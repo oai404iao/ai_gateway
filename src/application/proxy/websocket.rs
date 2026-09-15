@@ -45,7 +45,7 @@ use crate::{
 
 use super::super::connector::PreparedUpstreamAttempt as PreparedConnectorAttempt;
 use super::{
-    AttemptedChannelSlots, CompletionGuard, ProxyError, ProxyService, RequestOutcome,
+    AttemptedCandidateSlots, CompletionGuard, ProxyError, ProxyService, RequestOutcome,
     WebSocketRuntimeSnapshot, forward_request_headers, match_session_affinity, parse_bearer_token,
     request_billing_multiplier, request_log_metadata, rewrite_model_alias,
     sse_terminal_request_outcome,
@@ -375,13 +375,18 @@ impl ResponsesWebSocketSession {
             &self.request_headers,
             &original_body,
         );
-        let preferred_channel = pinned
+        let preferred_candidate = pinned
             .as_ref()
-            .map(|pinned| pinned.key.channel_id())
+            .map(|pinned| {
+                (
+                    pinned.key.channel_id(),
+                    Arc::clone(pinned.key.upstream_model()),
+                )
+            })
             .or_else(|| {
                 self.proxy
                     .upstream_clients
-                    .preferred_websocket_channel(api_key.id(), self.client_identity)
+                    .preferred_websocket_candidate(api_key.id(), self.client_identity)
             });
         let route = select_websocket_route(
             &self.proxy,
@@ -389,13 +394,14 @@ impl ResponsesWebSocketSession {
             &api_key,
             &parsed.model,
             affinity.clone(),
-            preferred_channel,
+            preferred_candidate.as_ref(),
             &[],
         );
         let crate::routing::SelectedRoute {
             rule,
             channel,
-            channel_slot,
+            candidate_slot,
+            channel_slot: _,
             upstream_model,
             session_affinity,
             lease,
@@ -477,24 +483,30 @@ impl ResponsesWebSocketSession {
         let max_attempts = max_retries.saturating_add(1);
         let mut attempt = 1_u32;
         let mut current_channel = channel;
-        let mut current_channel_slot = channel_slot;
+        let mut current_candidate_slot = candidate_slot;
         let mut current_upstream_model = upstream_model;
         let mut current_session_affinity = session_affinity;
-        let mut current_preferred_channel_hit = preferred_channel == Some(current_channel.id());
+        let mut current_preferred_candidate_hit =
+            preferred_candidate
+                .as_ref()
+                .is_some_and(|(channel_id, upstream_model)| {
+                    *channel_id == current_channel.id()
+                        && upstream_model.as_ref() == current_upstream_model.as_ref()
+                });
         let connector_seed = affinity
             .as_ref()
             .map(SessionAffinityMatch::session_hash)
             .unwrap_or_else(|| self.client_identity.connector_seed());
-        let mut attempted_channel_slots = AttemptedChannelSlots::new();
+        let mut attempted_candidate_slots = AttemptedCandidateSlots::new();
 
-        if parsed.previous_response_id && preferred_channel != Some(current_channel.id()) {
+        if parsed.previous_response_id && !current_preferred_candidate_hit {
             self.release_pinned(pinned.take());
             return reject_previous_response_not_found(client, &mut completion).await;
         }
 
         loop {
-            attempted_channel_slots.push(current_channel_slot);
-            let connector_affinity_hit = current_preferred_channel_hit
+            attempted_candidate_slots.push(current_candidate_slot);
+            let connector_affinity_hit = current_preferred_candidate_hit
                 || current_session_affinity
                     .as_ref()
                     .is_some_and(crate::routing::SessionAffinitySelection::cache_hit);
@@ -508,10 +520,11 @@ impl ResponsesWebSocketSession {
             ) {
                 Ok(connector) => connector,
                 Err(error) => {
-                    if let Some(active) = pinned
-                        .as_mut()
-                        .filter(|active| active.key.channel_id() == current_channel.id())
-                    {
+                    if let Some(active) = pinned.as_mut().filter(|active| {
+                        active.key.channel_id() == current_channel.id()
+                            && active.key.upstream_model().as_ref()
+                                == current_upstream_model.as_ref()
+                    }) {
                         active.reusable = false;
                     }
                     if parsed.previous_response_id {
@@ -545,7 +558,7 @@ impl ResponsesWebSocketSession {
                         &parsed.model,
                         affinity.clone(),
                         None,
-                        attempted_channel_slots.as_slice(),
+                        attempted_candidate_slots.as_slice(),
                     );
                     let SelectionResult::Selected(route) = retry_route else {
                         let error = ProxyError::connector_unavailable(error);
@@ -560,7 +573,8 @@ impl ResponsesWebSocketSession {
                     let crate::routing::SelectedRoute {
                         rule,
                         channel,
-                        channel_slot,
+                        candidate_slot,
+                        channel_slot: _,
                         upstream_model,
                         session_affinity,
                         lease,
@@ -578,10 +592,10 @@ impl ResponsesWebSocketSession {
                         request_multiplier,
                     );
                     current_channel = channel;
-                    current_channel_slot = channel_slot;
+                    current_candidate_slot = candidate_slot;
                     current_upstream_model = upstream_model;
                     current_session_affinity = session_affinity;
-                    current_preferred_channel_hit = false;
+                    current_preferred_candidate_hit = false;
                     continue;
                 }
             };
@@ -682,7 +696,7 @@ impl ResponsesWebSocketSession {
                                         &parsed.model,
                                         affinity.clone(),
                                         None,
-                                        attempted_channel_slots.as_slice(),
+                                        attempted_candidate_slots.as_slice(),
                                     )
                                 });
                             let Some(SelectionResult::Selected(route)) = next else {
@@ -699,7 +713,8 @@ impl ResponsesWebSocketSession {
                             let crate::routing::SelectedRoute {
                                 rule,
                                 channel,
-                                channel_slot,
+                                candidate_slot,
+                                channel_slot: _,
                                 upstream_model,
                                 session_affinity,
                                 lease,
@@ -724,13 +739,13 @@ impl ResponsesWebSocketSession {
                                 next_channel_id = %channel.id(),
                                 attempt = attempt.saturating_add(1),
                                 max_retries,
-                                "retrying Responses WebSocket setup on another channel"
+                                "retrying Responses WebSocket setup on another route candidate"
                             );
                             current_channel = channel;
-                            current_channel_slot = channel_slot;
+                            current_candidate_slot = candidate_slot;
                             current_upstream_model = upstream_model;
                             current_session_affinity = session_affinity;
-                            current_preferred_channel_hit = false;
+                            current_preferred_candidate_hit = false;
                             attempt = attempt.saturating_add(1);
                             continue;
                         }
@@ -892,6 +907,7 @@ impl ResponsesWebSocketSession {
             api_key.id(),
             self.client_identity,
             channel,
+            upstream_model,
             &target,
             &headers,
             MAX_UPSTREAM_MESSAGE_BYTES,
@@ -1028,18 +1044,19 @@ fn select_websocket_route(
     api_key: &CompiledApiKey,
     model: &str,
     affinity: Option<SessionAffinityMatch>,
-    preferred_channel: Option<Uuid>,
-    excluded_channel_slots: &[usize],
+    preferred_candidate: Option<&(Uuid, Arc<str>)>,
+    excluded_candidate_slots: &[usize],
 ) -> SelectionResult {
-    if let Some(preferred_channel) = preferred_channel
-        && let Some(selected) = proxy.routing.select_preferred_websocket_channel(
+    if let Some((preferred_channel, preferred_upstream_model)) = preferred_candidate
+        && let Some(selected) = proxy.routing.select_preferred_websocket_candidate(
             snapshot,
             api_key,
             OPENAI_RESPONSES_FORMAT,
             model,
-            preferred_channel,
+            *preferred_channel,
+            preferred_upstream_model,
             affinity.clone(),
-            excluded_channel_slots,
+            excluded_candidate_slots,
         )
     {
         return SelectionResult::Selected(selected);
@@ -1050,7 +1067,7 @@ fn select_websocket_route(
         OPENAI_RESPONSES_FORMAT,
         model,
         affinity,
-        excluded_channel_slots,
+        excluded_candidate_slots,
     )
 }
 

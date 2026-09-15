@@ -994,12 +994,18 @@ impl CompiledChannelGroup {
 
 #[derive(Clone, Debug)]
 pub struct CompiledCandidate {
+    candidate_slot: usize,
     channel_slot: usize,
     channel: Arc<CompiledChannel>,
     upstream_model: Arc<str>,
     weight: u32,
 }
 impl CompiledCandidate {
+    #[must_use]
+    pub(crate) const fn candidate_slot(&self) -> usize {
+        self.candidate_slot
+    }
+
     #[must_use]
     pub(crate) const fn channel_slot(&self) -> usize {
         self.channel_slot
@@ -1021,12 +1027,14 @@ impl CompiledCandidate {
     }
 
     pub(crate) fn new(
+        candidate_slot: usize,
         channel_slot: usize,
         channel: Arc<CompiledChannel>,
         upstream_model: Arc<str>,
         weight: i32,
     ) -> Self {
         Self {
+            candidate_slot,
             channel_slot,
             upstream_model,
             weight: u32::try_from(weight).expect("compiled positive route weight"),
@@ -1110,6 +1118,8 @@ pub struct CompiledModelRule {
     unavailable_candidates: Arc<[CompiledUnavailableRouteCandidate]>,
     target_candidates: Arc<[u64]>,
     model_capable_candidates: Arc<[u64]>,
+    target_candidate_count: usize,
+    model_capable_candidate_count: usize,
 }
 
 /// Immutable billable-model facts used by scheduled channel tests. Unlike a
@@ -1150,7 +1160,7 @@ impl CompiledScheduledTestModel {
     }
 }
 
-/// A model-capable route target that is structurally valid but not currently
+/// A model-capable candidate that is structurally valid but not currently
 /// selectable because its group or channel is disabled, or because the channel
 /// is automatically disabled.
 #[derive(Clone, Debug)]
@@ -1236,17 +1246,11 @@ impl CompiledModelRule {
     }
     #[must_use]
     pub fn target_candidate_count(&self) -> usize {
-        self.target_candidates
-            .iter()
-            .map(|word| word.count_ones() as usize)
-            .sum()
+        self.target_candidate_count
     }
     #[must_use]
     pub fn model_capable_candidate_count(&self) -> usize {
-        self.model_capable_candidates
-            .iter()
-            .map(|word| word.count_ones() as usize)
-            .sum()
+        self.model_capable_candidate_count
     }
     #[must_use]
     pub fn active_candidate_count(&self) -> usize {
@@ -1265,6 +1269,8 @@ impl CompiledModelRule {
         unavailable_candidates: Arc<[CompiledUnavailableRouteCandidate]>,
         target_candidates: Arc<[u64]>,
         model_capable_candidates: Arc<[u64]>,
+        target_candidate_count: usize,
+        model_capable_candidate_count: usize,
     ) -> Self {
         Self {
             route_slot,
@@ -1278,6 +1284,8 @@ impl CompiledModelRule {
             unavailable_candidates,
             target_candidates,
             model_capable_candidates,
+            target_candidate_count,
+            model_capable_candidate_count,
         }
     }
 }

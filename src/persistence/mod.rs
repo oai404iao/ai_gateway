@@ -136,6 +136,8 @@ pub struct SystemRequestRetrySettingsInput {
     pub enabled: bool,
     #[serde(default = "default_request_retry_max_retries")]
     pub max_retries: u32,
+    #[serde(default)]
+    pub retryable_status_codes: Vec<u16>,
 }
 
 impl Default for SystemRequestRetrySettingsInput {
@@ -143,6 +145,7 @@ impl Default for SystemRequestRetrySettingsInput {
         Self {
             enabled: default_request_retry_enabled(),
             max_retries: default_request_retry_max_retries(),
+            retryable_status_codes: Vec::new(),
         }
     }
 }
@@ -420,60 +423,10 @@ pub struct ModelRecord {
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct ModelRuleChannelWeight {
+pub struct ModelRuleRouteCandidate {
     pub channel_id: Uuid,
-    #[serde(deserialize_with = "deserialize_required_nullable_string")]
-    pub upstream_model: Option<String>,
+    pub upstream_model: String,
     pub weight: i32,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct ModelRuleChannelGroupTarget {
-    pub channel_group_id: Uuid,
-    pub channel_selection: String,
-    pub upstream_model: Option<String>,
-    pub default_weight: Option<i32>,
-    pub channels: Vec<ModelRuleChannelWeight>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ModelRuleChannelGroupTargetWire {
-    channel_group_id: Uuid,
-    channel_selection: String,
-    upstream_model: Value,
-    default_weight: Value,
-    channels: Vec<ModelRuleChannelWeight>,
-}
-
-impl<'de> Deserialize<'de> for ModelRuleChannelGroupTarget {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let wire = ModelRuleChannelGroupTargetWire::deserialize(deserializer)?;
-        let default_weight = match wire.default_weight {
-            Value::Null => None,
-            value => Some(
-                serde_json::from_value(value)
-                    .map_err(|error| serde::de::Error::custom(error.to_string()))?,
-            ),
-        };
-        let upstream_model = match wire.upstream_model {
-            Value::Null => None,
-            value => Some(
-                serde_json::from_value(value)
-                    .map_err(|error| serde::de::Error::custom(error.to_string()))?,
-            ),
-        };
-        Ok(Self {
-            channel_group_id: wire.channel_group_id,
-            channel_selection: wire.channel_selection,
-            upstream_model,
-            default_weight,
-            channels: wire.channels,
-        })
-    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -481,7 +434,7 @@ impl<'de> Deserialize<'de> for ModelRuleChannelGroupTarget {
 pub struct ModelRuleRoutingTier {
     pub priority: i32,
     pub selection_strategy: String,
-    pub channel_groups: Vec<ModelRuleChannelGroupTarget>,
+    pub candidates: Vec<ModelRuleRouteCandidate>,
 }
 
 #[derive(Clone, Debug)]
@@ -2255,9 +2208,9 @@ pub struct ControlPlaneModelProtocolRule {
     pub routing_tiers: Vec<ModelRuleRoutingTier>,
     pub enabled: bool,
     pub routing_status: ModelRuleRoutingStatus,
-    pub target_channel_count: usize,
-    pub model_capable_channel_count: usize,
-    pub active_channel_count: usize,
+    pub target_candidate_count: usize,
+    pub model_capable_candidate_count: usize,
+    pub active_candidate_count: usize,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -2292,54 +2245,28 @@ impl ControlPlaneModelProtocolRule {
         channels: &[ControlPlaneChannel],
     ) -> Self {
         let routing_tiers = row.routing_tiers.0;
-        let group_targets = routing_tiers
-            .iter()
-            .flat_map(|tier| &tier.channel_groups)
-            .map(|group| (group.channel_group_id, group))
-            .collect::<HashMap<_, _>>();
         let enabled_groups = groups
             .iter()
             .map(|group| (group.id, group.enabled))
             .collect::<HashMap<_, _>>();
-        let mut target_channel_count = 0;
-        let mut model_capable_channel_count = 0;
-        let mut active_channel_count = 0;
-        for channel in channels {
+        let channels_by_id = channels
+            .iter()
+            .map(|channel| (channel.id, channel))
+            .collect::<HashMap<_, _>>();
+        let mut target_candidate_count = 0;
+        let mut model_capable_candidate_count = 0;
+        let mut active_candidate_count = 0;
+        for candidate in routing_tiers.iter().flat_map(|tier| &tier.candidates) {
+            target_candidate_count += 1;
+            let Some(channel) = channels_by_id.get(&candidate.channel_id) else {
+                continue;
+            };
             if channel.api_format != row.api_format
-                || !group_targets
-                    .get(&channel.channel_group_id)
-                    .is_some_and(|group| {
-                        group.channel_selection == "all"
-                            || group
-                                .channels
-                                .iter()
-                                .any(|selected| selected.channel_id == channel.id)
-                    })
+                || !channel.available_models.contains(&candidate.upstream_model)
             {
                 continue;
             }
-            target_channel_count += 1;
-            let upstream_model = group_targets
-                .get(&channel.channel_group_id)
-                .and_then(|group| {
-                    if group.channel_selection == "all" {
-                        group.upstream_model.as_deref()
-                    } else {
-                        group
-                            .channels
-                            .iter()
-                            .find(|selected| selected.channel_id == channel.id)
-                            .and_then(|selected| selected.upstream_model.as_deref())
-                    }
-                });
-            if !channel
-                .available_models
-                .iter()
-                .any(|model| Some(model.as_str()) == upstream_model)
-            {
-                continue;
-            }
-            model_capable_channel_count += 1;
+            model_capable_candidate_count += 1;
             if channel.enabled
                 && !channel.auto_disabled
                 && enabled_groups
@@ -2347,7 +2274,7 @@ impl ControlPlaneModelProtocolRule {
                     .copied()
                     .unwrap_or(false)
             {
-                active_channel_count += 1;
+                active_candidate_count += 1;
             }
         }
         let routing_status = if !row.model_enabled {
@@ -2356,9 +2283,9 @@ impl ControlPlaneModelProtocolRule {
             ModelRuleRoutingStatus::Draft
         } else if !row.enabled {
             ModelRuleRoutingStatus::Disabled
-        } else if active_channel_count > 0 {
+        } else if active_candidate_count > 0 {
             ModelRuleRoutingStatus::Ready
-        } else if model_capable_channel_count > 0 {
+        } else if model_capable_candidate_count > 0 {
             ModelRuleRoutingStatus::TemporarilyUnavailable
         } else {
             ModelRuleRoutingStatus::Disconnected
@@ -2371,9 +2298,9 @@ impl ControlPlaneModelProtocolRule {
             routing_tiers,
             enabled: row.enabled,
             routing_status,
-            target_channel_count,
-            model_capable_channel_count,
-            active_channel_count,
+            target_candidate_count,
+            model_capable_candidate_count,
+            active_candidate_count,
             updated_at: row.updated_at,
         }
     }
@@ -5084,26 +5011,15 @@ impl ControlPlaneRepository {
                         SELECT jsonb_agg(jsonb_build_object( \
                             'priority',tier.priority, \
                             'selection_strategy',tier.selection_strategy, \
-                            'channel_groups',COALESCE(( \
+                            'candidates',COALESCE(( \
                                 SELECT jsonb_agg(jsonb_build_object( \
-                                    'channel_group_id',target.channel_group_id, \
-                                    'channel_selection',target.channel_selection, \
-                                    'upstream_model',target.upstream_model, \
-                                    'default_weight',target.default_weight, \
-                                    'channels',COALESCE(( \
-                                        SELECT jsonb_agg(jsonb_build_object( \
-                                            'channel_id',channel_weight.channel_id, \
-                                            'upstream_model',channel_weight.upstream_model, \
-                                            'weight',channel_weight.weight \
-                                        ) ORDER BY channel_weight.channel_id) \
-                                        FROM model_rule_routing_channels AS channel_weight \
-                                        WHERE channel_weight.model_rule_id=target.model_rule_id \
-                                          AND channel_weight.channel_group_id=target.channel_group_id \
-                                    ),'[]'::jsonb) \
-                                ) ORDER BY target.channel_group_id) \
-                                FROM model_rule_routing_groups AS target \
-                                WHERE target.model_rule_id=tier.model_rule_id \
-                                  AND target.priority=tier.priority \
+                                    'channel_id',candidate.channel_id, \
+                                    'upstream_model',candidate.upstream_model, \
+                                    'weight',candidate.weight \
+                                ) ORDER BY candidate.channel_id,candidate.upstream_model) \
+                                FROM model_rule_routing_candidates AS candidate \
+                                WHERE candidate.model_rule_id=tier.model_rule_id \
+                                  AND candidate.priority=tier.priority \
                             ),'[]'::jsonb) \
                         ) ORDER BY tier.priority) \
                         FROM model_rule_routing_tiers AS tier \
@@ -5335,26 +5251,15 @@ impl ControlPlaneRepository {
                         SELECT jsonb_agg(jsonb_build_object( \
                             'priority',tier.priority, \
                             'selection_strategy',tier.selection_strategy, \
-                            'channel_groups',COALESCE(( \
+                            'candidates',COALESCE(( \
                                 SELECT jsonb_agg(jsonb_build_object( \
-                                    'channel_group_id',target.channel_group_id, \
-                                    'channel_selection',target.channel_selection, \
-                                    'upstream_model',target.upstream_model, \
-                                    'default_weight',target.default_weight, \
-                                    'channels',COALESCE(( \
-                                        SELECT jsonb_agg(jsonb_build_object( \
-                                            'channel_id',channel_weight.channel_id, \
-                                            'upstream_model',channel_weight.upstream_model, \
-                                            'weight',channel_weight.weight \
-                                        ) ORDER BY channel_weight.channel_id) \
-                                        FROM model_rule_routing_channels AS channel_weight \
-                                        WHERE channel_weight.model_rule_id=target.model_rule_id \
-                                          AND channel_weight.channel_group_id=target.channel_group_id \
-                                    ),'[]'::jsonb) \
-                                ) ORDER BY target.channel_group_id) \
-                                FROM model_rule_routing_groups AS target \
-                                WHERE target.model_rule_id=tier.model_rule_id \
-                                  AND target.priority=tier.priority \
+                                    'channel_id',candidate.channel_id, \
+                                    'upstream_model',candidate.upstream_model, \
+                                    'weight',candidate.weight \
+                                ) ORDER BY candidate.channel_id,candidate.upstream_model) \
+                                FROM model_rule_routing_candidates AS candidate \
+                                WHERE candidate.model_rule_id=tier.model_rule_id \
+                                  AND candidate.priority=tier.priority \
                             ),'[]'::jsonb) \
                         ) ORDER BY tier.priority) \
                         FROM model_rule_routing_tiers AS tier \
@@ -6935,10 +6840,6 @@ async fn load_channel_deletion_plan(
         ChannelDeletionTarget::Group(_) => vec![root.id],
         ChannelDeletionTarget::Channel(_) => Vec::new(),
     };
-    let target_group_ids = match root.channel_group_id {
-        Some(id) => vec![id],
-        None => vec![root.id],
-    };
     let channels = match target {
         ChannelDeletionTarget::Group(_) => {
             sqlx::query_as::<_, DeletionImpactChannelRow>(
@@ -6975,26 +6876,15 @@ async fn load_channel_deletion_plan(
                     SELECT jsonb_agg(jsonb_build_object( \
                         'priority',tier.priority, \
                         'selection_strategy',tier.selection_strategy, \
-                        'channel_groups',COALESCE(( \
+                        'candidates',COALESCE(( \
                             SELECT jsonb_agg(jsonb_build_object( \
-                                'channel_group_id',group_target.channel_group_id, \
-                                'channel_selection',group_target.channel_selection, \
-                                'upstream_model',group_target.upstream_model, \
-                                'default_weight',group_target.default_weight, \
-                                'channels',COALESCE(( \
-                                    SELECT jsonb_agg(jsonb_build_object( \
-                                        'channel_id',channel_target.channel_id, \
-                                        'upstream_model',channel_target.upstream_model, \
-                                        'weight',channel_target.weight \
-                                    ) ORDER BY channel_target.channel_id) \
-                                    FROM model_rule_routing_channels AS channel_target \
-                                    WHERE channel_target.model_rule_id=group_target.model_rule_id \
-                                      AND channel_target.channel_group_id=group_target.channel_group_id \
-                                ),'[]'::jsonb) \
-                            ) ORDER BY group_target.channel_group_id) \
-                            FROM model_rule_routing_groups AS group_target \
-                            WHERE group_target.model_rule_id=tier.model_rule_id \
-                              AND group_target.priority=tier.priority \
+                                'channel_id',candidate.channel_id, \
+                                'upstream_model',candidate.upstream_model, \
+                                'weight',candidate.weight \
+                            ) ORDER BY candidate.channel_id,candidate.upstream_model) \
+                            FROM model_rule_routing_candidates AS candidate \
+                            WHERE candidate.model_rule_id=tier.model_rule_id \
+                              AND candidate.priority=tier.priority \
                         ),'[]'::jsonb) \
                     ) ORDER BY tier.priority) \
                     FROM model_rule_routing_tiers AS tier \
@@ -7006,12 +6896,12 @@ async fn load_channel_deletion_plan(
          JOIN models AS model ON model.id=profile.model_id \
           AND model.deleted_at IS NULL \
          WHERE EXISTS ( \
-             SELECT 1 FROM model_rule_routing_groups AS group_target \
-             WHERE group_target.model_rule_id=rule.id \
-               AND group_target.channel_group_id=ANY($1)) \
+             SELECT 1 FROM model_rule_routing_candidates AS candidate \
+             WHERE candidate.model_rule_id=rule.id \
+               AND candidate.channel_id=ANY($1)) \
          ORDER BY rule.id",
     )
-    .bind(&target_group_ids)
+    .bind(&deleted_channel_ids)
     .fetch_all(&mut **transaction)
     .await?;
     let deleted_groups = deleted_group_ids.iter().copied().collect::<HashSet<_>>();
@@ -7136,64 +7026,24 @@ fn deletion_impact_for_rule(
     let mut remaining_tier_count = 0;
 
     for tier in &state.routing_tiers {
-        let mut remaining_group_count = 0;
-        for group in &tier.channel_groups {
-            if deleted_groups.contains(&group.channel_group_id) {
+        let mut removed_from_tier = false;
+        let mut remaining_candidate_count = 0;
+        for candidate in &tier.candidates {
+            if deleted_channels.contains(&candidate.channel_id) {
                 affected = true;
-                removed_group_ids.insert(group.channel_group_id);
-                continue;
-            }
-
-            let explicit_deleted_channels = group
-                .channels
-                .iter()
-                .filter(|channel| deleted_channels.contains(&channel.channel_id))
-                .map(|channel| channel.channel_id)
-                .collect::<BTreeSet<_>>();
-            let all_target_deleted_channels = if group.channel_selection == "all" {
-                let upstream_model = group.upstream_model.as_deref();
-                deleted_channels
-                    .iter()
-                    .filter(|channel_id| {
-                        channel_rows.get(channel_id).is_some_and(|channel| {
-                            channel.channel_group_id == group.channel_group_id
-                                && (explicit_deleted_channels.contains(channel_id)
-                                    || channel
-                                        .available_models
-                                        .iter()
-                                        .any(|model| Some(model.as_str()) == upstream_model))
-                        })
-                    })
-                    .copied()
-                    .collect::<BTreeSet<_>>()
+                removed_from_tier = true;
+                removed_channel_ids.insert(candidate.channel_id);
+                if let Some(channel) = channel_rows.get(&candidate.channel_id)
+                    && deleted_groups.contains(&channel.channel_group_id)
+                {
+                    removed_group_ids.insert(channel.channel_group_id);
+                }
             } else {
-                BTreeSet::new()
-            };
-            let affected_channels = explicit_deleted_channels
-                .union(&all_target_deleted_channels)
-                .copied()
-                .collect::<BTreeSet<_>>();
-            if !affected_channels.is_empty() {
-                affected = true;
-                removed_channel_ids.extend(affected_channels);
+                remaining_candidate_count += 1;
             }
-
-            let remaining_selected_channels = group
-                .channels
-                .iter()
-                .filter(|channel| !deleted_channels.contains(&channel.channel_id))
-                .count();
-            if group.channel_selection == "selected"
-                && remaining_selected_channels == 0
-                && !explicit_deleted_channels.is_empty()
-            {
-                removed_group_ids.insert(group.channel_group_id);
-                continue;
-            }
-            remaining_group_count += 1;
         }
-        if remaining_group_count == 0 {
-            if affected {
+        if remaining_candidate_count == 0 {
+            if removed_from_tier {
                 removed_tier_priorities.push(tier.priority);
             }
         } else {
@@ -7293,26 +7143,15 @@ async fn rule_audit(
                         SELECT jsonb_agg(jsonb_build_object( \
                             'priority',tier.priority, \
                             'selection_strategy',tier.selection_strategy, \
-                            'channel_groups',COALESCE(( \
+                            'candidates',COALESCE(( \
                                 SELECT jsonb_agg(jsonb_build_object( \
-                                    'channel_group_id',target.channel_group_id, \
-                                    'channel_selection',target.channel_selection, \
-                                    'upstream_model',target.upstream_model, \
-                                    'default_weight',target.default_weight, \
-                                    'channels',COALESCE(( \
-                                        SELECT jsonb_agg(jsonb_build_object( \
-                                            'channel_id',channel_weight.channel_id, \
-                                            'upstream_model',channel_weight.upstream_model, \
-                                            'weight',channel_weight.weight \
-                                        ) ORDER BY channel_weight.channel_id) \
-                                        FROM model_rule_routing_channels AS channel_weight \
-                                        WHERE channel_weight.model_rule_id=target.model_rule_id \
-                                          AND channel_weight.channel_group_id=target.channel_group_id \
-                                    ),'[]'::jsonb) \
-                                ) ORDER BY target.channel_group_id) \
-                                FROM model_rule_routing_groups AS target \
-                                WHERE target.model_rule_id=tier.model_rule_id \
-                                  AND target.priority=tier.priority \
+                                    'channel_id',candidate.channel_id, \
+                                    'upstream_model',candidate.upstream_model, \
+                                    'weight',candidate.weight \
+                                ) ORDER BY candidate.channel_id,candidate.upstream_model) \
+                                FROM model_rule_routing_candidates AS candidate \
+                                WHERE candidate.model_rule_id=tier.model_rule_id \
+                                  AND candidate.priority=tier.priority \
                             ),'[]'::jsonb) \
                         ) ORDER BY tier.priority) \
                         FROM model_rule_routing_tiers AS tier \
@@ -8524,7 +8363,7 @@ async fn channel_resource_soft_delete(
     .await?;
 
     sqlx::query(
-        "DELETE FROM model_rule_routing_channels \
+        "DELETE FROM model_rule_routing_candidates \
          WHERE model_rule_id=ANY($1) AND channel_id=ANY($2)",
     )
     .bind(&plan.affected_rule_ids)
@@ -8532,32 +8371,12 @@ async fn channel_resource_soft_delete(
     .execute(&mut **transaction)
     .await?;
     sqlx::query(
-        "DELETE FROM model_rule_routing_groups \
-         WHERE model_rule_id=ANY($1) AND channel_group_id=ANY($2)",
-    )
-    .bind(&plan.affected_rule_ids)
-    .bind(&plan.deleted_group_ids)
-    .execute(&mut **transaction)
-    .await?;
-    sqlx::query(
-        "DELETE FROM model_rule_routing_groups AS group_target \
-         WHERE group_target.model_rule_id=ANY($1) \
-           AND group_target.channel_selection='selected' \
-           AND NOT EXISTS ( \
-               SELECT 1 FROM model_rule_routing_channels AS channel_target \
-               WHERE channel_target.model_rule_id=group_target.model_rule_id \
-                 AND channel_target.channel_group_id=group_target.channel_group_id)",
-    )
-    .bind(&plan.affected_rule_ids)
-    .execute(&mut **transaction)
-    .await?;
-    sqlx::query(
         "DELETE FROM model_rule_routing_tiers AS tier \
          WHERE tier.model_rule_id=ANY($1) \
            AND NOT EXISTS ( \
-               SELECT 1 FROM model_rule_routing_groups AS group_target \
-               WHERE group_target.model_rule_id=tier.model_rule_id \
-                 AND group_target.priority=tier.priority)",
+               SELECT 1 FROM model_rule_routing_candidates AS candidate \
+               WHERE candidate.model_rule_id=tier.model_rule_id \
+                 AND candidate.priority=tier.priority)",
     )
     .bind(&plan.affected_rule_ids)
     .execute(&mut **transaction)
@@ -8977,7 +8796,6 @@ async fn model_protocol_rule_update(
 
 fn valid_model_rule_routing_tiers(tiers: &[ModelRuleRoutingTier]) -> bool {
     let mut priorities = HashSet::with_capacity(tiers.len());
-    let mut group_ids = HashSet::new();
     for tier in tiers {
         if tier.priority < 0
             || !priorities.insert(tier.priority)
@@ -8985,42 +8803,18 @@ fn valid_model_rule_routing_tiers(tiers: &[ModelRuleRoutingTier]) -> bool {
                 tier.selection_strategy.as_str(),
                 "weighted_random" | "weighted_round_robin"
             )
-            || tier.channel_groups.is_empty()
+            || tier.candidates.is_empty()
         {
             return false;
         }
-        for group in &tier.channel_groups {
-            let mut channel_ids = HashSet::with_capacity(group.channels.len());
-            if !group_ids.insert(group.channel_group_id)
-                || group
-                    .channels
-                    .iter()
-                    .any(|channel| channel.weight <= 0 || !channel_ids.insert(channel.channel_id))
+        let mut candidates = HashSet::with_capacity(tier.candidates.len());
+        for candidate in &tier.candidates {
+            if candidate.weight <= 0
+                || candidate.upstream_model.trim().is_empty()
+                || candidate.upstream_model.chars().count() > 300
+                || !candidates.insert((candidate.channel_id, candidate.upstream_model.as_str()))
             {
                 return false;
-            }
-            match group.channel_selection.as_str() {
-                "all"
-                    if group.default_weight.is_some_and(|weight| weight > 0)
-                        && group
-                            .upstream_model
-                            .as_deref()
-                            .is_some_and(|model| !model.trim().is_empty())
-                        && group
-                            .channels
-                            .iter()
-                            .all(|channel| channel.upstream_model.is_none()) => {}
-                "selected"
-                    if group.default_weight.is_none()
-                        && group.upstream_model.is_none()
-                        && !group.channels.is_empty()
-                        && group.channels.iter().all(|channel| {
-                            channel
-                                .upstream_model
-                                .as_deref()
-                                .is_some_and(|model| !model.trim().is_empty())
-                        }) => {}
-                _ => return false,
             }
         }
     }
@@ -9032,138 +8826,31 @@ async fn validate_model_rule_routing_references(
     api_format: &str,
     tiers: &[ModelRuleRoutingTier],
 ) -> Result<(), RepositoryError> {
-    let group_ids = tiers
+    let candidates = tiers
         .iter()
-        .flat_map(|tier| &tier.channel_groups)
-        .map(|group| group.channel_group_id)
+        .flat_map(|tier| &tier.candidates)
+        .map(|candidate| (candidate.channel_id, candidate.upstream_model.as_str()))
         .collect::<Vec<_>>();
-    let matching_group_count = sqlx::query_scalar::<_, i64>(
-        "SELECT count(*) \
-         FROM channel_groups \
-         WHERE id=ANY($1) AND api_format=$2::api_format \
-           AND deleted_at IS NULL",
-    )
-    .bind(&group_ids)
-    .bind(api_format)
-    .fetch_one(&mut **transaction)
-    .await?;
-    if usize::try_from(matching_group_count).ok() != Some(group_ids.len()) {
-        return Err(RepositoryError::RoutingDependencyInvalid);
-    }
-
-    let all_group_targets = tiers
-        .iter()
-        .flat_map(|tier| &tier.channel_groups)
-        .filter(|group| group.channel_selection == "all")
-        .map(|group| {
-            (
-                group.channel_group_id,
-                group
-                    .upstream_model
-                    .as_deref()
-                    .expect("validated all-channel target model"),
-            )
-        })
-        .collect::<Vec<_>>();
-    if !all_group_targets.is_empty() {
-        let (target_group_ids, upstream_models): (Vec<_>, Vec<_>) =
-            all_group_targets.into_iter().unzip();
-        let matching_target_count = sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) \
-             FROM unnest($1::uuid[],$2::text[]) AS target(channel_group_id,upstream_model) \
-             WHERE EXISTS ( \
-                 SELECT 1 \
-                 FROM channels AS channel \
-                 WHERE channel.channel_group_id=target.channel_group_id \
-                   AND channel.api_format=$3::api_format \
-                   AND channel.deleted_at IS NULL \
-                   AND target.upstream_model=ANY(channel.available_models))",
-        )
-        .bind(&target_group_ids)
-        .bind(&upstream_models)
-        .bind(api_format)
-        .fetch_one(&mut **transaction)
-        .await?;
-        if usize::try_from(matching_target_count).ok() != Some(target_group_ids.len()) {
-            return Err(RepositoryError::RoutingDependencyInvalid);
-        }
-    }
-
-    let channel_targets = tiers
-        .iter()
-        .flat_map(|tier| &tier.channel_groups)
-        .flat_map(|group| {
-            group
-                .channels
-                .iter()
-                .map(move |channel| (channel.channel_id, group.channel_group_id))
-        })
-        .collect::<Vec<_>>();
-    if channel_targets.is_empty() {
+    if candidates.is_empty() {
         return Ok(());
     }
-    let (channel_ids, channel_group_ids): (Vec<_>, Vec<_>) = channel_targets.into_iter().unzip();
-    let matching_channel_count = sqlx::query_scalar::<_, i64>(
+    let (channel_ids, upstream_models): (Vec<_>, Vec<_>) = candidates.into_iter().unzip();
+    let matching_candidate_count = sqlx::query_scalar::<_, i64>(
         "SELECT count(*) \
-         FROM unnest($1::uuid[],$2::uuid[]) AS target(channel_id,channel_group_id) \
+         FROM unnest($1::uuid[],$2::text[]) AS target(channel_id,upstream_model) \
          JOIN channels AS channel \
           ON channel.id=target.channel_id \
-         AND channel.channel_group_id=target.channel_group_id \
           AND channel.api_format=$3::api_format \
-          AND channel.deleted_at IS NULL",
+          AND channel.deleted_at IS NULL \
+          AND target.upstream_model=ANY(channel.available_models)",
     )
     .bind(&channel_ids)
-    .bind(&channel_group_ids)
+    .bind(&upstream_models)
     .bind(api_format)
     .fetch_one(&mut **transaction)
     .await?;
-    if usize::try_from(matching_channel_count).ok() != Some(channel_ids.len()) {
+    if usize::try_from(matching_candidate_count).ok() != Some(channel_ids.len()) {
         return Err(RepositoryError::RoutingDependencyInvalid);
-    }
-
-    let selected_channel_targets = tiers
-        .iter()
-        .flat_map(|tier| &tier.channel_groups)
-        .filter(|group| group.channel_selection == "selected")
-        .flat_map(|group| {
-            group.channels.iter().map(move |channel| {
-                (
-                    channel.channel_id,
-                    group.channel_group_id,
-                    channel
-                        .upstream_model
-                        .as_deref()
-                        .expect("validated selected-channel target model"),
-                )
-            })
-        })
-        .collect::<Vec<_>>();
-    if !selected_channel_targets.is_empty() {
-        let (channel_ids, remaining): (Vec<_>, Vec<_>) = selected_channel_targets
-            .into_iter()
-            .map(|(channel_id, group_id, upstream_model)| (channel_id, (group_id, upstream_model)))
-            .unzip();
-        let (channel_group_ids, upstream_models): (Vec<_>, Vec<_>) = remaining.into_iter().unzip();
-        let matching_model_count = sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) \
-             FROM unnest($1::uuid[],$2::uuid[],$3::text[]) \
-                 AS target(channel_id,channel_group_id,upstream_model) \
-             JOIN channels AS channel \
-              ON channel.id=target.channel_id \
-             AND channel.channel_group_id=target.channel_group_id \
-             AND channel.api_format=$4::api_format \
-             AND channel.deleted_at IS NULL \
-             AND target.upstream_model=ANY(channel.available_models)",
-        )
-        .bind(&channel_ids)
-        .bind(&channel_group_ids)
-        .bind(&upstream_models)
-        .bind(api_format)
-        .fetch_one(&mut **transaction)
-        .await?;
-        if usize::try_from(matching_model_count).ok() != Some(channel_ids.len()) {
-            return Err(RepositoryError::RoutingDependencyInvalid);
-        }
     }
     Ok(())
 }
@@ -9186,36 +8873,20 @@ async fn insert_model_rule_routing_tiers(
         .bind(&tier.selection_strategy)
         .execute(&mut **transaction)
         .await?;
-        for group in &tier.channel_groups {
+        for candidate in &tier.candidates {
             sqlx::query(
-                "INSERT INTO model_rule_routing_groups \
-                 (model_rule_id,api_format,priority,channel_group_id,channel_selection,upstream_model,default_weight) \
-                 VALUES ($1,$2::api_format,$3,$4,$5,$6,$7)",
+                "INSERT INTO model_rule_routing_candidates \
+                 (model_rule_id,api_format,priority,channel_id,upstream_model,weight) \
+                 VALUES ($1,$2::api_format,$3,$4,$5,$6)",
             )
             .bind(model_rule_id)
             .bind(api_format)
             .bind(tier.priority)
-            .bind(group.channel_group_id)
-            .bind(&group.channel_selection)
-            .bind(&group.upstream_model)
-            .bind(group.default_weight)
+            .bind(candidate.channel_id)
+            .bind(&candidate.upstream_model)
+            .bind(candidate.weight)
             .execute(&mut **transaction)
             .await?;
-            for channel in &group.channels {
-                sqlx::query(
-                    "INSERT INTO model_rule_routing_channels \
-                     (model_rule_id,api_format,channel_group_id,channel_id,upstream_model,weight) \
-                     VALUES ($1,$2::api_format,$3,$4,$5,$6)",
-                )
-                .bind(model_rule_id)
-                .bind(api_format)
-                .bind(group.channel_group_id)
-                .bind(channel.channel_id)
-                .bind(&channel.upstream_model)
-                .bind(channel.weight)
-                .execute(&mut **transaction)
-                .await?;
-            }
         }
     }
     Ok(())
@@ -9507,6 +9178,7 @@ fn validate_system_settings_input(input: &SystemSettingsInput) -> Result<(), Rep
         || upstream.stream_idle_timeout_seconds == 0
         || request_retry.max_retries == 0
         || request_retry.max_retries > MAX_REQUEST_RETRIES
+        || !valid_retryable_status_codes(&request_retry.retryable_status_codes)
         || passive_health.connection_failure_threshold == 0
         || passive_health.cooldown_seconds == 0
         || automatic_disable
@@ -9533,6 +9205,12 @@ fn validate_system_settings_input(input: &SystemSettingsInput) -> Result<(), Rep
         return Err(RepositoryError::Validation);
     }
     Ok(())
+}
+
+fn valid_retryable_status_codes(statuses: &[u16]) -> bool {
+    statuses.len() <= 100
+        && statuses.iter().all(|status| (400..=599).contains(status))
+        && statuses.iter().collect::<HashSet<_>>().len() == statuses.len()
 }
 
 pub fn valid_codex_settings_input(input: &SystemCodexSettingsInput) -> bool {

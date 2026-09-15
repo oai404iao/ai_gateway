@@ -24,7 +24,7 @@
 | 领域 | 主要表 | 责任 |
 | --- | --- | --- |
 | 身份与授权 | `users`、`user_groups`、`user_sessions`、`user_invitations`、`registration_invitation_codes`、`api_key_policies`、`api_keys` | Console 身份、角色、生命周期、注册/邀请、用户可选路由边界和具体 Key 限制。 |
-| 模型与路由 | `models`、`model_routing_profiles`、`model_rules`、`model_rule_routing_tiers`、`model_rule_routing_groups`、`model_rule_routing_channels`、`channel_groups`、`channels`、`proxies`、`config_templates`、`system_settings` | 客户端模型价格、协议规则、目标级上游 wire 模型、路由层级/权重、格式隔离、Connector、网络/变换和数据库动态系统策略。 |
+| 模型与路由 | `models`、`model_routing_profiles`、`model_rules`、`model_rule_routing_tiers`、`model_rule_routing_candidates`、`channel_groups`、`channels`、`proxies`、`config_templates`、`system_settings` | 客户端模型价格、协议规则、候选级上游 wire 模型、路由层级/权重、格式隔离、Connector、网络/变换和数据库动态系统策略。 |
 | Codex Connector | `connector_pools`、`codex_oauth_credentials`、`codex_oauth_credential_channels`、`codex_oauth_flows`、`codex_quota_window_periods`、`codex_quota_reset_events`、`user_group_codex_quota_visibility` | 共享逻辑凭证、Responses/Images 投影、OAuth、quota 历史和用户组可见性。 |
 | 日志与统计 | `request_log_ingest`、`request_logs`、`spend_leaderboard_periods`、`spend_leaderboard_entries`、`audit_logs` | 耐久日志入口、查询/结算事实、排行榜投影和控制面审计。 |
 
@@ -40,19 +40,18 @@
   Console、目录同步匹配或运行时快照；同名重建使用新 UUID。
 - `model_rules` 现在是 profile 下按 `(model_routing_profile_id, api_format)` 唯一的协议规则。
   顶层 profile 不重复保存格式、启用状态或上游模型；协议格式创建后不可修改。
-- 上游 wire model 属于具体 route target。`model_rule_routing_groups.upstream_model` 只用于
-  `all`，`model_rule_routing_channels.upstream_model` 只用于 `selected`。协议写入会验证：
-  group 模型至少由一个成员 Channel 的 `available_models` 声明，每条 selected Channel 则必须
-  自己声明对应模型。后续 Channel 能力变更仍可让既有规则进入 `disconnected`。
+- 上游 wire model 属于具体 `model_rule_routing_candidates` 候选，不属于计价模型或协议父记录。
+  协议写入会验证每条候选引用的 Channel 格式一致，且该 Channel 的 `available_models` 声明了
+  对应模型；因此价格模型 A 可以路由到未单独计价的 wire model B。后续 Channel 能力变更仍可
+  让既有规则进入 `disconnected`。
 - `model_rule_routing_tiers` 保存规则拥有的非负 priority 和单一
   `weighted_random` / `weighted_round_robin` strategy；priority 数值越小越先选。
-  `model_rule_routing_groups` 保存 tier 内 group target：`all` 使用 target 级模型和正数默认权重，
-  并允许 `model_rule_routing_channels` 提供仅权重覆盖；`selected` 则要求后者明确列出至少一个
-  渠道、上游模型和正权重。权重只在同一 tier 的合格渠道间比较。
-- `all` 在每次完整快照编译时只展开 group 中声明支持该 target 模型的渠道，所以以后加入该组且
-  支持同一模型的渠道自动继承规则默认权重；`selected` 不随 group 新成员扩展。Console 新建
-  target 时把默认或显式 Channel 权重初始化为 `100`。
-- 规则、routing target、渠道组和渠道必须保持格式一致。计价模型启用时，停用协议可无 tier 并
+  `model_rule_routing_candidates` 为 tier 直接保存 `channel_id`、`upstream_model` 和正权重。
+  权重只在同一 tier 的合格渠道/模型候选间比较；同一 Channel 可在同层使用多个不同模型，也可
+  跨层重复，只有同层完全相同的 `(channel_id, upstream_model)` 组合被主键拒绝。
+- Channel Group 不进入持久化路由图。Console 的批量添加动作只把操作当时的组成员展开为显式
+  候选并默认使用权重 `100`；之后新增、移动或删除组成员不会隐式改变已保存规则。
+- 规则、routing candidate、渠道组和渠道必须保持格式一致。计价模型启用时，停用协议可无 tier 并
   显示为 `draft`；`model_disabled` 在计价模型停用后优先于其他状态。启用协议必须至少有一个
   非空 tier，但可以暂时没有模型兼容或活跃
   渠道；快照仍可发布，实际请求按普通路由错误失败。
@@ -83,14 +82,13 @@ Codex quota 可见性；直接删除 Key 会覆盖其明文 secret。活动记�
 API Key Policy 和 quota 可见性依赖生成确认 token；DELETE 在 `SERIALIZABLE` 事务中重新计算，
 影响变化时以 `deletion_impact_changed` 失败。渠道墓碑会清除 secret、上游 URL、Transform、
 proxy、超时、测试和模型能力配置；组墓碑会同时处理所有普通 child channels。删除事务解绑授权
-引用，移除路由 target，
-删除空 selected group 与空 tier，并在协议规则无 tier 时将其停用。运行时和普通管理查询仅加载
+引用，删除对应渠道/模型候选与空 tier，并在协议规则无 tier 时将其停用。运行时和普通管理查询仅加载
 活动渠道/组，历史 request log 和 audit 仍通过墓碑 UUID 读取稳定名称。Codex OAuth managed
 groups/channels 保持 connector pool 专用生命周期，普通删除接口返回
 `provider_managed_resource`；数据库触发器拒绝渠道和渠道组的直接硬删除。
 
 删除计价模型会先停用其 profile 下全部协议规则，并成对清空 Channel 的 `test_model` /
-`test_pricing_model_id`，再停用模型并写入墓碑。Profile、协议规则、tier 和 target 继续保留，
+`test_pricing_model_id`，再停用模型并写入墓碑。Profile、协议规则、tier 和 candidate 继续保留，
 但活动管理查询与完整运行时快照按父模型 `deleted_at IS NULL` 隐藏它们。模型自然标识可由新 UUID
 复用；目录同步只匹配活动模型，不会刷新墓碑。数据库触发器拒绝模型恢复、墓碑修改、硬删除，以及
 定时测试或新路由重新引用墓碑。
@@ -99,7 +97,8 @@ groups/channels 保持 connector pool 专用生命周期，普通删除接口返
 
 `system_settings` 不是预留表。固定的 `forwarding_policy` 文档保存并热更新以下策略：
 
-- 上游超时、请求重试、被动健康、自动禁用和定时测试；
+- 上游超时、按精确渠道/模型候选排除的请求重试、可重试 HTTP 状态码、被动健康、自动禁用和
+  定时测试；
 - Session affinity 与 Responses WebSocket；
 - Codex 合成 workspace path、HTTPS Git remote 等转发元数据策略。
 
@@ -140,7 +139,7 @@ Gateway 在持有 SQLx 数据库 advisory lock 期间，把连续待执行 migra
 外层事务。任一步失败会回滚同批先前已经执行的 migration 及其 `_sqlx_migrations` 记录；
 更早批次或启动中已经提交的版本不会被追溯回滚。历史 `0034`、`0046` 使用
 `ALTER TYPE ... ADD VALUE`，PostgreSQL 要求提交新增枚举值后才能由后续 migration 引用，
-因此它们是仅有的既存事务提交屏障；`0053–0061` 属于同一原子批次。禁止新增
+因此它们是仅有的既存事务提交屏障；`0053–0062` 属于同一原子批次。禁止新增
 `-- no-transaction` migration；新的提交屏障必须作为显式架构例外审查。
 
 ### migration 0061 失败请求零费用
@@ -148,6 +147,18 @@ Gateway 在持有 SQLx 数据库 advisory lock 期间，把连续待执行 migra
 `0061_zero_failed_and_cancelled_costs.sql` 把已有 `failed`/`cancelled` 请求费用统一为零。
 已经写入 `billed_at` 的旧正费用会按原日志用户和 API Key 聚合，退回用户余额并扣回 Key 已用额度；
 成功请求不变。没有价格快照的失败记录也可以用零费用完成幂等结算，供 Codex 拼车恢复旧 pending。
+
+### migration 0062 扁平路由候选硬切换
+
+`0062_flat_model_route_candidates.sql` 把 group target 与其 Channel 明细合并为
+`model_rule_routing_candidates`。旧 `selected` target 原样迁移每条渠道、模型和权重；旧
+`all` target 在 migration 时一次性展开当前未删除组成员，并保留默认权重或逐渠道覆盖。即使成员
+当时已不再声明该模型，也保留显式候选，使原有 `disconnected` 状态可在能力恢复后重新连通。
+空 `all` target 无法转换为候选，因此删除对应空 tier；规则最终无 tier 时自动停用。
+
+该 migration 删除旧的 `model_rule_routing_groups` 和 `model_rule_routing_channels`，旧二进制无法
+继续写入，必须按停机硬切换部署。迁移后 Channel Group 只保留资源、Connector 和授权语义，不再
+动态决定模型路由成员。
 
 ### 请求日志与结算
 
@@ -160,13 +171,14 @@ terminal RequestLogEvent
 ```
 
 - 本地 spool 覆盖数据库写入前的进程崩溃恢复；入口和最终表都依赖请求 UUID 幂等。
-- `request_logs` 保存最终协议规则 ID、渠道、实际发送的 target 上游模型、顶层 profile 的
+- `request_logs` 保存最终协议规则 ID、渠道、实际发送的 candidate 上游模型、顶层 profile 的
   计价模型 ID、usage、有效价格快照、成本、请求开始时是否命中高峰时段，以及有界错误诊断；
   不保存 prompt、completion、完整 Header、Cookie 或密钥。
 - Codex quota 当前与历史窗口的凭证总花费按逻辑凭证的 Responses/Images projection、周期边界和
   `cost_amount IS NOT NULL` 从该表聚合；现有 `(channel_id, started_at)` 索引支撑该只读查询。
-- Chat Completions、Responses 和 standalone web search 可按数据库策略在收到上游响应头前自动
-  重试不同渠道；Images 不自动重试，Responses WebSocket 发送上游消息后也不重试。
+- 普通 Connector 的 Chat Completions、Responses 和 standalone web search 可按数据库策略重试
+  响应头前传输失败，也可在向客户端发送前按显式 4xx/5xx 状态码切换到未尝试的渠道/模型候选；
+  Images 不自动重试，Codex Connector 与 Responses WebSocket 发送上游请求后也不重试。
 - 当前每个逻辑请求仍只写一条最终 `request_logs` 记录。数据库的旧 `attempts` JSONB 列不承载
   当前重试详情；尝试次数只进入完成 tracing。
 - 结算以 `billed_at IS NULL` 取得唯一处理权，在同一事务更新用户余额和 API Key 已用额度。
@@ -184,6 +196,7 @@ terminal RequestLogEvent
 `0057_model_rule_hierarchy.sql` 的停机升级和别名预检见上文；不得绕过预检手工删除旧列。
 `0060_model_soft_deletion.sql` 为模型增加不可恢复墓碑、活动标识部分唯一索引和引用保护；该
 migration 不删除 profile、协议规则或历史外键。
+`0062_flat_model_route_candidates.sql` 是路由图停机硬切换；不得在新旧 Gateway 混跑时应用。
 金额预占不写入余额实体，而由本地耐久 WAL 拥有；后台仅使用既有请求日志对账。
 详见 [Codex 拼车实现](codex-sharing.md)。
 

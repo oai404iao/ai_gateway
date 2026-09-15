@@ -16,9 +16,8 @@ use ai_gateway::{
     },
     http,
     persistence::{
-        ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ControlPlaneRecords,
-        ModelRuleChannelGroupTarget, ModelRuleChannelWeight, ModelRuleRecord, ModelRuleRoutingTier,
-        ProxyRecord,
+        ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ControlPlaneRecords, ModelRuleRecord,
+        ModelRuleRouteCandidate, ModelRuleRoutingTier, ProxyRecord,
     },
     routing::{PassiveHealthPolicy, RoutingRuntime},
     runtime_config::{RuntimeConfig, compile_control_plane_with_system_settings},
@@ -589,16 +588,10 @@ async fn gateway_harness_with_controls(
             routing_tiers: vec![ModelRuleRoutingTier {
                 priority: 0,
                 selection_strategy: "weighted_random".into(),
-                channel_groups: vec![ModelRuleChannelGroupTarget {
-                    channel_group_id: group_id,
-                    channel_selection: "selected".into(),
-                    upstream_model: None,
-                    default_weight: None,
-                    channels: vec![ModelRuleChannelWeight {
-                        channel_id,
-                        upstream_model: Some(UPSTREAM_MODEL.into()),
-                        weight: 1,
-                    }],
+                candidates: vec![ModelRuleRouteCandidate {
+                    channel_id,
+                    upstream_model: UPSTREAM_MODEL.into(),
+                    weight: 1,
                 }],
             }],
             enabled: true,
@@ -625,8 +618,7 @@ async fn gateway_harness_with_controls(
         let mut rule = records.model_rules[0].clone();
         rule.id = Uuid::new_v4();
         rule.client_model = "other-ws-model".into();
-        rule.routing_tiers[0].channel_groups[0].channel_group_id = group.id;
-        rule.routing_tiers[0].channel_groups[0].channels[0].channel_id = channel.id;
+        rule.routing_tiers[0].candidates[0].channel_id = channel.id;
         if controls.other_route_authorized {
             records.api_keys[0].allowed_group_ids.push(group.id);
         }

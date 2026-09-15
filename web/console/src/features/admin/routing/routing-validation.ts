@@ -34,28 +34,18 @@ function routingStatus(
   if (protocol.routing_tiers.length === 0) return "draft";
 
   const groupsById = new Map(groups.map((group) => [group.id, group]));
+  const channelsById = new Map(channels.map((channel) => [channel.id, channel]));
   let modelCapableCount = 0;
   let activeCount = 0;
-  for (const channel of channels) {
-    const target = protocol.routing_tiers
-      .flatMap((tier) => tier.channel_groups)
-      .find(
-        (entry) =>
-          entry.channel_group_id === channel.channel_group_id &&
-          (entry.channel_selection === "all" ||
-            entry.channels.some(
-              (selected) => selected.channel_id === channel.id,
-            )),
-      );
-    if (channel.api_format !== protocol.api_format || !target) {
-      continue;
-    }
-    const upstreamModel =
-      target.channel_selection === "all"
-        ? target.upstream_model
-        : target.channels.find((entry) => entry.channel_id === channel.id)
-            ?.upstream_model;
-    if (!upstreamModel || !channel.available_models.includes(upstreamModel)) {
+  for (const candidate of protocol.routing_tiers.flatMap(
+    (tier) => tier.candidates,
+  )) {
+    const channel = channelsById.get(candidate.channel_id);
+    if (
+      !channel ||
+      channel.api_format !== protocol.api_format ||
+      !channel.available_models.includes(candidate.upstream_model)
+    ) {
       continue;
     }
     modelCapableCount += 1;

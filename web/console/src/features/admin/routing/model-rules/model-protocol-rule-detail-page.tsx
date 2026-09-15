@@ -41,75 +41,40 @@ import { useConfigurationDraft } from "@/features/admin/model-setup/use-configur
 import { apiFormatLabel } from "@/lib/permissions";
 import { ModelRuleTierEditor } from "./model-rule-tier-editor";
 
-const channelSchema = z.object({
+const candidateSchema = z.object({
   channel_id: z.string().min(1),
-  upstream_model: z.string().min(1).nullable(),
+  upstream_model: z
+    .string()
+    .trim()
+    .min(1)
+    .max(300, "Upstream model must be at most 300 characters."),
   weight: z.number().int().min(1).max(2_147_483_647),
 });
 
-const groupSchema = z
+const tierSchema = z
   .object({
-    channel_group_id: z.string().min(1),
-    channel_selection: z.enum(["all", "selected"]),
-    upstream_model: z.string().min(1).nullable(),
-    default_weight: z.number().int().min(1).max(2_147_483_647).nullable(),
-    channels: z.array(channelSchema),
+    priority: z.number().int().min(0).max(2_147_483_647),
+    selection_strategy: z.enum([
+      "weighted_random",
+      "weighted_round_robin",
+    ]),
+    candidates: z.array(candidateSchema).min(1),
   })
   .superRefine((value, context) => {
-    if (
-      value.channel_selection === "all" &&
-      (value.upstream_model === null || value.default_weight === null)
-    ) {
-      context.addIssue({
-        code: "custom",
-        path: ["upstream_model"],
-        message: "Choose an upstream model and default weight for this group.",
-      });
-    }
-    if (
-      value.channel_selection === "all" &&
-      value.channels.some((channel) => channel.upstream_model !== null)
-    ) {
-      context.addIssue({
-        code: "custom",
-        path: ["channels"],
-        message: "Group weight overrides inherit the group upstream model.",
-      });
-    }
-    if (
-      value.channel_selection === "selected" &&
-      (value.upstream_model !== null ||
-        value.default_weight !== null ||
-        value.channels.length === 0 ||
-        value.channels.some((channel) => channel.upstream_model === null))
-    ) {
-      context.addIssue({
-        code: "custom",
-        path: ["channels"],
-        message: "Every selected channel needs an upstream model and weight.",
-      });
-    }
-    const ids = new Set<string>();
-    value.channels.forEach((channel, index) => {
-      if (ids.has(channel.channel_id)) {
+    const pairs = new Set<string>();
+    value.candidates.forEach((candidate, index) => {
+      const key = `${candidate.channel_id}\u0000${candidate.upstream_model}`;
+      if (pairs.has(key)) {
         context.addIssue({
           code: "custom",
-          path: ["channels", index, "channel_id"],
-          message: "A channel can appear only once in a group target.",
+          path: ["candidates", index, "upstream_model"],
+          message:
+            "A channel and upstream-model pair can appear only once in a tier.",
         });
       }
-      ids.add(channel.channel_id);
+      pairs.add(key);
     });
   });
-
-const tierSchema = z.object({
-  priority: z.number().int().min(0).max(2_147_483_647),
-  selection_strategy: z.enum([
-    "weighted_random",
-    "weighted_round_robin",
-  ]),
-  channel_groups: z.array(groupSchema).min(1),
-});
 
 const schema = z
   .object({
@@ -126,7 +91,6 @@ const schema = z
       });
     }
     const priorities = new Set<number>();
-    const groupIds = new Set<string>();
     value.routing_tiers.forEach((tier, tierIndex) => {
       if (priorities.has(tier.priority)) {
         context.addIssue({
@@ -136,22 +100,6 @@ const schema = z
         });
       }
       priorities.add(tier.priority);
-      tier.channel_groups.forEach((group, groupIndex) => {
-        if (groupIds.has(group.channel_group_id)) {
-          context.addIssue({
-            code: "custom",
-            path: [
-              "routing_tiers",
-              tierIndex,
-              "channel_groups",
-              groupIndex,
-              "channel_group_id",
-            ],
-            message: "A channel group can appear only once in a protocol.",
-          });
-        }
-        groupIds.add(group.channel_group_id);
-      });
     });
   });
 
@@ -278,7 +226,7 @@ export function ModelProtocolRuleDetailPage() {
           : t("Protocol rule")
       }
       description={t(
-        "Configure ordered channel targets and choose the upstream model at the target that owns it.",
+        "Configure ordered, independently weighted channel and upstream-model candidates.",
       )}
       backPath={parentPath}
       backLabel={t("Back to model rule")}
@@ -308,12 +256,12 @@ export function ModelProtocolRuleDetailPage() {
                   value={<StatusBadge value={protocolData.routing_status} />}
                 />
                 <DetailField
-                  label={t("Active channels")}
-                  value={`${protocolData.active_channel_count} / ${protocolData.target_channel_count}`}
+                  label={t("Active candidates")}
+                  value={`${protocolData.active_candidate_count} / ${protocolData.target_candidate_count}`}
                 />
                 <DetailField
-                  label={t("Model-capable channels")}
-                  value={protocolData.model_capable_channel_count}
+                  label={t("Model-capable candidates")}
+                  value={protocolData.model_capable_candidate_count}
                 />
               </dl>
             </CardContent>

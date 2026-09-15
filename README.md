@@ -37,9 +37,9 @@ separate management Console for users and administrators.
 - **OpenAI-compatible data plane** for Chat Completions, Responses, the Codex
   standalone web-search extension, Images generation, and multipart Images
   edits over HTTP, SSE, and Responses WebSocket where applicable.
-- **Model-rule-owned priority tiers and weighted routing** with passive
-  health, optional session affinity, and controlled failover before upstream
-  response headers arrive.
+- **Model-rule-owned priority tiers and weighted channel/model candidates**
+  with passive health, optional session affinity, and controlled failover on
+  transport failures or explicitly configured upstream statuses.
 - **In-process upstream connectors** keep provider-specific authentication and
   request preparation inside the single Rust service. The first connector,
   Codex OAuth, adds subscription credentials, per-account proxies, token
@@ -210,8 +210,9 @@ Use the Console UI or API to create:
    same credential pool.
 3. A channel with its upstream URL, credentials, and available models.
 4. A top-level model rule attached to the priced client model, then one or
-   more format-specific protocol rules. Each route target selects its upstream
-   wire model from the target channel capabilities.
+   more format-specific protocol rules. Each tier contains explicit,
+   independently weighted channel/upstream-model candidates; Channel Groups
+   are only a Console bulk-selection shortcut.
 5. A client API key with `proxy` permission; add `models.read` for
    `/v1/models`.
 
@@ -328,9 +329,12 @@ starting the stack.
   anonymous temporary files after the configured memory threshold.
 - Upstream responses are streamed; the gateway does not buffer the complete
   response for normal forwarding or usage collection.
-- Automatic failover is limited to connection failures and timeouts before
-  upstream response headers. It never switches channels after headers or
-  response bytes are sent.
+- Automatic failover covers connection failures and timeouts before upstream
+  response headers. Administrators may additionally opt specific 4xx/5xx
+  statuses into failover before any response is sent downstream. Each retry
+  excludes the exact channel/model candidate already attempted; another model
+  on the same channel remains eligible. No switch occurs after downstream
+  headers or response bytes are sent.
 - RPM, concurrency, passive health, session affinity, and WebSocket pools are
   process-local rather than cluster-coordinated.
 - Request logs do not persist prompts, completions, full headers, API keys,

@@ -1536,7 +1536,7 @@ paths:
       operationId: deleteChannelGroup
       description: |
         Irreversibly tombstones one ordinary OpenAI-compatible group and all
-        of its channels. Routing targets, API Keys, API Key Policies, and
+        of its channels. Routing candidates, API Keys, API Key Policies, and
         quota-visibility assignments are normalized or unbound atomically.
         Provider-managed groups must use their connector lifecycle.
       security: [{ bearerAuth: [] }]
@@ -1723,7 +1723,7 @@ paths:
       description: |
         Irreversibly tombstones one ordinary OpenAI-compatible channel,
         erases its upstream URL, credential, network settings, and transforms, and atomically
-        normalizes routing targets plus API Key and Policy assignments.
+        normalizes routing candidates plus API Key and Policy assignments.
         Provider-managed channels must use their connector lifecycle.
       security: [{ bearerAuth: [] }]
       parameters:
@@ -2954,10 +2954,10 @@ components:
       description: >
         `model_disabled` takes precedence and means the priced client model is
         disabled; `draft` has no routing tiers and cannot be enabled; `ready`
-        has at least one active model-capable channel;
-        `temporarily_unavailable` has a model-capable target but none is
-        currently active; `disconnected` has no target channel advertising
-        its target-owned upstream model; `disabled` means the protocol rule is
+        has at least one active model-capable candidate;
+        `temporarily_unavailable` has a model-capable candidate but none is
+        currently active; `disconnected` has no candidate channel advertising
+        its configured upstream model; `disabled` means the protocol rule is
         disabled.
     ConnectorKind:
       type: string
@@ -3299,18 +3299,29 @@ components:
 
     SystemRequestRetrySettings:
       type: object
-      required: [enabled, max_retries]
+      required: [enabled, max_retries, retryable_status_codes]
       properties:
         enabled:
           type: boolean
           default: true
-          description: Enables failover for connection failures, connect timeouts, and response-header timeouts.
+          description: Enables eligible HTTP failover before any downstream response bytes are sent.
         max_retries:
           type: integer
           minimum: 1
           maximum: 10
           default: 1
-          description: Automatic retries after the initial distinct-channel attempt.
+          description: Automatic retries after the initial distinct channel/model candidate attempt.
+        retryable_status_codes:
+          type: array
+          default: []
+          maxItems: 100
+          uniqueItems: true
+          items: { type: integer, minimum: 400, maximum: 599 }
+          description: |
+            Explicit upstream HTTP statuses that may fail over to another
+            untried channel/model candidate. Empty by default. Images,
+            Responses WebSocket messages, and connectors that forbid replay
+            remain non-retryable.
 
     SystemPassiveHealthSettings:
       type: object
@@ -4143,7 +4154,7 @@ components:
           items: { $ref: "#/components/schemas/DeletionImpactChannel" }
         model_protocol_rules:
           type: array
-          description: Protocol routing rules whose targets, tiers, enabled state, or effective candidates will change.
+          description: Protocol routing rules whose candidates, tiers, enabled state, or effective availability will change.
           items:
             { $ref: "#/components/schemas/DeletionImpactModelProtocolRule" }
         api_keys:
@@ -4603,70 +4614,39 @@ components:
           items: { type: string, format: uuid }
         correlation_id: { type: string, format: uuid }
 
-    ModelRuleChannelWeight:
+    ModelRuleRouteCandidate:
       type: object
       additionalProperties: false
       description: |
-        A selected channel and its upstream wire model, or a weight override
-        for an all-channel group target. `upstream_model` is required for
-        selected channels and null for all-channel weight overrides.
+        One independently weighted route candidate. The same channel may
+        appear with multiple advertised upstream models in one tier, while an
+        exact channel/model pair may appear only once in that tier.
       required: [channel_id, upstream_model, weight]
       properties:
         channel_id: { type: string, format: uuid }
         upstream_model:
           type: string
-          nullable: true
-          description: Required for a selected target and must appear in that channel's available_models; null for an all-channel weight override.
+          minLength: 1
+          maxLength: 300
+          description: Must appear in the selected channel's available_models when the rule is saved.
         weight: { type: integer, minimum: 1, maximum: 2147483647 }
-
-    ModelRuleChannelGroupTarget:
-      type: object
-      additionalProperties: false
-      description: |
-        Selects candidates from one channel group. `all` requires a positive
-        `default_weight` and one group-level `upstream_model`; entries in
-        `channels` may override only the weight. `selected` requires both
-        defaults to be null and every selected channel to carry its own
-        upstream model and positive weight.
-      required:
-        [channel_group_id, channel_selection, upstream_model, default_weight, channels]
-      properties:
-        channel_group_id: { type: string, format: uuid }
-        channel_selection:
-          type: string
-          enum: [all, selected]
-        upstream_model:
-          type: string
-          nullable: true
-          description: Required for `all`, selected from the union of member channels' available_models; null for `selected`.
-        default_weight:
-          type: integer
-          minimum: 1
-          maximum: 2147483647
-          nullable: true
-          description: Positive default for `all`; null for `selected`.
-        channels:
-          type: array
-          description: |
-            Per-channel weight overrides with a null upstream model for
-            `all`, or the complete nonempty channel/model selection for
-            `selected`.
-          items: { $ref: "#/components/schemas/ModelRuleChannelWeight" }
 
     ModelRuleRoutingTier:
       type: object
       additionalProperties: false
       description: |
         One protocol-rule routing tier. Lower priority wins. Selection strategy
-        and weights apply only among eligible candidates in this tier.
-      required: [priority, selection_strategy, channel_groups]
+        and weights apply to eligible channel/model candidates in this tier.
+        Channel groups are only a Console bulk-selection convenience and are
+        not retained in the route.
+      required: [priority, selection_strategy, candidates]
       properties:
         priority: { type: integer, minimum: 0, maximum: 2147483647 }
         selection_strategy: { $ref: "#/components/schemas/SelectionStrategy" }
-        channel_groups:
+        candidates:
           type: array
           minItems: 1
-          items: { $ref: "#/components/schemas/ModelRuleChannelGroupTarget" }
+          items: { $ref: "#/components/schemas/ModelRuleRouteCandidate" }
 
     ModelRuleView:
       type: object
@@ -4692,8 +4672,8 @@ components:
       description: One protocol rule under a priced client model; its API format is immutable.
       required:
         [id, model_rule_id, api_format, description, routing_tiers, enabled,
-         routing_status, target_channel_count, model_capable_channel_count,
-         active_channel_count, updated_at]
+         routing_status, target_candidate_count, model_capable_candidate_count,
+         active_candidate_count, updated_at]
       properties:
         id: { type: string, format: uuid }
         model_rule_id: { type: string, format: uuid }
@@ -4705,18 +4685,18 @@ components:
           items: { $ref: "#/components/schemas/ModelRuleRoutingTier" }
         enabled: { type: boolean }
         routing_status: { $ref: "#/components/schemas/ModelRuleRoutingStatus" }
-        target_channel_count:
+        target_candidate_count:
           type: integer
           minimum: 0
-          description: Distinct channels selected directly or through a target group.
-        model_capable_channel_count:
+          description: Configured channel/model candidate entries retained across all tiers.
+        model_capable_candidate_count:
           type: integer
           minimum: 0
-          description: Target channels whose available_models contain their assigned upstream model.
-        active_channel_count:
+          description: Candidates whose channel currently advertises the assigned upstream model.
+        active_candidate_count:
           type: integer
           minimum: 0
-          description: Target/model pairs currently eligible for routing.
+          description: Channel/model candidates currently eligible for routing.
         updated_at: { $ref: "#/components/schemas/DateTime" }
 
     ProxyView:

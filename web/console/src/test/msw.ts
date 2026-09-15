@@ -201,6 +201,12 @@ export const handlers = [
       ...CHANNEL_DELETION_IMPACT,
       resource_type: "channel_group",
       resource_id: CHANNEL_GROUP.id,
+      model_protocol_rules: CHANNEL_DELETION_IMPACT.model_protocol_rules.map(
+        (rule) => ({
+          ...rule,
+          removed_channel_group_ids: [CHANNEL_GROUP.id],
+        }),
+      ),
     }),
   ),
   http.delete("/console/v1/routing/channel-groups/:id", () =>

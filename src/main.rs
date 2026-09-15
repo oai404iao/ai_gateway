@@ -106,6 +106,7 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
             request_retry: SystemRequestRetrySettingsInput {
                 enabled: config.request_retry.enabled,
                 max_retries: config.request_retry.max_retries,
+                retryable_status_codes: config.request_retry.retryable_status_codes,
             },
             passive_health: SystemPassiveHealthSettingsInput {
                 connection_failure_threshold: config.passive_health.connection_failure_threshold,

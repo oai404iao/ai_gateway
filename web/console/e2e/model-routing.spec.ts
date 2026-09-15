@@ -81,12 +81,12 @@ test("model routing drills from a priced model into its protocol", async ({
   ).toBeVisible();
   await expect(
     page.getByRole("combobox", {
-      name: `Upstream model for channel group ${CHANNEL_GROUP.name}`,
+      name: `Upstream model for channel ${CHANNEL.name}`,
     }),
   ).toContainText(MODEL.source_model_id);
 });
 
-test("protocol saves preserve target-owned upstream models and the ETag", async ({
+test("protocol saves preserve candidate-owned upstream models and the ETag", async ({
   page,
 }) => {
   await prepare(page);
@@ -109,7 +109,7 @@ test("protocol saves preserve target-owned upstream models and the ETag", async 
     `"${MODEL_PROTOCOL_RULE.updated_at}"`,
   );
   const body = request.postDataJSON();
-  expect(body.routing_tiers[0].channel_groups[0].upstream_model).toBe(
+  expect(body.routing_tiers[0].candidates[0].upstream_model).toBe(
     MODEL.source_model_id,
   );
   expect(body.description).toBe("Updated route");

@@ -83,7 +83,7 @@ export function ModelRulesPage() {
         <AdminListPage
           title={t("Model Rules")}
           description={t(
-            "Attach a priced client model once, then configure its supported protocols and target-owned upstream models.",
+            "Attach a priced client model once, then configure its protocols and explicit channel/model candidates.",
           )}
           query={{
             data: rules.data,

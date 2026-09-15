@@ -5,6 +5,7 @@ import { http, HttpResponse } from "msw";
 import { BrowserRouter } from "react-router";
 import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
+import type { SystemSettingsInput } from "@/api/types";
 import { server, seedAuthenticatedSession } from "@/test/msw";
 import { SYSTEM_SETTINGS } from "@/test/fixtures";
 
@@ -170,6 +171,37 @@ describe("SystemPage", () => {
     expect(
       await screen.findByText("Maximum retries must be between 1 and 10."),
     ).toBeInTheDocument();
+  });
+
+  it("parses retryable upstream statuses into candidate failover policy", async () => {
+    seedAuthenticatedSession();
+    let received: SystemSettingsInput | undefined;
+    server.use(
+      http.put("/console/v1/system/settings", async ({ request }) => {
+        received = (await request.json()) as SystemSettingsInput;
+        return HttpResponse.json({
+          id: "00000000-0000-0000-0000-0000000000f1",
+          correlation_id: "11111111-0000-0000-0000-000000000002",
+        });
+      }),
+    );
+    const user = userEvent.setup();
+    renderApp("reliability");
+
+    const statuses = await screen.findByLabelText(
+      "Retryable upstream status codes",
+    );
+    await user.clear(statuses);
+    await user.type(statuses, "429, 502");
+    await user.click(
+      screen.getByRole("button", { name: /save system settings/i }),
+    );
+
+    await waitFor(() =>
+      expect(received?.request_retry.retryable_status_codes).toEqual([
+        429, 502,
+      ]),
+    );
   });
 
   it("requires a synthetic HTTPS Codex Git remote", async () => {

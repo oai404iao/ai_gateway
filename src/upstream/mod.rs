@@ -6,7 +6,7 @@ mod websocket;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fmt,
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -509,16 +509,17 @@ impl UpstreamClientRegistry {
         self.websockets.snapshot()
     }
 
-    /// Finds the most recently pooled channel for one downstream WebSocket
-    /// identity so reconnects can preserve OpenAI's connection-local cache.
+    /// Finds the most recently pooled channel/model candidate for one
+    /// downstream WebSocket identity so reconnects can preserve OpenAI's
+    /// connection-local cache.
     #[must_use]
-    pub(crate) fn preferred_websocket_channel(
+    pub(crate) fn preferred_websocket_candidate(
         &self,
         api_key_id: uuid::Uuid,
         client_identity: WebSocketClientIdentity,
-    ) -> Option<uuid::Uuid> {
+    ) -> Option<(uuid::Uuid, Arc<str>)> {
         self.websockets
-            .preferred_channel(api_key_id, client_identity)
+            .preferred_candidate(api_key_id, client_identity)
     }
 
     /// Drops every idle Responses WebSocket during process shutdown.
@@ -676,6 +677,8 @@ fn normalized_no_proxy_host(host: &NoProxyHost) -> Box<str> {
 mod tests {
     use std::{sync::Arc, time::Duration};
 
+    use axum::http::{HeaderMap, Uri};
+
     use super::*;
     use crate::{
         domain::{
@@ -694,6 +697,41 @@ mod tests {
             Duration::from_secs(5),
             Duration::from_secs(7),
         )
+    }
+
+    #[test]
+    fn websocket_pool_keys_isolate_models_on_the_same_channel() {
+        let snapshot = snapshot_with_format_proxy_timeouts_and_defaults(
+            "open_ai_responses",
+            "http://responses-proxy.test:8080",
+            None,
+            None,
+            upstream(),
+        );
+        let channel = snapshot.channels().next().unwrap();
+        let headers = HeaderMap::new();
+        let identity = WebSocketClientIdentity::new(&Uri::from_static("/v1/responses"), &headers);
+        let target = Url::parse("wss://upstream.test/v1/responses").unwrap();
+        let first = UpstreamWebSocketKey::new(
+            Uuid::from_u128(4),
+            identity,
+            channel,
+            "wire-a",
+            &target,
+            &headers,
+            MAX_UPSTREAM_MESSAGE_BYTES,
+        );
+        let second = UpstreamWebSocketKey::new(
+            Uuid::from_u128(4),
+            identity,
+            channel,
+            "wire-b",
+            &target,
+            &headers,
+            MAX_UPSTREAM_MESSAGE_BYTES,
+        );
+
+        assert_ne!(first, second);
     }
 
     fn policy(

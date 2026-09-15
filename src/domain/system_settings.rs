@@ -160,38 +160,50 @@ impl Default for PassiveHealthSettings {
     }
 }
 
-/// Immutable policy for retrying one client request on distinct channels
-/// before any upstream response headers are received.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Immutable policy for retrying one client request on untried route
+/// candidates before any downstream response bytes are sent.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RequestRetrySettings {
     enabled: bool,
     max_retries: u32,
+    retryable_status_codes: Arc<[u16]>,
 }
 
 impl RequestRetrySettings {
     #[must_use]
-    pub const fn new(enabled: bool, max_retries: u32) -> Self {
+    pub fn new(enabled: bool, max_retries: u32, retryable_status_codes: Arc<[u16]>) -> Self {
         Self {
             enabled,
             max_retries,
+            retryable_status_codes,
         }
     }
 
     #[must_use]
-    pub const fn enabled(self) -> bool {
+    pub const fn enabled(&self) -> bool {
         self.enabled
     }
 
     /// Automatic retries after the initial upstream attempt.
     #[must_use]
-    pub const fn max_retries(self) -> u32 {
+    pub const fn max_retries(&self) -> u32 {
         self.max_retries
+    }
+
+    #[must_use]
+    pub fn retryable_status_codes(&self) -> &[u16] {
+        &self.retryable_status_codes
+    }
+
+    #[must_use]
+    pub fn retries_status(&self, status: u16) -> bool {
+        self.enabled && self.retryable_status_codes.contains(&status)
     }
 }
 
 impl Default for RequestRetrySettings {
     fn default() -> Self {
-        Self::new(true, 1)
+        Self::new(true, 1, Arc::from([]))
     }
 }
 
@@ -737,8 +749,8 @@ impl SystemRuntimeSettings {
     }
 
     #[must_use]
-    pub const fn request_retry(&self) -> RequestRetrySettings {
-        self.request_retry
+    pub const fn request_retry(&self) -> &RequestRetrySettings {
+        &self.request_retry
     }
 
     #[must_use]

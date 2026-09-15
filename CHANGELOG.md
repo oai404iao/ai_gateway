@@ -7,6 +7,21 @@ Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Add configurable 4xx/5xx HTTP status failover for replayable ordinary
+  Connector requests. Retries exclude the exact channel/model candidate, so a
+  different model on the same physical channel remains eligible.
+
+### Changed
+
+- Flatten protocol routing tiers into independently weighted
+  `(channel, upstream model)` candidates. Channels may repeat with different
+  models or across priorities; Channel Groups now act only as a Console
+  bulk-add shortcut whose current members are expanded before save. Migration
+  0062 performs the stop-the-world schema cutover and snapshots legacy
+  all-group targets.
+
 ### Fixed
 
 - Return the generic `426 websocket_unavailable` fallback contract whenever

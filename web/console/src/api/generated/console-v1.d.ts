@@ -842,7 +842,7 @@ export interface paths {
         post?: never;
         /**
          * @description Irreversibly tombstones one ordinary OpenAI-compatible group and all
-         *     of its channels. Routing targets, API Keys, API Key Policies, and
+         *     of its channels. Routing candidates, API Keys, API Key Policies, and
          *     quota-visibility assignments are normalized or unbound atomically.
          *     Provider-managed groups must use their connector lifecycle.
          */
@@ -936,7 +936,7 @@ export interface paths {
         /**
          * @description Irreversibly tombstones one ordinary OpenAI-compatible channel,
          *     erases its upstream URL, credential, network settings, and transforms, and atomically
-         *     normalizes routing targets plus API Key and Policy assignments.
+         *     normalizes routing candidates plus API Key and Policy assignments.
          *     Provider-managed channels must use their connector lifecycle.
          */
         delete: operations["deleteChannel"];
@@ -1571,7 +1571,7 @@ export interface components {
         /** @enum {string} */
         SelectionStrategy: "weighted_random" | "weighted_round_robin";
         /**
-         * @description `model_disabled` takes precedence and means the priced client model is disabled; `draft` has no routing tiers and cannot be enabled; `ready` has at least one active model-capable channel; `temporarily_unavailable` has a model-capable target but none is currently active; `disconnected` has no target channel advertising its target-owned upstream model; `disabled` means the protocol rule is disabled.
+         * @description `model_disabled` takes precedence and means the priced client model is disabled; `draft` has no routing tiers and cannot be enabled; `ready` has at least one active model-capable candidate; `temporarily_unavailable` has a model-capable candidate but none is currently active; `disconnected` has no candidate channel advertising its configured upstream model; `disabled` means the protocol rule is disabled.
          * @enum {string}
          */
         ModelRuleRoutingStatus: "draft" | "model_disabled" | "ready" | "temporarily_unavailable" | "disconnected" | "disabled";
@@ -1820,15 +1820,23 @@ export interface components {
         };
         SystemRequestRetrySettings: {
             /**
-             * @description Enables failover for connection failures, connect timeouts, and response-header timeouts.
+             * @description Enables eligible HTTP failover before any downstream response bytes are sent.
              * @default true
              */
             enabled: boolean;
             /**
-             * @description Automatic retries after the initial distinct-channel attempt.
+             * @description Automatic retries after the initial distinct channel/model candidate attempt.
              * @default 1
              */
             max_retries: number;
+            /**
+             * @description Explicit upstream HTTP statuses that may fail over to another
+             *     untried channel/model candidate. Empty by default. Images,
+             *     Responses WebSocket messages, and connectors that forbid replay
+             *     remain non-retryable.
+             * @default []
+             */
+            retryable_status_codes: number[];
         };
         SystemPassiveHealthSettings: {
             connection_failure_threshold: number;
@@ -2387,7 +2395,7 @@ export interface components {
             confirmation_token: string;
             /** @description Ordinary channels that will become non-secret tombstones. */
             channels: components["schemas"]["DeletionImpactChannel"][];
-            /** @description Protocol routing rules whose targets, tiers, enabled state, or effective candidates will change. */
+            /** @description Protocol routing rules whose candidates, tiers, enabled state, or effective availability will change. */
             model_protocol_rules: components["schemas"]["DeletionImpactModelProtocolRule"][];
             /** @description Non-deleted API Keys from which the deleted targets will be removed. */
             api_keys: components["schemas"]["DeletionImpactNamedResource"][];
@@ -2699,48 +2707,27 @@ export interface components {
             correlation_id: string;
         };
         /**
-         * @description A selected channel and its upstream wire model, or a weight override
-         *     for an all-channel group target. `upstream_model` is required for
-         *     selected channels and null for all-channel weight overrides.
+         * @description One independently weighted route candidate. The same channel may
+         *     appear with multiple advertised upstream models in one tier, while an
+         *     exact channel/model pair may appear only once in that tier.
          */
-        ModelRuleChannelWeight: {
+        ModelRuleRouteCandidate: {
             /** Format: uuid */
             channel_id: string;
-            /** @description Required for a selected target and must appear in that channel's available_models; null for an all-channel weight override. */
-            upstream_model: string | null;
+            /** @description Must appear in the selected channel's available_models when the rule is saved. */
+            upstream_model: string;
             weight: number;
         };
         /**
-         * @description Selects candidates from one channel group. `all` requires a positive
-         *     `default_weight` and one group-level `upstream_model`; entries in
-         *     `channels` may override only the weight. `selected` requires both
-         *     defaults to be null and every selected channel to carry its own
-         *     upstream model and positive weight.
-         */
-        ModelRuleChannelGroupTarget: {
-            /** Format: uuid */
-            channel_group_id: string;
-            /** @enum {string} */
-            channel_selection: "all" | "selected";
-            /** @description Required for `all`, selected from the union of member channels' available_models; null for `selected`. */
-            upstream_model: string | null;
-            /** @description Positive default for `all`; null for `selected`. */
-            default_weight: number | null;
-            /**
-             * @description Per-channel weight overrides with a null upstream model for
-             *     `all`, or the complete nonempty channel/model selection for
-             *     `selected`.
-             */
-            channels: components["schemas"]["ModelRuleChannelWeight"][];
-        };
-        /**
          * @description One protocol-rule routing tier. Lower priority wins. Selection strategy
-         *     and weights apply only among eligible candidates in this tier.
+         *     and weights apply to eligible channel/model candidates in this tier.
+         *     Channel groups are only a Console bulk-selection convenience and are
+         *     not retained in the route.
          */
         ModelRuleRoutingTier: {
             priority: number;
             selection_strategy: components["schemas"]["SelectionStrategy"];
-            channel_groups: components["schemas"]["ModelRuleChannelGroupTarget"][];
+            candidates: components["schemas"]["ModelRuleRouteCandidate"][];
         };
         /** @description One priced client-model routing profile and its format-specific protocol rules. */
         ModelRuleView: {
@@ -2768,12 +2755,12 @@ export interface components {
             routing_tiers: components["schemas"]["ModelRuleRoutingTier"][];
             enabled: boolean;
             routing_status: components["schemas"]["ModelRuleRoutingStatus"];
-            /** @description Distinct channels selected directly or through a target group. */
-            target_channel_count: number;
-            /** @description Target channels whose available_models contain their assigned upstream model. */
-            model_capable_channel_count: number;
-            /** @description Target/model pairs currently eligible for routing. */
-            active_channel_count: number;
+            /** @description Configured channel/model candidate entries retained across all tiers. */
+            target_candidate_count: number;
+            /** @description Candidates whose channel currently advertises the assigned upstream model. */
+            model_capable_candidate_count: number;
+            /** @description Channel/model candidates currently eligible for routing. */
+            active_candidate_count: number;
             updated_at: components["schemas"]["DateTime"];
         };
         ProxyView: {

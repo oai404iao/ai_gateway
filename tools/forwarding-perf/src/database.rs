@@ -337,9 +337,9 @@ async fn seed(
     .await?;
 
     for scenario in scenarios {
-        let (group_id, channel_id) = match scenario.api_kind {
-            ApiKind::ChatCompletions => (chat_group_id, chat_channel_id),
-            ApiKind::Responses => (responses_group_id, responses_channel_id),
+        let channel_id = match scenario.api_kind {
+            ApiKind::ChatCompletions => chat_channel_id,
+            ApiKind::Responses => responses_channel_id,
         };
         let model_rule_profile_id = Uuid::new_v4();
         let model_rule_id = Uuid::new_v4();
@@ -372,25 +372,12 @@ async fn seed(
         .execute(&mut *transaction)
         .await?;
         sqlx::query(
-            "INSERT INTO model_rule_routing_groups
-             (model_rule_id,api_format,priority,channel_group_id,
-              channel_selection,default_weight)
-             VALUES ($1,$2::api_format,0,$3,'selected',NULL)",
+            "INSERT INTO model_rule_routing_candidates
+             (model_rule_id,api_format,priority,channel_id,upstream_model,weight)
+             VALUES ($1,$2::api_format,0,$3,$4,1)",
         )
         .bind(model_rule_id)
         .bind(scenario.api_kind.database_name())
-        .bind(group_id)
-        .execute(&mut *transaction)
-        .await?;
-        sqlx::query(
-            "INSERT INTO model_rule_routing_channels
-             (model_rule_id,api_format,channel_group_id,channel_id,
-              upstream_model,weight)
-             VALUES ($1,$2::api_format,$3,$4,$5,1)",
-        )
-        .bind(model_rule_id)
-        .bind(scenario.api_kind.database_name())
-        .bind(group_id)
         .bind(channel_id)
         .bind(&scenario.model)
         .execute(&mut *transaction)
