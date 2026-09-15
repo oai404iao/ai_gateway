@@ -1017,18 +1017,6 @@ impl ProxyError {
         }
     }
 
-    fn websocket_disabled(message: &'static str) -> Self {
-        Self {
-            status: StatusCode::FORBIDDEN,
-            message: message.to_owned(),
-            error_type: "permission_error",
-            param: None,
-            code: Some("websocket_disabled"),
-            authenticate: false,
-            retry_after: None,
-        }
-    }
-
     fn websocket_unavailable() -> Self {
         Self {
             status: StatusCode::UPGRADE_REQUIRED,
@@ -2454,6 +2442,8 @@ enum RequestOutcome {
     Succeeded,
     UpstreamHttpError,
     UpstreamSseError,
+    WebSocketUnavailable,
+    WebSocketStateLost,
     ConnectTimeout,
     ResponseHeaderTimeout,
     UpstreamUnavailable,
@@ -2471,6 +2461,8 @@ impl RequestOutcome {
             Self::Succeeded => "succeeded",
             Self::UpstreamHttpError => "upstream_http_error",
             Self::UpstreamSseError => "upstream_sse_error",
+            Self::WebSocketUnavailable => "websocket_unavailable",
+            Self::WebSocketStateLost => "websocket_state_lost",
             Self::ConnectTimeout => "connect_timeout",
             Self::ResponseHeaderTimeout => "response_header_timeout",
             Self::UpstreamUnavailable => "upstream_unavailable",
@@ -2489,6 +2481,8 @@ impl RequestOutcome {
             Self::Cancelled => RequestLogOutcome::Cancelled,
             Self::UpstreamHttpError
             | Self::UpstreamSseError
+            | Self::WebSocketUnavailable
+            | Self::WebSocketStateLost
             | Self::ConnectTimeout
             | Self::ResponseHeaderTimeout
             | Self::UpstreamUnavailable
@@ -2505,6 +2499,8 @@ impl RequestOutcome {
             Self::Succeeded => None,
             Self::UpstreamHttpError => Some("upstream_http_error"),
             Self::UpstreamSseError => Some("upstream_sse_error"),
+            Self::WebSocketUnavailable => Some("websocket_unavailable"),
+            Self::WebSocketStateLost => Some("previous_response_not_found"),
             Self::ConnectTimeout => Some("connect_timeout"),
             Self::ResponseHeaderTimeout => Some("response_header_timeout"),
             Self::UpstreamUnavailable => Some("upstream_unavailable"),
@@ -2529,6 +2525,10 @@ impl RequestOutcome {
                 ));
             }
             Self::UpstreamSseError => "The upstream stream reported an application-level error.",
+            Self::WebSocketUnavailable => "No upstream WebSocket route is currently available.",
+            Self::WebSocketStateLost => {
+                "The previous response state is unavailable on the upstream WebSocket."
+            }
             Self::ConnectTimeout => "Connecting to the selected upstream channel timed out.",
             Self::ResponseHeaderTimeout => {
                 "The selected upstream channel did not return response headers in time."
@@ -2561,6 +2561,8 @@ impl RequestOutcome {
             Self::UpstreamContentEncodingUnsupported => Some(StatusCode::BAD_GATEWAY.as_u16()),
             Self::ResponseTransformFailed => Some(StatusCode::BAD_GATEWAY.as_u16()),
             Self::ClientRequestError => Some(StatusCode::BAD_REQUEST.as_u16()),
+            Self::WebSocketUnavailable => Some(StatusCode::UPGRADE_REQUIRED.as_u16()),
+            Self::WebSocketStateLost => Some(StatusCode::NOT_FOUND.as_u16()),
             Self::Succeeded
             | Self::UpstreamHttpError
             | Self::UpstreamSseError

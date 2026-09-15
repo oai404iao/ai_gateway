@@ -2,7 +2,9 @@
 
 > 类型：外部实现参考，不是 `ai-gateway` 行为契约。
 >
-> 最近核对：2026-08-02；HTTP fallback 补充核对：2026-09-08（Codex CLI 0.130.0）。
+> 最近核对：2026-08-02；HTTP fallback 补充核对：2026-09-08（Codex CLI 0.130.0）、
+> 2026-09-15（Codex CLI 0.154.0）；
+> 连接状态恢复补充核对：2026-09-15（本地 `openai/codex@31ffe2bc9adccfe5fd3d29208250f796a13aa7a0`）。
 >
 > 参考版本：[`openai/codex@aa064463458adbef10400c74174107fc4b3550f0`](https://github.com/openai/codex/tree/aa064463458adbef10400c74174107fc4b3550f0)。
 >
@@ -141,6 +143,11 @@ Codex 区分两种提前工作：
 
 这些重试发生在 Codex 客户端。服务端网关不能在已经发送 `response.create` 后再自动复制请求，否则
 可能产生重复生成。
+
+`previous_response_not_found` 的映射由
+[`openai/codex@64dc1c7a01`](https://github.com/openai/codex/commit/64dc1c7a01b2aaa03701f08cf88b659c1a9737b3)
+加入。Codex 在终态流错误后销毁当前 WebSocket；下一次连接建立会清除上一请求/响应的增量状态，因此
+重试发送完整请求，而不是把同一个 `previous_response_id` 再发到新连接。
 
 ### Codex 0.130.0 的无可用 WS 路由兼容
 

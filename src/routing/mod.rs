@@ -857,6 +857,7 @@ impl RoutingRuntime {
         &self,
         snapshot: &CompiledRuntimeConfig,
         key: &CompiledApiKey,
+        connector_available: impl Fn(&CompiledChannel) -> bool,
     ) -> bool {
         let now = self.inner.clock.now();
         snapshot.model_rules().any(|rule| {
@@ -867,6 +868,7 @@ impl RoutingRuntime {
                         let channel = candidate.channel();
                         channel.supports_websocket()
                             && key.permits_route_candidate(candidate.channel_slot())
+                            && connector_available(channel)
                             && usable(&self.inner, &ChannelIdentity::from_channel(channel), now)
                     })
                 })
@@ -1810,7 +1812,8 @@ mod tests {
             Arc::new(Tickets(Mutex::new(VecDeque::new()))),
         );
         let key = snapshot.authenticate(&secret).unwrap();
-        assert!(runtime.has_available_websocket_route(&snapshot, &key));
+        assert!(runtime.has_available_websocket_route(&snapshot, &key, |_| true));
+        assert!(!runtime.has_available_websocket_route(&snapshot, &key, |_| false));
         assert_eq!(round_robin_len(&runtime), 0);
         assert_eq!(runtime.pressure_snapshot().in_flight_requests, 0);
         let SelectionResult::Selected(mut failed) = runtime
@@ -1828,10 +1831,10 @@ mod tests {
         let channel = Arc::clone(&failed.channel);
         failed.lease.connection_failed();
         drop(failed);
-        assert!(!runtime.has_available_websocket_route(&snapshot, &key));
+        assert!(!runtime.has_available_websocket_route(&snapshot, &key, |_| true));
         clock.advance(Duration::from_secs(11));
-        assert!(runtime.has_available_websocket_route(&snapshot, &key));
-        assert!(runtime.has_available_websocket_route(&snapshot, &key));
+        assert!(runtime.has_available_websocket_route(&snapshot, &key, |_| true));
+        assert!(runtime.has_available_websocket_route(&snapshot, &key, |_| true));
         assert!(!runtime.health(&channel).half_open_probe);
         assert_eq!(runtime.health(&channel).in_flight, 0);
         let SelectionResult::Selected(probe) = runtime.select_websocket_with_affinity_excluding(
@@ -1844,9 +1847,9 @@ mod tests {
         ) else {
             panic!("recovery probe must be available");
         };
-        assert!(!runtime.has_available_websocket_route(&snapshot, &key));
+        assert!(!runtime.has_available_websocket_route(&snapshot, &key, |_| true));
         drop(probe);
-        assert!(runtime.has_available_websocket_route(&snapshot, &key));
+        assert!(runtime.has_available_websocket_route(&snapshot, &key, |_| true));
     }
 
     fn snapshot_with_outbound_policy(

@@ -473,9 +473,9 @@ WebSocket Upgrade 在 HTTP 握手阶段验证 Gateway API Key 和 Responses `pro
 migration 后的现有系统、用户和普通渠道以及所有新普通渠道都保持关闭，必须显式启用。现有和新建
 Codex OAuth Responses projection 会自动声明 WebSocket 能力，但 Images projection 永不声明；
 系统与用户开关仍默认关闭。
-Chat Completions 渠道不能声明 WebSocket 支持。系统或用户未开启时，HTTP Upgrade 返回
-`403 websocket_disabled`。没有可用且声明支持的 Responses WS 路由时，返回
-`426 websocket_unavailable`，提示客户端改用 `POST /v1/responses`：
+Chat Completions 渠道不能声明 WebSocket 支持。系统、用户未开启，或没有可用且声明支持的
+Responses WS 路由时，HTTP Upgrade 统一返回 `426 websocket_unavailable`，提示客户端改用
+`POST /v1/responses`，且不向客户端暴露系统开关、渠道或 Connector 凭证的内部状态：
 
 - 握手时还没有请求模型。如果该 API Key 的全部已授权 Responses 路由都没有可选 WS 渠道，
   直接拒绝 Upgrade，返回 HTTP 426 和普通 JSON 错误体。
@@ -483,12 +483,17 @@ Chat Completions 渠道不能声明 WebSocket 支持。系统或用户未开启�
   WS 渠道，则发送 `type: "error"`、`status: 426`、
   `error.code: "websocket_unavailable"` 的错误帧并关闭连接。请求日志记录同样的状态和错误码。
 - 未配置 WS 能力、渠道组/渠道停用、自动禁用，以及被动健康冷却或已被占用的半开探针都会影响
-  可选性。握手预检不占用路由 lease、不推进权重轮转、不消耗 RPM/并发，也不发起上游请求；
-  模型消息仍重新执行正常鉴权、准入和路由。
-- 未知或无权访问的模型在消息阶段仍返回 `404 model_not_found`；系统/用户关闭 WS、
-  鉴权失败和其他准入错误不会被改成 426。HTTP 无可选渠道仍使用 `503 no_healthy_channel`。
+  可选性。明确不可用的 Codex Connector 凭证也不会使对应 projection 通过握手预检。预检不占用
+  路由 lease、不推进权重轮转、不消耗 RPM/并发，也不发起上游请求；模型消息仍重新执行正常鉴权、
+  准入和路由。
+- 未知或无权访问的模型在消息阶段仍返回 `404 model_not_found`；Gateway API Key 鉴权/权限、
+  请求校验、准入和进程关闭错误不会被改成 426。HTTP 无可选渠道仍使用
+  `503 no_healthy_channel`。
+- 上游渠道只能在首条消息后确定；若 Connector、目标配置、网络或上游 Upgrade 在发送
+  `response.create` 前不可用，已经完成的下游 `101` 无法撤销，Gateway 改为发送同码的
+  `426 websocket_unavailable` 错误帧并关闭连接。
 
-Codex CLI 0.130.0 已通过纯本地 Mock 验证：握手 426 触发 HTTP fallback；升级后的 426
+Codex CLI 0.130.0 和 0.154.0 已通过纯本地 Mock 验证：握手 426 触发 HTTP fallback；升级后的 426
 错误帧经其 WS 重试预算耗尽后回退，**不保证立即回退**。回退由客户端执行，Gateway 不把已发送的
 WS 请求自动转换或重放为 HTTP。其他客户端的自动回退取决于其实现；具体错误映射见
 [Codex 参考](../reference/codex-responses-websocket.md)。
@@ -514,10 +519,31 @@ OpenAI 的增量 `previous_response_id` 缓存属于具体上游 WebSocket 连�
 身份、渠道、目标 URL、代理/TLS 策略和最终上游请求 Header 精确隔离；不同下游 Session 不共享连接级
 上下文。
 
+携带非空 `previous_response_id` 的请求必须命中承载该 Session 状态的精确上游连接。连接若已因
+空闲/总龄、容量、配置或凭证变化、进程重启或多实例漂移而丢失，Gateway 不会把增量请求发送到新连接，
+而是返回以下错误帧；客户端应清除增量状态并重发完整请求：
+
+```json
+{
+  "type": "error",
+  "status": 404,
+  "error": {
+    "type": "invalid_request_error",
+    "code": "previous_response_not_found",
+    "message": "Previous response was not found. Retrying the full request."
+  }
+}
+```
+
+上游返回 `websocket_connection_limit_reached`（包括服务端 60 分钟连接上限）或
+`previous_response_not_found` 时，Gateway 保留该控制错误帧、废弃对应上游连接，并允许客户端用完整
+请求建立新连接。这两类状态恢复错误不会触发渠道自动禁用或清除 Session affinity；Gateway 自身仍不
+重放已经发送的请求。
+
 每条 WebSocket 连接同时只允许一个 `response.create` 在途。上游握手完成前的连接类失败仍可按全局
 重试设置切换未尝试渠道；消息一旦发往上游，就不再自动重试，以避免重复生成。连接期间客户端 API Key
 被撤销或过期后，下一条消息会收到 `invalid_api_key` 错误；系统或用户开关在连接期间关闭后，下一条
-消息会收到 `websocket_disabled` 并结束连接。
+消息会收到 `426 websocket_unavailable` 并结束连接。
 
 由于上游渠道只能在下游 Upgrade 完成并收到首条 `response.create` 后确定，上游 Upgrade 响应 Header
 无法回填到已经完成的下游握手；配置的响应 Header 变换因此只适用于 HTTP Responses，WebSocket

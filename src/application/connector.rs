@@ -63,6 +63,18 @@ impl UpstreamConnectorRegistry {
             }
         }
     }
+
+    #[must_use]
+    pub(crate) fn can_attempt_responses_websocket(&self, channel: &CompiledChannel) -> bool {
+        match channel.connector_kind() {
+            ConnectorKind::OpenAiCompatible => true,
+            ConnectorKind::CodexOauth => self.codex.as_ref().is_some_and(|service| {
+                // The model and request-specific affinity are unavailable during
+                // Upgrade, so draining credentials remain potential candidates.
+                service.runtime().credential(channel.id(), true).is_ok()
+            }),
+        }
+    }
 }
 
 pub(crate) enum PreparedUpstreamAttempt {
@@ -344,7 +356,12 @@ mod tests {
     use reqwest::header::HeaderName;
     use uuid::Uuid;
 
-    use crate::domain::{ApiFormat, CompiledChannel};
+    use rust_decimal::Decimal;
+
+    use crate::domain::{
+        ApiFormat, CompiledChannel, CompiledChannelUpstreamPolicy, ConnectorKind,
+        RequestCompression,
+    };
 
     use super::*;
 
@@ -379,5 +396,29 @@ mod tests {
             .unwrap();
         assert_eq!(headers.get("x-api-key").unwrap(), "upstream-secret");
         assert!(attempt.allows_automatic_retry());
+        assert!(UpstreamConnectorRegistry::default().can_attempt_responses_websocket(&channel));
+    }
+
+    #[test]
+    fn websocket_preflight_excludes_a_missing_codex_connector() {
+        let channel = CompiledChannel::new_with_connector_policy_automation_and_billing(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            ApiFormat::OpenAiResponses,
+            ConnectorKind::CodexOauth,
+            RequestCompression::Default,
+            Url::parse("https://example.test/backend-api/codex").unwrap(),
+            Decimal::ONE,
+            UpstreamAuth::None,
+            HashSet::new(),
+            true,
+            false,
+            false,
+            false,
+            None,
+            CompiledChannelUpstreamPolicy::transparent(ApiFormat::OpenAiResponses),
+        );
+
+        assert!(!UpstreamConnectorRegistry::default().can_attempt_responses_websocket(&channel));
     }
 }

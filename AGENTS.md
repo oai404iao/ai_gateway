@@ -312,8 +312,16 @@ Axum HTTP
   upstream socket because incremental `previous_response_id` cache state is
   connection-local. Return only clean sockets to the session-isolated pool
   after a successful terminal event, key pool entries by API key, handshake
-  identity, channel, network policy, target, and final headers, and never retry
-  after sending a WebSocket request message upstream.
+  identity, channel, network policy, target, and final headers. A nonempty
+  `previous_response_id` requires an exact pool hit; otherwise return
+  `404 previous_response_not_found` without dispatch. Preserve
+  `websocket_connection_limit_reached` and `previous_response_not_found` as
+  state-recovery control errors, discard their socket without disabling the
+  channel, and never retry after sending a WebSocket request message upstream.
+- Return generic `426 websocket_unavailable` rather than internal
+  system/user/channel/Connector state whenever Responses WebSocket transport
+  is disabled or cannot be established. Keep API-key authentication,
+  authorization, admission, request-validation, and shutdown errors distinct.
 - Track upgraded Responses WebSocket tasks independently from Hyper connection
   futures: reject new upgrades during shutdown, drain the current logical
   request within the configured grace period, then force-close any remainder.

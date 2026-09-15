@@ -99,6 +99,10 @@ assistants、fine-tuning 等其他 OpenAI 路径。
 Responses WebSocket 的上游事件以 JSON 文本消息透传；配置的 Responses SSE 事件规则会应用到
 同类型 WebSocket 事件。网关按顺序一次处理一个 `response.create`，并让同一下游 Session 优先取回
 同一条上游连接，以保留 `previous_response_id` 的连接级缓存；只有成功、无残留的连接才会归还池中。
+携带 `previous_response_id` 的请求若无法命中该精确连接，会在联系新上游前收到
+`404 previous_response_not_found`。`websocket_connection_limit_reached` 和
+`previous_response_not_found` 是保留原形状、不执行事件 patch 的状态恢复控制错误，并会废弃当前
+上游连接。
 上游 WebSocket Upgrade 在首条消息之后发生，因此上游握手响应 Header 不会出现在已经完成的下游
 Upgrade 响应中。
 

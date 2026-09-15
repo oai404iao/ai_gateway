@@ -5566,6 +5566,20 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
             .contains("codex_sticky_credential_unavailable")
     );
 
+    let websocket_error = connect_async(websocket_request())
+        .await
+        .expect_err("a disabled Codex connector must reject the WebSocket upgrade");
+    let tokio_tungstenite::tungstenite::Error::Http(websocket_response) = websocket_error else {
+        panic!("expected an HTTP WebSocket handshake error");
+    };
+    assert_eq!(websocket_response.status(), StatusCode::UPGRADE_REQUIRED);
+    let websocket_body: serde_json::Value =
+        serde_json::from_slice(websocket_response.body().as_deref().unwrap()).unwrap();
+    assert_eq!(
+        websocket_body["error"]["code"],
+        serde_json::json!("websocket_unavailable")
+    );
+
     let new_disabled = app
         .clone()
         .oneshot(request(

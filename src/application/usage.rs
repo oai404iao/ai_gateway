@@ -996,15 +996,17 @@ data: [DONE]
         let mut collector = UsageCollector::new(ApiFormat::OpenAiResponses, false);
         assert_eq!(
             collector.observe_websocket_event(&Bytes::from_static(
-                br#"{"type":"error","status":400,"error":{"code":"previous_response_not_found","message":"retry full request"}}"#,
+                br#"{"type":"error","status":404,"error":{"code":"previous_response_not_found","message":"Previous response was not found. Retrying the full request."}}"#,
             )),
             Some(SseTerminalOutcome::Failed)
         );
         let error = collector.error_details().unwrap();
         assert_eq!(error.code.as_deref(), Some("previous_response_not_found"));
         let summary = error.summary.unwrap();
-        assert!(summary.starts_with("retry full request\n\n{"));
-        assert!(summary.contains("\"status\": 400"));
+        assert!(
+            summary.starts_with("Previous response was not found. Retrying the full request.\n\n{")
+        );
+        assert!(summary.contains("\"status\": 404"));
         assert!(summary.contains("\"previous_response_not_found\""));
     }
 
