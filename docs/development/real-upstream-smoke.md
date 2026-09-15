@@ -123,12 +123,13 @@ responses without tool calls. It does not use real upstream credentials, contact
 provider, or replace the mandatory real-upstream smoke for forwarding changes.
 The child has a bounded lifetime and is killed/reaped on timeout.
 
-Verified with Codex CLI 0.130.0: an HTTP-only authorized scope gets HTTP 426
-during upgrade; a mixed-capability scope upgrades, then rejects the HTTP-only
-model with a wrapped 426 error. Both must attempt WS, complete via exactly one
-mock HTTP request, and preserve matching request-log statuses. Ordinary Rust CI
-ignores this test because it does not install Codex; deterministic Gateway
-protocol/authorization/health tests remain part of `websocket_integration`.
+Verified with Codex CLI 0.130.0 and 0.154.0: an HTTP-only authorized scope gets
+HTTP 426 during upgrade; a mixed-capability scope upgrades, then rejects the
+HTTP-only model with a wrapped 426 error. Both must attempt WS, complete via
+exactly one mock HTTP request, and preserve matching request-log statuses.
+Ordinary Rust CI ignores this test because it does not install Codex;
+deterministic Gateway protocol/authorization/health tests remain part of
+`websocket_integration`.
 
 ### Paid smoke boundaries
 

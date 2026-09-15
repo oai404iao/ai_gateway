@@ -43,6 +43,10 @@
   隔离。
 - 上游 WebSocket 池最多保留 128 条空闲连接；同一精确身份只保留最近一条，空闲 5 分钟或总龄
   55 分钟后淘汰，以避开官方 60 分钟上限。
+- 非空 `previous_response_id` 只会发送到精确命中的池连接；状态连接已经丢失时，网关不建立新连接
+  转发增量输入，而是返回 `404 previous_response_not_found`，要求客户端重发完整请求。
+- 上游 `websocket_connection_limit_reached` 和 `previous_response_not_found` 控制错误会原样
+  转发并使对应连接退出复用；这两类事件不会触发渠道自动禁用或清除 Session affinity。
 - 上游 Upgrade 前的连接类失败可以按全局重试策略故障转移；请求消息发出后不重试。
 - 上游握手发生在下游 Upgrade 和首条消息之后，因此上游握手响应 Header 与响应 Header 变换不能
   回填到下游握手。请求 Header、请求 JSON 和 Responses 事件变换仍然生效。

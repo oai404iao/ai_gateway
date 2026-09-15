@@ -56,6 +56,10 @@ use lifecycle::WebSocketSessionGuard;
 const OPENAI_RESPONSES_FORMAT: ApiFormat = ApiFormat::OpenAiResponses;
 const OPENAI_RESPONSES_WEBSOCKET_BETA: &str = "responses_websockets=2026-02-06";
 const DOWNSTREAM_CONTROL_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+const WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE: &str = "websocket_connection_limit_reached";
+const PREVIOUS_RESPONSE_NOT_FOUND_CODE: &str = "previous_response_not_found";
+const PREVIOUS_RESPONSE_NOT_FOUND_MESSAGE: &str =
+    "Previous response was not found. Retrying the full request.";
 
 /// Authenticated downstream WebSocket setup captured before HTTP upgrade.
 pub(crate) struct ResponsesWebSocketSession {
@@ -87,14 +91,10 @@ impl ProxyService {
             ));
         }
         if !snapshot.system_settings().websocket().enabled() {
-            return Err(ProxyError::websocket_disabled(
-                "Responses WebSocket forwarding is disabled by the gateway administrator.",
-            ));
+            return Err(ProxyError::websocket_unavailable());
         }
         if !api_key.websocket_enabled() {
-            return Err(ProxyError::websocket_disabled(
-                "Responses WebSocket forwarding is disabled in this user's settings.",
-            ));
+            return Err(ProxyError::websocket_unavailable());
         }
         let lifecycle_guard = self
             .websocket_lifecycle
@@ -107,7 +107,9 @@ impl ProxyService {
         // only when none of this key's authorized Responses routes can use WS.
         if !self
             .routing
-            .has_available_websocket_route(&snapshot, &api_key)
+            .has_available_websocket_route(&snapshot, &api_key, |channel| {
+                self.connectors.can_attempt_responses_websocket(channel)
+            })
         {
             return Err(ProxyError::websocket_unavailable());
         }
@@ -289,27 +291,11 @@ impl ResponsesWebSocketSession {
             return SessionAction::Close;
         }
         if !snapshot.system_settings().websocket().enabled() {
-            send_error(
-                client,
-                403,
-                "permission_error",
-                "websocket_disabled",
-                "Responses WebSocket forwarding is disabled by the gateway administrator.",
-                None,
-            )
-            .await;
+            send_proxy_error(client, ProxyError::websocket_unavailable()).await;
             return SessionAction::Close;
         }
         if !api_key.websocket_enabled() {
-            send_error(
-                client,
-                403,
-                "permission_error",
-                "websocket_disabled",
-                "Responses WebSocket forwarding is disabled in this user's settings.",
-                None,
-            )
-            .await;
+            send_proxy_error(client, ProxyError::websocket_unavailable()).await;
             return SessionAction::Close;
         }
         let admission = match self.proxy.admission.admit(&api_key) {
@@ -501,6 +487,11 @@ impl ResponsesWebSocketSession {
             .unwrap_or_else(|| self.client_identity.connector_seed());
         let mut attempted_channel_slots = AttemptedChannelSlots::new();
 
+        if parsed.previous_response_id && preferred_channel != Some(current_channel.id()) {
+            self.release_pinned(pinned.take());
+            return reject_previous_response_not_found(client, &mut completion).await;
+        }
+
         loop {
             attempted_channel_slots.push(current_channel_slot);
             let connector_affinity_hit = current_preferred_channel_hit
@@ -523,6 +514,10 @@ impl ResponsesWebSocketSession {
                     {
                         active.reusable = false;
                     }
+                    if parsed.previous_response_id {
+                        self.release_pinned(pinned.take());
+                        return reject_previous_response_not_found(client, &mut completion).await;
+                    }
                     if connector_affinity_hit
                         || snapshot
                             .sharing()
@@ -535,10 +530,13 @@ impl ResponsesWebSocketSession {
                         } else {
                             ProxyError::connector_unavailable(error)
                         };
-                        completion
-                            .finish_with_proxy_error(RequestOutcome::UpstreamUnavailable, &error);
-                        send_proxy_error(client, error).await;
-                        return SessionAction::Close;
+                        return reject_websocket_unavailable(
+                            client,
+                            &mut completion,
+                            error.code,
+                            &error.message,
+                        )
+                        .await;
                     }
                     let retry_route = select_websocket_route(
                         &self.proxy,
@@ -551,10 +549,13 @@ impl ResponsesWebSocketSession {
                     );
                     let SelectionResult::Selected(route) = retry_route else {
                         let error = ProxyError::connector_unavailable(error);
-                        completion
-                            .finish_with_proxy_error(RequestOutcome::UpstreamUnavailable, &error);
-                        send_proxy_error(client, error).await;
-                        return SessionAction::Close;
+                        return reject_websocket_unavailable(
+                            client,
+                            &mut completion,
+                            error.code,
+                            &error.message,
+                        )
+                        .await;
                     };
                     let crate::routing::SelectedRoute {
                         rule,
@@ -598,6 +599,15 @@ impl ResponsesWebSocketSession {
             ) {
                 Ok(prepared) => prepared,
                 Err(error) => {
+                    if error.status.is_server_error() {
+                        return reject_websocket_unavailable(
+                            client,
+                            &mut completion,
+                            error.code,
+                            &error.message,
+                        )
+                        .await;
+                    }
                     let outcome = if error.status.is_client_error() {
                         RequestOutcome::ClientRequestError
                     } else {
@@ -613,21 +623,8 @@ impl ResponsesWebSocketSession {
                 .as_ref()
                 .is_some_and(|existing| existing.key != prepared.key && parsed.previous_response_id)
             {
-                completion.finish_with_message(
-                    RequestOutcome::ClientRequestError,
-                    Some("previous_response_not_found"),
-                    "Previous response state is unavailable on the selected upstream connection.",
-                );
-                send_error(
-                    client,
-                    400,
-                    "invalid_request_error",
-                    "previous_response_not_found",
-                    "Previous response state is unavailable on the selected upstream connection.",
-                    None,
-                )
-                .await;
-                return SessionAction::Close;
+                self.release_pinned(pinned.take());
+                return reject_previous_response_not_found(client, &mut completion).await;
             }
             if pinned
                 .as_ref()
@@ -642,6 +639,8 @@ impl ResponsesWebSocketSession {
                 {
                     *pinned = Some(PinnedUpstream::new(prepared.key.clone(), connection));
                     completion.response_headers_received();
+                } else if parsed.previous_response_id {
+                    return reject_previous_response_not_found(client, &mut completion).await;
                 } else {
                     match connect_upstream_websocket(
                         prepared.target.clone(),
@@ -664,23 +663,13 @@ impl ResponsesWebSocketSession {
                                 }
                                 completion.set_upstream_status(status);
                                 completion.response_headers_received();
-                                completion.finish_with_message(
-                                    RequestOutcome::UpstreamHttpError,
-                                    Some("upstream_websocket_handshake_failed"),
-                                    &format!(
-                                        "The upstream rejected the WebSocket handshake with HTTP {status}."
-                                    ),
-                                );
-                                send_error(
+                                return reject_websocket_unavailable(
                                     client,
-                                    status,
-                                    "api_error",
-                                    "upstream_websocket_handshake_failed",
-                                    "The upstream rejected the WebSocket handshake.",
-                                    None,
+                                    &mut completion,
+                                    Some("upstream_websocket_handshake_failed"),
+                                    &format!("The upstream rejected the WebSocket handshake with HTTP {status}."),
                                 )
                                 .await;
-                                return SessionAction::Close;
                             }
                             record_connection_failure(error, &mut completion);
                             let next = (attempt < max_attempts
@@ -697,24 +686,15 @@ impl ResponsesWebSocketSession {
                                     )
                                 });
                             let Some(SelectionResult::Selected(route)) = next else {
-                                let (outcome, status, code) = connection_failure_response(error);
-                                completion.finish_with_message(
-                                    outcome,
-                                    Some(code),
+                                return reject_websocket_unavailable(
+                                    client,
+                                    &mut completion,
+                                    Some(connection_failure_code(error)),
                                     &format!(
                                         "The selected upstream channel could not establish a WebSocket connection: {error}"
                                     ),
-                                );
-                                send_error(
-                                    client,
-                                    status,
-                                    "api_error",
-                                    code,
-                                    "The selected upstream channel could not establish a WebSocket connection.",
-                                    None,
                                 )
                                 .await;
-                                return SessionAction::Close;
                             };
                             let crate::routing::SelectedRoute {
                                 rule,
@@ -761,12 +741,13 @@ impl ResponsesWebSocketSession {
             }
 
             let Some(active) = pinned.as_mut() else {
-                completion.finish_with_message(
-                    RequestOutcome::UpstreamUnavailable,
+                return reject_websocket_unavailable(
+                    client,
+                    &mut completion,
                     Some("upstream_unavailable"),
                     "The selected upstream WebSocket connection is unavailable.",
-                );
-                return SessionAction::Close;
+                )
+                .await;
             };
             if let Err(error) = completion
                 .admit_sharing(&self.proxy.sharing, &snapshot)
@@ -1173,13 +1154,14 @@ async fn relay_upstream_response(
                                 connector.observe_response(status_code);
                             }
                         }
-                        if !event.connection_limit_reached {
+                        if event.state_error.is_none() {
                             completion.observe_upstream_error_body(&original);
                         }
-                        let transformed = match apply_websocket_event_plan(
-                            original,
-                            response_plan,
-                        ) {
+                        let transformed = match if event.state_error.is_some() {
+                            Ok(original)
+                        } else {
+                            apply_websocket_event_plan(original, response_plan)
+                        } {
                             Ok(transformed) => transformed,
                             Err(error) => {
                                 upstream.reusable = false;
@@ -1230,8 +1212,13 @@ async fn relay_upstream_response(
                                 terminal,
                                 crate::application::usage::SseTerminalOutcome::Completed
                             );
-                            upstream.reusable = succeeded && !event.connection_limit_reached;
-                            completion.finish(sse_terminal_request_outcome(terminal, true));
+                            upstream.reusable = succeeded && event.state_error.is_none();
+                            let outcome = if event.state_error.is_some() {
+                                RequestOutcome::WebSocketStateLost
+                            } else {
+                                sse_terminal_request_outcome(terminal, true)
+                            };
+                            completion.finish(outcome);
                             return SessionAction::Continue;
                         }
                     }
@@ -1327,14 +1314,34 @@ fn reset_idle(mut idle: std::pin::Pin<&mut Sleep>, duration: Duration) {
     idle.as_mut().reset(tokio::time::Instant::now() + duration);
 }
 
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
+enum WebSocketStateError {
+    #[default]
+    None,
+    ConnectionLimitReached,
+    PreviousResponseNotFound,
+}
+
+impl WebSocketStateError {
+    const fn is_none(self) -> bool {
+        matches!(self, Self::None)
+    }
+
+    const fn is_some(self) -> bool {
+        !self.is_none()
+    }
+}
+
 #[derive(Default)]
 struct EventInspection {
     status: Option<u16>,
-    connection_limit_reached: bool,
+    state_error: WebSocketStateError,
 }
 
 #[derive(Deserialize)]
 struct EventInspectionProbe<'a> {
+    #[serde(borrow, rename = "type")]
+    kind: Option<&'a str>,
     #[serde(default, alias = "status_code")]
     status: Option<u16>,
     #[serde(default, borrow)]
@@ -1351,11 +1358,20 @@ fn inspect_event(bytes: &[u8]) -> EventInspection {
     let Ok(probe) = serde_json::from_slice::<EventInspectionProbe<'_>>(bytes) else {
         return EventInspection::default();
     };
-    let connection_limit_reached =
-        probe.error.and_then(|error| error.code) == Some("websocket_connection_limit_reached");
+    let state_error = if probe.kind == Some("error") {
+        match probe.error.and_then(|error| error.code) {
+            Some(WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE) => {
+                WebSocketStateError::ConnectionLimitReached
+            }
+            Some(PREVIOUS_RESPONSE_NOT_FOUND_CODE) => WebSocketStateError::PreviousResponseNotFound,
+            _ => WebSocketStateError::None,
+        }
+    } else {
+        WebSocketStateError::None
+    };
     EventInspection {
         status: probe.status,
-        connection_limit_reached,
+        state_error,
     }
 }
 
@@ -1371,27 +1387,57 @@ fn record_connection_failure(error: UpstreamWebSocketError, completion: &mut Com
     }
 }
 
-fn connection_failure_response(
-    error: UpstreamWebSocketError,
-) -> (RequestOutcome, u16, &'static str) {
+fn connection_failure_code(error: UpstreamWebSocketError) -> &'static str {
     match error {
-        UpstreamWebSocketError::ConnectTimeout => {
-            (RequestOutcome::ConnectTimeout, 504, "connect_timeout")
-        }
-        UpstreamWebSocketError::HandshakeTimeout => (
-            RequestOutcome::ResponseHeaderTimeout,
-            504,
-            "response_header_timeout",
-        ),
+        UpstreamWebSocketError::ConnectTimeout => "connect_timeout",
+        UpstreamWebSocketError::HandshakeTimeout => "response_header_timeout",
         UpstreamWebSocketError::InvalidConfiguration
         | UpstreamWebSocketError::Network
         | UpstreamWebSocketError::Closed
-        | UpstreamWebSocketError::Http { .. } => (
-            RequestOutcome::UpstreamUnavailable,
-            502,
-            "upstream_unavailable",
-        ),
+        | UpstreamWebSocketError::Http { .. } => "upstream_unavailable",
     }
+}
+
+async fn reject_websocket_unavailable(
+    client: &mut WebSocket,
+    completion: &mut CompletionGuard,
+    diagnostic_code: Option<&str>,
+    diagnostic_message: &str,
+) -> SessionAction {
+    completion.set_client_visible_status(StatusCode::UPGRADE_REQUIRED.as_u16());
+    completion.finish_with_message(
+        RequestOutcome::WebSocketUnavailable,
+        diagnostic_code,
+        diagnostic_message,
+    );
+    send_proxy_error(client, ProxyError::websocket_unavailable()).await;
+    SessionAction::Close
+}
+
+async fn reject_previous_response_not_found(
+    client: &mut WebSocket,
+    completion: &mut CompletionGuard,
+) -> SessionAction {
+    completion.set_client_visible_status(StatusCode::NOT_FOUND.as_u16());
+    completion.finish_with_message(
+        RequestOutcome::WebSocketStateLost,
+        Some(PREVIOUS_RESPONSE_NOT_FOUND_CODE),
+        PREVIOUS_RESPONSE_NOT_FOUND_MESSAGE,
+    );
+    send_json(
+        client,
+        json!({
+            "type": "error",
+            "status": StatusCode::NOT_FOUND.as_u16(),
+            "error": {
+                "type": "invalid_request_error",
+                "code": PREVIOUS_RESPONSE_NOT_FOUND_CODE,
+                "message": PREVIOUS_RESPONSE_NOT_FOUND_MESSAGE,
+            }
+        }),
+    )
+    .await;
+    SessionAction::Continue
 }
 
 async fn send_proxy_error(client: &mut WebSocket, error: ProxyError) {
@@ -1428,6 +1474,10 @@ async fn send_error(
         },
         "headers": headers,
     });
+    send_json(client, payload).await;
+}
+
+async fn send_json(client: &mut WebSocket, payload: serde_json::Value) {
     if let Ok(payload) = serde_json::to_string(&payload) {
         let _ = tokio::time::timeout(
             DOWNSTREAM_CONTROL_WRITE_TIMEOUT,

@@ -218,12 +218,20 @@ WebSocket 身份，不做请求多路复用。每个成功请求结束后，上�
 grace period 内完成，截止时强制取消，避免 Upgrade 脱离 Hyper connection tracker 后绕过进程排空。
 
 握手还执行只读 WS 可用性预检：在同一不可变快照内检查 API Key 可访问的 Responses 路由及其候选、
-显式 WS 能力和实时被动健康，不占用 lease/半开探针、不推进轮转/粘性状态、不进行数据库或上游调用。
-全部无可选 WS 路由时拒绝 Upgrade 并返回 HTTP `426 websocket_unavailable`。模型直到
+显式 WS 能力、Connector 运行时可用性和实时被动健康，不占用 lease/半开探针、不推进轮转/粘性状态、
+不进行数据库或上游调用。系统/用户关闭 WS 或全部无可选 WS 路由时均拒绝 Upgrade，并返回不暴露内部
+原因的 HTTP `426 websocket_unavailable`。模型直到
 `response.create` 才确定；混合能力场景或连接后可用性变化造成该模型没有 WS 候选时，返回带
 `status: 426` 的错误帧并记录同码请求日志。HTTP 的 `503 no_healthy_channel`、
 鉴权/准入错误和消息阶段的 `404 model_not_found` 保持不变。该兼容提示由 Codex 在客户端执行
 HTTP fallback，不能成为 Gateway 对已派发消息自动重放的依据。
+
+连接池中的具体上游 socket 是非空 `previous_response_id` 的状态载体。增量请求只允许使用精确命中的
+池连接；池 miss 时不新建连接或联系上游，而是返回规范的
+`404 previous_response_not_found`，由保有完整上下文的客户端重试。上游
+`websocket_connection_limit_reached` 与 `previous_response_not_found` 同样被归类为可恢复的
+连接状态丢失：控制事件不应用可配置 SSE/WebSocket JSON patch，当前 socket 被废弃，但渠道自动禁用和
+Session affinity 不受影响。
 
 ## 重试与 Streaming 边界
 

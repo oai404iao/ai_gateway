@@ -113,17 +113,25 @@ impl MockResponsesWebSocket {
 }
 
 // tokio-tungstenite fixes the handshake callback's error type to a full HTTP response.
-#[allow(clippy::result_large_err)]
 async fn start_mock_upstream() -> MockResponsesWebSocket {
+    start_mock_upstream_with_first_error(None).await
+}
+
+#[allow(clippy::result_large_err)]
+async fn start_mock_upstream_with_first_error(
+    first_error: Option<Value>,
+) -> MockResponsesWebSocket {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let handshakes = Arc::new(Mutex::new(Vec::new()));
     let requests = Arc::new(Mutex::new(Vec::new()));
+    let first_error = Arc::new(Mutex::new(first_error));
     let next_connection = Arc::new(AtomicUsize::new(0));
     let next_response = Arc::new(AtomicUsize::new(1));
     let task = {
         let handshakes = Arc::clone(&handshakes);
         let requests = Arc::clone(&requests);
+        let first_error = Arc::clone(&first_error);
         let next_connection = Arc::clone(&next_connection);
         let next_response = Arc::clone(&next_response);
         tokio::spawn(async move {
@@ -132,6 +140,7 @@ async fn start_mock_upstream() -> MockResponsesWebSocket {
                 let connection = next_connection.fetch_add(1, Ordering::SeqCst);
                 let handshakes = Arc::clone(&handshakes);
                 let requests = Arc::clone(&requests);
+                let first_error = Arc::clone(&first_error);
                 let next_response = Arc::clone(&next_response);
                 tokio::spawn(async move {
                     let callback = move |request: &Request, response: Response| {
@@ -157,17 +166,25 @@ async fn start_mock_upstream() -> MockResponsesWebSocket {
                             connection,
                             body: body.clone(),
                         });
+                        let scripted_error = first_error.lock().unwrap().take();
+                        if let Some(scripted_error) = scripted_error {
+                            websocket
+                                .send(Message::Text(scripted_error.to_string().into()))
+                                .await
+                                .unwrap();
+                            continue;
+                        }
                         let previous = body.get("previous_response_id").and_then(Value::as_str);
                         if previous.is_some() && previous != last_response_id.as_deref() {
                             websocket
                                 .send(Message::Text(
                                     json!({
                                         "type": "error",
-                                        "status": 400,
+                                        "status": 404,
                                         "error": {
                                             "type": "invalid_request_error",
                                             "code": "previous_response_not_found",
-                                            "message": "previous response was not on this connection"
+                                            "message": "Previous response was not found. Retrying the full request."
                                         }
                                     })
                                     .to_string()
@@ -233,6 +250,24 @@ async fn start_mock_upstream() -> MockResponsesWebSocket {
         address,
         handshakes,
         requests,
+        task,
+    }
+}
+
+async fn start_rejecting_upstream(status: axum::http::StatusCode) -> MockResponsesWebSocket {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let app = axum::Router::new().route(
+        "/v1/responses",
+        axum::routing::get(move || async move { status }),
+    );
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    MockResponsesWebSocket {
+        address,
+        handshakes: Arc::new(Mutex::new(Vec::new())),
+        requests: Arc::new(Mutex::new(Vec::new())),
         task,
     }
 }
@@ -390,6 +425,7 @@ struct GatewayHarness {
 struct WebSocketControls {
     system_enabled: bool,
     user_enabled: bool,
+    proxy_permission: bool,
     filter_fast_mode: bool,
     channel_supported: bool,
     group_enabled: bool,
@@ -405,6 +441,7 @@ impl Default for WebSocketControls {
         Self {
             system_enabled: true,
             user_enabled: true,
+            proxy_permission: true,
             filter_fast_mode: false,
             channel_supported: true,
             group_enabled: true,
@@ -448,7 +485,11 @@ async fn gateway_harness_with_controls(
             status: "active".into(),
             expires_at: None,
             allowed_api_formats: vec!["open_ai_responses".into()],
-            permissions: vec!["proxy".into(), "models.read".into()],
+            permissions: if controls.proxy_permission {
+                vec!["proxy".into(), "models.read".into()]
+            } else {
+                vec!["models.read".into()]
+            },
             allowed_group_ids: vec![group_id],
             allowed_channel_ids: vec![],
             requests_per_minute: None,
@@ -741,6 +782,21 @@ fn completed_response_id(events: &[Value]) -> &str {
         .expect("missing response.completed id")
 }
 
+fn assert_previous_response_not_found(events: &[Value]) {
+    assert_eq!(
+        events,
+        &[json!({
+            "type": "error",
+            "status": 404,
+            "error": {
+                "type": "invalid_request_error",
+                "code": "previous_response_not_found",
+                "message": "Previous response was not found. Retrying the full request."
+            }
+        })]
+    );
+}
+
 async fn close_and_wait(
     mut websocket: tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
@@ -895,6 +951,152 @@ async fn responses_websocket_forwards_transforms_reuses_connection_and_logs_requ
 }
 
 #[tokio::test]
+async fn responses_websocket_reports_missing_state_without_dispatching_incremental_input() {
+    let upstream = start_mock_upstream().await;
+    let gateway = gateway_harness_with_controls(
+        &upstream,
+        None,
+        WebSocketControls {
+            max_idle_connections: 0,
+            ..WebSocketControls::default()
+        },
+    )
+    .await;
+    let (mut websocket, _) = connect_async(websocket_request(
+        gateway.server.address,
+        CLIENT_KEY,
+        "evicted-state",
+    ))
+    .await
+    .unwrap();
+
+    let first = response_create(&mut websocket, None).await;
+    let first_response_id = completed_response_id(&first).to_owned();
+    let missing = response_create(&mut websocket, Some(&first_response_id)).await;
+    assert_previous_response_not_found(&missing);
+    assert_eq!(upstream.handshakes().len(), 1);
+    assert_eq!(upstream.requests().len(), 1);
+
+    let retried = response_create(&mut websocket, None).await;
+    assert_eq!(completed_response_id(&retried), "resp-2");
+    close_and_wait(websocket).await;
+
+    let requests = upstream.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].connection, 0);
+    assert_eq!(requests[1].connection, 1);
+    let logs = gateway.logs.events();
+    assert_eq!(logs.len(), 3);
+    assert_eq!(logs[1].response_status_code, Some(404));
+    assert_eq!(
+        logs[1].error_code.as_deref(),
+        Some("previous_response_not_found")
+    );
+}
+
+#[tokio::test]
+async fn responses_websocket_discards_upstream_state_after_previous_response_not_found() {
+    let upstream = start_mock_upstream().await;
+    let gateway = gateway_harness(&upstream).await;
+    let (mut websocket, _) = connect_async(websocket_request(
+        gateway.server.address,
+        CLIENT_KEY,
+        "stale-response",
+    ))
+    .await
+    .unwrap();
+
+    response_create(&mut websocket, None).await;
+    let missing = response_create(&mut websocket, Some("resp-does-not-exist")).await;
+    assert_previous_response_not_found(&missing);
+    let retried = response_create(&mut websocket, None).await;
+    assert_eq!(completed_response_id(&retried), "resp-2");
+    close_and_wait(websocket).await;
+
+    let requests = upstream.requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[0].connection, 0);
+    assert_eq!(requests[1].connection, 0);
+    assert_eq!(requests[2].connection, 1);
+    let logs = gateway.logs.events();
+    assert_eq!(logs[1].response_status_code, Some(404));
+    assert_eq!(
+        logs[1].error_code.as_deref(),
+        Some("previous_response_not_found")
+    );
+}
+
+#[tokio::test]
+async fn responses_websocket_reconnects_after_upstream_connection_limit() {
+    let connection_limit = json!({
+        "type": "error",
+        "status": 400,
+        "error": {
+            "type": "invalid_request_error",
+            "code": "websocket_connection_limit_reached",
+            "message": "Responses websocket connection limit reached (60 minutes). Create a new websocket connection to continue."
+        }
+    });
+    let upstream = start_mock_upstream_with_first_error(Some(connection_limit.clone())).await;
+    let gateway = gateway_harness(&upstream).await;
+    let (mut websocket, _) = connect_async(websocket_request(
+        gateway.server.address,
+        CLIENT_KEY,
+        "connection-limit",
+    ))
+    .await
+    .unwrap();
+
+    let limited = response_create(&mut websocket, None).await;
+    assert_eq!(limited, vec![connection_limit]);
+    let retried = response_create(&mut websocket, None).await;
+    assert_eq!(completed_response_id(&retried), "resp-1");
+    close_and_wait(websocket).await;
+
+    let requests = upstream.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].connection, 0);
+    assert_eq!(requests[1].connection, 1);
+    let logs = gateway.logs.events();
+    assert_eq!(logs[0].response_status_code, Some(400));
+    assert_eq!(
+        logs[0].error_code.as_deref(),
+        Some("websocket_connection_limit_reached")
+    );
+}
+
+#[tokio::test]
+async fn responses_websocket_wraps_upstream_upgrade_rejection_for_http_fallback() {
+    let upstream = start_rejecting_upstream(axum::http::StatusCode::SERVICE_UNAVAILABLE).await;
+    let gateway = gateway_harness(&upstream).await;
+    let (mut websocket, _) = connect_async(websocket_request(
+        gateway.server.address,
+        CLIENT_KEY,
+        "upstream-upgrade-rejected",
+    ))
+    .await
+    .unwrap();
+
+    let events = response_create(&mut websocket, None).await;
+    let error = events.last().unwrap();
+    assert_eq!(error["type"], "error");
+    assert_eq!(error["status"], 426);
+    assert_eq!(error["error"]["type"], "invalid_request_error");
+    assert_eq!(error["error"]["code"], "websocket_unavailable");
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("POST /v1/responses")
+    );
+    assert!(upstream.requests().is_empty());
+    let logs = gateway.logs.events();
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0].response_status_code, Some(426));
+    assert_eq!(logs[0].error_code.as_deref(), Some("websocket_unavailable"));
+}
+
+#[tokio::test]
 async fn responses_websocket_filters_fast_mode_before_forwarding_logging_and_billing() {
     let upstream = start_mock_upstream().await;
     let gateway = gateway_harness_with_controls(
@@ -946,6 +1148,35 @@ async fn responses_websocket_rejects_an_invalid_gateway_api_key_during_upgrade()
         panic!("expected an HTTP websocket handshake error");
     };
     assert_eq!(response.status(), 401);
+    assert!(upstream.handshakes().is_empty());
+}
+
+#[tokio::test]
+async fn responses_websocket_preserves_permission_errors_during_upgrade() {
+    let upstream = start_mock_upstream().await;
+    let gateway = gateway_harness_with_controls(
+        &upstream,
+        None,
+        WebSocketControls {
+            proxy_permission: false,
+            ..WebSocketControls::default()
+        },
+    )
+    .await;
+
+    let error = connect_async(websocket_request(
+        gateway.server.address,
+        CLIENT_KEY,
+        "forbidden",
+    ))
+    .await
+    .expect_err("missing Responses proxy permission must reject the upgrade");
+    let WebSocketError::Http(response) = error else {
+        panic!("expected an HTTP websocket handshake error");
+    };
+    assert_eq!(response.status(), 403);
+    let body: Value = serde_json::from_slice(response.body().as_ref().unwrap()).unwrap();
+    assert_eq!(body["error"]["code"], "permission_denied");
     assert!(upstream.handshakes().is_empty());
 }
 
@@ -1009,10 +1240,7 @@ async fn responses_websocket_requires_system_and_user_opt_in() {
         ))
         .await
         .expect_err("disabled WebSocket upgrade must be rejected");
-        let WebSocketError::Http(response) = error else {
-            panic!("expected HTTP upgrade rejection, got {error:?}");
-        };
-        assert_eq!(response.status(), 403);
+        assert_upgrade_unavailable(error);
         assert!(upstream.handshakes().is_empty());
     }
 }

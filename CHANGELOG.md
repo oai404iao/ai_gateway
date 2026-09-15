@@ -9,6 +9,13 @@ Versioning.
 
 ### Fixed
 
+- Return the generic `426 websocket_unavailable` fallback contract whenever
+  Responses WebSocket forwarding is disabled or cannot establish an upstream
+  WebSocket, without exposing internal route or credential state. Reject
+  connection-local incremental requests with `404 previous_response_not_found`
+  when their exact upstream socket has been lost, and discard/recover cleanly
+  from provider connection-limit and missing-response errors without replaying
+  requests inside the Gateway.
 - Apply contiguous database migrations pending at process startup in one
   PostgreSQL transaction, so a later migration failure rolls back earlier
   migrations in the same batch. Historical PostgreSQL enum-value commit
