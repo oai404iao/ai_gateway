@@ -78,14 +78,14 @@ export function DeletionImpactSummary({
                     <div className="text-muted-foreground flex flex-wrap gap-x-3 text-xs">
                       {rule.removed_channel_group_ids.length > 0 ? (
                         <span>
-                          {t("Group targets removed: {count}", {
+                          {t("Deleted parent groups: {count}", {
                             count: rule.removed_channel_group_ids.length,
                           })}
                         </span>
                       ) : null}
                       {rule.removed_channel_ids.length > 0 ? (
                         <span>
-                          {t("Channel routes removed: {count}", {
+                          {t("Channels removed from route: {count}", {
                             count: rule.removed_channel_ids.length,
                           })}
                         </span>

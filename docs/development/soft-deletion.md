@@ -26,7 +26,7 @@
 
 - 普通 OpenAI-compatible 渠道和渠道组使用墓碑。
 - 删除渠道组时软删除其渠道，并从模型路由、API Key、API Key Policy 和 quota 可见性中自动解绑。
-- 受影响的 selected target、空 tier 和空协议规则会自动规范化。
+- 受影响的显式渠道/模型候选、空 tier 和空协议规则会自动规范化。
 - 删除前使用权威影响预览；影响变化时要求管理员重新确认。
 - Codex 托管渠道及 connector pool 生命周期不复用普通删除路径。
 
@@ -88,8 +88,8 @@ Codex 拼车席位保留原用户 UUID 作为历史成员；数据面只承认�
 管理员先读取 `GET /console/v1/routing/channels/{id}/deletion-impact`，再用详情 `ETag` 和预览返回的
 `confirmation_token` 调用 `DELETE /console/v1/routing/channels/{id}`。删除事务会：
 
-1. 从 `selected` target 和 `all` target 的逐渠道权重覆盖中移除该渠道。
-2. 删除因此为空的 `selected` target 和 tier；协议规则失去最后一个 tier 时自动停用。
+1. 移除该渠道的全部显式渠道/模型候选。
+2. 删除因此为空的 tier；协议规则失去最后一个 tier 时自动停用。
 3. 从未删除 API Key 和 API Key Policy 的显式渠道数组中移除该 UUID。
 4. 停用渠道，清除自动禁用状态、上游 URL、代理、超时、转换模板、渠道转换、上游凭据、模型能力和
    定时测试引用，再写入墓碑。
@@ -100,7 +100,7 @@ Codex 拼车席位保留原用户 UUID 作为历史成员；数据面只承认�
 ### 普通渠道组
 
 渠道组使用对应的 `/deletion-impact` 与 `DELETE` 接口。删除会先对组内全部普通渠道执行上述墓碑
-处理，再移除整个组的模型路由 target、API Key/API Key Policy group 与 child-channel 引用，以及
+处理，再移除这些渠道的模型路由候选、API Key/API Key Policy group 与 child-channel 引用，以及
 匹配的 quota 可见性关系。组级状态监控同时关闭，空 tier 和空协议规则按同一规则规范化。组名可由
 新的 UUID 复用。
 
@@ -123,7 +123,7 @@ Codex OAuth 组及其 Responses/Images managed channels 返回
 管理员通过 `DELETE /console/v1/models/{id}` 和详情 `ETag` 进行不可恢复删除。串行化事务先停用该
 模型 routing profile 下全部已启用协议规则，再清除所有 Channel 成对设置的 `test_model` /
 `test_pricing_model_id`，最后停用模型并写入 `deleted_at`/`deleted_by`。Profile、协议规则、routing
-tier 和 target 行继续保留，已有 `request_logs.model_id` / `model_rule_id` 与审计引用因此保持有效。
+tier 和 candidate 行继续保留，已有 `request_logs.model_id` / `model_rule_id` 与审计引用因此保持有效。
 
 普通模型列表、详情、models.dev 同步匹配、运行时价格表和协议规则查询只读取活动模型。墓碑的
 `source_model_id` 由部分唯一索引释放；手工创建或目录导入同名模型会得到新 UUID，不会更新或恢复
@@ -131,7 +131,7 @@ tier 和 target 行继续保留，已有 `request_logs.model_id` / `model_rule_i
 模型墓碑。
 
 删除不移除 Channel 的 `available_models`。该字段描述上游 wire model 能力，不等同于
-`test_pricing_model_id` 指向的计价身份，也可能仍被其他活动模型的 route target 使用。
+`test_pricing_model_id` 指向的计价身份，也可能仍被其他活动模型的 route candidate 使用。
 
 ### 历史查询与 Console
 
@@ -156,7 +156,7 @@ tier 和 target 行继续保留，已有 `request_logs.model_id` / `model_rule_i
 
 - 普通渠道/渠道组删除后从列表、详情、运行时快照、定时测试和可选项消失，自然名称可复用。
 - 渠道组的所有 child channels 都写入非敏感墓碑，上游凭据和转换配置已清除。
-- 路由 channel/group target、空 tier 和空协议规则按预览结果规范化；失去最后一个 tier 的协议
+- 路由渠道/模型候选、空 tier 和空协议规则按预览结果规范化；失去最后一个 tier 的协议
   自动停用。
 - API Key、API Key Policy 和 quota 可见性引用自动解绑，旧影响 token 不会执行删除。
 - Codex managed channel/group 与直接 SQL 硬删除保护不变。

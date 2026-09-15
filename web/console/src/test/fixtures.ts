@@ -391,22 +391,20 @@ export const MODEL_PROTOCOL_RULE: ModelProtocolRuleView = {
     {
       priority: 0,
       selection_strategy: "weighted_random",
-      channel_groups: [
+      candidates: [
         {
-          channel_group_id: CHANNEL_GROUP.id,
-          channel_selection: "all",
+          channel_id: CHANNEL.id,
           upstream_model: MODEL.source_model_id,
-          default_weight: 100,
-          channels: [],
+          weight: 100,
         },
       ],
     },
   ],
   enabled: true,
   routing_status: "ready",
-  target_channel_count: 1,
-  model_capable_channel_count: 1,
-  active_channel_count: 1,
+  target_candidate_count: 1,
+  model_capable_candidate_count: 1,
+  active_candidate_count: 1,
   updated_at: "2026-01-02T00:00:00.000Z",
 };
 
@@ -439,7 +437,7 @@ export const CHANNEL_DELETION_IMPACT: ChannelDeletionImpact = {
       model_rule_id: MODEL_RULE.id,
       client_model: MODEL_RULE.client_model,
       api_format: MODEL_PROTOCOL_RULE.api_format,
-      removed_channel_group_ids: [CHANNEL_GROUP.id],
+      removed_channel_group_ids: [],
       removed_channel_ids: [CHANNEL.id],
       removed_tier_priorities: [0],
       will_disable: true,
@@ -459,22 +457,20 @@ const SEARCH_PROTOCOL_RULE: ModelProtocolRuleView = {
     {
       priority: 0,
       selection_strategy: "weighted_random",
-      channel_groups: [
+      candidates: [
         {
-          channel_group_id: CODEX_QUOTA_GROUP.id,
-          channel_selection: "all",
+          channel_id: OWN_CODEX_QUOTA.id,
           upstream_model: "gpt-5",
-          default_weight: 100,
-          channels: [],
+          weight: 100,
         },
       ],
     },
   ],
   enabled: true,
   routing_status: "ready",
-  target_channel_count: 1,
-  model_capable_channel_count: 1,
-  active_channel_count: 1,
+  target_candidate_count: 1,
+  model_capable_candidate_count: 1,
+  active_candidate_count: 1,
   updated_at: "2026-08-05T00:00:00.000Z",
 };
 
@@ -499,22 +495,20 @@ const IMAGE_PROTOCOL_RULE: ModelProtocolRuleView = {
     {
       priority: 0,
       selection_strategy: "weighted_random",
-      channel_groups: [
+      candidates: [
         {
-          channel_group_id: "00000000-0000-0000-0000-00000000c002",
-          channel_selection: "all",
+          channel_id: "00000000-0000-0000-0000-00000000c020",
           upstream_model: "gpt-image-2",
-          default_weight: 100,
-          channels: [],
+          weight: 100,
         },
       ],
     },
   ],
   enabled: true,
   routing_status: "disconnected",
-  target_channel_count: 0,
-  model_capable_channel_count: 0,
-  active_channel_count: 0,
+  target_candidate_count: 1,
+  model_capable_candidate_count: 0,
+  active_candidate_count: 0,
   updated_at: "2026-08-05T00:00:00.000Z",
 };
 
@@ -643,6 +637,7 @@ export const SYSTEM_SETTINGS: SystemSettings = {
   request_retry: {
     enabled: true,
     max_retries: 1,
+    retryable_status_codes: [429, 503],
   },
   passive_health: {
     connection_failure_threshold: 3,

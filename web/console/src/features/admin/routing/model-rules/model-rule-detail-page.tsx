@@ -178,11 +178,11 @@ export function ModelRuleDetailPage() {
                       <CardTitle>{apiFormatLabel(protocol.api_format)}</CardTitle>
                       <CardDescription>
                         {t(
-                          "{tiers} priority tiers · {active}/{targets} active targets",
+                          "{tiers} priority tiers · {active}/{targets} active candidates",
                           {
                             tiers: protocol.routing_tiers.length,
-                            active: protocol.active_channel_count,
-                            targets: protocol.target_channel_count,
+                            active: protocol.active_candidate_count,
+                            targets: protocol.target_candidate_count,
                           },
                         )}
                       </CardDescription>
@@ -216,8 +216,8 @@ export function ModelRuleDetailPage() {
                         })}
                       </Badge>
                       <Badge variant="outline">
-                        {t("{count} model-capable channels", {
-                          count: protocol.model_capable_channel_count,
+                        {t("{count} model-capable candidates", {
+                          count: protocol.model_capable_candidate_count,
                         })}
                       </Badge>
                     </CardContent>

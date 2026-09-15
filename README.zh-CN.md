@@ -23,7 +23,8 @@ Chat Completions、Responses、Codex standalone web search、非流式 JSON Imag
   Images generation 和 multipart Images edit；
   三种格式绝不相互回退。
 - 每个计价客户端模型拥有一个顶层模型规则，其下按 API 格式配置协议规则；协议规则各自拥有
-  优先级层级与选择策略，其中每个 target 保存上游模型和渠道权重。
+  优先级层级与选择策略，其中每个显式渠道/上游模型候选拥有独立权重；Channel Group 只用于
+  Console 批量选择。
 - 特殊上游通过单进程内 Connector 接入，不增加 sidecar 或第二次网络跳转。首个
   Codex OAuth Connector 支持订阅凭证、每账户代理、Token 刷新、额度感知 draining
   以及共享凭证的 provider-managed Responses HTTP/SSE/WebSocket/Search 与 Images
@@ -172,12 +173,12 @@ curl --request POST http://127.0.0.1:3001/console/v1/auth/login \
 2. 所需 API 格式与 Connector 的**渠道组**。新建 Codex OAuth Responses 组时会同时创建一个
    共享凭证池、默认停用的 Images 组。
 3. 该渠道组内的**渠道**：配置上游 URL、上游凭据和支持的上游模型名。
-4. 为该计价模型创建一个顶层**模型规则**，再添加所需格式的协议规则；每条路由 target 从目标
-   Channel 的能力中选择实际发送的上游 wire 模型。
+4. 为该计价模型创建一个顶层**模型规则**，再添加所需格式的协议规则；每个 tier 直接保存从
+   Channel 能力中选择的上游 wire 模型与独立权重。
 5. 一个客户端 **API Key**：至少授予 `proxy` 权限；如需调用 `/v1/models`，还要授予 `models.read`。
 
 按需在同一计价模型下分别创建 Chat Completions、Responses 与 Images 协议规则；三种格式的
-路由 target 仍相互独立。请使用 Console API 管理控制面，不要直接编辑控制面数据表。
+路由候选仍相互独立。请使用 Console API 管理控制面，不要直接编辑控制面数据表。
 
 Console 路由覆盖与运行行为详见[运行与接口说明](docs/user/operations.md)。
 
@@ -273,7 +274,7 @@ curl --request POST "$GATEWAY_URL/v1/responses" \
 ```
 
 对于 Images generation，请配置独立的 `open_ai_images` 渠道组、渠道、协议规则与 API Key
-权限，并让 target 选择对应上游模型，然后发送 JSON 请求：
+权限，并让路由候选选择对应上游模型，然后发送 JSON 请求：
 
 ```bash
 curl --request POST "$GATEWAY_URL/v1/images/generations" \
@@ -321,7 +322,7 @@ TOML 仅保存进程级 bootstrap 配置。二进制默认读取
 | `[request_limits]` | 代理、Console 和认证接口各自独立的请求体大小限制。 |
 | `[database]` | PostgreSQL URL、连接池大小和连接超时。 |
 | `[upstream]` | 默认建连、普通响应头、Images 响应头和流空闲超时。 |
-| `[request_retry]` | 收到上游响应头前的自动故障转移初始值。 |
+| `[request_retry]` | 传输失败与显式上游状态码的自动候选故障转移初始值。 |
 | `[runtime_config]` | PostgreSQL 控制面定时重载间隔。 |
 | `[passive_health]` | 连接失败阈值和冷却时间。 |
 | `[automatic_disable]` | 按状态码/错误关键词自动停用的初始值。 |
@@ -442,15 +443,16 @@ Base UI 组件规范和嵌入式交付边界见
   受保护 Header 清理 → Codex Header 白名单（如适用）→ 上游鉴权。
 - 客户端 `Authorization`、hop-by-hop Header、`Connection` 声明的 Header，以及常见反向代理/CDN
   转发元数据永不转发给任何上游渠道。
-- 被动健康响应收到上游响应头之前的连接失败。配置允许时，只能在响应头前切换到
-  尚未尝试的健康渠道；上游 HTTP 错误或已经开始的响应流不会重试。
+- 被动健康响应收到上游响应头之前的连接失败。配置允许时，传输失败或显式列出的上游 4xx/5xx
+  状态可在发送下游响应前切换到尚未尝试的渠道/模型候选；同一渠道的其他模型仍可参与，
+  已经开始的下游响应流不会重试。
 - RPM、并发和软额度准入均为进程内状态；没有跨实例协调。
 - 终态请求日志会先追加到本地 durable spool；用量提取和结算异步执行。额度是基于
   已结算用量的软预检查，不会在转发前预留本次成本。
 - 请求日志不保存 prompt、completion、完整 Header、API Key、Cookie 或未经脱敏的上游错误内容。
 
 当前公开 `/v1/images/edits` 范围不包含 JSON/data URL edit；项目也不包含图片流式响应、
-embeddings、audio、files、batches、assistants、fine-tuning、收到响应头/首字节后的自动重试、
+embeddings、audio、files、batches、assistants、fine-tuning、发送下游响应后的自动重试、
 TLS 终止、独立财务账本、充值/退款或多币种兑换。
 
 ## 开发与验证

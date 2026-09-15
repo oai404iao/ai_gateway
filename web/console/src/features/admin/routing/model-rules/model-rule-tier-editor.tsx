@@ -18,10 +18,8 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
   Field,
-  FieldContent,
   FieldDescription,
   FieldError,
   FieldGroup,
@@ -45,8 +43,7 @@ import {
 import { cn } from "@/lib/utils";
 
 type RoutingTier = ModelProtocolRuleInput["routing_tiers"][number];
-type GroupTarget = RoutingTier["channel_groups"][number];
-type ChannelWeight = GroupTarget["channels"][number];
+type RouteCandidate = RoutingTier["candidates"][number];
 
 interface ModelRuleTierEditorProps {
   value: RoutingTier[];
@@ -57,8 +54,8 @@ interface ModelRuleTierEditorProps {
   className?: string;
 }
 
+const ADD_CHANNEL_VALUE = "__add_channel__";
 const ADD_GROUP_VALUE = "__add_channel_group__";
-const NO_MODEL_VALUE = "__no_upstream_model__";
 
 function nextPriority(tiers: RoutingTier[]): number {
   const used = new Set(tiers.map((tier) => tier.priority));
@@ -75,11 +72,20 @@ function removeAt<T>(items: T[], index: number): T[] {
   return items.filter((_, itemIndex) => itemIndex !== index);
 }
 
-function channelWeight(
-  channels: ChannelWeight[],
-  channelId: string,
-): ChannelWeight | undefined {
-  return channels.find((channel) => channel.channel_id === channelId);
+function candidateKey(candidate: RouteCandidate): string {
+  return `${candidate.channel_id}\u0000${candidate.upstream_model}`;
+}
+
+function nextUnusedModel(
+  candidates: readonly RouteCandidate[],
+  channel: ChannelView,
+): string | undefined {
+  const selected = new Set(
+    candidates
+      .filter((candidate) => candidate.channel_id === channel.id)
+      .map((candidate) => candidate.upstream_model),
+  );
+  return channel.available_models.find((model) => !selected.has(model));
 }
 
 export function ModelRuleTierEditor({
@@ -100,161 +106,70 @@ export function ModelRuleTierEditor({
     () => new Map(channels.map((channel) => [channel.id, channel])),
     [channels],
   );
-  const selectedGroupIds = useMemo(
-    () =>
-      new Set(
-        value.flatMap((tier) =>
-          tier.channel_groups.map((target) => target.channel_group_id),
-        ),
-      ),
-    [value],
-  );
-  const availableGroups = groups
-    .filter((group) => !selectedGroupIds.has(group.id))
-    .sort((left, right) => left.name.localeCompare(right.name));
 
   const patchTier = (tierIndex: number, partial: Partial<RoutingTier>) => {
     onChange(updateAt(value, tierIndex, { ...value[tierIndex], ...partial }));
   };
 
-  const patchTarget = (
+  const patchCandidate = (
     tierIndex: number,
-    targetIndex: number,
-    partial: Partial<GroupTarget>,
+    candidateIndex: number,
+    partial: Partial<RouteCandidate>,
   ) => {
     const tier = value[tierIndex];
     patchTier(tierIndex, {
-      channel_groups: updateAt(tier.channel_groups, targetIndex, {
-        ...tier.channel_groups[targetIndex],
+      candidates: updateAt(tier.candidates, candidateIndex, {
+        ...tier.candidates[candidateIndex],
         ...partial,
       }),
     });
   };
 
-  const setChannelSelected = (
-    tierIndex: number,
-    targetIndex: number,
-    channelId: string,
-    checked: boolean,
-  ) => {
-    const target = value[tierIndex].channel_groups[targetIndex];
-    const nextChannels = checked
-      ? channelWeight(target.channels, channelId)
-        ? target.channels
-        : [
-            ...target.channels,
-            {
-              channel_id: channelId,
-              upstream_model:
-                target.channel_selection === "selected"
-                  ? channels.find((channel) => channel.id === channelId)
-                      ?.available_models[0] ?? null
-                  : null,
-              weight: 100,
-            },
-          ]
-      : target.channels.filter((channel) => channel.channel_id !== channelId);
-    patchTarget(tierIndex, targetIndex, { channels: nextChannels });
-  };
-
-  const setChannelWeight = (
-    tierIndex: number,
-    targetIndex: number,
-    channelId: string,
-    weight: number,
-  ) => {
-    const target = value[tierIndex].channel_groups[targetIndex];
-    patchTarget(tierIndex, targetIndex, {
-      channels: target.channels.map((channel) =>
-        channel.channel_id === channelId ? { ...channel, weight } : channel,
-      ),
+  const addChannel = (tierIndex: number, channelId: string) => {
+    const tier = value[tierIndex];
+    const channel = channelById.get(channelId);
+    if (!channel) return;
+    const upstreamModel = nextUnusedModel(tier.candidates, channel);
+    if (!upstreamModel) return;
+    patchTier(tierIndex, {
+      candidates: [
+        ...tier.candidates,
+        {
+          channel_id: channel.id,
+          upstream_model: upstreamModel,
+          weight: 100,
+        },
+      ],
     });
   };
 
-  const setChannelModel = (
-    tierIndex: number,
-    targetIndex: number,
-    channelId: string,
-    upstreamModel: string | null,
-  ) => {
-    const target = value[tierIndex].channel_groups[targetIndex];
-    patchTarget(tierIndex, targetIndex, {
-      channels: target.channels.map((channel) =>
-        channel.channel_id === channelId
-          ? { ...channel, upstream_model: upstreamModel }
-          : channel,
-      ),
-    });
-  };
-
-  const switchSelection = (
-    tierIndex: number,
-    targetIndex: number,
-    selection: GroupTarget["channel_selection"],
-  ) => {
-    const target = value[tierIndex].channel_groups[targetIndex];
-    if (selection === target.channel_selection) return;
-    if (selection === "all") {
-      const groupChannels = channels.filter(
-        (channel) => channel.channel_group_id === target.channel_group_id,
-      );
-      const groupModels = [
-        ...new Set(
-          groupChannels.flatMap((channel) => channel.available_models),
-        ),
-      ].sort();
-      const selectedModels = [
-        ...new Set(
-          target.channels.flatMap((channel) =>
-            channel.upstream_model ? [channel.upstream_model] : [],
-          ),
-        ),
-      ];
-      const upstreamModel =
-        selectedModels.length === 1 && groupModels.includes(selectedModels[0])
-          ? selectedModels[0]
-          : groupModels[0] ?? null;
-      patchTarget(tierIndex, targetIndex, {
-        channel_selection: "all",
-        upstream_model: upstreamModel,
-        default_weight: 100,
-        channels: target.channels
-          .filter(
-            (channel) =>
-              channel.weight !== 100 &&
-              upstreamModel !== null &&
-              groupChannels
-                .find((candidate) => candidate.id === channel.channel_id)
-                ?.available_models.includes(upstreamModel),
-          )
-          .map((channel) => ({ ...channel, upstream_model: null })),
-      });
-      return;
-    }
-
-    const groupChannels = channels.filter(
-      (channel) => channel.channel_group_id === target.channel_group_id,
+  const addChannelGroup = (tierIndex: number, groupId: string) => {
+    const tier = value[tierIndex];
+    const selectedChannelIds = new Set(
+      tier.candidates.map((candidate) => candidate.channel_id),
     );
-    const upstreamModel = target.upstream_model;
-    const explicitChannels = groupChannels
+    const additions = channels
       .filter(
         (channel) =>
-          upstreamModel !== null &&
-          channel.available_models.includes(upstreamModel),
+          channel.channel_group_id === groupId &&
+          !selectedChannelIds.has(channel.id),
       )
-      .map((channel) => ({
-        channel_id: channel.id,
-        upstream_model: upstreamModel,
-        weight:
-          channelWeight(target.channels, channel.id)?.weight ??
-          target.default_weight ??
-          100,
-      }));
-    patchTarget(tierIndex, targetIndex, {
-      channel_selection: "selected",
-      upstream_model: null,
-      default_weight: null,
-      channels: explicitChannels,
+      .sort((left, right) => left.name.localeCompare(right.name))
+      .flatMap((channel) => {
+        const upstreamModel = channel.available_models[0];
+        return upstreamModel
+          ? [
+              {
+                channel_id: channel.id,
+                upstream_model: upstreamModel,
+                weight: 100,
+              },
+            ]
+          : [];
+      });
+    if (additions.length === 0) return;
+    patchTier(tierIndex, {
+      candidates: [...tier.candidates, ...additions],
     });
   };
 
@@ -266,13 +181,29 @@ export function ModelRuleTierEditor({
       <FieldLegend>{t("Protocol routing tiers")}</FieldLegend>
       <FieldDescription>
         {t(
-          "Lower priority tiers are tried first. Strategy and weights belong to this protocol rule, not to global channels or groups.",
+          "Lower priority tiers are tried first. Every channel and upstream-model pair has its own weight.",
         )}
       </FieldDescription>
 
       <FieldGroup>
         {value.map((tier, tierIndex) => {
           const tierPath = ["routing_tiers", tierIndex];
+          const availableChannels = channels
+            .filter((channel) => nextUnusedModel(tier.candidates, channel))
+            .sort((left, right) => left.name.localeCompare(right.name));
+          const availableGroups = groups
+            .filter((group) =>
+              channels.some(
+                (channel) =>
+                  channel.channel_group_id === group.id &&
+                  channel.available_models.length > 0 &&
+                  !tier.candidates.some(
+                    (candidate) => candidate.channel_id === channel.id,
+                  ),
+              ),
+            )
+            .sort((left, right) => left.name.localeCompare(right.name));
+
           return (
             <Card key={tierIndex}>
               <CardHeader>
@@ -280,8 +211,8 @@ export function ModelRuleTierEditor({
                   {t("Tier {number}", { number: tierIndex + 1 })}
                 </CardTitle>
                 <CardDescription>
-                  {t("{count} channel groups", {
-                    count: tier.channel_groups.length,
+                  {t("{count} route candidates", {
+                    count: tier.candidates.length,
                   })}
                 </CardDescription>
                 <CardAction>
@@ -375,607 +306,306 @@ export function ModelRuleTierEditor({
                       </Select>
                       <FieldDescription>
                         {t(
-                          "Weights are compared only among eligible channels in this tier.",
+                          "Weights are compared only among eligible candidates in this tier.",
                         )}
                       </FieldDescription>
                     </Field>
                   </FieldGroup>
 
-                  <Field
+                  <FieldGroup className="grid gap-4 md:grid-cols-2">
+                    <Field>
+                      <FieldLabel>{t("Add a channel")}</FieldLabel>
+                      <Select
+                        value={ADD_CHANNEL_VALUE}
+                        disabled={availableChannels.length === 0}
+                        onValueChange={(channelId) => {
+                          if (channelId !== ADD_CHANNEL_VALUE) {
+                            addChannel(tierIndex, channelId);
+                          }
+                        }}
+                      >
+                        <SelectTrigger
+                          aria-label={t("Add channel to tier {number}", {
+                            number: tierIndex + 1,
+                          })}
+                        >
+                          <SelectValue
+                            placeholder={
+                              availableChannels.length > 0
+                                ? t("Choose a channel")
+                                : t("All channel/model pairs are already used")
+                            }
+                          />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectGroup>
+                            <SelectItem value={ADD_CHANNEL_VALUE}>
+                              {t("Choose a channel")}
+                            </SelectItem>
+                            {availableChannels.map((channel) => (
+                              <SelectItem key={channel.id} value={channel.id}>
+                                {channel.name}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                      <FieldDescription>
+                        {t(
+                          "Selecting the same channel again adds its next unused upstream model.",
+                        )}
+                      </FieldDescription>
+                    </Field>
+
+                    <Field>
+                      <FieldLabel>{t("Bulk-add a channel group")}</FieldLabel>
+                      <Select
+                        value={ADD_GROUP_VALUE}
+                        disabled={availableGroups.length === 0}
+                        onValueChange={(groupId) => {
+                          if (groupId !== ADD_GROUP_VALUE) {
+                            addChannelGroup(tierIndex, groupId);
+                          }
+                        }}
+                      >
+                        <SelectTrigger
+                          aria-label={t(
+                            "Bulk-add channel group to tier {number}",
+                            { number: tierIndex + 1 },
+                          )}
+                        >
+                          <SelectValue
+                            placeholder={
+                              availableGroups.length > 0
+                                ? t("Choose a channel group")
+                                : t("No unused group channels")
+                            }
+                          />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectGroup>
+                            <SelectItem value={ADD_GROUP_VALUE}>
+                              {t("Choose a channel group")}
+                            </SelectItem>
+                            {availableGroups.map((group) => (
+                              <SelectItem key={group.id} value={group.id}>
+                                {group.name}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                      <FieldDescription>
+                        {t(
+                          "This expands current group members into explicit candidates. Future group changes do not alter the saved route.",
+                        )}
+                      </FieldDescription>
+                    </Field>
+                  </FieldGroup>
+
+                  <FieldSet
                     data-invalid={
-                      Boolean(errorFor([...tierPath, "channel_groups"])) ||
+                      Boolean(errorFor([...tierPath, "candidates"])) ||
                       undefined
                     }
                   >
-                    <FieldLabel>
-                      {t("Add a format-compatible channel group")}
-                    </FieldLabel>
-                    <Select
-                      value={ADD_GROUP_VALUE}
-                      disabled={availableGroups.length === 0}
-                      onValueChange={(groupId) => {
-                        if (groupId === ADD_GROUP_VALUE) return;
-                        patchTier(tierIndex, {
-                          channel_groups: [
-                            ...tier.channel_groups,
-                            {
-                              channel_group_id: groupId,
-                              channel_selection: "all",
-                              upstream_model:
-                                channels
-                                  .filter(
-                                    (channel) =>
-                                      channel.channel_group_id === groupId,
-                                  )
-                                  .flatMap(
-                                    (channel) => channel.available_models,
-                                  )
-                                  .sort()[0] ?? null,
-                              default_weight: 100,
-                              channels: [],
-                            },
-                          ],
-                        });
-                      }}
-                    >
-                      <SelectTrigger
-                        aria-label={t(
-                          "Add channel group to tier {number}",
-                          { number: tierIndex + 1 },
-                        )}
-                        aria-invalid={Boolean(
-                          errorFor([...tierPath, "channel_groups"]),
-                        )}
-                      >
-                        <SelectValue
-                          placeholder={
-                            availableGroups.length > 0
-                              ? t("Choose a channel group")
-                              : t("All compatible groups are already used")
-                          }
-                        />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectGroup>
-                          <SelectItem value={ADD_GROUP_VALUE}>
-                            {t("Choose a channel group")}
-                          </SelectItem>
-                          {availableGroups.map((group) => (
-                            <SelectItem key={group.id} value={group.id}>
-                              {group.name}
-                            </SelectItem>
-                          ))}
-                        </SelectGroup>
-                      </SelectContent>
-                    </Select>
-                    {errorFor([...tierPath, "channel_groups"]) ? (
-                      <FieldError>
-                        {errorFor([...tierPath, "channel_groups"])}
-                      </FieldError>
-                    ) : null}
-                  </Field>
-
-                  {tier.channel_groups.map((target, targetIndex) => {
-                    const targetPath = [
-                      ...tierPath,
-                      "channel_groups",
-                      targetIndex,
-                    ];
-                    const group = groupById.get(target.channel_group_id);
-                    const knownChannels = channels.filter(
-                      (channel) =>
-                        channel.channel_group_id === target.channel_group_id,
-                    );
-                    const missingChannels = target.channels
-                      .filter(
-                        (channel) => !channelById.has(channel.channel_id),
-                      )
-                      .map((channel) => ({
-                        id: channel.channel_id,
-                        name: channel.channel_id,
-                        available_models: channel.upstream_model
-                          ? [channel.upstream_model]
-                          : [],
-                      }));
-                    const targetChannels = [
-                      ...knownChannels,
-                      ...missingChannels,
-                    ];
-                    const groupModels = [
-                      ...new Set(
-                        knownChannels.flatMap(
-                          (channel) => channel.available_models,
-                        ),
-                      ),
-                    ].sort();
-                    const visibleGroupModels =
-                      target.upstream_model &&
-                      !groupModels.includes(target.upstream_model)
-                        ? [target.upstream_model, ...groupModels]
-                        : groupModels;
-                    const capableChannelCount = target.upstream_model
-                      ? knownChannels.filter((channel) =>
-                          channel.available_models.includes(
-                            target.upstream_model!,
-                          ),
-                        ).length
-                      : 0;
-                    return (
-                      <Card key={target.channel_group_id} size="sm">
-                        <CardHeader>
-                          <CardTitle>
-                            {group?.name ?? target.channel_group_id}
-                          </CardTitle>
-                          <CardDescription>
-                            {target.channel_selection === "all"
-                              ? t(
-                                  "Channels advertising the selected model use the default weight unless overridden.",
-                                )
-                              : t(
-                                  "Only explicitly selected channels are eligible.",
-                                )}
-                          </CardDescription>
-                          <CardAction>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon-sm"
-                              aria-label={t("Remove channel group {name}", {
-                                name:
-                                  group?.name ?? target.channel_group_id,
-                              })}
-                              onClick={() =>
-                                patchTier(tierIndex, {
-                                  channel_groups: removeAt(
-                                    tier.channel_groups,
-                                    targetIndex,
-                                  ),
-                                })
-                              }
+                    <FieldLegend variant="label">
+                      {t("Channel/model candidates")}
+                    </FieldLegend>
+                    <FieldDescription>
+                      {t(
+                        "A channel may appear more than once when each entry uses a different upstream model.",
+                      )}
+                    </FieldDescription>
+                    {tier.candidates.length > 0 ? (
+                      <FieldGroup>
+                        {tier.candidates.map((candidate, candidateIndex) => {
+                          const candidatePath = [
+                            ...tierPath,
+                            "candidates",
+                            candidateIndex,
+                          ];
+                          const channel = channelById.get(candidate.channel_id);
+                          const group = channel
+                            ? groupById.get(channel.channel_group_id)
+                            : undefined;
+                          const visibleModels =
+                            channel &&
+                            !channel.available_models.includes(
+                              candidate.upstream_model,
+                            )
+                              ? [
+                                  candidate.upstream_model,
+                                  ...channel.available_models,
+                                ]
+                              : (channel?.available_models ?? [
+                                  candidate.upstream_model,
+                                ]);
+                          const pairError =
+                            errorFor([...candidatePath, "channel_id"]) ??
+                            errorFor([...candidatePath, "upstream_model"]);
+                          const weightError = errorFor([
+                            ...candidatePath,
+                            "weight",
+                          ]);
+                          return (
+                            <Card
+                              key={`${candidateKey(candidate)}-${candidateIndex}`}
+                              size="sm"
                             >
-                              <Trash2 data-icon="inline-start" />
-                            </Button>
-                          </CardAction>
-                        </CardHeader>
-                        <CardContent>
-                          <FieldGroup>
-                            {errorFor([
-                              ...targetPath,
-                              "channel_group_id",
-                            ]) ? (
-                              <FieldError>
-                                {errorFor([
-                                  ...targetPath,
-                                  "channel_group_id",
-                                ])}
-                              </FieldError>
-                            ) : null}
-                            <Field
-                              data-invalid={
-                                Boolean(
-                                  errorFor([
-                                    ...targetPath,
-                                    "channel_selection",
-                                  ]),
-                                ) || undefined
-                              }
-                            >
-                              <FieldLabel>{t("Channel selection")}</FieldLabel>
-                              <Select
-                                value={target.channel_selection}
-                                onValueChange={(selection) =>
-                                  switchSelection(
-                                    tierIndex,
-                                    targetIndex,
-                                    selection as GroupTarget["channel_selection"],
-                                  )
-                                }
-                              >
-                                <SelectTrigger
-                                  aria-label={t(
-                                    "Channel selection for {name}",
-                                    {
-                                      name:
-                                        group?.name ??
-                                        target.channel_group_id,
-                                    },
-                                  )}
-                                  aria-invalid={Boolean(
-                                    errorFor([
-                                      ...targetPath,
-                                      "channel_selection",
-                                    ]),
-                                  )}
-                                >
-                                  <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectGroup>
-                                    <SelectItem value="all">
-                                      {t("All channels")}
-                                    </SelectItem>
-                                    <SelectItem value="selected">
-                                      {t("Selected channels")}
-                                    </SelectItem>
-                                  </SelectGroup>
-                                </SelectContent>
-                              </Select>
-                            </Field>
-
-                            {target.channel_selection === "all" ? (
-                              <>
-                                <Field
-                                  data-invalid={
-                                    Boolean(
-                                      errorFor([
-                                        ...targetPath,
-                                        "upstream_model",
-                                      ]),
-                                    ) || undefined
-                                  }
-                                >
-                                  <FieldLabel>{t("Upstream model")}</FieldLabel>
-                                  <Select
-                                    value={
-                                      target.upstream_model ?? NO_MODEL_VALUE
-                                    }
-                                    onValueChange={(model) =>
-                                      patchTarget(
-                                        tierIndex,
-                                        targetIndex,
-                                        {
-                                          upstream_model:
-                                            model === NO_MODEL_VALUE
-                                              ? null
-                                              : model,
-                                          channels: target.channels.filter(
-                                            (selected) =>
-                                              model !== NO_MODEL_VALUE &&
-                                              channelById
-                                                .get(selected.channel_id)
-                                                ?.available_models.includes(
-                                                  model,
-                                                ),
-                                          ),
-                                        },
-                                      )
-                                    }
-                                  >
-                                    <SelectTrigger
-                                      aria-label={t(
-                                        "Upstream model for channel group {name}",
-                                        {
-                                          name:
-                                            group?.name ??
-                                            target.channel_group_id,
-                                        },
-                                      )}
-                                      aria-invalid={Boolean(
-                                        errorFor([
-                                          ...targetPath,
-                                          "upstream_model",
-                                        ]),
-                                      )}
-                                    >
-                                      <SelectValue
-                                        placeholder={t(
-                                          "Choose an upstream model",
-                                        )}
-                                      />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                      <SelectGroup>
-                                        <SelectItem value={NO_MODEL_VALUE}>
-                                          {t("Choose an upstream model")}
-                                        </SelectItem>
-                                        {visibleGroupModels.map((model) => (
-                                          <SelectItem key={model} value={model}>
-                                            {model}
-                                          </SelectItem>
-                                        ))}
-                                      </SelectGroup>
-                                    </SelectContent>
-                                  </Select>
-                                  <FieldDescription>
-                                    {target.upstream_model
-                                      ? t(
-                                          "{capable} of {total} channels advertise this model.",
-                                          {
-                                            capable: capableChannelCount,
-                                            total: knownChannels.length,
-                                          },
-                                        )
-                                      : t(
-                                          "Models come from this group's channel capabilities.",
-                                        )}
-                                  </FieldDescription>
-                                  {errorFor([
-                                    ...targetPath,
-                                    "upstream_model",
-                                  ]) ? (
-                                    <FieldError>
-                                      {errorFor([
-                                        ...targetPath,
-                                        "upstream_model",
-                                      ])}
-                                    </FieldError>
-                                  ) : null}
-                                </Field>
-                                <Field
-                                  data-invalid={
-                                    Boolean(
-                                      errorFor([
-                                        ...targetPath,
-                                        "default_weight",
-                                      ]),
-                                    ) || undefined
-                                  }
-                                >
-                                  <FieldLabel
-                                    htmlFor={`${idPrefix}-tier-${tierIndex}-target-${targetIndex}-default-weight`}
-                                  >
-                                    {t("Default weight")}
-                                  </FieldLabel>
-                                  <Input
-                                    id={`${idPrefix}-tier-${tierIndex}-target-${targetIndex}-default-weight`}
-                                    type="number"
-                                    min={1}
-                                    max={2_147_483_647}
-                                    step={1}
-                                    value={target.default_weight ?? ""}
-                                    aria-invalid={Boolean(
-                                      errorFor([
-                                        ...targetPath,
-                                        "default_weight",
-                                      ]),
+                              <CardHeader>
+                                <CardTitle>
+                                  {channel?.name ?? candidate.channel_id}
+                                </CardTitle>
+                                <CardDescription>
+                                  {group?.name ??
+                                    channel?.channel_group_id ??
+                                    t("Unknown channel")}
+                                </CardDescription>
+                                <CardAction>
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon-sm"
+                                    aria-label={t(
+                                      "Remove route candidate {name}",
+                                      {
+                                        name:
+                                          channel?.name ??
+                                          candidate.channel_id,
+                                      },
                                     )}
-                                    onChange={(event) =>
-                                      patchTarget(tierIndex, targetIndex, {
-                                        default_weight: Number(
-                                          event.target.value,
+                                    onClick={() =>
+                                      patchTier(tierIndex, {
+                                        candidates: removeAt(
+                                          tier.candidates,
+                                          candidateIndex,
                                         ),
                                       })
                                     }
-                                  />
-                                  <FieldDescription>
-                                    {t(
-                                      "Enable a channel below only to override this weight.",
-                                    )}
-                                  </FieldDescription>
-                                  {errorFor([
-                                    ...targetPath,
-                                    "default_weight",
-                                  ]) ? (
-                                    <FieldError>
-                                      {errorFor([
-                                        ...targetPath,
-                                        "default_weight",
-                                      ])}
-                                    </FieldError>
-                                  ) : null}
-                                </Field>
-                              </>
-                            ) : null}
-
-                            <FieldSet
-                              data-invalid={
-                                Boolean(
-                                  errorFor([...targetPath, "channels"]),
-                                ) || undefined
-                              }
-                            >
-                              <FieldLegend variant="label">
-                                {target.channel_selection === "all"
-                                  ? t("Per-channel overrides")
-                                  : t("Selected channels and weights")}
-                              </FieldLegend>
-                              <FieldDescription>
-                                {target.channel_selection === "all"
-                                  ? t(
-                                      "Unchecked model-capable channels inherit the default weight.",
-                                    )
-                                  : t(
-                                      "Select at least one channel and assign a positive weight.",
-                                    )}
-                              </FieldDescription>
-                              {targetChannels.length > 0 ? (
-                                <FieldGroup data-slot="checkbox-group">
-                                  {targetChannels.map((channel) => {
-                                    const selected = channelWeight(
-                                      target.channels,
-                                      channel.id,
-                                    );
-                                    const channelCanBeSelected =
-                                      target.channel_selection === "all"
-                                        ? target.upstream_model !== null &&
-                                          channel.available_models.includes(
-                                            target.upstream_model,
-                                          )
-                                        : channel.available_models.length > 0;
-                                    const channelIndex =
-                                      target.channels.findIndex(
-                                        (item) =>
-                                          item.channel_id === channel.id,
-                                      );
-                                    const channelPath = [
-                                      ...targetPath,
-                                      "channels",
-                                      channelIndex,
-                                    ];
-                                    const weightError = selected
-                                      ? errorFor([...channelPath, "weight"])
-                                      : undefined;
-                                    const modelError = selected
-                                      ? errorFor([
-                                          ...channelPath,
-                                          "upstream_model",
-                                        ])
-                                      : undefined;
-                                    const visibleModels =
-                                      selected?.upstream_model &&
-                                      !channel.available_models.includes(
-                                        selected.upstream_model,
-                                      )
-                                        ? [
-                                            selected.upstream_model,
-                                            ...channel.available_models,
-                                          ]
-                                        : channel.available_models;
-                                    const inputId = `${idPrefix}-tier-${tierIndex}-target-${targetIndex}-channel-${channel.id}`;
-                                    return (
-                                      <Field
-                                        key={channel.id}
-                                        orientation="horizontal"
-                                        data-invalid={
-                                          Boolean(weightError || modelError) ||
-                                          undefined
-                                        }
+                                  >
+                                    <Trash2 data-icon="inline-start" />
+                                  </Button>
+                                </CardAction>
+                              </CardHeader>
+                              <CardContent>
+                                <FieldGroup className="grid gap-4 md:grid-cols-[minmax(0,1fr)_8rem]">
+                                  <Field
+                                    data-invalid={
+                                      Boolean(pairError) || undefined
+                                    }
+                                  >
+                                    <FieldLabel>{t("Upstream model")}</FieldLabel>
+                                    <Select
+                                      value={candidate.upstream_model}
+                                      onValueChange={(upstreamModel) =>
+                                        patchCandidate(
+                                          tierIndex,
+                                          candidateIndex,
+                                          {
+                                            upstream_model: upstreamModel,
+                                          },
+                                        )
+                                      }
+                                    >
+                                      <SelectTrigger
+                                        aria-label={t(
+                                          "Upstream model for channel {name}",
+                                          {
+                                            name:
+                                              channel?.name ??
+                                              candidate.channel_id,
+                                          },
+                                        )}
+                                        aria-invalid={Boolean(pairError)}
                                       >
-                                        <Checkbox
-                                          id={inputId}
-                                          checked={Boolean(selected)}
-                                          disabled={
-                                            !selected && !channelCanBeSelected
-                                          }
-                                          aria-invalid={Boolean(
-                                            weightError || modelError,
-                                          )}
-                                          onCheckedChange={(checked) =>
-                                            setChannelSelected(
-                                              tierIndex,
-                                              targetIndex,
-                                              channel.id,
-                                              Boolean(checked),
-                                            )
-                                          }
-                                        />
-                                        <FieldContent>
-                                          <FieldLabel
-                                            htmlFor={inputId}
-                                            className="font-normal"
-                                          >
-                                            {channel.name}
-                                          </FieldLabel>
-                                        </FieldContent>
-                                        {selected &&
-                                        target.channel_selection ===
-                                          "selected" ? (
-                                          <Select
-                                            value={
-                                              selected.upstream_model ??
-                                              NO_MODEL_VALUE
-                                            }
-                                            onValueChange={(model) =>
-                                              setChannelModel(
-                                                tierIndex,
-                                                targetIndex,
-                                                channel.id,
-                                                model === NO_MODEL_VALUE
-                                                  ? null
-                                                  : model,
-                                              )
-                                            }
-                                          >
-                                            <SelectTrigger
-                                              className="max-w-64"
-                                              aria-label={t(
-                                                "Upstream model for channel {name}",
-                                                { name: channel.name },
-                                              )}
-                                              aria-invalid={Boolean(
-                                                modelError,
-                                              )}
-                                            >
-                                              <SelectValue
-                                                placeholder={t(
-                                                  "Choose a model",
-                                                )}
-                                              />
-                                            </SelectTrigger>
-                                            <SelectContent>
-                                              <SelectGroup>
-                                                <SelectItem
-                                                  value={NO_MODEL_VALUE}
-                                                >
-                                                  {t("Choose a model")}
-                                                </SelectItem>
-                                                {visibleModels.map((model) => (
-                                                  <SelectItem
-                                                    key={model}
-                                                    value={model}
-                                                  >
-                                                    {model}
-                                                  </SelectItem>
-                                                ))}
-                                              </SelectGroup>
-                                            </SelectContent>
-                                          </Select>
-                                        ) : null}
-                                        {selected ? (
-                                          <Input
-                                            className="max-w-28"
-                                            type="number"
-                                            min={1}
-                                            max={2_147_483_647}
-                                            step={1}
-                                            value={selected.weight}
-                                            aria-label={t(
-                                              "Weight for channel {name}",
-                                              { name: channel.name },
-                                            )}
-                                            aria-invalid={Boolean(weightError)}
-                                            onChange={(event) =>
-                                              setChannelWeight(
-                                                tierIndex,
-                                                targetIndex,
-                                                channel.id,
-                                                Number(event.target.value),
-                                              )
-                                            }
-                                          />
-                                        ) : null}
-                                        {weightError || modelError ? (
-                                          <FieldError>
-                                            {weightError ?? modelError}
-                                          </FieldError>
-                                        ) : null}
-                                      </Field>
-                                    );
-                                  })}
+                                        <SelectValue />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        <SelectGroup>
+                                          {visibleModels.map((model) => {
+                                            const duplicate =
+                                              model !==
+                                                candidate.upstream_model &&
+                                              tier.candidates.some(
+                                                (entry, index) =>
+                                                  index !== candidateIndex &&
+                                                  entry.channel_id ===
+                                                    candidate.channel_id &&
+                                                  entry.upstream_model ===
+                                                    model,
+                                              );
+                                            return (
+                                              <SelectItem
+                                                key={model}
+                                                value={model}
+                                                disabled={duplicate}
+                                              >
+                                                {model}
+                                              </SelectItem>
+                                            );
+                                          })}
+                                        </SelectGroup>
+                                      </SelectContent>
+                                    </Select>
+                                    {pairError ? (
+                                      <FieldError>{pairError}</FieldError>
+                                    ) : null}
+                                  </Field>
+                                  <Field
+                                    data-invalid={
+                                      Boolean(weightError) || undefined
+                                    }
+                                  >
+                                    <FieldLabel
+                                      htmlFor={`${idPrefix}-tier-${tierIndex}-candidate-${candidateIndex}-weight`}
+                                    >
+                                      {t("Weight")}
+                                    </FieldLabel>
+                                    <Input
+                                      id={`${idPrefix}-tier-${tierIndex}-candidate-${candidateIndex}-weight`}
+                                      type="number"
+                                      min={1}
+                                      max={2_147_483_647}
+                                      step={1}
+                                      value={candidate.weight}
+                                      aria-invalid={Boolean(weightError)}
+                                      onChange={(event) =>
+                                        patchCandidate(
+                                          tierIndex,
+                                          candidateIndex,
+                                          {
+                                            weight: Number(event.target.value),
+                                          },
+                                        )
+                                      }
+                                    />
+                                    {weightError ? (
+                                      <FieldError>{weightError}</FieldError>
+                                    ) : null}
+                                  </Field>
                                 </FieldGroup>
-                              ) : (
-                                <FieldDescription>
-                                  {t("This group has no channels.")}
-                                </FieldDescription>
-                              )}
-                              {errorFor([...targetPath, "channels"]) ? (
-                                <FieldError>
-                                  {errorFor([...targetPath, "channels"])}
-                                </FieldError>
-                              ) : null}
-                            </FieldSet>
-                          </FieldGroup>
-                        </CardContent>
-                        <CardFooter className="justify-between gap-2">
-                          <Badge variant="outline">
-                            {target.channel_selection === "all"
-                              ? t("All channels")
-                              : t("{count} selected", {
-                                  count: target.channels.length,
-                                })}
-                          </Badge>
-                          <span className="text-muted-foreground">
-                            {t("{count} channel overrides", {
-                              count:
-                                target.channel_selection === "all"
-                                  ? target.channels.length
-                                  : 0,
-                            })}
-                          </span>
-                        </CardFooter>
-                      </Card>
-                    );
-                  })}
+                              </CardContent>
+                              <CardFooter>
+                                <Badge variant="outline">
+                                  {t("Explicit candidate")}
+                                </Badge>
+                              </CardFooter>
+                            </Card>
+                          );
+                        })}
+                      </FieldGroup>
+                    ) : (
+                      <FieldDescription>
+                        {t("Add at least one channel/model candidate.")}
+                      </FieldDescription>
+                    )}
+                    {errorFor([...tierPath, "candidates"]) ? (
+                      <FieldError>
+                        {errorFor([...tierPath, "candidates"])}
+                      </FieldError>
+                    ) : null}
+                  </FieldSet>
                 </FieldGroup>
               </CardContent>
               <CardFooter>
@@ -1006,7 +636,7 @@ export function ModelRuleTierEditor({
             {
               priority: nextPriority(value),
               selection_strategy: "weighted_random",
-              channel_groups: [],
+              candidates: [],
             },
           ])
         }

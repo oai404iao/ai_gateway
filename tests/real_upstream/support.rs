@@ -18,8 +18,8 @@ use ai_gateway::{
     },
     http,
     persistence::{
-        ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ControlPlaneRecords,
-        ModelRuleChannelGroupTarget, ModelRuleChannelWeight, ModelRuleRecord, ModelRuleRoutingTier,
+        ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ControlPlaneRecords, ModelRuleRecord,
+        ModelRuleRouteCandidate, ModelRuleRoutingTier,
     },
     runtime_config::{RuntimeConfig, compile_control_plane_with_system_settings},
 };
@@ -416,16 +416,10 @@ fn gateway(
             routing_tiers: vec![ModelRuleRoutingTier {
                 priority: 0,
                 selection_strategy: "weighted_random".into(),
-                channel_groups: vec![ModelRuleChannelGroupTarget {
-                    channel_group_id: group_id,
-                    channel_selection: "selected".into(),
-                    upstream_model: None,
-                    default_weight: None,
-                    channels: vec![ModelRuleChannelWeight {
-                        channel_id,
-                        upstream_model: Some(upstream_model.into()),
-                        weight: 1,
-                    }],
+                candidates: vec![ModelRuleRouteCandidate {
+                    channel_id,
+                    upstream_model: upstream_model.into(),
+                    weight: 1,
                 }],
             }],
             enabled: true,

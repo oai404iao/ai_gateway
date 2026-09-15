@@ -70,10 +70,13 @@ a duplicate editor.
 
 Each priced client model has at most one top-level model rule. Its detail page
 lists format-specific protocol children whose formats are immutable, and each
-protocol editor owns its priority tiers, Channel targets, weights, and
-target-selected upstream models. Editors retain single-resource ETag mutations
-and protect unsaved drafts. Regression coverage lives beside the focused pages
-and in `e2e/model-routing.spec.ts`.
+protocol editor owns priority tiers and independently weighted
+`(channel, upstream model)` candidates. A Channel can appear with multiple
+models or in multiple tiers. Channel Groups are only a bulk-add convenience:
+the editor expands current members into explicit candidates before saving, so
+later membership changes do not alter the route. Editors retain
+single-resource ETag mutations and protect unsaved drafts. Regression coverage
+lives beside the focused pages and in `e2e/model-routing.spec.ts`.
 
 ## API contract
 

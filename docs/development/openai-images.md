@@ -154,10 +154,9 @@ Images projection 当前固定声明经核对的 `gpt-image-2`，不声明 WebSo
 `status_statistics_enabled`。
 
 路由层级、上游模型映射和权重不在凭证或 projection Channel 上同步。Responses 与 Images 协议
-规则分别拥有自己的 priority tiers、selection strategy 和 group/channel targets；`all`
-target 保存一个上游模型，只让以后加入该格式 group 且声明支持该模型的 credential projection
-使用默认权重，`selected` target 则必须显式加入 projection 并逐条选择模型。一个格式的 routing
-assignment 不会投影到另一个格式。
+规则分别拥有自己的 priority tiers、selection strategy 和显式 channel/model candidates。
+Channel Group 只让 Console 一次性批量加入当前 projection；保存后不保留组依赖，未来凭证不会
+自动继承既有规则。一个格式的 routing assignment 不会投影到另一个格式。
 
 ### 安全迁移
 
@@ -172,7 +171,7 @@ assignment 不会投影到另一个格式。
 - 不自动把 `open_ai_images` 添加到任何现有 API Key、Policy 或模型规则。
 - 不自动创建可访问的客户端 Images 路由。
 - 只有管理员显式启用 Images group，并配置客户端计价模型、Images 协议规则中指向
-  `gpt-image-2` 的 target、API Key format 和 group/channel 权限后才产生新流量。
+  `gpt-image-2` 的 candidate、API Key format 和 group/channel 权限后才产生新流量。
 - credential 删除会清除共享 Token，并把 Responses 与 Images Channel 都保留为不含敏感信息的
   tombstone。
 

@@ -19,8 +19,8 @@ use ai_gateway::{
     },
     http,
     persistence::{
-        ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ControlPlaneRecords,
-        ModelRuleChannelGroupTarget, ModelRuleRecord, ModelRuleRoutingTier,
+        ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ControlPlaneRecords, ModelRuleRecord,
+        ModelRuleRouteCandidate, ModelRuleRoutingTier,
     },
     routing::{PassiveHealthPolicy, RoutingRuntime},
     runtime_config::{RuntimeConfig, UpstreamConfig, compile_control_plane_with_system_settings},
@@ -141,33 +141,61 @@ fn proxy_fixture_with_retry_and_models(
 ) -> ProxyFixture {
     assert_eq!(upstream_urls.len(), priorities.len());
     assert_eq!(upstream_urls.len(), upstream_models.len());
+    let candidates = priorities
+        .iter()
+        .zip(upstream_models)
+        .enumerate()
+        .map(|(channel_index, (priority, upstream_model))| {
+            (channel_index, *priority, upstream_model.clone())
+        })
+        .collect::<Vec<_>>();
+    proxy_fixture_with_retry_and_candidates(
+        upstream_urls,
+        &candidates,
+        allowed_indices,
+        upstream,
+        routing,
+        request_retry,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn proxy_fixture_with_retry_and_candidates(
+    upstream_urls: &[String],
+    candidates: &[(usize, i32, String)],
+    allowed_indices: &[usize],
+    upstream: UpstreamConfig,
+    routing: RoutingRuntime,
+    request_retry: RequestRetrySettings,
+) -> ProxyFixture {
+    assert!(
+        candidates
+            .iter()
+            .all(|(channel_index, _, _)| *channel_index < upstream_urls.len())
+    );
     let group_ids = (0..upstream_urls.len())
         .map(|_| Uuid::new_v4())
         .collect::<Vec<_>>();
     let channel_ids = (0..upstream_urls.len())
         .map(|_| Uuid::new_v4())
         .collect::<Vec<_>>();
-    let mut routing_tiers = BTreeMap::<i32, Vec<ModelRuleChannelGroupTarget>>::new();
-    for ((group_id, priority), upstream_model) in
-        group_ids.iter().zip(priorities).zip(upstream_models)
-    {
+    let mut routing_tiers = BTreeMap::<i32, Vec<ModelRuleRouteCandidate>>::new();
+    for (channel_index, priority, upstream_model) in candidates {
         routing_tiers
             .entry(*priority)
             .or_default()
-            .push(ModelRuleChannelGroupTarget {
-                channel_group_id: *group_id,
-                channel_selection: "all".into(),
-                upstream_model: Some(upstream_model.clone()),
-                default_weight: Some(1),
-                channels: vec![],
+            .push(ModelRuleRouteCandidate {
+                channel_id: channel_ids[*channel_index],
+                upstream_model: upstream_model.clone(),
+                weight: 1,
             });
     }
     let routing_tiers = routing_tiers
         .into_iter()
-        .map(|(priority, channel_groups)| ModelRuleRoutingTier {
+        .map(|(priority, candidates)| ModelRuleRoutingTier {
             priority,
             selection_strategy: "weighted_random".into(),
-            channel_groups,
+            candidates,
         })
         .collect();
     let records = ControlPlaneRecords {
@@ -208,34 +236,35 @@ fn proxy_fixture_with_retry_and_models(
             .iter()
             .zip(group_ids.iter())
             .zip(upstream_urls)
-            .zip(upstream_models)
-            .map(
-                |(((id, group_id), base_url), upstream_model)| ChannelRecord {
-                    id: *id,
-                    channel_group_id: *group_id,
-                    api_format: "open_ai_chat_completions".into(),
-                    name: id.to_string(),
-                    base_url: base_url.clone(),
-                    enabled: true,
-                    supports_websocket: false,
-                    supports_standalone_web_search: false,
-                    auto_disabled: false,
-                    auto_disable_allowed: false,
-                    billing_multiplier: rust_decimal::Decimal::ONE,
-                    proxy_id: None,
-                    config_template_id: None,
-                    override_document: serde_json::json!({}),
-                    connect_timeout_ms: None,
-                    response_header_timeout_ms: None,
-                    stream_idle_timeout_ms: None,
-                    upstream_auth_kind: "none".into(),
-                    upstream_auth_header_name: None,
-                    upstream_api_key: None,
-                    available_models: vec![upstream_model.clone()],
-                    test_model: None,
-                    test_pricing_model_id: None,
-                },
-            )
+            .map(|((id, group_id), base_url)| ChannelRecord {
+                id: *id,
+                channel_group_id: *group_id,
+                api_format: "open_ai_chat_completions".into(),
+                name: id.to_string(),
+                base_url: base_url.clone(),
+                enabled: true,
+                supports_websocket: false,
+                supports_standalone_web_search: false,
+                auto_disabled: false,
+                auto_disable_allowed: false,
+                billing_multiplier: rust_decimal::Decimal::ONE,
+                proxy_id: None,
+                config_template_id: None,
+                override_document: serde_json::json!({}),
+                connect_timeout_ms: None,
+                response_header_timeout_ms: None,
+                stream_idle_timeout_ms: None,
+                upstream_auth_kind: "none".into(),
+                upstream_auth_header_name: None,
+                upstream_api_key: None,
+                available_models: candidates
+                    .iter()
+                    .filter(|(channel_index, _, _)| channel_ids[*channel_index] == *id)
+                    .map(|(_, _, upstream_model)| upstream_model.clone())
+                    .collect(),
+                test_model: None,
+                test_pricing_model_id: None,
+            })
             .collect(),
         models: vec![],
         model_rules: vec![ModelRuleRecord {
@@ -363,6 +392,30 @@ async fn capture_model_then_succeed(
         .unwrap()
 }
 
+async fn capture_model_and_retry_status(
+    State(state): State<CapturedModelState>,
+    body: Bytes,
+) -> Response {
+    state.capture(&body);
+    let model = serde_json::from_slice::<serde_json::Value>(&body).unwrap()["model"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    if model == "wire-primary" {
+        Response::builder()
+            .status(StatusCode::TOO_MANY_REQUESTS)
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"error":{"message":"retry"}} "#))
+            .unwrap()
+    } else {
+        Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"id":"completion"}"#))
+            .unwrap()
+    }
+}
+
 #[tokio::test]
 async fn header_timeout_makes_one_attempt_and_remains_neutral_for_ordinary_channels() {
     let (accepted_tx, accepted_rx) = oneshot::channel();
@@ -405,7 +458,7 @@ async fn header_timeout_makes_one_attempt_and_remains_neutral_for_ordinary_chann
 }
 
 #[tokio::test]
-async fn retry_rewrites_each_attempt_with_its_target_owned_upstream_model() {
+async fn retry_rewrites_each_attempt_with_its_candidate_upstream_model() {
     let first_models = Arc::new(Mutex::new(Vec::new()));
     let second_models = Arc::new(Mutex::new(Vec::new()));
     let first = start_server(
@@ -472,6 +525,94 @@ async fn retry_rewrites_each_attempt_with_its_target_owned_upstream_model() {
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].upstream_model.as_deref(), Some("wire-fallback"));
     assert_eq!(events[0].model_id, Some(pricing_model_id));
+}
+
+#[tokio::test]
+async fn configured_status_retries_another_model_on_the_same_channel() {
+    let models = Arc::new(Mutex::new(Vec::new()));
+    let upstream = start_server(
+        Router::new()
+            .route("/v1/chat/completions", post(capture_model_and_retry_status))
+            .with_state(CapturedModelState {
+                models: Arc::clone(&models),
+            }),
+    )
+    .await;
+    let fixture = proxy_fixture_with_retry_and_candidates(
+        &[format!("http://{}", upstream.address)],
+        &[
+            (0, 0, "wire-primary".into()),
+            (0, 1, "wire-fallback".into()),
+        ],
+        &[0],
+        upstream_config(2, 2),
+        RoutingRuntime::new(PassiveHealthPolicy::default()),
+        RequestRetrySettings::new(true, 1, Arc::from([429])),
+    );
+    let channel_id = fixture.channel_ids[0];
+    let pricing_model_id = fixture
+        .runtime
+        .snapshot()
+        .model_rule(
+            ai_gateway::domain::ApiFormat::OpenAiChatCompletions,
+            "model",
+        )
+        .unwrap()
+        .model_id();
+    let logs = fixture.logs.clone();
+    let gateway = start_server(http::router(fixture.service)).await;
+
+    let response = timeout(WAIT, request(&client(), gateway.address).send())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    response.bytes().await.unwrap();
+    assert_eq!(
+        *models.lock().unwrap(),
+        [
+            r#"{"model":"wire-primary"}"#,
+            r#"{"model":"wire-fallback"}"#
+        ]
+    );
+    let events = logs.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].channel_id, Some(channel_id));
+    assert_eq!(events[0].upstream_model.as_deref(), Some("wire-fallback"));
+    assert_eq!(events[0].model_id, Some(pricing_model_id));
+}
+
+#[tokio::test]
+async fn unconfigured_status_is_forwarded_without_candidate_retry() {
+    let models = Arc::new(Mutex::new(Vec::new()));
+    let upstream = start_server(
+        Router::new()
+            .route("/v1/chat/completions", post(capture_model_and_retry_status))
+            .with_state(CapturedModelState {
+                models: Arc::clone(&models),
+            }),
+    )
+    .await;
+    let fixture = proxy_fixture_with_retry_and_candidates(
+        &[format!("http://{}", upstream.address)],
+        &[
+            (0, 0, "wire-primary".into()),
+            (0, 1, "wire-fallback".into()),
+        ],
+        &[0],
+        upstream_config(2, 2),
+        RoutingRuntime::new(PassiveHealthPolicy::default()),
+        RequestRetrySettings::new(true, 1, Arc::from([])),
+    );
+    let gateway = start_server(http::router(fixture.service)).await;
+
+    let response = timeout(WAIT, request(&client(), gateway.address).send())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    response.bytes().await.unwrap();
+    assert_eq!(*models.lock().unwrap(), [r#"{"model":"wire-primary"}"#]);
 }
 
 #[tokio::test]
@@ -544,7 +685,7 @@ async fn disabled_retry_returns_the_first_header_timeout() {
         &[0, 1],
         upstream_config(2, 2),
         RoutingRuntime::new(PassiveHealthPolicy::default()),
-        RequestRetrySettings::new(false, 1),
+        RequestRetrySettings::new(false, 1, Arc::from([])),
     );
     let gateway = start_server(http::router(fixture.service)).await;
 
@@ -688,7 +829,7 @@ async fn max_retries_excludes_the_initial_channel() {
         &[0, 1, 2],
         upstream_config(2, 2),
         RoutingRuntime::new(PassiveHealthPolicy::default()),
-        RequestRetrySettings::new(true, 1),
+        RequestRetrySettings::new(true, 1, Arc::from([])),
     );
     let gateway = start_server(http::router(fixture.service)).await;
 

@@ -32,11 +32,29 @@ function renderPage() {
   );
 }
 
+function routeProtocol(
+  candidates: ModelProtocolRuleInput["routing_tiers"][number]["candidates"],
+): ModelProtocolRuleView {
+  return {
+    ...MODEL_PROTOCOL_RULE,
+    routing_tiers: [
+      {
+        priority: 0,
+        selection_strategy: "weighted_random",
+        candidates,
+      },
+    ],
+    target_candidate_count: candidates.length,
+    model_capable_candidate_count: candidates.length,
+    active_candidate_count: candidates.length,
+  };
+}
+
 describe("ModelProtocolRuleDetailPage", () => {
-  it("expands an all target only to channels advertising its model", async () => {
+  it("expands a channel group into current explicit candidates before save", async () => {
     seedAuthenticatedSession();
     const user = userEvent.setup();
-    const incompatibleChannel = {
+    const secondChannel = {
       ...CHANNEL,
       id: "00000000-0000-0000-0000-000000000199",
       name: "wire-b-only",
@@ -48,29 +66,19 @@ describe("ModelProtocolRuleDetailPage", () => {
       name: "no-models",
       available_models: [],
     };
-    const protocol: ModelProtocolRuleView = {
-      ...MODEL_PROTOCOL_RULE,
-      routing_tiers: [
-        {
-          priority: 0,
-          selection_strategy: "weighted_random",
-          channel_groups: [
-            {
-              channel_group_id: CHANNEL.channel_group_id,
-              channel_selection: "all",
-              upstream_model: "wire-a",
-              default_weight: 100,
-              channels: [],
-            },
-          ],
-        },
-      ],
-    };
+    const protocol = routeProtocol([
+      {
+        channel_id: CHANNEL.id,
+        upstream_model: "wire-a",
+        weight: 100,
+      },
+    ]);
+    let submitted: ModelProtocolRuleInput | undefined;
     server.use(
       http.get("/console/v1/routing/channels", () =>
         HttpResponse.json([
-          { ...CHANNEL, available_models: ["wire-a"] },
-          incompatibleChannel,
+          { ...CHANNEL, available_models: ["wire-a", "wire-a-2"] },
+          secondChannel,
           channelWithoutModels,
         ]),
       ),
@@ -81,72 +89,58 @@ describe("ModelProtocolRuleDetailPage", () => {
             headers: { ETag: `"${protocol.updated_at}"` },
           }),
       ),
+      http.put(
+        "/console/v1/routing/model-rules/:id/protocols/:protocolId",
+        async ({ request }) => {
+          submitted = (await request.json()) as ModelProtocolRuleInput;
+          return HttpResponse.json({
+            id: protocol.id,
+            correlation_id: "77777777-0000-0000-0000-000000000000",
+          });
+        },
+      ),
     );
     renderPage();
 
-    expect(
-      await screen.findByRole("checkbox", {
-        name: incompatibleChannel.name,
-      }),
-    ).toHaveAttribute("aria-disabled", "true");
-    expect(
-      screen.getByRole("checkbox", { name: channelWithoutModels.name }),
-    ).toHaveAttribute("aria-disabled", "true");
     await user.click(
-      screen.getByRole("combobox", {
-        name: `Channel selection for ${CHANNEL_GROUP.name}`,
+      await screen.findByRole("combobox", {
+        name: "Bulk-add channel group to tier 1",
       }),
     );
     await user.click(
       within(await screen.findByRole("listbox")).getByRole("option", {
-        name: "Selected channels",
+        name: CHANNEL_GROUP.name,
       }),
     );
+    await user.click(screen.getByRole("button", { name: "Save protocol" }));
 
-    expect(screen.getByRole("checkbox", { name: CHANNEL.name })).toBeChecked();
-    expect(
-      screen.getByRole("checkbox", { name: incompatibleChannel.name }),
-    ).not.toBeChecked();
-    expect(
-      screen.getByRole("checkbox", { name: incompatibleChannel.name }),
-    ).not.toHaveAttribute("aria-disabled");
-    expect(
-      screen.getByRole("checkbox", { name: channelWithoutModels.name }),
-    ).toHaveAttribute("aria-disabled", "true");
-    expect(
-      screen.getByRole("combobox", {
-        name: `Upstream model for channel ${CHANNEL.name}`,
-      }),
-    ).toHaveTextContent("wire-a");
+    await waitFor(() => expect(submitted).toBeDefined());
+    expect(submitted?.routing_tiers[0].candidates).toEqual([
+      {
+        channel_id: CHANNEL.id,
+        upstream_model: "wire-a",
+        weight: 100,
+      },
+      {
+        channel_id: secondChannel.id,
+        upstream_model: "wire-b",
+        weight: 100,
+      },
+    ]);
+    expect(JSON.stringify(submitted)).not.toContain("channel_group_id");
+    expect(JSON.stringify(submitted)).not.toContain(channelWithoutModels.id);
   });
 
-  it("selects and serializes the upstream model owned by a channel target", async () => {
+  it("serializes multiple upstream models for the same channel", async () => {
     seedAuthenticatedSession();
     const user = userEvent.setup();
-    const protocol: ModelProtocolRuleView = {
-      ...MODEL_PROTOCOL_RULE,
-      routing_tiers: [
-        {
-          priority: 0,
-          selection_strategy: "weighted_random",
-          channel_groups: [
-            {
-              channel_group_id: CHANNEL.channel_group_id,
-              channel_selection: "selected",
-              upstream_model: null,
-              default_weight: null,
-              channels: [
-                {
-                  channel_id: CHANNEL.id,
-                  upstream_model: "wire-a",
-                  weight: 100,
-                },
-              ],
-            },
-          ],
-        },
-      ],
-    };
+    const protocol = routeProtocol([
+      {
+        channel_id: CHANNEL.id,
+        upstream_model: "wire-a",
+        weight: 100,
+      },
+    ]);
     let submitted: ModelProtocolRuleInput | undefined;
     server.use(
       http.get("/console/v1/routing/channels", () =>
@@ -170,27 +164,38 @@ describe("ModelProtocolRuleDetailPage", () => {
           submitted = (await request.json()) as ModelProtocolRuleInput;
           return HttpResponse.json({
             id: protocol.id,
-            correlation_id: "77777777-0000-0000-0000-000000000000",
+            correlation_id: "77777777-0000-0000-0000-000000000001",
           });
         },
       ),
     );
     renderPage();
 
-    const modelSelect = await screen.findByRole("combobox", {
-      name: `Upstream model for channel ${CHANNEL.name}`,
-    });
-    await user.click(modelSelect);
-    const listbox = await screen.findByRole("listbox");
-    expect(within(listbox).queryByRole("textbox")).not.toBeInTheDocument();
-    await user.click(within(listbox).getByRole("option", { name: "wire-b" }));
+    await user.click(
+      await screen.findByRole("combobox", {
+        name: "Add channel to tier 1",
+      }),
+    );
+    await user.click(
+      within(await screen.findByRole("listbox")).getByRole("option", {
+        name: CHANNEL.name,
+      }),
+    );
     await user.click(screen.getByRole("button", { name: "Save protocol" }));
 
     await waitFor(() => expect(submitted).toBeDefined());
-    expect(
-      submitted?.routing_tiers[0].channel_groups[0].channels[0]
-        .upstream_model,
-    ).toBe("wire-b");
+    expect(submitted?.routing_tiers[0].candidates).toEqual([
+      {
+        channel_id: CHANNEL.id,
+        upstream_model: "wire-a",
+        weight: 100,
+      },
+      {
+        channel_id: CHANNEL.id,
+        upstream_model: "wire-b",
+        weight: 100,
+      },
+    ]);
   });
 
   it("keeps an empty protocol as a disabled draft", async () => {
@@ -200,9 +205,9 @@ describe("ModelProtocolRuleDetailPage", () => {
       routing_tiers: [],
       enabled: false,
       routing_status: "draft",
-      target_channel_count: 0,
-      model_capable_channel_count: 0,
-      active_channel_count: 0,
+      target_candidate_count: 0,
+      model_capable_candidate_count: 0,
+      active_candidate_count: 0,
     };
     let submitted: ModelProtocolRuleInput | undefined;
     server.use(
@@ -219,7 +224,7 @@ describe("ModelProtocolRuleDetailPage", () => {
           submitted = (await request.json()) as ModelProtocolRuleInput;
           return HttpResponse.json({
             id: draft.id,
-            correlation_id: "77777777-0000-0000-0000-000000000001",
+            correlation_id: "77777777-0000-0000-0000-000000000002",
           });
         },
       ),

@@ -38,7 +38,7 @@ describe("ModelRuleDetailPage", () => {
     expect(
       screen.getByRole("link", { name: "Open Chat Completions" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("1 priority tiers · 1/1 active targets"))
+    expect(screen.getByText("1 priority tiers · 1/1 active candidates"))
       .toBeInTheDocument();
   });
 

@@ -76,6 +76,12 @@ WHERE rule.client_model <> model.source_model_id;
 `request_logs.model_rule_id` 会保留。升级完成后，一个计价模型最多有一个顶层规则，顶层下可
 分别配置多个 API 格式协议。
 
+`0062_flat_model_route_candidates.sql` 是第三次路由 schema 停机硬切换。它在 migration 时把旧
+`selected` target 和旧 `all` target 当前组成员一次性展开为显式渠道/模型候选，然后删除
+`model_rule_routing_groups` 与 `model_rule_routing_channels`。空 `all` target 对应的空 tier 会
+被删除；规则不再有 tier 时会自动停用。应用该 migration 前同样必须停止所有旧 Gateway，不能
+新旧版本滚动混跑；升级后 Channel Group 成员变化不再自动改变已保存的模型路由。
+
 ### 紧急重置管理员密码
 
 Console 密码最少为 12 个字节；前端和后端都会拒绝更短的密码。若现有
@@ -196,7 +202,9 @@ multipart 字段返回 `400 request_body_field_unsupported`。当前只检查顶
 identity；整个过程不缓冲完整响应。未知上游 coding 返回
 `502 upstream_content_encoding_unsupported`；读取中才能发现的损坏压缩流会终止响应 body 并
 记录 `upstream_body_error`。连接失败、连接超时或等待响应头超时时，可以按系统设置在尚未尝试过
-的其他健康渠道上故障转移；一旦收到上游响应头或向客户端发送任何响应字节，绝不重试或切换渠道。
+的其他健康渠道/模型候选上故障转移；管理员也可以显式列出允许在转发响应前重试的 4xx/5xx
+上游状态码。未配置的 HTTP 状态直接转发；一旦向客户端发送响应头或任何响应字节，绝不重试或
+切换候选。
 
 Images generation/edit 是例外：请求一旦开始尝试上游，就不会自动切换渠道或重试，即使失败
 发生在响应头之前，以避免重复生成和重复计费。`stream: true` 返回
@@ -247,23 +255,26 @@ priority、selection strategy 和 routing weight 都在协议规则上配置，�
 Channel 或 Codex credential 的属性。每条已配置协议可包含多个非负 priority tier；较小数值
 优先，每个 tier 选择一种 `weighted_random` 或 `weighted_round_robin`。只有当前最低可用 tier
 参与选择，权重只比较该 tier 内通过格式、目标模型能力、operation capability、启用、授权和健康
-检查的渠道，不会跨 tier 抵消优先级。计费始终使用顶层绑定的价格模型；实际转发模型来自最终
-选中的 route target，重试到另一目标时可以随目标改变。
+检查的渠道/模型候选，不会跨 tier 抵消优先级。计费始终使用顶层绑定的价格模型；实际转发模型
+来自最终选中的候选。因此客户端计价模型 `deepseek` 可以路由到渠道声明、但没有单独价格记录的
+`m_1`、`m_2` 等 wire model。
 
-每个 tier 通过 Channel Group target 选择候选：
+每个 tier 直接保存显式的 `channel_id + upstream_model + weight` 候选：
 
-- `all`：target 必须从组内 Channel 的 `available_models` 并集中选择一个上游模型，并要求正数
-  默认权重。运行时只展开声明支持该模型的当前渠道；以后加入 group 且支持同一模型的渠道会自动
-  进入。Console 默认权重为 `100`，可为个别渠道设置仅权重覆盖。
-- `selected`：只包含显式列出的渠道，每条渠道分别从自己的 `available_models` 选择上游模型并
-  设置正数权重；Console 初始权重为 `100`。以后加入 group 的渠道不会自动进入该规则。
+- 同一 Channel 可在一个 tier 中分别以多个上游模型出现，也可跨多个 priority tier 重复。
+- 同一 tier 内完全相同的渠道/模型组合只能出现一次；每个组合独立参与加权。
+- Channel Group 只在 Console 中用于一次性批量选择当前成员。保存的路由只包含展开后的候选；
+  以后加入、移出或移动组成员不会自动改变既有规则。
+- Console 新候选默认权重为 `100`。直接重复选择同一 Channel 会添加其下一个尚未使用的
+  `available_models`；批量选择 Group 会为该 tier 中尚未出现的当前成员添加其首个可用模型，
+  此后可逐项修改模型和权重。
 
 Console 不提供自由输入上游模型；服务端也会在协议保存时校验模型能力。后续修改 Channel
 `available_models` 可以让既有规则变为 `disconnected`，但不会偷偷替换其目标模型。
 
 Channel Group 继续保存 API 格式、Connector、启用、请求压缩和状态统计等池级资源配置；Channel
 继续保存端点、上游鉴权、模型能力、Transform、网络、计费和健康配置。API Key Policy 与 Key
-自身的 `allowed_group_ids` / `allowed_channel_ids` 对普通目标的语义没有变化：规则 target
+自身的 `allowed_group_ids` / `allowed_channel_ids` 对普通目标的语义没有变化：规则 candidate
 只定义候选，不会扩大 Key 的授权范围。拼车席位另可给本人 Key 添加对应凭证的 canonical
 渠道 ID，不依赖 API Key Policy。
 
@@ -311,15 +322,14 @@ Codex 渠道组可开启整池同步的“仅拼车使用”模式；未绑定�
      在同一页面新增、编辑或删除代理，并把导入文件中的代理映射到现有代理。最终仍逐条调用
      服务端凭证验证与导入接口，因此失败条目可在保留其他草稿的情况下修正和重试。
 4. 创建或启用客户端计价 model，并在其顶层 model rule 下添加 Responses 协议。按需要建立
-   routing tiers；在 `all` target 中从该 group 的 Channel 能力选择 Codex model slug，让当前
-   和未来支持该 slug 的凭证 projection 使用规则默认权重；或用 `selected` 为每条凭证分别选择
-   slug 及权重。
+   routing tiers；可从该 Channel Group 一次性批量加入当前凭证 projection，也可逐条加入同一
+   渠道的不同 Codex model slug，并分别设置权重。以后新接入的凭证不会自动进入既有规则。
 5. Codex OAuth Responses managed channel 自动声明 standalone web search 能力。客户端若使用
    Codex 自定义 provider，还必须把 provider base URL 指向 Gateway 的 `/v1`，并设置
    `supports_standalone_web_search = true`。
 6. 如需图片生成或编辑，在同一或另一计价 model rule 下添加独立的
    `open_ai_images` 协议，为自动创建的 Images Channel Group 单独配置 routing tiers，并在
-   target 中选择 `gpt-image-2`，再显式启用该 group。Responses 的 routing assignment 不会
+   候选中选择 `gpt-image-2`，再显式启用该 group。Responses 的 routing assignment 不会
    同步到 Images。
 7. 确保调用方 API Key 允许所需格式、`proxy` 权限和对应格式的 Channel Group。服务不会自动把
    Images format、group 或 channel 加入现有 API Key、Policy 或规则。
@@ -332,7 +342,7 @@ Codex 渠道组可开启整池同步的“仅拼车使用”模式；未绑定�
 继续作为稳定的凭证 ID；Images 使用独立 Channel ID，因此两个格式的被动健康和日志不会混合。
 普通 Channel 详情、批量编辑和 model discovery 接口不能修改这些 channels；label、enable、
 proxy 和 quota threshold 必须在 Codex 凭证页维护。凭证和 managed channels 不保存 routing
-weight 或上游模型映射；两者只在引用它们的 Responses/Images 协议规则 target 上配置。
+weight 或上游模型映射；两者只在引用它们的 Responses/Images 协议规则候选上配置。
 每个凭证的 outbound proxy 独立生效，并由现有 reqwest client registry 按网络与超时策略复用。
 凭证 enable、quota 和 refresh 状态由两个 projection 共享的 Connector 运行时持有；底层 managed
 channels 保留为路由壳，使已绑定 Responses Session
@@ -362,7 +372,8 @@ OpenAI token revocation endpoint，若还需要使外部 Token 失效，应在�
 未加密备份处理。常规凭证列表和详情接口仍不会返回已保存 Token，只有管理员显式调用导出接口时
 才会读取这些敏感字段。高级导入会保留 Bundle 中的 enable 状态；如果 `id_token` 缺失，则验证
 阶段从 `access_token` 读取身份声明。旧原生或外部 JSON 中若带 `weight`，前端会忽略并显示
-warning，新凭证加入现有 `all` target 时使用对应 model rule 的默认权重。
+warning。新凭证不会自动加入现有模型规则；管理员必须在协议路由编辑器中显式或按组批量添加其
+projection 候选。
 
 高级导入页允许删除代理，但服务端要求 `If-Match`，并且只有当代理未被普通渠道或未完成的 Codex
 OAuth 流引用时才会删除；否则返回 `proxy_in_use`。已分配给导入草稿的代理还必须存在且已启用。
@@ -516,8 +527,8 @@ WS 请求自动转换或重放为 HTTP。其他客户端的自动回退取决于
 OpenAI 的增量 `previous_response_id` 缓存属于具体上游 WebSocket 连接，因此网关不会把同一条连接上的
 请求多路复用到多个上游连接。每个请求成功终止后，只有没有残留消息的上游连接才会立即归还进程内
 有界空闲池；同一条或重连后的下游 Session 会优先取回这个精确连接。池按 Gateway API Key、下游握手
-身份、渠道、目标 URL、代理/TLS 策略和最终上游请求 Header 精确隔离；不同下游 Session 不共享连接级
-上下文。
+身份、渠道/上游模型候选、目标 URL、代理/TLS 策略和最终上游请求 Header 精确隔离；不同下游
+Session 不共享连接级上下文。
 
 携带非空 `previous_response_id` 的请求必须命中承载该 Session 状态的精确上游连接。连接若已因
 空闲/总龄、容量、配置或凭证变化、进程重启或多实例漂移而丢失，Gateway 不会把增量请求发送到新连接，
@@ -705,7 +716,7 @@ workspace/member 身份、Token、代理、运行状态、错误或 reset-credit
 操作及普通资源复制仍位于对应的专用列表或详情页。
 
 模型规则列表每个计价模型只显示一行。`/admin/routing/model-rules/:id` 列出该模型的格式协议，
-缺失协议可创建为停用的空草稿；实际 priority、target、weight 与上游模型在
+缺失协议可创建为停用的空草稿；实际 priority、candidate、weight 与上游模型在
 `/admin/routing/model-rules/:id/protocols/:protocolId` 编辑。协议格式只在创建时选择，详情页不
 提供修改入口。离开有未保存修改的协议或其他资源详情页时仍会确认。
 
@@ -756,7 +767,7 @@ Codex 额度可见性和 Fast 过滤也立即按当前用户组生效。
 生命周期。
 
 渠道墓碑会擦除保存的上游 URL、凭据、Transform、proxy、超时、测试和模型能力配置；渠道组删除会
-对组内全部普通渠道执行相同处理。路由 target、空 selected group 和空 tier 会自动清理，失去最后一个 tier
+对组内全部普通渠道执行相同处理。对应路由候选和空 tier 会自动清理，失去最后一个 tier
 的协议规则自动停用。删除后可以用相同自然名称创建新 UUID；普通目录、详情、运行时和状态/定时
 测试不再显示墓碑，但历史请求日志与审计记录仍保留旧 UUID 的非敏感名称。完整语义见
 [控制面软删除](../development/soft-deletion.md)。
@@ -782,15 +793,15 @@ models.dev 导入都不会复活旧墓碑。请求日志继续保存旧模型 UU
 写入在 serializable 事务中再次确认 actor 仍为 active admin，校验完整候选快照、写入脱敏
 审计记录，并在提交后立即发布运行时快照。
 
-模型路由把结构错误与可用性下降分开处理。缺失目标和跨 API 格式引用会返回
-`routing_dependency_invalid`；非法/重复 priority、空 tier、`all` 缺少正数默认权重或
-`selected` 缺少显式正权重渠道等非法输入也会被拒绝。上述写入都会回滚；但管理员可以禁用最后一个活跃渠道，
+模型路由把结构错误与可用性下降分开处理。缺失候选和跨 API 格式引用会返回
+`routing_dependency_invalid`；非法/重复 priority、空 tier、同层重复渠道/模型组合、空模型或
+非正权重等非法输入也会被拒绝。上述写入都会回滚；但管理员可以禁用最后一个活跃渠道，
 也可以从目标渠道的 `available_models` 中移除规则使用的最后一个上游模型。Console 会在此类
 修改前列出受影响规则并要求确认，但不会阻止保存。模型规则详情使用以下状态：
 
-- `ready`：至少一个模型兼容渠道当前可选；
-- `temporarily_unavailable`：仍有模型兼容目标，但全部因渠道组、渠道或自动禁用而暂不可选；
-- `disconnected`：当前没有目标渠道声明支持该规则的上游模型；
+- `ready`：至少一个模型兼容候选当前可选；
+- `temporarily_unavailable`：仍有模型兼容候选，但全部因渠道组、渠道或自动禁用而暂不可选；
+- `disconnected`：当前没有候选渠道声明支持其配置的上游模型；
 - `disabled`：规则自身已禁用。
 
 `disconnected` 规则不出现在 `/v1/models`；已授权客户端仍直接请求该规则时会收到
@@ -897,8 +908,12 @@ API Key 和小时/天聚合粒度，不提供用户或渠道筛选，响应中�
 
 - `websocket.enabled`、`max_idle_connections`、`idle_timeout_seconds` 和
   `max_connection_age_seconds`：Responses WebSocket 总开关和进程级上游空闲池策略。
-- `request_retry.enabled`：是否启用响应头前故障转移，默认启用。
-- `request_retry.max_retries`：首次请求失败后的最大自动重试次数，范围 `1..=10`，默认 `1`。同一客户端请求不会重复尝试同一渠道。
+- `request_retry.enabled`：是否启用发送任何下游响应前的自动故障转移，默认启用。
+- `request_retry.max_retries`：首次请求失败后的最大自动重试次数，范围 `1..=10`，默认 `1`。
+  同一客户端请求不会重复尝试同一精确渠道/模型候选，但仍可尝试同一渠道上的其他模型。
+- `request_retry.retryable_status_codes`：可触发候选故障转移的上游 `400..=599` 状态码，最多
+  100 个且不能重复，默认空列表。配置状态重试会丢弃该次响应，可能让上游执行和计费重复；
+  Images、Codex Connector 和已发送的 Responses WebSocket 消息不使用该策略。
 - `automatic_disable.enabled`：自动禁用总开关。关闭时，即使渠道允许自动禁用也不会执行状态变更。
 - `automatic_disable.error_status_codes`：触发临时禁用的上游 HTTP 状态码列表。
 - `automatic_disable.error_message_keywords`：触发临时禁用的上游错误消息关键字；匹配大小写不敏感。自动禁用扫描器本身不保存正文；请求日志会为失败的非流式 HTTP、SSE 和 Responses WebSocket 请求保存最长 16KiB、已清理控制字符的文本或结构化错误详情。
@@ -926,16 +941,17 @@ provider-managed Codex Channel 也不能单独配置这两个字段；这些渠�
 ## Session 粘性
 
 `/console/v1/system/settings` 的 `session_affinity` 可以按请求 Header 或 JSON Pointer
-提取 Session Key，并优先复用该 Session 最后一次成功请求所使用的渠道。规则按配置顺序执行，
+提取 Session Key，并优先复用该 Session 最后一次成功请求所使用的渠道/模型候选。规则按配置顺序执行，
 第一个成功提取非空标量值的规则生效。
 
 - 缓存 Key 自动按规则、API Key 和模型规则隔离，原始 Session Key 只用于计算 SHA-256，
   不写入数据库、请求日志或审计详情。
 - 缓存有 TTL 和最大条目数，只存在于当前 Gateway 进程。
-- 命中的渠道仍须满足当前授权、模型候选、模型规则最低可用 priority tier 和被动健康状态，否则
+- 命中的候选仍须满足当前授权、模型能力、模型规则最低可用 priority tier 和被动健康状态，否则
   删除旧映射并执行普通选路。
 - 只有完整成功的 2xx 请求才写入或刷新映射；上游失败会删除本次命中的旧映射。
-- Session 粘性本身不增加尝试次数；如果全局请求故障转移已启用，失败的粘性渠道会从本次请求的候选中排除，并清除命中的旧映射。
+- Session 粘性本身不增加尝试次数；如果全局请求故障转移已启用，失败的精确渠道/模型候选会从
+  本次请求中排除，并清除命中的旧映射。
 - JSON 来源使用 RFC 6901 Pointer，例如 Responses 请求的 `/prompt_cache_key` 和
   standalone web search 请求的 `/id`。
 
@@ -949,7 +965,7 @@ provider-managed Codex Channel 也不能单独配置这两个字段；这些渠�
 ## 日志、用量与结算
 
 每次故障转移会产生 `proxy_request_retry` tracing 事件；每个客户端请求仍只产生一个终态 tracing
-事件和一条 `request_logs`，其中渠道、结果和计费快照对应最终尝试。worker 从三种格式的普通 JSON
+事件和一条 `request_logs`，其中渠道、上游模型、结果和计费快照对应最终尝试。worker 从三种格式的普通 JSON
 以及 Chat Completions/Responses 的 SSE 事件增量提取 usage，在选路时绑定价格快照，并在可结算时以 `billed_at` 条件幂等更新用户余额
 和 API Key 已用额度。usage 同时保留输入、缓存命中、缓存写入、输出总量，以及输出中包含的
 reasoning token。Chat Completions 的 `completion_tokens` 始终作为包含 reasoning 的输出总量保存；
@@ -992,7 +1008,8 @@ Console 列表与详情不显示用户、渠道或请求日志 ID。
   Images edit；公开 `/v1/images/edits` 不提供 JSON/data URL edit，也不提供图片流式响应、
   embeddings、audio、files、batches、assistants 或 fine-tuning API。
 - 所有余额、额度、模型价格和请求费用统一使用 USD；没有跨实例限流、健康状态或 Session
-  粘性协调。Chat Completions 与 Responses 的自动重试仅覆盖收到响应头前的连接失败、连接超时
-  和响应头超时，不覆盖 HTTP 错误、SSE 流中断或流空闲超时；Images generation/edit 不自动重试。
+  粘性协调。Chat Completions 与 Responses 的自动重试覆盖收到响应头前的连接失败、连接超时和
+  响应头超时；只有显式列入 `retryable_status_codes` 的 HTTP 错误可在下游响应前重试，SSE
+  流中断或流空闲超时不会重试；Images generation/edit 不自动重试。
   系统也没有独立财务账本、充值/退款或货币兑换。
 - 服务本身不终止 TLS；Console 必须部署在正确配置的 HTTPS 反向代理后。

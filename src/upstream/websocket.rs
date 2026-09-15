@@ -68,6 +68,7 @@ pub(crate) struct UpstreamWebSocketKey {
     api_key_id: Uuid,
     client_identity: WebSocketClientIdentity,
     channel_id: Uuid,
+    upstream_model: Arc<str>,
     connectivity_fingerprint: Arc<str>,
     outbound_network_policy_fingerprint: OutboundNetworkPolicyFingerprint,
     target: Arc<str>,
@@ -81,6 +82,7 @@ impl UpstreamWebSocketKey {
         api_key_id: Uuid,
         client_identity: WebSocketClientIdentity,
         channel: &CompiledChannel,
+        upstream_model: &str,
         target: &Url,
         headers: &HeaderMap,
         max_message_bytes: usize,
@@ -92,6 +94,7 @@ impl UpstreamWebSocketKey {
             api_key_id,
             client_identity,
             channel_id: channel.id(),
+            upstream_model: Arc::from(upstream_model),
             connectivity_fingerprint: Arc::clone(channel.connectivity_fingerprint()),
             outbound_network_policy_fingerprint: channel
                 .upstream_policy()
@@ -105,6 +108,11 @@ impl UpstreamWebSocketKey {
     #[must_use]
     pub(crate) fn channel_id(&self) -> Uuid {
         self.channel_id
+    }
+
+    #[must_use]
+    pub(crate) fn upstream_model(&self) -> &Arc<str> {
+        &self.upstream_model
     }
 }
 
@@ -458,11 +466,11 @@ impl UpstreamWebSocketPool {
         self.inner.discarded_total.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub(super) fn preferred_channel(
+    pub(super) fn preferred_candidate(
         &self,
         api_key_id: Uuid,
         client_identity: WebSocketClientIdentity,
-    ) -> Option<Uuid> {
+    ) -> Option<(Uuid, Arc<str>)> {
         let now = Instant::now();
         let mut state = self
             .inner
@@ -481,7 +489,7 @@ impl UpstreamWebSocketPool {
             .find(|entry| {
                 entry.key.api_key_id == api_key_id && entry.key.client_identity == client_identity
             })
-            .map(|entry| entry.key.channel_id)
+            .map(|entry| (entry.key.channel_id, Arc::clone(&entry.key.upstream_model)))
     }
 
     pub(super) fn reconcile(&self, snapshot: &CompiledRuntimeConfig) {

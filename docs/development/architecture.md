@@ -70,17 +70,17 @@ Browser or Console client
    多个格式唯一的协议规则。协议规则拥有按非负 `priority` 排序的 routing tier；数值越小越先
    尝试，每个 tier 独立选择 `weighted_random` 或 `weighted_round_robin`。停用的协议可以作为
    无 tier 的 `draft` 保存，启用协议必须至少有一个非空 tier。
-   tier 内的 group target 为 `all` 时，target 自己保存一个上游 wire model；编译器只展开该组
-   `available_models` 包含该模型的当前渠道，并应用正数默认权重及可选逐渠道权重覆盖。因此以后
-   加入该组且声明同一模型的渠道会在下次快照发布时自动进入规则。`selected` 则让每条显式渠道
-   分别保存其上游 wire model 和正数权重。Console 只能从目标渠道声明的 `available_models`
-   中选择这些模型，服务端在协议更新时再次验证。协议规则另存目标渠道位图和模型兼容位图；
-   后续渠道能力变化可使已发布规则进入断开状态。
+   每个 tier 直接保存显式 `(channel_id, upstream_model, weight)` 候选；同一渠道可在同层使用
+   不同模型，也可跨层重复，只有同一层内完全相同的渠道/模型组合不能重复。Channel Group 只在
+   Console 中作为批量选择当前成员的快捷方式，保存前即展开为候选；以后加入或移出该组的渠道
+   不会隐式改写既有规则。Console 只能从每条渠道声明的 `available_models` 中选择模型，服务端
+   在协议更新时再次验证。协议规则另存目标渠道位图和模型兼容位图；后续渠道能力变化可使已发布
+   规则进入断开状态。
 7. `accessible_routes` 通常按模型兼容渠道完成 O(1) 授权判断；只有规则全局没有任何模型兼容
    渠道时，才退回目标渠道位图，使原本已授权的断开规则仍可识别。随后使用渠道授权位图过滤
    实际模型兼容候选，并依次应用 operation capability、Session 粘性、规则中最低可用
-   `priority` tier 和被动健康过滤。权重只比较该 tier 内仍然合格的渠道，不跨 tier 比较；
-   API Key 的 group/channel 授权仍与此前相同，模型规则的 `all` target 不会扩大 Key 的授权
+   `priority` tier 和被动健康过滤。权重只比较该 tier 内仍然合格的渠道/模型候选，不跨 tier 比较；
+   API Key 的 group/channel 授权仍与此前相同，Console 的渠道组批量选择不会扩大 Key 的授权
    范围。HTTP 授权范围内没有可选候选时返回 `503 no_healthy_channel`；
    Responses WS 使用下文的 `426 websocket_unavailable` 回退提示。
    `/v1/models` 额外要求 API Key 范围与模型兼容位图相交，所以不公布断开规则。
@@ -207,7 +207,8 @@ Responses WebSocket 使用同一个 `/v1/responses` 路径的 `GET` Upgrade。�
 Images projection 永不声明，并且 Responses 仍受系统与用户开关限制。由于
 `previous_response_id` 的增量缓存属于具体上游连接，下游连接会固定到一个仍可用的上游渠道和
 WebSocket 身份，不做请求多路复用。每个成功请求结束后，上游连接立即回到按 API Key、Session
-握手身份、渠道网络配置、目标和最终 Header 精确隔离的有界空闲池；下一条消息优先取回同一连接。
+握手身份、渠道/上游模型候选、网络配置、目标和最终 Header 精确隔离的有界空闲池；下一条消息
+优先取回同一连接及候选。
 上游客户端使用与 Codex 相同的 SHA 固定 OpenAI Tungstenite fork，并主动协商
 `permessage-deflate`；未接受该扩展的上游仍使用未压缩消息。池只复用成功终态后的无残留连接。
 系统设置动态配置是否启用、最大空闲连接数、空闲超时和连接
@@ -235,16 +236,19 @@ Session affinity 不受影响。
 
 ## 重试与 Streaming 边界
 
-- 自动故障转移只覆盖收到响应头前的连接失败、建连超时和响应头超时。
+- 自动故障转移覆盖收到响应头前的连接失败、建连超时和响应头超时；管理员还可显式配置
+  `request_retry.retryable_status_codes`，在尚未向客户端发送响应时丢弃匹配的 4xx/5xx 响应并
+  选择下一候选。状态码列表默认为空，因为重放可能产生重复工作或费用。
 - Images generation/edit 不使用自动故障转移；上游尝试一旦开始即只返回该尝试结果。
 - Images generation/edit 在渠道没有显式响应头超时时使用独立的系统 Images 响应头超时；
   建连和流空闲超时仍与其他格式共享。
 - Standalone web search 在渠道没有显式响应头超时时使用独立的系统 Search 响应头超时；普通
-  Connector 仍可在响应头前故障转移，Codex Connector 发送后不重试。
+  Connector 仍可按传输失败和显式状态码策略故障转移，Codex Connector 发送后不重试。
 - Responses WebSocket 只在上游 Upgrade/建连完成前故障转移；`response.create`
   一旦发送就不再切换连接或渠道。
-- 每次后续尝试排除已经尝试过的渠道，并重新遵守授权、规则 tier、健康和 tier 内权重规则。
-- 上游返回任意 HTTP 响应头后，不再重试 HTTP 错误。
+- 每次后续尝试排除已经尝试过的精确渠道/模型候选，并重新遵守授权、规则 tier、健康和 tier
+  内权重；同一物理渠道上的其他模型仍可被选择。同一精确候选即使跨 tier 重复也不会再次尝试。
+- 未列入 `retryable_status_codes` 的 HTTP 响应直接转发，不触发故障转移。
 - 向客户端发送响应头或任何响应字节后，不得切换渠道。
 - SSE 变换按解码后的事件边界处理，不按压缩或网络 chunk 处理，也不缓冲完整流。
 - 客户端断开会释放上游响应体；流空闲超时只终止当前流，不再发起新尝试。
@@ -291,7 +295,7 @@ API Key 不受影响。临时密码登录只创建 `purpose = password_change` �
 路由快照为渠道和模型路由分配进程内 dense slot。每个协议规则 tier 保存自己的 priority、
 selection strategy 和连续的
 `CompiledCandidate(slot, channel, upstream_model, route_weight)` 数组；这里的
-模型与 weight 都来自协议规则 target，不是 Channel 的路由配置字段。计费快照始终来自顶层
+模型与 weight 都来自协议规则的显式候选，不是 Channel 的路由配置字段。计费快照始终来自顶层
 profile 绑定的价格模型，不随重试选中的上游 wire model 改变。相同授权范围
 的 API Key 共享
 `AuthorizationProfile`，其中包含允许渠道和预计算的可达路由位图。可达路由通常按模型兼容
@@ -302,13 +306,14 @@ profile 绑定的价格模型，不随重试选中的上游 wire model 改变。
 
 渠道健康、in-flight 和 half-open claim 使用渠道级原子状态；渠道状态注册表和平滑
 加权轮询游标分别按 64 个 shard 隔离。加权随机使用无分配两遍扫描，重试使用固定
-dense channel slot 数组，因此正常选择路径没有全局渠道状态锁，也不创建候选
+dense candidate slot 数组，因此正常选择路径没有全局渠道状态锁，也不创建候选
 `Vec`、`HashSet` 或 Session affinity `Box`。
 
 Channel Group 不再保存 priority 或 selection strategy，Channel 和 Codex credential 也不再保存
 routing weight。Group 继续承担格式、Connector、启用、请求压缩和状态统计等资源配置；Channel
 继续承担端点、鉴权、模型能力、变换、网络、计费和健康状态。路由层级与权重只由引用这些资源的
-模型 profile 下的协议规则拥有。
+模型 profile 下的协议规则拥有；Group 在路由编辑器中只用于一次性批量加入当前 Channel，不进入
+持久化路由或编译结果。
 
 ## 请求日志耐久链路
 

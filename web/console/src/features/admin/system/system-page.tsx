@@ -59,6 +59,15 @@ function parseStatusCodes(value: string): number[] {
     .map(Number);
 }
 
+function retryStatusCodesAreValid(value: string): boolean {
+  const codes = parseStatusCodes(value);
+  return (
+    codes.length <= 100 &&
+    codes.every((code) => Number.isInteger(code) && code >= 400 && code <= 599) &&
+    new Set(codes).size === codes.length
+  );
+}
+
 function isHttpsRepositoryUrl(value: string): boolean {
   try {
     const url = new URL(value);
@@ -145,6 +154,12 @@ const systemSettingsSchema = z
         .int()
         .min(1, "Maximum retries must be between 1 and 10.")
         .max(10, "Maximum retries must be between 1 and 10."),
+      retryable_status_codes: z
+        .string()
+        .refine(
+          retryStatusCodesAreValid,
+          "Enter at most 100 unique HTTP status codes from 400 through 599, separated by commas.",
+        ),
     }),
     passive_health: z.object({
       connection_failure_threshold: z
@@ -330,6 +345,7 @@ const defaultValues: SystemSettingsValues = {
   request_retry: {
     enabled: true,
     max_retries: 1,
+    retryable_status_codes: "",
   },
   passive_health: {
     connection_failure_threshold: 3,
@@ -390,7 +406,12 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
       form.reset({
         api_hosts: settings.data.data.api_hosts,
         upstream: settings.data.data.upstream,
-        request_retry: settings.data.data.request_retry,
+        request_retry: {
+          enabled: settings.data.data.request_retry.enabled,
+          max_retries: settings.data.data.request_retry.max_retries,
+          retryable_status_codes:
+            settings.data.data.request_retry.retryable_status_codes.join(", "),
+        },
         passive_health: settings.data.data.passive_health,
         automatic_disable: {
           enabled: settings.data.data.automatic_disable.enabled,
@@ -413,7 +434,13 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
       const input: SystemSettingsInput = {
         api_hosts: values.api_hosts,
         upstream: values.upstream,
-        request_retry: values.request_retry,
+        request_retry: {
+          enabled: values.request_retry.enabled,
+          max_retries: values.request_retry.max_retries,
+          retryable_status_codes: parseStatusCodes(
+            values.request_retry.retryable_status_codes,
+          ),
+        },
         passive_health: values.passive_health,
         automatic_disable: {
           enabled: values.automatic_disable.enabled,
@@ -773,7 +800,7 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
                 <CardTitle>{t("Request failover")}</CardTitle>
                 <CardDescription>
                   {t(
-                    "Before response headers arrive, connection failures, connect timeouts, and response-header timeouts can retry on distinct healthy channels. A timed-out upstream may still process the original request.",
+                    "Replayable requests can fail over after connection errors, response-header timeouts, or configured upstream status codes. A timed-out upstream may still process the original request.",
                   )}
                 </CardDescription>
               </CardHeader>
@@ -786,7 +813,7 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
                       </FieldLabel>
                       <FieldDescription>
                         {t(
-                          "Retries never reuse a channel already attempted by the same client request.",
+                          "Retries never reuse the same channel/model candidate. Another model on the same channel remains eligible.",
                         )}
                       </FieldDescription>
                     </FieldContent>
@@ -827,6 +854,41 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
                       <FieldError>
                         {errorMessage(
                           form.formState.errors.request_retry.max_retries.message,
+                        )}
+                      </FieldError>
+                    ) : null}
+                  </Field>
+                  <Field
+                    data-invalid={Boolean(
+                      form.formState.errors.request_retry
+                        ?.retryable_status_codes,
+                    )}
+                  >
+                    <FieldLabel htmlFor="request_retry_status_codes">
+                      {t("Retryable upstream status codes")}
+                    </FieldLabel>
+                    <Input
+                      id="request_retry_status_codes"
+                      placeholder="429, 502, 503, 504"
+                      aria-invalid={Boolean(
+                        form.formState.errors.request_retry
+                          ?.retryable_status_codes,
+                      )}
+                      {...form.register(
+                        "request_retry.retryable_status_codes",
+                      )}
+                    />
+                    <FieldDescription>
+                      {t(
+                        "Comma-separated 4xx/5xx responses to discard and retry before anything is sent to the client. Leave empty to retry transport failures only.",
+                      )}
+                    </FieldDescription>
+                    {form.formState.errors.request_retry
+                      ?.retryable_status_codes ? (
+                      <FieldError>
+                        {errorMessage(
+                          form.formState.errors.request_retry
+                            .retryable_status_codes.message,
                         )}
                       </FieldError>
                     ) : null}

@@ -90,10 +90,11 @@ assistants、fine-tuning 等其他 OpenAI 路径。
 - 已知长度至少 1KiB 的可压缩非 SSE 响应按客户端 `Accept-Encoding` 独立选择 gzip、deflate、
   Brotli、Zstandard 或 identity；长度未知的流保持立即转发并允许压缩。表示变化时移除失效的
   长度、range、ETag 和 digest 元数据。
-- 上游 HTTP 错误不会触发自动重试。
-- Chat Completions 与 Responses 的自动故障转移仅发生在响应头前的连接失败、建连超时或
-  响应头超时。普通 standalone web search 使用相同的 pre-header 故障转移边界；Codex OAuth
-  Connector 发送后不重试。Images generation/edit 一旦开始上游尝试就不自动重试或切换渠道。
+- 上游 HTTP 错误默认不重试。管理员可以显式配置 `400..=599` 状态码，在尚未向客户端发送响应时
+  丢弃匹配响应并选择未尝试的渠道/模型候选；该选项可能造成重复工作或费用。
+- Chat Completions 与 Responses 的自动故障转移覆盖响应头前的连接失败、建连超时和响应头超时，
+  以及上述显式状态码。普通 standalone web search 使用相同策略；Codex OAuth Connector 发送后
+  不重试。Images generation/edit 一旦开始上游尝试就不自动重试或切换候选。
 - 网关生成的本地错误使用 OpenAI 风格的 `{ "error": { ... } }` JSON 结构，但错误代码是本项目契约。
 
 Responses WebSocket 的上游事件以 JSON 文本消息透传；配置的 Responses SSE 事件规则会应用到
@@ -192,4 +193,4 @@ Standalone web search 是 `ApiOperation`，不是第四种 `ApiFormat`：它复�
 | `503` | `image_body_spool_unavailable` | edit 临时文件系统无法创建、写入或准备回放。 |
 | `504` | `connect_timeout` / `response_header_timeout` | 响应头前超时。 |
 
-上游已经返回的 HTTP 状态和 body 默认按上游内容传给客户端，不包装成本地错误。
+未列入状态重试策略的上游 HTTP 状态和 body 按上游内容传给客户端，不包装成本地错误。

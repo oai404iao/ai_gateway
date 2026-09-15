@@ -10,8 +10,6 @@ const zhCN: Record<string, string> = {
   "1. Pricing models": "1. 计价模型",
   "2. Channels": "2. 渠道",
   "3. Model rules": "3. 模型规则",
-  "A channel group can appear only once in a protocol.":
-    "同一渠道组在一个协议中只能出现一次。",
   "A client-visible model identifier with its USD billing price.":
     "客户端可见的模型标识及其美元计费价格。",
   "Add a priority tier before enabling this protocol.":
@@ -21,10 +19,10 @@ const zhCN: Record<string, string> = {
   "Add protocol": "添加协议",
   "Advertise the upstream model identifiers each channel supports.":
     "声明每条渠道支持的上游模型标识。",
-  "Attach a priced client model once, then configure its supported protocols and target-owned upstream models.":
-    "每个计价客户端模型只绑定一次，再配置其支持的协议和各目标拥有的上游模型。",
-  "Attach protocols to priced models, then configure priorities and target-owned upstream models.":
-    "为计价模型添加协议，再配置优先级和各目标拥有的上游模型。",
+  "Attach a priced client model once, then configure its protocols and explicit channel/model candidates.":
+    "每个计价客户端模型只绑定一次，再配置其协议和显式渠道/模型候选项。",
+  "Attach protocols to priced models, then configure priority tiers and explicit channel/model candidates.":
+    "为计价模型添加协议，再配置优先级层级和显式渠道/模型候选项。",
   "Back to model rule": "返回模型规则",
   "Back to pricing models": "返回计价模型",
   "Choose a model": "选择模型",
@@ -32,13 +30,11 @@ const zhCN: Record<string, string> = {
   "Choose an enabled priced model that does not already have a model rule. Protocols can be added afterwards.":
     "选择尚未创建模型规则的已启用计价模型，随后再添加协议。",
   "Choose an upstream model": "选择上游模型",
-  "Choose an upstream model and default weight for this group.":
-    "请为此渠道组选择上游模型和默认权重。",
   "Client model id": "客户端模型 ID",
   "Client-visible model identifiers and their USD prices. Prices carry an effective timestamp.":
     "客户端可见的模型标识及其美元价格；价格带有生效时间。",
-  "Configure ordered channel targets and choose the upstream model at the target that owns it.":
-    "配置有序渠道目标，并在拥有映射的目标上选择上游模型。",
+  "Configure ordered, independently weighted channel and upstream-model candidates.":
+    "配置有序且独立加权的渠道与上游模型候选项。",
   "Configure pricing models, protocol-aware routing rules, and channel supply in their dedicated views.":
     "分别在专用页面配置计价模型、协议路由规则和渠道供给。",
   "Copy pricing model": "复制计价模型",
@@ -179,6 +175,8 @@ const zhCN: Record<string, string> = {
   "Target channels": "目标渠道",
   "Model-capable channels": "支持模型的渠道",
   "Active channels": "当前可路由渠道",
+  "Model-capable candidates": "支持模型的候选项",
+  "Active candidates": "当前可路由候选项",
   "Unavailable channel group": "渠道组不可用",
   "Personal": "个人",
   "Administration": "管理",
@@ -264,15 +262,20 @@ const zhCN: Record<string, string> = {
     "仅当渠道未设置显式超时时使用。Images 和独立 Web Search 使用更长的响应头超时；所有响应头超时都必须大于连接超时。",
   "Stream idle timeout (seconds)": "流空闲超时（秒）",
   "Request failover": "请求故障转移",
-  "Before response headers arrive, connection failures, connect timeouts, and response-header timeouts can retry on distinct healthy channels. A timed-out upstream may still process the original request.":
-    "在响应头返回前，连接失败、连接超时和响应头超时可切换到其他健康渠道重试。发生超时的上游仍可能继续处理原请求。",
+  "Replayable requests can fail over after connection errors, response-header timeouts, or configured upstream status codes. A timed-out upstream may still process the original request.":
+    "可重放请求可在连接错误、响应头超时或命中配置的上游状态码后故障转移。发生超时的上游仍可能继续处理原请求。",
   "Enable automatic retry": "启用自动重试",
-  "Retries never reuse a channel already attempted by the same client request.":
-    "重试不会再次使用同一客户端请求已经尝试过的渠道。",
+  "Retries never reuse the same channel/model candidate. Another model on the same channel remains eligible.":
+    "重试不会再次使用同一渠道/模型候选项，但同一渠道上的其他模型仍可参与重试。",
   "Maximum retries": "最大重试次数",
   "Does not include the initial request. A value of 1 allows one automatic failover.":
     "不包含首次请求。设置为 1 表示允许一次自动故障转移。",
   "Maximum retries must be between 1 and 10.": "最大重试次数必须在 1 至 10 之间。",
+  "Retryable upstream status codes": "可重试的上游状态码",
+  "Comma-separated 4xx/5xx responses to discard and retry before anything is sent to the client. Leave empty to retry transport failures only.":
+    "以逗号分隔的 4xx/5xx 状态码；在向客户端发送任何内容前丢弃匹配响应并重试。留空则仅重试传输故障。",
+  "Enter at most 100 unique HTTP status codes from 400 through 599, separated by commas.":
+    "请输入最多 100 个不重复的 400 至 599 HTTP 状态码，并以逗号分隔。",
   "Passive health": "被动健康检查",
   "After the configured number of pre-header connection failures, a channel enters cooldown before one half-open probe is allowed.":
     "达到配置的响应头前连接失败次数后，渠道会进入冷却期，随后只允许一次半开探测。",
@@ -1084,59 +1087,52 @@ const zhCN: Record<string, string> = {
   "Model rule created": "模型规则已创建",
   "Routing status": "路由状态",
   "Protocol routing tiers": "协议路由层",
+  "Lower priority tiers are tried first. Every channel and upstream-model pair has its own weight.":
+    "优先尝试数值较低的路由层；每个渠道与上游模型组合都有独立权重。",
   "Lower priority tiers are tried first. Strategy and weights belong to this protocol rule, not to global channels or groups.":
     "优先尝试数值较低的优先级层。选择策略和权重属于此协议规则，而不是全局渠道或渠道组。",
   "Tier {number}": "路由层 {number}",
+  "{count} route candidates": "{count} 个路由候选项",
   "{count} channel groups": "{count} 个渠道组",
   "Remove tier {number}": "删除路由层 {number}",
   "Lower numbers are attempted first.": "优先尝试数值较低的层。",
   "Selection strategy for tier {number}": "路由层 {number} 的选择策略",
   "Weights are compared only among eligible channels in this tier.":
     "权重仅在此层内符合条件的渠道之间比较。",
-  "Add a format-compatible channel group": "添加格式兼容的渠道组",
-  "Add channel group to tier {number}": "向路由层 {number} 添加渠道组",
+  "Weights are compared only among eligible candidates in this tier.":
+    "权重仅在此层内符合条件的候选项之间比较。",
+  "Add a channel": "添加渠道",
+  "Add channel to tier {number}": "向路由层 {number} 添加渠道",
+  "Choose a channel": "选择渠道",
+  "All channel/model pairs are already used": "所有渠道/模型组合均已使用",
+  "Selecting the same channel again adds its next unused upstream model.":
+    "再次选择同一渠道会添加其下一个尚未使用的上游模型。",
+  "Bulk-add a channel group": "批量添加渠道组",
+  "Bulk-add channel group to tier {number}":
+    "向路由层 {number} 批量添加渠道组",
+  "No unused group channels": "渠道组中没有未使用的渠道模型",
+  "This expands current group members into explicit candidates. Future group changes do not alter the saved route.":
+    "这会把当前组成员展开为显式候选项；渠道组后续变化不会修改已保存路由。",
+  "Channel/model candidates": "渠道/模型候选项",
+  "A channel may appear more than once when each entry uses a different upstream model.":
+    "同一渠道可出现多次，但每项必须使用不同的上游模型。",
+  "Unknown channel": "未知渠道",
+  "Remove route candidate {name}": "删除路由候选项 {name}",
+  "Weight": "权重",
+  "Explicit candidate": "显式候选项",
+  "Add at least one channel/model candidate.":
+    "请至少添加一个渠道/模型候选项。",
+  "A channel and upstream-model pair can appear only once in a tier.":
+    "同一渠道与上游模型组合在一个路由层中只能出现一次。",
+  "Upstream model must be at most 300 characters.":
+    "上游模型最多 300 个字符。",
   "Choose a channel group": "选择渠道组",
-  "All compatible groups are already used": "所有兼容渠道组均已使用",
-  "Channels advertising the selected model use the default weight unless overridden.":
-    "除非单独覆盖，否则声明支持所选模型的渠道均使用默认权重。",
-  "Only explicitly selected channels are eligible.":
-    "只有显式选择的渠道才符合路由条件。",
-  "Remove channel group {name}": "删除渠道组 {name}",
-  "Channel selection": "渠道选择",
-  "Channel selection for {name}": "{name} 的渠道选择",
-  "Selected channels": "所选渠道",
-  "Default weight": "默认权重",
-  "Enable a channel below only to override this weight.":
-    "仅在需要覆盖此权重时启用下方渠道。",
-  "Per-channel overrides": "单渠道覆盖",
-  "Selected channels and weights": "所选渠道及权重",
-  "Unchecked model-capable channels inherit the default weight.":
-    "未勾选且支持该模型的渠道继承默认权重。",
-  "Select at least one channel and assign a positive weight.":
-    "请至少选择一个渠道并分配正权重。",
-  "This group has no channels.": "此渠道组没有渠道。",
-  "Weight for channel {name}": "渠道 {name} 的权重",
-  "{count} channel overrides": "{count} 个渠道覆盖",
+  "{tiers} priority tiers · {active}/{targets} active candidates":
+    "{tiers} 个优先级层级 · {active}/{targets} 个活跃候选项",
+  "{count} model-capable candidates": "{count} 个支持模型的候选项",
   "Tier priority {priority} · {strategy}":
     "路由层优先级 {priority} · {strategy}",
   "Add routing tier": "添加路由层",
-  "Channel weights must be whole numbers.": "渠道权重必须为整数。",
-  "Channel weights must be positive.": "渠道权重必须为正数。",
-  "Channel weights are too large.": "渠道权重过大。",
-  "Default weight must be positive.": "默认权重必须为正数。",
-  "Default weight must be a whole number.": "默认权重必须为整数。",
-  "Default weight is too large.": "默认权重过大。",
-  "All-channel routing requires a positive default weight.":
-    "全部渠道路由需要正的默认权重。",
-  "Selected-channel routing cannot have a default weight.":
-    "显式选择渠道时不能设置默认权重。",
-  "A channel can appear only once in a group target.":
-    "同一渠道在一个渠道组目标中只能出现一次。",
-  "Priority must be a whole number.": "优先级必须为整数。",
-  "Priority is too large.": "优先级过大。",
-  "Add at least one channel group to this tier.":
-    "请向此路由层添加至少一个渠道组。",
-  "Add at least one routing tier.": "请添加至少一个路由层。",
   "Tier priorities must be unique.": "路由层优先级必须唯一。",
   "Ready": "可路由",
   "Temporarily unavailable": "暂时不可用",
@@ -1503,8 +1499,8 @@ const zhCN: Record<string, string> = {
   "Channels to delete ({count})": "将删除的渠道（{count}）",
   "Protocol rules affected ({count})": "受影响的协议规则（{count}）",
   "will be disabled": "将被停用",
-  "Group targets removed: {count}": "将移除的渠道组目标：{count}",
-  "Channel routes removed: {count}": "将移除的渠道路由：{count}",
+  "Deleted parent groups: {count}": "将删除的所属渠道组：{count}",
+  "Channels removed from route: {count}": "将从路由中移除的渠道：{count}",
   "Tiers removed: {priorities}": "将移除的层级：{priorities}",
   "API keys to unbind ({count})": "将解绑的 API Key（{count}）",
   "API key policies to unbind ({count})":

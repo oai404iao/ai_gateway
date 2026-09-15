@@ -412,8 +412,11 @@ describe("ChannelDetailPage", () => {
         HttpResponse.json([
           {
             ...MODEL_RULE,
-            routing_status: "temporarily_unavailable",
-            active_channel_count: 0,
+            protocol_rules: MODEL_RULE.protocol_rules.map((protocol) => ({
+              ...protocol,
+              routing_status: "temporarily_unavailable" as const,
+              active_candidate_count: 0,
+            })),
           },
         ]),
       ),

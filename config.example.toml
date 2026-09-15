@@ -67,13 +67,17 @@ standalone_web_search_response_header_timeout_seconds = 300
 stream_idle_timeout_seconds = 90
 
 [request_retry]
-# Bootstrap values for pre-header request failover. They are inserted only
-# when the forwarding_policy row is first created; later edits are made in the
-# Console. Retries always select a distinct, not-yet-attempted healthy channel.
+# Bootstrap values for request failover before any downstream response bytes.
+# They are inserted only when the forwarding_policy row is first created;
+# later edits are made in the Console. Retries select an untried channel/model
+# candidate.
 enabled = true
 # Automatic retries after the initial request. A value of 1 permits one
 # automatic failover. The supported range is 1 through 10.
 max_retries = 1
+# Explicit upstream HTTP 4xx/5xx statuses eligible for failover. This is empty
+# by default because replay can duplicate provider work or charges.
+retryable_status_codes = []
 
 [runtime_config]
 # Console mutations publish immediately in the local process. This periodic

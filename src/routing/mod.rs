@@ -117,7 +117,8 @@ struct RuntimeInner {
     entropy: Arc<dyn Entropy>,
     channel_states: [RwLock<HashMap<ChannelIdentity, Arc<ChannelState>>>; CHANNEL_STATE_SHARDS],
     active_channels: RwLock<Option<HashSet<ChannelIdentity>>>,
-    round_robin: [Mutex<HashMap<RoundRobinKey, HashMap<Uuid, i64>>>; ROUND_ROBIN_SHARDS],
+    round_robin:
+        [Mutex<HashMap<RoundRobinKey, HashMap<RouteCandidateIdentity, i64>>>; ROUND_ROBIN_SHARDS],
     affinity: Mutex<AffinityState>,
 }
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -324,9 +325,29 @@ struct AffinityCacheKey {
     session_hash: [u8; 32],
 }
 
-#[derive(Clone, Copy, Debug)]
-struct AffinityEntry {
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct RouteCandidateIdentity {
     channel_id: Uuid,
+    upstream_model: Arc<str>,
+}
+
+impl RouteCandidateIdentity {
+    fn from_candidate(candidate: &crate::domain::CompiledCandidate) -> Self {
+        Self {
+            channel_id: candidate.channel().id(),
+            upstream_model: Arc::clone(candidate.upstream_model()),
+        }
+    }
+
+    fn matches(&self, candidate: &crate::domain::CompiledCandidate) -> bool {
+        self.channel_id == candidate.channel().id()
+            && self.upstream_model.as_ref() == candidate.upstream_model().as_ref()
+    }
+}
+
+#[derive(Clone, Debug)]
+struct AffinityEntry {
+    candidate: RouteCandidateIdentity,
     expires_at: Duration,
     generation: u64,
 }
@@ -345,13 +366,13 @@ struct PreparedAffinity {
     key: AffinityCacheKey,
     rule_name: Arc<str>,
     ttl: Duration,
-    preferred_channel_id: Option<Uuid>,
+    preferred_candidate: Option<RouteCandidateIdentity>,
 }
 
 struct AffinityBinding {
     key: AffinityCacheKey,
     ttl: Duration,
-    channel_id: Uuid,
+    candidate: RouteCandidateIdentity,
     cache_hit: bool,
 }
 
@@ -661,7 +682,7 @@ impl RoutingRuntime {
         model: &str,
         preferred_channel_id: Uuid,
         affinity: Option<SessionAffinityMatch>,
-        excluded_channel_slots: &[usize],
+        excluded_candidate_slots: &[usize],
     ) -> Option<SelectedRoute> {
         self.select_preferred_channel_with_capability(
             snapshot,
@@ -669,8 +690,9 @@ impl RoutingRuntime {
             format,
             model,
             preferred_channel_id,
+            None,
             affinity,
-            excluded_channel_slots,
+            excluded_candidate_slots,
             ChannelCapability::Any,
         )
     }
@@ -687,7 +709,7 @@ impl RoutingRuntime {
         model: &str,
         preferred_channel_id: Uuid,
         affinity: Option<SessionAffinityMatch>,
-        excluded_channel_slots: &[usize],
+        excluded_candidate_slots: &[usize],
     ) -> Option<SelectedRoute> {
         self.select_preferred_channel_with_capability(
             snapshot,
@@ -695,8 +717,35 @@ impl RoutingRuntime {
             format,
             model,
             preferred_channel_id,
+            None,
             affinity,
-            excluded_channel_slots,
+            excluded_candidate_slots,
+            ChannelCapability::ResponsesWebSocket,
+        )
+    }
+
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn select_preferred_websocket_candidate(
+        &self,
+        snapshot: &CompiledRuntimeConfig,
+        key: &CompiledApiKey,
+        format: ApiFormat,
+        model: &str,
+        preferred_channel_id: Uuid,
+        preferred_upstream_model: &str,
+        affinity: Option<SessionAffinityMatch>,
+        excluded_candidate_slots: &[usize],
+    ) -> Option<SelectedRoute> {
+        self.select_preferred_channel_with_capability(
+            snapshot,
+            key,
+            format,
+            model,
+            preferred_channel_id,
+            Some(preferred_upstream_model),
+            affinity,
+            excluded_candidate_slots,
             ChannelCapability::ResponsesWebSocket,
         )
     }
@@ -709,8 +758,9 @@ impl RoutingRuntime {
         format: ApiFormat,
         model: &str,
         preferred_channel_id: Uuid,
+        preferred_upstream_model: Option<&str>,
         affinity: Option<SessionAffinityMatch>,
-        excluded_channel_slots: &[usize],
+        excluded_candidate_slots: &[usize],
         capability: ChannelCapability,
     ) -> Option<SelectedRoute> {
         let rule = snapshot.model_rule(format, model)?;
@@ -724,7 +774,7 @@ impl RoutingRuntime {
             let channel = candidate.channel();
             capability.permits(channel)
                 && key.permits_route_candidate(channel_slot)
-                && !excluded_channel_slots.contains(&channel_slot)
+                && !excluded_candidate_slots.contains(&candidate.candidate_slot())
                 && usable(&self.inner, &ChannelIdentity::from_channel(channel), now)
         };
         let mut preferred = None;
@@ -732,25 +782,49 @@ impl RoutingRuntime {
             if !tier.candidates().iter().any(&eligible) {
                 continue;
             }
-            preferred = tier.candidates().iter().find(|candidate| {
-                candidate.channel().id() == preferred_channel_id && eligible(candidate)
-            });
+            preferred = affinity
+                .as_ref()
+                .and_then(|affinity| affinity.preferred_candidate.as_ref())
+                .and_then(|identity| {
+                    tier.candidates()
+                        .iter()
+                        .find(|candidate| identity.matches(candidate) && eligible(candidate))
+                });
+            if preferred.is_none() {
+                preferred = if let Some(upstream_model) = preferred_upstream_model {
+                    tier.candidates().iter().find(|candidate| {
+                        candidate.channel().id() == preferred_channel_id
+                            && candidate.upstream_model().as_ref() == upstream_model
+                            && eligible(candidate)
+                    })
+                } else {
+                    let mut candidates = tier.candidates().iter().filter(|candidate| {
+                        candidate.channel().id() == preferred_channel_id && eligible(candidate)
+                    });
+                    candidates.next().filter(|_| candidates.next().is_none())
+                };
+            }
             break;
         }
         let candidate = preferred?;
+        let candidate_slot = candidate.candidate_slot();
         let channel_slot = candidate.channel_slot();
         let channel = Arc::clone(candidate.channel());
         let upstream_model = Arc::clone(candidate.upstream_model());
+        let candidate_identity = RouteCandidateIdentity {
+            channel_id: channel.id(),
+            upstream_model: Arc::clone(&upstream_model),
+        };
         let identity = ChannelIdentity::from_channel(&channel);
         let (channel_state, half_open_claim) = try_acquire_channel(&self.inner, &identity, now)?;
         let cache_hit = affinity
             .as_ref()
-            .and_then(|affinity| affinity.preferred_channel_id)
-            == Some(channel.id());
+            .and_then(|affinity| affinity.preferred_candidate.as_ref())
+            == Some(&candidate_identity);
         let affinity_binding = affinity.as_ref().map(|affinity| AffinityBinding {
             key: affinity.key,
             ttl: affinity.ttl,
-            channel_id: channel.id(),
+            candidate: candidate_identity.clone(),
             cache_hit,
         });
         let affinity_selection = affinity.as_ref().map(|affinity| SessionAffinitySelection {
@@ -758,15 +832,17 @@ impl RoutingRuntime {
             cache_hit,
         });
         if let Some(affinity) = &affinity
-            && let Some(stale_channel_id) = affinity
-                .preferred_channel_id
-                .filter(|channel_id| *channel_id != channel.id())
+            && let Some(stale_candidate) = affinity
+                .preferred_candidate
+                .as_ref()
+                .filter(|candidate| *candidate != &candidate_identity)
         {
-            affinity_remove_if_channel(&self.inner, affinity.key, stale_channel_id);
+            affinity_remove_if_candidate(&self.inner, affinity.key, stale_candidate);
         }
         Some(SelectedRoute {
             rule,
             channel,
+            candidate_slot,
             channel_slot,
             upstream_model,
             session_affinity: affinity_selection,
@@ -781,10 +857,10 @@ impl RoutingRuntime {
         })
     }
 
-    /// Selects a route while excluding channels already attempted by the same
-    /// client request. Exclusions are applied after authorization and before
-    /// priority/weight selection, so failover exhausts each priority tier
-    /// without retrying a channel twice.
+    /// Selects a route while excluding channel/model candidates already
+    /// attempted by the same client request. Exclusions are applied after
+    /// authorization and before priority/weight selection, so another model on
+    /// the same physical channel remains eligible.
     #[must_use]
     pub fn select_with_affinity_excluding(
         &self,
@@ -793,7 +869,7 @@ impl RoutingRuntime {
         format: ApiFormat,
         model: &str,
         affinity: Option<SessionAffinityMatch>,
-        excluded_channel_slots: &[usize],
+        excluded_candidate_slots: &[usize],
     ) -> SelectionResult {
         self.select_with_affinity_excluding_capability(
             snapshot,
@@ -801,7 +877,7 @@ impl RoutingRuntime {
             format,
             model,
             affinity,
-            excluded_channel_slots,
+            excluded_candidate_slots,
             ChannelCapability::Any,
         )
     }
@@ -814,7 +890,7 @@ impl RoutingRuntime {
         operation: ApiOperation,
         model: &str,
         affinity: Option<SessionAffinityMatch>,
-        excluded_channel_slots: &[usize],
+        excluded_candidate_slots: &[usize],
     ) -> SelectionResult {
         self.select_with_affinity_excluding_capability(
             snapshot,
@@ -822,13 +898,13 @@ impl RoutingRuntime {
             operation.api_format(),
             model,
             affinity,
-            excluded_channel_slots,
+            excluded_candidate_slots,
             ChannelCapability::for_operation(operation),
         )
     }
 
-    /// WebSocket-specific weighted selection that excludes channels which do
-    /// not explicitly advertise Responses WebSocket support.
+    /// WebSocket-specific weighted selection that excludes candidates whose
+    /// channels do not explicitly advertise Responses WebSocket support.
     #[must_use]
     pub fn select_websocket_with_affinity_excluding(
         &self,
@@ -837,7 +913,7 @@ impl RoutingRuntime {
         format: ApiFormat,
         model: &str,
         affinity: Option<SessionAffinityMatch>,
-        excluded_channel_slots: &[usize],
+        excluded_candidate_slots: &[usize],
     ) -> SelectionResult {
         self.select_with_affinity_excluding_capability(
             snapshot,
@@ -845,7 +921,7 @@ impl RoutingRuntime {
             format,
             model,
             affinity,
-            excluded_channel_slots,
+            excluded_candidate_slots,
             ChannelCapability::ResponsesWebSocket,
         )
     }
@@ -883,7 +959,7 @@ impl RoutingRuntime {
         format: ApiFormat,
         model: &str,
         affinity: Option<SessionAffinityMatch>,
-        excluded_channel_slots: &[usize],
+        excluded_candidate_slots: &[usize],
         capability: ChannelCapability,
     ) -> SelectionResult {
         let Some(rule) = snapshot.model_rule(format, model) else {
@@ -897,20 +973,21 @@ impl RoutingRuntime {
         for tier in rule.tiers() {
             let mut allow_affinity = true;
             loop {
-                let (channel, cache_hit) = {
-                    let affinity_channel = allow_affinity
+                let (candidate, cache_hit) = {
+                    let affinity_candidate = allow_affinity
                         .then(|| {
                             affinity
                                 .as_ref()
-                                .and_then(|affinity| affinity.preferred_channel_id)
+                                .and_then(|affinity| affinity.preferred_candidate.as_ref())
                                 .and_then(|preferred| {
                                     tier.candidates().iter().find_map(|candidate| {
-                                        let slot = candidate.channel_slot();
+                                        let channel_slot = candidate.channel_slot();
                                         let channel = candidate.channel();
-                                        (channel.id() == preferred
+                                        (preferred.matches(candidate)
                                             && capability.permits(channel)
-                                            && key.permits_route_candidate(slot)
-                                            && !excluded_channel_slots.contains(&slot)
+                                            && key.permits_route_candidate(channel_slot)
+                                            && !excluded_candidate_slots
+                                                .contains(&candidate.candidate_slot())
                                             && usable(
                                                 &self.inner,
                                                 &ChannelIdentity::from_channel(channel),
@@ -918,7 +995,8 @@ impl RoutingRuntime {
                                             ))
                                         .then(|| {
                                             (
-                                                slot,
+                                                candidate.candidate_slot(),
+                                                channel_slot,
                                                 Arc::clone(channel),
                                                 Arc::clone(candidate.upstream_model()),
                                             )
@@ -927,12 +1005,12 @@ impl RoutingRuntime {
                                 })
                         })
                         .flatten();
-                    let cache_hit = affinity_channel.is_some();
-                    let channel = affinity_channel.or_else(|| match tier.strategy() {
+                    let cache_hit = affinity_candidate.is_some();
+                    let candidate = affinity_candidate.or_else(|| match tier.strategy() {
                         SelectionStrategy::WeightedRandom => weighted_ticket(
                             tier,
                             key,
-                            excluded_channel_slots,
+                            excluded_candidate_slots,
                             &self.inner,
                             now,
                             &*self.inner.entropy,
@@ -952,8 +1030,8 @@ impl RoutingRuntime {
                                 .filter(|candidate| {
                                     capability.permits(candidate.channel())
                                         && key.permits_route_candidate(candidate.channel_slot())
-                                        && !excluded_channel_slots
-                                            .contains(&candidate.channel_slot())
+                                        && !excluded_candidate_slots
+                                            .contains(&candidate.candidate_slot())
                                 })
                                 .all(|candidate| {
                                     channel_is_active(
@@ -970,7 +1048,7 @@ impl RoutingRuntime {
                                     shard.entry(round_robin_key).or_default(),
                                     tier,
                                     key,
-                                    excluded_channel_slots,
+                                    excluded_candidate_slots,
                                     &self.inner,
                                     now,
                                     capability,
@@ -983,7 +1061,7 @@ impl RoutingRuntime {
                                     &mut HashMap::new(),
                                     tier,
                                     key,
-                                    excluded_channel_slots,
+                                    excluded_candidate_slots,
                                     &self.inner,
                                     now,
                                     capability,
@@ -991,10 +1069,15 @@ impl RoutingRuntime {
                             }
                         }
                     });
-                    (channel, cache_hit)
+                    (candidate, cache_hit)
                 };
-                let Some((channel_slot, channel, upstream_model)) = channel else {
+                let Some((candidate_slot, channel_slot, channel, upstream_model)) = candidate
+                else {
                     break;
+                };
+                let candidate_identity = RouteCandidateIdentity {
+                    channel_id: channel.id(),
+                    upstream_model: Arc::clone(&upstream_model),
                 };
                 let identity = ChannelIdentity::from_channel(&channel);
                 let Some((channel_state, half_open_claim)) =
@@ -1008,7 +1091,7 @@ impl RoutingRuntime {
                 let affinity_binding = affinity.as_ref().map(|affinity| AffinityBinding {
                     key: affinity.key,
                     ttl: affinity.ttl,
-                    channel_id: channel.id(),
+                    candidate: candidate_identity.clone(),
                     cache_hit,
                 });
                 let affinity_selection =
@@ -1018,11 +1101,12 @@ impl RoutingRuntime {
                     });
                 let stale_affinity = affinity
                     .as_ref()
-                    .and_then(|affinity| affinity.preferred_channel_id)
+                    .and_then(|affinity| affinity.preferred_candidate.as_ref())
                     .filter(|_| !cache_hit);
                 let selected = SelectedRoute {
                     rule,
                     channel,
+                    candidate_slot,
                     channel_slot,
                     upstream_model,
                     session_affinity: affinity_selection,
@@ -1035,16 +1119,16 @@ impl RoutingRuntime {
                         released: false,
                     },
                 };
-                if let (Some(affinity), Some(channel_id)) = (&affinity, stale_affinity) {
-                    affinity_remove_if_channel(&self.inner, affinity.key, channel_id);
+                if let (Some(affinity), Some(candidate)) = (&affinity, stale_affinity) {
+                    affinity_remove_if_candidate(&self.inner, affinity.key, candidate);
                 }
                 return SelectionResult::Selected(selected);
             }
         }
         if let Some(affinity) = &affinity
-            && let Some(channel_id) = affinity.preferred_channel_id
+            && let Some(candidate) = affinity.preferred_candidate.as_ref()
         {
-            affinity_remove_if_channel(&self.inner, affinity.key, channel_id);
+            affinity_remove_if_candidate(&self.inner, affinity.key, candidate);
         }
         SelectionResult::NoHealthyChannel { rule }
     }
@@ -1064,7 +1148,7 @@ fn prepare_affinity(
             session_hash: affinity.session_hash,
         };
         PreparedAffinity {
-            preferred_channel_id: affinity_lookup(inner, cache_key),
+            preferred_candidate: affinity_lookup(inner, cache_key),
             key: cache_key,
             rule_name: affinity.rule_name,
             ttl: affinity.ttl,
@@ -1103,7 +1187,7 @@ fn reconcile_affinity(inner: &RuntimeInner, snapshot: &CompiledRuntimeConfig) {
     trim_affinity_state(&mut state);
 }
 
-fn affinity_lookup(inner: &RuntimeInner, key: AffinityCacheKey) -> Option<Uuid> {
+fn affinity_lookup(inner: &RuntimeInner, key: AffinityCacheKey) -> Option<RouteCandidateIdentity> {
     let now = inner.clock.now();
     let mut state = inner
         .affinity
@@ -1112,12 +1196,12 @@ fn affinity_lookup(inner: &RuntimeInner, key: AffinityCacheKey) -> Option<Uuid> 
     if !state.enabled || !state.active_rules.contains_key(&key.rule_fingerprint) {
         return None;
     }
-    let entry = state.entries.get(&key).copied()?;
+    let entry = state.entries.get(&key).cloned()?;
     if entry.expires_at <= now {
         state.entries.remove(&key);
         return None;
     }
-    Some(entry.channel_id)
+    Some(entry.candidate)
 }
 
 fn affinity_store(inner: &RuntimeInner, binding: &AffinityBinding) {
@@ -1139,7 +1223,7 @@ fn affinity_store(inner: &RuntimeInner, binding: &AffinityBinding) {
     state.entries.insert(
         binding.key,
         AffinityEntry {
-            channel_id: binding.channel_id,
+            candidate: binding.candidate.clone(),
             expires_at: now + binding.ttl,
             generation,
         },
@@ -1149,10 +1233,10 @@ fn affinity_store(inner: &RuntimeInner, binding: &AffinityBinding) {
     compact_affinity_recency(&mut state);
 }
 
-fn affinity_remove_if_channel(
+fn affinity_remove_if_candidate(
     inner: &RuntimeInner,
     key: AffinityCacheKey,
-    expected_channel_id: Uuid,
+    expected_candidate: &RouteCandidateIdentity,
 ) {
     let mut state = inner
         .affinity
@@ -1161,7 +1245,7 @@ fn affinity_remove_if_channel(
     if state
         .entries
         .get(&key)
-        .is_some_and(|entry| entry.channel_id == expected_channel_id)
+        .is_some_and(|entry| entry.candidate == *expected_candidate)
     {
         state.entries.remove(&key);
     }
@@ -1315,23 +1399,24 @@ fn usable(inner: &RuntimeInner, identity: &ChannelIdentity, now: Duration) -> bo
 fn weighted_ticket(
     tier: &CompiledRouteTier,
     key: &CompiledApiKey,
-    excluded_channel_slots: &[usize],
+    excluded_candidate_slots: &[usize],
     inner: &RuntimeInner,
     now: Duration,
     entropy: &dyn Entropy,
     capability: ChannelCapability,
-) -> Option<(usize, Arc<CompiledChannel>, Arc<str>)> {
-    let eligible = |slot: usize, channel: &CompiledChannel| {
+) -> Option<(usize, usize, Arc<CompiledChannel>, Arc<str>)> {
+    let eligible = |candidate: &crate::domain::CompiledCandidate| {
+        let channel = candidate.channel();
         capability.permits(channel)
-            && key.permits_route_candidate(slot)
-            && !excluded_channel_slots.contains(&slot)
+            && key.permits_route_candidate(candidate.channel_slot())
+            && !excluded_candidate_slots.contains(&candidate.candidate_slot())
             && usable(inner, &ChannelIdentity::from_channel(channel), now)
     };
     loop {
         let total = tier
             .candidates()
             .iter()
-            .filter(|candidate| eligible(candidate.channel_slot(), candidate.channel()))
+            .filter(|candidate| eligible(candidate))
             .map(|candidate| u64::from(candidate.weight()))
             .sum::<u64>();
         if total == 0 {
@@ -1350,13 +1435,14 @@ fn weighted_ticket(
         for candidate in tier.candidates() {
             let slot = candidate.channel_slot();
             let channel = candidate.channel();
-            if !eligible(slot, channel) {
+            if !eligible(candidate) {
                 continue;
             }
             let weight = u64::from(candidate.weight());
             observed_total += weight;
             if selected.is_none() && remaining < weight {
                 selected = Some((
+                    candidate.candidate_slot(),
                     slot,
                     Arc::clone(channel),
                     Arc::clone(candidate.upstream_model()),
@@ -1375,44 +1461,53 @@ fn weighted_ticket(
 }
 
 fn smooth_round_robin(
-    current: &mut HashMap<Uuid, i64>,
+    current: &mut HashMap<RouteCandidateIdentity, i64>,
     tier: &CompiledRouteTier,
     key: &CompiledApiKey,
-    excluded_channel_slots: &[usize],
+    excluded_candidate_slots: &[usize],
     inner: &RuntimeInner,
     now: Duration,
     capability: ChannelCapability,
-) -> Option<(usize, Arc<CompiledChannel>, Arc<str>)> {
+) -> Option<(usize, usize, Arc<CompiledChannel>, Arc<str>)> {
     let mut total = 0_i64;
-    let mut winner = None::<(usize, Arc<CompiledChannel>, Arc<str>, i64)>;
+    let mut winner = None::<(usize, usize, Arc<CompiledChannel>, Arc<str>, i64)>;
     for candidate in tier.candidates() {
-        let slot = candidate.channel_slot();
+        let channel_slot = candidate.channel_slot();
+        let candidate_slot = candidate.candidate_slot();
         let channel = candidate.channel();
         if !capability.permits(channel)
-            || !key.permits_route_candidate(slot)
-            || excluded_channel_slots.contains(&slot)
+            || !key.permits_route_candidate(channel_slot)
+            || excluded_candidate_slots.contains(&candidate_slot)
             || !usable(inner, &ChannelIdentity::from_channel(channel), now)
         {
             continue;
         }
         total += i64::from(candidate.weight());
-        let value = current.entry(channel.id()).or_insert(0);
+        let candidate_identity = RouteCandidateIdentity::from_candidate(candidate);
+        let value = current.entry(candidate_identity).or_insert(0);
         *value += i64::from(candidate.weight());
         if winner
             .as_ref()
-            .is_none_or(|(_, _, _, winner_value)| *value > *winner_value)
+            .is_none_or(|(_, _, _, _, winner_value)| *value > *winner_value)
         {
             winner = Some((
-                slot,
+                candidate_slot,
+                channel_slot,
                 Arc::clone(channel),
                 Arc::clone(candidate.upstream_model()),
                 *value,
             ));
         }
     }
-    let (slot, winner, upstream_model, _) = winner?;
-    *current.get_mut(&winner.id()).expect("winner exists") -= total;
-    Some((slot, winner, upstream_model))
+    let (candidate_slot, channel_slot, winner, upstream_model, _) = winner?;
+    let winner_identity = RouteCandidateIdentity {
+        channel_id: winner.id(),
+        upstream_model: Arc::clone(&upstream_model),
+    };
+    *current
+        .get_mut(&winner_identity)
+        .expect("winner candidate exists") -= total;
+    Some((candidate_slot, channel_slot, winner, upstream_model))
 }
 
 #[allow(clippy::large_enum_variant)] // keep successful selection free of request-level boxing
@@ -1434,6 +1529,7 @@ impl SelectionResult {
 pub struct SelectedRoute {
     pub rule: Arc<CompiledModelRule>,
     pub channel: Arc<CompiledChannel>,
+    pub candidate_slot: usize,
     pub channel_slot: usize,
     pub upstream_model: Arc<str>,
     pub session_affinity: Option<SessionAffinitySelection>,
@@ -1461,7 +1557,7 @@ impl ChannelLease {
         if let Some(affinity) = self.affinity.as_ref()
             && affinity.cache_hit
         {
-            affinity_remove_if_channel(&self.inner, affinity.key, affinity.channel_id);
+            affinity_remove_if_candidate(&self.inner, affinity.key, &affinity.candidate);
         }
     }
 
@@ -1557,8 +1653,8 @@ mod tests {
             SystemRuntimeSettings, UpstreamTimeoutDefaults,
         },
         persistence::{
-            ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ControlPlaneRecords,
-            ModelRuleChannelGroupTarget, ModelRuleRecord, ModelRuleRoutingTier, ProxyRecord,
+            ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ControlPlaneRecords, ModelRuleRecord,
+            ModelRuleRouteCandidate, ModelRuleRoutingTier, ProxyRecord,
         },
         runtime_config::{compile_control_plane, compile_control_plane_with_system_settings},
     };
@@ -1622,6 +1718,19 @@ mod tests {
         system_settings: SystemRuntimeSettings,
         format: ApiFormat,
     ) -> (CompiledRuntimeConfig, String) {
+        let (records, secret) = records_with_format(groups, weights, base_url, format);
+        (
+            compile_control_plane_with_system_settings(records, system_settings).unwrap(),
+            secret,
+        )
+    }
+
+    fn records_with_format(
+        groups: &[(i32, &str)],
+        weights: &[i32],
+        base_url: Option<&str>,
+        format: ApiFormat,
+    ) -> (ControlPlaneRecords, String) {
         assert_eq!(groups.len(), weights.len());
         let group_ids = (0..groups.len())
             .map(|index| Uuid::from_u128(index as u128 + 1))
@@ -1630,27 +1739,26 @@ mod tests {
             .map(|index| Uuid::from_u128(index as u128 + 100))
             .collect::<Vec<_>>();
         let secret = "routing-test-key".to_owned();
-        let mut routing_tiers = BTreeMap::<(i32, String), Vec<ModelRuleChannelGroupTarget>>::new();
-        for ((group_id, (priority, strategy)), weight) in group_ids.iter().zip(groups).zip(weights)
+        let mut routing_tiers = BTreeMap::<(i32, String), Vec<ModelRuleRouteCandidate>>::new();
+        for (((_group_id, channel_id), (priority, strategy)), weight) in
+            group_ids.iter().zip(&channel_ids).zip(groups).zip(weights)
         {
             routing_tiers
                 .entry((*priority, (*strategy).into()))
                 .or_default()
-                .push(ModelRuleChannelGroupTarget {
-                    channel_group_id: *group_id,
-                    channel_selection: "all".into(),
-                    upstream_model: Some("upstream".into()),
-                    default_weight: Some(*weight),
-                    channels: vec![],
+                .push(ModelRuleRouteCandidate {
+                    channel_id: *channel_id,
+                    upstream_model: "upstream".into(),
+                    weight: *weight,
                 });
         }
         let routing_tiers = routing_tiers
             .into_iter()
             .map(
-                |((priority, selection_strategy), channel_groups)| ModelRuleRoutingTier {
+                |((priority, selection_strategy), candidates)| ModelRuleRoutingTier {
                     priority,
                     selection_strategy,
-                    channel_groups,
+                    candidates,
                 },
             )
             .collect();
@@ -1741,10 +1849,7 @@ mod tests {
             proxies: vec![],
             templates: vec![],
         };
-        (
-            compile_control_plane_with_system_settings(records, system_settings).unwrap(),
-            secret,
-        )
+        (records, secret)
     }
 
     fn affinity_system_settings(fingerprint: [u8; 32], ttl: Duration) -> SystemRuntimeSettings {
@@ -1791,6 +1896,78 @@ mod tests {
             .iter()
             .map(|shard| shard.lock().unwrap().len())
             .sum()
+    }
+
+    fn same_channel_candidate_snapshot(
+        strategy: &str,
+        candidates: &[(&str, i32)],
+    ) -> (CompiledRuntimeConfig, String) {
+        let (mut records, secret) = records_with_format(
+            &[(0, strategy)],
+            &[1],
+            None,
+            ApiFormat::OpenAiChatCompletions,
+        );
+        let channel_id = records.channels[0].id;
+        records.channels[0].available_models = candidates
+            .iter()
+            .map(|(model, _)| (*model).to_owned())
+            .collect();
+        records.model_rules[0].routing_tiers[0].candidates = candidates
+            .iter()
+            .map(|(model, weight)| ModelRuleRouteCandidate {
+                channel_id,
+                upstream_model: (*model).to_owned(),
+                weight: *weight,
+            })
+            .collect();
+        (compile_control_plane(records).unwrap(), secret)
+    }
+
+    #[test]
+    fn round_robin_tracks_channel_model_candidates_independently() {
+        let (snapshot, secret) = same_channel_candidate_snapshot(
+            "weighted_round_robin",
+            &[("wire-a", 1), ("wire-b", 1)],
+        );
+        let runtime = RoutingRuntime::new(PassiveHealthPolicy::default());
+        let selected = (0..4)
+            .map(|_| {
+                select(&runtime, &snapshot, &secret)
+                    .upstream_model
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(selected, vec!["wire-a", "wire-b", "wire-a", "wire-b"]);
+    }
+
+    #[test]
+    fn retry_excludes_only_the_attempted_channel_model_candidate() {
+        let (snapshot, secret) =
+            same_channel_candidate_snapshot("weighted_random", &[("wire-a", 1), ("wire-b", 1)]);
+        let runtime = RoutingRuntime::with_seams(
+            PassiveHealthPolicy::default(),
+            Arc::new(TestClock(AtomicU64::new(0))),
+            Arc::new(Tickets(Mutex::new(VecDeque::from([0, 0])))),
+        );
+        let first = select(&runtime, &snapshot, &secret);
+        let first_channel = first.channel.id();
+        let first_slot = first.candidate_slot;
+        let first_model = first.upstream_model.to_string();
+        drop(first);
+        let key = snapshot.authenticate(&secret).unwrap();
+        let SelectionResult::Selected(second) = runtime.select_with_affinity_excluding(
+            &snapshot,
+            &key,
+            ApiFormat::OpenAiChatCompletions,
+            "model",
+            None,
+            &[first_slot],
+        ) else {
+            panic!("another model on the same channel must remain retryable");
+        };
+        assert_eq!(second.channel.id(), first_channel);
+        assert_ne!(second.upstream_model.as_ref(), first_model);
     }
 
     #[test]
@@ -1937,16 +2114,10 @@ mod tests {
                 routing_tiers: vec![ModelRuleRoutingTier {
                     priority: 0,
                     selection_strategy: "weighted_random".into(),
-                    channel_groups: vec![ModelRuleChannelGroupTarget {
-                        channel_group_id: group_id,
-                        channel_selection: "selected".into(),
-                        upstream_model: None,
-                        default_weight: None,
-                        channels: vec![crate::persistence::ModelRuleChannelWeight {
-                            channel_id,
-                            upstream_model: Some("upstream".into()),
-                            weight: 1,
-                        }],
+                    candidates: vec![ModelRuleRouteCandidate {
+                        channel_id,
+                        upstream_model: "upstream".into(),
+                        weight: 1,
                     }],
                 }],
                 enabled: true,
@@ -2332,6 +2503,62 @@ mod tests {
             selected,
             vec![ids[0], ids[1], ids[0], ids[0], ids[1], ids[0]]
         );
+    }
+
+    #[test]
+    fn round_robin_state_follows_candidate_identity_when_slots_shift() {
+        let (old_records, secret) = records_with_format(
+            &[(1, "weighted_round_robin"), (1, "weighted_round_robin")],
+            &[2, 1],
+            None,
+            ApiFormat::OpenAiChatCompletions,
+        );
+        let old = compile_control_plane(old_records).unwrap();
+        let (mut next_records, _) = records_with_format(
+            &[(1, "weighted_round_robin"), (1, "weighted_round_robin")],
+            &[2, 1],
+            None,
+            ApiFormat::OpenAiChatCompletions,
+        );
+        let first_channel_id = next_records.channels[0].id;
+        next_records.channels[0]
+            .available_models
+            .push("earlier-tier-model".into());
+        next_records.model_rules[0].routing_tiers.insert(
+            0,
+            ModelRuleRoutingTier {
+                priority: 0,
+                selection_strategy: "weighted_round_robin".into(),
+                candidates: vec![ModelRuleRouteCandidate {
+                    channel_id: first_channel_id,
+                    upstream_model: "earlier-tier-model".into(),
+                    weight: 1,
+                }],
+            },
+        );
+        let next = compile_control_plane(next_records).unwrap();
+        let runtime = RoutingRuntime::new(PassiveHealthPolicy::default());
+        runtime.reconcile(&next);
+
+        drop(select(&runtime, &old, &secret));
+
+        let next_rule = next
+            .model_rule(ApiFormat::OpenAiChatCompletions, "model")
+            .unwrap();
+        let earlier_candidate_slot = next_rule.tiers()[0].candidates()[0].candidate_slot();
+        let expected = next_rule.tiers()[1].channel_ids()[1];
+        let key = next.authenticate(&secret).unwrap();
+        let SelectionResult::Selected(selected) = runtime.select_with_affinity_excluding(
+            &next,
+            &key,
+            ApiFormat::OpenAiChatCompletions,
+            "model",
+            None,
+            &[earlier_candidate_slot],
+        ) else {
+            panic!("unchanged lower tier must remain selectable");
+        };
+        assert_eq!(selected.channel.id(), expected);
     }
 
     #[test]

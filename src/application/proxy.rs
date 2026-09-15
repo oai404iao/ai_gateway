@@ -436,14 +436,15 @@ impl ProxyService {
         let crate::routing::SelectedRoute {
             rule,
             channel,
-            channel_slot,
+            candidate_slot,
+            channel_slot: _,
             upstream_model,
             session_affinity: selected_session_affinity,
             lease,
         } = route;
         let current_rule = rule;
         let mut current_channel = channel;
-        let mut current_channel_slot = channel_slot;
+        let mut current_candidate_slot = candidate_slot;
         let mut current_upstream_model = upstream_model;
         let mut current_session_affinity = selected_session_affinity;
         let request_multiplier =
@@ -477,10 +478,10 @@ impl ProxyService {
         };
         let max_attempts = max_retries.saturating_add(1);
         let mut attempt = 1_u32;
-        let mut attempted_channel_slots = AttemptedChannelSlots::new();
+        let mut attempted_candidate_slots = AttemptedCandidateSlots::new();
 
         loop {
-            attempted_channel_slots.push(current_channel_slot);
+            attempted_candidate_slots.push(current_candidate_slot);
             let affinity_hit = current_session_affinity
                 .as_ref()
                 .is_some_and(SessionAffinitySelection::cache_hit);
@@ -518,7 +519,7 @@ impl ProxyService {
                         api_operation,
                         &parsed.model,
                         session_affinity.clone(),
-                        attempted_channel_slots.as_slice(),
+                        attempted_candidate_slots.as_slice(),
                     );
                     let SelectionResult::Selected(route) = retry_route else {
                         let error = ProxyError::connector_unavailable(error);
@@ -529,7 +530,8 @@ impl ProxyService {
                     let crate::routing::SelectedRoute {
                         rule,
                         channel,
-                        channel_slot,
+                        candidate_slot,
+                        channel_slot: _,
                         upstream_model,
                         session_affinity: selected_session_affinity,
                         lease,
@@ -549,7 +551,7 @@ impl ProxyService {
                         request_billing_multiplier,
                     );
                     current_channel = channel;
-                    current_channel_slot = channel_slot;
+                    current_candidate_slot = candidate_slot;
                     current_upstream_model = upstream_model;
                     current_session_affinity = selected_session_affinity;
                     continue;
@@ -755,7 +757,74 @@ impl ProxyService {
 
             let upstream_response = match send_result {
                 Ok(response) => {
+                    let status = response.status();
+                    prepared_attempt.observe_response(status);
                     completion.response_headers_received();
+                    let retry_route = (retry_settings.retries_status(status.as_u16())
+                        && prepared_attempt.allows_automatic_retry()
+                        && api_operation.permits_automatic_retry()
+                        && attempt < max_attempts)
+                        .then(|| {
+                            self.routing.select_operation_with_affinity_excluding(
+                                &snapshot,
+                                &api_key,
+                                api_operation,
+                                &parsed.model,
+                                session_affinity.clone(),
+                                attempted_candidate_slots.as_slice(),
+                            )
+                        });
+                    if let Some(SelectionResult::Selected(route)) = retry_route {
+                        completion.set_upstream_status(status.as_u16());
+                        let crate::routing::SelectedRoute {
+                            rule,
+                            channel,
+                            candidate_slot,
+                            channel_slot: _,
+                            upstream_model,
+                            session_affinity: selected_session_affinity,
+                            lease,
+                        } = route;
+                        let failed_channel_id = current_channel.id();
+                        let failed_upstream_model = Arc::clone(&current_upstream_model);
+                        let next_channel_id = channel.id();
+                        let next_upstream_model = Arc::clone(&upstream_model);
+                        let request_billing_multiplier = request_billing_multiplier_for_body(
+                            rule.advanced_billing(),
+                            &original_body,
+                        );
+                        drop(response);
+                        completion.retry_with_route(
+                            &rule,
+                            &channel,
+                            &upstream_model,
+                            lease,
+                            self.automatic_disable.clone(),
+                            snapshot.system_settings().automatic_disable().clone(),
+                            selected_session_affinity.as_ref(),
+                            request_billing_multiplier,
+                        );
+                        current_channel = channel;
+                        current_candidate_slot = candidate_slot;
+                        current_upstream_model = upstream_model;
+                        current_session_affinity = selected_session_affinity;
+                        attempt = attempt.saturating_add(1);
+                        tracing::warn!(
+                            event = "proxy_request_retry",
+                            api_key_id = %api_key.id(),
+                            client_model = %parsed.model,
+                            failed_channel_id = %failed_channel_id,
+                            failed_upstream_model = %failed_upstream_model,
+                            next_channel_id = %next_channel_id,
+                            next_upstream_model = %next_upstream_model,
+                            status = status.as_u16(),
+                            attempt,
+                            max_retries,
+                            reason = "configured_upstream_status",
+                            "retrying proxy request on another route candidate"
+                        );
+                        continue;
+                    }
                     response
                 }
                 Err(failure) => {
@@ -770,7 +839,7 @@ impl ProxyService {
                                 api_operation,
                                 &parsed.model,
                                 session_affinity.clone(),
-                                attempted_channel_slots.as_slice(),
+                                attempted_candidate_slots.as_slice(),
                             )
                         });
                     let Some(SelectionResult::Selected(route)) = retry_route else {
@@ -781,13 +850,16 @@ impl ProxyService {
                     let crate::routing::SelectedRoute {
                         rule,
                         channel,
-                        channel_slot,
+                        candidate_slot,
+                        channel_slot: _,
                         upstream_model,
                         session_affinity: selected_session_affinity,
                         lease,
                     } = route;
                     let failed_channel_id = current_channel.id();
+                    let failed_upstream_model = Arc::clone(&current_upstream_model);
                     let next_channel_id = channel.id();
+                    let next_upstream_model = Arc::clone(&upstream_model);
                     let request_billing_multiplier = request_billing_multiplier_for_body(
                         rule.advanced_billing(),
                         &original_body,
@@ -803,7 +875,7 @@ impl ProxyService {
                         request_billing_multiplier,
                     );
                     current_channel = channel;
-                    current_channel_slot = channel_slot;
+                    current_candidate_slot = candidate_slot;
                     current_upstream_model = upstream_model;
                     current_session_affinity = selected_session_affinity;
                     attempt = attempt.saturating_add(1);
@@ -812,18 +884,19 @@ impl ProxyService {
                         api_key_id = %api_key.id(),
                         client_model = %parsed.model,
                         failed_channel_id = %failed_channel_id,
+                        failed_upstream_model = %failed_upstream_model,
                         next_channel_id = %next_channel_id,
+                        next_upstream_model = %next_upstream_model,
                         attempt,
                         max_retries,
                         reason = failure.error_code(),
-                        "retrying proxy request on another channel"
+                        "retrying proxy request on another route candidate"
                     );
                     continue;
                 }
             };
 
             let connector_success_response_is_sse = prepared_attempt.successful_response_is_sse();
-            prepared_attempt.observe_response(upstream_response.status());
 
             return response_from_upstream(
                 upstream_response,
@@ -2366,36 +2439,36 @@ enum PreHeaderFailure {
     ResponseHeaderTimeout,
 }
 
-const INLINE_ATTEMPTED_CHANNELS: usize = MAX_REQUEST_RETRIES as usize + 1;
+const INLINE_ATTEMPTED_CANDIDATES: usize = MAX_REQUEST_RETRIES as usize + 1;
 
-struct AttemptedChannelSlots {
-    inline: [usize; INLINE_ATTEMPTED_CHANNELS],
+struct AttemptedCandidateSlots {
+    inline: [usize; INLINE_ATTEMPTED_CANDIDATES],
     len: usize,
     overflow: Option<Vec<usize>>,
 }
 
-impl AttemptedChannelSlots {
+impl AttemptedCandidateSlots {
     const fn new() -> Self {
         Self {
-            inline: [usize::MAX; INLINE_ATTEMPTED_CHANNELS],
+            inline: [usize::MAX; INLINE_ATTEMPTED_CANDIDATES],
             len: 0,
             overflow: None,
         }
     }
 
-    fn push(&mut self, channel_slot: usize) {
+    fn push(&mut self, candidate_slot: usize) {
         if let Some(slots) = &mut self.overflow {
-            slots.push(channel_slot);
+            slots.push(candidate_slot);
             return;
         }
         if self.len < self.inline.len() {
-            self.inline[self.len] = channel_slot;
+            self.inline[self.len] = candidate_slot;
             self.len += 1;
             return;
         }
         let mut slots = Vec::with_capacity(self.inline.len().saturating_mul(2));
         slots.extend_from_slice(&self.inline);
-        slots.push(channel_slot);
+        slots.push(candidate_slot);
         self.overflow = Some(slots);
     }
 
@@ -3107,7 +3180,7 @@ mod tests {
     use rust_decimal::Decimal;
 
     use super::{
-        AttemptedChannelSlots, PreparedRequestBody, forward_request_headers,
+        AttemptedCandidateSlots, PreparedRequestBody, forward_request_headers,
         forward_response_headers, match_session_affinity, parse_bearer_token, parse_request,
         response_error_body_is_textual, response_has_no_body,
     };
@@ -3230,8 +3303,8 @@ mod tests {
     }
 
     #[test]
-    fn attempted_channel_slots_spill_only_after_the_inline_retry_capacity() {
-        let mut slots = AttemptedChannelSlots::new();
+    fn attempted_candidate_slots_spill_only_after_the_inline_retry_capacity() {
+        let mut slots = AttemptedCandidateSlots::new();
         for slot in 0..20 {
             slots.push(slot);
         }

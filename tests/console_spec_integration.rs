@@ -413,31 +413,25 @@ async fn seed_test_protocol_rule(
     .execute(&mut *transaction)
     .await
     .unwrap();
-    sqlx::query(
-        "INSERT INTO model_rule_routing_groups \
-         (model_rule_id,api_format,priority,channel_group_id, \
-          channel_selection,upstream_model,default_weight) \
-         VALUES ( \
-             $1,'open_ai_chat_completions',0,$2,$3, \
-             CASE WHEN $3='all' THEN $4 ELSE NULL END, \
-             CASE WHEN $3='all' THEN 100 ELSE NULL END)",
-    )
-    .bind(rule_id)
-    .bind(channel_group_id)
-    .bind(channel_selection)
-    .bind(upstream_model)
-    .execute(&mut *transaction)
-    .await
-    .unwrap();
-    if channel_selection == "selected" {
+    let channel_ids = if channel_selection == "all" {
+        sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM channels \
+             WHERE channel_group_id=$1 AND deleted_at IS NULL ORDER BY id",
+        )
+        .bind(channel_group_id)
+        .fetch_all(&mut *transaction)
+        .await
+        .unwrap()
+    } else {
+        vec![channel_id]
+    };
+    for channel_id in channel_ids {
         sqlx::query(
-            "INSERT INTO model_rule_routing_channels \
-             (model_rule_id,api_format,channel_group_id,channel_id, \
-              upstream_model,weight) \
-             VALUES ($1,'open_ai_chat_completions',$2,$3,$4,100)",
+            "INSERT INTO model_rule_routing_candidates \
+             (model_rule_id,api_format,priority,channel_id,upstream_model,weight) \
+             VALUES ($1,'open_ai_chat_completions',0,$2,$3,100)",
         )
         .bind(rule_id)
-        .bind(channel_group_id)
         .bind(channel_id)
         .bind(upstream_model)
         .execute(&mut *transaction)
@@ -622,6 +616,13 @@ async fn system_settings_bootstrap_initializes_once_without_overwriting_database
     );
     assert!(stored.settings.request_retry.enabled);
     assert_eq!(stored.settings.request_retry.max_retries, 1);
+    assert!(
+        stored
+            .settings
+            .request_retry
+            .retryable_status_codes
+            .is_empty()
+    );
     assert_eq!(
         stored.settings.passive_health.connection_failure_threshold,
         3
@@ -4022,12 +4023,10 @@ async fn model_delete_hides_routing_clears_probes_and_preserves_history() {
             "routing_tiers": [{
                 "priority": 0,
                 "selection_strategy": "weighted_random",
-                "channel_groups": [{
-                    "channel_group_id": group_id,
-                    "channel_selection": "all",
+                "candidates": [{
+                    "channel_id": channel_id,
                     "upstream_model": "model-delete-wire",
-                    "default_weight": 100,
-                    "channels": []
+                    "weight": 100
                 }]
             }],
             "enabled": true
@@ -5182,6 +5181,7 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
     input["request_retry"] = serde_json::json!({
         "enabled": false,
         "max_retries": 4,
+        "retryable_status_codes": [429, 503],
     });
     input["passive_health"]["connection_failure_threshold"] = serde_json::json!(4);
     input["passive_health"]["cooldown_seconds"] = serde_json::json!(45);
@@ -5232,6 +5232,18 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
         "PUT",
         "/console/v1/system/settings",
         invalid_retry,
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let mut invalid_retry_status = input.clone();
+    invalid_retry_status["request_retry"]["retryable_status_codes"] = serde_json::json!([399]);
+    let invalid = request(
+        &app,
+        "PUT",
+        "/console/v1/system/settings",
+        invalid_retry_status,
         &[("if-match", &etag)],
     )
     .await;
@@ -5359,6 +5371,10 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
     );
     assert!(!published.request_retry().enabled());
     assert_eq!(published.request_retry().max_retries(), 4);
+    assert_eq!(
+        published.request_retry().retryable_status_codes(),
+        &[429, 503]
+    );
     assert_eq!(published.passive_health().connection_failure_threshold(), 4);
     assert!(published.automatic_disable().enabled());
     assert!(published.automatic_disable().matches_status(429));
@@ -5420,9 +5436,9 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
 }
 
 /// A parent model rule owns one priced client identity. Its protocol children
-/// have immutable formats and choose wire models from their target channels.
+/// have immutable formats and choose wire models from explicit candidates.
 #[tokio::test]
-async fn model_rule_hierarchy_separates_pricing_from_target_models() {
+async fn model_rule_hierarchy_separates_pricing_from_candidate_models() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
     let effective_at = chrono::Utc::now().to_rfc3339();
@@ -5472,7 +5488,7 @@ async fn model_rule_hierarchy_separates_pricing_from_target_models() {
             "base_url": "https://upstream.example.test",
             "enabled": true,
             "upstream_auth_kind": "none",
-            "available_models": ["spec-wire-model"],
+            "available_models": ["spec-wire-model", "spec-wire-fallback"],
         }),
         &[],
     )
@@ -5585,28 +5601,33 @@ async fn model_rule_hierarchy_separates_pricing_from_target_models() {
     assert_eq!(detail["enabled"], false);
     assert_eq!(detail["routing_tiers"], serde_json::json!([]));
 
-    let target = |upstream_model: &str| {
+    let route = |upstream_model: &str| {
         serde_json::json!({
-            "description": "Target-owned wire model",
-            "routing_tiers": [{
-                "priority": 3,
-                "selection_strategy": "weighted_round_robin",
-                "channel_groups": [{
-                    "channel_group_id": group_id,
-                    "channel_selection": "selected",
-                    "upstream_model": null,
-                    "default_weight": null,
-                    "channels": [{
+            "description": "Candidate-owned wire models",
+            "routing_tiers": [
+                {
+                    "priority": 0,
+                    "selection_strategy": "weighted_round_robin",
+                    "candidates": [{
                         "channel_id": channel_id,
                         "upstream_model": upstream_model,
                         "weight": 7
                     }]
-                }]
-            }],
+                },
+                {
+                    "priority": 3,
+                    "selection_strategy": "weighted_round_robin",
+                    "candidates": [{
+                        "channel_id": channel_id,
+                        "upstream_model": "spec-wire-fallback",
+                        "weight": 5
+                    }]
+                }
+            ],
             "enabled": true,
         })
     };
-    let mut format_mutation = target("spec-wire-model");
+    let mut format_mutation = route("spec-wire-model");
     format_mutation["api_format"] = serde_json::json!("open_ai_responses");
     let immutable_format = request(
         &app,
@@ -5618,7 +5639,7 @@ async fn model_rule_hierarchy_separates_pricing_from_target_models() {
     .await;
     assert_eq!(immutable_format.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
-    let mut missing_description = target("spec-wire-model");
+    let mut missing_description = route("spec-wire-model");
     missing_description
         .as_object_mut()
         .unwrap()
@@ -5636,8 +5657,8 @@ async fn model_rule_hierarchy_separates_pricing_from_target_models() {
         StatusCode::UNPROCESSABLE_ENTITY
     );
 
-    let mut missing_channel_model = target("spec-wire-model");
-    missing_channel_model["routing_tiers"][0]["channel_groups"][0]["channels"][0]
+    let mut missing_channel_model = route("spec-wire-model");
+    missing_channel_model["routing_tiers"][0]["candidates"][0]
         .as_object_mut()
         .unwrap()
         .remove("upstream_model");
@@ -5654,7 +5675,7 @@ async fn model_rule_hierarchy_separates_pricing_from_target_models() {
         StatusCode::UNPROCESSABLE_ENTITY
     );
 
-    let invalid_all = request(
+    let invalid_candidate = request(
         &app,
         "PUT",
         &protocol_path,
@@ -5663,12 +5684,10 @@ async fn model_rule_hierarchy_separates_pricing_from_target_models() {
             "routing_tiers": [{
                 "priority": 0,
                 "selection_strategy": "weighted_random",
-                "channel_groups": [{
-                    "channel_group_id": group_id,
-                    "channel_selection": "all",
+                "candidates": [{
+                    "channel_id": channel_id,
                     "upstream_model": "not-advertised",
-                    "default_weight": 100,
-                    "channels": []
+                    "weight": 100
                 }]
             }],
             "enabled": true
@@ -5676,9 +5695,9 @@ async fn model_rule_hierarchy_separates_pricing_from_target_models() {
         &[("if-match", &etag)],
     )
     .await;
-    assert_eq!(invalid_all.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(invalid_candidate.status(), StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(
-        body_json(invalid_all).await,
+        body_json(invalid_candidate).await,
         serde_json::json!({"error": "routing_dependency_invalid"})
     );
 
@@ -5686,7 +5705,7 @@ async fn model_rule_hierarchy_separates_pricing_from_target_models() {
         &app,
         "PUT",
         &protocol_path,
-        target("not-advertised"),
+        route("not-advertised"),
         &[("if-match", &etag)],
     )
     .await;
@@ -5696,7 +5715,7 @@ async fn model_rule_hierarchy_separates_pricing_from_target_models() {
         serde_json::json!({"error": "routing_dependency_invalid"})
     );
 
-    let updated_input = target("spec-wire-model");
+    let updated_input = route("spec-wire-model");
     let updated = request(
         &app,
         "PUT",
@@ -5710,9 +5729,9 @@ async fn model_rule_hierarchy_separates_pricing_from_target_models() {
     let current = body_json(current).await;
     assert_eq!(current["routing_status"], "ready");
     assert_eq!(current["routing_tiers"], updated_input["routing_tiers"]);
-    assert_eq!(current["target_channel_count"], 1);
-    assert_eq!(current["model_capable_channel_count"], 1);
-    assert_eq!(current["active_channel_count"], 1);
+    assert_eq!(current["target_candidate_count"], 2);
+    assert_eq!(current["model_capable_candidate_count"], 2);
+    assert_eq!(current["active_candidate_count"], 2);
 
     let stale = request(
         &app,
@@ -5824,6 +5843,8 @@ async fn channel_deletion_reconfirms_changed_impact_and_normalizes_dependencies(
     )
     .await;
     assert_eq!(fallback_channel.status(), StatusCode::CREATED);
+    let fallback_channel_id =
+        Uuid::parse_str(body_json(fallback_channel).await["id"].as_str().unwrap()).unwrap();
     let mut routing_transaction = database.pool.begin().await.unwrap();
     sqlx::query(
         "INSERT INTO model_rule_routing_tiers \
@@ -5835,14 +5856,12 @@ async fn channel_deletion_reconfirms_changed_impact_and_normalizes_dependencies(
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO model_rule_routing_groups \
-         (model_rule_id,api_format,priority,channel_group_id, \
-          channel_selection,upstream_model,default_weight) \
-         VALUES ($1,'open_ai_chat_completions',1,$2,'all', \
-                 'delete-fallback-wire',100)",
+        "INSERT INTO model_rule_routing_candidates \
+         (model_rule_id,api_format,priority,channel_id,upstream_model,weight) \
+         VALUES ($1,'open_ai_chat_completions',1,$2,'delete-fallback-wire',100)",
     )
     .bind(rule_id)
-    .bind(fallback_group_id)
+    .bind(fallback_channel_id)
     .execute(&mut *routing_transaction)
     .await
     .unwrap();

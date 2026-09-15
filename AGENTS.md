@@ -250,11 +250,13 @@ Axum HTTP
 - A priced `models.source_model_id` is the immutable client-model identity once attached to its
   sole `model_routing_profiles` row. Format-specific `model_rules` are protocol children, unique by
   `(model_routing_profile_id, api_format)`; disabled children may be empty drafts, while enabled
-  children require a nonempty routing graph. Protocol rules, targets, channel groups, and channels
-  must agree on `api_format`.
-- Upstream wire models belong to route targets, not the priced model or protocol parent. An `all`
-  group target owns one model and expands only member channels advertising it; a `selected` target
-  owns one advertised model per channel. Keep request billing on the profile's priced model while
+  children require a nonempty routing graph. Protocol rules, candidates, channel groups, and
+  channels must agree on `api_format`.
+- Upstream wire models belong to explicit weighted `(channel_id, upstream_model)` route
+  candidates, not the priced model or protocol parent. A channel may appear with different models
+  in one tier or across tiers; reject only an exact duplicate pair within one tier. Channel Groups
+  are Console bulk-selection conveniences that expand current members before save and never enter
+  the persisted or compiled route. Keep request billing on the profile's priced model while
   rewriting and logging the final selected candidate's upstream model.
 - Channel scheduled probes pair an upstream `test_model` with an independent
   `test_pricing_model_id`; both must be set or null. Do not infer probe pricing by matching the wire
@@ -303,7 +305,11 @@ Axum HTTP
   `codex_oauth_credential_channels` to separate Responses and Images managed channels. Preserve the
   legacy Responses channel/credential ID, share token/quota/proxy state, keep format health and
   authorization isolated, and never auto-enable the paired Images group or grant Images access.
-- Stream upstream responses instead of buffering them. Do not retry or switch channels after sending response headers or any response byte to the client.
+- Stream upstream responses instead of buffering them. Do not retry or switch candidates after
+  sending response headers or any response byte to the client. Ordinary Connectors may retry
+  pre-header transport failures and explicitly configured 4xx/5xx responses before downstream
+  dispatch; exclude the exact attempted channel/model candidate, not its whole physical channel.
+  Images and Codex requests remain non-retryable after upstream dispatch.
 - Responses WebSocket accepts `GET /v1/responses` upgrades only. Authenticate
   the upgrade, then treat each sequential `response.create` as its own
   admitted, routed, logged request; never multiplex concurrent Responses on
@@ -312,7 +318,7 @@ Axum HTTP
   upstream socket because incremental `previous_response_id` cache state is
   connection-local. Return only clean sockets to the session-isolated pool
   after a successful terminal event, key pool entries by API key, handshake
-  identity, channel, network policy, target, and final headers. A nonempty
+  identity, channel/model candidate, network policy, target, and final headers. A nonempty
   `previous_response_id` requires an exact pool hit; otherwise return
   `404 previous_response_not_found` without dispatch. Preserve
   `websocket_connection_limit_reached` and `previous_response_not_found` as

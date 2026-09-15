@@ -72,7 +72,7 @@ export function ModelSetupPage() {
           <SetupCard
             title={t("3. Model rules")}
             description={t(
-              "Attach protocols to priced models, then configure priorities and target-owned upstream models.",
+              "Attach protocols to priced models, then configure priority tiers and explicit channel/model candidates.",
             )}
             count={protocolCount}
             countLabel={t("protocol rules")}
