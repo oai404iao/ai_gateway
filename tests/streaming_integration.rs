@@ -572,6 +572,7 @@ async fn client_disconnect_drops_upstream_response_body_without_background_pump(
             }),
     )
     .await;
+    let logs = RecordingRequestLogSink::default();
     let gateway = start_server(http::router(proxy_service_with_documents(
         &format!("http://{}", upstream.address),
         5,
@@ -580,7 +581,7 @@ async fn client_disconnect_drops_upstream_response_body_without_background_pump(
         active_chat_sse_document(serde_json::json!([
             {"op": "add", "path": "/patched", "value": true}
         ])),
-        RecordingRequestLogSink::default(),
+        logs.clone(),
     )))
     .await;
 
@@ -609,6 +610,13 @@ async fn client_disconnect_drops_upstream_response_body_without_background_pump(
         .await
         .expect("dropping the client response did not release the upstream body")
         .unwrap();
+    let events = logs.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].outcome.as_str(), "cancelled");
+    assert_eq!(
+        events[0].billing.as_ref().unwrap().cost_amount,
+        Some(rust_decimal::Decimal::ZERO)
+    );
 }
 
 async fn split_crlf_sse() -> Response {
@@ -1079,6 +1087,10 @@ async fn event_patch_failure_after_headers_terminates_the_body_releases_upstream
     assert_eq!(
         events[0].response_status_code,
         Some(StatusCode::OK.as_u16())
+    );
+    assert_eq!(
+        events[0].billing.as_ref().unwrap().cost_amount,
+        Some(rust_decimal::Decimal::ZERO)
     );
 }
 

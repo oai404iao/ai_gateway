@@ -19,11 +19,11 @@ use ai_gateway::{
     models_dev::ModelsDevClient,
     observability,
     persistence::{
-        AuthRepository, ControlPlaneRepository, MIGRATOR, RequestLogRepository,
+        AuthRepository, ControlPlaneRepository, RequestLogRepository,
         SystemAutomaticDisableSettingsInput, SystemPassiveHealthSettingsInput,
         SystemRequestRetrySettingsInput, SystemScheduledTestingSettingsInput,
         SystemSessionAffinitySettingsInput, SystemSettingsInput, SystemUpstreamSettingsInput,
-        SystemWebSocketSettingsInput,
+        SystemWebSocketSettingsInput, run_migrations,
     },
     routing::{PassiveHealthPolicy, RoutingRuntime},
     runtime_config::{AppConfig, RuntimeConfig, compile_runtime_config},
@@ -87,7 +87,7 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
                 .application_name("ai-gateway-control-plane"),
         )
         .await?;
-    MIGRATOR.run(&pool).await?;
+    run_migrations(&pool).await?;
     let repository = ControlPlaneRepository::new(pool.clone());
     repository
         .ensure_system_settings(SystemSettingsInput {
@@ -347,7 +347,7 @@ async fn bootstrap_admin(
         .acquire_timeout(Duration::from_secs(config.database.connect_timeout_seconds))
         .connect_with(database_connect_options.application_name("ai-gateway-bootstrap"))
         .await?;
-    MIGRATOR.run(&pool).await?;
+    run_migrations(&pool).await?;
     let id = AuthRepository::new(pool)
         .bootstrap_admin(&email, &display_name, &password_hash)
         .await?;
@@ -366,7 +366,7 @@ async fn reset_admin_password(config_path: PathBuf, email: String) -> Result<(),
         .acquire_timeout(Duration::from_secs(config.database.connect_timeout_seconds))
         .connect_with(database_connect_options.application_name("ai-gateway-password-reset"))
         .await?;
-    MIGRATOR.run(&pool).await?;
+    run_migrations(&pool).await?;
     let reset = AuthRepository::new(pool)
         .reset_active_admin_password(&email, &password_hash)
         .await?;

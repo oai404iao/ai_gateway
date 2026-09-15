@@ -3,6 +3,7 @@
 mod auth;
 mod codex;
 mod codex_sharing;
+mod migrations;
 
 pub use auth::{
     AuthRepository, ConsoleProfile, ConsoleSession, ConsoleSessionState, InvitationCreated,
@@ -19,6 +20,7 @@ pub use codex::{
     CodexQuotaWindowPeriodView, CodexTokenRefreshUpdate, SelfCodexQuotaCredentialView,
     SelfCodexQuotaWindowHistory, SelfCodexQuotaWindowPeriodView,
 };
+pub use migrations::{MIGRATOR, MigrationRunError, run_migrations};
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -44,8 +46,6 @@ use crate::{
     },
     request_log_journal::EncodedRequestLog,
 };
-
-pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
 /// Singleton row that supplies database-backed process-wide runtime settings.
 pub const FORWARDING_SETTINGS_KEY: &str = "forwarding_policy";
@@ -4598,8 +4598,7 @@ impl RequestLogInsertBatch {
             .push(price.map(|price| price.cache_write_unit_price));
         self.output_unit_price
             .push(price.map(|price| price.output_unit_price));
-        self.cost_amount
-            .push(billing.and_then(|billing| billing.cost_amount));
+        self.cost_amount.push(event.effective_cost_amount());
         self.error_codes.push(event.error_code.clone());
         self.error_summaries.push(event.error_summary.clone());
         self.reasoning_efforts.push(event.reasoning_effort.clone());
@@ -4754,11 +4753,7 @@ impl StoredRequestLog {
                     .billing
                     .as_ref()
                     .map(|billing| billing.price.output_unit_price)
-            && self.cost_amount
-                == event
-                    .billing
-                    .as_ref()
-                    .and_then(|billing| billing.cost_amount)
+            && self.cost_amount == event.effective_cost_amount()
             && self.error_code == event.error_code
             && self.error_summary == event.error_summary
             && self.reasoning_effort == event.reasoning_effort

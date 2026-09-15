@@ -136,6 +136,19 @@ Channel 定时探测的 wire `test_model` 与 `test_pricing_model_id` 分离。
 旧 `test_model`，以及 Images/provider-managed Channel 上不再支持的定时测试配置，避免迁移后
 第一次快照编译才暴露不兼容数据。
 
+Gateway 在持有 SQLx 数据库 advisory lock 期间，把连续待执行 migration 放入同一个 PostgreSQL
+外层事务。任一步失败会回滚同批先前已经执行的 migration 及其 `_sqlx_migrations` 记录；
+更早批次或启动中已经提交的版本不会被追溯回滚。历史 `0034`、`0046` 使用
+`ALTER TYPE ... ADD VALUE`，PostgreSQL 要求提交新增枚举值后才能由后续 migration 引用，
+因此它们是仅有的既存事务提交屏障；`0053–0061` 属于同一原子批次。禁止新增
+`-- no-transaction` migration；新的提交屏障必须作为显式架构例外审查。
+
+### migration 0061 失败请求零费用
+
+`0061_zero_failed_and_cancelled_costs.sql` 把已有 `failed`/`cancelled` 请求费用统一为零。
+已经写入 `billed_at` 的旧正费用会按原日志用户和 API Key 聚合，退回用户余额并扣回 Key 已用额度；
+成功请求不变。没有价格快照的失败记录也可以用零费用完成幂等结算，供 Codex 拼车恢复旧 pending。
+
 ### 请求日志与结算
 
 ```text

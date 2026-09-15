@@ -25,7 +25,7 @@ use ai_gateway::{
     persistence::{
         AuthRepository, ControlPlaneRepository, DEFAULT_USER_GROUP_ID, MIGRATOR,
         RequestLogRepository, SystemPassiveHealthSettingsInput, SystemSettingsInput,
-        SystemUpstreamSettingsInput,
+        SystemUpstreamSettingsInput, run_migrations,
     },
     routing::{PassiveHealthPolicy, RoutingRuntime},
     runtime_config::{AuthConfig, ModelsSyncConfig, RuntimeConfig, compile_runtime_config},
@@ -164,7 +164,7 @@ async fn retired_adapter_migration_preserves_usage_and_removes_control_plane_sta
     .await
     .unwrap();
 
-    MIGRATOR.run(&database.pool).await.unwrap();
+    run_migrations(&database.pool).await.unwrap();
     let app = app(database.pool.clone()).await;
     let state: (bool, bool, bool) = sqlx::query_as(
         "SELECT to_regclass('mcp_servers') IS NULL, to_regtype('mcp_server_kind') IS NULL, \
@@ -7873,8 +7873,8 @@ async fn request_log_filters_match_the_console_contract() {
     ] {
         sqlx::query(
             "INSERT INTO request_logs \
-             (id,started_at,completed_at,user_id,api_key_id,api_format,api_operation,client_model,upstream_model,outcome,streamed,ttft_ms,total_duration_ms,output_tokens_per_second,reasoning_effort,fast_mode,input_tokens,cached_input_tokens,cache_write_tokens,output_tokens,reasoning_tokens,error_code,error_summary,peak_pricing) \
-             VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions','chat_completions',$5,$6,$7,false,100,1000,5.5556,'high',true,12,2,1,5,1,$8,$9,$10)",
+             (id,started_at,completed_at,user_id,api_key_id,api_format,api_operation,client_model,upstream_model,outcome,streamed,ttft_ms,total_duration_ms,output_tokens_per_second,reasoning_effort,fast_mode,input_tokens,cached_input_tokens,cache_write_tokens,output_tokens,reasoning_tokens,cost_amount,error_code,error_summary,peak_pricing) \
+             VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions','chat_completions',$5,$6,$7,false,100,1000,5.5556,'high',true,12,2,1,5,1,CASE WHEN $7='failed' THEN 0 ELSE NULL END,$8,$9,$10)",
         )
         .bind(id)
         .bind(now)
@@ -8167,7 +8167,7 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
             2_i64,
             1_i64,
             0_i64,
-            Some(rust_decimal::Decimal::new(5, 2)),
+            Some(rust_decimal::Decimal::ZERO),
         ),
         (
             "cancelled",
@@ -8178,7 +8178,7 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
             0_i64,
             0_i64,
             0_i64,
-            None,
+            Some(rust_decimal::Decimal::ZERO),
         ),
     ] {
         sqlx::query(
@@ -8303,7 +8303,7 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     let costs = body_json(costs).await;
     assert_eq!(costs["granularity"], "hour");
     assert_eq!(costs["summary"]["request_count"], 3);
-    assert_eq!(costs["summary"]["priced_request_count"], 2);
+    assert_eq!(costs["summary"]["priced_request_count"], 3);
     assert_eq!(costs["summary"]["total_tokens"], 160);
     assert_eq!(costs["summary"]["input_tokens"], 110);
     assert_eq!(costs["summary"]["cached_input_tokens"], 22);
@@ -8314,7 +8314,7 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
         .unwrap()
         .parse::<f64>()
         .unwrap();
-    assert!((amount - 0.30).abs() < f64::EPSILON);
+    assert!((amount - 0.25).abs() < f64::EPSILON);
     assert_eq!(costs["models"][0]["model"], "statistics-model");
     assert_eq!(costs["models"][0]["input_tokens"], 110);
     assert_eq!(costs["models"][0]["cached_input_tokens"], 22);
@@ -8741,7 +8741,7 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
         .unwrap()
         .parse::<f64>()
         .unwrap();
-    assert!((leaderboard_total - 1.30).abs() < f64::EPSILON);
+    assert!((leaderboard_total - 1.25).abs() < f64::EPSILON);
     let entries = leaderboard["entries"].as_array().unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["rank"], 1);

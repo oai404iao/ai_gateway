@@ -135,6 +135,15 @@ MCP 日志归入 `client`，保留用量与费用，并兼容旧 spool/ingress �
 4. 执行 `up -d --no-build`；Gateway 启动时自动运行 migration。
 5. 检查 `/health`、容器日志、spool/ingress/settlement backlog 和 Console。
 
+Gateway 会在数据库 migration advisory lock 下，将连续待执行 migration 放在同一个 PostgreSQL
+事务中；任一版本失败都会回滚同批已经执行的其他版本。历史 `0034`、`0046` 新增 PostgreSQL
+枚举值，因数据库要求先提交再引用而构成事务屏障；`0053–0061` 不含屏障，会整体提交或回滚。
+旧 Gateway 此前已经提交的 migration 不属于当前事务，仍需通过升级前备份恢复，不能靠切换旧
+二进制撤销。
+
+Migration `0061_zero_failed_and_cancelled_costs.sql` 会把历史失败/取消请求改为零费用，并退回
+此前已经结算的用户余额与 API Key 已用额度。升级前应保留余额、Key 额度和请求日志的一致备份。
+
 Migration `0017_remove_legacy_compatibility.sql` 会永久删除
 `api_keys.tokens_per_minute` 与 `channels.health_check` 的值；升级前备份必须可用。
 

@@ -319,6 +319,11 @@ Axum HTTP
   request within the configured grace period, then force-close any remainder.
 - Reuse reqwest clients keyed by proxy, TLS, and timeout policy. Do not create an HTTP client per request.
 - Compile database-backed control-plane configuration into immutable runtime snapshots; the data plane must not query the database on every request.
+- Run contiguous pending database migrations under one PostgreSQL transaction
+  while holding the migration advisory lock. Historical migrations 0034 and
+  0046 are required enum-value commit barriers; otherwise a failure must roll
+  back the entire pending batch. Do not add `-- no-transaction` migrations or
+  new commit barriers without an explicit architecture decision.
 
 ### Console API and embedded UI
 
@@ -447,6 +452,8 @@ reservations, UUID-idempotent settlement, fixed seats, complete provider
 window observations, and credential projection isolation together. Never
 reset money on page refresh, key rotation, rejoining, or restart, and never
 serve sharing requests through an unmetered operation.
+Failed and cancelled requests currently settle at zero even without usage;
+successful requests with unknown usage remain pending and fail closed.
 Apply sharing admission to the selected credential, not the entire user;
 ordinary authorized routes retain normal billing even when a car is paused or
 unavailable. `channel_groups.sharing_only` is Codex-only and synchronized across

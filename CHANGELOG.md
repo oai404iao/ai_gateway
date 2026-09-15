@@ -7,6 +7,16 @@ Versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- Apply contiguous database migrations pending at process startup in one
+  PostgreSQL transaction, so a later migration failure rolls back earlier
+  migrations in the same batch. Historical PostgreSQL enum-value commit
+  barriers remain the only required batch boundaries.
+- Make failed and cancelled requests cost zero even when partial usage was
+  observed. Migration 0061 normalizes historical logs, refunds already-settled
+  user/API-Key charges, and lets Codex sharing reconcile old zero-cost failures.
+
 ## [0.11.0] - 2026-09-14
 
 ### Added

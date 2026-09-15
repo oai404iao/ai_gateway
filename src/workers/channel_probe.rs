@@ -506,6 +506,7 @@ fn finished_probe(
         usage,
         total_duration_ms,
         ttft_ms,
+        outcome,
     );
     tracing::info!(
         event = "scheduled_channel_test_completed",
@@ -865,7 +866,10 @@ mod tests {
         assert_eq!(result.event.outcome, RequestLogOutcome::Failed);
         assert_eq!(result.event.response_status_code, Some(429));
         assert_eq!(result.event.model_id, Some(model_id));
-        assert!(result.event.billing.is_some());
+        assert_eq!(
+            result.event.billing.as_ref().unwrap().cost_amount,
+            Some(Decimal::ZERO)
+        );
         assert_eq!(
             result.event.error_code.as_deref(),
             Some("scheduled_test_http_error")

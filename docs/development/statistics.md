@@ -99,7 +99,8 @@ Console 的“统计”页面默认打开“个人使用情况”标签；贡献
 ## 花费统计定义
 
 - **请求数**：过滤区间内全部终态请求。
-- **已计价请求数**：`cost_amount IS NOT NULL` 的请求。
+- **已计价请求数**：`cost_amount IS NOT NULL` 的请求。失败和取消请求固定写入零费用，
+  因此也属于费用已确定的请求。
 - **总 Token**：`input_tokens + output_tokens`；缓存 Token 已包含在输入 Token 内，
   不重复相加。
 - **平均 RPM**：请求数 / 过滤区间分钟数。

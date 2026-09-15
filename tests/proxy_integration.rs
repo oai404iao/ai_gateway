@@ -2460,6 +2460,10 @@ async fn corrupt_upstream_content_coding_terminates_the_stream_and_fails_the_log
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].outcome.as_str(), "failed");
     assert_eq!(events[0].error_code.as_deref(), Some("upstream_body_error"));
+    assert_eq!(
+        events[0].billing.as_ref().unwrap().cost_amount,
+        Some(rust_decimal::Decimal::ZERO)
+    );
 }
 
 #[tokio::test]

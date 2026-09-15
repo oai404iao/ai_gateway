@@ -5,7 +5,8 @@ use rust_decimal::Decimal;
 use serde_json::Value;
 
 use crate::domain::{
-    CompiledAdvancedBilling, ModelPriceSnapshot, RequestBilling, RequestPriceSnapshot, RequestUsage,
+    CompiledAdvancedBilling, ModelPriceSnapshot, RequestBilling, RequestLogOutcome,
+    RequestPriceSnapshot, RequestUsage,
 };
 
 use super::usage::ResponseUsage;
@@ -63,6 +64,7 @@ pub(crate) fn request_billing(
     usage: Option<ResponseUsage>,
     total_duration_ms: i32,
     ttft_ms: Option<i32>,
+    outcome: RequestLogOutcome,
 ) -> RequestBilling {
     let usage = usage.map(|usage| RequestUsage {
         input_tokens: usage.input_tokens,
@@ -104,7 +106,11 @@ pub(crate) fn request_billing(
         cache_write_unit_price: effective_unit_price(cache_write_unit_price, billing_multiplier),
         output_unit_price: effective_unit_price(output_unit_price, billing_multiplier),
     };
-    let cost_amount = usage.as_ref().map(|usage| calculate_cost(usage, &price));
+    let cost_amount = if outcome.forces_zero_cost() {
+        Some(Decimal::ZERO)
+    } else {
+        usage.as_ref().map(|usage| calculate_cost(usage, &price))
+    };
     let output_tokens_per_second = usage.and_then(|usage| {
         let ttft_ms = ttft_ms?;
         (usage.output_tokens > 0).then(|| {
