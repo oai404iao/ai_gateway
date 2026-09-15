@@ -78,6 +78,9 @@ Migration `0012_request_log_ingest.sql` 创建 `request_log_ingest`：
 
 投影 Worker 按 sequence 读取入口记录，解码后复用批量 `UNNEST` 写入现有 `request_logs`。成功行从入口表删除；格式错误、约束冲突或暂时失败的行保留在入口表并延迟重试，不会阻塞后续正常记录。
 
+投影时统一把 `failed`/`cancelled` 事件的费用归一为 `0`，因此升级前遗留在本地 spool 或
+`request_log_ingest` 中的旧事件不会重新写入正费用或未知费用。成功事件仍要求 usage 才能得到费用。
+
 这使“日志已耐久接收”与“日志已可在 Console 查询”成为两个不同阶段。持续流量高于最终宽表能力时，入口 backlog 会增长，但请求路径不会因宽表索引写放大而同步等待。
 
 ## 独立结算
@@ -90,6 +93,7 @@ Migration `0012_request_log_ingest.sql` 创建 `request_log_ingest`：
 - 在提交后更新进程内 soft-quota 状态。
 
 数据库行是恢复来源，因此结算允许落后于日志投影。关闭时会在配置的 drain deadline 内继续结算；未完成记录由下次启动恢复。
+零费用失败/取消记录同样会取得一次 `billed_at`，但不会改变余额或额度。
 
 ## 实时面板与状态变化日志
 

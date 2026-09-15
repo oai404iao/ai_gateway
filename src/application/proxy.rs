@@ -2960,6 +2960,7 @@ impl CompletionGuard {
         let Some(context) = self.context.take() else {
             return;
         };
+        let log_outcome = outcome.log_outcome();
         if let Some(lease) = &mut self.lease {
             if matches!(outcome, RequestOutcome::Succeeded) {
                 lease.request_succeeded();
@@ -2992,6 +2993,7 @@ impl CompletionGuard {
             usage,
             total_duration_ms,
             billing_ttft_ms,
+            log_outcome,
         );
         if let Some(sharing) = self.sharing.take() {
             sharing.settle(billing.cost_amount);
@@ -3034,7 +3036,7 @@ impl CompletionGuard {
             channel_group_id: Some(context.channel_group_id),
             channel_id: Some(context.channel_id),
             model_id: Some(context.model_id),
-            outcome: outcome.log_outcome(),
+            outcome: log_outcome,
             response_status_code: context
                 .client_visible_status
                 .or(context.upstream_status)
@@ -3112,9 +3114,9 @@ mod tests {
         application::usage::ResponseUsage,
         domain::{
             AdvancedBilling, ApiFormat, ApiOperation, BillingWeekday, CompiledAdvancedBilling,
-            LongContextTier, ModelPriceSnapshot, RequestBillingMultiplier, RequestPriceSnapshot,
-            RequestUsage, SessionAffinityKeySource, SessionAffinityRule, SessionAffinitySettings,
-            TimeBillingMultiplier,
+            LongContextTier, ModelPriceSnapshot, RequestBillingMultiplier, RequestLogOutcome,
+            RequestPriceSnapshot, RequestUsage, SessionAffinityKeySource, SessionAffinityRule,
+            SessionAffinitySettings, TimeBillingMultiplier,
         },
     };
     use serde_json::json;
@@ -3419,6 +3421,7 @@ mod tests {
             }),
             2_000,
             Some(500),
+            RequestLogOutcome::Succeeded,
         );
         assert_eq!(billing.cost_amount, Some(Decimal::new(1725, 2)));
         assert!(!billing.peak_pricing);
@@ -3440,6 +3443,7 @@ mod tests {
             }),
             2_000,
             None,
+            RequestLogOutcome::Succeeded,
         );
         assert_eq!(missing_ttft.output_tokens_per_second, None);
     }
@@ -3472,6 +3476,7 @@ mod tests {
             }),
             2_000,
             Some(500),
+            RequestLogOutcome::Succeeded,
         );
 
         assert_eq!(billing.price.input_unit_price, Decimal::new(15, 1));
@@ -3531,6 +3536,7 @@ mod tests {
             }),
             2_000,
             Some(500),
+            RequestLogOutcome::Succeeded,
         );
 
         assert_eq!(billing.price.input_unit_price, Decimal::from(18_i64));
@@ -3572,9 +3578,43 @@ mod tests {
             None,
             1,
             None,
+            RequestLogOutcome::Succeeded,
         );
 
         assert_eq!(billing.price.input_unit_price, Decimal::new(5, 1));
         assert!(!billing.peak_pricing);
+    }
+
+    #[test]
+    fn failed_and_cancelled_requests_have_zero_cost_even_with_usage() {
+        let started_at = chrono::Utc::now();
+        let snapshot = ModelPriceSnapshot::new(
+            "USD".into(),
+            1,
+            started_at,
+            Decimal::ONE,
+            Decimal::ONE,
+            Decimal::ONE,
+            Decimal::ONE,
+        );
+        for outcome in [RequestLogOutcome::Failed, RequestLogOutcome::Cancelled] {
+            let billing = request_billing(
+                &snapshot,
+                &CompiledAdvancedBilling::default(),
+                RequestBillingFactors::new(started_at, Decimal::ONE, Decimal::ONE),
+                Some(ResponseUsage {
+                    input_tokens: 10,
+                    cached_input_tokens: 2,
+                    cache_write_tokens: 1,
+                    output_tokens: 4,
+                    reasoning_tokens: 1,
+                }),
+                2_000,
+                Some(500),
+                outcome,
+            );
+
+            assert_eq!(billing.cost_amount, Some(Decimal::ZERO));
+        }
     }
 }

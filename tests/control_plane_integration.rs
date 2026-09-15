@@ -30,7 +30,7 @@ use ai_gateway::{
         RequestLogRepository, RequestLogSettlementOutcome, SystemAutomaticDisableSettingsInput,
         SystemPassiveHealthSettingsInput, SystemSessionAffinityKeySourceInput,
         SystemSessionAffinityRuleInput, SystemSessionAffinitySettingsInput, SystemSettingsInput,
-        SystemUpstreamSettingsInput,
+        SystemUpstreamSettingsInput, run_migrations,
     },
     routing::{self, PassiveHealthPolicy, RoutingRuntime},
     runtime_config::{
@@ -1131,8 +1131,7 @@ async fn wait_for_blocked_request_log_insert(pool: &PgPool) {
 impl TestDatabase {
     async fn new() -> Self {
         let database = Self::new_unmigrated().await;
-        MIGRATOR
-            .run(&database.pool)
+        run_migrations(&database.pool)
             .await
             .expect("migrations must apply to the temporary database");
         ControlPlaneRepository::new(database.pool.clone())
@@ -2040,6 +2039,12 @@ async fn direct_seat_migration_preserves_existing_money_and_pending_reservations
         .execute(&database.pool)
         .await
         .unwrap();
+    sqlx::raw_sql(include_str!(
+        "../migrations/0061_zero_failed_and_cancelled_costs.sql"
+    ))
+    .execute(&database.pool)
+    .await
+    .unwrap();
     let snapshot = compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap();
     sharing.publish(snapshot.sharing());
     sharing.flush().await.unwrap();
@@ -6072,8 +6077,7 @@ async fn settlement_claim_is_concurrent_idempotent_and_allows_soft_quota_overdra
     assert_eq!(after_retry.quota_used_amount, facts.quota_used_amount);
     assert_eq!(after_retry.billed_at, facts.billed_at);
 
-    let mut zero_cost = request_log_event(&seed, RequestLogOutcome::Failed);
-    zero_cost.billing.as_mut().unwrap().cost_amount = Some(rust_decimal::Decimal::ZERO);
+    let zero_cost = request_log_event(&seed, RequestLogOutcome::Failed);
     repository.insert(&zero_cost).await.unwrap();
     assert!(matches!(
         repository.settle(zero_cost.id).await.unwrap(),
@@ -6134,8 +6138,8 @@ async fn batch_settlement_aggregates_account_updates_and_deduplicates_ids() {
     .fetch_one(&database.pool)
     .await
     .unwrap();
-    assert_eq!(facts.0, -(cost + cost));
-    assert_eq!(facts.1, cost + cost);
+    assert_eq!(facts.0, -cost);
+    assert_eq!(facts.1, cost);
     assert_eq!(facts.2, 2);
 
     let retried = repository
@@ -6169,7 +6173,7 @@ async fn batch_settlement_classifies_ineligible_rows_independently() {
     let seed = seed(&database.pool).await;
     let repository = RequestLogRepository::new(database.pool.clone());
     let billable = request_log_event(&seed, RequestLogOutcome::Succeeded);
-    let mut not_billable = request_log_event(&seed, RequestLogOutcome::Failed);
+    let mut not_billable = request_log_event(&seed, RequestLogOutcome::Succeeded);
     not_billable.billing = None;
 
     let other_user = Uuid::new_v4();
@@ -8829,6 +8833,215 @@ async fn request_log_peak_pricing_migration_defaults_existing_logs() {
             .unwrap();
     assert!(!peak_pricing);
 
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn pending_migrations_commit_and_rollback_as_one_batch() {
+    let database = TestDatabase::new_unmigrated().await;
+    let mut previous = sqlx::migrate::Migrator::new(std::path::Path::new("./migrations"))
+        .await
+        .unwrap();
+    previous.migrations = previous
+        .iter()
+        .filter(|migration| migration.version <= 52)
+        .cloned()
+        .collect::<Vec<_>>()
+        .into();
+    previous.run(&database.pool).await.unwrap();
+    let seed = seed(&database.pool).await;
+    sqlx::query(
+        "UPDATE channels
+         SET available_models=ARRAY['unpriced-wire']::text[],
+             test_model='unpriced-wire'
+         WHERE id=$1",
+    )
+    .bind(seed.channel)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    let error = run_migrations(&database.pool).await.unwrap_err();
+    assert!(error.to_string().contains("migration 57"));
+    let latest: i64 = sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations")
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(latest, 52);
+    let schema: (bool, bool) = sqlx::query_as(
+        "SELECT to_regclass('mcp_servers') IS NOT NULL,
+                to_regclass('codex_sharing_groups') IS NULL",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(schema, (true, true));
+
+    sqlx::query("UPDATE channels SET test_model=NULL WHERE id=$1")
+        .bind(seed.channel)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    run_migrations(&database.pool).await.unwrap();
+    let latest: i64 = sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations")
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(latest, 61);
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn zero_cost_migration_refunds_and_reconciles_historical_failures() {
+    use rust_decimal::Decimal;
+
+    let database = TestDatabase::new_unmigrated().await;
+    let mut previous = sqlx::migrate::Migrator::new(std::path::Path::new("./migrations"))
+        .await
+        .unwrap();
+    previous.migrations = previous
+        .iter()
+        .filter(|migration| migration.version <= 60)
+        .cloned()
+        .collect::<Vec<_>>()
+        .into();
+    previous.run(&database.pool).await.unwrap();
+    let seed = seed(&database.pool).await;
+    let failed_billed = Uuid::new_v4();
+    let cancelled_billed = Uuid::new_v4();
+    let succeeded_billed = Uuid::new_v4();
+    for (id, outcome, cost) in [
+        (failed_billed, "failed", Decimal::from(2)),
+        (cancelled_billed, "cancelled", Decimal::ONE),
+        (succeeded_billed, "succeeded", Decimal::from(3)),
+    ] {
+        sqlx::query(
+            "INSERT INTO request_logs (
+                 id,started_at,completed_at,user_id,api_key_id,request_source,
+                 api_format,api_operation,request_protocol,client_model,upstream_model,
+                 model_rule_id,channel_group_id,channel_id,outcome,response_status_code,
+                 streamed,total_duration_ms,model_id,currency,price_unit_tokens,
+                 price_effective_at,input_unit_price,cached_input_unit_price,
+                 cache_write_unit_price,output_unit_price,cost_amount,billed_at
+             ) VALUES (
+                 $1,now(),now(),$2,$3,'client','open_ai_chat_completions',
+                 'chat_completions','non_stream',$4,'upstream-v1',$5,$6,$7,$8,500,
+                 false,1,$9,'USD',1,now(),1,1,1,1,$10,now()
+             )",
+        )
+        .bind(id)
+        .bind(seed.user)
+        .bind(seed.key)
+        .bind(&seed.client_model)
+        .bind(seed.rule)
+        .bind(seed.group)
+        .bind(seed.channel)
+        .bind(outcome)
+        .bind(seed.model)
+        .bind(cost)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    }
+    let failed_unpriced = Uuid::new_v4();
+    let cancelled_unpriced = Uuid::new_v4();
+    for (id, outcome) in [
+        (failed_unpriced, "failed"),
+        (cancelled_unpriced, "cancelled"),
+    ] {
+        sqlx::query(
+            "INSERT INTO request_logs (
+                 id,started_at,completed_at,user_id,api_key_id,request_source,
+                 api_format,api_operation,request_protocol,client_model,outcome,
+                 response_status_code,streamed,total_duration_ms
+             ) VALUES (
+                 $1,now(),now(),$2,$3,'client','open_ai_chat_completions',
+                 'chat_completions','non_stream',$4,$5,503,false,1
+             )",
+        )
+        .bind(id)
+        .bind(seed.user)
+        .bind(seed.key)
+        .bind(&seed.client_model)
+        .bind(outcome)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    }
+    sqlx::query("UPDATE users SET balance_amount=-6 WHERE id=$1")
+        .bind(seed.user)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE api_keys SET quota_used_amount=6 WHERE id=$1")
+        .bind(seed.key)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+
+    run_migrations(&database.pool).await.unwrap();
+
+    let costs = sqlx::query_as::<_, (String, Decimal)>(
+        "SELECT outcome,cost_amount
+         FROM request_logs
+         WHERE id=ANY($1)
+         ORDER BY outcome,cost_amount",
+    )
+    .bind([
+        failed_billed,
+        cancelled_billed,
+        succeeded_billed,
+        failed_unpriced,
+        cancelled_unpriced,
+    ])
+    .fetch_all(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        costs,
+        vec![
+            ("cancelled".into(), Decimal::ZERO),
+            ("cancelled".into(), Decimal::ZERO),
+            ("failed".into(), Decimal::ZERO),
+            ("failed".into(), Decimal::ZERO),
+            ("succeeded".into(), Decimal::from(3)),
+        ]
+    );
+    let account: (Decimal, Decimal) = sqlx::query_as(
+        "SELECT account.balance_amount,key.quota_used_amount
+         FROM users account
+         JOIN api_keys key ON key.user_id=account.id
+         WHERE account.id=$1 AND key.id=$2",
+    )
+    .bind(seed.user)
+    .bind(seed.key)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(account, (Decimal::from(-3), Decimal::from(3)));
+
+    let control_plane = ControlPlaneRepository::new(database.pool.clone());
+    let completed = control_plane
+        .sharing_completed_costs(&[failed_unpriced, cancelled_unpriced])
+        .await
+        .unwrap();
+    assert_eq!(completed.len(), 2);
+    assert!(completed.contains(&(failed_unpriced, Decimal::ZERO)));
+    assert!(completed.contains(&(cancelled_unpriced, Decimal::ZERO)));
+    RequestLogRepository::new(database.pool.clone())
+        .settle_batch(&[failed_unpriced, cancelled_unpriced])
+        .await
+        .unwrap();
+    let settled: i64 = sqlx::query_scalar(
+        "SELECT count(*)
+         FROM request_logs
+         WHERE id=ANY($1) AND billed_at IS NOT NULL",
+    )
+    .bind([failed_unpriced, cancelled_unpriced])
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(settled, 2);
     database.cleanup().await;
 }
 

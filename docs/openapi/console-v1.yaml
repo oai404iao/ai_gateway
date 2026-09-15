@@ -4861,7 +4861,7 @@ components:
           description: Subset of output_tokens spent on model reasoning, or null when usage is unavailable.
         cost_amount:
           allOf: [{ $ref: "#/components/schemas/DecimalNullable" }]
-          description: Final request cost in USD, or null when not priced.
+          description: Final request cost in USD. Failed and cancelled requests are zero; other unpriced requests are null.
         peak_pricing:
           type: boolean
           description: True when a weekly UTC time window selected a multiplier greater than one at request start.

@@ -162,4 +162,22 @@ impl RequestLogOutcome {
             Self::Cancelled => "cancelled",
         }
     }
+
+    #[must_use]
+    pub const fn forces_zero_cost(self) -> bool {
+        matches!(self, Self::Failed | Self::Cancelled)
+    }
+}
+
+impl RequestLogEvent {
+    #[must_use]
+    pub fn effective_cost_amount(&self) -> Option<Decimal> {
+        if self.outcome.forces_zero_cost() {
+            Some(Decimal::ZERO)
+        } else {
+            self.billing
+                .as_ref()
+                .and_then(|billing| billing.cost_amount)
+        }
+    }
 }

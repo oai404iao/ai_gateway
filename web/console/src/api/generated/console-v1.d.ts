@@ -2881,7 +2881,7 @@ export interface components {
             output_tokens: number | null;
             /** @description Subset of output_tokens spent on model reasoning, or null when usage is unavailable. */
             reasoning_tokens: number | null;
-            /** @description Final request cost in USD, or null when not priced. */
+            /** @description Final request cost in USD. Failed and cancelled requests are zero; other unpriced requests are null. */
             cost_amount: components["schemas"]["DecimalNullable"];
             /** @description True when a weekly UTC time window selected a multiplier greater than one at request start. */
             peak_pricing: boolean;

@@ -4,8 +4,9 @@ use std::{collections::HashMap, error::Error, fs, path::Path, time::Duration};
 
 use ai_gateway::{
     persistence::{
-        ControlPlaneRepository, MIGRATOR, SystemPassiveHealthSettingsInput,
+        ControlPlaneRepository, SystemPassiveHealthSettingsInput,
         SystemScheduledTestingSettingsInput, SystemSettingsInput, SystemUpstreamSettingsInput,
+        run_migrations,
     },
     runtime_config::compile_runtime_config,
 };
@@ -76,7 +77,7 @@ impl TemporaryDatabase {
                 .acquire_timeout(Duration::from_secs(5))
                 .connect(&database_url_string)
                 .await?;
-            MIGRATOR.run(&pool).await?;
+            run_migrations(&pool).await?;
             seed(&pool, scenarios, mock_base_url).await?;
             let repository = ControlPlaneRepository::new(pool.clone());
             repository.ensure_system_settings(system_settings()).await?;
