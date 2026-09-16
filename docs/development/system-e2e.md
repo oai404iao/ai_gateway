@@ -96,6 +96,11 @@ Codex 分别显式运行 HTTP 与 WS；没有跨协议转换矩阵，也未覆�
 要求 Linux、C 编译器、Python 3.11+、Docker daemon、OpenSSL、Node、项目固定 Rust/pnpm，
 以及 `e2e/clients.json` 指定的 Codex/Pi CLI。数据库镜像按 digest 固定，
 WS 依赖按版本与 wheel hash 固定；首次运行可能下载依赖。只使用容器内 psql。
+Codex 的只读 shell 沙箱要求可用的 bubblewrap；Ubuntu 24.04 还需加载对应的
+AppArmor user-namespace profile，参见 [Codex 官方前置条件](https://developers.openai.com/codex/concepts/sandboxing#prerequisites)。
+CI 安装这些依赖并验证 namespace 创建，不关闭沙箱或全局 user-namespace 限制。
+子进程 `TMPDIR` 使用私有根下单独的 `tmp/`，不得包含 `CODEX_HOME`，
+否则 Codex 会拒绝创建 helper aliases。
 
 ```bash
 pnpm --dir web/console install --frozen-lockfile

@@ -86,6 +86,16 @@ class ScenarioTests(unittest.TestCase):
 
 
 class HarnessTests(unittest.TestCase):
+    def test_child_temp_directory_does_not_enclose_client_homes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            resources = Resources(Path(directory))
+            temporary = Path(resources.env["TMPDIR"])
+            self.assertTrue(temporary.is_dir())
+            self.assertTrue(temporary.is_relative_to(resources.directory))
+            for name in ("codex-http-home", "codex-ws-home"):
+                self.assertFalse((resources.directory / name).is_relative_to(temporary))
+            self.assertEqual(resources.close(), [])
+
     def test_redaction(self):
         text = redact("postgres://u:secret@host/db Bearer jwt-token\npassword secret", ["secret"])
         self.assertNotIn("secret", text)

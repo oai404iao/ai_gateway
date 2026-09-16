@@ -89,6 +89,8 @@ def redact(text, values):
 class Resources:
     def __init__(self, directory):
         self.directory = directory
+        temporary = directory / "tmp"
+        temporary.mkdir()
         self.processes = []
         self.collectors = {}
         self.output_errors = []
@@ -97,7 +99,7 @@ class Resources:
         self.container = None
         self.env = {
             "PATH": os.environ.get("PATH", ""),
-            "HOME": str(directory), "TMPDIR": str(directory),
+            "HOME": str(directory), "TMPDIR": str(temporary),
             "LANG": "C.UTF-8", "NO_PROXY": "*",
         }
 
@@ -361,7 +363,8 @@ def run_codex(resources, binary, data, marker, websocket=False):
     check(version == CODEX_VERSION, f"requires {CODEX_VERSION}, got {version}")
     home = resources.directory / (name + "-home")
     # Keep cwd outside any repository so the CLI cannot inherit its AGENTS or
-    # project configuration. CODEX_HOME stays outside /tmp for helper binaries.
+    # project configuration. CODEX_HOME must not be nested under the child's
+    # TMPDIR, or Codex refuses to create its sandbox helper aliases.
     directory = tempfile.TemporaryDirectory(prefix="ai-gateway-cli-")
     resources.directories.append(directory)
     work = Path(directory.name)
@@ -383,7 +386,7 @@ stream_max_retries = 0
 """)
     output = work / "answer.txt"
     resources.run([
-        binary, "exec", "--ephemeral", "--skip-git-repo-check", "--output-last-message", str(output),
+        binary, "exec", "--json", "--ephemeral", "--skip-git-repo-check", "--output-last-message", str(output),
         "Read marker.txt with the shell tool. Then reply E2E_TOOL_OK. Do not use network or write files.",
     ], name, env={**resources.env, "CODEX_HOME": str(home), "SYSTEM_E2E_KEY": data["api_key"]},
         cwd=work)

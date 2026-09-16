@@ -167,6 +167,15 @@ jobs:
           node-version: 24
       - run: pnpm --dir web/console install --frozen-lockfile
       - run: pnpm --dir web/console exec playwright install --with-deps chromium
+      - name: Prepare Codex read-only sandbox
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap apparmor-profiles apparmor-utils
+          sudo install -m 0644 \
+            /usr/share/apparmor/extra-profiles/bwrap-userns-restrict \
+            /etc/apparmor.d/bwrap-userns-restrict
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+          bwrap --unshare-user --unshare-pid --ro-bind / / --proc /proc --dev /dev -- /bin/true
       - name: Install pinned real client
         run: |
           python3 - <<'PY'
