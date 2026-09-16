@@ -2,7 +2,8 @@
 
 > 类型：外部参考索引。第三方接口可能变化，使用前请检查各文档的“最近核对”日期。
 
-本目录不复制完整 OpenAI 文档，只记录 `ai-gateway` 实现、测试和上游接入所依赖的行为。
+本目录不复制完整 OpenAI 文档，只记录 `ai-gateway` 实现、测试和上游接入所依赖的行为，
+以及有固定源码版本和明确适用边界的外部工程研究。
 
 ## OpenAI API
 
@@ -19,6 +20,10 @@
 
 - [DeepSeek 峰谷定价](deepseek-peak-pricing.md)
 - [ip-api.com 代理出口 IP 查询](ip-api-proxy-test.md)
+
+## 外部项目工程研究
+
+- [Monoize 的 E2E、Mock、双数据库与日志](monoize-engineering-study.md)
 
 ## 使用原则
 

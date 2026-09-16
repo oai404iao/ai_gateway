@@ -24,6 +24,9 @@
 
 ## 测试、性能与发布
 
+- [系统 E2E](system-e2e.md)：真实浏览器、CLI、Gateway、临时 PostgreSQL 与共享协议场景。
+- [日志故障准入审查](request-log-admission-review.md)：现状、风险、决策边界与后续故障验证。
+
 - [持续集成与安全扫描](continuous-integration.md)：路径感知门禁、稳定
   `ci-gate`、cache 写入边界、Playwright、CodeQL 与默认分支 ruleset。
 - [安全告警核查与处置](security-alert-triage.md)：逐条 CodeQL 核查证据、测试用途与误报边界，

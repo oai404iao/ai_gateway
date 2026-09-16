@@ -1,0 +1,7 @@
+{
+  "codex": {
+    "package": "@openai/codex",
+    "version": "0.154.0",
+    "version_output": "codex-cli 0.154.0"
+  }
+}

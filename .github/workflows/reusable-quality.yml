@@ -142,6 +142,50 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  system-e2e:
+    if: ${{ inputs.run_rust || inputs.run_e2e }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: system-e2e
+          save-if: ${{ inputs.save_cache }}
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 11.17.0
+          run_install: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - run: pnpm --dir web/console install --frozen-lockfile
+      - run: pnpm --dir web/console exec playwright install --with-deps chromium
+      - name: Install pinned real client
+        run: |
+          version="$(python3 -c 'import json; print(json.load(open("e2e/clients.json"))["codex"]["version"])')"
+          npm install --global --ignore-scripts "@openai/codex@$version"
+      - run: python3 -m unittest discover -s e2e -p 'test_*.py'
+      - run: node --test e2e/browser-checks.test.mjs
+      - run: pnpm --dir web/console build
+      - run: cargo build --locked --features embedded-console-ui
+      - name: Real browser, CLI, gateway and PostgreSQL
+        run: python3 e2e/run.py
+      - name: Upload safe system-test reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: system-e2e-results
+          path: target/system-e2e/
+          if-no-files-found: ignore
+          retention-days: 7
+
   gate:
     name: quality-gate
     if: ${{ always() }}
@@ -150,6 +194,7 @@ jobs:
       - rust
       - console
       - e2e
+      - system-e2e
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
@@ -157,6 +202,7 @@ jobs:
       RUST_RESULT: ${{ needs.rust.result }}
       CONSOLE_RESULT: ${{ needs.console.result }}
       E2E_RESULT: ${{ needs.e2e.result }}
+      SYSTEM_E2E_RESULT: ${{ needs.system-e2e.result }}
     steps:
       - name: Evaluate selected quality checks
         shell: bash
@@ -166,7 +212,8 @@ jobs:
             "$DOCS_RESULT" \
             "$RUST_RESULT" \
             "$CONSOLE_RESULT" \
-            "$E2E_RESULT"
+            "$E2E_RESULT" \
+            "$SYSTEM_E2E_RESULT"
           do
             case "$result" in
               success | skipped)
