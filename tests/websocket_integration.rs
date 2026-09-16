@@ -116,9 +116,16 @@ async fn start_mock_upstream() -> MockResponsesWebSocket {
     start_mock_upstream_with_first_error(None).await
 }
 
-#[allow(clippy::result_large_err)]
 async fn start_mock_upstream_with_first_error(
     first_error: Option<Value>,
+) -> MockResponsesWebSocket {
+    start_mock_upstream_with_script(first_error, false).await
+}
+
+#[allow(clippy::result_large_err)]
+async fn start_mock_upstream_with_script(
+    first_error: Option<Value>,
+    shared_tool_cycle: bool,
 ) -> MockResponsesWebSocket {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -195,6 +202,16 @@ async fn start_mock_upstream_with_first_error(
                         }
                         let response_number = next_response.fetch_add(1, Ordering::SeqCst);
                         let response_id = format!("resp-{response_number}");
+                        if shared_tool_cycle {
+                            for event in shared_tool_events(&response_id, response_number == 1) {
+                                websocket
+                                    .send(Message::Text(event.to_string().into()))
+                                    .await
+                                    .unwrap();
+                            }
+                            last_response_id = Some(response_id);
+                            continue;
+                        }
                         websocket
                             .send(Message::Text(
                                 json!({
@@ -251,6 +268,89 @@ async fn start_mock_upstream_with_first_error(
         requests,
         task,
     }
+}
+
+fn shared_tool_events(response_id: &str, tool_call: bool) -> Vec<Value> {
+    let contract: Value =
+        serde_json::from_str(include_str!("../mock/scenarios/responses.json")).unwrap();
+    let templates: Value =
+        serde_json::from_str(include_str!("../mock/scenarios/response-events.json")).unwrap();
+    assert_eq!(contract["version"], 1);
+    assert_eq!(templates["version"], 1);
+    let scenario = &contract["scenarios"]["responses-tool-cycle"];
+    let item = if tool_call {
+        json!({
+            "id": "fc_system_e2e", "type": "function_call", "status": "completed",
+            "call_id": scenario["call_id"], "name": "exec_command",
+            "arguments": json!({"cmd": format!("cat {}", scenario["marker_file"].as_str().unwrap())}).to_string()
+        })
+    } else {
+        json!({
+            "id": "msg_system_e2e", "type": "message", "role": "assistant", "status": "completed",
+            "content": [{"type": "output_text", "text": scenario["final_text"], "annotations": []}]
+        })
+    };
+    let response = json!({
+        "id": response_id, "object": "response", "model": UPSTREAM_MODEL,
+        "status": "completed", "output": [item.clone()], "usage": contract["usage"]
+    });
+    let mut partial_response = response.clone();
+    partial_response["status"] = json!("in_progress");
+    partial_response["output"] = json!([]);
+    partial_response["usage"] = Value::Null;
+    let mut partial_item = item.clone();
+    partial_item["status"] = json!("in_progress");
+    if tool_call {
+        partial_item["arguments"] = json!("");
+    } else {
+        partial_item["content"] = json!([]);
+    }
+    let part = item["content"][0].clone();
+    let variables = json!({
+        "$response": response, "$partial_response": partial_response,
+        "$item": item, "$partial_item": partial_item, "$item_id": item["id"],
+        "$arguments": item["arguments"], "$text": part["text"], "$part": part,
+        "$partial_part": {"type": "output_text", "text": "", "annotations": []}
+    });
+    fn render(value: &Value, variables: &Value) -> Value {
+        match value {
+            Value::String(key) if key.starts_with('$') => variables
+                .get(key)
+                .expect("unknown shared event placeholder")
+                .clone(),
+            Value::Array(values) => Value::Array(
+                values
+                    .iter()
+                    .map(|value| render(value, variables))
+                    .collect(),
+            ),
+            Value::Object(values) => Value::Object(
+                values
+                    .iter()
+                    .map(|(key, value)| (key.clone(), render(value, variables)))
+                    .collect(),
+            ),
+            value => value.clone(),
+        }
+    }
+    [
+        "prefix",
+        if tool_call {
+            "function_call"
+        } else {
+            "message"
+        },
+        "suffix",
+    ]
+    .into_iter()
+    .flat_map(|key| templates[key].as_array().unwrap())
+    .enumerate()
+    .map(|(index, event)| {
+        let mut event = render(event, &variables);
+        event["sequence_number"] = json!(index);
+        event
+    })
+    .collect()
 }
 
 async fn start_rejecting_upstream(status: axum::http::StatusCode) -> MockResponsesWebSocket {
@@ -433,6 +533,7 @@ struct WebSocketControls {
     other_websocket_route: bool,
     other_route_authorized: bool,
     max_idle_connections: usize,
+    admitted_log_requests: usize,
 }
 
 impl Default for WebSocketControls {
@@ -449,6 +550,7 @@ impl Default for WebSocketControls {
             other_websocket_route: false,
             other_route_authorized: true,
             max_idle_connections: 128,
+            admitted_log_requests: usize::MAX,
         }
     }
 }
@@ -653,7 +755,10 @@ async fn gateway_harness_with_controls(
         Arc::clone(&runtime),
         1_048_576,
         Arc::clone(&registry),
-        Arc::new(logs.clone()),
+        Arc::new(LimitedLogSink {
+            logs: logs.clone(),
+            remaining: AtomicUsize::new(controls.admitted_log_requests),
+        }),
         routing.clone(),
         AdmissionRuntime::new(),
     )
@@ -681,6 +786,62 @@ async fn gateway_harness_with_controls(
         runtime,
         routing,
         upgrade_attempts,
+    }
+}
+
+struct LimitedLogSink {
+    logs: RecordingRequestLogSink,
+    remaining: AtomicUsize,
+}
+
+impl ai_gateway::application::RequestLogSink for LimitedLogSink {
+    fn admit(
+        &self,
+        _: &ai_gateway::application::RequestLogIntent,
+    ) -> Result<(), ai_gateway::application::RequestLogAdmissionError> {
+        self.remaining
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .map(|_| ())
+            .map_err(|_| ai_gateway::application::RequestLogAdmissionError)
+    }
+
+    fn try_record(&self, event: ai_gateway::domain::RequestLogEvent) {
+        ai_gateway::application::RequestLogSink::try_record(&self.logs, event);
+    }
+}
+
+#[tokio::test]
+async fn log_admission_is_checked_for_each_websocket_create_before_dispatch() {
+    for allowed in [0, 1] {
+        let upstream = start_mock_upstream().await;
+        let gateway = gateway_harness_with_controls(
+            &upstream,
+            None,
+            WebSocketControls {
+                admitted_log_requests: allowed,
+                ..Default::default()
+            },
+        )
+        .await;
+        let (mut client, _) = connect_async(websocket_request(
+            gateway.server.address,
+            CLIENT_KEY,
+            "log-admission",
+        ))
+        .await
+        .unwrap();
+        if allowed == 1 {
+            let events = response_create(&mut client, None).await;
+            assert_eq!(events.last().unwrap()["type"], "response.completed");
+        }
+        let events = response_create(&mut client, None).await;
+        assert_eq!(
+            events.last().unwrap()["error"]["code"],
+            "request_log_unavailable"
+        );
+        assert_eq!(events.last().unwrap()["status"], 503);
+        assert_eq!(upstream.requests().len(), allowed);
+        assert_eq!(gateway.logs.events().len(), allowed);
     }
 }
 
@@ -796,6 +957,64 @@ async fn close_and_wait(
 ) {
     websocket.close(None).await.unwrap();
     let _ = timeout(Duration::from_secs(1), websocket.next()).await;
+}
+
+#[tokio::test]
+async fn shared_cli_fixture_preserves_websocket_tool_continuation_and_usage() {
+    let upstream = start_mock_upstream_with_script(None, true).await;
+    let gateway = gateway_harness(&upstream).await;
+    let (mut socket, _) = connect_async(websocket_request(
+        gateway.server.address,
+        CLIENT_KEY,
+        "shared-cli-fixture",
+    ))
+    .await
+    .unwrap();
+    let first = response_create(&mut socket, None).await;
+    let terminal = first.last().unwrap();
+    assert_eq!(terminal["type"], "response.completed");
+    let call = &terminal["response"]["output"][0];
+    assert_eq!(call["type"], "function_call");
+    assert_eq!(call["call_id"], "call_system_e2e");
+    assert_eq!(call["name"], "exec_command");
+    let args: Value = serde_json::from_str(call["arguments"].as_str().unwrap()).unwrap();
+    assert_eq!(args["cmd"], "cat marker.txt");
+    let second = send_websocket_body(
+        &mut socket,
+        json!({
+            "type": "response.create", "model": CLIENT_MODEL,
+            "previous_response_id": completed_response_id(&first),
+            "input": [{"type": "function_call_output", "call_id": call["call_id"], "output": "fixture-marker"}]
+        }),
+    )
+    .await;
+    assert_eq!(second.last().unwrap()["type"], "response.completed");
+    assert_eq!(
+        second.last().unwrap()["response"]["output"][0]["content"][0]["text"],
+        "E2E_TOOL_OK"
+    );
+    close_and_wait(socket).await;
+    let requests = upstream.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].connection, requests[1].connection);
+    assert_eq!(
+        requests[1].body["previous_response_id"],
+        completed_response_id(&first)
+    );
+    assert_eq!(requests[1].body["input"][0]["call_id"], "call_system_e2e");
+    assert_eq!(requests[1].body["input"][0]["output"], "fixture-marker");
+    for request in requests {
+        assert_eq!(request.body["model"], UPSTREAM_MODEL);
+    }
+    let logs = gateway.logs.events();
+    assert_eq!(logs.len(), 2);
+    for log in logs {
+        assert_eq!(log.request_protocol, RequestProtocol::WebSocket);
+        assert_eq!(log.response_status_code, Some(200));
+        let usage = log.billing.unwrap().usage.unwrap();
+        assert_eq!(usage.input_tokens, 5);
+        assert_eq!(usage.output_tokens, 2);
+    }
 }
 
 #[tokio::test]

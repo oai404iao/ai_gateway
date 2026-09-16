@@ -9,6 +9,7 @@ rust_only=$'docs=false\nrust=true\nconsole=false\nimage=false'
 console_only=$'docs=false\nrust=false\nconsole=true\nimage=false'
 rust_and_image=$'docs=false\nrust=true\nconsole=false\nimage=true'
 console_and_image=$'docs=false\nrust=false\nconsole=true\nimage=true'
+system_e2e=$'docs=true\nrust=true\nconsole=true\nimage=false'
 image_only=$'docs=false\nrust=false\nconsole=false\nimage=true'
 all_areas=$'docs=true\nrust=true\nconsole=true\nimage=true'
 
@@ -46,6 +47,9 @@ assert_areas \
 assert_areas "Docker image recipe" "$image_only" "Dockerfile"
 assert_areas "OpenAPI contract" "$all_areas" "docs/openapi/console-v1.yaml"
 assert_areas "workflow" "$all_areas" ".github/workflows/ci.yml"
+assert_areas "system E2E" "$system_e2e" "e2e/run.py"
+assert_areas "shared upstream fixture" "$system_e2e" "mock/scenarios/responses.json"
+assert_areas "system E2E docs" "$docs_only" "e2e/README.md" "mock/README.md"
 assert_areas "unknown path" "$all_areas" "new-area/file.txt"
 assert_areas "empty change set" "$all_areas"
 

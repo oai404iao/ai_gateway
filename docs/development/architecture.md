@@ -86,6 +86,9 @@ Browser or Console client
    `/v1/models` 额外要求 API Key 范围与模型兼容位图相交，所以不公布断开规则。
    Standalone web search 只允许
    `supports_standalone_web_search = true` 的 Responses 渠道。
+   候选选定后，同步持久化客户端逻辑请求的日志 intent 并预留终态 slot；
+   不可写或容量不足返回 `503 request_log_unavailable`，不进入 Connector 准备或上游 dispatch。
+   重试复用同一预占；WS 每次 create 单独准入。见[日志耐久化](request-log-durability.md)。
 8. 将客户端计价模型标识改写为最终候选携带的上游 wire model，并按“模板默认值 → 渠道覆盖”
    应用受限变换。普通 JSON 沿用
    JSON Patch；multipart edit 在无需别名时原样回放，需要别名时流式等价重建，只执行 Header
@@ -125,7 +128,8 @@ Browser or Console client
     表示被解码、变换或重编码时，失效的长度、range、ETag 和 digest 元数据会被移除。失败的文本
     响应仍旁路保留最长 16KiB 供请求日志诊断；只能在读取 body 时发现的损坏压缩流会终止当前
     body，并记录 `upstream_body_error`。
-12. 将终态事件写入本地 spool，并异步投影、提取 usage 和结算。
+12. 同步保存已准入请求的终态 slot 与 spool，再释放预占，并异步投影和结算。
+    完整 slot 可按 UUID 重放；终态缺失保留待核对，不伪造 usage 或零费用。
 
 客户端和 Connector policy 均未删除/覆盖字段、且没有模型别名、body Transform、客户端请求
 解码或渠道组请求压缩时，原始请求字节保持不变。`POST /v1/responses` 另外接受客户端

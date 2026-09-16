@@ -1,6 +1,7 @@
 # Rust build artifacts
 /target/
 *.rs.bk
+__pycache__/
 
 # SQLx's offline query cache can be regenerated locally
 /.sqlx/

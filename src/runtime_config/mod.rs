@@ -123,6 +123,10 @@ impl AppConfig {
             || self.request_logging.settlement_interval_milliseconds == 0
             || self.request_logging.spool_sync_interval_milliseconds == 0
             || self.request_logging.spool_compaction_threshold_bytes == 0
+            || self.request_logging.spool_max_bytes
+                < 2 * crate::request_log_admission::RESERVATION_BYTES
+            || self.request_logging.spool_compaction_threshold_bytes
+                > self.request_logging.spool_max_bytes
             || self.request_logging.shutdown_drain_seconds == 0
             || self.request_logging.spool_directory.as_os_str().is_empty()
         {
@@ -288,6 +292,10 @@ pub struct RequestLoggingConfig {
     pub spool_sync_interval_milliseconds: u64,
     #[serde(default = "default_request_log_spool_compaction_threshold_bytes")]
     pub spool_compaction_threshold_bytes: u64,
+    #[serde(default = "default_request_log_spool_max_bytes")]
+    pub spool_max_bytes: u64,
+    #[serde(default = "default_request_log_spool_min_free_bytes")]
+    pub spool_min_free_bytes: u64,
     /// Optional structured INFO heartbeat interval. Zero disables periodic
     /// snapshots; nonzero values must be at least ten seconds. Transition-
     /// based request-log health events remain active.
@@ -429,6 +437,8 @@ impl Default for RequestLoggingConfig {
             ),
             spool_compaction_threshold_bytes: default_request_log_spool_compaction_threshold_bytes(
             ),
+            spool_max_bytes: default_request_log_spool_max_bytes(),
+            spool_min_free_bytes: default_request_log_spool_min_free_bytes(),
             metrics_interval_seconds: default_request_log_metrics_interval_seconds(),
             shutdown_drain_seconds: default_request_log_shutdown_drain_seconds(),
         }
@@ -619,6 +629,12 @@ const fn default_request_log_settlement_interval_milliseconds() -> u64 {
 }
 fn default_request_log_spool_directory() -> PathBuf {
     PathBuf::from("./data/request-log-spool")
+}
+const fn default_request_log_spool_max_bytes() -> u64 {
+    1_073_741_824
+}
+const fn default_request_log_spool_min_free_bytes() -> u64 {
+    67_108_864
 }
 const fn default_request_log_spool_sync_interval_milliseconds() -> u64 {
     10
@@ -3397,6 +3413,8 @@ mod tests {
             256 * 1_024 * 1_024
         );
         assert_eq!(config.request_logging.metrics_interval_seconds, 0);
+        assert_eq!(config.request_logging.spool_max_bytes, 1_073_741_824);
+        assert_eq!(config.request_logging.spool_min_free_bytes, 67_108_864);
         assert!(config.request_retry.enabled);
         assert_eq!(config.request_retry.max_retries, 1);
         assert_eq!(config.passive_health.connection_failure_threshold, 3);
@@ -3439,6 +3457,24 @@ mod tests {
                 .validate()
                 .is_err()
         );
+    }
+
+    #[test]
+    fn bootstrap_rejects_incoherent_spool_capacity() {
+        for limits in [
+            "spool_max_bytes=1",
+            "spool_max_bytes=4194304\nspool_compaction_threshold_bytes=8388608",
+        ] {
+            let value = format!(
+                "[server]\nhost='x'\nport=1\n[database]\nurl='postgres://x'\nmax_connections=1\nconnect_timeout_seconds=1\n[upstream]\nconnect_timeout_seconds=1\nresponse_header_timeout_seconds=2\nstream_idle_timeout_seconds=1\n[runtime_config]\nreload_interval_seconds=1\n[request_logging]\n{limits}\n[observability]\nfilter='info'"
+            );
+            assert!(
+                toml::from_str::<AppConfig>(&value)
+                    .unwrap()
+                    .validate()
+                    .is_err()
+            );
+        }
     }
 
     #[test]

@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -17,13 +17,15 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use uuid::Uuid;
 
 use crate::{
+    application::RequestLogIntent,
     domain::RequestLogEvent,
+    request_log_admission::{AdmissionStore, RESERVATION_BYTES},
     request_log_journal::{EncodedRequestLog, JournalCodecError},
 };
 
 const FRAME_MAGIC: [u8; 4] = *b"AIGL";
 const FRAME_HEADER_BYTES: usize = 32;
-const MAX_PAYLOAD_BYTES: usize = 1_048_576;
+pub(crate) const MAX_PAYLOAD_BYTES: usize = 1_048_576;
 const CHECKPOINT_FILE: &str = "checkpoint";
 const CHECKPOINT_TEMP_FILE: &str = "checkpoint.tmp";
 const EVENTS_FILE: &str = "events.log";
@@ -33,6 +35,7 @@ struct SpoolWriter {
     file: File,
     end_offset: u64,
     failed: bool,
+    admissions: AdmissionStore,
 }
 
 pub(crate) struct RequestLogSpool {
@@ -41,21 +44,38 @@ pub(crate) struct RequestLogSpool {
     checkpoint_path: PathBuf,
     checkpoint_temp_path: PathBuf,
     writer: Mutex<SpoolWriter>,
-    sync_file: File,
     end_offset: AtomicU64,
     checkpoint_offset: AtomicU64,
     synced_offset: AtomicU64,
     compaction_threshold_bytes: u64,
+    max_bytes: u64,
+    min_free_bytes: u64,
+    capacity_pressure: AtomicBool,
     _lock: File,
 }
 
 impl RequestLogSpool {
+    #[cfg(test)]
     pub(crate) fn open(
         directory: impl AsRef<Path>,
         compaction_threshold_bytes: u64,
     ) -> Result<Self, SpoolError> {
+        Self::open_with_limits(
+            directory,
+            compaction_threshold_bytes,
+            1_073_741_824,
+            67_108_864,
+        )
+    }
+
+    pub(crate) fn open_with_limits(
+        directory: impl AsRef<Path>,
+        compaction_threshold_bytes: u64,
+        max_bytes: u64,
+        min_free_bytes: u64,
+    ) -> Result<Self, SpoolError> {
         let directory = directory.as_ref().to_path_buf();
-        fs::create_dir_all(&directory)?;
+        create_durable_directory(&directory)?;
         secure_directory(&directory)?;
         let lock_path = directory.join(LOCK_FILE);
         let lock = OpenOptions::new()
@@ -91,9 +111,10 @@ impl RequestLogSpool {
             .read(true)
             .append(true)
             .open(&events_path)?;
-        let sync_file = writer.try_clone()?;
+        let (admissions, recovered) = AdmissionStore::open(&directory)?;
+        File::open(&directory)?.sync_all()?;
 
-        Ok(Self {
+        let spool = Self {
             directory,
             events_path,
             checkpoint_path,
@@ -102,14 +123,46 @@ impl RequestLogSpool {
                 file: writer,
                 end_offset: scan.end_offset,
                 failed: false,
+                admissions,
             }),
-            sync_file,
             end_offset: AtomicU64::new(scan.end_offset),
             checkpoint_offset: AtomicU64::new(checkpoint_offset),
             synced_offset: AtomicU64::new(scan.end_offset),
             compaction_threshold_bytes,
+            max_bytes,
+            min_free_bytes,
+            capacity_pressure: AtomicBool::new(false),
             _lock: lock,
-        })
+        };
+        for event in recovered {
+            spool.append(&event)?;
+        }
+        Ok(spool)
+    }
+
+    pub(crate) fn admit(&self, intent: &RequestLogIntent) -> Result<(), SpoolError> {
+        let mut writer = self.writer.lock().map_err(|_| SpoolError::Poisoned)?;
+        if writer.failed {
+            return Err(SpoolError::UnavailableAfterWriteFailure);
+        }
+        let used = writer
+            .end_offset
+            .saturating_add(writer.admissions.reserved_bytes());
+        if used.saturating_add(2 * RESERVATION_BYTES) > self.max_bytes
+            || fs2::available_space(&self.directory)?
+                < self
+                    .min_free_bytes
+                    .saturating_add(writer.admissions.terminal_headroom())
+                    .saturating_add(2 * RESERVATION_BYTES)
+        {
+            self.capacity_pressure.store(true, Ordering::Release);
+            return Err(SpoolError::Capacity);
+        }
+        if let Err(error) = writer.admissions.reserve(intent) {
+            writer.failed = true;
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub(crate) fn append(&self, event: &RequestLogEvent) -> Result<u64, SpoolError> {
@@ -133,8 +186,24 @@ impl RequestLogSpool {
         frame.extend_from_slice(&record.payload);
 
         let mut writer = self.writer.lock().map_err(|_| SpoolError::Poisoned)?;
+        let reserved = writer.admissions.contains(event.id);
+        // Even after an events.log failure, an admitted in-flight request
+        // still owns a preallocated slot for its exact terminal evidence.
+        if reserved && let Err(error) = writer.admissions.save_terminal(event) {
+            writer.failed = true;
+            return Err(error);
+        }
         if writer.failed {
             return Err(SpoolError::UnavailableAfterWriteFailure);
+        }
+        if !reserved
+            && writer
+                .end_offset
+                .saturating_add(writer.admissions.reserved_bytes())
+                .saturating_add(frame.len() as u64)
+                > self.max_bytes
+        {
+            return Err(SpoolError::Capacity);
         }
         if let Err(error) = writer.file.write_all(&frame) {
             // A partial frame may now exist after the published end offset.
@@ -147,7 +216,15 @@ impl RequestLogSpool {
             .end_offset
             .checked_add(frame.len() as u64)
             .ok_or(SpoolError::OffsetOverflow)?;
+        if reserved && let Err(error) = writer.file.sync_data() {
+            writer.failed = true;
+            return Err(error.into());
+        }
         self.end_offset.store(writer.end_offset, Ordering::Release);
+        if reserved && let Err(error) = writer.admissions.retire(event.id) {
+            writer.failed = true;
+            return Err(error);
+        }
         Ok(frame.len() as u64)
     }
 
@@ -182,6 +259,7 @@ impl RequestLogSpool {
     }
 
     pub(crate) fn sync_data(&self) -> Result<(), SpoolError> {
+        let mut writer = self.writer.lock().map_err(|_| SpoolError::Poisoned)?;
         let target = self.end_offset();
         let synced = self.synced_offset.load(Ordering::Acquire);
         if target <= synced {
@@ -191,7 +269,10 @@ impl RequestLogSpool {
             self.synced_offset.store(target, Ordering::Release);
             return Ok(());
         }
-        self.sync_file.sync_data()?;
+        if let Err(error) = writer.file.sync_data() {
+            writer.failed = true;
+            return Err(error.into());
+        }
         self.synced_offset.store(target, Ordering::Release);
         Ok(())
     }
@@ -199,26 +280,41 @@ impl RequestLogSpool {
     pub(crate) fn compact_if_drained(&self) -> Result<bool, SpoolError> {
         let checkpoint = self.checkpoint_offset();
         let end = self.end_offset();
-        if checkpoint != end || end < self.compaction_threshold_bytes {
+        let pressure = self.capacity_pressure.load(Ordering::Acquire);
+        if checkpoint != end || end == 0 || (!pressure && end < self.compaction_threshold_bytes) {
             return Ok(false);
         }
 
         let mut writer = self.writer.lock().map_err(|_| SpoolError::Poisoned)?;
+        if writer.failed {
+            return Err(SpoolError::UnavailableAfterWriteFailure);
+        }
         let checkpoint = self.checkpoint_offset();
-        if checkpoint != writer.end_offset || writer.end_offset < self.compaction_threshold_bytes {
+        if checkpoint != writer.end_offset
+            || (!pressure && writer.end_offset < self.compaction_threshold_bytes)
+        {
             return Ok(false);
         }
-        writer.file.sync_data()?;
-        // Writing zero first is crash-safe: a crash before truncation merely
-        // replays already committed idempotent rows.
-        persist_checkpoint(&self.checkpoint_path, &self.checkpoint_temp_path, 0, true)?;
-        writer.file.set_len(0)?;
-        writer.file.seek(SeekFrom::Start(0))?;
-        writer.file.sync_data()?;
+        let compact = (|| -> Result<(), SpoolError> {
+            writer.file.sync_data()?;
+            // Writing zero first is crash-safe: a crash before truncation merely
+            // replays already committed idempotent rows.
+            persist_checkpoint(&self.checkpoint_path, &self.checkpoint_temp_path, 0, true)?;
+            File::open(&self.directory)?.sync_all()?;
+            writer.file.set_len(0)?;
+            writer.file.seek(SeekFrom::Start(0))?;
+            writer.file.sync_data()?;
+            Ok(())
+        })();
+        if let Err(error) = compact {
+            writer.failed = true;
+            return Err(error);
+        }
         writer.end_offset = 0;
         self.checkpoint_offset.store(0, Ordering::Release);
         self.end_offset.store(0, Ordering::Release);
         self.synced_offset.store(0, Ordering::Release);
+        self.capacity_pressure.store(false, Ordering::Release);
         Ok(true)
     }
 
@@ -237,6 +333,21 @@ impl RequestLogSpool {
     pub(crate) fn directory(&self) -> &Path {
         &self.directory
     }
+}
+
+fn create_durable_directory(path: &Path) -> Result<(), io::Error> {
+    if path.is_dir() {
+        return Ok(());
+    }
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    create_durable_directory(parent)?;
+    fs::create_dir(path)?;
+    secure_directory(path)?;
+    File::open(path)?.sync_all()?;
+    File::open(parent)?.sync_all()
 }
 
 pub(crate) struct SpoolReader {
@@ -435,26 +546,26 @@ fn persist_checkpoint(
 }
 
 #[cfg(unix)]
-fn secure_directory(path: &Path) -> Result<(), io::Error> {
+pub(crate) fn secure_directory(path: &Path) -> Result<(), io::Error> {
     use std::os::unix::fs::PermissionsExt;
 
     fs::set_permissions(path, fs::Permissions::from_mode(0o700))
 }
 
 #[cfg(not(unix))]
-fn secure_directory(_: &Path) -> Result<(), io::Error> {
+pub(crate) fn secure_directory(_: &Path) -> Result<(), io::Error> {
     Ok(())
 }
 
 #[cfg(unix)]
-fn secure_file(file: &File) -> Result<(), io::Error> {
+pub(crate) fn secure_file(file: &File) -> Result<(), io::Error> {
     use std::os::unix::fs::PermissionsExt;
 
     file.set_permissions(fs::Permissions::from_mode(0o600))
 }
 
 #[cfg(not(unix))]
-fn secure_file(_: &File) -> Result<(), io::Error> {
+pub(crate) fn secure_file(_: &File) -> Result<(), io::Error> {
     Ok(())
 }
 
@@ -477,6 +588,8 @@ pub(crate) enum SpoolError {
     Poisoned,
     #[error("request-log spool is unavailable after an earlier partial write")]
     UnavailableAfterWriteFailure,
+    #[error("request-log spool capacity or free-space reserve exhausted")]
+    Capacity,
     #[error("request-log spool checkpoint {checkpoint} is invalid for end offset {end}")]
     InvalidCheckpoint { checkpoint: u64, end: u64 },
     #[error("{0}")]
@@ -487,18 +600,19 @@ pub(crate) enum SpoolError {
 mod tests {
     use std::{
         fs::{self, OpenOptions},
-        io::Write,
+        io::{Seek, SeekFrom, Write},
         sync::Arc,
     };
 
     use chrono::Utc;
     use uuid::Uuid;
 
-    use super::RequestLogSpool;
+    use super::{RequestLogSpool, SpoolError};
     use crate::domain::{
         ApiFormat, ApiOperation, RequestLogEvent, RequestLogOutcome, RequestLogSource,
         RequestProtocol,
     };
+    use crate::{application::RequestLogIntent, request_log_admission::RESERVATION_BYTES};
 
     fn directory() -> std::path::PathBuf {
         std::env::temp_dir().join(format!("ai-gateway-spool-test-{}", Uuid::new_v4()))
@@ -532,6 +646,192 @@ mod tests {
             billing: None,
             error_code: Some("model_not_found".into()),
             error_summary: None,
+        }
+    }
+
+    fn intent(event: &RequestLogEvent) -> RequestLogIntent {
+        RequestLogIntent {
+            version: 1,
+            id: event.id,
+            user_id: event.user_id,
+            api_key_id: event.api_key_id,
+            model_id: Uuid::new_v4(),
+            started_at: event.started_at,
+            api_operation: event.api_operation,
+            request_protocol: event.request_protocol,
+        }
+    }
+
+    #[tokio::test]
+    async fn admission_synchronizes_terminal_and_retires_reservation() {
+        let directory = directory();
+        let event = event();
+        let spool = Arc::new(RequestLogSpool::open(&directory, u64::MAX).unwrap());
+        spool.admit(&intent(&event)).unwrap();
+        let path = directory
+            .join("admissions")
+            .join(format!("{}.json", event.id));
+        assert!(path.exists());
+        assert!(spool.writer.lock().unwrap().admissions.contains(event.id));
+        spool.append(&event).unwrap();
+        assert!(!path.exists());
+        assert!(!spool.writer.lock().unwrap().admissions.contains(event.id));
+        let mut reader = spool.reader().await.unwrap();
+        assert_eq!(
+            reader.read_batch(10).await.unwrap().records[0].request_log_id,
+            event.id
+        );
+        drop(reader);
+        drop(spool);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn admitted_terminal_survives_latched_spool_failure_and_replays_once() {
+        let directory = directory();
+        let event = event();
+        {
+            let spool = RequestLogSpool::open(&directory, u64::MAX).unwrap();
+            spool.admit(&intent(&event)).unwrap();
+            spool.writer.lock().unwrap().failed = true;
+            assert!(spool.append(&event).is_err());
+            assert!(spool.admit(&intent(&self::event())).is_err());
+            assert_eq!(spool.end_offset(), 0);
+        }
+        {
+            let spool = Arc::new(RequestLogSpool::open(&directory, u64::MAX).unwrap());
+            let mut reader = spool.reader().await.unwrap();
+            let batch = reader.read_batch(10).await.unwrap();
+            assert_eq!(batch.records.len(), 1);
+            assert_eq!(batch.records[0].decode().unwrap().id, event.id);
+            spool.checkpoint(batch.end_offset).unwrap();
+        }
+        {
+            let spool = Arc::new(RequestLogSpool::open(&directory, u64::MAX).unwrap());
+            assert!(
+                spool
+                    .reader()
+                    .await
+                    .unwrap()
+                    .read_batch(10)
+                    .await
+                    .unwrap()
+                    .records
+                    .is_empty()
+            );
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn unknown_intents_are_retained_without_active_reservations_or_fabricated_events() {
+        let directory = directory();
+        let event = event();
+        {
+            let spool = RequestLogSpool::open(&directory, u64::MAX).unwrap();
+            spool.admit(&intent(&event)).unwrap();
+        }
+        for _ in 0..3 {
+            let spool = RequestLogSpool::open(&directory, u64::MAX).unwrap();
+            assert_eq!(spool.end_offset(), 0);
+            let writer = spool.writer.lock().unwrap();
+            assert!(!writer.admissions.contains(event.id));
+            assert!(writer.admissions.reserved_bytes() < RESERVATION_BYTES);
+            drop(writer);
+            let next = self::event();
+            spool.admit(&intent(&next)).unwrap();
+            spool.append(&next).unwrap();
+            spool.checkpoint(spool.end_offset()).unwrap();
+            // Preserve the original unknown intent while draining real terminals.
+            spool
+                .capacity_pressure
+                .store(true, std::sync::atomic::Ordering::Release);
+            spool.compact_if_drained().unwrap();
+        }
+        assert!(
+            directory
+                .join("admissions")
+                .join(format!("{}.json", event.id))
+                .exists()
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn capacity_recovers_after_pressure_compaction_below_normal_threshold() {
+        let directory = directory();
+        let spool = RequestLogSpool::open_with_limits(
+            &directory,
+            RESERVATION_BYTES,
+            2 * RESERVATION_BYTES,
+            0,
+        )
+        .unwrap();
+        let first = event();
+        spool.admit(&intent(&first)).unwrap();
+        assert!(matches!(
+            spool.admit(&intent(&event())),
+            Err(SpoolError::Capacity)
+        ));
+        spool.append(&first).unwrap();
+        spool.checkpoint(spool.end_offset()).unwrap();
+        assert!(spool.compact_if_drained().unwrap());
+        spool.admit(&intent(&event())).unwrap();
+        drop(spool);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn free_space_floor_denies_without_creating_an_intent() {
+        let directory = directory();
+        let spool = RequestLogSpool::open_with_limits(&directory, 1, u64::MAX, u64::MAX).unwrap();
+        assert!(matches!(
+            spool.admit(&intent(&event())),
+            Err(SpoolError::Capacity)
+        ));
+        assert_eq!(
+            fs::read_dir(directory.join("admissions")).unwrap().count(),
+            0
+        );
+        drop(spool);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn torn_or_corrupt_terminal_slots_remain_unknown_instead_of_zero_cost() {
+        for truncate in [false, true] {
+            let directory = directory();
+            let event = event();
+            {
+                let spool = RequestLogSpool::open(&directory, u64::MAX).unwrap();
+                spool.admit(&intent(&event)).unwrap();
+                spool
+                    .writer
+                    .lock()
+                    .unwrap()
+                    .admissions
+                    .save_terminal(&event)
+                    .unwrap();
+            }
+            let slot = directory
+                .join("admissions")
+                .join(format!("{}.slot", event.id));
+            let mut file = OpenOptions::new().write(true).open(&slot).unwrap();
+            if truncate {
+                file.set_len(20).unwrap();
+            } else {
+                file.seek(SeekFrom::Start(16)).unwrap();
+                file.write_all(b"!").unwrap();
+            }
+            file.sync_all().unwrap();
+            drop(file);
+            let spool = RequestLogSpool::open(&directory, u64::MAX).unwrap();
+            assert_eq!(spool.end_offset(), 0);
+            assert!(slot.exists());
+            assert!(!spool.writer.lock().unwrap().admissions.contains(event.id));
+            spool.admit(&intent(&self::event())).unwrap();
+            drop(spool);
+            fs::remove_dir_all(directory).unwrap();
         }
     }
 

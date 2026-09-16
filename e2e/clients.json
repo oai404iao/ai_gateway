@@ -1,0 +1,12 @@
+{
+  "codex": {
+    "package": "@openai/codex",
+    "version": "0.154.0",
+    "version_output": "codex-cli 0.154.0"
+  },
+  "pi": {
+    "package": "@earendil-works/pi-coding-agent",
+    "version": "0.85.1",
+    "version_output": "0.85.1"
+  }
+}

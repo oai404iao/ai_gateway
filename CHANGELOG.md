@@ -7,6 +7,19 @@ Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Add root-level system E2E and shared protocol fixtures covering the embedded
+  Console, pinned Codex/Pi tool cycles, crash recovery and isolated storage faults.
+
+### Fixed
+
+- Require synchronously durable request-log admission before client dispatch.
+  Reserve terminal recovery slots, reject unavailable/full logging with
+  `503 request_log_unavailable`, and replay complete terminals idempotently.
+  Interrupted requests without terminal evidence remain pending reconciliation,
+  without fabricated usage, zero-cost settlement or a user freeze.
+
 ## [0.11.1] - 2026-09-15
 
 ### Added

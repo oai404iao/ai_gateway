@@ -68,8 +68,10 @@ Compose 将 PostgreSQL 端口默认绑定到 `127.0.0.1`。只有 Gateway 位于
 | `projection_batch_size` | 2048 | 单 Worker 投影最终宽表 |
 | `settlement_batch_size` | 4096 | 一次 claim/聚合的结算行数 |
 | `settlement_interval_milliseconds` | 500 | 默认软额度更新延迟 |
-| `spool_sync_interval_milliseconds` | 10 | 主机掉电时的默认 group-sync 窗口 |
+| `spool_sync_interval_milliseconds` | 10 | 未准入的拒绝/probe 日志 group-sync 窗口；已准入请求逐条同步 |
 | `spool_compaction_threshold_bytes` | 256 MiB | 降低高流量下的截断与同步频率 |
+| `spool_max_bytes` | 1 GiB | 本地追加文件、在途预占/追加余量和待核对证据预算 |
+| `spool_min_free_bytes` | 64 MiB | 准入所需的文件系统保留空间，另计在途追加余量 |
 | `metrics_interval_seconds` | 0 | 默认关闭完整 INFO 心跳；非零值至少为 10 秒 |
 | `request_limits.image_edit_body_bytes` | 64 MiB | 单个 multipart edit 总 body 上限 |
 | `request_limits.image_edit_file_bytes` | 50 MiB | 单个 image/mask part 上限 |
@@ -87,6 +89,13 @@ Gateway 实例数
 默认 PostgreSQL `max_connections=50` 可容纳三个默认 Gateway 实例并保留少量管理余量。同一主机上的多个 Gateway 实例必须使用不同的 spool 目录；同一 spool 目录不能被多个进程共享。
 
 不要仅通过增加日志连接数扩大吞吐。当前日志流水线的投影与结算并发受到刻意限制；连接过多会增加 WAL、索引、CPU 和热账户行锁竞争。
+
+日志准入不可写或容量不足时，客户端新请求在派发前返回
+`503 request_log_unavailable`。DB 暂时不可用但本地仍有预算时可以继续服务；
+容量恢复可自动恢复准入，写/同步失败锁定需保留原 spool 并重启。
+存储必须支持预分配及文件/目录同步。逐请求同步增加存储开销，应在实际部署上验证容量。
+重启后只有 intent、没有完整终态的请求保留待核对，不自动记零，也不单独冻结用户。
+恢复及回滚步骤见[日志耐久化](../development/request-log-durability.md)。
 
 ### 日志级别
 

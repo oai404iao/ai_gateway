@@ -474,6 +474,11 @@ impl ResponsesWebSocketSession {
             session_affinity.as_ref(),
             request_multiplier,
         );
+        if let Err(error) = completion.admit_request_log() {
+            pinned.take();
+            send_proxy_error(client, error).await;
+            return SessionAction::Close;
+        }
         let retry = snapshot.system_settings().request_retry();
         let max_retries = if retry.enabled() {
             retry.max_retries()

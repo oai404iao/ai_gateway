@@ -11,6 +11,7 @@
 | --- | --- |
 | Markdown、普通 `docs/`、Agent 指令和 `.gitignore` | `docs` |
 | `src/`、`tests/`、`migrations/`、`tools/` | `rust` |
+| 根 `e2e/`、`mock/` 的非 Markdown 文件 | `docs`、`rust`、`console` |
 | `Cargo.toml`、`Cargo.lock`、`rust-toolchain.toml` | `rust`、`image` |
 | `web/console/package.json`、`web/console/pnpm-lock.yaml`、`web/console/pnpm-workspace.yaml` | `console`、`image` |
 | 其余 `web/console/` | `console` |
@@ -51,7 +52,11 @@ Docker image job 只依赖快速的路径分类，与 Rust、Console 和 E2E 并
 - Rust 1.97.1 format、默认 workspace 的
   Clippy/测试，包括 Codex Responses 与 Images 适配器集成路径；
 - Console API 类型漂移、TypeScript、lint、组件测试和生产构建；
-- Chromium Playwright E2E，并在失败时上传 trace/test results。
+- Chromium Playwright 模拟 API 的 UI E2E，并在失败时上传 trace/test results；
+- [系统 E2E](system-e2e.md)：真实浏览器、固定 Codex/Pi CLI、嵌入式 Gateway 和临时
+  PostgreSQL，验证 HTTP/WS 工具闭环、日志结算、崩溃重放和 spool 写失败边界；
+  Rust 或浏览器检查被选中时执行，
+  并上传脱敏报告。其结果同样进入 `quality-gate` 和稳定 `ci-gate`。
 
 Rust 质量门禁只使用仓库固定的 Rust 1.97.1，不声明或测试更低版本兼容性。
 普通 CI 按路径传入启用项。Release tag 必须解析到属于 `main` 的提交，并通过

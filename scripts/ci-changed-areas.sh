@@ -33,6 +33,14 @@ while IFS= read -r path; do
             console=true
             image=true
             ;;
+        e2e/*.md | mock/*.md)
+            docs=true
+            ;;
+        e2e/* | mock/*)
+            docs=true
+            rust=true
+            console=true
+            ;;
         src/* | tests/* | migrations/* | tools/*)
             rust=true
             ;;

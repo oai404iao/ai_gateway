@@ -25,6 +25,9 @@
 
 ## 来源优先级
 
+项目级验收入口见[系统 E2E](development/system-e2e.md)；
+工程对比背景见 [Monoize 源码研究](reference/monoize-engineering-study.md)。
+
 当文档之间出现差异时，按以下优先级判断：
 
 1. 当前实现、测试、migration、配置反序列化类型。

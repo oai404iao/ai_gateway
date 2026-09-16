@@ -470,6 +470,7 @@ impl ProxyService {
             current_session_affinity.as_ref(),
             request_multiplier,
         );
+        completion.admit_request_log()?;
         let retry_settings = snapshot.system_settings().request_retry();
         let max_retries = if retry_settings.enabled() {
             retry_settings.max_retries()
@@ -1066,6 +1067,18 @@ pub struct ProxyError {
 }
 
 impl ProxyError {
+    fn request_log_unavailable() -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: "Request logging is temporarily unavailable.".to_owned(),
+            error_type: "api_error",
+            param: None,
+            code: Some("request_log_unavailable"),
+            authenticate: false,
+            retry_after: None,
+        }
+    }
+
     fn invalid_api_key() -> Self {
         Self {
             status: StatusCode::UNAUTHORIZED,
@@ -2712,6 +2725,29 @@ struct AutomaticDisableContext {
 }
 
 impl CompletionGuard {
+    fn admit_request_log(&mut self) -> Result<(), ProxyError> {
+        let Some(context) = &self.context else {
+            return Ok(());
+        };
+        let intent = super::request_log::RequestLogIntent {
+            version: 1,
+            id: context.event_id,
+            user_id: context.user_id,
+            api_key_id: context.api_key_id,
+            model_id: context.model_id,
+            started_at: context.started_wall_at,
+            api_operation: context.api_operation,
+            request_protocol: context.request_protocol,
+        };
+        if context.sink.admit(&intent).is_err() {
+            // No dispatch occurred. Do not turn a failed admission into a
+            // fabricated cancelled terminal event through Drop.
+            self.context.take();
+            return Err(ProxyError::request_log_unavailable());
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)] // terminal event requires all selected-route context
     fn new(
         sink: Arc<dyn RequestLogSink>,

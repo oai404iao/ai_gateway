@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "wire_model": "e2e-wire",
+  "usage": {"input_tokens": 5, "output_tokens": 2, "total_tokens": 7},
+  "scenarios": {
+    "responses-text": {"final_text": "E2E_TEXT_OK", "requests": 1},
+    "responses-tool-cycle": {
+      "final_text": "E2E_TOOL_OK",
+      "call_id": "call_system_e2e",
+      "marker_file": "marker.txt",
+      "requests": 2
+    }
+  }
+}
