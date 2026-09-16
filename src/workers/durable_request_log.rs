@@ -70,9 +70,16 @@ impl DurableRequestLogWorker {
         let settings = DurableRequestLogSettings::from(config);
         let directory = settings.spool_directory.clone();
         let compaction_threshold = settings.spool_compaction_threshold_bytes;
+        let max_bytes = config.spool_max_bytes;
+        let min_free_bytes = config.spool_min_free_bytes;
         let spool = Arc::new(
             tokio::task::spawn_blocking(move || {
-                RequestLogSpool::open(directory, compaction_threshold)
+                RequestLogSpool::open_with_limits(
+                    directory,
+                    compaction_threshold,
+                    max_bytes,
+                    min_free_bytes,
+                )
             })
             .await?
             .map_err(|error| DurableRequestLogWorkerStartError::Spool {
@@ -431,6 +438,17 @@ async fn run_spool_ingest_worker(
             continue;
         }
 
+        match compact_spool(Arc::clone(&spool)).await {
+            Ok(true) => {
+                if let Err(error) = reader.reset(0).await {
+                    tracing::error!(%error, "compacted spool reader reset failed");
+                    return;
+                }
+                continue;
+            }
+            Ok(false) => {}
+            Err(error) => tracing::warn!(%error, "request-log spool compaction failed"),
+        }
         if drain_deadline.is_some() {
             let _ = sync_spool(Arc::clone(&spool)).await;
             return;

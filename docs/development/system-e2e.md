@@ -1,7 +1,7 @@
 # 项目级系统 E2E
 
-> 状态：部分实现。第一阶段测试侧覆盖浏览器、Codex HTTP/WS、Pi、共享事件样本与隔离故障注入。
-> 普通请求的生产日志准入仍待策略决策与独立实现，不因测试完成而宣称已修复。
+> 状态：当前。第一阶段覆盖浏览器、Codex HTTP/WS、Pi、共享事件样本、
+> 隔离故障注入及逐请求同步的生产日志准入；未知 usage 只保留待核对。
 
 ## 目标与分层
 
@@ -63,17 +63,29 @@ spool，再 SIGKILL Gateway；恢复 DB 并用原配置/spool 启动，核验最
 本地 checkpoint 未提交的窗口。等待 spool 排空及真实 SQL ingress 计数归零，
 核验日志数、余额和额度没有重复变化；不重新 dispatch 模型调用。
 
-`spool-write-enospc` / `spool-write-eacces` 是**风险复现，不是可靠性成功保证**：
+`spool-write-enospc` / `spool-write-eacces`：
 
-- C helper 只通过当前测试 Gateway 的 `LD_PRELOAD` 拦截指定 `events.log` fd 的 `write`，
+- C helper 只通过当前测试 Gateway 的 `LD_PRELOAD` 拦截指定 admission 目录内 fd 的 `write`，
   返回 ENOSPC/EACCES；不填满宿主磁盘、不改变宿主文件系统权限、不修改生产代码。
-- 核验一次写失败的指标；移除注入后再发请求，核验 writer 仍锁定失败、直到进程重启。
-- 明确记录普通请求仍 dispatch、终态日志缺失、余额没有对应扣减的现状。
+- 验证返回 `503 request_log_unavailable`、上游请求数为零且不伪造终态或扣费。
+- 移除注入后仍返回 503，核验 writer 锁定直到重启。
 - 重启去除注入后，验证新请求重新正常持久化与结算。
 
-这种 syscall 注入不模拟真实文件系统的部分写、全部 I/O 错误或主机断电。
-若以后实施生产 fail-closed，必须同步将风险复现的预期改为拒绝未准入请求，
-不能为了维持测试通过而保留危险语义。
+`terminal-slot-replay-enospc` / `terminal-slot-replay-eacces`：
+只使 `events.log` 写失败，已派发请求将真实终态同步到预分配 slot；
+后续请求被拒绝。重启自动重放 slot，不重新调用上游，核验一次完整结算。
+
+`spool-write-eio_sync` / `terminal-slot-replay-eio_sync` 对 `fsync`/`fdatasync`
+注入 EIO，分别验证派发前同步失败拒绝、终态同步失败后 slot 重放。
+后者同时覆盖追加 write 成功但 sync 未确认的窗口；重启可能重复读取同一 UUID，
+仍只能结算一次。
+
+`kill-before-terminal-pending`：Mock 收到请求后暂不返回响应，确认 intent 存在再 kill；
+重启保留未知记录、释放闲置 slot，不生成零费用终态、不重新调用上游。
+设施恢复后新的请求可以正常派发和结算，与本轮“不因未知费用冻结用户”的决策一致。
+
+这种 syscall 注入不模拟真实文件系统的全部部分写、I/O 错误或主机断电。
+Rust 单元测试另覆盖 slot 重放、容量压力压缩、free-space 拒绝和未知记录反复恢复。
 
 Console 使用 `http://localhost` 的 Chromium loopback 安全上下文例外。
 这验证真实 cookie 行为，但不验证生产 TLS、反向代理或跨域部署。
@@ -140,7 +152,8 @@ PR 不写 Rust cache；系统测试报告保留七天。CI 安装固定客户端
 - [x] WS 工具连续交互与禁止意外 fallback。
 - [x] 第二客户端 Pi，以及协议/工具失败 oracle。
 - [x] Rust/CLI 共享 wire 事件模板，不强制所有 Mock 共用执行器。
-- [x] 真实进程 kill/restart、重复重放以及进程局部 ENOSPC/EACCES 注入。
-- [ ] 根据[日志准入审查](request-log-admission-review.md)确定生产策略后，独立实现与验证。
+- [x] 真实进程 kill/restart、重复重放以及进程局部 ENOSPC/EACCES/同步 EIO 注入。
+- [x] 根据[日志准入审查](request-log-admission-review.md)完成生产策略决策、独立实现与验证。
 
-本阶段不修改生产转发、schema、计费公式或日志准入语义，也不增加 SQLite。
+生产改动增加派发前日志准入和本地恢复语义，不修改 schema 或计费公式，不增加 SQLite。
+待核对记录的自动核对/补账、所有文件系统故障组合和性能验证不在本轮完成声明中。

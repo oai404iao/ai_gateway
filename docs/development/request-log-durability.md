@@ -5,7 +5,8 @@
 请求日志不再直接依赖最终 `request_logs` 宽表的瞬时写入能力。生产启动路径使用三段式流水线：
 
 ```text
-终态请求事件
+派发前同步 intent + 预分配终态 slot
+  -> 终态同步 slot
   -> 本地 append-only spool
   -> PostgreSQL request_log_ingest（COPY FROM，低索引）
   -> request_logs（查询宽表）
@@ -14,24 +15,62 @@
 
 ## 耐久边界
 
-普通请求的故障准入和未完成终态边界另见
-[请求日志故障准入审查](request-log-admission-review.md)；有 spool 不代表已经实现
-dispatch 前的容量预占或逐条同步确认。
+所有完成路由选择的客户端逻辑请求，在 Connector 准备/上游派发前同步持久化
+`admissions/<request UUID>.json`，并为最大 1MiB 终态 payload 预分配 `.slot` 文件。
+一个 HTTP/SSE 请求或每个 WS `response.create`（包括 `generate:false` warmup）只预占一次；
+重试不重复预占，正常结束和客户端取消都由同一个 CompletionGuard 完成。
+准入失败返回 HTTP/WS `503 request_log_unavailable`，不派发、不伪造取消日志。
+路由选择前拒绝和后台 scheduled probe 不属于该准入范围，仍使用原终态端口。
+策略决策见[日志故障准入审查](request-log-admission-review.md)。
 
 `DurableRequestLogSink` 在请求完成时同步完成以下操作：
 
 1. 将不含请求体、成功响应体、Header 或凭据的终态事件编码为带版本的 JSON；失败事件可包含最长 16KiB、已清理控制字符的上游错误响应详情，以及网关或传输错误诊断。
-2. 写入带长度、UUID 和 CRC32 校验的本地追加文件。
-3. 更新文件末尾位置并发送一个可合并的后台唤醒通知。
+2. 已准入请求先把终态写入预分配 slot，带版本、长度和 CRC32，并同步文件。
+3. 写入带长度、UUID 和 CRC32 的本地追加文件。已准入请求同步追加文件后才发布末尾位置，
+   删除 intent/slot，并同步相应目录变更。
+4. 发送一个可合并的后台唤醒通知。
 
 通知队列满不会丢日志，因为队列只负责唤醒；本地 spool 才是待处理数据源。进程重启时会从持久化 checkpoint 后继续读取。数据库提交成功但 checkpoint 尚未更新时会安全重放，并由最终表 UUID 主键保持幂等。
 
-默认每 10ms 对 spool 执行一次 `sync_data`，并在优雅关闭时再次同步。因此普通进程崩溃可以恢复已经完成 `write` 的事件；主机掉电时仍可能损失最后一个 group-sync 窗口。要求掉电场景也具有逐条确认语义时，应使用同步持久化存储或 Kafka/JetStream 等外部 durable broker，不能仅依赖异步本地文件。
+已准入客户端请求使用逐请求同步，不等待 PostgreSQL；生产 Tokio 多线程运行时通过
+`block_in_place` 让出网络执行器线程，并保持同步所有权交接，避免取消与后台预占竞争。
+这些本地同步不是无延迟操作，吞吐依赖存储同步性能，本次没有运行性能基准。
+没有准入的路由前拒绝和 scheduled probe 日志仍默认每 10ms group-sync，
+该部分主机掉电可能损失最后一个窗口；优雅关闭会再次同步。
+逐请求同步以文件系统/设备正确执行 allocation、文件/目录 sync 为前提，
+不是磁盘损毁、主机永久丢失或所有断电场景的证明。
+
+## 故障恢复与未知 usage
+
+- 准入写/同步失败会锁定 writer；移除故障后仍拒绝新派发，必须用原目录重启恢复。
+- `events.log` 写失败时，已经准入的其他在途请求仍可写自己的预分配 slot。
+  slot 完整时，启动自动使用同一 UUID 重放，再沿原 COPY/投影/结算链路幂等处理。
+- 如果 slot 也失败、进程在终态前被杀或只留下撕裂终态，保留 intent 和非零 slot 证据，
+  输出 `request_log_reconciliation_required`。**未知不等于失败/取消，不自动记零、不伪造 usage，
+  不进入普通终态结算。**
+- 本轮策略明确选择“只保留待核对”：未知记录本身不冻结用户或整个实例。
+  重启会释放未知 slot 尾部的闲置预分配空间，预算只保留实际证据大小（每文件至少按 4KiB）；
+  设施健康且预算允许时继续服务。因此存在人工核对期间的未知费用风险。
+- intent 只有版本、请求/用户/Key/定价模型 UUID、开始时间、操作和传输类型；
+  它不是 usage 或费用证据，亦不能证明已经派发（同步成功至真正 dispatch 之间仍有窗口）。
+  不保存请求体、Header、成功响应体或凭据。
+
+运维应按 ERROR 中的 UUID，在原 `admissions/` 中核对 JSON intent、slot、
+数据库同 UUID 日志及提供方证据。数据库已有完整同 UUID 终态时先验证其结算状态，
+不要手工再扣一次。没有可靠 usage 时保留待核对，不把缺失证据变成零费用成功记录。
+当前没有自动核对、Console 待核对页面或补账 API；经核实需要归档的文件只能在实例停止后
+由运维按具体 UUID 操作，禁止批量删除目录或通过换 spool 目录“恢复”。
+slot 是二进制版本化 journal，不能当 JSON 或正常终态表直接导入。
 
 spool 目录必须可写，并且同一台主机上的每个 Gateway 进程必须使用不同目录。进程会持有排他文件锁，防止两个实例同时写坏同一个 spool；Unix 下目录和文件会分别收紧为 `0700` 与 `0600`。
 重启时应继续使用同一目录和同一业务数据库；切换数据库环境时必须同时切换 spool 目录，避免把旧环境的用户/API Key UUID 投影到新数据库。
 
 ## 升级边界
+
+新增的 admission 文件不改变 `events.log` journal 版本，也不修改数据库 schema。
+回滚到不理解 admission 的旧二进制前，必须先由新二进制重放完整 slot 并排空流水线，
+将未知记录另行完成核对/保留，不能让旧二进制忽略尚未重放的终态文件。
 
 Journal v3 的每条事件都显式包含 `request_protocol`，取值为
 `non_stream`、`sse` 或 `websocket`。读取器仍兼容 v2，并根据旧事件的
@@ -134,7 +173,17 @@ COPY、投影、结算、backlog、耗时和日志数据库池累计字段。
 4. 批量恢复未结算记录。
 5. 最后同步 spool 文件。
 
-整个日志流水线达到 `shutdown_drain_seconds` 后，未完成数据保留在 spool 或入口表供重启恢复，而不是被丢弃。磁盘空间仍是硬容量边界；生产环境必须监控 spool 目录和 PostgreSQL 存储，并为持续流量提供足够容量。
+整个日志流水线达到 `shutdown_drain_seconds` 后，未完成数据保留在 spool、slot 或入口表供重启恢复。
+`spool_max_bytes` 默认 1GiB，预算包括整个追加文件、每个在途请求的 slot 与终态追加余量、
+以及待核对证据；它不是 PostgreSQL backlog 限额或跨进程磁盘配额。
+`spool_min_free_bytes` 默认 64MiB，准入另检查文件系统可用空间和在途终态余量。
+真正预留通过文件 allocation 完成，不支持该操作的文件系统会拒绝准入。
+外部磁盘使用、I/O 错误仍可能使终态失败，不能把 free-space 检查当成绝对写入保证。
+
+DB 故障但本地预算足够时继续服务；容量不足只拒绝新派发，不删除旧日志。
+正常压缩阈值不能大于总预算，总预算至少容纳一个完整预占及追加余量。
+容量压力会唤醒 ingestion Worker，在文件已排空时允许低于普通阈值压缩并重置 reader；
+纯容量恢复不要求重启，写/同步失败锁定则要求重启。
 
 生产模板将已排空 spool 的压缩阈值设为 256MiB，以减少高请求率下频繁
 truncate/sync 对尾延迟的影响。完整机器分档和 PostgreSQL 参数见

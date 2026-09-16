@@ -85,19 +85,21 @@ spool，不是靠易失队列换可移植性。它在请求开始时预留容量
 是合理的幂等设计，但查询投影、保留策略与结算恢复耦合。应明确计量事实和查询投影
 的生命周期，不预设引入消息中间件或重写账本。
 
-普通 `RequestLogSink::try_record` 返回 `()`；终态 append 失败只输出指标/ERROR，
-不能撤销已完成上游调用。拼车另有预占 WAL，必须分开审查。
-需要明确磁盘满、不可写、DB 长期不可用时的准入，而不是声称“有 spool 就不丢”。
+研究时普通 `RequestLogSink::try_record` 返回 `()`，终态 append 失败只输出指标/ERROR，
+无法撤销已完成上游调用。后续第一阶段已增加独立 `admit` 端口、派发前同步 intent、
+预分配终态 slot 和恢复；未知费用选择只保留待核对，不冻结用户。
+拼车另有预占 WAL，仍不能把其金额 fail-closed 保证外推给普通请求。
 
 耐久性要区分进程崩溃和断电：Monoize SQLite 的 `synchronous=NORMAL` 存在近期
-事务断电丢失窗口，我们默认 spool 也有 10ms group-sync 窗口。
+事务断电丢失窗口；我们已准入的客户端请求现在逐条同步，
+路由前拒绝和 scheduled probe 等未准入日志仍有默认 10ms group-sync 窗口。
 参见 [SQLite 官方说明](https://www.sqlite.org/pragma.html#pragma_synchronous)
 和[本项目耐久边界](../development/request-log-durability.md)。
 
 ## 改进顺序
 
 1. 第一阶段：[系统 E2E](../development/system-e2e.md)、真实 CLI 工具闭环、
-   少量浏览器全栈、共享场景/报告和普通日志故障准入审查。
+   少量浏览器全栈、共享场景/报告和普通日志故障准入实现，已完成。
 2. 第二阶段：收拢事务接口，区分控制面、计量结算和查询投影，将 PG 优化留在后端内。
 3. 第三阶段：确认轻量部署需求后增加 SQLite，运行相同业务契约；不直接承诺双数据库。
 

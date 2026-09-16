@@ -6,7 +6,10 @@ use std::{
 };
 
 use ai_gateway::{
-    application::{ProxyService, RecordingRequestLogSink},
+    application::{
+        ProxyService, RecordingRequestLogSink, RequestLogAdmissionError, RequestLogIntent,
+        RequestLogSink,
+    },
     domain::{
         ApiFormat, AutomaticDisableSettings, PassiveHealthSettings, ScheduledTestingSettings,
         SessionAffinityKeySource, SessionAffinityRule, SessionAffinitySettings,
@@ -1187,6 +1190,84 @@ fn proxy_request(model: &str) -> axum::http::Request<Body> {
             serde_json::to_vec(&serde_json::json!({"model": model})).unwrap(),
         ))
         .unwrap()
+}
+
+struct DeniedLogSink;
+
+impl RequestLogSink for DeniedLogSink {
+    fn admit(&self, _: &RequestLogIntent) -> Result<(), RequestLogAdmissionError> {
+        Err(RequestLogAdmissionError)
+    }
+
+    fn try_record(&self, _: ai_gateway::domain::RequestLogEvent) {
+        panic!("denied admission must not emit a fabricated terminal");
+    }
+}
+
+#[tokio::test]
+async fn log_admission_denies_all_http_operations_before_dispatch() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let upstream = start_server(Router::new().fallback(any(capture_upstream)).with_state(
+        MockUpstream {
+            requests: Arc::clone(&requests),
+            status: StatusCode::OK,
+            body: b"{}".to_vec(),
+        },
+    ))
+    .await;
+    let configured = proxy_service_with_policy(
+        &format!("http://{}", upstream.address),
+        RecordingRequestLogSink::default(),
+        None,
+        None,
+        None,
+        Decimal::ZERO,
+    );
+    let proxy = ProxyService::with_log_sink(configured.runtime, 1_048_576, Arc::new(DeniedLogSink))
+        .unwrap();
+    let app = http::router(proxy);
+    for (path, model, stream) in [
+        ("/v1/chat/completions", "same-model", false),
+        ("/v1/chat/completions", "same-model", true),
+        ("/v1/responses", "responses-model", false),
+        ("/v1/responses", "responses-model", true),
+        ("/v1/alpha/search", "search-alias", false),
+        ("/v1/images/generations", "gpt-image-2", false),
+        ("/v1/images/edits", "gpt-image-2", false),
+    ] {
+        let (content_type, body) = if path.ends_with("/edits") {
+            (
+                "multipart/form-data; boundary=admission",
+                multipart_edit_body("admission", model, &[], b"png"),
+            )
+        } else {
+            let mut body = serde_json::json!({"model": model});
+            if path.ends_with("/search") {
+                body["input"] = serde_json::json!("test");
+                body["commands"] = serde_json::json!({"search_query": [{"q": "test"}]});
+            } else if !path.contains("/images/") {
+                body["stream"] = serde_json::json!(stream);
+            }
+            ("application/json", serde_json::to_vec(&body).unwrap())
+        };
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post(path)
+                    .header("authorization", format!("Bearer {CLIENT_KEY}"))
+                    .header("content-type", content_type)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 8192).await.unwrap()).unwrap();
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{path}: {body}");
+        assert_eq!(body["error"]["code"], "request_log_unavailable", "{path}");
+    }
+    assert!(requests.lock().unwrap().is_empty());
 }
 
 fn session_affinity_proxy(first_upstream_url: &str, second_upstream_url: &str) -> ProxyService {

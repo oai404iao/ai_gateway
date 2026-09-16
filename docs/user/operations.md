@@ -982,8 +982,13 @@ OpenAI Responses 的 `reasoning.effort`、DeepSeek/OpenAI Chat Completions 兼�
 `output_tokens / ((total_duration_ms - ttft_ms) / 1000)`；usage 或 TTFT 不可用时显示空值。
 
 额度是软预检查：不预留金额，已结算额度达到上限后才拒绝后续请求；余额可以为负。
-终态请求日志先同步追加到本地 durable spool，后台通知队列饱和只会合并唤醒，不会丢弃
-spool 中的事件。spool 写入失败和磁盘空间耗尽仍是必须告警的耐久边界。
+客户端请求在派发前同步日志 intent 并预留终态空间；不可写或容量不足返回
+`503 request_log_unavailable`（WS 为同码错误帧），不会派发上游或伪造取消日志。
+终态先同步预分配 slot，再同步追加到 spool；后台通知队列满只合并唤醒。
+完整 slot 可在重启后按原 UUID 重放并幂等结算。只有 intent 而无完整终态时，
+保留待核对，不自动记零或冻结用户；应监控 `request_log_reconciliation_required`。
+日志写/同步失败锁定必须保留原目录重启，单纯容量不足可在排空后自动恢复。
+详见[恢复、容量与回滚边界](../development/request-log-durability.md)。
 
 Console 请求日志列表会在同一列上下显示 `api_operation` 和请求协议，并支持按
 `api_operation` 筛选。操作区分 Chat Completions、Responses、standalone web search、

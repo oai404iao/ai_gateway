@@ -104,14 +104,16 @@ settlement_batch_size = 4_096
 settlement_interval_milliseconds = 500
 # Each gateway process sharing a host must use a unique spool directory.
 spool_directory = "/var/lib/ai-gateway/request-log-spool"
-# File data is group-synced on this interval and always synced at shutdown.
-# A process crash is recoverable after write(); strict host-power-loss
-# durability would require synchronous storage or an external durable broker.
+# Admitted client requests sync individually. This interval covers terminal
+# logs without admission (pre-route rejections and scheduled probes).
 spool_sync_interval_milliseconds = 10
-# A fully drained append file is truncated only after crossing this threshold.
+# A fully drained append file is truncated at this threshold or under capacity pressure.
 # 256 MiB avoids frequent truncate/sync pauses at high request rates. Lower it
 # when disk capacity is tight; raise it when p99 latency shows compaction spikes.
 spool_compaction_threshold_bytes = 268_435_456
+# Budget includes in-flight terminal slots and append headroom, not just pending bytes.
+spool_max_bytes = 1_073_741_824
+spool_min_free_bytes = 67_108_864
 # Optional full `request_log_metrics` INFO heartbeat. Zero disables periodic
 # snapshots; the Console system-load panel and transition-based health events
 # remain active. Headless deployments can use 300-900 seconds if needed.

@@ -52,7 +52,7 @@ pub use proxy_test::{ProxyTestError, ProxyTestInput, ProxyTestResponse, ProxyTes
 pub use request_body::ProxyRequestBodyLimits;
 pub use request_log::{
     DurableRequestLogSink, NoopRequestLogSink, QueueRequestLogSink, RecordingRequestLogSink,
-    RequestLogPipelineMonitor, RequestLogSink,
+    RequestLogAdmissionError, RequestLogIntent, RequestLogPipelineMonitor, RequestLogSink,
 };
 pub use system_metrics::{SystemLoadReport, SystemMetricsService};
 pub(crate) use usage::{ResponseErrorDetails, ResponseUsage, UsageCollector};

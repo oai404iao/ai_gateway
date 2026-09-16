@@ -8,6 +8,7 @@ pub mod http;
 pub mod models_dev;
 pub mod observability;
 pub mod persistence;
+mod request_log_admission;
 mod request_log_journal;
 mod request_log_spool;
 mod request_policy;

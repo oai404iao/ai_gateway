@@ -1,7 +1,7 @@
 # Project system E2E
 
 > Status: Current. Covers a real browser, pinned Codex HTTP/WS and Pi clients,
-> crash/replay, and explicit spool-failure characterization against the production
+> crash/replay, and durable admission fault acceptance against the production
 > gateway and disposable PostgreSQL. Production admission changes remain separate.
 
 See [the maintainer guide](../docs/development/system-e2e.md) for setup,

@@ -122,7 +122,7 @@ class Scenario:
 
 
 class Upstream:
-    def __init__(self, marker):
+    def __init__(self, marker, response_gate=None):
         self.scenario = Scenario(marker)
         scenario = self.scenario
 
@@ -142,6 +142,8 @@ class Upstream:
                     self.connection.settimeout(10)
                     body = json.loads(self.rfile.read(length))
                     events, response = scenario.respond(body)
+                    if response_gate is not None and not response_gate.wait(timeout=10):
+                        raise ValueError("response gate timed out")
                     events = encode_sse(events)
                     payload = b"".join(events) if body.get("stream") else json.dumps(response).encode()
                     self.send_response(200)
@@ -154,6 +156,8 @@ class Upstream:
                             self.wfile.flush()
                     else:
                         self.wfile.write(payload)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
                 except (ValueError, TypeError, KeyError) as error:
                     with scenario.lock:
                         if len(scenario.errors) < MAX_REQUESTS:

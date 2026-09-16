@@ -1,4 +1,4 @@
-//! Nonblocking application port for terminal request-log events.
+//! Local-durability admission and terminal request-log application ports.
 
 use std::{
     sync::{Arc, Mutex},
@@ -6,7 +6,9 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
+use uuid::Uuid;
 
 use crate::{
     domain::RequestLogEvent, observability::RequestLogPipelineMetrics,
@@ -18,7 +20,30 @@ const MONITOR_QUERY_TIMEOUT: Duration = Duration::from_secs(2);
 /// Request paths use this synchronous port without waiting for PostgreSQL.
 /// Durable implementations may perform a bounded local append before return.
 pub trait RequestLogSink: Send + Sync {
+    /// Admission must complete before any upstream dispatch. Non-production
+    /// sinks may opt out; the durable sink synchronizes a recoverable intent.
+    fn admit(&self, _: &RequestLogIntent) -> Result<(), RequestLogAdmissionError> {
+        Ok(())
+    }
+
     fn try_record(&self, event: RequestLogEvent);
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("request-log admission is unavailable")]
+pub struct RequestLogAdmissionError;
+
+/// Safe correlation facts only; this is not usage evidence or a billable event.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct RequestLogIntent {
+    pub version: u16,
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub api_key_id: Uuid,
+    pub model_id: Uuid,
+    pub started_at: DateTime<Utc>,
+    pub api_operation: crate::domain::ApiOperation,
+    pub request_protocol: crate::domain::RequestProtocol,
 }
 
 #[derive(Clone, Default)]
@@ -81,10 +106,19 @@ impl DurableRequestLogSink {
 }
 
 impl RequestLogSink for DurableRequestLogSink {
+    fn admit(&self, intent: &RequestLogIntent) -> Result<(), RequestLogAdmissionError> {
+        local_io(|| self.spool.admit(intent)).map_err(|error| {
+            let _ = self.wake.try_send(());
+            tracing::error!(request_log_id = %intent.id, %error,
+                reason = "request_log_admission_denied", "request rejected before upstream dispatch");
+            RequestLogAdmissionError
+        })
+    }
+
     fn try_record(&self, event: RequestLogEvent) {
         let id = event.id;
         self.metrics.record_attempt();
-        match self.spool.append(&event) {
+        match local_io(|| self.spool.append(&event)) {
             Ok(bytes) => {
                 self.metrics.record_spooled(bytes);
                 match self.wake.try_send(()) {
@@ -104,10 +138,22 @@ impl RequestLogSink for DurableRequestLogSink {
                     request_log_id = %id,
                     %error,
                     reason = "spool_append_failed",
-                    "request log could not cross the configured durability boundary"
+                    "terminal spool append failed; admission artifacts are retained for recovery"
                 );
             }
         }
+    }
+}
+
+fn local_io<T>(operation: impl FnOnce() -> T) -> T {
+    // Keep the synchronous ownership handoff cancellation-safe, while Tokio's
+    // production multithread runtime replaces this worker during disk waits.
+    if tokio::runtime::Handle::try_current()
+        .is_ok_and(|handle| handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
+    {
+        tokio::task::block_in_place(operation)
+    } else {
+        operation()
     }
 }
 

@@ -533,6 +533,7 @@ struct WebSocketControls {
     other_websocket_route: bool,
     other_route_authorized: bool,
     max_idle_connections: usize,
+    admitted_log_requests: usize,
 }
 
 impl Default for WebSocketControls {
@@ -549,6 +550,7 @@ impl Default for WebSocketControls {
             other_websocket_route: false,
             other_route_authorized: true,
             max_idle_connections: 128,
+            admitted_log_requests: usize::MAX,
         }
     }
 }
@@ -753,7 +755,10 @@ async fn gateway_harness_with_controls(
         Arc::clone(&runtime),
         1_048_576,
         Arc::clone(&registry),
-        Arc::new(logs.clone()),
+        Arc::new(LimitedLogSink {
+            logs: logs.clone(),
+            remaining: AtomicUsize::new(controls.admitted_log_requests),
+        }),
         routing.clone(),
         AdmissionRuntime::new(),
     )
@@ -781,6 +786,62 @@ async fn gateway_harness_with_controls(
         runtime,
         routing,
         upgrade_attempts,
+    }
+}
+
+struct LimitedLogSink {
+    logs: RecordingRequestLogSink,
+    remaining: AtomicUsize,
+}
+
+impl ai_gateway::application::RequestLogSink for LimitedLogSink {
+    fn admit(
+        &self,
+        _: &ai_gateway::application::RequestLogIntent,
+    ) -> Result<(), ai_gateway::application::RequestLogAdmissionError> {
+        self.remaining
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .map(|_| ())
+            .map_err(|_| ai_gateway::application::RequestLogAdmissionError)
+    }
+
+    fn try_record(&self, event: ai_gateway::domain::RequestLogEvent) {
+        ai_gateway::application::RequestLogSink::try_record(&self.logs, event);
+    }
+}
+
+#[tokio::test]
+async fn log_admission_is_checked_for_each_websocket_create_before_dispatch() {
+    for allowed in [0, 1] {
+        let upstream = start_mock_upstream().await;
+        let gateway = gateway_harness_with_controls(
+            &upstream,
+            None,
+            WebSocketControls {
+                admitted_log_requests: allowed,
+                ..Default::default()
+            },
+        )
+        .await;
+        let (mut client, _) = connect_async(websocket_request(
+            gateway.server.address,
+            CLIENT_KEY,
+            "log-admission",
+        ))
+        .await
+        .unwrap();
+        if allowed == 1 {
+            let events = response_create(&mut client, None).await;
+            assert_eq!(events.last().unwrap()["type"], "response.completed");
+        }
+        let events = response_create(&mut client, None).await;
+        assert_eq!(
+            events.last().unwrap()["error"]["code"],
+            "request_log_unavailable"
+        );
+        assert_eq!(events.last().unwrap()["status"], 503);
+        assert_eq!(upstream.requests().len(), allowed);
+        assert_eq!(gateway.logs.events().len(), allowed);
     }
 }
 
