@@ -155,7 +155,7 @@ Images projection 当前固定声明经核对的 `gpt-image-2`，不声明 WebSo
 
 路由层级、上游模型映射和权重不在凭证或 projection Channel 上同步。Responses 与 Images 协议
 规则分别拥有自己的 priority tiers、selection strategy 和显式 channel/model candidates。
-Channel Group 只让 Console 一次性批量加入当前 projection；保存后不保留组依赖，未来凭证不会
+Console 逐行添加 projection 渠道，Channel Group 仅提供选项上下文；保存后不保留组依赖，未来凭证不会
 自动继承既有规则。一个格式的 routing assignment 不会投影到另一个格式。
 
 ### 安全迁移

@@ -72,8 +72,8 @@ attempt 不会在中途观察到新设置；OAuth authorization、Models 与 quo
 Codex credential 和两个 projection channel 都不拥有 routing weight 或目标模型映射。权重、
 priority、selection strategy 和上游 wire model 属于顶层计价模型下的显式协议规则 candidate；
 Responses 和 Images 协议独立引用各自的 group/channel projection，不在两个格式之间同步路由
-赋值。Console 可以按 Codex group 批量加入当时已有的 projection，但保存结果只有渠道、模型和
-正权重；以后新接入的 credential 必须再次显式或批量加入，不会自动继承既有路由。
+赋值。Console 逐行选择 projection 渠道、模型和正权重；以后新接入的 credential 必须再次显式
+加入，不会自动继承既有路由。
 
 新建 Codex Responses group 时会同时创建一个默认关闭的 Images group。migration 对现有 group 和
 凭证执行同样投影，但不会增加 API Key format、Policy、模型规则或可访问路由。管理员必须显式启用

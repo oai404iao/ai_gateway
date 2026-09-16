@@ -42,13 +42,17 @@ import { apiFormatLabel } from "@/lib/permissions";
 import { ModelRuleTierEditor } from "./model-rule-tier-editor";
 
 const candidateSchema = z.object({
-  channel_id: z.string().min(1),
+  channel_id: z.string().min(1, "Choose a channel."),
   upstream_model: z
     .string()
     .trim()
-    .min(1)
+    .min(1, "Choose an upstream model.")
     .max(300, "Upstream model must be at most 300 characters."),
-  weight: z.number().int().min(1).max(2_147_483_647),
+  weight: z
+    .number()
+    .int("Weight must be a positive integer.")
+    .min(1, "Weight must be a positive integer.")
+    .max(2_147_483_647),
 });
 
 const tierSchema = z

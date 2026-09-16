@@ -81,9 +81,9 @@ test("model routing drills from a priced model into its protocol", async ({
   ).toBeVisible();
   await expect(
     page.getByRole("combobox", {
-      name: `Upstream model for channel ${CHANNEL.name}`,
+      name: "Upstream model for tier 1 row 1",
     }),
-  ).toContainText(MODEL.source_model_id);
+  ).toHaveValue(MODEL.source_model_id);
 });
 
 test("protocol saves preserve candidate-owned upstream models and the ETag", async ({
@@ -97,9 +97,11 @@ test("protocol saves preserve candidate-owned upstream models and the ETag", asy
   const requestPromise = page.waitForRequest(
     (request) =>
       request.method() === "PUT" &&
-      request.url().endsWith(
-        `/model-rules/${MODEL_RULE.id}/protocols/${MODEL_PROTOCOL_RULE.id}`,
-      ),
+      request
+        .url()
+        .endsWith(
+          `/model-rules/${MODEL_RULE.id}/protocols/${MODEL_PROTOCOL_RULE.id}`,
+        ),
   );
   await page
     .getByRole("button", { name: "Save protocol", exact: true })
@@ -118,4 +120,71 @@ test("protocol saves preserve candidate-owned upstream models and the ETag", asy
       () => document.documentElement.scrollWidth <= window.innerWidth,
     ),
   ).toBe(true);
+});
+
+test("route records can be added, searched, edited and removed on a narrow viewport", async ({
+  page,
+}) => {
+  await prepare(page);
+  const secondChannel = {
+    ...CHANNEL,
+    id: "00000000-0000-0000-0000-000000000199",
+    name: "Backup",
+    available_models: ["wire-backup"],
+  };
+  await page.route("**/console/v1/routing/channels", (route) =>
+    route.fulfill({ json: [CHANNEL, secondChannel] }),
+  );
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `/admin/routing/model-rules/${MODEL_RULE.id}/protocols/${MODEL_PROTOCOL_RULE.id}`,
+  );
+  await page.getByRole("button", { name: "Add record", exact: true }).click();
+  await expect(
+    page.getByRole("combobox", { name: "Upstream model for tier 1 row 2" }),
+  ).toBeDisabled();
+  await page
+    .getByRole("combobox", { name: "Channel for tier 1 row 2", exact: true })
+    .fill("Back");
+  await page.getByRole("option", { name: /Backup/ }).click();
+  await page
+    .getByRole("combobox", { name: "Upstream model for tier 1 row 2" })
+    .fill("wire-back");
+  await page.getByRole("option", { name: "wire-backup", exact: true }).click();
+  await page
+    .getByRole("spinbutton", { name: "Weight for tier 1 row 2" })
+    .fill("7");
+  await page
+    .getByRole("button", { name: "Remove tier 1 row 1", exact: true })
+    .click();
+  await expect(
+    page.getByRole("combobox", {
+      name: "Channel for tier 1 row 1",
+      exact: true,
+    }),
+  ).toHaveValue("Backup");
+  await expect(
+    page.getByRole("combobox", { name: "Upstream model for tier 1 row 1" }),
+  ).toHaveValue("wire-backup");
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+  const requestPromise = page.waitForRequest(
+    (request) =>
+      request.method() === "PUT" && request.url().includes("/protocols/"),
+  );
+  await page
+    .getByRole("button", { name: "Save protocol", exact: true })
+    .click();
+  expect(
+    (await requestPromise).postDataJSON().routing_tiers[0].candidates,
+  ).toEqual([
+    {
+      channel_id: secondChannel.id,
+      upstream_model: "wire-backup",
+      weight: 7,
+    },
+  ]);
 });

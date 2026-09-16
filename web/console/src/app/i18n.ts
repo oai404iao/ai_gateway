@@ -1087,6 +1087,8 @@ const zhCN: Record<string, string> = {
   "Model rule created": "模型规则已创建",
   "Routing status": "路由状态",
   "Protocol routing tiers": "协议路由层",
+  "Lower priority tiers are tried first. Weights are compared only among eligible candidates in the same tier.":
+    "优先尝试数值较低的路由层；权重仅在同一层内符合条件的候选项之间比较。",
   "Lower priority tiers are tried first. Every channel and upstream-model pair has its own weight.":
     "优先尝试数值较低的路由层；每个渠道与上游模型组合都有独立权重。",
   "Lower priority tiers are tried first. Strategy and weights belong to this protocol rule, not to global channels or groups.":
@@ -1104,6 +1106,17 @@ const zhCN: Record<string, string> = {
   "Add a channel": "添加渠道",
   "Add channel to tier {number}": "向路由层 {number} 添加渠道",
   "Choose a channel": "选择渠道",
+  "Add record": "新增记录",
+  "Choose a channel.": "请选择渠道。",
+  "Choose an upstream model.": "请选择上游模型。",
+  "Choose a channel first": "请先选择渠道",
+  "No matching channels": "没有匹配的渠道",
+  "No matching models": "没有匹配的模型",
+  "Weight must be a positive integer.": "权重必须为正整数。",
+  "Channel for tier {tier} row {row}": "路由层 {tier} 第 {row} 行的渠道",
+  "Upstream model for tier {tier} row {row}": "路由层 {tier} 第 {row} 行的上游模型",
+  "Weight for tier {tier} row {row}": "路由层 {tier} 第 {row} 行的权重",
+  "Remove tier {tier} row {row}": "删除路由层 {tier} 第 {row} 行",
   "All channel/model pairs are already used": "所有渠道/模型组合均已使用",
   "Selecting the same channel again adds its next unused upstream model.":
     "再次选择同一渠道会添加其下一个尚未使用的上游模型。",

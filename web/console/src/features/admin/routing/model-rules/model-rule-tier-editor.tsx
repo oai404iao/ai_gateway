@@ -1,5 +1,5 @@
 import { useId, useMemo } from "react";
-import { Plus, Trash2 } from "lucide-react";
+import { Plus, Trash2, X } from "lucide-react";
 import type {
   ChannelGroupView,
   ChannelView,
@@ -7,17 +7,25 @@ import type {
   SelectionStrategy,
 } from "@/api/types";
 import { useI18n } from "@/app/i18n";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Card,
   CardAction,
   CardContent,
   CardDescription,
-  CardFooter,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Combobox,
+  ComboboxCollection,
+  ComboboxContent,
+  ComboboxEmpty,
+  ComboboxGroup,
+  ComboboxInput,
+  ComboboxItem,
+  ComboboxList,
+} from "@/components/ui/combobox";
 import {
   Field,
   FieldDescription,
@@ -37,6 +45,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
   SELECTION_STRATEGIES,
   selectionStrategyLabel,
 } from "@/lib/permissions";
@@ -54,9 +70,6 @@ interface ModelRuleTierEditorProps {
   className?: string;
 }
 
-const ADD_CHANNEL_VALUE = "__add_channel__";
-const ADD_GROUP_VALUE = "__add_channel_group__";
-
 function nextPriority(tiers: RoutingTier[]): number {
   const used = new Set(tiers.map((tier) => tier.priority));
   let priority = 0;
@@ -70,22 +83,6 @@ function updateAt<T>(items: T[], index: number, value: T): T[] {
 
 function removeAt<T>(items: T[], index: number): T[] {
   return items.filter((_, itemIndex) => itemIndex !== index);
-}
-
-function candidateKey(candidate: RouteCandidate): string {
-  return `${candidate.channel_id}\u0000${candidate.upstream_model}`;
-}
-
-function nextUnusedModel(
-  candidates: readonly RouteCandidate[],
-  channel: ChannelView,
-): string | undefined {
-  const selected = new Set(
-    candidates
-      .filter((candidate) => candidate.channel_id === channel.id)
-      .map((candidate) => candidate.upstream_model),
-  );
-  return channel.available_models.find((model) => !selected.has(model));
 }
 
 export function ModelRuleTierEditor({
@@ -104,6 +101,13 @@ export function ModelRuleTierEditor({
   );
   const channelById = useMemo(
     () => new Map(channels.map((channel) => [channel.id, channel])),
+    [channels],
+  );
+  const channelIds = useMemo(
+    () =>
+      [...channels]
+        .sort((left, right) => left.name.localeCompare(right.name))
+        .map((channel) => channel.id),
     [channels],
   );
 
@@ -125,54 +129,6 @@ export function ModelRuleTierEditor({
     });
   };
 
-  const addChannel = (tierIndex: number, channelId: string) => {
-    const tier = value[tierIndex];
-    const channel = channelById.get(channelId);
-    if (!channel) return;
-    const upstreamModel = nextUnusedModel(tier.candidates, channel);
-    if (!upstreamModel) return;
-    patchTier(tierIndex, {
-      candidates: [
-        ...tier.candidates,
-        {
-          channel_id: channel.id,
-          upstream_model: upstreamModel,
-          weight: 100,
-        },
-      ],
-    });
-  };
-
-  const addChannelGroup = (tierIndex: number, groupId: string) => {
-    const tier = value[tierIndex];
-    const selectedChannelIds = new Set(
-      tier.candidates.map((candidate) => candidate.channel_id),
-    );
-    const additions = channels
-      .filter(
-        (channel) =>
-          channel.channel_group_id === groupId &&
-          !selectedChannelIds.has(channel.id),
-      )
-      .sort((left, right) => left.name.localeCompare(right.name))
-      .flatMap((channel) => {
-        const upstreamModel = channel.available_models[0];
-        return upstreamModel
-          ? [
-              {
-                channel_id: channel.id,
-                upstream_model: upstreamModel,
-                weight: 100,
-              },
-            ]
-          : [];
-      });
-    if (additions.length === 0) return;
-    patchTier(tierIndex, {
-      candidates: [...tier.candidates, ...additions],
-    });
-  };
-
   return (
     <FieldSet
       className={cn(className)}
@@ -181,29 +137,13 @@ export function ModelRuleTierEditor({
       <FieldLegend>{t("Protocol routing tiers")}</FieldLegend>
       <FieldDescription>
         {t(
-          "Lower priority tiers are tried first. Every channel and upstream-model pair has its own weight.",
+          "Lower priority tiers are tried first. Weights are compared only among eligible candidates in the same tier.",
         )}
       </FieldDescription>
-
       <FieldGroup>
         {value.map((tier, tierIndex) => {
           const tierPath = ["routing_tiers", tierIndex];
-          const availableChannels = channels
-            .filter((channel) => nextUnusedModel(tier.candidates, channel))
-            .sort((left, right) => left.name.localeCompare(right.name));
-          const availableGroups = groups
-            .filter((group) =>
-              channels.some(
-                (channel) =>
-                  channel.channel_group_id === group.id &&
-                  channel.available_models.length > 0 &&
-                  !tier.candidates.some(
-                    (candidate) => candidate.channel_id === channel.id,
-                  ),
-              ),
-            )
-            .sort((left, right) => left.name.localeCompare(right.name));
-
+          const priorityError = errorFor([...tierPath, "priority"]);
           return (
             <Card key={tierIndex}>
               <CardHeader>
@@ -231,65 +171,43 @@ export function ModelRuleTierEditor({
               </CardHeader>
               <CardContent>
                 <FieldGroup>
-                  <FieldGroup className="grid gap-4 md:grid-cols-2">
-                    <Field
-                      data-invalid={
-                        Boolean(errorFor([...tierPath, "priority"])) || undefined
-                      }
-                    >
-                      <FieldLabel
-                        htmlFor={`${idPrefix}-tier-${tierIndex}-priority`}
-                      >
+                  <FieldGroup className="grid gap-4 sm:grid-cols-[8rem_14rem]">
+                    <Field data-invalid={Boolean(priorityError) || undefined}>
+                      <FieldLabel htmlFor={`${idPrefix}-${tierIndex}-priority`}>
                         {t("Priority")}
                       </FieldLabel>
                       <Input
-                        id={`${idPrefix}-tier-${tierIndex}-priority`}
+                        id={`${idPrefix}-${tierIndex}-priority`}
                         type="number"
                         min={0}
                         max={2_147_483_647}
                         step={1}
                         value={tier.priority}
-                        aria-invalid={Boolean(
-                          errorFor([...tierPath, "priority"]),
-                        )}
+                        aria-invalid={Boolean(priorityError)}
                         onChange={(event) =>
                           patchTier(tierIndex, {
                             priority: Number(event.target.value),
                           })
                         }
                       />
-                      <FieldDescription>
-                        {t("Lower numbers are attempted first.")}
-                      </FieldDescription>
-                      {errorFor([...tierPath, "priority"]) ? (
-                        <FieldError>
-                          {errorFor([...tierPath, "priority"])}
-                        </FieldError>
+                      {priorityError ? (
+                        <FieldError>{priorityError}</FieldError>
                       ) : null}
                     </Field>
-                    <Field
-                      data-invalid={
-                        Boolean(
-                          errorFor([...tierPath, "selection_strategy"]),
-                        ) || undefined
-                      }
-                    >
+                    <Field>
                       <FieldLabel>{t("Selection strategy")}</FieldLabel>
                       <Select
                         value={tier.selection_strategy}
-                        onValueChange={(selectionStrategy) =>
+                        onValueChange={(strategy) =>
                           patchTier(tierIndex, {
-                            selection_strategy:
-                              selectionStrategy as SelectionStrategy,
+                            selection_strategy: strategy as SelectionStrategy,
                           })
                         }
                       >
                         <SelectTrigger
-                          aria-label={t("Selection strategy for tier {number}", {
-                            number: tierIndex + 1,
-                          })}
-                          aria-invalid={Boolean(
-                            errorFor([...tierPath, "selection_strategy"]),
+                          aria-label={t(
+                            "Selection strategy for tier {number}",
+                            { number: tierIndex + 1 },
                           )}
                         >
                           <SelectValue />
@@ -304,102 +222,6 @@ export function ModelRuleTierEditor({
                           </SelectGroup>
                         </SelectContent>
                       </Select>
-                      <FieldDescription>
-                        {t(
-                          "Weights are compared only among eligible candidates in this tier.",
-                        )}
-                      </FieldDescription>
-                    </Field>
-                  </FieldGroup>
-
-                  <FieldGroup className="grid gap-4 md:grid-cols-2">
-                    <Field>
-                      <FieldLabel>{t("Add a channel")}</FieldLabel>
-                      <Select
-                        value={ADD_CHANNEL_VALUE}
-                        disabled={availableChannels.length === 0}
-                        onValueChange={(channelId) => {
-                          if (channelId !== ADD_CHANNEL_VALUE) {
-                            addChannel(tierIndex, channelId);
-                          }
-                        }}
-                      >
-                        <SelectTrigger
-                          aria-label={t("Add channel to tier {number}", {
-                            number: tierIndex + 1,
-                          })}
-                        >
-                          <SelectValue
-                            placeholder={
-                              availableChannels.length > 0
-                                ? t("Choose a channel")
-                                : t("All channel/model pairs are already used")
-                            }
-                          />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectGroup>
-                            <SelectItem value={ADD_CHANNEL_VALUE}>
-                              {t("Choose a channel")}
-                            </SelectItem>
-                            {availableChannels.map((channel) => (
-                              <SelectItem key={channel.id} value={channel.id}>
-                                {channel.name}
-                              </SelectItem>
-                            ))}
-                          </SelectGroup>
-                        </SelectContent>
-                      </Select>
-                      <FieldDescription>
-                        {t(
-                          "Selecting the same channel again adds its next unused upstream model.",
-                        )}
-                      </FieldDescription>
-                    </Field>
-
-                    <Field>
-                      <FieldLabel>{t("Bulk-add a channel group")}</FieldLabel>
-                      <Select
-                        value={ADD_GROUP_VALUE}
-                        disabled={availableGroups.length === 0}
-                        onValueChange={(groupId) => {
-                          if (groupId !== ADD_GROUP_VALUE) {
-                            addChannelGroup(tierIndex, groupId);
-                          }
-                        }}
-                      >
-                        <SelectTrigger
-                          aria-label={t(
-                            "Bulk-add channel group to tier {number}",
-                            { number: tierIndex + 1 },
-                          )}
-                        >
-                          <SelectValue
-                            placeholder={
-                              availableGroups.length > 0
-                                ? t("Choose a channel group")
-                                : t("No unused group channels")
-                            }
-                          />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectGroup>
-                            <SelectItem value={ADD_GROUP_VALUE}>
-                              {t("Choose a channel group")}
-                            </SelectItem>
-                            {availableGroups.map((group) => (
-                              <SelectItem key={group.id} value={group.id}>
-                                {group.name}
-                              </SelectItem>
-                            ))}
-                          </SelectGroup>
-                        </SelectContent>
-                      </Select>
-                      <FieldDescription>
-                        {t(
-                          "This expands current group members into explicit candidates. Future group changes do not alter the saved route.",
-                        )}
-                      </FieldDescription>
                     </Field>
                   </FieldGroup>
 
@@ -409,16 +231,23 @@ export function ModelRuleTierEditor({
                       undefined
                     }
                   >
-                    <FieldLegend variant="label">
+                    <FieldLegend className="sr-only">
                       {t("Channel/model candidates")}
                     </FieldLegend>
-                    <FieldDescription>
-                      {t(
-                        "A channel may appear more than once when each entry uses a different upstream model.",
-                      )}
-                    </FieldDescription>
-                    {tier.candidates.length > 0 ? (
-                      <FieldGroup>
+                    <Table className="min-w-[34rem] table-fixed">
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="w-[38%]">
+                            {t("Channel")}
+                          </TableHead>
+                          <TableHead>{t("Upstream model")}</TableHead>
+                          <TableHead className="w-24">{t("Weight")}</TableHead>
+                          <TableHead className="w-10">
+                            <span className="sr-only">{t("Actions")}</span>
+                          </TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
                         {tier.candidates.map((candidate, candidateIndex) => {
                           const candidatePath = [
                             ...tierPath,
@@ -426,203 +255,284 @@ export function ModelRuleTierEditor({
                             candidateIndex,
                           ];
                           const channel = channelById.get(candidate.channel_id);
-                          const group = channel
-                            ? groupById.get(channel.channel_group_id)
-                            : undefined;
-                          const visibleModels =
-                            channel &&
-                            !channel.available_models.includes(
-                              candidate.upstream_model,
-                            )
-                              ? [
-                                  candidate.upstream_model,
-                                  ...channel.available_models,
-                                ]
-                              : (channel?.available_models ?? [
-                                  candidate.upstream_model,
-                                ]);
-                          const pairError =
-                            errorFor([...candidatePath, "channel_id"]) ??
-                            errorFor([...candidatePath, "upstream_model"]);
+                          const channelError = errorFor([
+                            ...candidatePath,
+                            "channel_id",
+                          ]);
+                          const modelError = errorFor([
+                            ...candidatePath,
+                            "upstream_model",
+                          ]);
                           const weightError = errorFor([
                             ...candidatePath,
                             "weight",
                           ]);
+                          const duplicate = (
+                            channelId: string,
+                            model: string,
+                          ) =>
+                            tier.candidates.some(
+                              (entry, index) =>
+                                index !== candidateIndex &&
+                                entry.channel_id === channelId &&
+                                entry.upstream_model === model,
+                            );
+                          const visibleModels = [
+                            ...new Set([
+                              ...(channel?.available_models ?? []),
+                              ...(candidate.upstream_model
+                                ? [candidate.upstream_model]
+                                : []),
+                            ]),
+                          ];
+                          const rowLabel = {
+                            tier: tierIndex + 1,
+                            row: candidateIndex + 1,
+                          };
                           return (
-                            <Card
-                              key={`${candidateKey(candidate)}-${candidateIndex}`}
-                              size="sm"
-                            >
-                              <CardHeader>
-                                <CardTitle>
-                                  {channel?.name ?? candidate.channel_id}
-                                </CardTitle>
-                                <CardDescription>
-                                  {group?.name ??
-                                    channel?.channel_group_id ??
-                                    t("Unknown channel")}
-                                </CardDescription>
-                                <CardAction>
-                                  <Button
-                                    type="button"
-                                    variant="ghost"
-                                    size="icon-sm"
-                                    aria-label={t(
-                                      "Remove route candidate {name}",
-                                      {
-                                        name:
-                                          channel?.name ??
-                                          candidate.channel_id,
-                                      },
-                                    )}
-                                    onClick={() =>
-                                      patchTier(tierIndex, {
-                                        candidates: removeAt(
-                                          tier.candidates,
-                                          candidateIndex,
-                                        ),
-                                      })
+                            <TableRow key={candidateIndex}>
+                              <TableCell className="align-top whitespace-normal">
+                                <Field
+                                  data-invalid={
+                                    Boolean(channelError) || undefined
+                                  }
+                                >
+                                  <Combobox
+                                    items={channelIds}
+                                    value={candidate.channel_id || null}
+                                    itemToStringLabel={(id) =>
+                                      channelById.get(id)?.name ?? id
                                     }
+                                    onValueChange={(channelId) => {
+                                      // Clearing the search must not clear the dependent model.
+                                      if (channelId === null) return;
+                                      const nextChannel =
+                                        channelById.get(channelId);
+                                      patchCandidate(
+                                        tierIndex,
+                                        candidateIndex,
+                                        {
+                                          channel_id: channelId,
+                                          upstream_model:
+                                            nextChannel?.available_models.includes(
+                                              candidate.upstream_model,
+                                            ) &&
+                                            !duplicate(
+                                              nextChannel.id,
+                                              candidate.upstream_model,
+                                            )
+                                              ? candidate.upstream_model
+                                              : "",
+                                        },
+                                      );
+                                    }}
                                   >
-                                    <Trash2 data-icon="inline-start" />
-                                  </Button>
-                                </CardAction>
-                              </CardHeader>
-                              <CardContent>
-                                <FieldGroup className="grid gap-4 md:grid-cols-[minmax(0,1fr)_8rem]">
-                                  <Field
-                                    data-invalid={
-                                      Boolean(pairError) || undefined
-                                    }
-                                  >
-                                    <FieldLabel>{t("Upstream model")}</FieldLabel>
-                                    <Select
-                                      value={candidate.upstream_model}
-                                      onValueChange={(upstreamModel) =>
-                                        patchCandidate(
-                                          tierIndex,
-                                          candidateIndex,
-                                          {
-                                            upstream_model: upstreamModel,
-                                          },
-                                        )
-                                      }
-                                    >
-                                      <SelectTrigger
-                                        aria-label={t(
-                                          "Upstream model for channel {name}",
-                                          {
-                                            name:
-                                              channel?.name ??
-                                              candidate.channel_id,
-                                          },
-                                        )}
-                                        aria-invalid={Boolean(pairError)}
-                                      >
-                                        <SelectValue />
-                                      </SelectTrigger>
-                                      <SelectContent>
-                                        <SelectGroup>
-                                          {visibleModels.map((model) => {
-                                            const duplicate =
-                                              model !==
-                                                candidate.upstream_model &&
-                                              tier.candidates.some(
-                                                (entry, index) =>
-                                                  index !== candidateIndex &&
-                                                  entry.channel_id ===
-                                                    candidate.channel_id &&
-                                                  entry.upstream_model ===
-                                                    model,
+                                    <ComboboxInput
+                                      aria-label={t(
+                                        "Channel for tier {tier} row {row}",
+                                        rowLabel,
+                                      )}
+                                      aria-invalid={Boolean(channelError)}
+                                      placeholder={t("Choose a channel")}
+                                    />
+                                    <ComboboxContent>
+                                      <ComboboxEmpty>
+                                        {t("No matching channels")}
+                                      </ComboboxEmpty>
+                                      <ComboboxList>
+                                        <ComboboxGroup>
+                                          <ComboboxCollection>
+                                            {(channelId: string) => {
+                                              const option =
+                                                channelById.get(channelId)!;
+                                              return (
+                                                <ComboboxItem
+                                                  key={channelId}
+                                                  value={channelId}
+                                                  disabled={
+                                                    !option.available_models.some(
+                                                      (model) =>
+                                                        !duplicate(
+                                                          channelId,
+                                                          model,
+                                                        ),
+                                                    )
+                                                  }
+                                                >
+                                                  <span className="flex min-w-0 flex-col">
+                                                    <span className="truncate">
+                                                      {option.name}
+                                                    </span>
+                                                    <span className="truncate text-xs text-muted-foreground">
+                                                      {
+                                                        groupById.get(
+                                                          option.channel_group_id,
+                                                        )?.name
+                                                      }
+                                                    </span>
+                                                  </span>
+                                                </ComboboxItem>
                                               );
-                                            return (
-                                              <SelectItem
-                                                key={model}
-                                                value={model}
-                                                disabled={duplicate}
-                                              >
-                                                {model}
-                                              </SelectItem>
-                                            );
-                                          })}
-                                        </SelectGroup>
-                                      </SelectContent>
-                                    </Select>
-                                    {pairError ? (
-                                      <FieldError>{pairError}</FieldError>
-                                    ) : null}
-                                  </Field>
-                                  <Field
-                                    data-invalid={
-                                      Boolean(weightError) || undefined
+                                            }}
+                                          </ComboboxCollection>
+                                        </ComboboxGroup>
+                                      </ComboboxList>
+                                    </ComboboxContent>
+                                  </Combobox>
+                                  {channelError ? (
+                                    <FieldError>{channelError}</FieldError>
+                                  ) : null}
+                                </Field>
+                              </TableCell>
+                              <TableCell className="align-top whitespace-normal">
+                                <Field
+                                  data-invalid={
+                                    Boolean(modelError) || undefined
+                                  }
+                                >
+                                  <Combobox
+                                    items={visibleModels}
+                                    value={candidate.upstream_model || null}
+                                    disabled={!channel}
+                                    onValueChange={(model) =>
+                                      patchCandidate(
+                                        tierIndex,
+                                        candidateIndex,
+                                        { upstream_model: model ?? "" },
+                                      )
                                     }
                                   >
-                                    <FieldLabel
-                                      htmlFor={`${idPrefix}-tier-${tierIndex}-candidate-${candidateIndex}-weight`}
-                                    >
-                                      {t("Weight")}
-                                    </FieldLabel>
-                                    <Input
-                                      id={`${idPrefix}-tier-${tierIndex}-candidate-${candidateIndex}-weight`}
-                                      type="number"
-                                      min={1}
-                                      max={2_147_483_647}
-                                      step={1}
-                                      value={candidate.weight}
-                                      aria-invalid={Boolean(weightError)}
-                                      onChange={(event) =>
-                                        patchCandidate(
-                                          tierIndex,
-                                          candidateIndex,
-                                          {
-                                            weight: Number(event.target.value),
-                                          },
-                                        )
+                                    <ComboboxInput
+                                      aria-label={t(
+                                        "Upstream model for tier {tier} row {row}",
+                                        rowLabel,
+                                      )}
+                                      aria-invalid={Boolean(modelError)}
+                                      disabled={!channel}
+                                      placeholder={
+                                        channel
+                                          ? t("Choose an upstream model")
+                                          : t("Choose a channel first")
                                       }
                                     />
-                                    {weightError ? (
-                                      <FieldError>{weightError}</FieldError>
-                                    ) : null}
-                                  </Field>
-                                </FieldGroup>
-                              </CardContent>
-                              <CardFooter>
-                                <Badge variant="outline">
-                                  {t("Explicit candidate")}
-                                </Badge>
-                              </CardFooter>
-                            </Card>
+                                    <ComboboxContent>
+                                      <ComboboxEmpty>
+                                        {t("No matching models")}
+                                      </ComboboxEmpty>
+                                      <ComboboxList>
+                                        <ComboboxGroup>
+                                          <ComboboxCollection>
+                                            {(model: string) => (
+                                              <ComboboxItem
+                                                key={model}
+                                                value={model}
+                                                disabled={duplicate(
+                                                  candidate.channel_id,
+                                                  model,
+                                                )}
+                                              >
+                                                {model}
+                                              </ComboboxItem>
+                                            )}
+                                          </ComboboxCollection>
+                                        </ComboboxGroup>
+                                      </ComboboxList>
+                                    </ComboboxContent>
+                                  </Combobox>
+                                  {modelError ? (
+                                    <FieldError>{modelError}</FieldError>
+                                  ) : null}
+                                </Field>
+                              </TableCell>
+                              <TableCell className="align-top whitespace-normal">
+                                <Field
+                                  data-invalid={
+                                    Boolean(weightError) || undefined
+                                  }
+                                >
+                                  <Input
+                                    type="number"
+                                    min={1}
+                                    max={2_147_483_647}
+                                    step={1}
+                                    value={candidate.weight}
+                                    aria-label={t(
+                                      "Weight for tier {tier} row {row}",
+                                      rowLabel,
+                                    )}
+                                    aria-invalid={Boolean(weightError)}
+                                    onChange={(event) =>
+                                      patchCandidate(
+                                        tierIndex,
+                                        candidateIndex,
+                                        { weight: Number(event.target.value) },
+                                      )
+                                    }
+                                  />
+                                  {weightError ? (
+                                    <FieldError>{weightError}</FieldError>
+                                  ) : null}
+                                </Field>
+                              </TableCell>
+                              <TableCell className="align-top">
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon-sm"
+                                  aria-label={t(
+                                    "Remove tier {tier} row {row}",
+                                    rowLabel,
+                                  )}
+                                  onClick={() =>
+                                    patchTier(tierIndex, {
+                                      candidates: removeAt(
+                                        tier.candidates,
+                                        candidateIndex,
+                                      ),
+                                    })
+                                  }
+                                >
+                                  <X data-icon="inline-start" />
+                                </Button>
+                              </TableCell>
+                            </TableRow>
                           );
                         })}
-                      </FieldGroup>
-                    ) : (
+                      </TableBody>
+                    </Table>
+                    {tier.candidates.length === 0 ? (
                       <FieldDescription>
                         {t("Add at least one channel/model candidate.")}
                       </FieldDescription>
-                    )}
+                    ) : null}
                     {errorFor([...tierPath, "candidates"]) ? (
                       <FieldError>
                         {errorFor([...tierPath, "candidates"])}
                       </FieldError>
                     ) : null}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="self-start"
+                      onClick={() =>
+                        patchTier(tierIndex, {
+                          candidates: [
+                            ...tier.candidates,
+                            { channel_id: "", upstream_model: "", weight: 1 },
+                          ],
+                        })
+                      }
+                    >
+                      <Plus data-icon="inline-start" />
+                      {t("Add record")}
+                    </Button>
                   </FieldSet>
                 </FieldGroup>
               </CardContent>
-              <CardFooter>
-                <span className="text-muted-foreground">
-                  {t("Tier priority {priority} · {strategy}", {
-                    priority: tier.priority,
-                    strategy: selectionStrategyLabel(
-                      tier.selection_strategy,
-                    ),
-                  })}
-                </span>
-              </CardFooter>
             </Card>
           );
         })}
       </FieldGroup>
-
       {errorFor(["routing_tiers"]) ? (
         <FieldError>{errorFor(["routing_tiers"])}</FieldError>
       ) : null}

@@ -211,8 +211,8 @@ Use the Console UI or API to create:
 3. A channel with its upstream URL, credentials, and available models.
 4. A top-level model rule attached to the priced client model, then one or
    more format-specific protocol rules. Each tier contains explicit,
-   independently weighted channel/upstream-model candidates; Channel Groups
-   are only a Console bulk-selection shortcut.
+   independently weighted channel/upstream-model candidates, edited as rows
+   in the Console. See [routing operations](docs/user/operations.md) for details.
 5. A client API key with `proxy` permission; add `models.read` for
    `/v1/models`.
 

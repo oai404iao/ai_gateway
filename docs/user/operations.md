@@ -263,11 +263,11 @@ Channel 或 Codex credential 的属性。每条已配置协议可包含多个非
 
 - 同一 Channel 可在一个 tier 中分别以多个上游模型出现，也可跨多个 priority tier 重复。
 - 同一 tier 内完全相同的渠道/模型组合只能出现一次；每个组合独立参与加权。
-- Channel Group 只在 Console 中用于一次性批量选择当前成员。保存的路由只包含展开后的候选；
+- Console 每层使用记录列表，点击“新增记录”追加一行；渠道、上游模型和权重均可行内修改。
+  新行默认权重为 `1`，渠道和模型需手动选择，支持搜索；未完成的行或非正整数权重不能保存。
+- 切换渠道时，原模型仍可用且组合不重复则保留，否则清空模型要求重新选择；权重不变。
+- Channel Group 仅作为渠道选项的辅助信息，不再提供批量添加入口。保存的路由只包含显式候选；
   以后加入、移出或移动组成员不会自动改变既有规则。
-- Console 新候选默认权重为 `100`。直接重复选择同一 Channel 会添加其下一个尚未使用的
-  `available_models`；批量选择 Group 会为该 tier 中尚未出现的当前成员添加其首个可用模型，
-  此后可逐项修改模型和权重。
 
 Console 不提供自由输入上游模型；服务端也会在协议保存时校验模型能力。后续修改 Channel
 `available_models` 可以让既有规则变为 `disconnected`，但不会偷偷替换其目标模型。
@@ -322,8 +322,8 @@ Codex 渠道组可开启整池同步的“仅拼车使用”模式；未绑定�
      在同一页面新增、编辑或删除代理，并把导入文件中的代理映射到现有代理。最终仍逐条调用
      服务端凭证验证与导入接口，因此失败条目可在保留其他草稿的情况下修正和重试。
 4. 创建或启用客户端计价 model，并在其顶层 model rule 下添加 Responses 协议。按需要建立
-   routing tiers；可从该 Channel Group 一次性批量加入当前凭证 projection，也可逐条加入同一
-   渠道的不同 Codex model slug，并分别设置权重。以后新接入的凭证不会自动进入既有规则。
+   routing tiers；通过“新增记录”逐条选择凭证 projection 渠道及 Codex model slug，并分别设置
+   权重。同一渠道可选择不同模型；以后新接入的凭证不会自动进入既有规则。
 5. Codex OAuth Responses managed channel 自动声明 standalone web search 能力。客户端若使用
    Codex 自定义 provider，还必须把 provider base URL 指向 Gateway 的 `/v1`，并设置
    `supports_standalone_web_search = true`。
@@ -372,7 +372,7 @@ OpenAI token revocation endpoint，若还需要使外部 Token 失效，应在�
 未加密备份处理。常规凭证列表和详情接口仍不会返回已保存 Token，只有管理员显式调用导出接口时
 才会读取这些敏感字段。高级导入会保留 Bundle 中的 enable 状态；如果 `id_token` 缺失，则验证
 阶段从 `access_token` 读取身份声明。旧原生或外部 JSON 中若带 `weight`，前端会忽略并显示
-warning。新凭证不会自动加入现有模型规则；管理员必须在协议路由编辑器中显式或按组批量添加其
+warning。新凭证不会自动加入现有模型规则；管理员必须在协议路由编辑器中逐条添加其
 projection 候选。
 
 高级导入页允许删除代理，但服务端要求 `If-Match`，并且只有当代理未被普通渠道或未完成的 Codex
