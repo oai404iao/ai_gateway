@@ -254,9 +254,9 @@ Axum HTTP
   channels must agree on `api_format`.
 - Upstream wire models belong to explicit weighted `(channel_id, upstream_model)` route
   candidates, not the priced model or protocol parent. A channel may appear with different models
-  in one tier or across tiers; reject only an exact duplicate pair within one tier. Channel Groups
-  are Console bulk-selection conveniences that expand current members before save and never enter
-  the persisted or compiled route. Keep request billing on the profile's priced model while
+  in one tier or across tiers; reject only an exact duplicate pair within one tier. The Console
+  edits explicit channel/model/weight rows; Channel Groups provide option context only and never
+  enter the persisted or compiled route. Keep request billing on the profile's priced model while
   rewriting and logging the final selected candidate's upstream model.
 - Channel scheduled probes pair an upstream `test_model` with an independent
   `test_pricing_model_id`; both must be set or null. Do not infer probe pricing by matching the wire

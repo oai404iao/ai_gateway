@@ -72,9 +72,12 @@ Each priced client model has at most one top-level model rule. Its detail page
 lists format-specific protocol children whose formats are immutable, and each
 protocol editor owns priority tiers and independently weighted
 `(channel, upstream model)` candidates. A Channel can appear with multiple
-models or in multiple tiers. Channel Groups are only a bulk-add convenience:
-the editor expands current members into explicit candidates before saving, so
-later membership changes do not alter the route. Editors retain
+models or in multiple tiers. Each tier uses a compact row list with one **Add
+record** button. Each row has searchable Channel and upstream-model selectors,
+an editable weight (default `1`), and a remove action. Changing Channel retains
+the model only when it is available and does not duplicate another row.
+Channel Groups appear as option context, not bulk-add controls; saved routes
+contain only explicit candidates. Editors retain
 single-resource ETag mutations and protect unsaved drafts. Regression coverage
 lives beside the focused pages and in `e2e/model-routing.spec.ts`.
 

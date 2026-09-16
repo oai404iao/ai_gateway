@@ -49,8 +49,8 @@
   `model_rule_routing_candidates` 为 tier 直接保存 `channel_id`、`upstream_model` 和正权重。
   权重只在同一 tier 的合格渠道/模型候选间比较；同一 Channel 可在同层使用多个不同模型，也可
   跨层重复，只有同层完全相同的 `(channel_id, upstream_model)` 组合被主键拒绝。
-- Channel Group 不进入持久化路由图。Console 的批量添加动作只把操作当时的组成员展开为显式
-  候选并默认使用权重 `100`；之后新增、移动或删除组成员不会隐式改变已保存规则。
+- Channel Group 不进入持久化路由图。Console 逐行添加显式渠道/模型候选，新行默认权重为 `1`；
+  渠道组仅提供选项上下文，之后新增或移动组成员不会隐式改变已保存规则。
 - 规则、routing candidate、渠道组和渠道必须保持格式一致。计价模型启用时，停用协议可无 tier 并
   显示为 `draft`；`model_disabled` 在计价模型停用后优先于其他状态。启用协议必须至少有一个
   非空 tier，但可以暂时没有模型兼容或活跃

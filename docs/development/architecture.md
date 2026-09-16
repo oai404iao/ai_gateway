@@ -71,8 +71,8 @@ Browser or Console client
    尝试，每个 tier 独立选择 `weighted_random` 或 `weighted_round_robin`。停用的协议可以作为
    无 tier 的 `draft` 保存，启用协议必须至少有一个非空 tier。
    每个 tier 直接保存显式 `(channel_id, upstream_model, weight)` 候选；同一渠道可在同层使用
-   不同模型，也可跨层重复，只有同一层内完全相同的渠道/模型组合不能重复。Channel Group 只在
-   Console 中作为批量选择当前成员的快捷方式，保存前即展开为候选；以后加入或移出该组的渠道
+   不同模型，也可跨层重复，只有同一层内完全相同的渠道/模型组合不能重复。Console 逐行编辑
+   渠道、模型和权重，Channel Group 仅提供渠道选项上下文；以后加入或移出该组的渠道
    不会隐式改写既有规则。Console 只能从每条渠道声明的 `available_models` 中选择模型，服务端
    在协议更新时再次验证。协议规则另存目标渠道位图和模型兼容位图；后续渠道能力变化可使已发布
    规则进入断开状态。
@@ -80,7 +80,7 @@ Browser or Console client
    渠道时，才退回目标渠道位图，使原本已授权的断开规则仍可识别。随后使用渠道授权位图过滤
    实际模型兼容候选，并依次应用 operation capability、Session 粘性、规则中最低可用
    `priority` tier 和被动健康过滤。权重只比较该 tier 内仍然合格的渠道/模型候选，不跨 tier 比较；
-   API Key 的 group/channel 授权仍与此前相同，Console 的渠道组批量选择不会扩大 Key 的授权
+   API Key 的 group/channel 授权仍与此前相同，Console 的路由候选编辑不会扩大 Key 的授权
    范围。HTTP 授权范围内没有可选候选时返回 `503 no_healthy_channel`；
    Responses WS 使用下文的 `426 websocket_unavailable` 回退提示。
    `/v1/models` 额外要求 API Key 范围与模型兼容位图相交，所以不公布断开规则。

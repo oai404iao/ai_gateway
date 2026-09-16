@@ -130,9 +130,11 @@ docs/openapi/console-v1.yaml
 - `/admin/routing/model-rules/:id` 显示不可编辑的客户端计价身份，以及 Chat Completions、
   Responses 和 Images 协议入口。缺失协议由此创建为停用的空 `draft`。
 - `/admin/routing/model-rules/:id/protocols/:protocolId` 是实际路由编辑器。协议格式不可编辑；
-  每个 tier 直接编辑可重复 Channel、但渠道/模型组合唯一的显式候选和独立权重。Channel Group
-  下拉框只把当前尚未选择的成员批量展开为候选，保存结果不保留组引用，后续成员变化不会隐式
-  改写规则。上游模型仍只能从各 Channel 的 `available_models` 选择，不提供自由文本输入。
+  每个 tier 用紧凑记录列表编辑可重复 Channel、但渠道/模型组合唯一的显式候选和独立权重。
+  “新增记录”追加空渠道、空模型、权重 `1` 的行，三个字段均可行内修改；渠道组仅作为渠道选项
+  的辅助信息，不提供批量添加入口。渠道和模型支持搜索，但上游模型仍只能从各 Channel 的
+  `available_models` 选择，不接受自由文本作为新模型。切换渠道仅在模型仍可用且组合不重复时
+  保留原模型，否则清空模型；权重保持不变。空行或非正整数权重阻止保存。
 - 渠道组、渠道、计价模型和协议规则编辑器继续使用统一双栏详情和 sticky 操作栏；价格编辑器
   保留专用计算布局。每次保存仍只提交一个资源，没有跨资源原子保存。
 - 生产使用 data router 的 `useBlocker` 保护 PUSH/REPLACE/浏览器 POP；表单草稿不持久化。

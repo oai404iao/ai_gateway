@@ -9,12 +9,7 @@ import type {
 } from "@/api/types";
 import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
-import {
-  CHANNEL,
-  CHANNEL_GROUP,
-  MODEL_PROTOCOL_RULE,
-  MODEL_RULE,
-} from "@/test/fixtures";
+import { CHANNEL, MODEL_PROTOCOL_RULE, MODEL_RULE } from "@/test/fixtures";
 import { seedAuthenticatedSession, server } from "@/test/msw";
 
 function renderPage() {
@@ -51,7 +46,36 @@ function routeProtocol(
 }
 
 describe("ModelProtocolRuleDetailPage", () => {
-  it("expands a channel group into current explicit candidates before save", async () => {
+  it("blocks incomplete records and invalid weights before making a save request", async () => {
+    seedAuthenticatedSession();
+    const user = userEvent.setup();
+    let saveCount = 0;
+    server.use(
+      http.put(
+        "/console/v1/routing/model-rules/:id/protocols/:protocolId",
+        () => {
+          saveCount += 1;
+          return HttpResponse.json({});
+        },
+      ),
+    );
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: "Add record" }));
+    const weight = screen.getByRole("spinbutton", {
+      name: "Weight for tier 1 row 2",
+    });
+    await user.clear(weight);
+    await user.type(weight, "0");
+    await user.click(screen.getByRole("button", { name: "Save protocol" }));
+    expect(await screen.findByText("Choose a channel.")).toBeInTheDocument();
+    expect(screen.getByText("Choose an upstream model.")).toBeInTheDocument();
+    expect(
+      screen.getByText("Weight must be a positive integer."),
+    ).toBeInTheDocument();
+    expect(saveCount).toBe(0);
+  });
+
+  it("adds an editable blank record and saves the selected channel, model and weight", async () => {
     seedAuthenticatedSession();
     const user = userEvent.setup();
     const secondChannel = {
@@ -102,16 +126,38 @@ describe("ModelProtocolRuleDetailPage", () => {
     );
     renderPage();
 
-    await user.click(
-      await screen.findByRole("combobox", {
+    await user.click(await screen.findByRole("button", { name: "Add record" }));
+    expect(
+      screen.queryByRole("combobox", {
         name: "Bulk-add channel group to tier 1",
       }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("combobox", { name: "Upstream model for tier 1 row 2" }),
+    ).toBeDisabled();
+    await user.click(
+      screen.getByRole("combobox", { name: "Channel for tier 1 row 2" }),
     );
+    expect(
+      within(await screen.findByRole("listbox")).getByRole("option", {
+        name: /no-models/,
+      }),
+    ).toHaveAttribute("aria-disabled", "true");
     await user.click(
       within(await screen.findByRole("listbox")).getByRole("option", {
-        name: CHANNEL_GROUP.name,
+        name: /wire-b-only/,
       }),
     );
+    await user.click(
+      screen.getByRole("combobox", { name: "Upstream model for tier 1 row 2" }),
+    );
+    await user.click(await screen.findByRole("option", { name: "wire-b" }));
+    const weight = screen.getByRole("spinbutton", {
+      name: "Weight for tier 1 row 2",
+    });
+    expect(weight).toHaveValue(1);
+    await user.clear(weight);
+    await user.type(weight, "3");
     await user.click(screen.getByRole("button", { name: "Save protocol" }));
 
     await waitFor(() => expect(submitted).toBeDefined());
@@ -124,7 +170,7 @@ describe("ModelProtocolRuleDetailPage", () => {
       {
         channel_id: secondChannel.id,
         upstream_model: "wire-b",
-        weight: 100,
+        weight: 3,
       },
     ]);
     expect(JSON.stringify(submitted)).not.toContain("channel_group_id");
@@ -171,16 +217,22 @@ describe("ModelProtocolRuleDetailPage", () => {
     );
     renderPage();
 
+    await user.click(await screen.findByRole("button", { name: "Add record" }));
     await user.click(
-      await screen.findByRole("combobox", {
-        name: "Add channel to tier 1",
-      }),
+      screen.getByRole("combobox", { name: "Channel for tier 1 row 2" }),
     );
     await user.click(
       within(await screen.findByRole("listbox")).getByRole("option", {
-        name: CHANNEL.name,
+        name: new RegExp(CHANNEL.name),
       }),
     );
+    await user.click(
+      screen.getByRole("combobox", { name: "Upstream model for tier 1 row 2" }),
+    );
+    expect(
+      await screen.findByRole("option", { name: "wire-a" }),
+    ).toHaveAttribute("aria-disabled", "true");
+    await user.click(screen.getByRole("option", { name: "wire-b" }));
     await user.click(screen.getByRole("button", { name: "Save protocol" }));
 
     await waitFor(() => expect(submitted).toBeDefined());
@@ -193,7 +245,7 @@ describe("ModelProtocolRuleDetailPage", () => {
       {
         channel_id: CHANNEL.id,
         upstream_model: "wire-b",
-        weight: 100,
+        weight: 1,
       },
     ]);
   });

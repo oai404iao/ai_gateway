@@ -23,8 +23,8 @@ Chat Completions、Responses、Codex standalone web search、非流式 JSON Imag
   Images generation 和 multipart Images edit；
   三种格式绝不相互回退。
 - 每个计价客户端模型拥有一个顶层模型规则，其下按 API 格式配置协议规则；协议规则各自拥有
-  优先级层级与选择策略，其中每个显式渠道/上游模型候选拥有独立权重；Channel Group 只用于
-  Console 批量选择。
+  优先级层级与选择策略，其中每个显式渠道/上游模型候选拥有独立权重，可在 Console 中逐行编辑；
+  详见[路由运维说明](docs/user/operations.md)。
 - 特殊上游通过单进程内 Connector 接入，不增加 sidecar 或第二次网络跳转。首个
   Codex OAuth Connector 支持订阅凭证、每账户代理、Token 刷新、额度感知 draining
   以及共享凭证的 provider-managed Responses HTTP/SSE/WebSocket/Search 与 Images
