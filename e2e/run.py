@@ -16,6 +16,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections import Counter
 from decimal import Decimal
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, ProxyHandler, build_opener
@@ -23,9 +24,11 @@ from urllib.request import Request, ProxyHandler, build_opener
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from mock.upstream import Upstream  # noqa: E402
+from mock.websocket import WebSocketUpstream  # noqa: E402
 
 POSTGRES = "postgres:18.4-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15"
-CODEX_VERSION = json.loads((ROOT / "e2e/clients.json").read_text())["codex"]["version_output"]
+CLIENTS = json.loads((ROOT / "e2e/clients.json").read_text())
+CODEX_VERSION = CLIENTS["codex"]["version_output"]
 MAX_LOG = 8 * 1024 * 1024
 HTTP = build_opener(ProxyHandler({}))
 
@@ -90,6 +93,7 @@ class Resources:
         self.collectors = {}
         self.output_errors = []
         self.directories = []
+        self.secret_values = []
         self.container = None
         self.env = {
             "PATH": os.environ.get("PATH", ""),
@@ -154,6 +158,7 @@ class Resources:
         self.container = "ai-gateway-e2e-" + secrets.token_hex(8)
         password = secrets.token_hex(24)
         database = "ai_gateway_e2e_" + secrets.token_hex(8)
+        self.database_name = database
         self.docker(
             "run", "--detach", "--name", self.container,
             "--label", "ai-gateway.system-e2e=true",
@@ -264,6 +269,7 @@ filter = "ai_gateway=info,tower_http=warn"
         "--email", "system-e2e@example.test", "--display-name", "System E2E", "--password-stdin",
     ], "bootstrap", stdin=(password + "\n").encode())
     gateway, _ = resources.start([str(binary), str(config)], "gateway")
+    resources.gateway = gateway
     console = f"http://localhost:{console_port}"
 
     def ready():
@@ -324,14 +330,36 @@ def seed(console, password, upstream):
     return {
         "console": console, "password": password, "token": token, "user_id": user,
         "api_key": key["secret"], "api_key_id": key["id"], "channel_id": channel["id"],
-        "protocol_path": path,
+        "channel_group_id": group["id"], "protocol_path": path,
     }
 
 
-def run_codex(resources, binary, data, marker):
-    version = resources.run([binary, "--version"], "codex-version").strip().splitlines()[-1]
+def set_upstream(data, url, websocket=False):
+    def api(path, method="GET", body=None, etag=None):
+        return request(data["console"], "/console/v1" + path, method, body, data["token"], etag)
+
+    if websocket:
+        settings, headers = api("/system/settings")
+        settings.pop("updated_at", None)
+        settings["websocket"]["enabled"] = True
+        api("/system/settings", "PUT", settings, headers["ETag"])
+        _, headers = api(f"/users/{data['user_id']}")
+        api(f"/users/{data['user_id']}", "PATCH", {"websocket_enabled": True}, headers["ETag"])
+    path = f"/routing/channels/{data['channel_id']}"
+    _, headers = api(path)
+    api(path, "PUT", {
+        "channel_group_id": data["channel_group_id"], "api_format": "open_ai_responses",
+        "name": "system-e2e", "base_url": url, "enabled": True,
+        "upstream_auth_kind": "none", "available_models": ["e2e-before", "e2e-wire"],
+        "supports_websocket": websocket,
+    }, headers["ETag"])
+
+
+def run_codex(resources, binary, data, marker, websocket=False):
+    name = "codex-ws" if websocket else "codex-http"
+    version = resources.run([binary, "--version"], name + "-version").strip().splitlines()[-1]
     check(version == CODEX_VERSION, f"requires {CODEX_VERSION}, got {version}")
-    home = resources.directory / "codex-home"
+    home = resources.directory / (name + "-home")
     # Keep cwd outside any repository so the CLI cannot inherit its AGENTS or
     # project configuration. CODEX_HOME stays outside /tmp for helper binaries.
     directory = tempfile.TemporaryDirectory(prefix="ai-gateway-cli-")
@@ -349,7 +377,7 @@ name = "Loopback fixture"
 base_url = "{data['public']}/v1"
 env_key = "SYSTEM_E2E_KEY"
 wire_api = "responses"
-supports_websockets = false
+supports_websockets = {str(websocket).lower()}
 request_max_retries = 0
 stream_max_retries = 0
 """)
@@ -357,13 +385,51 @@ stream_max_retries = 0
     resources.run([
         binary, "exec", "--ephemeral", "--skip-git-repo-check", "--output-last-message", str(output),
         "Read marker.txt with the shell tool. Then reply E2E_TOOL_OK. Do not use network or write files.",
-    ], "codex", env={**resources.env, "CODEX_HOME": str(home), "SYSTEM_E2E_KEY": data["api_key"]},
+    ], name, env={**resources.env, "CODEX_HOME": str(home), "SYSTEM_E2E_KEY": data["api_key"]},
         cwd=work)
     check(output.read_text().strip() == "E2E_TOOL_OK", "CLI final output mismatch")
     return version
 
 
-def verify_settlement(data, expected_count):
+def run_pi(resources, binary, data, marker):
+    env = {**resources.env, "PI_OFFLINE": "1", "PI_TELEMETRY": "0"}
+    version = resources.run([binary, "--version"], "pi-version", env=env).strip()
+    check(version == CLIENTS["pi"]["version_output"], "Pi version mismatch")
+    home = resources.directory / "pi-home"
+    home.mkdir()
+    directory = tempfile.TemporaryDirectory(prefix="ai-gateway-pi-")
+    resources.directories.append(directory)
+    work = Path(directory.name)
+    (work / "marker.txt").write_text(marker)
+    (home / "models.json").write_text(json.dumps({"providers": {"system-e2e": {
+        "baseUrl": data["public"] + "/v1", "api": "openai-responses",
+        "apiKey": "$SYSTEM_E2E_KEY", "models": [{"id": "e2e-client"}],
+    }}}))
+    output = resources.run([
+        binary, "--mode", "json", "--no-session", "--offline", "--no-approve",
+        "--no-context-files", "--no-extensions", "--no-skills", "--no-prompt-templates",
+        "--no-themes", "--provider", "system-e2e", "--model", "e2e-client",
+        "--tools", "read", "--thinking", "off",
+        "Read marker.txt with the read tool, then reply E2E_TOOL_OK.",
+    ], "pi", env={**env, "PI_CODING_AGENT_DIR": str(home), "SYSTEM_E2E_KEY": data["api_key"]}, cwd=work)
+    validate_pi_output(output, marker)
+    return version
+
+
+def validate_pi_output(output, marker):
+    events = [json.loads(line) for line in output.split("\n") if line]
+    tools = [event for event in events if event["type"] == "tool_execution_end"]
+    check(len(tools) == 1 and tools[0]["isError"] is False, "Pi tool execution failed")
+    check(tools[0]["toolName"] == "read" and marker in json.dumps(tools[0]["result"]), "Pi read evidence missing")
+    check(tools[0]["toolCallId"].split("|", 1)[0] == "call_system_e2e", "Pi tool ID mismatch")
+    check(sum(event["type"] == "agent_end" for event in events) == 1, "Pi agent end missing")
+    finals = [event["message"] for event in events if event["type"] == "message_end"
+              and event["message"]["role"] == "assistant"]
+    check(finals and finals[-1]["stopReason"] == "stop", "Pi terminal event missing")
+    check(any(part.get("text") == "E2E_TOOL_OK" for part in finals[-1]["content"]), "Pi final text mismatch")
+
+
+def verify_settlement(data, expected_count, zero_count=0, protocols=None):
     def api(path):
         return request(data["console"], "/console/v1" + path, token=data["token"])[0]
 
@@ -378,13 +444,19 @@ def verify_settlement(data, expected_count):
         return True
 
     wait_until(ready)
+    check(sum(log["input_tokens"] == 0 and log["output_tokens"] == 0 for log in settled) == zero_count,
+          "zero-usage count mismatch")
+    if protocols:
+        check(Counter(log["request_protocol"] for log in settled) == Counter(protocols),
+              "unexpected request transport or HTTP fallback")
     for log in settled:
         check(log["outcome"] == "succeeded" and log["response_status_code"] == 200, "request failed")
         check(log["client_model"] == "e2e-client" and log["upstream_model"] == "e2e-wire", "log model mismatch")
         check(log["channel_id"] == data["channel_id"], "log channel mismatch")
-        check(log["input_tokens"] == 5 and log["output_tokens"] == 2, "usage mismatch")
-        check(Decimal(log["cost_amount"]) == Decimal("0.000009"), "cost mismatch")
-    expected = Decimal("0.000009") * expected_count
+        zero = log["input_tokens"] == 0 and log["output_tokens"] == 0
+        check(zero or (log["input_tokens"] == 5 and log["output_tokens"] == 2), "usage mismatch")
+        check(Decimal(log["cost_amount"]) == Decimal("0" if zero else "0.000009"), "cost mismatch")
+    expected = Decimal("0.000009") * (expected_count - zero_count)
     check(Decimal(api("/me")["balance_amount"]) == Decimal("100") - expected, "balance mismatch")
     check(Decimal(api(f"/api-keys/{data['api_key_id']}")["quota_used_amount"]) == expected, "key usage mismatch")
     return {"logs": len(settled), "cost": str(expected), "billed": True}
@@ -394,6 +466,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, default=ROOT / "target/debug/ai-gateway")
     parser.add_argument("--codex", default=shutil.which("codex"))
+    parser.add_argument("--pi", default=shutil.which("pi"))
     parser.add_argument("--output", type=Path, help="new directory under target/system-e2e")
     args = parser.parse_args()
     output = (args.output or ROOT / "target/system-e2e" / secrets.token_hex(8)).resolve()
@@ -413,7 +486,8 @@ def main():
         try:
             check(args.binary.is_file(), "build embedded-console-ui binary first")
             check(args.codex is not None, "install the pinned Codex CLI")
-            for command in ("docker", "node", "openssl"):
+            check(args.pi is not None, "install the pinned Pi CLI")
+            for command in ("docker", "node", "openssl", "cc"):
                 check(shutil.which(command), f"{command} is required")
             report["source_commit"] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT).decode().strip()
             report["working_tree_dirty"] = bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT))
@@ -422,7 +496,7 @@ def main():
             harness = hashlib.sha256()
             for area in ("e2e", "mock"):
                 for path in sorted((ROOT / area).rglob("*")):
-                    if path.suffix in (".py", ".mjs", ".json"):
+                    if path.suffix in (".py", ".mjs", ".json", ".c", ".txt"):
                         harness.update(str(path.relative_to(ROOT)).encode())
                         harness.update(path.read_bytes())
             report["harness_sha256"] = harness.hexdigest()
@@ -460,10 +534,45 @@ def main():
                 report["upstream"] = upstream.scenario.evidence
                 report["stage"] = "settlement"
                 report["settlement"] = verify_settlement(data, 3)
-                report["status"] = "passed"
+            report["stage"] = "codex-websocket"
+            with WebSocketUpstream(marker) as upstream:
+                set_upstream(data, upstream.url, websocket=True)
+                run_codex(resources, args.codex, data, marker, websocket=True)
+                check(upstream.scenario.tool_completed and not upstream.errors
+                      and not upstream.scenario.errors, "WS tool/continuation contract failed")
+                evidence = upstream.scenario.evidence
+                check(len(evidence) == 2 and len({entry["connection"] for entry in evidence}) == 1,
+                      "WS tool cycle did not use one connection")
+                check(evidence[1]["previous_response_id"] == "resp_e2e_0", "WS continuation missing")
+                warmups = upstream.warmups
+                report["upstream"].extend(evidence)
+                report["scenarios"].append({"id": "codex-ws-tool-cycle", "status": "passed",
+                                            "warmups": warmups})
+            report["stage"] = "pi-responses"
+            with Upstream(marker) as upstream:
+                set_upstream(data, upstream.url)
+                report["pi_version"] = run_pi(resources, args.pi, data, marker)
+                check(upstream.scenario.tool_completed and not upstream.scenario.errors
+                      and len(upstream.scenario.evidence) == 2, "Pi upstream evidence missing")
+                report["upstream"].extend(upstream.scenario.evidence)
+                report["scenarios"].append({"id": "pi-responses-tool-cycle", "status": "passed"})
+            report["stage"] = "settlement"
+            report["settlement"] = verify_settlement(
+                data, 7 + warmups, warmups,
+                ["non_stream"] + ["sse"] * 4 + ["websocket"] * (2 + warmups),
+            )
+            report["stage"] = "durability-faults"
+            from faults import exercise_faults
+            faults, settlement = exercise_faults(
+                resources, args.binary.resolve(), data, 7 + warmups, warmups,
+                ["non_stream"] + ["sse"] * 4 + ["websocket"] * (2 + warmups),
+            )
+            report["scenarios"].extend(faults)
+            report["settlement"] = settlement
+            report["status"] = "passed"
         except Exception as error:
             interrupted = isinstance(error, (InterruptedError, KeyboardInterrupt))
-            report["error"] = redact(str(error), secret_values)[:4000]
+            report["error"] = redact(str(error), secret_values + resources.secret_values)[:4000]
         finally:
             for sig in previous:
                 signal.signal(sig, signal.SIG_IGN)
@@ -476,7 +585,7 @@ def main():
                     with path.open("rb") as file:
                         file.seek(max(0, path.stat().st_size - 16384))
                         text = file.read(16384).decode(errors="replace")
-                    (output / path.name).write_text(redact(text, secret_values))
+                    (output / path.name).write_text(redact(text, secret_values + resources.secret_values))
             (output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
             for sig, handler in previous.items():
                 signal.signal(sig, handler)

@@ -169,14 +169,22 @@ jobs:
       - run: pnpm --dir web/console exec playwright install --with-deps chromium
       - name: Install pinned real client
         run: |
-          version="$(python3 -c 'import json; print(json.load(open("e2e/clients.json"))["codex"]["version"])')"
-          npm install --global --ignore-scripts "@openai/codex@$version"
-      - run: python3 -m unittest discover -s e2e -p 'test_*.py'
+          python3 - <<'PY'
+          import json, subprocess
+          for client in json.load(open("e2e/clients.json")).values():
+              subprocess.run(["npm", "install", "--global", "--ignore-scripts",
+                              f"{client['package']}@{client['version']}"], check=True)
+          PY
+      - name: Install isolated test dependencies
+        run: |
+          python3 -m venv target/e2e-venv
+          target/e2e-venv/bin/pip install --require-hashes -r e2e/requirements.txt
+      - run: target/e2e-venv/bin/python -m unittest discover -s e2e -p 'test_*.py'
       - run: node --test e2e/browser-checks.test.mjs
       - run: pnpm --dir web/console build
       - run: cargo build --locked --features embedded-console-ui
       - name: Real browser, CLI, gateway and PostgreSQL
-        run: python3 e2e/run.py
+        run: target/e2e-venv/bin/python e2e/run.py
       - name: Upload safe system-test reports
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

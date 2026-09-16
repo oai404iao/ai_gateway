@@ -6,51 +6,41 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 CONTRACT = json.loads((Path(__file__).parent / "scenarios/responses.json").read_text())
+EVENTS = json.loads((Path(__file__).parent / "scenarios/response-events.json").read_text())
 MAX_BODY = 1024 * 1024
 MAX_REQUESTS = 8
 
 
-def sse_events(response_id, item):
+def response_events(response_id, item):
     response = {
         "id": response_id, "object": "response", "model": CONTRACT["wire_model"],
         "status": "completed", "output": [item], "usage": CONTRACT["usage"],
     }
-    events = [
-        {"type": "response.created", "response": {
-            **response, "status": "in_progress", "output": [], "usage": None,
-        }},
-        {"type": "response.output_item.added", "output_index": 0, "item": {
-            **item, "status": "in_progress",
-            **({"arguments": ""} if item["type"] == "function_call" else {"content": []}),
-        }},
-    ]
-    if item["type"] == "function_call":
-        events.extend([
-            {"type": "response.function_call_arguments.delta", "output_index": 0,
-             "item_id": item["id"], "delta": item["arguments"]},
-            {"type": "response.function_call_arguments.done", "output_index": 0,
-             "item_id": item["id"], "arguments": item["arguments"]},
-        ])
-    else:
-        part = item["content"][0]
-        events.extend([
-            {"type": "response.content_part.added", "output_index": 0,
-             "item_id": item["id"], "content_index": 0, "part": {**part, "text": ""}},
-            {"type": "response.output_text.delta", "output_index": 0,
-             "item_id": item["id"], "content_index": 0, "delta": part["text"]},
-            {"type": "response.output_text.done", "output_index": 0,
-             "item_id": item["id"], "content_index": 0, "text": part["text"]},
-            {"type": "response.content_part.done", "output_index": 0,
-             "item_id": item["id"], "content_index": 0, "part": part},
-        ])
-    events.extend([
-        {"type": "response.output_item.done", "output_index": 0, "item": item},
-        {"type": "response.completed", "response": response},
-    ])
-    return [
-        f"event: {event['type']}\ndata: {json.dumps({**event, 'sequence_number': i})}\n\n".encode()
-        for i, event in enumerate(events)
-    ], response
+    part = item.get("content", [{}])[0]
+    variables = {
+        "$response": response, "$item": item, "$item_id": item["id"],
+        "$partial_response": {**response, "status": "in_progress", "output": [], "usage": None},
+        "$partial_item": {**item, "status": "in_progress",
+                          **({"arguments": ""} if item["type"] == "function_call" else {"content": []})},
+        "$arguments": item.get("arguments"), "$text": part.get("text"), "$part": part,
+        "$partial_part": {**part, "text": ""},
+    }
+
+    def render(value):
+        if isinstance(value, str) and value.startswith("$"):
+            return variables[value]
+        if isinstance(value, dict):
+            return {key: render(child) for key, child in value.items()}
+        if isinstance(value, list):
+            return [render(child) for child in value]
+        return value
+
+    events = render(EVENTS["prefix"] + EVENTS[item["type"]] + EVENTS["suffix"])
+    return [{**event, "sequence_number": i} for i, event in enumerate(events)], response
+
+
+def encode_sse(events):
+    return [f"event: {event['type']}\ndata: {json.dumps(event)}\n\n".encode() for event in events]
 
 
 class Scenario:
@@ -63,16 +53,16 @@ class Scenario:
         self.requests = 0
         self.lock = threading.Lock()
 
-    def respond(self, body):
+    def respond(self, body, transport="http", connection=None):
         with self.lock:
             try:
-                return self._respond(body)
+                return self._respond(body, transport, connection)
             except (ValueError, KeyError, TypeError) as error:
                 if len(self.errors) < MAX_REQUESTS:
                     self.errors.append(str(error))
                 raise ValueError(str(error)) from error
 
-    def _respond(self, body):
+    def _respond(self, body, transport, connection):
         self.requests += 1
         if self.requests > MAX_REQUESTS:
             raise ValueError("request limit exceeded")
@@ -92,6 +82,8 @@ class Scenario:
                 name, arguments = "shell_command", {"command": command}
             elif "shell" in names:
                 name, arguments = "shell", {"command": ["cat", scenario["marker_file"]]}
+            elif "read" in names:
+                name, arguments = "read", {"path": scenario["marker_file"]}
             else:
                 raise ValueError("client did not advertise a supported shell tool")
             item = {
@@ -123,8 +115,10 @@ class Scenario:
         self.evidence.append({
             "scenario": mode, "model": body["model"], "stream": body.get("stream", False),
             "output_type": item["type"], "tool_output_verified": output_verified,
+            "transport": transport, "connection": connection,
+            "previous_response_id": body.get("previous_response_id"),
         })
-        return sse_events(f"resp_e2e_{index}", item)
+        return response_events(f"resp_e2e_{index}", item)
 
 
 class Upstream:
@@ -148,6 +142,7 @@ class Upstream:
                     self.connection.settimeout(10)
                     body = json.loads(self.rfile.read(length))
                     events, response = scenario.respond(body)
+                    events = encode_sse(events)
                     payload = b"".join(events) if body.get("stream") else json.dumps(response).encode()
                     self.send_response(200)
                     self.send_header("Content-Type", "text/event-stream" if body.get("stream") else "application/json")

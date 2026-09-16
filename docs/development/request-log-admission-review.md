@@ -1,6 +1,6 @@
 # 请求日志故障准入审查
 
-> 状态：已完成设计记录；2026-09-16 静态审查。生产策略仍保持现状，
+> 状态：已完成设计记录；2026-09-16 源码审查并由隔离系统测试复现部分边界。生产策略仍保持现状，
 > 以下建议不是已经实施的 fail-closed 保证。
 
 ## 审查边界
@@ -33,7 +33,10 @@
   `batch_settlement_aggregates_account_updates_and_deduplicates_ids`。
 
 这些测试不等价于真实主机断电、磁盘耗尽或所有请求阶段的 kill 注入。
-首批系统 E2E 验证正常链路最终日志、费用、余额和 Key 额度；不宣称覆盖上表所有故障。
+[系统 E2E](system-e2e.md) 还验证 DB 暂停后的 kill/restart 恢复、
+checkpoint 回退重复重放不重复扣费，以及真实 Gateway 的局部 ENOSPC/EACCES syscall 注入。
+写失败场景确认普通请求继续 dispatch、终态日志缺失、writer 在去除注入后仍拒绝 append，
+直到重启恢复；这是已复现风险，不是 fail-closed 成功验收。仍不宣称覆盖上表所有故障。
 
 ## 需要明确的生产策略
 

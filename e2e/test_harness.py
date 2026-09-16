@@ -28,7 +28,7 @@ class ScenarioTests(unittest.TestCase):
         call = response["output"][0]
         self.assertEqual(call["type"], "function_call")
         self.assertEqual(json.loads(call["arguments"])["cmd"], "cat marker.txt")
-        self.assertNotIn(b"random-marker", b"".join(events))
+        self.assertNotIn("random-marker", json.dumps(events))
         self.assertFalse(fixture.tool_completed)
         fixture.respond(tool_request(input=[{
             "type": "function_call_output", "call_id": call["call_id"],
@@ -67,8 +67,7 @@ class ScenarioTests(unittest.TestCase):
 
     def test_stream_lifecycle_and_usage(self):
         fixture = Scenario("marker")
-        frames, response = fixture.respond({"model": "e2e-wire", "stream": True})
-        events = [json.loads(frame.decode().split("data: ", 1)[1]) for frame in frames]
+        events, response = fixture.respond({"model": "e2e-wire", "stream": True})
         self.assertEqual(events[0]["type"], "response.created")
         self.assertEqual(events[-1]["type"], "response.completed")
         self.assertEqual(events[-1]["response"]["status"], "completed")
