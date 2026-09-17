@@ -349,8 +349,8 @@ async fn app_with_proxy_test_endpoint(
         proxy_tests,
         model_sync,
         auth: auth.clone(),
-        request_logs: RequestLogRepository::new(pool.clone()),
-        system_metrics: SystemMetricsService::new(pool, 5),
+        request_logs: RequestLogRepository::new(pool.clone()).queries(),
+        system_metrics: SystemMetricsService::new(pool.into(), 5),
         console_body_bytes: 1_048_576,
         auth_body_bytes: 16_384,
         allowed_origins: vec![],
@@ -8739,6 +8739,8 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     assert_eq!(admin_channel_costs["channels"].as_array().unwrap().len(), 1);
 
     RequestLogRepository::new(database.pool.clone())
+        .queries()
+        .metering()
         .refresh_spend_leaderboard_snapshots()
         .await
         .unwrap();
@@ -9088,6 +9090,8 @@ async fn spend_leaderboard_uses_shanghai_periods_and_serves_snapshots() {
 
     let repository = RequestLogRepository::new(database.pool.clone());
     repository
+        .queries()
+        .metering()
         .refresh_spend_leaderboard_snapshots()
         .await
         .unwrap();
@@ -9268,6 +9272,8 @@ async fn spend_leaderboard_uses_shanghai_periods_and_serves_snapshots() {
     );
 
     repository
+        .queries()
+        .metering()
         .refresh_spend_leaderboard_snapshots()
         .await
         .unwrap();

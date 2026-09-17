@@ -8,7 +8,7 @@ use tokio::{
     time::{MissedTickBehavior, interval, timeout},
 };
 
-use crate::persistence::{RequestLogRepository, SpendLeaderboardRefresh};
+use crate::persistence::{MeteringQueries, SpendLeaderboardRefresh};
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(15 * 60);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
@@ -23,7 +23,7 @@ pub struct SpendLeaderboardWorker {
 
 impl SpendLeaderboardWorker {
     #[must_use]
-    pub fn start(repository: RequestLogRepository) -> Self {
+    pub fn start(repository: MeteringQueries) -> Self {
         let (shutdown, mut shutdown_requested) = oneshot::channel();
         let task = tokio::spawn(async move {
             let mut ticker = interval(REFRESH_INTERVAL);

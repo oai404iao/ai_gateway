@@ -15,8 +15,8 @@ use crate::{
     application::{DurableRequestLogSink, RequestLogPipelineMonitor},
     observability::{RequestLogPipelineMetrics, RequestLogPipelineMetricsSnapshot},
     persistence::{
-        RequestLogBatchInsertOutcome, RequestLogIngestRecord, RequestLogRepository,
-        RequestLogSettlementOutcome,
+        IngestReceipt, RequestLogBatchInsertOutcome, RequestLogIngestRecord, RequestLogRepository,
+        RequestLogSettlementOutcome, SettlementRepository,
     },
     request_log_spool::{RequestLogSpool, SpoolReader},
     runtime_config::RequestLoggingConfig,
@@ -134,7 +134,7 @@ impl DurableRequestLogWorker {
             spool_sync_shutdown_requested,
         ));
         let settlement_task = tokio::spawn(run_durable_settlement_worker(
-            repository.clone(),
+            repository.settlements(),
             settlement_shutdown_requested,
             settings.clone(),
             admission,
@@ -352,11 +352,7 @@ async fn run_spool_ingest_worker(
         if !batch.records.is_empty() {
             let started = Instant::now();
             let operation_timeout = remaining_operation_timeout(drain_deadline);
-            let result = timeout(
-                operation_timeout,
-                repository.copy_ingest_batch(&batch.records),
-            )
-            .await;
+            let result = timeout(operation_timeout, repository.accept_batch(&batch.records)).await;
             match result {
                 Ok(Ok(rows)) => {
                     if rows != batch.records.len() as u64 {
@@ -554,7 +550,7 @@ async fn project_one_batch(
             Err(error) => {
                 metrics.record_projection_failure();
                 tracing::error!(
-                    sequence = row.sequence,
+                    receipt = ?row.sequence,
                     request_log_id = %row.request_log_id,
                     %error,
                     reason = "ingest_decode_failed",
@@ -599,7 +595,7 @@ async fn project_one_batch(
                     RequestLogBatchInsertOutcome::DuplicateConflict => {
                         conflicting.push(row.sequence);
                         tracing::error!(
-                            sequence = row.sequence,
+                            receipt = ?row.sequence,
                             request_log_id = %row.request_log_id,
                             reason = "duplicate_conflict",
                             "request-log ingress row conflicts with immutable final facts"
@@ -608,7 +604,7 @@ async fn project_one_batch(
                     RequestLogBatchInsertOutcome::InvalidResponseStatus { status } => {
                         invalid.push(row.sequence);
                         tracing::error!(
-                            sequence = row.sequence,
+                            receipt = ?row.sequence,
                             request_log_id = %row.request_log_id,
                             status,
                             reason = "invalid_response_status",
@@ -712,7 +708,7 @@ async fn project_rows_individually(
             Ok(Ok(_)) => acknowledged.push(row.sequence),
             Ok(Err(error)) => {
                 tracing::error!(
-                    sequence = row.sequence,
+                    receipt = ?row.sequence,
                     request_log_id = %row.request_log_id,
                     %error,
                     reason = "isolated_projection_failed",
@@ -722,7 +718,7 @@ async fn project_rows_individually(
             }
             Err(_) => {
                 tracing::error!(
-                    sequence = row.sequence,
+                    receipt = ?row.sequence,
                     request_log_id = %row.request_log_id,
                     reason = "isolated_projection_timeout",
                     "request-log ingress row remains durable for a later retry"
@@ -749,7 +745,7 @@ async fn project_rows_individually(
 
 async fn acknowledge_rows(
     repository: &RequestLogRepository,
-    sequences: &[i64],
+    sequences: &[IngestReceipt],
     metrics: &RequestLogPipelineMetrics,
 ) {
     if sequences.is_empty() {
@@ -784,7 +780,7 @@ async fn acknowledge_rows(
 
 async fn defer_rows(
     repository: &RequestLogRepository,
-    sequences: &[i64],
+    sequences: &[IngestReceipt],
     error_code: &str,
     retry_after_seconds: i64,
     metrics: &RequestLogPipelineMetrics,
@@ -820,7 +816,7 @@ async fn defer_rows(
 }
 
 async fn run_durable_settlement_worker(
-    repository: RequestLogRepository,
+    repository: SettlementRepository,
     mut shutdown_requested: oneshot::Receiver<()>,
     settings: DurableRequestLogSettings,
     admission: Option<AdmissionRuntime>,
@@ -853,7 +849,7 @@ async fn run_durable_settlement_worker(
 }
 
 async fn settle_one_durable_batch(
-    repository: &RequestLogRepository,
+    repository: &SettlementRepository,
     batch_size: i64,
     admission: Option<&AdmissionRuntime>,
     metrics: &RequestLogPipelineMetrics,
@@ -895,7 +891,7 @@ async fn settle_one_durable_batch(
 }
 
 async fn drain_settlements(
-    repository: &RequestLogRepository,
+    repository: &SettlementRepository,
     batch_size: i64,
     drain_duration: Duration,
     admission: Option<&AdmissionRuntime>,
@@ -983,9 +979,10 @@ async fn load_telemetry_sample(
     // dropped pool connections asynchronously, so sampling afterward can
     // briefly count this probe's own connections as busy.
     let pool_before_queries = repository.pool_status();
+    let settlements = repository.settlements();
     let (ingress, settlement) = tokio::join!(
         timeout(DATABASE_OPERATION_TIMEOUT, repository.ingest_backlog()),
-        timeout(DATABASE_OPERATION_TIMEOUT, repository.settlement_backlog())
+        timeout(DATABASE_OPERATION_TIMEOUT, settlements.settlement_backlog())
     );
     RequestLogTelemetrySample {
         metrics: metrics.snapshot(),

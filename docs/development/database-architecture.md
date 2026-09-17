@@ -12,6 +12,11 @@
   跨进程收敛。
 - schema 只能通过新的有序 migration 演进；不得修改已经部署的 migration 来伪造当前结构。
 
+应用通过 prepared control-plane/Codex 专属操作使用事务，不直接持有 PG 事务或连接池；
+日志写入、日志查询、计量查询与结算已拆为窄句柄。SQLx 错误在存储内部分类，
+提交前校验/审计与提交后发布顺序不变。详见[持久化操作接口](persistence-interfaces.md)。
+当前仍由 `request_logs` 提供费用和结算认领；接口拆分尚未解除该物理依赖。
+
 最初的 11 表方案及其当时的取舍已移入
 [首版数据库设计归档](../archive/initial-database-design.md)。它不能作为当前列名、表数量或功能边界
 的依据。

@@ -121,6 +121,10 @@ Migration `0012_request_log_ingest.sql` 创建 `request_log_ingest`：
 
 投影 Worker 按 sequence 读取入口记录，解码后复用批量 `UNNEST` 写入现有 `request_logs`。成功行从入口表删除；格式错误、约束冲突或暂时失败的行保留在入口表并延迟重试，不会阻塞后续正常记录。
 
+PG sequence 只作为不透明 `IngestReceipt` 交给 worker；批量接收接口为 `accept_batch`，
+COPY 编码与数据库确认留在持久化实现内。结算 worker 使用独立 `SettlementRepository`，
+查询/计量读取使用各自句柄，但本节的实际表、提交与重放顺序未改变。
+
 投影时统一把 `failed`/`cancelled` 事件的费用归一为 `0`，因此升级前遗留在本地 spool 或
 `request_log_ingest` 中的旧事件不会重新写入正费用或未知费用。成功事件仍要求 usage 才能得到费用。
 

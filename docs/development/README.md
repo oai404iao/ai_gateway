@@ -15,12 +15,20 @@
 - [Console 认证与授权设计记录](console-auth.md)
 - [Console Web UI 架构与开发指南](console-ui.md)：当前 Base UI 技术栈、会话、安全、构建和测试。
 - [请求日志耐久化流水线](request-log-durability.md)
+- [持久化行为契约基线](persistence-contracts.md)：金额、结算原子性、重放、约束测试和费用读写路径；
+  明确独立计量事实实施前的已知限制。
+- [持久化操作接口](persistence-interfaces.md)：P2 的专属事务操作、窄仓储句柄、PG 错误与池观测边界。
 - [Codex 拼车金额账本](codex-sharing.md)：固定席位、窗口准入、WAL 恢复与单实例边界。
 - [统计功能设计](statistics.md)
 - [Transform DSL](transform-dsl.md)
 
 早期的产品蓝图、11 表数据库方案和 Console UI 分阶段计划已移入
 [`docs/archive/`](../archive/README.md)，只用于追溯。
+
+## 设计提案
+
+- [持久化边界与独立计量事实](persistence-boundaries.md)：第二阶段的存储职责、金额与恢复契约、
+  PG 封装，以及独立计量事实/结算回执的迁移和验收计划；P1/P2 已有代码，独立事实尚未实现。
 
 ## 测试、性能与发布
 

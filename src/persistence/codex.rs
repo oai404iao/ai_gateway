@@ -457,16 +457,6 @@ pub struct CodexTokenRefreshUpdate {
 }
 
 impl ControlPlaneRepository {
-    pub async fn begin_codex_refresh(&self) -> Result<Transaction<'_, Postgres>, RepositoryError> {
-        self.pool.begin().await.map_err(RepositoryError::from)
-    }
-
-    pub async fn begin_codex_quota_reset(
-        &self,
-    ) -> Result<Transaction<'_, Postgres>, RepositoryError> {
-        self.pool.begin().await.map_err(RepositoryError::from)
-    }
-
     pub async fn codex_credentials(
         &self,
         channel_group_id: Uuid,
@@ -694,7 +684,7 @@ impl ControlPlaneRepository {
         .map_err(RepositoryError::from)
     }
 
-    pub async fn codex_credential_for_update(
+    pub(super) async fn codex_credential_for_update(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         channel_id: Uuid,
@@ -903,7 +893,7 @@ impl ControlPlaneRepository {
         .map_err(RepositoryError::from)
     }
 
-    pub async fn insert_codex_credential(
+    pub(super) async fn insert_codex_credential(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         input: CodexCredentialCreate,
@@ -1144,7 +1134,7 @@ impl ControlPlaneRepository {
         })
     }
 
-    pub async fn update_codex_credential(
+    pub(super) async fn update_codex_credential(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         channel_id: Uuid,
@@ -1199,7 +1189,7 @@ impl ControlPlaneRepository {
         })
     }
 
-    pub async fn delete_codex_credential(
+    pub(super) async fn delete_codex_credential(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         channel_id: Uuid,
@@ -1208,7 +1198,7 @@ impl ControlPlaneRepository {
         delete_codex_credential(transaction, channel_id, None, expected_updated_at).await
     }
 
-    pub async fn update_codex_credentials_batch(
+    pub(super) async fn update_codex_credentials_batch(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         channel_group_id: Uuid,
@@ -1264,7 +1254,7 @@ impl ControlPlaneRepository {
         Ok(results)
     }
 
-    pub async fn persist_codex_token_refresh_transaction(
+    pub(super) async fn persist_codex_token_refresh_transaction(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         channel_id: Uuid,
@@ -1397,7 +1387,7 @@ impl ControlPlaneRepository {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub async fn record_codex_quota_reset_transaction(
+    pub(super) async fn record_codex_quota_reset_transaction(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         actor_user_id: Uuid,
@@ -1472,7 +1462,7 @@ impl ControlPlaneRepository {
         Ok(())
     }
 
-    pub async fn mark_codex_credential_error_transaction(
+    pub(super) async fn mark_codex_credential_error_transaction(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         channel_id: Uuid,

@@ -22,6 +22,7 @@ use crate::{
     persistence::{
         ControlPlaneRepository, RepositoryError, RequestLogBatchInsertOutcome,
         RequestLogInsertOutcome, RequestLogRepository, RequestLogSettlementOutcome,
+        SettlementRepository,
     },
     routing::{PassiveHealthPolicy, RoutingRuntime},
     runtime_config::{ConfigError, RuntimeConfig},
@@ -90,7 +91,7 @@ impl RequestLogWorker {
             mpsc::channel::<Vec<uuid::Uuid>>(SETTLEMENT_NOTIFICATION_CAPACITY);
         let sink = QueueRequestLogSink::new(sender);
         let settlement_task = tokio::spawn(run_settlement_worker(
-            repository.clone(),
+            repository.settlements(),
             settlement_receiver,
             admission,
         ));
@@ -354,7 +355,7 @@ fn queue_settlement(
 }
 
 async fn run_settlement_worker(
-    repository: RequestLogRepository,
+    repository: SettlementRepository,
     mut receiver: mpsc::Receiver<Vec<uuid::Uuid>>,
     admission: Option<AdmissionRuntime>,
 ) {
@@ -379,7 +380,7 @@ async fn run_settlement_worker(
 }
 
 async fn reconcile_settlements(
-    repository: &RequestLogRepository,
+    repository: &SettlementRepository,
     drain_deadline: Option<Instant>,
     admission: Option<&AdmissionRuntime>,
 ) {
@@ -414,7 +415,7 @@ async fn reconcile_settlements(
 }
 
 async fn settle_batch(
-    repository: &RequestLogRepository,
+    repository: &SettlementRepository,
     request_log_ids: &[uuid::Uuid],
     drain_deadline: Option<Instant>,
     admission: Option<&AdmissionRuntime>,
@@ -455,7 +456,7 @@ async fn settle_batch(
 }
 
 async fn reconcile_all_settlements(
-    repository: &RequestLogRepository,
+    repository: &SettlementRepository,
     admission: Option<&AdmissionRuntime>,
 ) {
     let deadline = Instant::now() + REQUEST_LOG_DRAIN_TIMEOUT;

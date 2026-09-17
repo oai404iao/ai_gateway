@@ -3,7 +3,11 @@
 mod auth;
 mod codex;
 mod codex_sharing;
+mod codex_write;
+mod control_plane_write;
+mod health;
 mod migrations;
+mod storage_error;
 
 pub use auth::{
     AuthRepository, ConsoleProfile, ConsoleSession, ConsoleSessionState, InvitationCreated,
@@ -20,7 +24,11 @@ pub use codex::{
     CodexQuotaWindowPeriodView, CodexTokenRefreshUpdate, SelfCodexQuotaCredentialView,
     SelfCodexQuotaWindowHistory, SelfCodexQuotaWindowPeriodView,
 };
+pub use codex_write::{CodexQuotaReset, CodexRefresh};
+pub use control_plane_write::PreparedControlPlaneChange;
+pub use health::DatabaseHealth;
 pub use migrations::{MIGRATOR, MigrationRunError, run_migrations};
+pub use storage_error::{StorageError, StorageFailureKind};
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -2363,10 +2371,61 @@ pub struct RequestLogRepository {
     pool: PgPool,
 }
 
+#[derive(Clone)]
+pub struct RequestLogQueries {
+    pool: PgPool,
+}
+
+#[derive(Clone)]
+pub struct SettlementRepository {
+    pool: PgPool,
+}
+
+#[derive(Clone)]
+pub struct MeteringQueries {
+    pool: PgPool,
+}
+
+impl MeteringQueries {
+    #[must_use]
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+impl RequestLogQueries {
+    #[must_use]
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+
+    #[must_use]
+    pub fn metering(&self) -> MeteringQueries {
+        MeteringQueries::new(self.pool.clone())
+    }
+}
+
+impl SettlementRepository {
+    #[must_use]
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
 impl RequestLogRepository {
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
+    }
+
+    #[must_use]
+    pub fn queries(&self) -> RequestLogQueries {
+        RequestLogQueries::new(self.pool.clone())
+    }
+
+    #[must_use]
+    pub fn settlements(&self) -> SettlementRepository {
+        SettlementRepository::new(self.pool.clone())
     }
 
     /// Appends encoded terminal events to the low-index durable ingress table.
@@ -2374,7 +2433,7 @@ impl RequestLogRepository {
     /// Duplicates are intentionally allowed here. A checkpoint replay can
     /// therefore use PostgreSQL COPY directly, while the final request_logs
     /// primary key remains the idempotency boundary.
-    pub(crate) async fn copy_ingest_batch(
+    pub(crate) async fn accept_batch(
         &self,
         records: &[EncodedRequestLog],
     ) -> Result<u64, RepositoryError> {
@@ -2424,7 +2483,7 @@ impl RequestLogRepository {
 
     pub(crate) async fn acknowledge_ingest(
         &self,
-        sequences: &[i64],
+        sequences: &[IngestReceipt],
     ) -> Result<u64, RepositoryError> {
         if sequences.is_empty() {
             return Ok(0);
@@ -2439,7 +2498,7 @@ impl RequestLogRepository {
 
     pub(crate) async fn defer_ingest(
         &self,
-        sequences: &[i64],
+        sequences: &[IngestReceipt],
         error_code: &str,
         retry_after_seconds: i64,
     ) -> Result<u64, RepositoryError> {
@@ -2482,7 +2541,9 @@ impl RequestLogRepository {
         .await
         .map_err(RepositoryError::from)
     }
+}
 
+impl SettlementRepository {
     pub(crate) async fn settlement_backlog(
         &self,
     ) -> Result<RequestLogSettlementBacklog, RepositoryError> {
@@ -2501,7 +2562,9 @@ impl RequestLogRepository {
         .await
         .map_err(RepositoryError::from)
     }
+}
 
+impl RequestLogRepository {
     #[must_use]
     pub(crate) fn pool_status(&self) -> RequestLogPoolStatus {
         RequestLogPoolStatus {
@@ -2509,7 +2572,9 @@ impl RequestLogRepository {
             idle: self.pool.num_idle(),
         }
     }
+}
 
+impl RequestLogQueries {
     pub async fn list_for_user(
         &self,
         user_id: Uuid,
@@ -2544,7 +2609,9 @@ impl RequestLogRepository {
     pub async fn get(&self, id: Uuid) -> Result<Option<ConsoleRequestLog>, RepositoryError> {
         query_console_request_log(&self.pool, id, None).await
     }
+}
 
+impl MeteringQueries {
     pub async fn personal_usage(
         &self,
         user_id: Uuid,
@@ -2585,7 +2652,9 @@ impl RequestLogRepository {
 
         Ok(fold_personal_usage(rows, started_on, ended_on))
     }
+}
 
+impl RequestLogQueries {
     pub async fn channel_group_status(
         &self,
         window: ChannelGroupStatusWindow,
@@ -2798,7 +2867,9 @@ impl RequestLogRepository {
                 .collect(),
         })
     }
+}
 
+impl MeteringQueries {
     pub async fn cost_statistics(
         &self,
         filter: CostStatisticsFilter,
@@ -3309,7 +3380,9 @@ impl RequestLogRepository {
             entries,
         })
     }
+}
 
+impl RequestLogRepository {
     /// Inserts one terminal event without changing schema-owned defaults.
     ///
     /// A duplicate id is successful only if every field owned by this event is
@@ -3532,7 +3605,9 @@ impl RequestLogRepository {
             })
             .collect())
     }
+}
 
+impl SettlementRepository {
     /// Claims and applies one billable terminal log in a single transaction.
     ///
     /// The conditional `billed_at` update is the sole settlement claim. If a
@@ -4307,9 +4382,13 @@ pub enum RequestLogSettlementOutcome {
     NotFound,
 }
 
+#[derive(Clone, Copy, Debug, sqlx::Type)]
+#[sqlx(transparent)]
+pub(crate) struct IngestReceipt(i64);
+
 #[derive(FromRow)]
 pub(crate) struct RequestLogIngestRecord {
-    pub sequence: i64,
+    pub sequence: IngestReceipt,
     pub request_log_id: Uuid,
     pub schema_version: i16,
     pub payload: Vec<u8>,
@@ -4928,7 +5007,7 @@ impl ControlPlaneRepository {
         Ok(records)
     }
 
-    pub async fn load_runtime_transaction(
+    async fn load_runtime_transaction(
         transaction: &mut Transaction<'_, Postgres>,
     ) -> Result<RuntimeConfigRecords, RepositoryError> {
         Ok(RuntimeConfigRecords {
@@ -4977,7 +5056,7 @@ impl ControlPlaneRepository {
         .map_err(RepositoryError::from)
     }
 
-    pub async fn update_user_settings(
+    async fn update_user_settings(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         user_id: Uuid,
@@ -4996,7 +5075,7 @@ impl ControlPlaneRepository {
         .map_err(RepositoryError::from)
     }
 
-    pub async fn load_transaction(
+    async fn load_transaction(
         transaction: &mut Transaction<'_, Postgres>,
     ) -> Result<ControlPlaneRecords, RepositoryError> {
         let api_keys = sqlx::query_as::<_, ApiKeyRecord>("SELECT k.id, k.user_id, u.status AS user_status, u.websocket_enabled AS user_websocket_enabled, g.filter_fast_mode AS user_filter_fast_mode, k.secret_value, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount FROM api_keys k JOIN users u ON u.id = k.user_id AND u.deleted_at IS NULL JOIN user_groups g ON g.id=u.user_group_id AND g.deleted_at IS NULL WHERE NOT k.is_system AND k.deleted_at IS NULL ORDER BY k.id").fetch_all(&mut **transaction).await?;
@@ -5055,7 +5134,7 @@ impl ControlPlaneRepository {
         })
     }
 
-    pub async fn begin_serializable(&self) -> Result<Transaction<'_, Postgres>, RepositoryError> {
+    async fn begin_serializable(&self) -> Result<Transaction<'_, Postgres>, RepositoryError> {
         let mut transaction = self.pool.begin().await?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
             .execute(&mut *transaction)
@@ -5063,7 +5142,7 @@ impl ControlPlaneRepository {
         Ok(transaction)
     }
 
-    pub async fn active_user_exists(
+    async fn active_user_exists(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         id: Uuid,
@@ -5079,7 +5158,7 @@ impl ControlPlaneRepository {
         .await?)
     }
 
-    pub async fn active_admin_exists(
+    async fn active_admin_exists(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         id: Uuid,
@@ -5098,7 +5177,7 @@ impl ControlPlaneRepository {
     /// Applies an idempotent system-owned temporary disable only when the
     /// current persisted policy still matches the supplied sanitized failure
     /// trigger. The caller owns snapshot publication after a returned change.
-    pub async fn automatically_disable_channel(
+    async fn automatically_disable_channel(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         id: Uuid,
@@ -5148,7 +5227,7 @@ impl ControlPlaneRepository {
     /// upstream test when automatic recovery remains enabled in the current
     /// persisted settings. The caller owns snapshot publication after a
     /// returned change.
-    pub async fn automatically_recover_channel(
+    async fn automatically_recover_channel(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         id: Uuid,
@@ -5519,7 +5598,7 @@ impl ControlPlaneRepository {
         })
     }
 
-    pub async fn create_own_api_key(
+    async fn create_own_api_key(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         user_id: Uuid,
@@ -5582,7 +5661,7 @@ impl ControlPlaneRepository {
         })
     }
 
-    pub async fn update_own_api_key(
+    async fn update_own_api_key(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         user_id: Uuid,
@@ -5670,7 +5749,7 @@ impl ControlPlaneRepository {
         })
     }
 
-    pub async fn revoke_own_api_key(
+    async fn revoke_own_api_key(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         user_id: Uuid,
@@ -5707,7 +5786,7 @@ impl ControlPlaneRepository {
         })
     }
 
-    pub async fn delete_own_api_key(
+    async fn delete_own_api_key(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         user_id: Uuid,
@@ -5725,7 +5804,7 @@ impl ControlPlaneRepository {
         .await
     }
 
-    pub async fn update_users_batch(
+    async fn update_users_batch(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         actor: Uuid,
@@ -5852,7 +5931,7 @@ impl ControlPlaneRepository {
         Ok(results)
     }
 
-    pub async fn update_channels_batch(
+    async fn update_channels_batch(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         input: ChannelBatchUpdateInput,
@@ -5920,7 +5999,7 @@ impl ControlPlaneRepository {
         Ok(results)
     }
 
-    pub async fn apply_control_plane_mutation(
+    async fn apply_control_plane_mutation(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         mutation: ControlPlaneMutation,
@@ -6214,7 +6293,7 @@ impl ControlPlaneRepository {
 
     /// Applies explicitly selected catalog entries. Existing source-model IDs
     /// receive a price refresh; absent IDs are imported as new local models.
-    pub async fn apply_catalog_models(
+    async fn apply_catalog_models(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         inputs: Vec<SyncedModelInput>,
@@ -6237,7 +6316,7 @@ impl ControlPlaneRepository {
         Ok(results)
     }
 
-    pub async fn insert_audit(
+    async fn insert_audit(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         actor: Uuid,
@@ -6248,7 +6327,7 @@ impl ControlPlaneRepository {
             .bind(Uuid::new_v4()).bind(actor).bind(mutation.action).bind(mutation.object_type).bind(mutation.id).bind(&mutation.before_redacted).bind(&mutation.after_redacted).bind(correlation_id.to_string()).bind(&mutation.reason).execute(&mut **transaction).await?;
         Ok(())
     }
-    pub async fn insert_self_audit(
+    async fn insert_self_audit(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         actor: Uuid,
@@ -6259,7 +6338,7 @@ impl ControlPlaneRepository {
             .bind(Uuid::new_v4()).bind(actor).bind(mutation.action).bind(mutation.object_type).bind(mutation.id).bind(&mutation.before_redacted).bind(&mutation.after_redacted).bind(correlation_id.to_string()).bind(&mutation.reason).execute(&mut **transaction).await?;
         Ok(())
     }
-    pub async fn insert_system_audit(
+    async fn insert_system_audit(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         mutation: &MutationResult,
@@ -6282,7 +6361,7 @@ impl ControlPlaneRepository {
         .await?;
         Ok(())
     }
-    pub async fn insert_manual_reload_audit(
+    async fn insert_manual_reload_audit(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         actor: Uuid,
@@ -9376,10 +9455,12 @@ fn valid_session_affinity_json_pointer(pointer: &str) -> bool {
 
 #[derive(Debug, Error)]
 pub enum RepositoryError {
+    #[error("control-plane actor is not active or authorized")]
+    InvalidActor,
     #[error("credential is bound to a Codex sharing group")]
     SharingCredentialInUse,
     #[error("control-plane database operation failed")]
-    Sql(#[from] sqlx::Error),
+    Storage(#[source] StorageError),
     #[error("request log response status is outside the HTTP range")]
     InvalidResponseStatus { status: u16 },
     #[error("request log id already exists with different immutable facts")]

@@ -27,6 +27,8 @@
 
 项目级验收入口见[系统 E2E](development/system-e2e.md)；
 工程对比背景见 [Monoize 源码研究](reference/monoize-engineering-study.md)。
+第二阶段设计见[持久化边界与独立计量事实](development/persistence-boundaries.md)；
+当前已收拢的接口见[持久化操作接口](development/persistence-interfaces.md)，独立计量事实尚未实现。
 
 当文档之间出现差异时，按以下优先级判断：
 

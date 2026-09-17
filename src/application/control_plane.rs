@@ -12,8 +12,8 @@ use crate::{
         ApiHostsView, ChannelBatchUpdateInput, ChannelDeletionImpact, CodexCredentialBatchInput,
         CodexCredentialCreate, CodexCredentialUpdateInput, ConsoleApiKey, ConsoleAuditLog,
         ControlPlaneChannelDetail, ControlPlaneConfigTemplateDetail, ControlPlaneLists,
-        ControlPlaneMutation, ControlPlaneRepository, MutationResult, RepositoryError,
-        SelfApiKeyCreate, SelfApiKeyOptions, SelfApiKeyUpdate, SyncedModelInput,
+        ControlPlaneMutation, ControlPlaneRepository, MutationResult, PreparedControlPlaneChange,
+        RepositoryError, SelfApiKeyCreate, SelfApiKeyOptions, SelfApiKeyUpdate, SyncedModelInput,
         SystemSettingsView, UserBatchUpdateInput, UserSettingsInput, UserSettingsView,
     },
     routing::{
@@ -120,22 +120,8 @@ impl ControlPlaneCoordinator {
 
     pub async fn manual_reload(&self, actor: Uuid) -> Result<Uuid, ControlPlaneError> {
         let _guard = self.serial.lock().await;
-        let mut transaction = self.repository.begin_serializable().await?;
-        if !self
-            .repository
-            .active_admin_exists(&mut transaction, actor)
-            .await?
-        {
-            return Err(ControlPlaneError::InvalidActor);
-        }
-        let next = self.compile_transaction(&mut transaction).await?;
-        self.validate_candidate(&next)?;
-        let correlation_id = Uuid::new_v4();
-        self.repository
-            .insert_manual_reload_audit(&mut transaction, actor, correlation_id)
-            .await?;
-        transaction.commit().await.map_err(RepositoryError::from)?;
-        self.publish(next);
+        let change = self.repository.prepare_manual_reload(actor).await?;
+        let (_, correlation_id) = self.commit_change(change).await?;
         Ok(correlation_id)
     }
 
@@ -191,16 +177,11 @@ impl ControlPlaneCoordinator {
         input: UserSettingsInput,
     ) -> Result<UserSettingsView, ControlPlaneError> {
         let _guard = self.serial.lock().await;
-        let mut transaction = self.repository.begin_serializable().await?;
-        let settings = self
+        let (settings, change) = self
             .repository
-            .update_user_settings(&mut transaction, user_id, input)
-            .await?
-            .ok_or(RepositoryError::NotFound)?;
-        let candidate = self.compile_transaction(&mut transaction).await?;
-        self.validate_candidate(&candidate)?;
-        transaction.commit().await.map_err(RepositoryError::from)?;
-        self.publish(candidate);
+            .prepare_user_settings(user_id, input)
+            .await?;
+        self.commit_change(change).await?;
         tracing::info!(
             %user_id,
             websocket_enabled = settings.websocket_enabled,
@@ -234,36 +215,19 @@ impl ControlPlaneCoordinator {
         mutation: ControlPlaneMutation,
     ) -> Result<MutationResult, ControlPlaneError> {
         let _guard = self.serial.lock().await;
-        let mut transaction = self.repository.begin_serializable().await?;
-        if !self
-            .repository
-            .active_admin_exists(&mut transaction, actor)
-            .await?
-        {
-            return Err(ControlPlaneError::InvalidActor);
-        }
         if matches!(&mutation, ControlPlaneMutation::SaveCodexSharing { input, .. }
             if input.enabled && !self.sharing.available())
         {
+            self.verify_active_admin(actor).await?;
             return Err(RepositoryError::Validation.into());
         }
-        let result = self
-            .repository
-            .apply_control_plane_mutation(&mut transaction, mutation)
-            .await?;
-        let candidate = self.compile_transaction(&mut transaction).await?;
-        self.validate_candidate(&candidate)?;
-        let correlation_id = Uuid::new_v4();
-        self.repository
-            .insert_audit(&mut transaction, actor, &result, correlation_id)
-            .await?;
-        transaction.commit().await.map_err(RepositoryError::from)?;
-        self.publish(candidate);
+        let change = self.repository.prepare_mutation(actor, mutation).await?;
+        let result = self.commit_mutation(change).await?;
+        let correlation_id = result
+            .correlation_id
+            .expect("committed mutation has audit id");
         tracing::info!(%correlation_id, object_type = result.object_type, action = result.action, "management mutation committed");
-        Ok(MutationResult {
-            correlation_id: Some(correlation_id),
-            ..result
-        })
+        Ok(result)
     }
 
     pub async fn update_channels_batch(
@@ -272,28 +236,8 @@ impl ControlPlaneCoordinator {
         input: ChannelBatchUpdateInput,
     ) -> Result<ChannelBatchUpdateResult, ControlPlaneError> {
         let _guard = self.serial.lock().await;
-        let mut transaction = self.repository.begin_serializable().await?;
-        if !self
-            .repository
-            .active_admin_exists(&mut transaction, actor)
-            .await?
-        {
-            return Err(ControlPlaneError::InvalidActor);
-        }
-        let mutations = self
-            .repository
-            .update_channels_batch(&mut transaction, input)
-            .await?;
-        let candidate = self.compile_transaction(&mut transaction).await?;
-        self.validate_candidate(&candidate)?;
-        let correlation_id = Uuid::new_v4();
-        for mutation in &mutations {
-            self.repository
-                .insert_audit(&mut transaction, actor, mutation, correlation_id)
-                .await?;
-        }
-        transaction.commit().await.map_err(RepositoryError::from)?;
-        self.publish(candidate);
+        let change = self.repository.prepare_channels_batch(actor, input).await?;
+        let (mutations, correlation_id) = self.commit_change(change).await?;
         tracing::info!(
             %correlation_id,
             channel_count = mutations.len(),
@@ -312,30 +256,11 @@ impl ControlPlaneCoordinator {
         oauth_flow_id: Option<Uuid>,
     ) -> Result<MutationResult, ControlPlaneError> {
         let _guard = self.serial.lock().await;
-        let mut transaction = self.repository.begin_serializable().await?;
-        if !self
+        let change = self
             .repository
-            .active_admin_exists(&mut transaction, actor)
-            .await?
-        {
-            return Err(ControlPlaneError::InvalidActor);
-        }
-        let result = self
-            .repository
-            .insert_codex_credential(&mut transaction, input, oauth_flow_id)
+            .prepare_codex_credential_create(actor, input, oauth_flow_id)
             .await?;
-        let candidate = self.compile_transaction(&mut transaction).await?;
-        self.validate_candidate(&candidate)?;
-        let correlation_id = Uuid::new_v4();
-        self.repository
-            .insert_audit(&mut transaction, actor, &result, correlation_id)
-            .await?;
-        transaction.commit().await.map_err(RepositoryError::from)?;
-        self.publish(candidate);
-        Ok(MutationResult {
-            correlation_id: Some(correlation_id),
-            ..result
-        })
+        self.commit_mutation(change).await
     }
 
     pub async fn update_codex_credential(
@@ -346,30 +271,11 @@ impl ControlPlaneCoordinator {
         expected_updated_at: chrono::DateTime<chrono::Utc>,
     ) -> Result<MutationResult, ControlPlaneError> {
         let _guard = self.serial.lock().await;
-        let mut transaction = self.repository.begin_serializable().await?;
-        if !self
+        let change = self
             .repository
-            .active_admin_exists(&mut transaction, actor)
-            .await?
-        {
-            return Err(ControlPlaneError::InvalidActor);
-        }
-        let result = self
-            .repository
-            .update_codex_credential(&mut transaction, channel_id, input, expected_updated_at)
+            .prepare_codex_credential_update(actor, channel_id, input, expected_updated_at)
             .await?;
-        let candidate = self.compile_transaction(&mut transaction).await?;
-        self.validate_candidate(&candidate)?;
-        let correlation_id = Uuid::new_v4();
-        self.repository
-            .insert_audit(&mut transaction, actor, &result, correlation_id)
-            .await?;
-        transaction.commit().await.map_err(RepositoryError::from)?;
-        self.publish(candidate);
-        Ok(MutationResult {
-            correlation_id: Some(correlation_id),
-            ..result
-        })
+        self.commit_mutation(change).await
     }
 
     pub async fn delete_codex_credential(
@@ -379,30 +285,11 @@ impl ControlPlaneCoordinator {
         expected_updated_at: chrono::DateTime<chrono::Utc>,
     ) -> Result<MutationResult, ControlPlaneError> {
         let _guard = self.serial.lock().await;
-        let mut transaction = self.repository.begin_serializable().await?;
-        if !self
+        let change = self
             .repository
-            .active_admin_exists(&mut transaction, actor)
-            .await?
-        {
-            return Err(ControlPlaneError::InvalidActor);
-        }
-        let result = self
-            .repository
-            .delete_codex_credential(&mut transaction, channel_id, expected_updated_at)
+            .prepare_codex_credential_delete(actor, channel_id, expected_updated_at)
             .await?;
-        let candidate = self.compile_transaction(&mut transaction).await?;
-        self.validate_candidate(&candidate)?;
-        let correlation_id = Uuid::new_v4();
-        self.repository
-            .insert_audit(&mut transaction, actor, &result, correlation_id)
-            .await?;
-        transaction.commit().await.map_err(RepositoryError::from)?;
-        self.publish(candidate);
-        Ok(MutationResult {
-            correlation_id: Some(correlation_id),
-            ..result
-        })
+        self.commit_mutation(change).await
     }
 
     pub async fn update_codex_credentials_batch(
@@ -412,28 +299,11 @@ impl ControlPlaneCoordinator {
         input: CodexCredentialBatchInput,
     ) -> Result<CodexCredentialBatchResult, ControlPlaneError> {
         let _guard = self.serial.lock().await;
-        let mut transaction = self.repository.begin_serializable().await?;
-        if !self
+        let change = self
             .repository
-            .active_admin_exists(&mut transaction, actor)
-            .await?
-        {
-            return Err(ControlPlaneError::InvalidActor);
-        }
-        let mutations = self
-            .repository
-            .update_codex_credentials_batch(&mut transaction, channel_group_id, input)
+            .prepare_codex_credentials_batch(actor, channel_group_id, input)
             .await?;
-        let candidate = self.compile_transaction(&mut transaction).await?;
-        self.validate_candidate(&candidate)?;
-        let correlation_id = Uuid::new_v4();
-        for mutation in &mutations {
-            self.repository
-                .insert_audit(&mut transaction, actor, mutation, correlation_id)
-                .await?;
-        }
-        transaction.commit().await.map_err(RepositoryError::from)?;
-        self.publish(candidate);
+        let (mutations, correlation_id) = self.commit_change(change).await?;
         Ok(CodexCredentialBatchResult {
             updated_ids: mutations.into_iter().map(|mutation| mutation.id).collect(),
             correlation_id,
@@ -446,28 +316,8 @@ impl ControlPlaneCoordinator {
         input: UserBatchUpdateInput,
     ) -> Result<UserBatchUpdateResult, ControlPlaneError> {
         let _guard = self.serial.lock().await;
-        let mut transaction = self.repository.begin_serializable().await?;
-        if !self
-            .repository
-            .active_admin_exists(&mut transaction, actor)
-            .await?
-        {
-            return Err(ControlPlaneError::InvalidActor);
-        }
-        let mutations = self
-            .repository
-            .update_users_batch(&mut transaction, actor, input)
-            .await?;
-        let candidate = self.compile_transaction(&mut transaction).await?;
-        self.validate_candidate(&candidate)?;
-        let correlation_id = Uuid::new_v4();
-        for mutation in &mutations {
-            self.repository
-                .insert_audit(&mut transaction, actor, mutation, correlation_id)
-                .await?;
-        }
-        transaction.commit().await.map_err(RepositoryError::from)?;
-        self.publish(candidate);
+        let change = self.repository.prepare_users_batch(actor, input).await?;
+        let (mutations, correlation_id) = self.commit_change(change).await?;
         tracing::info!(
             %correlation_id,
             user_count = mutations.len(),
@@ -508,30 +358,11 @@ impl ControlPlaneCoordinator {
         input: SelfApiKeyCreate,
     ) -> Result<MutationResult, ControlPlaneError> {
         let _guard = self.serial.lock().await;
-        let mut transaction = self.repository.begin_serializable().await?;
-        if !self
+        let change = self
             .repository
-            .active_user_exists(&mut transaction, actor)
-            .await?
-        {
-            return Err(ControlPlaneError::InvalidActor);
-        }
-        let result = self
-            .repository
-            .create_own_api_key(&mut transaction, actor, input)
+            .prepare_own_api_key_create(actor, input)
             .await?;
-        let candidate = self.compile_transaction(&mut transaction).await?;
-        self.validate_candidate(&candidate)?;
-        let correlation_id = Uuid::new_v4();
-        self.repository
-            .insert_self_audit(&mut transaction, actor, &result, correlation_id)
-            .await?;
-        transaction.commit().await.map_err(RepositoryError::from)?;
-        self.publish(candidate);
-        Ok(MutationResult {
-            correlation_id: Some(correlation_id),
-            ..result
-        })
+        self.commit_mutation(change).await
     }
 
     pub async fn update_own_api_key(
@@ -542,30 +373,11 @@ impl ControlPlaneCoordinator {
         expected_updated_at: chrono::DateTime<chrono::Utc>,
     ) -> Result<MutationResult, ControlPlaneError> {
         let _guard = self.serial.lock().await;
-        let mut transaction = self.repository.begin_serializable().await?;
-        if !self
+        let change = self
             .repository
-            .active_user_exists(&mut transaction, actor)
-            .await?
-        {
-            return Err(ControlPlaneError::InvalidActor);
-        }
-        let result = self
-            .repository
-            .update_own_api_key(&mut transaction, actor, id, input, expected_updated_at)
+            .prepare_own_api_key_update(actor, id, input, expected_updated_at)
             .await?;
-        let candidate = self.compile_transaction(&mut transaction).await?;
-        self.validate_candidate(&candidate)?;
-        let correlation_id = Uuid::new_v4();
-        self.repository
-            .insert_self_audit(&mut transaction, actor, &result, correlation_id)
-            .await?;
-        transaction.commit().await.map_err(RepositoryError::from)?;
-        self.publish(candidate);
-        Ok(MutationResult {
-            correlation_id: Some(correlation_id),
-            ..result
-        })
+        self.commit_mutation(change).await
     }
 
     pub async fn revoke_own_api_key(
@@ -575,30 +387,11 @@ impl ControlPlaneCoordinator {
         reason: String,
     ) -> Result<MutationResult, ControlPlaneError> {
         let _guard = self.serial.lock().await;
-        let mut transaction = self.repository.begin_serializable().await?;
-        if !self
+        let change = self
             .repository
-            .active_user_exists(&mut transaction, actor)
-            .await?
-        {
-            return Err(ControlPlaneError::InvalidActor);
-        }
-        let result = self
-            .repository
-            .revoke_own_api_key(&mut transaction, actor, id, reason)
+            .prepare_own_api_key_revoke(actor, id, reason)
             .await?;
-        let candidate = self.compile_transaction(&mut transaction).await?;
-        self.validate_candidate(&candidate)?;
-        let correlation_id = Uuid::new_v4();
-        self.repository
-            .insert_self_audit(&mut transaction, actor, &result, correlation_id)
-            .await?;
-        transaction.commit().await.map_err(RepositoryError::from)?;
-        self.publish(candidate);
-        Ok(MutationResult {
-            correlation_id: Some(correlation_id),
-            ..result
-        })
+        self.commit_mutation(change).await
     }
 
     pub async fn delete_own_api_key(
@@ -608,30 +401,11 @@ impl ControlPlaneCoordinator {
         expected_updated_at: chrono::DateTime<chrono::Utc>,
     ) -> Result<MutationResult, ControlPlaneError> {
         let _guard = self.serial.lock().await;
-        let mut transaction = self.repository.begin_serializable().await?;
-        if !self
+        let change = self
             .repository
-            .active_user_exists(&mut transaction, actor)
-            .await?
-        {
-            return Err(ControlPlaneError::InvalidActor);
-        }
-        let result = self
-            .repository
-            .delete_own_api_key(&mut transaction, actor, id, expected_updated_at)
+            .prepare_own_api_key_delete(actor, id, expected_updated_at)
             .await?;
-        let candidate = self.compile_transaction(&mut transaction).await?;
-        self.validate_candidate(&candidate)?;
-        let correlation_id = Uuid::new_v4();
-        self.repository
-            .insert_self_audit(&mut transaction, actor, &result, correlation_id)
-            .await?;
-        transaction.commit().await.map_err(RepositoryError::from)?;
-        self.publish(candidate);
-        Ok(MutationResult {
-            correlation_id: Some(correlation_id),
-            ..result
-        })
+        self.commit_mutation(change).await
     }
 
     pub async fn model_source_ids(&self) -> Result<Vec<String>, ControlPlaneError> {
@@ -650,28 +424,11 @@ impl ControlPlaneCoordinator {
         inputs: Vec<SyncedModelInput>,
     ) -> Result<ModelSyncResult, ControlPlaneError> {
         let _guard = self.serial.lock().await;
-        let mut transaction = self.repository.begin_serializable().await?;
-        if !self
+        let change = self
             .repository
-            .active_admin_exists(&mut transaction, actor)
-            .await?
-        {
-            return Err(ControlPlaneError::InvalidActor);
-        }
-        let mutations = self
-            .repository
-            .apply_catalog_models(&mut transaction, inputs)
+            .prepare_catalog_models(actor, inputs)
             .await?;
-        let candidate = self.compile_transaction(&mut transaction).await?;
-        self.validate_candidate(&candidate)?;
-        let correlation_id = Uuid::new_v4();
-        for mutation in &mutations {
-            self.repository
-                .insert_audit(&mut transaction, actor, mutation, correlation_id)
-                .await?;
-        }
-        transaction.commit().await.map_err(RepositoryError::from)?;
-        self.publish(candidate);
+        let (mutations, correlation_id) = self.commit_change(change).await?;
         tracing::info!(
             %correlation_id,
             model_count = mutations.len(),
@@ -692,20 +449,7 @@ impl ControlPlaneCoordinator {
     }
 
     pub async fn verify_active_admin(&self, actor: Uuid) -> Result<(), ControlPlaneError> {
-        let mut transaction = self.repository.begin_serializable().await?;
-        let active = self
-            .repository
-            .active_admin_exists(&mut transaction, actor)
-            .await?;
-        transaction
-            .rollback()
-            .await
-            .map_err(RepositoryError::from)?;
-        if active {
-            Ok(())
-        } else {
-            Err(ControlPlaneError::InvalidActor)
-        }
+        Ok(self.repository.verify_active_admin(actor).await?)
     }
 
     /// Transitions one eligible channel into durable temporary disablement.
@@ -718,23 +462,17 @@ impl ControlPlaneCoordinator {
         trigger: AutomaticDisableTrigger,
     ) -> Result<bool, ControlPlaneError> {
         let _guard = self.serial.lock().await;
-        let mut transaction = self.repository.begin_serializable().await?;
-        let Some(result) = self
+        let Some(change) = self
             .repository
-            .automatically_disable_channel(&mut transaction, channel_id, &trigger)
+            .prepare_channel_disable(channel_id, &trigger)
             .await?
         else {
-            transaction.commit().await.map_err(RepositoryError::from)?;
             return Ok(false);
         };
-        let candidate = self.compile_transaction(&mut transaction).await?;
-        self.validate_candidate(&candidate)?;
-        let correlation_id = Uuid::new_v4();
-        self.repository
-            .insert_system_audit(&mut transaction, &result, correlation_id)
-            .await?;
-        transaction.commit().await.map_err(RepositoryError::from)?;
-        self.publish(candidate);
+        let result = self.commit_mutation(change).await?;
+        let correlation_id = result
+            .correlation_id
+            .expect("committed mutation has audit id");
         tracing::info!(
             %correlation_id,
             channel_id = %channel_id,
@@ -752,23 +490,13 @@ impl ControlPlaneCoordinator {
         channel_id: Uuid,
     ) -> Result<bool, ControlPlaneError> {
         let _guard = self.serial.lock().await;
-        let mut transaction = self.repository.begin_serializable().await?;
-        let Some(result) = self
-            .repository
-            .automatically_recover_channel(&mut transaction, channel_id)
-            .await?
-        else {
-            transaction.commit().await.map_err(RepositoryError::from)?;
+        let Some(change) = self.repository.prepare_channel_recovery(channel_id).await? else {
             return Ok(false);
         };
-        let candidate = self.compile_transaction(&mut transaction).await?;
-        self.validate_candidate(&candidate)?;
-        let correlation_id = Uuid::new_v4();
-        self.repository
-            .insert_system_audit(&mut transaction, &result, correlation_id)
-            .await?;
-        transaction.commit().await.map_err(RepositoryError::from)?;
-        self.publish(candidate);
+        let result = self.commit_mutation(change).await?;
+        let correlation_id = result
+            .correlation_id
+            .expect("committed mutation has audit id");
         tracing::info!(
             %correlation_id,
             channel_id = %channel_id,
@@ -806,13 +534,23 @@ impl ControlPlaneCoordinator {
         })
     }
 
-    async fn compile_transaction(
+    async fn commit_mutation(
         &self,
-        transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    ) -> Result<Arc<crate::domain::CompiledRuntimeConfig>, ControlPlaneError> {
-        Ok(Arc::new(compile_runtime_config(
-            ControlPlaneRepository::load_runtime_transaction(transaction).await?,
-        )?))
+        change: PreparedControlPlaneChange<'_>,
+    ) -> Result<MutationResult, ControlPlaneError> {
+        let (mut results, _) = self.commit_change(change).await?;
+        Ok(results.pop().expect("single mutation produces one result"))
+    }
+
+    async fn commit_change(
+        &self,
+        mut change: PreparedControlPlaneChange<'_>,
+    ) -> Result<(Vec<MutationResult>, Uuid), ControlPlaneError> {
+        let candidate = Arc::new(compile_runtime_config(change.runtime_records().await?)?);
+        self.validate_candidate(&candidate)?;
+        let result = change.commit().await?;
+        self.publish(candidate);
+        Ok(result)
     }
 }
 
@@ -845,9 +583,18 @@ pub struct UserBatchUpdateResult {
 #[derive(Debug, Error)]
 pub enum ControlPlaneError {
     #[error("control-plane database operation failed")]
-    Repository(#[from] RepositoryError),
+    Repository(#[source] RepositoryError),
     #[error("candidate configuration is invalid")]
     Compile(#[from] ConfigError),
     #[error("Console actor is not an active administrator")]
     InvalidActor,
+}
+
+impl From<RepositoryError> for ControlPlaneError {
+    fn from(error: RepositoryError) -> Self {
+        match error {
+            RepositoryError::InvalidActor => Self::InvalidActor,
+            error => Self::Repository(error),
+        }
+    }
 }

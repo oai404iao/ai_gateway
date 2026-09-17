@@ -148,7 +148,7 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
     let sharing_worker = if let Some(ledger_id) = sharing.ledger_id() {
         let mut owner = repository.claim_sharing_ledger(ledger_id).await?;
         let sharing = sharing.clone();
-        let repository = repository.clone();
+        let repository = ai_gateway::persistence::MeteringQueries::new(pool.clone());
         Some(tokio::spawn(async move {
             use sqlx::Connection;
             let mut interval = tokio::time::interval(Duration::from_secs(5));
@@ -187,7 +187,8 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
         .acquire_timeout(Duration::from_secs(config.database.connect_timeout_seconds))
         .connect_with(request_log_connect_options)
         .await?;
-    let spend_leaderboard_repository = RequestLogRepository::new(request_log_pool.clone());
+    let spend_leaderboard_repository =
+        ai_gateway::persistence::MeteringQueries::new(request_log_pool.clone());
     let (request_log_sink, request_log_worker) = DurableRequestLogWorker::start_with_admission(
         RequestLogRepository::new(request_log_pool),
         &config.request_logging,
@@ -232,7 +233,7 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
     .with_connector_registry(connectors)
     .with_sharing_runtime(sharing.clone());
     let system_metrics = SystemMetricsService::new_at(
-        pool.clone(),
+        pool.clone().into(),
         config.database.max_connections,
         gateway_started_at,
         gateway_started,
@@ -287,7 +288,7 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
             proxy_tests,
             model_sync,
             auth,
-            request_logs: RequestLogRepository::new(pool.clone()),
+            request_logs: ai_gateway::persistence::RequestLogQueries::new(pool.clone()),
             system_metrics,
             console_body_bytes: config.request_limits.console_body_bytes,
             auth_body_bytes: config.request_limits.auth_body_bytes,
