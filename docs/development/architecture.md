@@ -325,11 +325,14 @@ routing weight。Group 继续承担格式、Connector、启用、请求压缩和
 terminal request event
   -> process-unique local append-only spool
   -> request_log_ingest via COPY
-  -> request_logs projection
-  -> idempotent balance/quota settlement
+  -> immutable financial facts + pending work
+     -> idempotent receipt and balance/quota settlement
+     -> request_logs projection
 ```
 
-spool 和 ingress 分别形成两层可恢复 backlog。不得在数据库 COPY 提交前 checkpoint，也不得在最终投影成功前删除 ingress 记录。
+spool、ingress 和 pending work 是独立的恢复来源。不得在 COPY 提交前 checkpoint，
+也不得在事实和日志投影均成功前删除 ingress。结算不等待查询投影；
+迁移与恢复保证见[独立计量事实](independent-metering.md)。
 日志同时保存路由维度 `api_format` 和公共操作维度 `api_operation`，使同一 Images 格式中的
 generation/edit 可以保持独立观测和迁移兼容性。
 

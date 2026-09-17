@@ -6,6 +6,7 @@ mod codex_sharing;
 mod codex_write;
 mod control_plane_write;
 mod health;
+mod metering;
 mod migrations;
 mod storage_error;
 
@@ -27,6 +28,7 @@ pub use codex::{
 pub use codex_write::{CodexQuotaReset, CodexRefresh};
 pub use control_plane_write::PreparedControlPlaneChange;
 pub use health::DatabaseHealth;
+pub use metering::{MeteringReconciliationCounts, MeteringRepository, MeteringWriteOutcome};
 pub use migrations::{MIGRATOR, MigrationRunError, run_migrations};
 pub use storage_error::{StorageError, StorageFailureKind};
 
@@ -2428,6 +2430,11 @@ impl RequestLogRepository {
         SettlementRepository::new(self.pool.clone())
     }
 
+    #[must_use]
+    pub fn metering(&self) -> MeteringRepository {
+        MeteringRepository::new(self.pool.clone())
+    }
+
     /// Appends encoded terminal events to the low-index durable ingress table.
     ///
     /// Duplicates are intentionally allowed here. A checkpoint replay can
@@ -2471,7 +2478,7 @@ impl RequestLogRepository {
         sqlx::query_as::<_, RequestLogIngestRecord>(
             "SELECT sequence,request_log_id,schema_version,payload,attempt_count
              FROM request_log_ingest
-             WHERE next_attempt_at <= now()
+             WHERE metered_at IS NOT NULL AND next_attempt_at <= now()
              ORDER BY sequence
              LIMIT $1",
         )
@@ -2488,12 +2495,14 @@ impl RequestLogRepository {
         if sequences.is_empty() {
             return Ok(0);
         }
-        sqlx::query("DELETE FROM request_log_ingest WHERE sequence = ANY($1)")
-            .bind(sequences)
-            .execute(&self.pool)
-            .await
-            .map(|result| result.rows_affected())
-            .map_err(RepositoryError::from)
+        sqlx::query(
+            "DELETE FROM request_log_ingest WHERE sequence = ANY($1) AND metered_at IS NOT NULL",
+        )
+        .bind(sequences)
+        .execute(&self.pool)
+        .await
+        .map(|result| result.rows_affected())
+        .map_err(RepositoryError::from)
     }
 
     pub(crate) async fn defer_ingest(
@@ -2551,12 +2560,12 @@ impl SettlementRepository {
             "SELECT
                  count(*)::bigint AS row_count,
                  min(log.completed_at) AS oldest_completed_at
-             FROM request_logs AS log
+             FROM request_settlement_pending AS pending
+             JOIN request_metering_facts AS log ON log.id=pending.request_id
              JOIN api_keys AS key
                ON key.id = log.api_key_id
               AND key.user_id = log.user_id
-             WHERE log.billed_at IS NULL
-               AND log.cost_amount IS NOT NULL",
+             WHERE log.amount_state IN ('priced','zero_by_policy')",
         )
         .fetch_one(&self.pool)
         .await
@@ -2636,7 +2645,7 @@ impl MeteringQueries {
         let rows = sqlx::query_as::<_, PersonalUsageDayRow>(
             "SELECT (started_at AT TIME ZONE 'UTC')::date AS date,
                     count(*)::bigint AS request_count
-             FROM request_logs
+             FROM request_metering_facts
              WHERE user_id = $1
                AND request_source = 'client'
                AND started_at >= $2
@@ -2894,7 +2903,7 @@ impl MeteringQueries {
                     COALESCE(sum(cache_write_tokens), 0)::bigint AS cache_write_tokens,
                     COALESCE(sum(output_tokens), 0)::bigint AS output_tokens,
                     COALESCE(sum(cost_amount), 0) AS cost_amount
-             FROM request_logs
+             FROM request_metering_facts
              WHERE started_at >= $1
                AND started_at < $2
                AND ($3::uuid IS NULL OR user_id = $3)
@@ -2928,7 +2937,7 @@ impl MeteringQueries {
                         0
                     )::bigint AS total_tokens,
                     COALESCE(sum(cost_amount), 0) AS cost_amount
-             FROM request_logs
+             FROM request_metering_facts
              WHERE started_at >= $1
                AND started_at < $2
                AND ($3::uuid IS NULL OR user_id = $3)
@@ -2976,7 +2985,7 @@ impl MeteringQueries {
                     COALESCE(sum(cache_write_tokens), 0)::bigint AS cache_write_tokens,
                     COALESCE(sum(output_tokens), 0)::bigint AS output_tokens,
                     COALESCE(sum(cost_amount), 0) AS cost_amount
-             FROM request_logs
+             FROM request_metering_facts
              WHERE started_at >= $1
                AND started_at < $2
                AND ($3::uuid IS NULL OR user_id = $3)
@@ -3025,7 +3034,7 @@ impl MeteringQueries {
                             AS cache_write_tokens,
                         COALESCE(sum(log.output_tokens), 0)::bigint AS output_tokens,
                         COALESCE(sum(log.cost_amount), 0) AS cost_amount
-                 FROM request_logs AS log
+                 FROM request_metering_facts AS log
                  JOIN channels AS channel ON channel.id = log.channel_id
                  JOIN channel_groups AS channel_group
                    ON channel_group.id = log.channel_group_id
@@ -3090,9 +3099,9 @@ impl MeteringQueries {
     }
 
     /// Rebuilds Asia/Shanghai day, ISO-week, and calendar-month user-spend
-    /// snapshots from immutable request logs. Console reads only these
+    /// snapshots from immutable financial facts. Console reads only these
     /// snapshot tables; no request-time leaderboard aggregate touches
-    /// `request_logs`.
+    /// `request_metering_facts`.
     pub async fn refresh_spend_leaderboard_snapshots(
         &self,
     ) -> Result<SpendLeaderboardRefresh, RepositoryError> {
@@ -3156,7 +3165,7 @@ impl MeteringQueries {
                         0
                     )::bigint AS total_tokens,
                     COALESCE(sum(log.cost_amount), 0) AS cost_amount
-             FROM request_logs AS log
+             FROM request_metering_facts AS log
              WHERE log.request_source = 'client'
              GROUP BY (log.started_at AT TIME ZONE 'Asia/Shanghai')::date, log.user_id
              HAVING count(log.cost_amount) > 0
@@ -3176,7 +3185,7 @@ impl MeteringQueries {
                         0
                     )::bigint,
                     COALESCE(sum(log.cost_amount), 0)
-             FROM request_logs AS log
+             FROM request_metering_facts AS log
              WHERE log.request_source = 'client'
              GROUP BY date_trunc(
                  'week',
@@ -3199,7 +3208,7 @@ impl MeteringQueries {
                         0
                     )::bigint,
                     COALESCE(sum(log.cost_amount), 0)
-             FROM request_logs AS log
+             FROM request_metering_facts AS log
              WHERE log.request_source = 'client'
              GROUP BY date_trunc(
                  'month',
@@ -3411,13 +3420,43 @@ impl RequestLogRepository {
         }
     }
 
-    /// Inserts a bounded set of terminal events with one multi-row statement.
+    /// Persists financial facts before attempting the independent log projection.
+    /// A projection error never rolls back already accepted financial evidence.
+    pub async fn insert_batch(
+        &self,
+        events: &[RequestLogEvent],
+    ) -> Result<Vec<RequestLogBatchInsertResult>, RepositoryError> {
+        let accepted = self.metering().record_batch(events).await?;
+        let projectable = events
+            .iter()
+            .zip(&accepted)
+            .filter_map(|(event, outcome)| {
+                (*outcome == MeteringWriteOutcome::Accepted).then_some(event.clone())
+            })
+            .collect::<Vec<_>>();
+        let mut projected = self.project_batch(&projectable).await?.into_iter();
+        Ok(events
+            .iter()
+            .zip(accepted)
+            .map(|(event, outcome)| match outcome {
+                MeteringWriteOutcome::Accepted => projected
+                    .next()
+                    .expect("projection preserves input cardinality"),
+                MeteringWriteOutcome::Conflict => RequestLogBatchInsertResult {
+                    request_log_id: event.id,
+                    outcome: RequestLogBatchInsertOutcome::DuplicateConflict,
+                },
+            })
+            .collect())
+    }
+
+    /// Projects events whose independent financial facts are already durable.
     ///
     /// Per-event validation and duplicate classification remain isolated so one
     /// malformed status or conflicting duplicate does not hide valid peers.
     /// Database-level failures still fail the whole statement transactionally;
     /// the worker falls back to single-event insertion on that exceptional path.
-    pub async fn insert_batch(
+    pub(crate) async fn project_batch(
         &self,
         events: &[RequestLogEvent],
     ) -> Result<Vec<RequestLogBatchInsertResult>, RepositoryError> {
@@ -3608,9 +3647,9 @@ impl RequestLogRepository {
 }
 
 impl SettlementRepository {
-    /// Claims and applies one billable terminal log in a single transaction.
+    /// Claims and applies one eligible financial fact in a single transaction.
     ///
-    /// The conditional `billed_at` update is the sole settlement claim. If a
+    /// The unique settlement receipt is the sole settlement claim. If a
     /// later account update fails, the transaction rolls back the claim too.
     /// This lets a durable recovery scan retry safely after worker restarts or
     /// transient database failures.
@@ -3649,15 +3688,19 @@ impl SettlementRepository {
 
         let mut transaction = self.pool.begin().await?;
         let claimed = sqlx::query_as::<_, ClaimedRequestLog>(
-            "UPDATE request_logs AS log
-             SET billed_at = now()
-             FROM api_keys AS key
-             WHERE log.id = ANY($1)
-               AND log.billed_at IS NULL
-               AND log.cost_amount IS NOT NULL
-               AND key.id = log.api_key_id
-               AND key.user_id = log.user_id
-             RETURNING log.id, log.user_id, log.api_key_id, log.cost_amount",
+            "WITH claimed AS (
+                INSERT INTO request_settlements(request_id,cost_amount,currency)
+                SELECT fact.id,fact.cost_amount,fact.currency
+                FROM request_metering_facts AS fact
+                JOIN api_keys AS key ON key.id=fact.api_key_id AND key.user_id=fact.user_id
+                WHERE fact.id=ANY($1) AND fact.amount_state IN ('priced','zero_by_policy')
+                  AND NOT EXISTS (SELECT 1 FROM request_settlements WHERE request_id=fact.id)
+                ORDER BY fact.id
+                ON CONFLICT (request_id) DO NOTHING
+                RETURNING request_id,cost_amount
+             )
+             SELECT fact.id,fact.user_id,fact.api_key_id,claimed.cost_amount
+             FROM claimed JOIN request_metering_facts AS fact ON fact.id=claimed.request_id",
         )
         .bind(&request_log_ids)
         .fetch_all(&mut *transaction)
@@ -3674,11 +3717,12 @@ impl SettlementRepository {
         } else {
             sqlx::query_as::<_, SettlementEligibility>(
                 "SELECT log.id,
-                        log.billed_at,
+                        receipt.settled_at AS billed_at,
                         log.cost_amount,
                         key.user_id AS api_key_user_id,
                         log.user_id
-                 FROM request_logs AS log
+                 FROM request_metering_facts AS log
+                 LEFT JOIN request_settlements AS receipt ON receipt.request_id=log.id
                  LEFT JOIN api_keys AS key ON key.id = log.api_key_id
                  WHERE log.id = ANY($1)",
             )
@@ -3700,6 +3744,15 @@ impl SettlementRepository {
                     .entry((row.api_key_id, row.user_id))
                     .or_default() += row.cost_amount;
             }
+
+            sqlx::query("SELECT id FROM users WHERE id=ANY($1) ORDER BY id FOR NO KEY UPDATE")
+                .bind(user_costs.keys().copied().collect::<Vec<_>>())
+                .fetch_all(&mut *transaction)
+                .await?;
+            sqlx::query("SELECT id FROM api_keys WHERE id=ANY($1) ORDER BY id FOR NO KEY UPDATE")
+                .bind(api_key_costs.keys().map(|(id, _)| *id).collect::<Vec<_>>())
+                .fetch_all(&mut *transaction)
+                .await?;
 
             let mut users = QueryBuilder::<Postgres>::new(
                 "UPDATE users AS account \
@@ -3784,15 +3837,18 @@ impl SettlementRepository {
                 (*id, outcome)
             })
             .collect();
+        sqlx::query("DELETE FROM request_settlement_pending WHERE request_id=ANY($1)")
+            .bind(claimed.keys().copied().collect::<Vec<_>>())
+            .execute(&mut *transaction)
+            .await?;
         transaction.commit().await?;
         Ok(outcomes)
     }
 
     /// Reconciles a bounded oldest-first slice of durable, eligible logs.
     ///
-    /// It intentionally excludes missing-cost and account-mismatch rows. Those
-    /// rows remain visibly unbilled until their source facts are corrected
-    /// instead of being retried forever as transient failures.
+    /// Unknown, invalid-price and account-mismatch facts remain for
+    /// reconciliation rather than blocking eligible pending work.
     pub async fn settle_pending(
         &self,
         limit: i64,
@@ -3806,13 +3862,13 @@ impl SettlementRepository {
             .await?;
         let request_log_ids = sqlx::query_scalar::<_, Uuid>(
             "SELECT log.id
-             FROM request_logs AS log
+             FROM request_settlement_pending AS pending
+             JOIN request_metering_facts AS log ON log.id=pending.request_id
              JOIN api_keys AS key
                ON key.id = log.api_key_id
               AND key.user_id = log.user_id
-             WHERE log.billed_at IS NULL
-               AND log.cost_amount IS NOT NULL
-             ORDER BY log.completed_at, log.id
+             WHERE log.amount_state IN ('priced','zero_by_policy')
+             ORDER BY pending.completed_at, pending.request_id
              LIMIT $1",
         )
         .bind(limit.max(1))
@@ -3834,7 +3890,7 @@ fn redact_self_service_request_log(log: &mut ConsoleRequestLog) {
     log.channel_name = None;
 }
 
-const CONSOLE_REQUEST_LOG_COLUMNS: &str = "log.id,log.started_at,log.completed_at,log.user_id,request_user.display_name AS user_name,log.api_key_id,log.request_source,log.api_format::text AS api_format,log.api_operation,log.request_protocol,log.client_model,log.reasoning_effort,log.fast_mode,log.upstream_model,log.model_rule_id,log.channel_group_id,channel_group.name AS channel_group_name,log.channel_id,channel.name AS channel_name,log.outcome,log.response_status_code,log.streamed,log.ttft_ms,log.total_duration_ms,log.output_tokens_per_second,log.input_tokens,log.cached_input_tokens,log.cache_write_tokens,log.output_tokens,log.reasoning_tokens,log.cost_amount,log.peak_pricing,log.error_code,log.error_summary,log.billed_at";
+const CONSOLE_REQUEST_LOG_COLUMNS: &str = "log.id,log.started_at,log.completed_at,log.user_id,request_user.display_name AS user_name,log.api_key_id,log.request_source,log.api_format::text AS api_format,log.api_operation,log.request_protocol,log.client_model,log.reasoning_effort,log.fast_mode,log.upstream_model,log.model_rule_id,log.channel_group_id,channel_group.name AS channel_group_name,log.channel_id,channel.name AS channel_name,log.outcome,log.response_status_code,log.streamed,log.ttft_ms,log.total_duration_ms,log.output_tokens_per_second,log.input_tokens,log.cached_input_tokens,log.cache_write_tokens,log.output_tokens,log.reasoning_tokens,log.cost_amount,log.peak_pricing,log.error_code,log.error_summary,receipt.settled_at AS billed_at";
 
 async fn query_console_request_log(
     pool: &PgPool,
@@ -3844,6 +3900,7 @@ async fn query_console_request_log(
     let mut query = QueryBuilder::<Postgres>::new(format!(
         "SELECT {CONSOLE_REQUEST_LOG_COLUMNS}
          FROM request_logs AS log
+         LEFT JOIN request_settlements AS receipt ON receipt.request_id=log.id
          JOIN users AS request_user ON request_user.id = log.user_id
          LEFT JOIN channel_groups AS channel_group ON channel_group.id = log.channel_group_id
          LEFT JOIN channels AS channel ON channel.id = log.channel_id
@@ -3894,6 +3951,7 @@ async fn query_console_request_logs(
     let mut query = QueryBuilder::<Postgres>::new(format!(
         "SELECT {CONSOLE_REQUEST_LOG_COLUMNS}
          FROM request_logs AS log
+         LEFT JOIN request_settlements AS receipt ON receipt.request_id=log.id
          JOIN users AS request_user ON request_user.id = log.user_id
          LEFT JOIN channel_groups AS channel_group ON channel_group.id = log.channel_group_id
          LEFT JOIN channels AS channel ON channel.id = log.channel_id
@@ -3941,9 +3999,9 @@ async fn query_console_request_logs(
     }
     if let Some(billed) = filter.billed {
         if billed {
-            query.push(" AND log.billed_at IS NOT NULL");
+            query.push(" AND receipt.settled_at IS NOT NULL");
         } else {
-            query.push(" AND log.billed_at IS NULL");
+            query.push(" AND receipt.settled_at IS NULL");
         }
     }
     query
@@ -4458,8 +4516,7 @@ fn settlement_outcome_from_eligibility(
     if eligibility.api_key_user_id != Some(eligibility.user_id) {
         return RequestLogSettlementOutcome::AccountMismatch;
     }
-    // A concurrent claimer either commits and is observed as `AlreadyBilled`,
-    // or rolls back and leaves a later recovery pass to claim the row.
+    // A known cost without complete pricing evidence is not a billable claim.
     RequestLogSettlementOutcome::NotBillable
 }
 
@@ -9467,7 +9524,7 @@ pub enum RepositoryError {
     DuplicateConflict { id: Uuid },
     #[error("request log duplicate disappeared before it could be compared")]
     DuplicateDisappeared { id: Uuid },
-    #[error("request log settlement claim became ineligible before account updates")]
+    #[error("financial settlement claim became ineligible before account updates")]
     SettlementClaimInvalidated { id: Uuid },
     #[error("requested record was not found or cannot be changed")]
     NotFound,

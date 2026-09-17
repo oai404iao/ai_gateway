@@ -93,7 +93,7 @@ impl super::MeteringQueries {
             return Err(RepositoryError::Validation);
         }
         Ok(sqlx::query_as(
-            "SELECT id,cost_amount FROM request_logs WHERE id=ANY($1) AND cost_amount IS NOT NULL",
+            "SELECT id,cost_amount FROM request_metering_facts WHERE id=ANY($1) AND amount_state IN ('priced','zero_by_policy')",
         )
         .bind(ids)
         .fetch_all(&self.pool)

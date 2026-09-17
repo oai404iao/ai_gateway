@@ -1,10 +1,10 @@
 # 持久化操作接口
 
-> 状态：当前。第二阶段 P2 的接口收拢；数据库仍只有 PostgreSQL 实现，schema 与收费语义不变。
+> 状态：当前。第二阶段 P2 的操作边界；数据库仍只有 PostgreSQL 实现，P3 schema 见独立计量文档。
 
 整体演进见[持久化边界设计](persistence-boundaries.md)，业务不变量和费用路径清单见
-[契约基线](persistence-contracts.md)。独立计量事实/结算回执仍是后续 P3，不能将本次句柄拆分
-解释为结算已经脱离日志投影。
+[契约基线](persistence-contracts.md)。P3 已实现[独立计量事实/回执](independent-metering.md)，
+本页侧重调用边界，不重复迁移与恢复协议。
 
 ## 当前职责
 
@@ -15,6 +15,7 @@
 | `CodexRefresh` / `CodexQuotaReset` | 对选定凭证持有锁，提交对应刷新/失败/兑换结果；不提供任意 SQL 能力 |
 | `AuthRepository` | 身份与会话事务；HTTP 通过 `ConsoleAuthService` 操作，不再取得 auth repository |
 | `RequestLogRepository` | 终态批次耐久接收、ingress 重试/确认和日志物化 |
+| `MeteringRepository` | 独立事实、pending 工作项与 ingress 可投影标记的原子物化，核对分类 |
 | `RequestLogQueries` | 本人/管理员日志、渠道组状态；不提供结算或 ingress 写入 |
 | `MeteringQueries` | 个人 usage、费用统计、排行榜投影/查询、拼车确定费用读取 |
 | `SettlementRepository` | 原子认领与账户更新、恢复扫描、结算积压 |
@@ -27,7 +28,7 @@
 
 SQL 仍集中在 `src/persistence/`；本次不为目录美观搬迁整个大文件。
 PG 行映射与快照 DTO 仍在该模块内，未来后端实现需要显式适配，不代表已经支持双后端。
-Codex credential/window view 的费用聚合暂留在该专用 PG 查询内部，P3 再更换读源。
+Codex credential/window view 的费用聚合仍封装在该专用 PG 查询内部，已读取独立计量事实。
 
 ## 控制面事务与发布
 
@@ -69,7 +70,8 @@ guard 集成测试验证了锁阻塞/释放、失败状态提交、generation �
 
 事件 worker 调用 `accept_batch`，COPY 文本编码、传输和确认都在 PG 实现内部。
 `IngestReceipt` 隐藏 PG sequence 的数值类型，worker 只保存/传回不透明 receipt，
-不计算序号或构造确认范围。journal payload、重放规则、checkpoint/ack 时序完全保留。
+不计算序号或构造确认范围。journal payload 保留；P3 在 ack 前额外要求计量事实与 ready 标记，
+checkpoint 仍只等待 COPY 耐久接收。
 
 `StorageError` 私有持有 SQLx source，并提供 `StorageFailureKind`：
 冲突、输入拒绝、路由依赖、内部失败。SQLSTATE/constraint 白名单只在
@@ -96,6 +98,6 @@ guard 集成测试验证了锁阻塞/释放、失败状态提交、generation �
 同时保留 P1 金额/事务/重放测试、完整控制面与 Console spec 测试。
 涉及 Codex 请求路径时执行经授权的真实上游 smoke；系统 E2E 验证原耐久流水线。
 
-尚未改变：`request_logs.billed_at` 仍是普通扣款的唯一认领；
-计量查询/拼车恢复仍读查询宽表；未知费用与异常归属的观测缺口、
-日志 DELETE 保护及独立保留策略仍待 P3。
+尚未改变：仍只支持 PostgreSQL，不提供自动补账、事实清理或日志 TTL。
+P3 已移除日志认领权；事实/回执不可删改，日志删除不能删除财务证据。
+原有 Codex 长事务与外部结果不确定边界仍存在。

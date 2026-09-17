@@ -1,12 +1,13 @@
 # 持久化行为契约基线
 
-> 状态：当前。记录第二阶段 P1 固定的现有行为及已知限制，不代表独立计量事实已经实现。
+> 状态：当前。记录 P1 固定的业务不变量，并同步 P2/P3 的实现定位和约束变化。
 > 设计与后续切片见[持久化边界提案](persistence-boundaries.md)。
 
 ## 范围
 
 P1 仅补充测试和职责清单，不修改生产金额计算、结算路径、公开 API 或 migration。
-本页代码定位已随 [P2 接口收拢](persistence-interfaces.md)更新，业务断言保持不变。
+本页代码定位已随 [P2 接口收拢](persistence-interfaces.md)和
+[P3 独立事实](independent-metering.md)更新；收费规则不变，异常隔离与财务来源的变化如下。
 以下区分必须保持的业务保证与待替换的 PG 机制/已知缺陷；P2/P3 可以替换实现，
 但不能靠删掉失败场景测试宣称保持了保证。
 
@@ -23,20 +24,20 @@ P1 仅补充测试和职责清单，不修改生产金额计算、结算路径�
 | 已选模型快照、渠道/请求/时间倍率决定费用，当前模型价格不能重算历史 | 原有 `src/application/proxy.rs` billing 单测；新增 `recovery_is_bounded_oldest_first_and_preserves_prices_and_probe_charges` |
 | 金额使用 Decimal/NUMERIC；单条最大值精确保存、批量越界整笔失败 | `maximum_amount_is_exact_and_aggregate_overflow_never_partially_settles` |
 | 普通余额可负、Key 软配额可透支，但已用额度不能负 | 原有 `settlement_claim_is_concurrent_idempotent_and_allows_soft_quota_overdraft`；migrations `0001`、`0003` |
-| 成功缺 usage/费用不结算；路由前 rejected 无计费事实不是已结算零费用 | 新增 `unknown_rejected_and_zero_by_policy_remain_distinct_during_recovery`；两者均返回既有 `NotBillable`，本轮不新增生产枚举 |
+| 成功缺 usage/费用不结算；路由前 rejected 无计费事实不是已结算零费用 | `unknown_rejected_and_zero_by_policy_remain_distinct_during_recovery`；均保留 `NotBillable`，内部分类见 P3 |
 | 明确 failed/cancelled 始终归零，包括缺价格/usage 或旧事件携带正费用 | 同一测试；原有 `zero_cost_migration_refunds_and_reconciles_historical_failures` |
-| 有费用不等于具备结算资格 | `missing_price_evidence_blocks_the_entire_settlement_batch`；旧 `request_logs_billed_state_check` 是实际兜底 |
+| 有费用不等于具备结算资格 | `missing_price_evidence_is_preserved_without_blocking_eligible_facts`；资格转移到独立事实/回执，不再毒化正常批次 |
 | scheduled probe 仍按系统身份和既有价格计费，不能因 source 改为免费 | `recovery_is_bounded_oldest_first_and_preserves_prices_and_probe_charges` |
 | 拼车窗口预算每席位除法按 8 位向零截断，不使用普通费用的中点取偶 | 新增 `src/codex_sharing.rs::tests::seat_budgets_truncate_instead_of_rounding_up_at_eight_places` |
 
-当前金额分类没有独立存储状态：“待核对”“不适用”“证据异常”是提案用于拆分职责的名称，
-不是已存在的新表字段或 API 值。只有 intent 的请求也不能伪造成 terminal fact。
+P3 用生成的 `amount_state` 保存金额分类，没有改变公共 API 枚举。
+只有 intent 的请求不能伪造成 terminal fact。
 
 ## 原子性、重放与恢复
 
 | 保证 | 证据 |
 | --- | --- |
-| billed_at 认领、余额、Key 已用额度同事务；部分账户未更新时全部回滚 | 新增 `settlement_rolls_back_claims_and_all_accounts_on_overflow_or_missing_updates`：余额溢出、Key 溢出、用户/Key BEFORE UPDATE 跳过一行，共四个隔离场景 |
+| 唯一回执、余额、Key 已用额度及 pending 删除同事务；部分账户未更新时全部回滚 | `settlement_rolls_back_claims_and_all_accounts_on_overflow_or_missing_updates`：余额溢出、Key 溢出、用户/Key BEFORE UPDATE 跳过一行，共四个隔离场景 |
 | 同 UUID 并发及提交后再次调用只扣一次 | 原有 `settlement_claim_is_concurrent_idempotent_and_allows_soft_quota_overdraft`；`batch_settlement_aggregates_account_updates_and_deduplicates_ids` |
 | 用户与 Key 不匹配不可认领；有效行可独立结算 | 原有 `batch_settlement_classifies_ineligible_rows_independently`；`settlement_leaves_account_mismatch_unbilled_and_worker_recovers_durable_logs` |
 | 确认丢失后的数据库效果由再次查询/调用恢复，而不是凭返回超时重复扣款 | 原有重复 `settle`/`settle_batch` 测试；未新增真实网络 COMMIT 回复丢失注入，不将调用级重试描述为网络故障证明 |
@@ -48,8 +49,9 @@ P1 仅补充测试和职责清单，不修改生产金额计算、结算路径�
 | 连续 migration 原子执行；失败/取消历史退款只执行一次 | 原有 `pending_migrations_commit_and_rollback_as_one_batch`、`zero_cost_migration_refunds_and_reconciles_historical_failures` |
 
 新增 `database_constraints_reject_invalid_money_and_illegal_log_updates` 绕过应用直接执行 SQL，
-验证 failed/cancelled 正费用、缺模型的已 billed 行、部分价格快照、非 USD、非正 token 单位、
-负费用及越界 reasoning tokens 被 CHECK 拒绝；非结算字段更新和撤销 billed_at 被触发器拒绝。
+验证 failed/cancelled 正费用、部分价格快照、非 USD、非正 token 单位、
+负费用及越界 reasoning tokens 被 CHECK 拒绝；非结算字段更新与撤销回执被触发器拒绝。
+`tests/contracts/facts.rs` 另验证无合格模型/价格的事实不能获得回执及旧认领列不可写。
 这些是 PG 实现契约，未来后端必须证明同等业务效果，不要求复刻同一 SQLSTATE。
 
 ## 费用与状态读写路径清单
@@ -62,9 +64,10 @@ P1 仅补充测试和职责清单，不修改生产金额计算、结算路径�
 | --- | --- | --- |
 | 客户端终态费用；探测费用 | `application/billing.rs::request_billing`；`proxy.rs::CompletionGuard`；`workers/channel_probe.rs` | 只生成事件，不逐请求查库扣款；保留不可变快照 |
 | 派发前 intent、终态 slot/spool | `application/request_log.rs`、`request_log_admission.rs`、`request_log_spool.rs`、`request_log_journal.rs` | 本地版本化耐久证据；保持第一阶段语义 |
-| COPY、投影、ack/defer | `persistence/mod.rs::RequestLogRepository::{accept_batch,insert_batch,acknowledge_ingest,defer_ingest}` | PG `request_log_ingest` → `request_logs`；COPY 留在接收实现内 |
-| 普通账户扣款及恢复 | `SettlementRepository::{settle,settle_batch,settle_pending}` | 当前唯一普通请求扣款入口；后续由事实/回执结算边界替代 |
-| 自动结算调用方 | `workers/durable_request_log.rs` 与 `workers/mod.rs::RequestLogWorker` | 生产耐久 worker 与旧测试入口均须迁移，不能保留两套认领规则 |
+| COPY、投影、ack/defer | `RequestLogRepository::{accept_batch,project_batch,acknowledge_ingest,defer_ingest}` | COPY 后由计量物化，再独立写 `request_logs`；确认必须有事实和投影 |
+| 计量物化 | `persistence/metering.rs::MeteringRepository` | 事实、工作项和 ingress ready 原子提交；兼容直接终态入口 `insert_batch` 先提交事实再尝试投影 |
+| 普通账户扣款及恢复 | `SettlementRepository::{settle,settle_batch,settle_pending}` | 唯一回执与账户更新，不依赖查询表；扫描 pending 而非全部历史 |
+| 自动结算调用方 | `workers/durable_request_log.rs` 与 `workers/mod.rs::RequestLogWorker` | 生产耐久 worker 与旧入口共用同一事实/回执结算规则 |
 | 进程内 Key 额度 | `workers/mod.rs::handle_settlement_outcome` → `admission/mod.rs::record_settled_quota_usage` | 提交后单调更新缓存；不是数据库余额事实 |
 | 管理员单条设余额 | `persistence/mod.rs::user_update`，经 `ControlPlaneCoordinator::mutate` | 绝对赋值；控制面 SERIALIZABLE + 候选校验 + 审计，不属于请求结算回执 |
 | 管理员批量 set/increase/decrease | `ControlPlaneRepository::update_users_batch`，经 coordinator 同名方法 | 仍属控制面原子管理操作；不得拆成逐行非事务更新 |
@@ -78,7 +81,7 @@ P1 仅补充测试和职责清单，不修改生产金额计算、结算路径�
 `MeteringQueries` 和 `SettlementRepository`；拼车费用读取也归 `MeteringQueries`。
 费用读源迁移不得统一成一种 source 或时间口径。
 
-| 查询 | 当前时间/source/权限边界 | P3 目标 |
+| 查询 | 时间/source/权限边界 | 当前 P3 归属 |
 | --- | --- | --- |
 | `query_console_request_logs` / `query_console_request_log` | 本人查询绑定 user；管理视图及字段脱敏保持原状；时间筛选含两端；`billed` 过滤 billed_at | 日志投影 + 回执 LEFT JOIN，不再拥有认领权 |
 | `personal_usage` | started_at 闭开区间、UTC 日桶、仅 client、本人 user | 费用/usage 读独立事实 |
@@ -87,7 +90,7 @@ P1 仅补充测试和职责清单，不修改生产金额计算、结算路径�
 | `refresh_spend_leaderboard_snapshots` | 仅 client；Asia/Shanghai 日/周/月边界；写入 `spend_leaderboard_*` | 保留统计快照，费用源改为事实 |
 | `persistence/codex.rs::CODEX_CURRENT_WINDOW_COSTS_LATERAL`、管理员/本人 quota history | 两个 managed projection 的 channel；started_at 在 period 起点至 ended_at 或 min(now,reset_at) 的闭开区间；cost 非 NULL；本人视图遵守 group/pool 可见性 | 读事实，不依赖日志或普通结算回执 |
 | `persistence/codex_sharing.rs::sharing_completed_costs` | 按请求 UUID，最多 1000 个；cost 非 NULL；不要求 billed | 拼车恢复读事实，保持单向费用证据读取 |
-| `settlement_backlog` / `settle_pending` | 当前排除 cost=NULL 和账户不匹配；前者用于健康观测，后者恢复结算 | 未知/异常与可结算 backlog 分开，不伪装成清零 |
+| `settlement_backlog` / `settle_pending` | 只扫描合格 pending；排除账户不匹配 | unknown/invalid/账户异常有独立核对计数，不伪装成清零 |
 
 ### Codex quota 与拼车不是普通 Key 额度重置
 
@@ -101,20 +104,17 @@ P1 仅补充测试和职责清单，不修改生产金额计算、结算路径�
 - `persistence/codex_sharing.rs::claim_sharing_ledger` 与 `main.rs` 保活拥有单实例锁；
   配置存储、窗口完整性加载不替代本地 WAL。
 
-## 已知限制，不应固化成未来保证
+## 基线限制的演进
 
-1. 有费用但缺完整价格/模型的未 billed 历史记录可以入表；认领 SQL 先选中它，
-   然后 `request_logs_billed_state_check` 拒绝，导致整批回滚并可能反复重试。
-   新增测试固定“不误扣、无部分扣款”，不是要求 P3 永远让它阻塞正常结算。
-2. 自动扫描与健康 backlog 不覆盖未知费用/归属异常；本轮没有添加新指标。
-   缺 usage 的成功请求仍可能只在日志查询中可见，须按提案改善分类观测。
-3. `prevent_log_mutation` 对 `request_logs` DELETE 返回 OLD，数据库并未禁止删除。
-   应用没有日志删除入口，但这不构成幂等保留保证；手工删行可能移除认领证据并导致重放再扣。
-   P3 必须保护独立事实/回执，P1 不新增删除接口或改变触发器。
-4. 现有宽表既是查询也是结算来源，日志投影失败仍能延迟扣款/拼车恢复。
-   “日志锁住而结算继续”的测试属于 P3，不能在 P1 宣称已通过。
-5. P2 已隐藏应用层 SQLx 类型和错误方言；PG 测试仍通过诊断 source/直接 SQL 检查机制。
-   具体存储实现仍仅支持 PostgreSQL，SQLite 未实现。
+P1 固定了“不误扣、无部分扣款”，没有把旧日志表实现固化成未来保证。P3 已改进：
+
+- 缺价格的历史费用归为 invalid，不再回滚正常结算批次。
+- unknown/invalid/账户异常有独立核对计数与变化日志，但没有自动补账或 Console 核对页。
+- 日志 DELETE 不再移除财务认领证据；事实/回执禁止删改，但没有启用日志 TTL。
+- 查询表被锁或展示字段非法时，事实、结算、费用统计与拼车恢复仍可推进。
+
+P2 的驱动边界继续由测试固定。具体实现仍仅支持 PostgreSQL，
+SQLx source 只在 PG 测试/内部诊断中使用；没有 SQLite、分布式 exactly-once 或无损硬件保证。
 
 ## 验证入口
 
@@ -122,6 +122,7 @@ P1 仅补充测试和职责清单，不修改生产金额计算、结算路径�
 cargo test --locked --lib application::billing::tests
 cargo test --locked --lib codex_sharing::tests
 cargo test --locked --test control_plane_integration persistence_contracts
+cargo test --locked --test control_plane_integration metering_facts
 cargo fmt --check
 cargo clippy --locked --workspace --all-targets
 cargo test --locked --workspace

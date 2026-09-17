@@ -2,15 +2,16 @@
 
 > 状态：当前。
 
-请求日志不再直接依赖最终 `request_logs` 宽表的瞬时写入能力。生产启动路径使用三段式流水线：
+生产启动路径在查询投影之前独立物化财务事实，结算不依赖 `request_logs` 的瞬时写入能力：
 
 ```text
 派发前同步 intent + 预分配终态 slot
   -> 终态同步 slot
   -> 本地 append-only spool
   -> PostgreSQL request_log_ingest（COPY FROM，低索引）
-  -> request_logs（查询宽表）
-  -> 用户余额与 API Key 额度批量结算
+  -> request_metering_facts + 待结算工作项 + 可投影标记（单事务）
+     -> 唯一回执 + 用户余额与 API Key 额度批量结算
+     -> request_logs（查询宽表）
 ```
 
 ## 耐久边界
@@ -45,7 +46,7 @@
 
 - 准入写/同步失败会锁定 writer；移除故障后仍拒绝新派发，必须用原目录重启恢复。
 - `events.log` 写失败时，已经准入的其他在途请求仍可写自己的预分配 slot。
-  slot 完整时，启动自动使用同一 UUID 重放，再沿原 COPY/投影/结算链路幂等处理。
+  slot 完整时，启动自动使用同一 UUID 重放，再沿 COPY/计量及各后续阶段幂等处理。
 - 如果 slot 也失败、进程在终态前被杀或只留下撕裂终态，保留 intent 和非零 slot 证据，
   输出 `request_log_reconciliation_required`。**未知不等于失败/取消，不自动记零、不伪造 usage，
   不进入普通终态结算。**
@@ -57,8 +58,8 @@
   不保存请求体、Header、成功响应体或凭据。
 
 运维应按 ERROR 中的 UUID，在原 `admissions/` 中核对 JSON intent、slot、
-数据库同 UUID 日志及提供方证据。数据库已有完整同 UUID 终态时先验证其结算状态，
-不要手工再扣一次。没有可靠 usage 时保留待核对，不把缺失证据变成零费用成功记录。
+数据库同 UUID 计量事实/回执/日志及提供方证据。先验证财务事实和回执，
+不要因日志页面尚无记录而手工再扣一次。没有可靠 usage 时保留待核对，不把缺失证据变成零费用成功记录。
 当前没有自动核对、Console 待核对页面或补账 API；经核实需要归档的文件只能在实例停止后
 由运维按具体 UUID 操作，禁止批量删除目录或通过换 spool 目录“恢复”。
 slot 是二进制版本化 journal，不能当 JSON 或正常终态表直接导入。
@@ -67,6 +68,10 @@ spool 目录必须可写，并且同一台主机上的每个 Gateway 进程必�
 重启时应继续使用同一目录和同一业务数据库；切换数据库环境时必须同时切换 spool 目录，避免把旧环境的用户/API Key UUID 投影到新数据库。
 
 ## 升级边界
+
+`0063` 将财务来源与唯一认领切换到独立表，删除日志物理 `billed_at`。
+必须停止全部旧 worker 后应用，不能回退旧二进制；它不修改 journal 格式。
+历史回填、锁与完整备份要求见[独立计量切换](independent-metering.md)。
 
 新增的 admission 文件不改变 `events.log` journal 版本，也不修改数据库 schema。
 回滚到不理解 admission 的旧二进制前，必须先由新二进制重放完整 slot 并排空流水线，
@@ -100,14 +105,16 @@ Journal v6 新增 `billing.peak_pricing`。它在请求开始时命中倍率大�
 日志流水线使用独立的 SQLx PostgreSQL 连接池：
 
 - 控制面、Console 与运行时重载继续使用 `[database].max_connections`。
-- spool ingestion、最终表投影、指标查询和结算只使用
+- spool ingestion、计量物化、最终表投影、指标查询和结算只使用
   `[request_logging].database_max_connections`。
 - 增加日志连接数不会自动提升总吞吐；同一 PostgreSQL 实例仍共享 CPU、WAL、磁盘和行锁。
 
-默认日志池为四个连接，分别覆盖 COPY ingestion、低并发投影、结算和健康采样。最终表投影保持单 Worker，避免重新出现多个写 Worker 抢占转发资源的问题。
+默认日志池为四个连接，由 COPY、计量、投影、结算和健康采样共享，不是每个任务独占一个连接。
+计量与最终表投影各保持单 Worker；新增阶段没有增加连接数或容量配置。
 
 生产模板默认使用 4096 条 COPY、2048 条投影、4096 条结算批次与
-500ms 结算间隔。较小机器可以将三种批次减半；较大机器应先扩大批次并验证
+500ms 结算间隔。计量与投影共用 `projection_batch_size`。
+较小机器可以将三种批次减半；较大机器应先扩大批次并验证
 事务时长，而不是直接增加数据库 Worker。
 
 ## 低索引入口与最终投影
@@ -117,30 +124,35 @@ Migration `0012_request_log_ingest.sql` 创建 `request_log_ingest`：
 - 数据使用 PostgreSQL `COPY FROM STDIN` 成批写入二进制 payload，入口阶段不解析 JSON。
 - 入口表只维护 identity 主键和一个仅覆盖失败重试的部分索引。
 - checkpoint 只在 COPY 提交后推进。
-- 入口表允许重放产生重复 UUID；最终 `request_logs` 主键负责幂等归并。
+- 入口表允许重放产生重复 UUID；财务事实与查询投影分别按 UUID 归并，并比较各自不可变内容。
 
-投影 Worker 按 sequence 读取入口记录，解码后复用批量 `UNNEST` 写入现有 `request_logs`。成功行从入口表删除；格式错误、约束冲突或暂时失败的行保留在入口表并延迟重试，不会阻塞后续正常记录。
+计量 Worker 先解码并持久化事实，和 `metered_at` 标记一起提交。投影 Worker 只读取已标记记录，
+复用批量 `UNNEST` 写 `request_logs`，成功后删除入口行。计量/投影各有独立退避，
+坏行保留且可逐条隔离。删除触发器拒绝缺事实或缺投影的提前 ack。
 
 PG sequence 只作为不透明 `IngestReceipt` 交给 worker；批量接收接口为 `accept_batch`，
 COPY 编码与数据库确认留在持久化实现内。结算 worker 使用独立 `SettlementRepository`，
-查询/计量读取使用各自句柄，但本节的实际表、提交与重放顺序未改变。
+查询/计量读取使用各自句柄；SQL/COPY 能力仍不暴露给应用调用者。
 
-投影时统一把 `failed`/`cancelled` 事件的费用归一为 `0`，因此升级前遗留在本地 spool 或
+计量和展示投影均把 `failed`/`cancelled` 事件的费用归一为 `0`，因此升级前遗留在本地 spool 或
 `request_log_ingest` 中的旧事件不会重新写入正费用或未知费用。成功事件仍要求 usage 才能得到费用。
 
 这使“日志已耐久接收”与“日志已可在 Console 查询”成为两个不同阶段。持续流量高于最终宽表能力时，入口 backlog 会增长，但请求路径不会因宽表索引写放大而同步等待。
 
 ## 独立结算
 
-结算 Worker 不再依赖每个插入批次的内存通知。它按固定间隔直接扫描最终表中的未结算记录，并继续：
+结算 Worker 按固定间隔扫描独立 pending 工作集合，而非全部历史日志或事实：
 
-- 在一个事务内 claim `billed_at`。
+- 插入唯一结算回执取得处理权。
 - 按用户聚合余额扣减。
 - 按 API Key 聚合额度增加。
+- 同事务删除 pending 工作项；任一步失败全部回滚。
 - 在提交后更新进程内 soft-quota 状态。
 
-数据库行是恢复来源，因此结算允许落后于日志投影。关闭时会在配置的 drain deadline 内继续结算；未完成记录由下次启动恢复。
-零费用失败/取消记录同样会取得一次 `billed_at`，但不会改变余额或额度。
+数据库行是恢复来源，结算可早于日志投影。关闭时在 drain deadline 内继续结算；
+未完成记录由下次启动恢复。零费用失败/取消也写一次回执，但不改变余额或额度。
+Console `billed_at` 从回执派生。未知费用/价格证据异常/账户不匹配由
+`ai_gateway::metering_health` 单独报告变化，不因普通 settlement backlog 为空而被认为已结清。
 
 ## 实时面板与状态变化日志
 
@@ -158,7 +170,7 @@ ingress/settlement backlog、累计失败数和数据库池压力。页面默认
 连接池压力在发起 backlog 健康查询前采样。SQLx 会异步归还查询连接，因此该顺序避免后台采样器
 和 Console 实时快照把自身的两个查询短暂计为日志连接池占用。
 
-spool append、COPY、投影和结算操作本身的失败仍在发生时直接输出 `ERROR`。其中
+spool append、COPY、计量、投影和结算操作本身的失败仍在发生时直接输出 `ERROR`。其中
 `spool_append_failures_total` 必须为零；入口 backlog 持续增长表示最终表投影能力低于持续流量，
 spool pending 持续增长表示 PostgreSQL 入口本身不可用或 COPY 能力不足。
 
@@ -173,9 +185,10 @@ COPY、投影、结算、backlog、耗时和日志数据库池累计字段。
 
 1. 停止接收新的 HTTP 工作。
 2. 将本地 spool 尽量 COPY 到数据库入口表。
-3. 将入口记录尽量投影到最终表。
-4. 批量恢复未结算记录。
-5. 最后同步 spool 文件。
+3. 尽量完成计量事实与可投影标记。
+4. 将可投影入口记录尽量投影到最终表。
+5. 批量恢复未结算工作项。
+6. 最后同步 spool 文件。
 
 整个日志流水线达到 `shutdown_drain_seconds` 后，未完成数据保留在 spool、slot 或入口表供重启恢复。
 `spool_max_bytes` 默认 1GiB，预算包括整个追加文件、每个在途请求的 slot 与终态追加余量、

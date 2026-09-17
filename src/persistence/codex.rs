@@ -432,7 +432,7 @@ LEFT JOIN LATERAL ( \
     FROM codex_quota_window_periods AS period \
     LEFT JOIN codex_oauth_credential_channels AS projection \
       ON projection.credential_id=credential.channel_id \
-    LEFT JOIN request_logs AS log \
+    LEFT JOIN request_metering_facts AS log \
       ON log.channel_id=projection.channel_id \
      AND log.cost_amount IS NOT NULL \
      AND log.started_at>=period.started_at \
@@ -534,7 +534,7 @@ impl ControlPlaneRepository {
              LEFT JOIN LATERAL ( \
                  SELECT sum(log.cost_amount) AS cost_amount \
                  FROM codex_oauth_credential_channels AS projection \
-                 JOIN request_logs AS log ON log.channel_id=projection.channel_id \
+                 JOIN request_metering_facts AS log ON log.channel_id=projection.channel_id \
                  WHERE projection.credential_id=period.credential_id \
                    AND log.cost_amount IS NOT NULL \
                    AND log.started_at>=period.started_at \
@@ -643,7 +643,7 @@ impl ControlPlaneRepository {
              LEFT JOIN LATERAL ( \
                  SELECT sum(log.cost_amount) AS cost_amount \
                  FROM codex_oauth_credential_channels AS projection \
-                 JOIN request_logs AS log ON log.channel_id=projection.channel_id \
+                 JOIN request_metering_facts AS log ON log.channel_id=projection.channel_id \
                  WHERE projection.credential_id=$2 \
                    AND log.cost_amount IS NOT NULL \
                    AND log.started_at>=period.started_at \

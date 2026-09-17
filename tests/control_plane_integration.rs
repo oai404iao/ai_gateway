@@ -68,6 +68,10 @@ use tokio_tungstenite::{
 use tower::ServiceExt;
 use uuid::Uuid;
 
+#[path = "contracts/facts.rs"]
+mod metering_facts;
+#[path = "support/metering.rs"]
+mod metering_fixtures;
 #[path = "contracts/persistence.rs"]
 mod persistence_contracts;
 #[path = "contracts/interfaces.rs"]
@@ -469,7 +473,7 @@ async fn system_probe_identity_is_an_internal_active_administrator() {
     let settled: (rust_decimal::Decimal, rust_decimal::Decimal, bool) = sqlx::query_as(
         "SELECT user_account.balance_amount,
                 key.quota_used_amount,
-                log.billed_at IS NOT NULL
+                EXISTS (SELECT 1 FROM request_settlements WHERE request_id=log.id)
          FROM users AS user_account
          JOIN api_keys AS key ON key.user_id=user_account.id
          JOIN request_logs AS log ON log.api_key_id=key.id
@@ -6106,7 +6110,7 @@ async fn durable_request_log_pipeline_replays_spool_after_an_ingress_outage() {
                 "SELECT count(*)::bigint
                  FROM request_logs
                  WHERE id = ANY($1)
-                   AND billed_at IS NOT NULL",
+                   AND EXISTS (SELECT 1 FROM request_settlements WHERE request_id=request_logs.id)",
             )
             .bind(&ids)
             .fetch_one(&database.pool)
@@ -6123,7 +6127,8 @@ async fn durable_request_log_pipeline_replays_spool_after_an_ingress_outage() {
     worker.shutdown().await;
 
     let persisted: Vec<DurablePersistedLog> = sqlx::query_as(
-        "SELECT id,client_model,upstream_model,billed_at
+        "SELECT id,client_model,upstream_model,
+                (SELECT settled_at FROM request_settlements WHERE request_id=request_logs.id) AS billed_at
          FROM request_logs
          WHERE id = ANY($1)
          ORDER BY id",
@@ -6191,7 +6196,8 @@ async fn settlement_claim_is_concurrent_idempotent_and_allows_soft_quota_overdra
     );
 
     let facts: SettlementFacts = sqlx::query_as(
-        "SELECT u.balance_amount, k.quota_used_amount, log.billed_at
+        "SELECT u.balance_amount, k.quota_used_amount,
+                (SELECT settled_at FROM request_settlements WHERE request_id=log.id) AS billed_at
          FROM request_logs AS log
          JOIN users AS u ON u.id = log.user_id
          JOIN api_keys AS k ON k.id = log.api_key_id
@@ -6211,7 +6217,8 @@ async fn settlement_claim_is_concurrent_idempotent_and_allows_soft_quota_overdra
         RequestLogSettlementOutcome::AlreadyBilled
     );
     let after_retry: SettlementFacts = sqlx::query_as(
-        "SELECT u.balance_amount, k.quota_used_amount, log.billed_at
+        "SELECT u.balance_amount, k.quota_used_amount,
+                (SELECT settled_at FROM request_settlements WHERE request_id=log.id) AS billed_at
          FROM request_logs AS log
          JOIN users AS u ON u.id = log.user_id
          JOIN api_keys AS k ON k.id = log.api_key_id
@@ -6232,7 +6239,8 @@ async fn settlement_claim_is_concurrent_idempotent_and_allows_soft_quota_overdra
         RequestLogSettlementOutcome::Settled { .. }
     ));
     let zero_cost_facts: SettlementFacts = sqlx::query_as(
-        "SELECT u.balance_amount, k.quota_used_amount, log.billed_at
+        "SELECT u.balance_amount, k.quota_used_amount,
+                (SELECT settled_at FROM request_settlements WHERE request_id=log.id) AS billed_at
          FROM request_logs AS log
          JOIN users AS u ON u.id = log.user_id
          JOIN api_keys AS k ON k.id = log.api_key_id
@@ -6275,10 +6283,11 @@ async fn batch_settlement_aggregates_account_updates_and_deduplicates_ids() {
     let facts: (rust_decimal::Decimal, rust_decimal::Decimal, i64) = sqlx::query_as(
         "SELECT user_account.balance_amount,
                 key.quota_used_amount,
-                count(log.billed_at)::bigint
+                count(receipt.settled_at)::bigint
          FROM users AS user_account
          JOIN api_keys AS key ON key.user_id = user_account.id
          JOIN request_logs AS log ON log.api_key_id = key.id
+         LEFT JOIN request_settlements AS receipt ON receipt.request_id=log.id
          WHERE user_account.id = $1 AND key.id = $2
          GROUP BY user_account.balance_amount,key.quota_used_amount",
     )
@@ -6371,7 +6380,7 @@ async fn batch_settlement_classifies_ineligible_rows_independently() {
     let unbilled: i64 = sqlx::query_scalar(
         "SELECT count(*)::bigint
          FROM request_logs
-         WHERE id = ANY($1) AND billed_at IS NULL",
+         WHERE id = ANY($1) AND NOT EXISTS (SELECT 1 FROM request_settlements WHERE request_id=request_logs.id)",
     )
     .bind(vec![not_billable.id, mismatched.id])
     .fetch_one(&database.pool)
@@ -6409,12 +6418,13 @@ async fn settlement_leaves_account_mismatch_unbilled_and_worker_recovers_durable
             .unwrap(),
         RequestLogSettlementOutcome::AccountMismatch
     );
-    let mismatch_billed: Option<DateTime<Utc>> =
-        sqlx::query_scalar("SELECT billed_at FROM request_logs WHERE id = $1")
-            .bind(mismatched.id)
-            .fetch_one(&database.pool)
-            .await
-            .unwrap();
+    let mismatch_billed: Option<DateTime<Utc>> = sqlx::query_scalar(
+        "SELECT (SELECT settled_at FROM request_settlements WHERE request_id = $1)",
+    )
+    .bind(mismatched.id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
     assert_eq!(mismatch_billed, None);
 
     let recoverable = request_log_event(&seed, RequestLogOutcome::Cancelled);
@@ -6422,12 +6432,13 @@ async fn settlement_leaves_account_mismatch_unbilled_and_worker_recovers_durable
     let (_sink, worker) = RequestLogWorker::start(repository, 4);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     loop {
-        let billed: Option<DateTime<Utc>> =
-            sqlx::query_scalar("SELECT billed_at FROM request_logs WHERE id = $1")
-                .bind(recoverable.id)
-                .fetch_one(&database.pool)
-                .await
-                .unwrap();
+        let billed: Option<DateTime<Utc>> = sqlx::query_scalar(
+            "SELECT (SELECT settled_at FROM request_settlements WHERE request_id = $1)",
+        )
+        .bind(recoverable.id)
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
         if billed.is_some() {
             break;
         }
@@ -9044,7 +9055,14 @@ async fn pending_migrations_commit_and_rollback_as_one_batch() {
         .fetch_one(&database.pool)
         .await
         .unwrap();
-    assert_eq!(latest, 62);
+    assert_eq!(
+        latest,
+        MIGRATOR
+            .iter()
+            .map(|migration| migration.version)
+            .max()
+            .unwrap()
+    );
     database.cleanup().await;
 }
 
@@ -9192,7 +9210,7 @@ async fn zero_cost_migration_refunds_and_reconciles_historical_failures() {
     let settled: i64 = sqlx::query_scalar(
         "SELECT count(*)
          FROM request_logs
-         WHERE id=ANY($1) AND billed_at IS NOT NULL",
+         WHERE id=ANY($1) AND EXISTS (SELECT 1 FROM request_settlements WHERE request_id=request_logs.id)",
     )
     .bind([failed_unpriced, cancelled_unpriced])
     .fetch_one(&database.pool)

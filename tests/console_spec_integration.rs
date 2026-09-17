@@ -44,6 +44,9 @@ use tokio::net::TcpListener;
 use tower::ServiceExt;
 use uuid::Uuid;
 
+#[path = "support/metering.rs"]
+mod metering_fixtures;
+
 const DEFAULT_ADMIN_URL: &str = "postgres://ai_gateway:ai_gateway@127.0.0.1:5432/postgres";
 const PASSWORD_FILE_ADMIN_URL: &str = "postgres://ai_gateway@127.0.0.1:5432/postgres";
 const TEST_PASSWORD: &str = "test-password-with-enough-length";
@@ -3284,6 +3287,7 @@ async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
             .unwrap();
         }
     }
+    metering_fixtures::copy_log_fixtures(&database.pool).await;
     let legacy_zero_started_at = period_started_at - chrono::Duration::minutes(30);
     sqlx::query(
         "INSERT INTO codex_quota_window_periods \
@@ -8255,6 +8259,7 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     .await
     .unwrap();
 
+    metering_fixtures::copy_log_fixtures(&database.pool).await;
     let channel_detail = request(
         &app,
         "GET",
@@ -8456,6 +8461,7 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     .execute(&database.pool)
     .await
     .unwrap();
+    metering_fixtures::copy_log_fixtures(&database.pool).await;
     let regular_session = app
         .auth
         .login(regular_email.clone(), TEST_PASSWORD.to_owned())
@@ -8960,6 +8966,7 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
         .await
         .unwrap();
     }
+    metering_fixtures::copy_log_fixtures(&database.pool).await;
     let codex_range_start = (codex_started_at - chrono::Duration::minutes(5))
         .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let codex_range_end = (codex_started_at + chrono::Duration::minutes(5))
@@ -9089,6 +9096,7 @@ async fn spend_leaderboard_uses_shanghai_periods_and_serves_snapshots() {
     }
 
     let repository = RequestLogRepository::new(database.pool.clone());
+    metering_fixtures::copy_log_fixtures(&database.pool).await;
     repository
         .queries()
         .metering()
@@ -9250,6 +9258,7 @@ async fn spend_leaderboard_uses_shanghai_periods_and_serves_snapshots() {
     .await
     .unwrap();
 
+    metering_fixtures::copy_log_fixtures(&database.pool).await;
     let stale_snapshot = request(
         &app,
         "GET",

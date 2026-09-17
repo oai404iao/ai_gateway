@@ -9,6 +9,10 @@ Versioning.
 
 ### Added
 
+- Persist independent immutable metering facts and unique settlement receipts,
+  allowing billing and sharing recovery to continue while log projection is delayed.
+  Migration 0063 requires an offline cutover of all instances; direct binary rollback
+  is not supported.
 - Add root-level system E2E and shared protocol fixtures covering the embedded
   Console, pinned Codex/Pi tool cycles, crash recovery and isolated storage faults.
 

@@ -22,11 +22,15 @@ async fn account_state(pool: &PgPool, ids: &[Uuid]) -> Vec<(Uuid, Decimal, Decim
 }
 
 async fn log_state(pool: &PgPool, id: Uuid) -> (Option<Decimal>, Option<DateTime<Utc>>) {
-    sqlx::query_as("SELECT cost_amount,billed_at FROM request_logs WHERE id=$1")
-        .bind(id)
-        .fetch_one(pool)
-        .await
-        .unwrap()
+    sqlx::query_as(
+        "SELECT cost_amount,
+        (SELECT settled_at FROM request_settlements WHERE request_id=fact.id) AS billed_at
+        FROM request_metering_facts AS fact WHERE id=$1",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await
+    .unwrap()
 }
 
 async fn insert_raw_variant(
@@ -114,7 +118,7 @@ async fn unknown_rejected_and_zero_by_policy_remain_distinct_during_recovery() {
 }
 
 #[tokio::test]
-async fn missing_price_evidence_blocks_the_entire_settlement_batch() {
+async fn missing_price_evidence_is_preserved_without_blocking_eligible_facts() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
     let repository = RequestLogRepository::new(database.pool.clone());
@@ -132,24 +136,33 @@ async fn missing_price_evidence_blocks_the_entire_settlement_batch() {
     )
     .await
     .unwrap();
+    metering_fixtures::copy_log_fixtures(&database.pool).await;
     let before = account_state(&database.pool, &[seed.key]).await;
-    let error = repository
+    let outcomes = repository
         .settlements()
         .settle_batch(&[valid.id, invalid])
         .await
-        .unwrap_err();
-    let RepositoryError::Storage(error) = error else {
-        panic!("expected database eligibility failure, got {error:?}");
-    };
-    let error = driver_error(&error).as_database_error().unwrap();
-    assert_eq!(error.code().as_deref(), Some("23514"));
-    assert_eq!(error.constraint(), Some("request_logs_billed_state_check"));
-    for id in [valid.id, invalid] {
-        assert!(log_state(&database.pool, id).await.1.is_none());
-    }
-    assert_eq!(account_state(&database.pool, &[seed.key]).await, before);
-    assert!(repository.settlements().settle_pending(10).await.is_err());
-    assert_eq!(account_state(&database.pool, &[seed.key]).await, before);
+        .unwrap();
+    assert!(matches!(
+        outcomes[0].1,
+        RequestLogSettlementOutcome::Settled { .. }
+    ));
+    assert_eq!(outcomes[1].1, RequestLogSettlementOutcome::NotBillable);
+    assert!(log_state(&database.pool, valid.id).await.1.is_some());
+    assert!(log_state(&database.pool, invalid).await.1.is_none());
+    let cost = valid.effective_cost_amount().unwrap();
+    assert_eq!(
+        account_state(&database.pool, &[seed.key]).await,
+        vec![(seed.key, before[0].1 - cost, before[0].2 + cost)]
+    );
+    assert!(
+        repository
+            .settlements()
+            .settle_pending(10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     database.cleanup().await;
 }
 
@@ -360,7 +373,6 @@ async fn database_constraints_reject_invalid_money_and_illegal_log_updates() {
     for mut changes in [
         json!({"outcome": "failed", "cost_amount": "1"}),
         json!({"outcome": "cancelled", "cost_amount": "1"}),
-        json!({"model_id": null, "billed_at": "2026-09-16T00:00:00Z"}),
         json!({"currency": null}),
         json!({"currency": "EUR"}),
         json!({"price_unit_tokens": 0}),
@@ -388,7 +400,7 @@ async fn database_constraints_reject_invalid_money_and_illegal_log_updates() {
     );
     repository.settlements().settle(event.id).await.unwrap();
     let before = log_state(&database.pool, event.id).await;
-    let error = sqlx::query("UPDATE request_logs SET billed_at=NULL WHERE id=$1")
+    let error = sqlx::query("UPDATE request_settlements SET settled_at=NULL WHERE request_id=$1")
         .bind(event.id)
         .execute(&database.pool)
         .await
