@@ -82,7 +82,9 @@ impl ControlPlaneRepository {
             .map(|value| serde_json::from_value(value).map_err(|_| RepositoryError::Validation))
             .collect()
     }
+}
 
+impl super::MeteringQueries {
     pub async fn sharing_completed_costs(
         &self,
         ids: &[Uuid],
@@ -91,13 +93,15 @@ impl ControlPlaneRepository {
             return Err(RepositoryError::Validation);
         }
         Ok(sqlx::query_as(
-            "SELECT id,cost_amount FROM request_logs WHERE id=ANY($1) AND cost_amount IS NOT NULL",
+            "SELECT id,cost_amount FROM request_metering_facts WHERE id=ANY($1) AND amount_state IN ('priced','zero_by_policy')",
         )
         .bind(ids)
         .fetch_all(&self.pool)
         .await?)
     }
+}
 
+impl ControlPlaneRepository {
     pub(super) async fn load_sharing_transaction(
         transaction: &mut Transaction<'_, Postgres>,
     ) -> Result<Vec<SharingRecord>, RepositoryError> {

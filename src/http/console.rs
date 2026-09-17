@@ -41,10 +41,10 @@ use crate::{
         ConfigTemplateCreateInput, ConfigTemplateInput, ConsoleApiKey, ControlPlaneMutation,
         CostStatisticsFilter, DeletionConfirmationInput, InviteUserInput, ModelInput,
         ModelProtocolRuleCreateInput, ModelProtocolRuleInput, ModelRuleCreateInput,
-        ProxyCreateInput, ProxyInput, RequestLogFilter, RequestLogRepository, SelfApiKeyCreate,
-        SelfApiKeyUpdate, SelfCodexQuotaCredentialView, SelfCodexQuotaWindowHistory,
-        SpendLeaderboardFilter, SpendLeaderboardPeriod, StatisticsGranularity, SystemSettingsInput,
-        UserBatchUpdateInput, UserGroupInput, UserInput, UserSettingsInput, UserUpdateInput,
+        ProxyCreateInput, ProxyInput, RequestLogFilter, SelfApiKeyCreate, SelfApiKeyUpdate,
+        SelfCodexQuotaCredentialView, SelfCodexQuotaWindowHistory, SpendLeaderboardFilter,
+        SpendLeaderboardPeriod, StatisticsGranularity, SystemSettingsInput, UserBatchUpdateInput,
+        UserGroupInput, UserInput, UserSettingsInput, UserUpdateInput,
     },
     runtime_config::ConfigError,
 };
@@ -59,7 +59,7 @@ pub struct ConsoleState {
     pub proxy_tests: ProxyTestService,
     pub model_sync: ModelSyncService,
     pub auth: ConsoleAuthService,
-    pub request_logs: RequestLogRepository,
+    pub request_logs: crate::persistence::RequestLogQueries,
     pub system_metrics: SystemMetricsService,
     pub console_body_bytes: usize,
     pub auth_body_bytes: usize,
@@ -884,7 +884,6 @@ async fn get_me(
 ) -> Result<Json<crate::persistence::ConsoleProfile>, ConsoleError> {
     state
         .auth
-        .repository()
         .profile(principal.user_id())
         .await?
         .map(Json)
@@ -901,7 +900,6 @@ async fn update_me(
     }
     state
         .auth
-        .repository()
         .update_display_name(principal.user_id(), &input.display_name)
         .await?
         .map(Json)
@@ -952,7 +950,6 @@ async fn list_sessions(
     Ok(Json(
         state
             .auth
-            .repository()
             .sessions_for_user(principal.user_id(), principal.session_id())
             .await?,
     ))
@@ -964,7 +961,6 @@ async fn revoke_other_sessions(
 ) -> Result<StatusCode, ConsoleError> {
     state
         .auth
-        .repository()
         .revoke_other_sessions(principal.user_id(), principal.session_id())
         .await?;
     Ok(StatusCode::NO_CONTENT)
@@ -977,7 +973,6 @@ async fn revoke_session(
 ) -> Result<Response, ConsoleError> {
     if state
         .auth
-        .repository()
         .revoke_session_for_user(principal.user_id(), id)
         .await?
     {
@@ -1134,6 +1129,7 @@ async fn get_own_usage(
     Ok(Json(
         state
             .request_logs
+            .metering()
             .personal_usage(principal.user_id(), Utc::now().date_naive())
             .await?,
     ))
@@ -1388,13 +1384,7 @@ async fn delete_user_group(
 async fn list_registration_invitation_codes(
     State(state): State<ConsoleState>,
 ) -> Result<Json<Vec<crate::persistence::RegistrationInvitationCode>>, ConsoleError> {
-    Ok(Json(
-        state
-            .auth
-            .repository()
-            .registration_invitation_codes()
-            .await?,
-    ))
+    Ok(Json(state.auth.registration_invitation_codes().await?))
 }
 
 async fn create_registration_invitation_code(
@@ -1439,7 +1429,6 @@ async fn get_registration_invitation_code(
 ) -> Result<Response, ConsoleError> {
     let code = state
         .auth
-        .repository()
         .registration_invitation_code(id)
         .await?
         .ok_or(ConsoleError::NotFound)?;
@@ -2352,6 +2341,7 @@ async fn cost_statistics(
     Ok(Json(
         state
             .request_logs
+            .metering()
             .cost_statistics(CostStatisticsFilter {
                 started_at,
                 ended_at,
@@ -2383,6 +2373,7 @@ async fn get_spend_leaderboard(
     Ok(Json(
         state
             .request_logs
+            .metering()
             .spend_leaderboard(SpendLeaderboardFilter {
                 period,
                 period_start,
@@ -2898,30 +2889,13 @@ fn repository_error_message(error: &crate::persistence::RepositoryError) -> &'st
         crate::persistence::RepositoryError::RegistrationInvitationCodeConflict => {
             "registration_invitation_code_conflict"
         }
-        crate::persistence::RepositoryError::Sql(error) if routing_dependency_sql_error(error) => {
+        crate::persistence::RepositoryError::Storage(error)
+            if error.kind() == crate::persistence::StorageFailureKind::RoutingDependency =>
+        {
             "routing_dependency_invalid"
         }
         _ => "Console operation rejected",
     }
-}
-
-fn routing_dependency_sql_error(error: &sqlx::Error) -> bool {
-    error
-        .as_database_error()
-        .and_then(sqlx::error::DatabaseError::constraint)
-        .is_some_and(|constraint| {
-            matches!(
-                constraint,
-                "channels_channel_group_id_api_format_fkey"
-                    | "channels_proxy_id_fkey"
-                    | "channels_config_template_id_fkey"
-                    | "model_rule_tiers_rule_format_fk"
-                    | "model_rule_groups_tier_fk"
-                    | "model_rule_groups_group_format_fk"
-                    | "model_rule_channels_group_target_fk"
-                    | "model_rule_channels_channel_group_format_fk"
-            )
-        })
 }
 
 fn repository_status(error: &crate::persistence::RepositoryError) -> StatusCode {
@@ -2952,27 +2926,14 @@ fn repository_status(error: &crate::persistence::RepositoryError) -> StatusCode 
         | crate::persistence::RepositoryError::ApiKeyTargetNotAllowed => {
             StatusCode::UNPROCESSABLE_ENTITY
         }
-        crate::persistence::RepositoryError::Sql(error)
-            if error
-                .as_database_error()
-                .and_then(|database| database.code())
-                .is_some_and(|code| code == "40001" || code == "40P01") =>
-        {
-            StatusCode::CONFLICT
-        }
-        crate::persistence::RepositoryError::Sql(error)
-            if error
-                .as_database_error()
-                .and_then(|database| database.code())
-                .is_some_and(|code| {
-                    matches!(
-                        code.as_ref(),
-                        "22001" | "22007" | "22P02" | "23502" | "23503" | "23505" | "23514"
-                    )
-                }) =>
-        {
-            StatusCode::UNPROCESSABLE_ENTITY
-        }
+        crate::persistence::RepositoryError::Storage(error) => match error.kind() {
+            crate::persistence::StorageFailureKind::Conflict => StatusCode::CONFLICT,
+            crate::persistence::StorageFailureKind::InvalidInput
+            | crate::persistence::StorageFailureKind::RoutingDependency => {
+                StatusCode::UNPROCESSABLE_ENTITY
+            }
+            crate::persistence::StorageFailureKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+        },
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }

@@ -8,7 +8,6 @@ use chrono::{DateTime, Utc};
 use futures_util::{StreamExt, stream};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use sqlx::{Postgres, Transaction};
 use thiserror::Error;
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -393,10 +392,9 @@ impl CodexConnectorService {
         let outbound_identity = self.outbound_identity();
         let quota_lock = self.quota_lock(channel_id).await;
         let _guard = quota_lock.lock().await;
-        let mut transaction = self.repository.begin_codex_quota_reset().await?;
-        let record = self
+        let (record, reset_operation) = self
             .repository
-            .codex_credential_for_update(&mut transaction, channel_id)
+            .lock_codex_quota_reset(channel_id)
             .await?
             .ok_or(CodexConnectorError::CredentialNotFound)?;
         validate_quota_credential(&record)?;
@@ -415,20 +413,15 @@ impl CodexConnectorService {
             policy.timeouts().stream_idle(),
         )
         .await?;
-        let correlation_id = self
-            .repository
-            .record_codex_quota_reset_transaction(
-                &mut transaction,
+        let correlation_id = reset_operation
+            .complete(
                 actor,
-                channel_id,
                 redeem_request_id,
                 requested_at,
                 reset.outcome,
                 reset.windows_reset,
-                record.quota_reset_credits_available,
             )
             .await?;
-        transaction.commit().await.map_err(RepositoryError::from)?;
         let quota_refreshed = match self.refresh_quota_locked(record, &outbound_identity).await {
             Ok(()) => true,
             Err(error) => {
@@ -622,14 +615,13 @@ impl CodexConnectorService {
         channel_id: Uuid,
         observed_generation: Option<i64>,
     ) -> Result<(), CodexConnectorError> {
-        let mut transaction = self.repository.begin_codex_refresh().await?;
-        let record = self
+        let (record, refresh) = self
             .repository
-            .codex_credential_for_update(&mut transaction, channel_id)
+            .lock_codex_refresh(channel_id)
             .await?
             .ok_or(CodexConnectorError::CredentialNotFound)?;
         if observed_generation.is_some_and(|generation| generation != record.refresh_generation) {
-            transaction.commit().await.map_err(RepositoryError::from)?;
+            refresh.unchanged().await?;
             return Ok(());
         }
         if !record.enabled || record.runtime_status == "disabled" {
@@ -650,13 +642,8 @@ impl CodexConnectorService {
         {
             Ok(refreshed) => refreshed,
             Err(error) => {
-                self.commit_refresh_failure(
-                    transaction,
-                    channel_id,
-                    error.permanent_refresh_failure(),
-                    &error,
-                )
-                .await?;
+                self.commit_refresh_failure(refresh, error.permanent_refresh_failure(), &error)
+                    .await?;
                 return Err(error);
             }
         };
@@ -669,8 +656,7 @@ impl CodexConnectorService {
         {
             Ok(identity) => identity,
             Err(error) => {
-                self.commit_refresh_failure(transaction, channel_id, true, &error)
-                    .await?;
+                self.commit_refresh_failure(refresh, true, &error).await?;
                 return Err(error);
             }
         };
@@ -686,53 +672,42 @@ impl CodexConnectorService {
                 .is_some_and(|(user_id, current_user_id)| user_id != current_user_id)
         {
             let error = CodexConnectorError::AccountChanged;
-            self.commit_refresh_failure(transaction, channel_id, true, &error)
-                .await?;
+            self.commit_refresh_failure(refresh, true, &error).await?;
             return Err(error);
         }
         let access_token_expires_at = match refreshed.access_token.as_deref() {
             Some(access_token) => match parse_jwt_expiration(access_token) {
                 Ok(expires_at) => expires_at,
                 Err(error) => {
-                    self.commit_refresh_failure(transaction, channel_id, true, &error)
-                        .await?;
+                    self.commit_refresh_failure(refresh, true, &error).await?;
                     return Err(error);
                 }
             },
             None => record.access_token_expires_at,
         };
-        let updated = self
-            .repository
-            .persist_codex_token_refresh_transaction(
-                &mut transaction,
-                channel_id,
-                CodexTokenRefreshUpdate {
-                    expected_generation: record.refresh_generation,
-                    id_token: refreshed.id_token,
-                    access_token: refreshed.access_token,
-                    refresh_token: refreshed.refresh_token,
-                    email: identity
-                        .as_ref()
-                        .and_then(|identity| identity.email.clone()),
-                    account_id: identity
-                        .as_ref()
-                        .and_then(|identity| identity.account_id.clone()),
-                    user_id: identity
-                        .as_ref()
-                        .and_then(|identity| identity.user_id.clone()),
-                    plan_type: identity
-                        .as_ref()
-                        .and_then(|identity| identity.plan_type.clone()),
-                    is_fedramp: identity.as_ref().map(|identity| identity.is_fedramp),
-                    access_token_expires_at,
-                    refreshed_at: Utc::now(),
-                },
-            )
+        refresh
+            .complete(CodexTokenRefreshUpdate {
+                expected_generation: record.refresh_generation,
+                id_token: refreshed.id_token,
+                access_token: refreshed.access_token,
+                refresh_token: refreshed.refresh_token,
+                email: identity
+                    .as_ref()
+                    .and_then(|identity| identity.email.clone()),
+                account_id: identity
+                    .as_ref()
+                    .and_then(|identity| identity.account_id.clone()),
+                user_id: identity
+                    .as_ref()
+                    .and_then(|identity| identity.user_id.clone()),
+                plan_type: identity
+                    .as_ref()
+                    .and_then(|identity| identity.plan_type.clone()),
+                is_fedramp: identity.as_ref().map(|identity| identity.is_fedramp),
+                access_token_expires_at,
+                refreshed_at: Utc::now(),
+            })
             .await?;
-        if !updated {
-            return Err(CodexConnectorError::Repository(RepositoryError::Conflict));
-        }
-        transaction.commit().await.map_err(RepositoryError::from)?;
         tracing::info!(%channel_id, "Codex OAuth credential refreshed");
         self.reload_runtime().await?;
         Ok(())
@@ -758,21 +733,13 @@ impl CodexConnectorService {
 
     async fn commit_refresh_failure(
         &self,
-        mut transaction: Transaction<'_, Postgres>,
-        channel_id: Uuid,
+        refresh: crate::persistence::CodexRefresh<'_>,
         permanent: bool,
         error: &CodexConnectorError,
     ) -> Result<(), CodexConnectorError> {
-        self.repository
-            .mark_codex_credential_error_transaction(
-                &mut transaction,
-                channel_id,
-                permanent,
-                error.code(),
-                error.safe_summary(),
-            )
+        refresh
+            .fail(permanent, error.code(), error.safe_summary())
             .await?;
-        transaction.commit().await.map_err(RepositoryError::from)?;
         self.reload_runtime().await
     }
 

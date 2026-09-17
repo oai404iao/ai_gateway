@@ -35,8 +35,9 @@ Console 提供统计页面：
      月榜为每月 1 日至月底。
    - Console 将前三名以领奖台柱状图展示，提供最多 50 名用户的榜单，并可前后浏览已保留的历史周期。
 
-个人使用情况、渠道组状态监控、个人花费统计和系统花费统计在 Console 请求时从 append-only
-`request_logs` 聚合；排行榜由后台快照 worker 聚合，Console 请求只读取快照表。
+个人使用情况和花费统计从 `request_metering_facts` 聚合；渠道组状态仍从 `request_logs`
+读取延迟/成功率。排行榜由后台 worker 从计量事实聚合，Console 请求只读取快照表。
+费用可能先于日志页面可见；统计仍按原有费用非 NULL 口径，不代表已结算或提供方账单。
 这些查询都不在数据平面请求路径中执行。
 
 ## 个人使用情况定义
@@ -121,7 +122,7 @@ Codex 凭证页的主/次窗口历史可直接跳转到系统花费统计。跳�
 当前尚未结束的窗口使用“周期起点到当前时间（不超过计划重置时间）”作为统计区间。
 
 Codex 当前额度列表和额度历史还会直接显示各主/次周期的凭证总花费。金额使用相同的
-`request_logs.cost_amount`，按该逻辑凭证的 Responses 与 Images projection 汇总，不按
+`request_metering_facts.cost_amount`，按该逻辑凭证的 Responses 与 Images projection 汇总，不按
 Gateway 用户或 API Key 过滤。周期使用左闭右开的时间边界；当前周期结束于
 `min(now(), scheduled_reset_at)`。该金额是 Gateway 价格快照算出的 USD 计价事实，不是 OpenAI
 账单；主、次周期重叠时不能相加。
@@ -135,12 +136,12 @@ Gateway 用户或 API Key 过滤。周期使用左闭右开的时间边界；当
 
 ## 花费排行榜定义
 
-排行榜使用 `request_logs.cost_amount`，不以异步结算状态 `billed_at` 作为额外过滤条件。
+排行榜使用 `request_metering_facts.cost_amount`，不以是否存在结算回执作为额外过滤条件。
 `SpendLeaderboardWorker` 在 Console 启用时随服务启动，立即执行一次聚合，随后每 15 分钟
 重建 `Asia/Shanghai` 自然日、周、月的全量快照。多进程实例通过 PostgreSQL 事务级 advisory
 lock 避免并发刷新；刷新失败会保留上一版快照。API 只读取
 `spend_leaderboard_periods` 与 `spend_leaderboard_entries`，因此排行榜不会在页面请求时扫描
-`request_logs`。
+`request_metering_facts`。
 
 每次刷新会重新计算已保留的所有周期，但仅更新数值或名次实际变化的条目。用户名称和邮箱不复制到
 快照中，响应时再连接当前 `users` 记录，以保持用户匿名化后的显示效果。

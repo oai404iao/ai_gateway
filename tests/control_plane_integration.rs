@@ -68,6 +68,15 @@ use tokio_tungstenite::{
 use tower::ServiceExt;
 use uuid::Uuid;
 
+#[path = "contracts/facts.rs"]
+mod metering_facts;
+#[path = "support/metering.rs"]
+mod metering_fixtures;
+#[path = "contracts/persistence.rs"]
+mod persistence_contracts;
+#[path = "contracts/interfaces.rs"]
+mod persistence_interfaces;
+
 const DEFAULT_ADMIN_URL: &str = "postgres://ai_gateway:ai_gateway@127.0.0.1:5432/postgres";
 const PASSWORD_FILE_ADMIN_URL: &str = "postgres://ai_gateway@127.0.0.1:5432/postgres";
 const TEST_PNG_BASE64: &str =
@@ -455,6 +464,7 @@ async fn system_probe_identity_is_an_internal_active_administrator() {
     assert_eq!(request_source, "scheduled_test");
     assert!(matches!(
         RequestLogRepository::new(database.pool.clone())
+            .settlements()
             .settle(event.id)
             .await
             .unwrap(),
@@ -463,7 +473,7 @@ async fn system_probe_identity_is_an_internal_active_administrator() {
     let settled: (rust_decimal::Decimal, rust_decimal::Decimal, bool) = sqlx::query_as(
         "SELECT user_account.balance_amount,
                 key.quota_used_amount,
-                log.billed_at IS NOT NULL
+                EXISTS (SELECT 1 FROM request_settlements WHERE request_id=log.id)
          FROM users AS user_account
          JOIN api_keys AS key ON key.user_id=user_account.id
          JOIN request_logs AS log ON log.api_key_id=key.id
@@ -3037,16 +3047,17 @@ async fn codex_personal_credentials_without_account_ids_are_unique_by_user() {
 #[tokio::test]
 async fn batch_mutations_reject_empty_and_oversized_inputs() {
     let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
     let repository = ControlPlaneRepository::new(database.pool.clone());
-    let mut transaction = repository.begin_serializable().await.unwrap();
-    // An aborted transaction makes accidental SQL return a database error, not
-    // a coincidental Validation caused by a missing target or connector pool.
-    assert!(
-        sqlx::query("SELECT 1 / 0")
-            .execute(&mut *transaction)
-            .await
-            .is_err()
-    );
+    let codex_group = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO channel_groups (id,name,api_format,connector_kind,enabled)
+         VALUES ($1,'batch-validation','open_ai_responses','codex_oauth',true)",
+    )
+    .bind(codex_group)
+    .execute(&database.pool)
+    .await
+    .unwrap();
     for count in [0, 101] {
         let items = (0..count)
             .map(|_| serde_json::json!({"id": Uuid::new_v4(), "updated_at": Utc::now()}))
@@ -3057,9 +3068,7 @@ async fn batch_mutations_reject_empty_and_oversized_inputs() {
         }))
         .unwrap();
         assert!(matches!(
-            repository
-                .update_users_batch(&mut transaction, Uuid::new_v4(), users)
-                .await,
+            repository.prepare_users_batch(seed.user, users).await,
             Err(ai_gateway::persistence::RepositoryError::Validation)
         ));
 
@@ -3069,9 +3078,7 @@ async fn batch_mutations_reject_empty_and_oversized_inputs() {
         }))
         .unwrap();
         assert!(matches!(
-            repository
-                .update_channels_batch(&mut transaction, channels)
-                .await,
+            repository.prepare_channels_batch(seed.user, channels).await,
             Err(ai_gateway::persistence::RepositoryError::Validation)
         ));
 
@@ -3082,12 +3089,11 @@ async fn batch_mutations_reject_empty_and_oversized_inputs() {
         .unwrap();
         assert!(matches!(
             repository
-                .update_codex_credentials_batch(&mut transaction, Uuid::new_v4(), credentials)
+                .prepare_codex_credentials_batch(seed.user, codex_group, credentials)
                 .await,
             Err(ai_gateway::persistence::RepositoryError::Validation)
         ));
     }
-    transaction.rollback().await.unwrap();
     database.cleanup().await;
 }
 
@@ -3599,30 +3605,27 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
         .unwrap()
         .unwrap();
     assert!(record.reauth_required);
-    let mut transaction = repository.begin_codex_refresh().await.unwrap();
-    assert!(
-        repository
-            .persist_codex_token_refresh_transaction(
-                &mut transaction,
-                created.id,
-                CodexTokenRefreshUpdate {
-                    expected_generation: record.refresh_generation,
-                    id_token: None,
-                    access_token: Some("replacement-access-token".into()),
-                    refresh_token: Some("replacement-refresh-token".into()),
-                    email: None,
-                    account_id: None,
-                    user_id: None,
-                    plan_type: None,
-                    is_fedramp: None,
-                    access_token_expires_at: Some(now + chrono::Duration::hours(2)),
-                    refreshed_at: Utc::now(),
-                },
-            )
-            .await
-            .unwrap()
-    );
-    transaction.commit().await.unwrap();
+    let (_, refresh) = repository
+        .lock_codex_refresh(created.id)
+        .await
+        .unwrap()
+        .unwrap();
+    refresh
+        .complete(CodexTokenRefreshUpdate {
+            expected_generation: record.refresh_generation,
+            id_token: None,
+            access_token: Some("replacement-access-token".into()),
+            refresh_token: Some("replacement-refresh-token".into()),
+            email: None,
+            account_id: None,
+            user_id: None,
+            plan_type: None,
+            is_fedramp: None,
+            access_token_expires_at: Some(now + chrono::Duration::hours(2)),
+            refreshed_at: Utc::now(),
+        })
+        .await
+        .unwrap();
     let recovered = repository
         .codex_credential(created.id)
         .await
@@ -6107,7 +6110,7 @@ async fn durable_request_log_pipeline_replays_spool_after_an_ingress_outage() {
                 "SELECT count(*)::bigint
                  FROM request_logs
                  WHERE id = ANY($1)
-                   AND billed_at IS NOT NULL",
+                   AND EXISTS (SELECT 1 FROM request_settlements WHERE request_id=request_logs.id)",
             )
             .bind(&ids)
             .fetch_one(&database.pool)
@@ -6124,7 +6127,8 @@ async fn durable_request_log_pipeline_replays_spool_after_an_ingress_outage() {
     worker.shutdown().await;
 
     let persisted: Vec<DurablePersistedLog> = sqlx::query_as(
-        "SELECT id,client_model,upstream_model,billed_at
+        "SELECT id,client_model,upstream_model,
+                (SELECT settled_at FROM request_settlements WHERE request_id=request_logs.id) AS billed_at
          FROM request_logs
          WHERE id = ANY($1)
          ORDER BY id",
@@ -6172,8 +6176,8 @@ async fn settlement_claim_is_concurrent_idempotent_and_allows_soft_quota_overdra
         .unwrap();
     repository.insert(&event).await.unwrap();
 
-    let first = repository.clone();
-    let second = repository.clone();
+    let first = repository.settlements();
+    let second = repository.settlements();
     let (first, second) = tokio::join!(first.settle(event.id), second.settle(event.id));
     let outcomes = [first.unwrap(), second.unwrap()];
     assert_eq!(
@@ -6192,7 +6196,8 @@ async fn settlement_claim_is_concurrent_idempotent_and_allows_soft_quota_overdra
     );
 
     let facts: SettlementFacts = sqlx::query_as(
-        "SELECT u.balance_amount, k.quota_used_amount, log.billed_at
+        "SELECT u.balance_amount, k.quota_used_amount,
+                (SELECT settled_at FROM request_settlements WHERE request_id=log.id) AS billed_at
          FROM request_logs AS log
          JOIN users AS u ON u.id = log.user_id
          JOIN api_keys AS k ON k.id = log.api_key_id
@@ -6208,11 +6213,12 @@ async fn settlement_claim_is_concurrent_idempotent_and_allows_soft_quota_overdra
     assert!(facts.billed_at.is_some());
 
     assert_eq!(
-        repository.settle(event.id).await.unwrap(),
+        repository.settlements().settle(event.id).await.unwrap(),
         RequestLogSettlementOutcome::AlreadyBilled
     );
     let after_retry: SettlementFacts = sqlx::query_as(
-        "SELECT u.balance_amount, k.quota_used_amount, log.billed_at
+        "SELECT u.balance_amount, k.quota_used_amount,
+                (SELECT settled_at FROM request_settlements WHERE request_id=log.id) AS billed_at
          FROM request_logs AS log
          JOIN users AS u ON u.id = log.user_id
          JOIN api_keys AS k ON k.id = log.api_key_id
@@ -6229,11 +6235,12 @@ async fn settlement_claim_is_concurrent_idempotent_and_allows_soft_quota_overdra
     let zero_cost = request_log_event(&seed, RequestLogOutcome::Failed);
     repository.insert(&zero_cost).await.unwrap();
     assert!(matches!(
-        repository.settle(zero_cost.id).await.unwrap(),
+        repository.settlements().settle(zero_cost.id).await.unwrap(),
         RequestLogSettlementOutcome::Settled { .. }
     ));
     let zero_cost_facts: SettlementFacts = sqlx::query_as(
-        "SELECT u.balance_amount, k.quota_used_amount, log.billed_at
+        "SELECT u.balance_amount, k.quota_used_amount,
+                (SELECT settled_at FROM request_settlements WHERE request_id=log.id) AS billed_at
          FROM request_logs AS log
          JOIN users AS u ON u.id = log.user_id
          JOIN api_keys AS k ON k.id = log.api_key_id
@@ -6263,6 +6270,7 @@ async fn batch_settlement_aggregates_account_updates_and_deduplicates_ids() {
         .unwrap();
 
     let outcomes = repository
+        .settlements()
         .settle_batch(&[first.id, second.id, first.id])
         .await
         .unwrap();
@@ -6275,10 +6283,11 @@ async fn batch_settlement_aggregates_account_updates_and_deduplicates_ids() {
     let facts: (rust_decimal::Decimal, rust_decimal::Decimal, i64) = sqlx::query_as(
         "SELECT user_account.balance_amount,
                 key.quota_used_amount,
-                count(log.billed_at)::bigint
+                count(receipt.settled_at)::bigint
          FROM users AS user_account
          JOIN api_keys AS key ON key.user_id = user_account.id
          JOIN request_logs AS log ON log.api_key_id = key.id
+         LEFT JOIN request_settlements AS receipt ON receipt.request_id=log.id
          WHERE user_account.id = $1 AND key.id = $2
          GROUP BY user_account.balance_amount,key.quota_used_amount",
     )
@@ -6292,6 +6301,7 @@ async fn batch_settlement_aggregates_account_updates_and_deduplicates_ids() {
     assert_eq!(facts.2, 2);
 
     let retried = repository
+        .settlements()
         .settle_batch(&[first.id, second.id])
         .await
         .unwrap();
@@ -6344,6 +6354,7 @@ async fn batch_settlement_classifies_ineligible_rows_independently() {
     let missing = Uuid::new_v4();
 
     let outcomes = repository
+        .settlements()
         .settle_batch(&[billable.id, not_billable.id, mismatched.id, missing])
         .await
         .unwrap()
@@ -6369,7 +6380,7 @@ async fn batch_settlement_classifies_ineligible_rows_independently() {
     let unbilled: i64 = sqlx::query_scalar(
         "SELECT count(*)::bigint
          FROM request_logs
-         WHERE id = ANY($1) AND billed_at IS NULL",
+         WHERE id = ANY($1) AND NOT EXISTS (SELECT 1 FROM request_settlements WHERE request_id=request_logs.id)",
     )
     .bind(vec![not_billable.id, mismatched.id])
     .fetch_one(&database.pool)
@@ -6400,15 +6411,20 @@ async fn settlement_leaves_account_mismatch_unbilled_and_worker_recovers_durable
     mismatched.user_id = other_user;
     repository.insert(&mismatched).await.unwrap();
     assert_eq!(
-        repository.settle(mismatched.id).await.unwrap(),
+        repository
+            .settlements()
+            .settle(mismatched.id)
+            .await
+            .unwrap(),
         RequestLogSettlementOutcome::AccountMismatch
     );
-    let mismatch_billed: Option<DateTime<Utc>> =
-        sqlx::query_scalar("SELECT billed_at FROM request_logs WHERE id = $1")
-            .bind(mismatched.id)
-            .fetch_one(&database.pool)
-            .await
-            .unwrap();
+    let mismatch_billed: Option<DateTime<Utc>> = sqlx::query_scalar(
+        "SELECT (SELECT settled_at FROM request_settlements WHERE request_id = $1)",
+    )
+    .bind(mismatched.id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
     assert_eq!(mismatch_billed, None);
 
     let recoverable = request_log_event(&seed, RequestLogOutcome::Cancelled);
@@ -6416,12 +6432,13 @@ async fn settlement_leaves_account_mismatch_unbilled_and_worker_recovers_durable
     let (_sink, worker) = RequestLogWorker::start(repository, 4);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     loop {
-        let billed: Option<DateTime<Utc>> =
-            sqlx::query_scalar("SELECT billed_at FROM request_logs WHERE id = $1")
-                .bind(recoverable.id)
-                .fetch_one(&database.pool)
-                .await
-                .unwrap();
+        let billed: Option<DateTime<Utc>> = sqlx::query_scalar(
+            "SELECT (SELECT settled_at FROM request_settlements WHERE request_id = $1)",
+        )
+        .bind(recoverable.id)
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
         if billed.is_some() {
             break;
         }
@@ -6640,8 +6657,8 @@ async fn admin_app_with_models_dev(
                 ),
                 model_sync,
                 auth,
-                request_logs: RequestLogRepository::new(pool.clone()),
-                system_metrics: SystemMetricsService::new(pool, 5),
+                request_logs: RequestLogRepository::new(pool.clone()).queries(),
+                system_metrics: SystemMetricsService::new(pool.into(), 5),
                 console_body_bytes: 1_048_576,
                 auth_body_bytes: 16_384,
                 allowed_origins: vec![],
@@ -9038,7 +9055,14 @@ async fn pending_migrations_commit_and_rollback_as_one_batch() {
         .fetch_one(&database.pool)
         .await
         .unwrap();
-    assert_eq!(latest, 62);
+    assert_eq!(
+        latest,
+        MIGRATOR
+            .iter()
+            .map(|migration| migration.version)
+            .max()
+            .unwrap()
+    );
     database.cleanup().await;
 }
 
@@ -9171,8 +9195,7 @@ async fn zero_cost_migration_refunds_and_reconciles_historical_failures() {
     .unwrap();
     assert_eq!(account, (Decimal::from(-3), Decimal::from(3)));
 
-    let control_plane = ControlPlaneRepository::new(database.pool.clone());
-    let completed = control_plane
+    let completed = ai_gateway::persistence::MeteringQueries::new(database.pool.clone())
         .sharing_completed_costs(&[failed_unpriced, cancelled_unpriced])
         .await
         .unwrap();
@@ -9180,13 +9203,14 @@ async fn zero_cost_migration_refunds_and_reconciles_historical_failures() {
     assert!(completed.contains(&(failed_unpriced, Decimal::ZERO)));
     assert!(completed.contains(&(cancelled_unpriced, Decimal::ZERO)));
     RequestLogRepository::new(database.pool.clone())
+        .settlements()
         .settle_batch(&[failed_unpriced, cancelled_unpriced])
         .await
         .unwrap();
     let settled: i64 = sqlx::query_scalar(
         "SELECT count(*)
          FROM request_logs
-         WHERE id=ANY($1) AND billed_at IS NOT NULL",
+         WHERE id=ANY($1) AND EXISTS (SELECT 1 FROM request_settlements WHERE request_id=request_logs.id)",
     )
     .bind([failed_unpriced, cancelled_unpriced])
     .fetch_one(&database.pool)

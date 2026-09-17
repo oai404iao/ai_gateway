@@ -1147,7 +1147,8 @@ async fn responses_websocket_forwards_transforms_reuses_connection_and_logs_requ
     let metrics = SystemMetricsService::new(
         PgPoolOptions::new()
             .connect_lazy("postgres://postgres@localhost/unused")
-            .unwrap(),
+            .unwrap()
+            .into(),
         1,
     )
     .with_websocket_proxy(gateway.proxy.clone())
@@ -1699,7 +1700,8 @@ async fn responses_websocket_zero_idle_capacity_disables_connection_reuse() {
     let metrics = SystemMetricsService::new(
         PgPoolOptions::new()
             .connect_lazy("postgres://postgres@localhost/unused")
-            .unwrap(),
+            .unwrap()
+            .into(),
         1,
     )
     .with_websocket_proxy(gateway.proxy.clone())

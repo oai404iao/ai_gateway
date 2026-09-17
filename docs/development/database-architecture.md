@@ -12,6 +12,11 @@
   跨进程收敛。
 - schema 只能通过新的有序 migration 演进；不得修改已经部署的 migration 来伪造当前结构。
 
+应用通过 prepared control-plane/Codex 专属操作使用事务，不直接持有 PG 事务或连接池；
+日志写入、日志查询、计量查询与结算已拆为窄句柄。SQLx 错误在存储内部分类，
+提交前校验/审计与提交后发布顺序不变。详见[持久化操作接口](persistence-interfaces.md)。
+费用来源与结算认领已由[独立计量事实和回执](independent-metering.md)拥有，不再依赖日志投影。
+
 最初的 11 表方案及其当时的取舍已移入
 [首版数据库设计归档](../archive/initial-database-design.md)。它不能作为当前列名、表数量或功能边界
 的依据。
@@ -26,7 +31,8 @@
 | 身份与授权 | `users`、`user_groups`、`user_sessions`、`user_invitations`、`registration_invitation_codes`、`api_key_policies`、`api_keys` | Console 身份、角色、生命周期、注册/邀请、用户可选路由边界和具体 Key 限制。 |
 | 模型与路由 | `models`、`model_routing_profiles`、`model_rules`、`model_rule_routing_tiers`、`model_rule_routing_candidates`、`channel_groups`、`channels`、`proxies`、`config_templates`、`system_settings` | 客户端模型价格、协议规则、候选级上游 wire 模型、路由层级/权重、格式隔离、Connector、网络/变换和数据库动态系统策略。 |
 | Codex Connector | `connector_pools`、`codex_oauth_credentials`、`codex_oauth_credential_channels`、`codex_oauth_flows`、`codex_quota_window_periods`、`codex_quota_reset_events`、`user_group_codex_quota_visibility` | 共享逻辑凭证、Responses/Images 投影、OAuth、quota 历史和用户组可见性。 |
-| 日志与统计 | `request_log_ingest`、`request_logs`、`spend_leaderboard_periods`、`spend_leaderboard_entries`、`audit_logs` | 耐久日志入口、查询/结算事实、排行榜投影和控制面审计。 |
+| 日志与统计 | `request_log_ingest`、`request_logs`、`spend_leaderboard_periods`、`spend_leaderboard_entries`、`audit_logs` | 耐久事件入口、日志/排行榜投影和控制面审计。 |
+| 计量与结算 | `request_metering_facts`、`request_settlements`、`request_settlement_pending` | 不可变财务事实、唯一结算回执和可索引的未结算工作集合。 |
 
 ## 关键当前语义
 
@@ -139,7 +145,7 @@ Gateway 在持有 SQLx 数据库 advisory lock 期间，把连续待执行 migra
 外层事务。任一步失败会回滚同批先前已经执行的 migration 及其 `_sqlx_migrations` 记录；
 更早批次或启动中已经提交的版本不会被追溯回滚。历史 `0034`、`0046` 使用
 `ALTER TYPE ... ADD VALUE`，PostgreSQL 要求提交新增枚举值后才能由后续 migration 引用，
-因此它们是仅有的既存事务提交屏障；`0053–0062` 属于同一原子批次。禁止新增
+因此它们是仅有的既存事务提交屏障；`0053–0063` 属于同一原子批次。禁止新增
 `-- no-transaction` migration；新的提交屏障必须作为显式架构例外审查。
 
 ### migration 0061 失败请求零费用
@@ -166,8 +172,9 @@ Gateway 在持有 SQLx 数据库 advisory lock 期间，把连续待执行 migra
 terminal RequestLogEvent
   -> process-unique local durable spool
   -> request_log_ingest
-  -> indexed request_logs
-  -> idempotent settlement and statistics projection
+  -> immutable request_metering_facts + pending + ingress readiness
+     -> unique settlement receipt + balance/quota update
+     -> indexed request_logs projection
 ```
 
 - 本地 spool 覆盖数据库写入前的进程崩溃恢复；入口和最终表都依赖请求 UUID 幂等。
@@ -175,13 +182,16 @@ terminal RequestLogEvent
   计价模型 ID、usage、有效价格快照、成本、请求开始时是否命中高峰时段，以及有界错误诊断；
   不保存 prompt、completion、完整 Header、Cookie 或密钥。
 - Codex quota 当前与历史窗口的凭证总花费按逻辑凭证的 Responses/Images projection、周期边界和
-  `cost_amount IS NOT NULL` 从该表聚合；现有 `(channel_id, started_at)` 索引支撑该只读查询。
+  `cost_amount IS NOT NULL` 从 `request_metering_facts` 聚合；独立渠道/时间索引支撑该查询。
 - 普通 Connector 的 Chat Completions、Responses 和 standalone web search 可按数据库策略重试
   响应头前传输失败，也可在向客户端发送前按显式 4xx/5xx 状态码切换到未尝试的渠道/模型候选；
   Images 不自动重试，Codex Connector 与 Responses WebSocket 发送上游请求后也不重试。
 - 当前每个逻辑请求仍只写一条最终 `request_logs` 记录。数据库的旧 `attempts` JSONB 列不承载
   当前重试详情；尝试次数只进入完成 tracing。
-- 结算以 `billed_at IS NULL` 取得唯一处理权，在同一事务更新用户余额和 API Key 已用额度。
+- 结算插入唯一回执，在同一事务更新余额/额度并删除 pending；Console `billed_at` 由回执派生。
+
+`0063_independent_metering_facts.sql` 回填历史费用与已结算回执，不再次扣款；删除日志物理
+`billed_at`，不能与旧 worker 混跑。详见[停机切换与回退](independent-metering.md)。
 
 完整耐久性和故障边界见[请求日志耐久化流水线](request-log-durability.md)。
 
@@ -197,7 +207,7 @@ terminal RequestLogEvent
 `0060_model_soft_deletion.sql` 为模型增加不可恢复墓碑、活动标识部分唯一索引和引用保护；该
 migration 不删除 profile、协议规则或历史外键。
 `0062_flat_model_route_candidates.sql` 是路由图停机硬切换；不得在新旧 Gateway 混跑时应用。
-金额预占不写入余额实体，而由本地耐久 WAL 拥有；后台仅使用既有请求日志对账。
+金额预占不写入余额实体，而由本地耐久 WAL 拥有；后台使用独立计量事实对账。
 详见 [Codex 拼车实现](codex-sharing.md)。
 
 1. 新增有序 migration，不修改已发布 migration。

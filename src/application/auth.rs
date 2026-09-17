@@ -89,9 +89,68 @@ impl ConsoleAuthService {
         })
     }
 
-    #[must_use]
-    pub fn repository(&self) -> &AuthRepository {
-        &self.repository
+    pub async fn profile(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Option<crate::persistence::ConsoleProfile>, AuthError> {
+        Ok(self.repository.profile(user_id).await?)
+    }
+
+    pub async fn update_display_name(
+        &self,
+        user_id: Uuid,
+        display_name: &str,
+    ) -> Result<Option<crate::persistence::ConsoleProfile>, AuthError> {
+        Ok(self
+            .repository
+            .update_display_name(user_id, display_name)
+            .await?)
+    }
+
+    pub async fn sessions_for_user(
+        &self,
+        user_id: Uuid,
+        current_session_id: Uuid,
+    ) -> Result<Vec<crate::persistence::ConsoleSession>, AuthError> {
+        Ok(self
+            .repository
+            .sessions_for_user(user_id, current_session_id)
+            .await?)
+    }
+
+    pub async fn revoke_other_sessions(
+        &self,
+        user_id: Uuid,
+        current_session_id: Uuid,
+    ) -> Result<u64, AuthError> {
+        Ok(self
+            .repository
+            .revoke_other_sessions(user_id, current_session_id)
+            .await?)
+    }
+
+    pub async fn revoke_session_for_user(
+        &self,
+        user_id: Uuid,
+        session_id: Uuid,
+    ) -> Result<bool, AuthError> {
+        Ok(self
+            .repository
+            .revoke_session_for_user(user_id, session_id)
+            .await?)
+    }
+
+    pub async fn registration_invitation_codes(
+        &self,
+    ) -> Result<Vec<crate::persistence::RegistrationInvitationCode>, AuthError> {
+        Ok(self.repository.registration_invitation_codes().await?)
+    }
+
+    pub async fn registration_invitation_code(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<crate::persistence::RegistrationInvitationCode>, AuthError> {
+        Ok(self.repository.registration_invitation_code(id).await?)
     }
 
     pub async fn login(&self, email: String, password: String) -> Result<IssuedSession, AuthError> {

@@ -146,3 +146,114 @@ pub(crate) fn calculate_cost(usage: &RequestUsage, price: &RequestPriceSnapshot)
         / unit)
         .round_dp(8)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn price() -> RequestPriceSnapshot {
+        RequestPriceSnapshot {
+            currency: "USD".into(),
+            price_unit_tokens: 1,
+            price_effective_at: "2026-09-16T00:00:00Z".parse().unwrap(),
+            input_unit_price: Decimal::ZERO,
+            cached_input_unit_price: Decimal::ZERO,
+            cache_write_unit_price: Decimal::ZERO,
+            output_unit_price: Decimal::ZERO,
+        }
+    }
+
+    #[test]
+    fn effective_prices_round_midpoints_to_even_at_twelve_places() {
+        for (coefficient, expected) in [(5, 2), (15, 8), (25, 12), (35, 18)] {
+            assert_eq!(
+                effective_unit_price(Decimal::new(coefficient, 12), Decimal::new(5, 1)),
+                Decimal::new(expected, 12),
+            );
+        }
+    }
+
+    #[test]
+    fn cost_rounds_midpoints_to_even_only_after_summing_and_dividing() {
+        let usage = RequestUsage {
+            input_tokens: 1,
+            cached_input_tokens: 0,
+            cache_write_tokens: 0,
+            output_tokens: 1,
+            reasoning_tokens: 1,
+        };
+        for (coefficient, expected) in [(5, 0), (15, 2), (25, 2), (35, 4)] {
+            let mut price = price();
+            price.price_unit_tokens = 1_000_000;
+            price.input_unit_price = Decimal::new(coefficient, 3);
+            assert_eq!(calculate_cost(&usage, &price), Decimal::new(expected, 8));
+        }
+        let mut price = price();
+        price.input_unit_price = Decimal::new(5, 9);
+        price.output_unit_price = Decimal::new(5, 9);
+        assert_eq!(calculate_cost(&usage, &price), Decimal::new(1, 8));
+    }
+
+    #[test]
+    fn cost_uses_the_rounded_effective_price_not_the_unrounded_product() {
+        let price = price();
+        let snapshot = ModelPriceSnapshot::new(
+            price.currency.into(),
+            1,
+            price.price_effective_at,
+            Decimal::new(7, 12),
+            Decimal::ZERO,
+            Decimal::ZERO,
+            Decimal::ZERO,
+        );
+        let billing = request_billing(
+            &snapshot,
+            &CompiledAdvancedBilling::default(),
+            RequestBillingFactors::new(price.price_effective_at, Decimal::new(5, 1), Decimal::ONE),
+            Some(ResponseUsage {
+                input_tokens: 15_000,
+                cached_input_tokens: 0,
+                cache_write_tokens: 0,
+                output_tokens: 0,
+                reasoning_tokens: 0,
+            }),
+            1,
+            None,
+            RequestLogOutcome::Succeeded,
+        );
+        assert_eq!(billing.price.input_unit_price, Decimal::new(4, 12));
+        assert_eq!(billing.cost_amount, Some(Decimal::new(6, 8)));
+    }
+
+    #[test]
+    fn missing_usage_is_unknown_except_for_explicit_failure_or_cancellation() {
+        let price = price();
+        let snapshot = ModelPriceSnapshot::new(
+            price.currency.into(),
+            1,
+            price.price_effective_at,
+            Decimal::ONE,
+            Decimal::ONE,
+            Decimal::ONE,
+            Decimal::ONE,
+        );
+        for (outcome, expected) in [
+            (RequestLogOutcome::Succeeded, None),
+            (RequestLogOutcome::Rejected, None),
+            (RequestLogOutcome::Failed, Some(Decimal::ZERO)),
+            (RequestLogOutcome::Cancelled, Some(Decimal::ZERO)),
+        ] {
+            let billing = request_billing(
+                &snapshot,
+                &CompiledAdvancedBilling::default(),
+                RequestBillingFactors::new(price.price_effective_at, Decimal::ONE, Decimal::ONE),
+                None,
+                1,
+                None,
+                outcome,
+            );
+            assert_eq!(billing.usage, None);
+            assert_eq!(billing.cost_amount, expected, "{outcome:?}");
+        }
+    }
+}

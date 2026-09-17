@@ -197,9 +197,10 @@ impl RequestLogPipelineMonitor {
         // Measure pool pressure before the backlog queries so this monitoring
         // request does not count its own asynchronously returned connections.
         let pool_before_queries = self.repository.pool_status();
+        let settlements = self.repository.settlements();
         let (ingress, settlement) = tokio::join!(
             tokio::time::timeout(MONITOR_QUERY_TIMEOUT, self.repository.ingest_backlog()),
-            tokio::time::timeout(MONITOR_QUERY_TIMEOUT, self.repository.settlement_backlog())
+            tokio::time::timeout(MONITOR_QUERY_TIMEOUT, settlements.settlement_backlog())
         );
         let ingress = ingress.ok().and_then(Result::ok);
         let settlement = settlement.ok().and_then(Result::ok);

@@ -1109,6 +1109,25 @@ mod tests {
     }
 
     #[test]
+    fn seat_budgets_truncate_instead_of_rounding_up_at_eight_places() {
+        let (_dir, mut actor, mut group, windows) = fixture();
+        group.policy.seats.push(Some(Uuid::new_v4()));
+        group.policy.primary_limit_amount = Decimal::from(2);
+        group.policy.secondary_limit_amount = Decimal::from(5);
+        group.policy.request_reservation_amount = Decimal::new(1, 1);
+        actor.sync(std::slice::from_ref(&group), windows).unwrap();
+        let usage = actor.inspect(&group, group.policy.seats[0].unwrap(), Utc::now());
+        assert_eq!(
+            usage.windows[0].remaining_amount,
+            Decimal::new(66_666_666, 8)
+        );
+        assert_eq!(
+            usage.windows[1].remaining_amount,
+            Decimal::new(166_666_666, 8)
+        );
+    }
+
+    #[test]
     fn money_is_shared_across_keys_but_isolated_between_users_and_windows() {
         let (_dir, mut actor, group, windows) = fixture();
         actor

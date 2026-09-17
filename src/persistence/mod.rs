@@ -3,7 +3,12 @@
 mod auth;
 mod codex;
 mod codex_sharing;
+mod codex_write;
+mod control_plane_write;
+mod health;
+mod metering;
 mod migrations;
+mod storage_error;
 
 pub use auth::{
     AuthRepository, ConsoleProfile, ConsoleSession, ConsoleSessionState, InvitationCreated,
@@ -20,7 +25,12 @@ pub use codex::{
     CodexQuotaWindowPeriodView, CodexTokenRefreshUpdate, SelfCodexQuotaCredentialView,
     SelfCodexQuotaWindowHistory, SelfCodexQuotaWindowPeriodView,
 };
+pub use codex_write::{CodexQuotaReset, CodexRefresh};
+pub use control_plane_write::PreparedControlPlaneChange;
+pub use health::DatabaseHealth;
+pub use metering::{MeteringReconciliationCounts, MeteringRepository, MeteringWriteOutcome};
 pub use migrations::{MIGRATOR, MigrationRunError, run_migrations};
+pub use storage_error::{StorageError, StorageFailureKind};
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -2363,10 +2373,66 @@ pub struct RequestLogRepository {
     pool: PgPool,
 }
 
+#[derive(Clone)]
+pub struct RequestLogQueries {
+    pool: PgPool,
+}
+
+#[derive(Clone)]
+pub struct SettlementRepository {
+    pool: PgPool,
+}
+
+#[derive(Clone)]
+pub struct MeteringQueries {
+    pool: PgPool,
+}
+
+impl MeteringQueries {
+    #[must_use]
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+impl RequestLogQueries {
+    #[must_use]
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+
+    #[must_use]
+    pub fn metering(&self) -> MeteringQueries {
+        MeteringQueries::new(self.pool.clone())
+    }
+}
+
+impl SettlementRepository {
+    #[must_use]
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
 impl RequestLogRepository {
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
+    }
+
+    #[must_use]
+    pub fn queries(&self) -> RequestLogQueries {
+        RequestLogQueries::new(self.pool.clone())
+    }
+
+    #[must_use]
+    pub fn settlements(&self) -> SettlementRepository {
+        SettlementRepository::new(self.pool.clone())
+    }
+
+    #[must_use]
+    pub fn metering(&self) -> MeteringRepository {
+        MeteringRepository::new(self.pool.clone())
     }
 
     /// Appends encoded terminal events to the low-index durable ingress table.
@@ -2374,7 +2440,7 @@ impl RequestLogRepository {
     /// Duplicates are intentionally allowed here. A checkpoint replay can
     /// therefore use PostgreSQL COPY directly, while the final request_logs
     /// primary key remains the idempotency boundary.
-    pub(crate) async fn copy_ingest_batch(
+    pub(crate) async fn accept_batch(
         &self,
         records: &[EncodedRequestLog],
     ) -> Result<u64, RepositoryError> {
@@ -2412,7 +2478,7 @@ impl RequestLogRepository {
         sqlx::query_as::<_, RequestLogIngestRecord>(
             "SELECT sequence,request_log_id,schema_version,payload,attempt_count
              FROM request_log_ingest
-             WHERE next_attempt_at <= now()
+             WHERE metered_at IS NOT NULL AND next_attempt_at <= now()
              ORDER BY sequence
              LIMIT $1",
         )
@@ -2424,22 +2490,24 @@ impl RequestLogRepository {
 
     pub(crate) async fn acknowledge_ingest(
         &self,
-        sequences: &[i64],
+        sequences: &[IngestReceipt],
     ) -> Result<u64, RepositoryError> {
         if sequences.is_empty() {
             return Ok(0);
         }
-        sqlx::query("DELETE FROM request_log_ingest WHERE sequence = ANY($1)")
-            .bind(sequences)
-            .execute(&self.pool)
-            .await
-            .map(|result| result.rows_affected())
-            .map_err(RepositoryError::from)
+        sqlx::query(
+            "DELETE FROM request_log_ingest WHERE sequence = ANY($1) AND metered_at IS NOT NULL",
+        )
+        .bind(sequences)
+        .execute(&self.pool)
+        .await
+        .map(|result| result.rows_affected())
+        .map_err(RepositoryError::from)
     }
 
     pub(crate) async fn defer_ingest(
         &self,
-        sequences: &[i64],
+        sequences: &[IngestReceipt],
         error_code: &str,
         retry_after_seconds: i64,
     ) -> Result<u64, RepositoryError> {
@@ -2482,7 +2550,9 @@ impl RequestLogRepository {
         .await
         .map_err(RepositoryError::from)
     }
+}
 
+impl SettlementRepository {
     pub(crate) async fn settlement_backlog(
         &self,
     ) -> Result<RequestLogSettlementBacklog, RepositoryError> {
@@ -2490,18 +2560,20 @@ impl RequestLogRepository {
             "SELECT
                  count(*)::bigint AS row_count,
                  min(log.completed_at) AS oldest_completed_at
-             FROM request_logs AS log
+             FROM request_settlement_pending AS pending
+             JOIN request_metering_facts AS log ON log.id=pending.request_id
              JOIN api_keys AS key
                ON key.id = log.api_key_id
               AND key.user_id = log.user_id
-             WHERE log.billed_at IS NULL
-               AND log.cost_amount IS NOT NULL",
+             WHERE log.amount_state IN ('priced','zero_by_policy')",
         )
         .fetch_one(&self.pool)
         .await
         .map_err(RepositoryError::from)
     }
+}
 
+impl RequestLogRepository {
     #[must_use]
     pub(crate) fn pool_status(&self) -> RequestLogPoolStatus {
         RequestLogPoolStatus {
@@ -2509,7 +2581,9 @@ impl RequestLogRepository {
             idle: self.pool.num_idle(),
         }
     }
+}
 
+impl RequestLogQueries {
     pub async fn list_for_user(
         &self,
         user_id: Uuid,
@@ -2544,7 +2618,9 @@ impl RequestLogRepository {
     pub async fn get(&self, id: Uuid) -> Result<Option<ConsoleRequestLog>, RepositoryError> {
         query_console_request_log(&self.pool, id, None).await
     }
+}
 
+impl MeteringQueries {
     pub async fn personal_usage(
         &self,
         user_id: Uuid,
@@ -2569,7 +2645,7 @@ impl RequestLogRepository {
         let rows = sqlx::query_as::<_, PersonalUsageDayRow>(
             "SELECT (started_at AT TIME ZONE 'UTC')::date AS date,
                     count(*)::bigint AS request_count
-             FROM request_logs
+             FROM request_metering_facts
              WHERE user_id = $1
                AND request_source = 'client'
                AND started_at >= $2
@@ -2585,7 +2661,9 @@ impl RequestLogRepository {
 
         Ok(fold_personal_usage(rows, started_on, ended_on))
     }
+}
 
+impl RequestLogQueries {
     pub async fn channel_group_status(
         &self,
         window: ChannelGroupStatusWindow,
@@ -2798,7 +2876,9 @@ impl RequestLogRepository {
                 .collect(),
         })
     }
+}
 
+impl MeteringQueries {
     pub async fn cost_statistics(
         &self,
         filter: CostStatisticsFilter,
@@ -2823,7 +2903,7 @@ impl RequestLogRepository {
                     COALESCE(sum(cache_write_tokens), 0)::bigint AS cache_write_tokens,
                     COALESCE(sum(output_tokens), 0)::bigint AS output_tokens,
                     COALESCE(sum(cost_amount), 0) AS cost_amount
-             FROM request_logs
+             FROM request_metering_facts
              WHERE started_at >= $1
                AND started_at < $2
                AND ($3::uuid IS NULL OR user_id = $3)
@@ -2857,7 +2937,7 @@ impl RequestLogRepository {
                         0
                     )::bigint AS total_tokens,
                     COALESCE(sum(cost_amount), 0) AS cost_amount
-             FROM request_logs
+             FROM request_metering_facts
              WHERE started_at >= $1
                AND started_at < $2
                AND ($3::uuid IS NULL OR user_id = $3)
@@ -2905,7 +2985,7 @@ impl RequestLogRepository {
                     COALESCE(sum(cache_write_tokens), 0)::bigint AS cache_write_tokens,
                     COALESCE(sum(output_tokens), 0)::bigint AS output_tokens,
                     COALESCE(sum(cost_amount), 0) AS cost_amount
-             FROM request_logs
+             FROM request_metering_facts
              WHERE started_at >= $1
                AND started_at < $2
                AND ($3::uuid IS NULL OR user_id = $3)
@@ -2954,7 +3034,7 @@ impl RequestLogRepository {
                             AS cache_write_tokens,
                         COALESCE(sum(log.output_tokens), 0)::bigint AS output_tokens,
                         COALESCE(sum(log.cost_amount), 0) AS cost_amount
-                 FROM request_logs AS log
+                 FROM request_metering_facts AS log
                  JOIN channels AS channel ON channel.id = log.channel_id
                  JOIN channel_groups AS channel_group
                    ON channel_group.id = log.channel_group_id
@@ -3019,9 +3099,9 @@ impl RequestLogRepository {
     }
 
     /// Rebuilds Asia/Shanghai day, ISO-week, and calendar-month user-spend
-    /// snapshots from immutable request logs. Console reads only these
+    /// snapshots from immutable financial facts. Console reads only these
     /// snapshot tables; no request-time leaderboard aggregate touches
-    /// `request_logs`.
+    /// `request_metering_facts`.
     pub async fn refresh_spend_leaderboard_snapshots(
         &self,
     ) -> Result<SpendLeaderboardRefresh, RepositoryError> {
@@ -3085,7 +3165,7 @@ impl RequestLogRepository {
                         0
                     )::bigint AS total_tokens,
                     COALESCE(sum(log.cost_amount), 0) AS cost_amount
-             FROM request_logs AS log
+             FROM request_metering_facts AS log
              WHERE log.request_source = 'client'
              GROUP BY (log.started_at AT TIME ZONE 'Asia/Shanghai')::date, log.user_id
              HAVING count(log.cost_amount) > 0
@@ -3105,7 +3185,7 @@ impl RequestLogRepository {
                         0
                     )::bigint,
                     COALESCE(sum(log.cost_amount), 0)
-             FROM request_logs AS log
+             FROM request_metering_facts AS log
              WHERE log.request_source = 'client'
              GROUP BY date_trunc(
                  'week',
@@ -3128,7 +3208,7 @@ impl RequestLogRepository {
                         0
                     )::bigint,
                     COALESCE(sum(log.cost_amount), 0)
-             FROM request_logs AS log
+             FROM request_metering_facts AS log
              WHERE log.request_source = 'client'
              GROUP BY date_trunc(
                  'month',
@@ -3309,7 +3389,9 @@ impl RequestLogRepository {
             entries,
         })
     }
+}
 
+impl RequestLogRepository {
     /// Inserts one terminal event without changing schema-owned defaults.
     ///
     /// A duplicate id is successful only if every field owned by this event is
@@ -3338,13 +3420,43 @@ impl RequestLogRepository {
         }
     }
 
-    /// Inserts a bounded set of terminal events with one multi-row statement.
+    /// Persists financial facts before attempting the independent log projection.
+    /// A projection error never rolls back already accepted financial evidence.
+    pub async fn insert_batch(
+        &self,
+        events: &[RequestLogEvent],
+    ) -> Result<Vec<RequestLogBatchInsertResult>, RepositoryError> {
+        let accepted = self.metering().record_batch(events).await?;
+        let projectable = events
+            .iter()
+            .zip(&accepted)
+            .filter_map(|(event, outcome)| {
+                (*outcome == MeteringWriteOutcome::Accepted).then_some(event.clone())
+            })
+            .collect::<Vec<_>>();
+        let mut projected = self.project_batch(&projectable).await?.into_iter();
+        Ok(events
+            .iter()
+            .zip(accepted)
+            .map(|(event, outcome)| match outcome {
+                MeteringWriteOutcome::Accepted => projected
+                    .next()
+                    .expect("projection preserves input cardinality"),
+                MeteringWriteOutcome::Conflict => RequestLogBatchInsertResult {
+                    request_log_id: event.id,
+                    outcome: RequestLogBatchInsertOutcome::DuplicateConflict,
+                },
+            })
+            .collect())
+    }
+
+    /// Projects events whose independent financial facts are already durable.
     ///
     /// Per-event validation and duplicate classification remain isolated so one
     /// malformed status or conflicting duplicate does not hide valid peers.
     /// Database-level failures still fail the whole statement transactionally;
     /// the worker falls back to single-event insertion on that exceptional path.
-    pub async fn insert_batch(
+    pub(crate) async fn project_batch(
         &self,
         events: &[RequestLogEvent],
     ) -> Result<Vec<RequestLogBatchInsertResult>, RepositoryError> {
@@ -3532,10 +3644,12 @@ impl RequestLogRepository {
             })
             .collect())
     }
+}
 
-    /// Claims and applies one billable terminal log in a single transaction.
+impl SettlementRepository {
+    /// Claims and applies one eligible financial fact in a single transaction.
     ///
-    /// The conditional `billed_at` update is the sole settlement claim. If a
+    /// The unique settlement receipt is the sole settlement claim. If a
     /// later account update fails, the transaction rolls back the claim too.
     /// This lets a durable recovery scan retry safely after worker restarts or
     /// transient database failures.
@@ -3574,15 +3688,19 @@ impl RequestLogRepository {
 
         let mut transaction = self.pool.begin().await?;
         let claimed = sqlx::query_as::<_, ClaimedRequestLog>(
-            "UPDATE request_logs AS log
-             SET billed_at = now()
-             FROM api_keys AS key
-             WHERE log.id = ANY($1)
-               AND log.billed_at IS NULL
-               AND log.cost_amount IS NOT NULL
-               AND key.id = log.api_key_id
-               AND key.user_id = log.user_id
-             RETURNING log.id, log.user_id, log.api_key_id, log.cost_amount",
+            "WITH claimed AS (
+                INSERT INTO request_settlements(request_id,cost_amount,currency)
+                SELECT fact.id,fact.cost_amount,fact.currency
+                FROM request_metering_facts AS fact
+                JOIN api_keys AS key ON key.id=fact.api_key_id AND key.user_id=fact.user_id
+                WHERE fact.id=ANY($1) AND fact.amount_state IN ('priced','zero_by_policy')
+                  AND NOT EXISTS (SELECT 1 FROM request_settlements WHERE request_id=fact.id)
+                ORDER BY fact.id
+                ON CONFLICT (request_id) DO NOTHING
+                RETURNING request_id,cost_amount
+             )
+             SELECT fact.id,fact.user_id,fact.api_key_id,claimed.cost_amount
+             FROM claimed JOIN request_metering_facts AS fact ON fact.id=claimed.request_id",
         )
         .bind(&request_log_ids)
         .fetch_all(&mut *transaction)
@@ -3599,11 +3717,12 @@ impl RequestLogRepository {
         } else {
             sqlx::query_as::<_, SettlementEligibility>(
                 "SELECT log.id,
-                        log.billed_at,
+                        receipt.settled_at AS billed_at,
                         log.cost_amount,
                         key.user_id AS api_key_user_id,
                         log.user_id
-                 FROM request_logs AS log
+                 FROM request_metering_facts AS log
+                 LEFT JOIN request_settlements AS receipt ON receipt.request_id=log.id
                  LEFT JOIN api_keys AS key ON key.id = log.api_key_id
                  WHERE log.id = ANY($1)",
             )
@@ -3625,6 +3744,15 @@ impl RequestLogRepository {
                     .entry((row.api_key_id, row.user_id))
                     .or_default() += row.cost_amount;
             }
+
+            sqlx::query("SELECT id FROM users WHERE id=ANY($1) ORDER BY id FOR NO KEY UPDATE")
+                .bind(user_costs.keys().copied().collect::<Vec<_>>())
+                .fetch_all(&mut *transaction)
+                .await?;
+            sqlx::query("SELECT id FROM api_keys WHERE id=ANY($1) ORDER BY id FOR NO KEY UPDATE")
+                .bind(api_key_costs.keys().map(|(id, _)| *id).collect::<Vec<_>>())
+                .fetch_all(&mut *transaction)
+                .await?;
 
             let mut users = QueryBuilder::<Postgres>::new(
                 "UPDATE users AS account \
@@ -3709,15 +3837,18 @@ impl RequestLogRepository {
                 (*id, outcome)
             })
             .collect();
+        sqlx::query("DELETE FROM request_settlement_pending WHERE request_id=ANY($1)")
+            .bind(claimed.keys().copied().collect::<Vec<_>>())
+            .execute(&mut *transaction)
+            .await?;
         transaction.commit().await?;
         Ok(outcomes)
     }
 
     /// Reconciles a bounded oldest-first slice of durable, eligible logs.
     ///
-    /// It intentionally excludes missing-cost and account-mismatch rows. Those
-    /// rows remain visibly unbilled until their source facts are corrected
-    /// instead of being retried forever as transient failures.
+    /// Unknown, invalid-price and account-mismatch facts remain for
+    /// reconciliation rather than blocking eligible pending work.
     pub async fn settle_pending(
         &self,
         limit: i64,
@@ -3731,13 +3862,13 @@ impl RequestLogRepository {
             .await?;
         let request_log_ids = sqlx::query_scalar::<_, Uuid>(
             "SELECT log.id
-             FROM request_logs AS log
+             FROM request_settlement_pending AS pending
+             JOIN request_metering_facts AS log ON log.id=pending.request_id
              JOIN api_keys AS key
                ON key.id = log.api_key_id
               AND key.user_id = log.user_id
-             WHERE log.billed_at IS NULL
-               AND log.cost_amount IS NOT NULL
-             ORDER BY log.completed_at, log.id
+             WHERE log.amount_state IN ('priced','zero_by_policy')
+             ORDER BY pending.completed_at, pending.request_id
              LIMIT $1",
         )
         .bind(limit.max(1))
@@ -3759,7 +3890,7 @@ fn redact_self_service_request_log(log: &mut ConsoleRequestLog) {
     log.channel_name = None;
 }
 
-const CONSOLE_REQUEST_LOG_COLUMNS: &str = "log.id,log.started_at,log.completed_at,log.user_id,request_user.display_name AS user_name,log.api_key_id,log.request_source,log.api_format::text AS api_format,log.api_operation,log.request_protocol,log.client_model,log.reasoning_effort,log.fast_mode,log.upstream_model,log.model_rule_id,log.channel_group_id,channel_group.name AS channel_group_name,log.channel_id,channel.name AS channel_name,log.outcome,log.response_status_code,log.streamed,log.ttft_ms,log.total_duration_ms,log.output_tokens_per_second,log.input_tokens,log.cached_input_tokens,log.cache_write_tokens,log.output_tokens,log.reasoning_tokens,log.cost_amount,log.peak_pricing,log.error_code,log.error_summary,log.billed_at";
+const CONSOLE_REQUEST_LOG_COLUMNS: &str = "log.id,log.started_at,log.completed_at,log.user_id,request_user.display_name AS user_name,log.api_key_id,log.request_source,log.api_format::text AS api_format,log.api_operation,log.request_protocol,log.client_model,log.reasoning_effort,log.fast_mode,log.upstream_model,log.model_rule_id,log.channel_group_id,channel_group.name AS channel_group_name,log.channel_id,channel.name AS channel_name,log.outcome,log.response_status_code,log.streamed,log.ttft_ms,log.total_duration_ms,log.output_tokens_per_second,log.input_tokens,log.cached_input_tokens,log.cache_write_tokens,log.output_tokens,log.reasoning_tokens,log.cost_amount,log.peak_pricing,log.error_code,log.error_summary,receipt.settled_at AS billed_at";
 
 async fn query_console_request_log(
     pool: &PgPool,
@@ -3769,6 +3900,7 @@ async fn query_console_request_log(
     let mut query = QueryBuilder::<Postgres>::new(format!(
         "SELECT {CONSOLE_REQUEST_LOG_COLUMNS}
          FROM request_logs AS log
+         LEFT JOIN request_settlements AS receipt ON receipt.request_id=log.id
          JOIN users AS request_user ON request_user.id = log.user_id
          LEFT JOIN channel_groups AS channel_group ON channel_group.id = log.channel_group_id
          LEFT JOIN channels AS channel ON channel.id = log.channel_id
@@ -3819,6 +3951,7 @@ async fn query_console_request_logs(
     let mut query = QueryBuilder::<Postgres>::new(format!(
         "SELECT {CONSOLE_REQUEST_LOG_COLUMNS}
          FROM request_logs AS log
+         LEFT JOIN request_settlements AS receipt ON receipt.request_id=log.id
          JOIN users AS request_user ON request_user.id = log.user_id
          LEFT JOIN channel_groups AS channel_group ON channel_group.id = log.channel_group_id
          LEFT JOIN channels AS channel ON channel.id = log.channel_id
@@ -3866,9 +3999,9 @@ async fn query_console_request_logs(
     }
     if let Some(billed) = filter.billed {
         if billed {
-            query.push(" AND log.billed_at IS NOT NULL");
+            query.push(" AND receipt.settled_at IS NOT NULL");
         } else {
-            query.push(" AND log.billed_at IS NULL");
+            query.push(" AND receipt.settled_at IS NULL");
         }
     }
     query
@@ -4307,9 +4440,13 @@ pub enum RequestLogSettlementOutcome {
     NotFound,
 }
 
+#[derive(Clone, Copy, Debug, sqlx::Type)]
+#[sqlx(transparent)]
+pub(crate) struct IngestReceipt(i64);
+
 #[derive(FromRow)]
 pub(crate) struct RequestLogIngestRecord {
-    pub sequence: i64,
+    pub sequence: IngestReceipt,
     pub request_log_id: Uuid,
     pub schema_version: i16,
     pub payload: Vec<u8>,
@@ -4379,8 +4516,7 @@ fn settlement_outcome_from_eligibility(
     if eligibility.api_key_user_id != Some(eligibility.user_id) {
         return RequestLogSettlementOutcome::AccountMismatch;
     }
-    // A concurrent claimer either commits and is observed as `AlreadyBilled`,
-    // or rolls back and leaves a later recovery pass to claim the row.
+    // A known cost without complete pricing evidence is not a billable claim.
     RequestLogSettlementOutcome::NotBillable
 }
 
@@ -4928,7 +5064,7 @@ impl ControlPlaneRepository {
         Ok(records)
     }
 
-    pub async fn load_runtime_transaction(
+    async fn load_runtime_transaction(
         transaction: &mut Transaction<'_, Postgres>,
     ) -> Result<RuntimeConfigRecords, RepositoryError> {
         Ok(RuntimeConfigRecords {
@@ -4977,7 +5113,7 @@ impl ControlPlaneRepository {
         .map_err(RepositoryError::from)
     }
 
-    pub async fn update_user_settings(
+    async fn update_user_settings(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         user_id: Uuid,
@@ -4996,7 +5132,7 @@ impl ControlPlaneRepository {
         .map_err(RepositoryError::from)
     }
 
-    pub async fn load_transaction(
+    async fn load_transaction(
         transaction: &mut Transaction<'_, Postgres>,
     ) -> Result<ControlPlaneRecords, RepositoryError> {
         let api_keys = sqlx::query_as::<_, ApiKeyRecord>("SELECT k.id, k.user_id, u.status AS user_status, u.websocket_enabled AS user_websocket_enabled, g.filter_fast_mode AS user_filter_fast_mode, k.secret_value, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount FROM api_keys k JOIN users u ON u.id = k.user_id AND u.deleted_at IS NULL JOIN user_groups g ON g.id=u.user_group_id AND g.deleted_at IS NULL WHERE NOT k.is_system AND k.deleted_at IS NULL ORDER BY k.id").fetch_all(&mut **transaction).await?;
@@ -5055,7 +5191,7 @@ impl ControlPlaneRepository {
         })
     }
 
-    pub async fn begin_serializable(&self) -> Result<Transaction<'_, Postgres>, RepositoryError> {
+    async fn begin_serializable(&self) -> Result<Transaction<'_, Postgres>, RepositoryError> {
         let mut transaction = self.pool.begin().await?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
             .execute(&mut *transaction)
@@ -5063,7 +5199,7 @@ impl ControlPlaneRepository {
         Ok(transaction)
     }
 
-    pub async fn active_user_exists(
+    async fn active_user_exists(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         id: Uuid,
@@ -5079,7 +5215,7 @@ impl ControlPlaneRepository {
         .await?)
     }
 
-    pub async fn active_admin_exists(
+    async fn active_admin_exists(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         id: Uuid,
@@ -5098,7 +5234,7 @@ impl ControlPlaneRepository {
     /// Applies an idempotent system-owned temporary disable only when the
     /// current persisted policy still matches the supplied sanitized failure
     /// trigger. The caller owns snapshot publication after a returned change.
-    pub async fn automatically_disable_channel(
+    async fn automatically_disable_channel(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         id: Uuid,
@@ -5148,7 +5284,7 @@ impl ControlPlaneRepository {
     /// upstream test when automatic recovery remains enabled in the current
     /// persisted settings. The caller owns snapshot publication after a
     /// returned change.
-    pub async fn automatically_recover_channel(
+    async fn automatically_recover_channel(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         id: Uuid,
@@ -5519,7 +5655,7 @@ impl ControlPlaneRepository {
         })
     }
 
-    pub async fn create_own_api_key(
+    async fn create_own_api_key(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         user_id: Uuid,
@@ -5582,7 +5718,7 @@ impl ControlPlaneRepository {
         })
     }
 
-    pub async fn update_own_api_key(
+    async fn update_own_api_key(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         user_id: Uuid,
@@ -5670,7 +5806,7 @@ impl ControlPlaneRepository {
         })
     }
 
-    pub async fn revoke_own_api_key(
+    async fn revoke_own_api_key(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         user_id: Uuid,
@@ -5707,7 +5843,7 @@ impl ControlPlaneRepository {
         })
     }
 
-    pub async fn delete_own_api_key(
+    async fn delete_own_api_key(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         user_id: Uuid,
@@ -5725,7 +5861,7 @@ impl ControlPlaneRepository {
         .await
     }
 
-    pub async fn update_users_batch(
+    async fn update_users_batch(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         actor: Uuid,
@@ -5852,7 +5988,7 @@ impl ControlPlaneRepository {
         Ok(results)
     }
 
-    pub async fn update_channels_batch(
+    async fn update_channels_batch(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         input: ChannelBatchUpdateInput,
@@ -5920,7 +6056,7 @@ impl ControlPlaneRepository {
         Ok(results)
     }
 
-    pub async fn apply_control_plane_mutation(
+    async fn apply_control_plane_mutation(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         mutation: ControlPlaneMutation,
@@ -6214,7 +6350,7 @@ impl ControlPlaneRepository {
 
     /// Applies explicitly selected catalog entries. Existing source-model IDs
     /// receive a price refresh; absent IDs are imported as new local models.
-    pub async fn apply_catalog_models(
+    async fn apply_catalog_models(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         inputs: Vec<SyncedModelInput>,
@@ -6237,7 +6373,7 @@ impl ControlPlaneRepository {
         Ok(results)
     }
 
-    pub async fn insert_audit(
+    async fn insert_audit(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         actor: Uuid,
@@ -6248,7 +6384,7 @@ impl ControlPlaneRepository {
             .bind(Uuid::new_v4()).bind(actor).bind(mutation.action).bind(mutation.object_type).bind(mutation.id).bind(&mutation.before_redacted).bind(&mutation.after_redacted).bind(correlation_id.to_string()).bind(&mutation.reason).execute(&mut **transaction).await?;
         Ok(())
     }
-    pub async fn insert_self_audit(
+    async fn insert_self_audit(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         actor: Uuid,
@@ -6259,7 +6395,7 @@ impl ControlPlaneRepository {
             .bind(Uuid::new_v4()).bind(actor).bind(mutation.action).bind(mutation.object_type).bind(mutation.id).bind(&mutation.before_redacted).bind(&mutation.after_redacted).bind(correlation_id.to_string()).bind(&mutation.reason).execute(&mut **transaction).await?;
         Ok(())
     }
-    pub async fn insert_system_audit(
+    async fn insert_system_audit(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         mutation: &MutationResult,
@@ -6282,7 +6418,7 @@ impl ControlPlaneRepository {
         .await?;
         Ok(())
     }
-    pub async fn insert_manual_reload_audit(
+    async fn insert_manual_reload_audit(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         actor: Uuid,
@@ -9376,17 +9512,19 @@ fn valid_session_affinity_json_pointer(pointer: &str) -> bool {
 
 #[derive(Debug, Error)]
 pub enum RepositoryError {
+    #[error("control-plane actor is not active or authorized")]
+    InvalidActor,
     #[error("credential is bound to a Codex sharing group")]
     SharingCredentialInUse,
     #[error("control-plane database operation failed")]
-    Sql(#[from] sqlx::Error),
+    Storage(#[source] StorageError),
     #[error("request log response status is outside the HTTP range")]
     InvalidResponseStatus { status: u16 },
     #[error("request log id already exists with different immutable facts")]
     DuplicateConflict { id: Uuid },
     #[error("request log duplicate disappeared before it could be compared")]
     DuplicateDisappeared { id: Uuid },
-    #[error("request log settlement claim became ineligible before account updates")]
+    #[error("financial settlement claim became ineligible before account updates")]
     SettlementClaimInvalidated { id: Uuid },
     #[error("requested record was not found or cannot be changed")]
     NotFound,

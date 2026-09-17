@@ -15,8 +15,9 @@ use crate::{
     application::{DurableRequestLogSink, RequestLogPipelineMonitor},
     observability::{RequestLogPipelineMetrics, RequestLogPipelineMetricsSnapshot},
     persistence::{
-        RequestLogBatchInsertOutcome, RequestLogIngestRecord, RequestLogRepository,
-        RequestLogSettlementOutcome,
+        IngestReceipt, MeteringRepository, MeteringWriteOutcome, RequestLogBatchInsertOutcome,
+        RequestLogIngestRecord, RequestLogRepository, RequestLogSettlementOutcome,
+        SettlementRepository,
     },
     request_log_spool::{RequestLogSpool, SpoolReader},
     runtime_config::RequestLoggingConfig,
@@ -36,6 +37,7 @@ pub struct DurableRequestLogWorker {
     spool_task: JoinHandle<()>,
     spool_sync_shutdown: oneshot::Sender<()>,
     spool_sync_task: JoinHandle<()>,
+    metering_task: JoinHandle<()>,
     projection_task: JoinHandle<()>,
     settlement_shutdown: oneshot::Sender<()>,
     settlement_task: JoinHandle<()>,
@@ -96,6 +98,7 @@ impl DurableRequestLogWorker {
         let metrics = Arc::new(RequestLogPipelineMetrics::default());
         let (wake_sender, wake_receiver) = mpsc::channel(config.queue_capacity);
         let (stage_sender, stage_receiver) = mpsc::channel(1);
+        let (projection_sender, projection_receiver) = mpsc::channel(1);
         let (spool_shutdown, spool_shutdown_requested) = oneshot::channel();
         let (spool_sync_shutdown, spool_sync_shutdown_requested) = oneshot::channel();
         let (settlement_shutdown, settlement_shutdown_requested) = oneshot::channel();
@@ -105,7 +108,7 @@ impl DurableRequestLogWorker {
             Arc::clone(&spool),
             wake_sender.clone(),
             config.queue_capacity,
-            stage_sender.clone(),
+            projection_sender.clone(),
             config.database_max_connections,
             Arc::clone(&metrics),
         );
@@ -122,9 +125,15 @@ impl DurableRequestLogWorker {
             wake_receiver,
             spool_shutdown_requested,
         ));
+        let metering_task = tokio::spawn(run_metering_worker(
+            repository.metering(),
+            stage_receiver,
+            projection_sender,
+            settings.clone(),
+        ));
         let projection_task = tokio::spawn(run_projection_worker(
             repository.clone(),
-            stage_receiver,
+            projection_receiver,
             settings.clone(),
             Arc::clone(&metrics),
         ));
@@ -134,7 +143,7 @@ impl DurableRequestLogWorker {
             spool_sync_shutdown_requested,
         ));
         let settlement_task = tokio::spawn(run_durable_settlement_worker(
-            repository.clone(),
+            repository.settlements(),
             settlement_shutdown_requested,
             settings.clone(),
             admission,
@@ -163,6 +172,7 @@ impl DurableRequestLogWorker {
                 spool_task,
                 spool_sync_shutdown,
                 spool_sync_task,
+                metering_task,
                 projection_task,
                 settlement_shutdown,
                 settlement_task,
@@ -186,6 +196,7 @@ impl DurableRequestLogWorker {
             mut spool_task,
             spool_sync_shutdown,
             mut spool_sync_task,
+            mut metering_task,
             mut projection_task,
             settlement_shutdown,
             mut settlement_task,
@@ -208,6 +219,12 @@ impl DurableRequestLogWorker {
         await_or_abort(
             "spool_sync",
             &mut spool_sync_task,
+            remaining_until(drain_deadline),
+        )
+        .await;
+        await_or_abort(
+            "metering",
+            &mut metering_task,
             remaining_until(drain_deadline),
         )
         .await;
@@ -242,6 +259,156 @@ impl DurableRequestLogWorker {
             spool_pending_bytes = spool.pending_bytes(),
             "durable request-log pipeline stopped"
         );
+    }
+}
+
+async fn run_metering_worker(
+    repository: MeteringRepository,
+    mut wake: mpsc::Receiver<()>,
+    projection_wake: mpsc::Sender<()>,
+    settings: DurableRequestLogSettings,
+) {
+    let mut poll = interval(PROJECTION_POLL_INTERVAL);
+    poll.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut deadline = None;
+    loop {
+        if wake.is_closed() {
+            let deadline =
+                *deadline.get_or_insert_with(|| Instant::now() + settings.shutdown_drain);
+            if Instant::now() >= deadline {
+                return;
+            }
+        }
+        let rows = match timeout(
+            DATABASE_OPERATION_TIMEOUT,
+            repository.load_pending(settings.projection_batch_size),
+        )
+        .await
+        {
+            Ok(Ok(rows)) => rows,
+            error => {
+                tracing::error!(
+                    reason = "metering_load_failed",
+                    timed_out = error.is_err(),
+                    "financial facts remain pending in ingress"
+                );
+                Vec::new()
+            }
+        };
+        if rows.is_empty() {
+            if wake.is_closed() {
+                return;
+            }
+            tokio::select! {
+                _ = poll.tick() => {},
+                _ = wake.recv() => {},
+            }
+            continue;
+        }
+        let mut valid = Vec::new();
+        for row in rows {
+            match row.encoded().decode() {
+                Ok(event) => valid.push((row, event)),
+                Err(_) => {
+                    defer_metering(
+                        &repository,
+                        &[row.sequence],
+                        "decode_failed",
+                        ISOLATED_PROJECTION_RETRY_SECONDS,
+                    )
+                    .await
+                }
+            }
+        }
+        if valid.is_empty() {
+            continue;
+        }
+        if valid.iter().any(|(row, _)| row.attempt_count > 0) {
+            for (row, event) in valid {
+                materialize_metering(&repository, &[row.sequence], &[event], &projection_wake)
+                    .await;
+            }
+        } else {
+            let receipts = valid
+                .iter()
+                .map(|(row, _)| row.sequence)
+                .collect::<Vec<_>>();
+            let events = valid
+                .into_iter()
+                .map(|(_, event)| event)
+                .collect::<Vec<_>>();
+            materialize_metering(&repository, &receipts, &events, &projection_wake).await;
+        }
+    }
+}
+
+async fn materialize_metering(
+    repository: &MeteringRepository,
+    receipts: &[IngestReceipt],
+    events: &[crate::domain::RequestLogEvent],
+    projection_wake: &mpsc::Sender<()>,
+) {
+    match timeout(
+        DATABASE_OPERATION_TIMEOUT,
+        repository.materialize(receipts, events),
+    )
+    .await
+    {
+        Ok(Ok(outcomes)) => {
+            let conflicting = receipts
+                .iter()
+                .zip(&outcomes)
+                .filter_map(|(receipt, outcome)| {
+                    (*outcome == MeteringWriteOutcome::Conflict).then_some(*receipt)
+                })
+                .collect::<Vec<_>>();
+            if !conflicting.is_empty() {
+                defer_metering(
+                    repository,
+                    &conflicting,
+                    "financial_replay_conflict",
+                    ISOLATED_PROJECTION_RETRY_SECONDS,
+                )
+                .await;
+            }
+            let _ = projection_wake.try_send(());
+        }
+        _ => {
+            defer_metering(
+                repository,
+                receipts,
+                "metering_write_failed",
+                FIRST_PROJECTION_RETRY_SECONDS,
+            )
+            .await
+        }
+    }
+}
+
+async fn defer_metering(
+    repository: &MeteringRepository,
+    receipts: &[IngestReceipt],
+    code: &str,
+    delay: i64,
+) {
+    tracing::error!(
+        reason = code,
+        event_count = receipts.len(),
+        "financial ingress retained for retry or reconciliation"
+    );
+    if !matches!(
+        timeout(
+            DATABASE_OPERATION_TIMEOUT,
+            repository.defer(receipts, code, delay)
+        )
+        .await,
+        Ok(Ok(()))
+    ) {
+        tracing::error!(
+            reason = "metering_defer_failed",
+            "could not defer financial ingress"
+        );
+        sleep(INGEST_RETRY_DELAY).await;
     }
 }
 
@@ -352,11 +519,7 @@ async fn run_spool_ingest_worker(
         if !batch.records.is_empty() {
             let started = Instant::now();
             let operation_timeout = remaining_operation_timeout(drain_deadline);
-            let result = timeout(
-                operation_timeout,
-                repository.copy_ingest_batch(&batch.records),
-            )
-            .await;
+            let result = timeout(operation_timeout, repository.accept_batch(&batch.records)).await;
             match result {
                 Ok(Ok(rows)) => {
                     if rows != batch.records.len() as u64 {
@@ -554,7 +717,7 @@ async fn project_one_batch(
             Err(error) => {
                 metrics.record_projection_failure();
                 tracing::error!(
-                    sequence = row.sequence,
+                    receipt = ?row.sequence,
                     request_log_id = %row.request_log_id,
                     %error,
                     reason = "ingest_decode_failed",
@@ -585,7 +748,12 @@ async fn project_one_batch(
         .iter()
         .map(|(_, event)| event.clone())
         .collect::<Vec<_>>();
-    match timeout(DATABASE_OPERATION_TIMEOUT, repository.insert_batch(&events)).await {
+    match timeout(
+        DATABASE_OPERATION_TIMEOUT,
+        repository.project_batch(&events),
+    )
+    .await
+    {
         Ok(Ok(results)) => {
             let mut acknowledged = Vec::with_capacity(results.len());
             let mut conflicting = Vec::new();
@@ -599,7 +767,7 @@ async fn project_one_batch(
                     RequestLogBatchInsertOutcome::DuplicateConflict => {
                         conflicting.push(row.sequence);
                         tracing::error!(
-                            sequence = row.sequence,
+                            receipt = ?row.sequence,
                             request_log_id = %row.request_log_id,
                             reason = "duplicate_conflict",
                             "request-log ingress row conflicts with immutable final facts"
@@ -608,7 +776,7 @@ async fn project_one_batch(
                     RequestLogBatchInsertOutcome::InvalidResponseStatus { status } => {
                         invalid.push(row.sequence);
                         tracing::error!(
-                            sequence = row.sequence,
+                            receipt = ?row.sequence,
                             request_log_id = %row.request_log_id,
                             status,
                             reason = "invalid_response_status",
@@ -708,11 +876,27 @@ async fn project_rows_individually(
     let mut acknowledged = Vec::new();
     let mut deferred = Vec::new();
     for (row, event) in rows {
-        match timeout(DATABASE_OPERATION_TIMEOUT, repository.insert(event)).await {
-            Ok(Ok(_)) => acknowledged.push(row.sequence),
+        match timeout(
+            DATABASE_OPERATION_TIMEOUT,
+            repository.project_batch(std::slice::from_ref(event)),
+        )
+        .await
+        {
+            Ok(Ok(results))
+                if results.iter().all(|result| {
+                    matches!(
+                        result.outcome,
+                        RequestLogBatchInsertOutcome::Inserted
+                            | RequestLogBatchInsertOutcome::ExactDuplicate
+                    )
+                }) =>
+            {
+                acknowledged.push(row.sequence)
+            }
+            Ok(Ok(_)) => deferred.push(row.sequence),
             Ok(Err(error)) => {
                 tracing::error!(
-                    sequence = row.sequence,
+                    receipt = ?row.sequence,
                     request_log_id = %row.request_log_id,
                     %error,
                     reason = "isolated_projection_failed",
@@ -722,7 +906,7 @@ async fn project_rows_individually(
             }
             Err(_) => {
                 tracing::error!(
-                    sequence = row.sequence,
+                    receipt = ?row.sequence,
                     request_log_id = %row.request_log_id,
                     reason = "isolated_projection_timeout",
                     "request-log ingress row remains durable for a later retry"
@@ -749,7 +933,7 @@ async fn project_rows_individually(
 
 async fn acknowledge_rows(
     repository: &RequestLogRepository,
-    sequences: &[i64],
+    sequences: &[IngestReceipt],
     metrics: &RequestLogPipelineMetrics,
 ) {
     if sequences.is_empty() {
@@ -784,7 +968,7 @@ async fn acknowledge_rows(
 
 async fn defer_rows(
     repository: &RequestLogRepository,
-    sequences: &[i64],
+    sequences: &[IngestReceipt],
     error_code: &str,
     retry_after_seconds: i64,
     metrics: &RequestLogPipelineMetrics,
@@ -820,7 +1004,7 @@ async fn defer_rows(
 }
 
 async fn run_durable_settlement_worker(
-    repository: RequestLogRepository,
+    repository: SettlementRepository,
     mut shutdown_requested: oneshot::Receiver<()>,
     settings: DurableRequestLogSettings,
     admission: Option<AdmissionRuntime>,
@@ -853,7 +1037,7 @@ async fn run_durable_settlement_worker(
 }
 
 async fn settle_one_durable_batch(
-    repository: &RequestLogRepository,
+    repository: &SettlementRepository,
     batch_size: i64,
     admission: Option<&AdmissionRuntime>,
     metrics: &RequestLogPipelineMetrics,
@@ -895,7 +1079,7 @@ async fn settle_one_durable_batch(
 }
 
 async fn drain_settlements(
-    repository: &RequestLogRepository,
+    repository: &SettlementRepository,
     batch_size: i64,
     drain_duration: Duration,
     admission: Option<&AdmissionRuntime>,
@@ -934,6 +1118,8 @@ async fn run_telemetry_reporter(
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
     ticker.tick().await;
     let mut state = RequestLogTelemetryState::default();
+    let metering = repository.metering();
+    let mut reconciliation_state = None;
     let mut next_metrics_at = settings
         .metrics_interval
         .map(|interval| Instant::now() + interval);
@@ -948,6 +1134,26 @@ async fn run_telemetry_reporter(
                 ).await;
                 let now = Instant::now();
                 emit_telemetry_transitions(&state.observe(&sample, now), &sample);
+                let reconciliation = timeout(DATABASE_OPERATION_TIMEOUT, metering.reconciliation_counts())
+                    .await.ok().and_then(Result::ok).ok_or(());
+                if reconciliation_state != Some(reconciliation) {
+                    match reconciliation {
+                        Ok(counts) if counts.unknown + counts.invalid + counts.account_mismatch > 0 => {
+                            tracing::warn!(target: "ai_gateway::metering_health",
+                                unknown = counts.unknown, invalid = counts.invalid,
+                                account_mismatch = counts.account_mismatch,
+                                "financial facts require reconciliation; unknown is not zero");
+                        }
+                        Ok(_) if reconciliation_state.is_some() => {
+                            tracing::info!(target: "ai_gateway::metering_health", "financial reconciliation backlog cleared");
+                        }
+                        Err(()) => {
+                            tracing::warn!(target: "ai_gateway::metering_health", "financial reconciliation health query unavailable");
+                        }
+                        Ok(_) => {}
+                    }
+                    reconciliation_state = Some(reconciliation);
+                }
                 if metrics_heartbeat_due(
                     &mut next_metrics_at,
                     settings.metrics_interval,
@@ -983,9 +1189,10 @@ async fn load_telemetry_sample(
     // dropped pool connections asynchronously, so sampling afterward can
     // briefly count this probe's own connections as busy.
     let pool_before_queries = repository.pool_status();
+    let settlements = repository.settlements();
     let (ingress, settlement) = tokio::join!(
         timeout(DATABASE_OPERATION_TIMEOUT, repository.ingest_backlog()),
-        timeout(DATABASE_OPERATION_TIMEOUT, repository.settlement_backlog())
+        timeout(DATABASE_OPERATION_TIMEOUT, settlements.settlement_backlog())
     );
     RequestLogTelemetrySample {
         metrics: metrics.snapshot(),

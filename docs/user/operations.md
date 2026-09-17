@@ -900,7 +900,7 @@ API Key 和小时/天聚合粒度，不提供用户或渠道筛选，响应中�
 月榜为每月 1 日至月底；并可前后浏览已保留的历史榜单；不再提供任意日志时间范围筛选。后台每 15 分钟汇总一次排行榜快照，因此当前
 数据不是实时数据，除刷新间隔外还会受到请求日志投影和刷新耗时影响。前三名使用领奖台柱状图展示，排行榜表格显示最多 50 名用户的已记录 USD
 花费、占比、已计价请求数和 Token。排行榜仅包含该周期内至少有一个已定价请求的用户；其总花费来自
-客户端请求的 `request_logs.cost_amount`，不等待异步结算 worker 写入 `billed_at`；系统定时渠道测试不会参与排行榜。
+客户端请求的独立计量费用，不等待异步结算回执；系统定时渠道测试不会参与排行榜。
 
 ## 自动禁用与定时测试
 
@@ -966,12 +966,17 @@ provider-managed Codex Channel 也不能单独配置这两个字段；这些渠�
 
 每次故障转移会产生 `proxy_request_retry` tracing 事件；每个客户端请求仍只产生一个终态 tracing
 事件和一条 `request_logs`，其中渠道、上游模型、结果和计费快照对应最终尝试。worker 从三种格式的普通 JSON
-以及 Chat Completions/Responses 的 SSE 事件增量提取 usage，在选路时绑定价格快照，并在可结算时以 `billed_at` 条件幂等更新用户余额
+以及 Chat Completions/Responses 的 SSE 事件增量提取 usage，在选路时绑定价格快照，并在可结算时以唯一回执幂等更新用户余额
 和 API Key 已用额度。usage 同时保留输入、缓存命中、缓存写入、输出总量，以及输出中包含的
 reasoning token。Chat Completions 的 `completion_tokens` 始终作为包含 reasoning 的输出总量保存；
 OpenAI 的最终空 `choices` usage chunk 和 DeepSeek 将 usage 附在 `finish_reason` chunk 的形式都可解析。
 Console 请求日志的 `Tokens` 列将未缓存输入和输出总量作为主数字，并用紧凑标记分别展示缓存命中
 与作为输出子集的 reasoning token。
+
+终态先物化独立计量事实，再分别驱动结算与查询日志投影。日志表暂不可写时费用仍可结算，
+所以余额/统计可能先于日志页面可见。API 的 `billed_at` 与筛选保持不变，值来自结算回执；
+unknown、价格证据异常和账户归属异常不自动扣款，可通过 `ai_gateway::metering_health`
+的状态变化日志核对。无费用的拒绝和当前不可计价的独立搜索不是“零额已结算”。
 
 对于未被用户组 Fast 策略过滤的客户端原始请求，日志还会在不改变其他转发校验的前提下提取显式模式元数据：
 OpenAI Responses 的 `reasoning.effort`、DeepSeek/OpenAI Chat Completions 兼容的

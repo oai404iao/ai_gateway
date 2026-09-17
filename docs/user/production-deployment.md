@@ -137,7 +137,7 @@ MCP 日志归入 `client`，保留用量与费用，并兼容旧 spool/ingress �
 
 Gateway 会在数据库 migration advisory lock 下，将连续待执行 migration 放在同一个 PostgreSQL
 事务中；任一版本失败都会回滚同批已经执行的其他版本。历史 `0034`、`0046` 新增 PostgreSQL
-枚举值，因数据库要求先提交再引用而构成事务屏障；`0053–0062` 不含屏障，会整体提交或回滚。
+枚举值，因数据库要求先提交再引用而构成事务屏障；`0053–0063` 不含屏障，会整体提交或回滚。
 旧 Gateway 此前已经提交的 migration 不属于当前事务，仍需通过升级前备份恢复，不能靠切换旧
 二进制撤销。
 
@@ -147,6 +147,14 @@ Migration `0061_zero_failed_and_cancelled_costs.sql` 会把历史失败/取消�
 Migration `0062_flat_model_route_candidates.sql` 会一次性展开旧 Channel Group 路由目标，并删除
 旧 group/channel 路由表。所有旧 Gateway 必须在应用 migration 前排空并停止；迁移后不能回切旧
 二进制。旧 `all` 目标只快照迁移时的当前成员，之后组成员变化不再自动改变模型规则。
+
+Migration `0063_independent_metering_facts.sql` 把历史费用与已结算状态回填到独立事实/回执，
+不再次扣款，并删除日志物理 `billed_at`。必须停止全部旧 worker 后整体切换，不能滚动混跑或
+仅回滚二进制。该 migration 本身不改变 journal 格式，支持版本的 spool/ingress 可以保留；
+未知 intent 必须保留待核对。发布前需用真实规模的隔离副本验证回填时长与磁盘/WAL 余量。
+完整备份、恢复与验收要求见[独立计量切换](../development/independent-metering.md)；
+手动隔离验证入口见[成对备份恢复演练](../development/persistence-rehearsal.md)。
+小数据开发库的通过结果不能代替不同数据量/硬件下的生产停机容量验收。
 
 Migration `0017_remove_legacy_compatibility.sql` 会永久删除
 `api_keys.tokens_per_minute` 与 `channels.health_check` 的值；升级前备份必须可用。
