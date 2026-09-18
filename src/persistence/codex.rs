@@ -6,7 +6,8 @@ use serde_json::{Value, json};
 use sqlx::{FromRow, PgPool, Postgres, Transaction, postgres::PgConnection};
 use uuid::Uuid;
 
-use super::{ControlPlaneRepository, MutationResult, RepositoryError};
+use super::PostgresControlPlaneRepository;
+use crate::persistence::{MutationResult, RepositoryError};
 
 const CODEX_CONNECTOR_KIND: &str = "codex_oauth";
 const CODEX_RESPONSES_API_FORMAT: &str = "open_ai_responses";
@@ -456,7 +457,7 @@ pub struct CodexTokenRefreshUpdate {
     pub refreshed_at: DateTime<Utc>,
 }
 
-impl ControlPlaneRepository {
+impl PostgresControlPlaneRepository {
     pub async fn codex_credentials(
         &self,
         channel_group_id: Uuid,

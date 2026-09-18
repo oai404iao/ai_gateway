@@ -1,7 +1,12 @@
 //! Sharing configuration and bounded background reconciliation queries.
 
-use super::*;
+use chrono::{DateTime, Utc};
+use serde_json::{Value, json};
+use sqlx::{Postgres, Transaction};
+use uuid::Uuid;
+
 use crate::domain::codex_sharing::{SharingGroup, SharingGroupInput, SharingRecord, SharingWindow};
+use crate::persistence::*;
 
 const GROUP_JSON: &str = "jsonb_build_object('id',s.id,\
      'credential_id',s.credential_id,'name',s.name,'enabled',s.enabled,'seats',s.seats,\
@@ -14,7 +19,7 @@ const GROUP_JSON: &str = "jsonb_build_object('id',s.id,\
      'group_max_concurrent_requests',s.group_max_concurrent_requests,\
      'updated_at',s.updated_at)";
 
-impl ControlPlaneRepository {
+impl PostgresControlPlaneRepository {
     pub(super) async fn load_sharing_only_channels(
         transaction: &mut Transaction<'_, Postgres>,
     ) -> Result<Vec<Uuid>, RepositoryError> {
@@ -84,7 +89,7 @@ impl ControlPlaneRepository {
     }
 }
 
-impl super::MeteringQueries {
+impl crate::persistence::MeteringQueries {
     pub async fn sharing_completed_costs(
         &self,
         ids: &[Uuid],
@@ -101,7 +106,7 @@ impl super::MeteringQueries {
     }
 }
 
-impl ControlPlaneRepository {
+impl PostgresControlPlaneRepository {
     pub(super) async fn load_sharing_transaction(
         transaction: &mut Transaction<'_, Postgres>,
     ) -> Result<Vec<SharingRecord>, RepositoryError> {

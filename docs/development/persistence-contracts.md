@@ -69,15 +69,15 @@ P3 用生成的 `amount_state` 保存金额分类，没有改变公共 API 枚�
 | 普通账户扣款及恢复 | `SettlementRepository::{settle,settle_batch,settle_pending}` | 唯一回执与账户更新，不依赖查询表；扫描 pending 而非全部历史 |
 | 自动结算调用方 | `workers/durable_request_log.rs` 与 `workers/mod.rs::RequestLogWorker` | 生产耐久 worker 与旧入口共用同一事实/回执结算规则 |
 | 进程内 Key 额度 | `workers/mod.rs::handle_settlement_outcome` → `admission/mod.rs::record_settled_quota_usage` | 提交后单调更新缓存；不是数据库余额事实 |
-| 管理员单条设余额 | `persistence/mod.rs::user_update`，经 `ControlPlaneCoordinator::mutate` | 绝对赋值；控制面 SERIALIZABLE + 候选校验 + 审计，不属于请求结算回执 |
+| 管理员单条设余额 | `persistence/postgres_control_plane.rs::user_update`，经 `ControlPlaneCoordinator::mutate` | 绝对赋值；控制面 SERIALIZABLE + 候选校验 + 审计，不属于请求结算回执 |
 | 管理员批量 set/increase/decrease | `ControlPlaneRepository::update_users_batch`，经 coordinator 同名方法 | 仍属控制面原子管理操作；不得拆成逐行非事务更新 |
-| 初始余额/邀请码余额 | `persistence/mod.rs::user_create`；`persistence/auth.rs::{invite_user,register_with_invitation}` | 用户/邀请事务；不是上游消费 |
-| Key 修改/撤销/软删除 | `persistence/mod.rs` Key mutation 与 `revoke_own_api_key` | 修改授权或额度上限不重置 `quota_used_amount`，墓碑保留旧费用归属 |
+| 初始余额/邀请码余额 | `persistence/postgres_control_plane.rs::user_create`；`persistence/auth.rs::{invite_user,register_with_invitation}` | 用户/邀请事务；不是上游消费 |
+| Key 修改/撤销/软删除 | `persistence/postgres_control_plane.rs` Key mutation 与 `revoke_own_api_key` | 修改授权或额度上限不重置 `quota_used_amount`，墓碑保留旧费用归属 |
 | 历史冲正 | migration `0061_zero_failed_and_cancelled_costs.sql` | 已 billed 正费用失败/取消按原 user/key 退款，整批预检与回滚；没有运行时自动补账 API |
 
 ### 查询与财务读源
 
-除 Codex 模块外，下列查询位于 `persistence/mod.rs` 的 `RequestLogQueries`、
+除 Codex 模块外，下列 PG 查询位于 `persistence/postgres_control_plane.rs` 的 `RequestLogQueries`、
 `MeteringQueries` 和 `SettlementRepository`；拼车费用读取也归 `MeteringQueries`。
 费用读源迁移不得统一成一种 source 或时间口径。
 

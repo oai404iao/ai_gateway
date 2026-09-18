@@ -79,6 +79,9 @@ mod persistence_interfaces;
 #[cfg(all(feature = "sqlite-backend", target_os = "linux"))]
 #[path = "contracts/sqlite_parity.rs"]
 mod sqlite_parity;
+#[cfg(all(feature = "sqlite-backend", target_os = "linux"))]
+#[path = "contracts/sqlite_s3_parity.rs"]
+mod sqlite_s3_parity;
 
 const DEFAULT_ADMIN_URL: &str = "postgres://ai_gateway:ai_gateway@127.0.0.1:5432/postgres";
 const PASSWORD_FILE_ADMIN_URL: &str = "postgres://ai_gateway@127.0.0.1:5432/postgres";

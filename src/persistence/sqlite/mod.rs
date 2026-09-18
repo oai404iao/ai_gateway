@@ -1,6 +1,8 @@
-//! Experimental SQLite storage primitives, not a selectable server backend.
+//! SQLite storage and development repositories, not a selectable server backend.
 //! SQL access stays in persistence; application code must use operation-specific repositories.
 
+mod auth;
+mod control_plane;
 mod decimal;
 mod functions;
 mod migrations;
@@ -8,6 +10,8 @@ mod ownership;
 mod schema;
 mod types;
 
+pub use auth::SqliteAuthRepository;
+pub use control_plane::{SqliteControlPlaneRepository, SqlitePreparedControlPlaneChange};
 pub use decimal::{
     SqliteAmount, SqliteDecimal, SqliteNumeric, SqliteSharingAmount, SqliteTokenRate,
     SqliteUnitPrice,
@@ -61,7 +65,8 @@ impl From<rustix::io::Errno> for SqliteOpenError {
 }
 
 /// Development-only file database. Call `install_schema` before accessing business tables.
-/// Server repositories are not yet wired to this backend.
+/// The parent `AuthRepository` / `ControlPlaneRepository` facades can dispatch to it through
+/// their `from_sqlite` constructors; the server composition root still rejects SQLite.
 /// All openers must cooperate, and claimed paths must remain unchanged until process exit.
 /// Closing pools allows same-process reuse; another process must wait for this process to exit.
 pub struct SqliteDatabase {

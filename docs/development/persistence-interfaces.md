@@ -1,6 +1,7 @@
 # 持久化操作接口
 
-> 状态：当前。第二阶段 P2 的操作边界；数据库仍只有 PostgreSQL 实现，P3 schema 见独立计量文档。
+> 状态：当前。第二阶段 P2 的操作边界；生产仍只支持 PostgreSQL，
+> 开发 feature 下的 SQLite 身份/普通控制面见 [S3 实现](sqlite-control-plane.md)。
 
 整体演进见[持久化边界设计](persistence-boundaries.md)，业务不变量和费用路径清单见
 [契约基线](persistence-contracts.md)。P3 已实现[独立计量事实/回执](independent-metering.md)，
@@ -26,8 +27,9 @@
 原池的窄句柄，不创建新池；结算 worker 只持有 `SettlementRepository`。
 生产继续使用原控制面池与日志流水线池，不增加配置。
 
-SQL 仍集中在 `src/persistence/`；本次不为目录美观搬迁整个大文件。
-PG 行映射与快照 DTO 仍在该模块内，未来后端实现需要显式适配，不代表已经支持双后端。
+SQL 仍集中在 `src/persistence/`。公共仓储通过 `backend_auth.rs` /
+`backend_control_plane.rs` 显式分派；原 `mod.rs` 中的 PG SQL/行映射和共享 DTO
+位于 `postgres_control_plane.rs`，SQLite 有后端私有行映射。
 Codex credential/window view 的费用聚合仍封装在该专用 PG 查询内部，已读取独立计量事实。
 
 ## 控制面事务与发布
@@ -98,6 +100,6 @@ checkpoint 仍只等待 COPY 耐久接收。
 同时保留 P1 金额/事务/重放测试、完整控制面与 Console spec 测试。
 涉及 Codex 请求路径时执行经授权的真实上游 smoke；系统 E2E 验证原耐久流水线。
 
-尚未改变：仍只支持 PostgreSQL，不提供自动补账、事实清理或日志 TTL。
+尚未改变：生产仍只支持 PostgreSQL，不提供自动补账、事实清理或日志 TTL。
 P3 已移除日志认领权；事实/回执不可删改，日志删除不能删除财务证据。
 原有 Codex 长事务与外部结果不确定边界仍存在。

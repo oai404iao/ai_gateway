@@ -1,6 +1,14 @@
 //! Immutable financial facts, independent of the request-log projection.
 
-use super::*;
+use chrono::{DateTime, Utc};
+use serde_json::{Value, json};
+use sqlx::{FromRow, PgPool, Postgres, Transaction};
+use uuid::Uuid;
+
+use crate::domain::RequestLogEvent;
+
+use super::RepositoryError;
+use super::postgres_control_plane::{IngestReceipt, RequestLogIngestRecord};
 
 const FACT_COLUMNS: &str = "id,started_at,completed_at,user_id,api_key_id,request_source,api_format,api_operation,\
      request_protocol,client_model,upstream_model,model_rule_id,channel_group_id,channel_id,\

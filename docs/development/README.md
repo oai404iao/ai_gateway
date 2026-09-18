@@ -21,6 +21,7 @@
 - [SQLite 双后端实施](sqlite-backend.md)：第三阶段范围、开发基础、分阶段契约与生产启用门槛；尚不可部署。
 - [SQLite 文件与迁移生命周期](sqlite-lifecycle.md)：协作式进程 lease、数据库身份、原子迁移与故障验收。
 - [SQLite schema 约束映射](sqlite-schema-mapping.md)：0063 后完整业务 baseline、数据库保护、类型编码与归一化写入契约。
+- [SQLite 身份与控制面](sqlite-control-plane.md)：S3 后端分派、完整认证/管理操作与双后端契约；生产配置仍关闭。
 - [独立计量事实与结算回执](independent-metering.md)：P3 的财务来源、pending 工作集合、独立投影和 0063 停机切换。
 - [0063 升级与成对备份恢复演练](persistence-rehearsal.md)：P4 的手动小数据量演练、PG dump/restore、spool/WAL 配对及 10/30 分钟预算。
 - [Codex 拼车金额账本](codex-sharing.md)：固定席位、窗口准入、WAL 恢复与单实例边界。

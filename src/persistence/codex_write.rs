@@ -1,22 +1,26 @@
 //! Locked credential operations; external provider calls remain in application.
 
-use super::*;
+use chrono::{DateTime, Utc};
+use sqlx::{Postgres, Transaction};
+use uuid::Uuid;
+
+use crate::persistence::*;
 
 /// Keeps the credential locked until a refresh outcome is committed or dropped.
 pub struct CodexRefresh<'a> {
-    repository: &'a ControlPlaneRepository,
+    repository: &'a PostgresControlPlaneRepository,
     transaction: Transaction<'a, Postgres>,
     channel_id: Uuid,
 }
 
 pub struct CodexQuotaReset<'a> {
-    repository: &'a ControlPlaneRepository,
+    repository: &'a PostgresControlPlaneRepository,
     transaction: Transaction<'a, Postgres>,
     channel_id: Uuid,
     credits_available: Option<i64>,
 }
 
-impl ControlPlaneRepository {
+impl PostgresControlPlaneRepository {
     pub async fn lock_codex_refresh(
         &self,
         channel_id: Uuid,

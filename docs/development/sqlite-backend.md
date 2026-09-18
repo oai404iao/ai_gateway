@@ -1,7 +1,7 @@
 # SQLite 双后端实施
 
 > 状态：部分实现。基于 `081d8c9`（第二阶段 PR #177）；S1 已提交，
-> S2 已实现完整业务 baseline、类型/约束、原子迁移和文件/进程所有权。
+> S2 已提交为 `65d8fee`；S3 已实现认证、会话、管理员操作和普通控制面双后端分派。
 > 尚不能用 SQLite 启动 Gateway。最后核对：2026-09-18。
 
 前置工作见[持久化边界](persistence-boundaries.md)、
@@ -20,10 +20,10 @@
 - 启用前所有业务链路必须完整；不支持的后端必须在配置验证时拒绝，
   不能先启动后在某个请求上发现仓储未实现。
 
-## S1–S2 当前实现
+## S1–S3 当前实现
 
 `sqlite-backend` 是非默认 Cargo feature，仅编译
-`src/persistence/sqlite/`、文件库契约和 PG 对照测试；不改变生产组合根、
+`src/persistence/sqlite/`、仓储分派、文件库契约和 PG 对照测试；不改变生产组合根、
 TOML、配置模板或发行构建。即使启用该 feature，`AppConfig::validate` 仍拒绝 `sqlite:`。
 
 `SqliteDatabase` 直接使用 SQLx SQLite 驱动，不包装现有 PG 仓储：
@@ -50,7 +50,8 @@ TEXT 不能用于金额的字典序排序或 SQLite 原生 `SUM`、算术、NUME
 
 S1 提交为 `5668ea4`。S2 的 `install_schema()` 通过独立的 `0001_baseline.sql`
 和 `0002_guards.sql` 一次性安装完整业务 schema。另有身份 metadata、原子 runner 和进程所有权。
-尚无仓储分派、备份命令或业务端到端支持。SQLx 仍按路径打开文件，不使用自定义 VFS；
+S3 仓储分派与双后端契约见[身份与控制面](sqlite-control-plane.md)；
+尚无备份命令或完整业务端到端支持。SQLx 仍按路径打开文件，不使用自定义 VFS；
 调用方不得移动、替换或删除进程已认领的目录/数据库文件，直到该进程退出。
 完整 schema 和归一化写入契约见[约束映射](sqlite-schema-mapping.md)。
 当前 bundled SQLite 还需处理[原生版本门槛](sqlite-lifecycle.md#原生-sqlite-版本门槛)，
@@ -119,13 +120,32 @@ S6 才确定并同步 TOML、两个配置模板、compose/容器目录、CLI 和
 | --- | --- | --- |
 | S1 基础 | 可选驱动、文件读写连接、drop/cancel 回滚、TEXT Decimal 无损往返、生产配置仍拒绝 SQLite、CI 收集测试 | 已实现，测试范围见下 |
 | S2 schema 与生命周期 | 完整约束映射和 baseline、原子迁移、类型编码、单实例所有权、错误分类、路径/身份/关闭恢复负向测试 | 已实现；包括真实 PG schema/编码对照和完整 baseline 批次回滚 |
-| S3 身份与控制面 | 认证/会话/管理员 CLI、完整配置读写、编译失败和审计失败回滚、权限/版本/软删除/路由约束双后端契约 | 待实现 |
+| S3 身份与控制面 | 认证/会话/管理员操作、完整配置读写、编译失败和审计失败回滚、权限/版本/软删除/路由约束双后端契约 | 已实现；CLI 底层 bootstrap/reset 操作已双后端，SQLite CLI 配置/组合根开放仍属 S6 |
 | S4 事实与结算 | ingress/计量/独立投影/回执/pending、精确聚合、重复与冲突重放、未知费用、取消/崩溃与提交回复丢失 | 待实现 |
 | S5 Codex 与拼车 | OAuth/配额/paired projections、长事务替代协议、单实例 WAL 恢复、窗口费用及授权隔离 | 待实现 |
 | S6 可部署验收 | 组合根与配置开放、真实浏览器/CLI 系统链路双后端矩阵、SQLite 故障/备份恢复、运维说明与发行构建 | 待实现 |
 
 S3–S5 的公共仓储使用显式后端分派和后端私有行映射，保留既有窄操作接口；
 不要求业务理解 SQLx Any、方言或原始 executor。不以空 SQLite 分支或 Mock 仓储宣称完成。
+
+S3 的共享门面已接线：`AuthRepository::new(PgPool)` 与 `ControlPlaneRepository::new(PgPool)`
+保持原签名，另加仅 `sqlite-backend` 可用的 `from_sqlite(Arc<SqliteDatabase>)` 开发构造器；
+两者按显式封闭后端枚举分派，保留 `PreparedControlPlaneChange` 等既有应用接口。
+PostgreSQL 实现改名为 `PostgresAuthRepository` / `PostgresControlPlaneRepository`，行为不变。
+认证全部 24 个方法已完整分派。普通控制面读写、预提交变更、用户设置、自助 API Key、
+批量更新、目录同步和审计读取同样已分派。
+
+S5 专属的 Codex 方法当前仍只有 PostgreSQL 实现：`codex_credentials`、`codex_credential`、
+`codex_credential_view`、`load_codex_credentials`、`export_codex_credentials`、
+`create_codex_oauth_flow`、`codex_oauth_flow`、`cleanup_codex_oauth_flows`、
+`set_codex_user_id_if_missing`、`codex_quota_window_history`、`self_codex_quota_credentials`、
+`self_codex_quota_window_history`、`persist_codex_quota`、`record_codex_quota_reset`、
+`mark_codex_credential_error`、`lock_codex_refresh`、`lock_codex_quota_reset`、
+`prepare_codex_credential_{create,update,delete}`、`prepare_codex_credentials_batch`、
+`claim_sharing_ledger`、`sharing_groups`。它们统一经单一 PostgreSQL-only 访问器返回
+`UnsupportedBackendOperation`（经 `RepositoryError::Storage`/内部错误类别映射），
+不返回空成功、不伪装成业务 `Validation`，也不改变任何应用签名。
+生产组合根仍拒绝 SQLite 配置，因此该门面不对生产暴露。
 
 正式启用必须覆盖同一套行为契约：金额逐位相等、权限与快照一致、
 软删除历史身份可追溯、一份事实/回执/账户效果、日志阻塞时仍结算、未知不记零、
@@ -138,6 +158,7 @@ PG 的 COPY/锁/升级测试和 SQLite 的 busy/WAL/文件锁/迁移测试分别
 ```bash
 cargo test --locked --features sqlite-backend --test sqlite_foundation
 cargo test --locked --features sqlite-backend --test control_plane_integration sqlite_parity
+cargo test --locked --features sqlite-backend --test control_plane_integration sqlite_s3_parity
 cargo clippy --locked --workspace --all-targets --features sqlite-backend
 ```
 

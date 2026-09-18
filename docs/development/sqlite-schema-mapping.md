@@ -1,7 +1,7 @@
 # SQLite 完整 schema 与约束映射
 
 > 状态：当前 S2 实现。业务 baseline 对齐 `081d8c9` 的 PostgreSQL
-> 0001–0063 最终 schema；尚未接入生产仓储或启动配置。核对日期：2026-09-18。
+> 0001–0063 最终 schema；S3 开发仓储已接入，尚未开放生产启动配置。核对日期：2026-09-18。
 
 整体进度见 [SQLite 双后端实施](sqlite-backend.md)，原子安装、文件身份和
 进程独占见[文件与迁移生命周期](sqlite-lifecycle.md)。S2 完成不代表 S3–S6
@@ -110,7 +110,7 @@ INSERT/UPDATE，再 `RAISE(IGNORE)`”：这种方案会破坏 `ON CONFLICT`、�
 4. 更新带 `updated_at` 的表时显式 `SET updated_at=ag_now()`；派生更新触发器也遵守
    此规则。不得使用连接外系统时间或 SQL `CURRENT_TIMESTAMP` 混入其他编码。
 
-这是 S3/S5 必须遵守的内部写入契约，不是公共 API 变更，也不承诺 PG 原始 SQL
+这是 S3 已遵守、S5 必须继续遵守的内部写入契约，不是公共 API 变更，也不承诺 PG 原始 SQL
 可以逐字执行。数据库仍独立保护跨表业务不变量；没有将保护替换成应用层断言。
 
 ### 延迟路由约束
@@ -145,5 +145,6 @@ BUSY/LOCKED 为 Conflict；约束、类型/长度与 schema 函数拒绝为 Inva
 时间量化及派生 UUID。文件/进程与取消/重启测试见[生命周期验收](sqlite-lifecycle.md)。
 
 S2 的 schema、编码、约束、错误分类、原子迁移和所有权已实现。
-生产配置保持关闭；业务仓储、完整双后端系统验收、备份恢复与原生 SQLite
-版本升级门槛仍属于后续切片，不能以 S2 测试代替。
+生产配置保持关闭；S3 身份/普通控制面仓储见[当前实现](sqlite-control-plane.md)。
+其余业务仓储、完整双后端系统验收、备份恢复与原生 SQLite 版本升级门槛仍属于
+后续切片，不能以 S2 测试代替。

@@ -34,7 +34,7 @@ PR #176 的非阻塞 Rust 缓存整理告警独立处理，不混入本设计。
 | `src/application/control_plane.rs` 的 `mutate`、`compile_transaction` | 应用编排 PG 事务；变更、完整快照编译校验、审计在提交前完成；提交后发布。进程内串行门覆盖写入与重载。 |
 | `src/application/codex/mod.rs` 的 `refresh_credential_locked`、`reset_quota` | 应用持有 PG 事务/行锁期间访问外部服务；generation 校验、失败状态提交和兑换串行化不可顺带改变。 |
 | `src/application/system_metrics.rs`、`src/http/console.rs` | 上层读取 PG pool 状态，HTTP 还解释 SQLSTATE/constraint 名；错误翻译未收拢。 |
-| `src/persistence/mod.rs` 的 `RequestLogRepository` | 一个仓储兼任 ingress、宽表写入、查询、统计和余额结算。 |
+| 原 `src/persistence/mod.rs`（现 `postgres_control_plane.rs`）的 `RequestLogRepository` | 一个仓储兼任 ingress、宽表写入、查询、统计和余额结算。 |
 | 同文件的 `settle_batch` | `request_logs.billed_at` 是唯一认领标记；与余额扣减、Key 额度增加在一个事务提交。 |
 | `src/persistence/codex_sharing.rs` 的 `sharing_completed_costs` | 拼车 WAL 恢复读取 `request_logs.cost_amount`；与普通账户结算不是同一笔状态更新。 |
 | `src/persistence/codex.rs` | Codex 窗口费用也聚合查询日志；必须纳入费用读路径迁移。 |

@@ -4,16 +4,22 @@
 
 use std::{os::unix::fs::PermissionsExt, path::Path, str::FromStr, sync::Arc, time::Duration};
 
+use ai_gateway::persistence::{DEFAULT_ADMIN_GROUP_ID, DEFAULT_USER_GROUP_ID};
 use ai_gateway::{
     persistence::sqlite::{
         SqliteDatabase, SqliteDecimal, SqliteMigration, SqliteMigrationError, SqliteOpenError,
     },
     runtime_config::AppConfig,
 };
+use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use sqlx::{Connection, Row, SqliteConnection, sqlite::SqliteConnectOptions};
 use tokio::time::timeout;
 
+#[path = "contracts/sqlite_auth.rs"]
+mod sqlite_auth;
+#[path = "contracts/sqlite_control_plane.rs"]
+mod sqlite_control_plane;
 #[path = "contracts/sqlite_schema.rs"]
 mod sqlite_schema;
 
@@ -965,4 +971,105 @@ async fn process_death_releases_ownership_and_recovers_committed_history_only() 
     assert!(table_exists(&reopened, "migration_fixture").await);
     assert!(!table_exists(&reopened, "interrupted_schema").await);
     reopened.close().await;
+}
+
+/// Narrow facade contracts: the shared constructors keep their signatures and
+/// the SQLite development constructors dispatch the ordinary operations.
+#[tokio::test]
+async fn repository_facades_dispatch_ordinary_operations_to_sqlite() {
+    use ai_gateway::persistence::{AuthRepository, BackendKind, ControlPlaneRepository};
+    use uuid::Uuid;
+
+    let (_directory, database) = database().await;
+    assert_eq!(database.install_schema().await.unwrap(), 2);
+    let database = Arc::new(database);
+
+    let auth = AuthRepository::from_sqlite(Arc::clone(&database));
+    assert!(
+        auth.find_login_user("nobody@example.test")
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    let control_plane = ControlPlaneRepository::from_sqlite(Arc::clone(&database));
+    assert!(control_plane.load().await.unwrap().proxies.is_empty());
+    control_plane
+        .ensure_system_settings(system_settings())
+        .await
+        .unwrap();
+    assert_eq!(
+        control_plane
+            .system_settings()
+            .await
+            .unwrap()
+            .settings
+            .api_hosts,
+        vec!["https://gateway.example.test"]
+    );
+
+    // The S5-only Codex/sharing operations fail closed instead of reporting an
+    // empty success through the SQLite backend.
+    let error = control_plane
+        .sharing_groups(None)
+        .await
+        .expect_err("SQLite has no sharing implementation yet");
+    assert!(
+        unsupported_operation(&error).is_some_and(|operation| {
+            operation.backend() == BackendKind::Sqlite && operation.operation() == "sharing_groups"
+        }),
+        "the backend gap must stay a typed unsupported-operation failure: {error}"
+    );
+    for (operation, error) in [
+        (
+            "codex_credentials",
+            control_plane.codex_credentials(Uuid::nil()).await.err(),
+        ),
+        (
+            "lock_codex_refresh",
+            control_plane.lock_codex_refresh(Uuid::nil()).await.err(),
+        ),
+    ] {
+        let error = error.unwrap_or_else(|| panic!("{operation} must fail closed on SQLite"));
+        assert_eq!(
+            unsupported_operation(&error).map(|unsupported| unsupported.operation()),
+            Some(operation),
+        );
+    }
+}
+
+fn system_settings() -> ai_gateway::persistence::SystemSettingsInput {
+    serde_json::from_value(serde_json::json!({
+        "api_hosts": ["https://gateway.example.test"],
+        "upstream": {
+            "connect_timeout_seconds": 10,
+            "response_header_timeout_seconds": 30,
+            "stream_idle_timeout_seconds": 60
+        },
+        "passive_health": {"connection_failure_threshold": 3, "cooldown_seconds": 60},
+        "session_affinity": {
+            "enabled": false, "max_entries": 100000, "default_ttl_seconds": 3600, "rules": []
+        },
+        "codex": {
+            "originator": "codex_cli_rs",
+            "client_version": "0.1.0",
+            "user_agent": "codex_cli_rs/0.1.0"
+        }
+    }))
+    .unwrap()
+}
+
+/// Walks the storage failure chain to the typed backend-gap source.
+fn unsupported_operation(
+    error: &ai_gateway::persistence::RepositoryError,
+) -> Option<&ai_gateway::persistence::UnsupportedBackendOperation> {
+    let mut source = std::error::Error::source(error)?;
+    loop {
+        if let Some(operation) =
+            source.downcast_ref::<ai_gateway::persistence::UnsupportedBackendOperation>()
+        {
+            return Some(operation);
+        }
+        source = source.source()?;
+    }
 }
