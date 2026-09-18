@@ -7,6 +7,8 @@ license = "AGPL-3.0-only"
 repository = "https://github.com/oai404iao/ai_gateway"
 
 [features]
+# Development foundation only; does not enable SQLite in the server configuration.
+sqlite-backend = ["sqlx/sqlite"]
 # Embeds the built `web/console/dist` static assets into the binary and serves
 # them from the Console listener when `[console].ui_enabled` is set. Building
 # with this feature requires `pnpm --dir web/console build` to have produced

@@ -69,6 +69,8 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --locked --workspace --all-targets
       - run: cargo test --locked --workspace
+      - run: cargo clippy --locked --features sqlite-backend --lib --test sqlite_foundation
+      - run: cargo test --locked --features sqlite-backend --test sqlite_foundation
 
   console:
     if: ${{ inputs.run_console }}

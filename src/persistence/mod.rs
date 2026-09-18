@@ -8,6 +8,8 @@ mod control_plane_write;
 mod health;
 mod metering;
 mod migrations;
+#[cfg(feature = "sqlite-backend")]
+pub mod sqlite;
 mod storage_error;
 
 pub use auth::{

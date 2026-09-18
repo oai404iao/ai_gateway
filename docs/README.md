@@ -31,6 +31,8 @@
 当前接口见[持久化操作接口](development/persistence-interfaces.md)，
 独立财务来源与升级边界见[独立计量事实](development/independent-metering.md)，
 成对备份与恢复入口见[0063 演练](development/persistence-rehearsal.md)。
+第三阶段见 [SQLite 双后端实施](development/sqlite-backend.md)；
+目前仅有开发基础切片，生产仍只支持 PostgreSQL。
 
 当文档之间出现差异时，按以下优先级判断：
 
