@@ -13,6 +13,66 @@ use sqlx::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SqliteDecimal(pub Decimal);
 
+/// Column-aware transport restores PostgreSQL's scale for API serialization without rounding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SqliteNumeric<const PRECISION: u32, const SCALE: u32>(pub Decimal);
+
+pub type SqliteAmount = SqliteNumeric<24, 8>;
+pub type SqliteUnitPrice = SqliteNumeric<24, 12>;
+pub type SqliteSharingAmount = SqliteNumeric<20, 8>;
+pub type SqliteTokenRate = SqliteNumeric<14, 4>;
+
+pub(super) fn fits_precision(value: Decimal, precision: u32, scale: u32) -> bool {
+    let value = value.normalize();
+    let text = value.abs().to_string();
+    let integer = text.split('.').next().unwrap_or("");
+    precision > 0
+        && precision <= 28
+        && scale <= precision
+        && value.scale() <= scale
+        && (integer == "0" || integer.len() <= (precision - scale) as usize)
+}
+
+impl<const P: u32, const S: u32> SqliteNumeric<P, S> {
+    pub fn new(mut value: Decimal) -> Result<Self, BoxDynError> {
+        if !fits_precision(value, P, S) {
+            return Err("SQLite numeric column precision exceeded".into());
+        }
+        // SQLx decodes PostgreSQL's zero with scale zero regardless of the column typmod.
+        if value.is_zero() {
+            value = Decimal::ZERO;
+        } else {
+            value.rescale(S);
+        }
+        Ok(Self(value))
+    }
+}
+
+impl<const P: u32, const S: u32> Type<Sqlite> for SqliteNumeric<P, S> {
+    fn type_info() -> SqliteTypeInfo {
+        SqliteDecimal::type_info()
+    }
+    fn compatible(ty: &SqliteTypeInfo) -> bool {
+        SqliteDecimal::compatible(ty)
+    }
+}
+
+impl<'q, const P: u32, const S: u32> Encode<'q, Sqlite> for SqliteNumeric<P, S> {
+    fn encode_by_ref(
+        &self,
+        arguments: &mut Vec<SqliteArgumentValue<'q>>,
+    ) -> Result<IsNull, BoxDynError> {
+        Self::new(self.0)?;
+        SqliteDecimal(self.0).encode_by_ref(arguments)
+    }
+}
+
+impl<'r, const P: u32, const S: u32> Decode<'r, Sqlite> for SqliteNumeric<P, S> {
+    fn decode(value: SqliteValueRef<'r>) -> Result<Self, BoxDynError> {
+        Self::new(SqliteDecimal::decode(value)?.0)
+    }
+}
+
 impl Type<Sqlite> for SqliteDecimal {
     fn type_info() -> SqliteTypeInfo {
         <String as Type<Sqlite>>::type_info()

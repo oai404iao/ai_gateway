@@ -1,6 +1,7 @@
 # SQLite 双后端实施
 
-> 状态：部分实现。基于 `081d8c9`（第二阶段 PR #177）；S1 仅提供开发用连接和金额编解码，
+> 状态：部分实现。基于 `081d8c9`（第二阶段 PR #177）；S1 已提交，
+> S2 已实现完整业务 baseline、类型/约束、原子迁移和文件/进程所有权。
 > 尚不能用 SQLite 启动 Gateway。最后核对：2026-09-18。
 
 前置工作见[持久化边界](persistence-boundaries.md)、
@@ -19,15 +20,16 @@
 - 启用前所有业务链路必须完整；不支持的后端必须在配置验证时拒绝，
   不能先启动后在某个请求上发现仓储未实现。
 
-## S1 当前实现
+## S1–S2 当前实现
 
 `sqlite-backend` 是非默认 Cargo feature，仅编译
-`src/persistence/sqlite/` 和 `tests/sqlite_foundation.rs`；不改变生产组合根、
+`src/persistence/sqlite/`、文件库契约和 PG 对照测试；不改变生产组合根、
 TOML、配置模板或发行构建。即使启用该 feature，`AppConfig::validate` 仍拒绝 `sqlite:`。
 
 `SqliteDatabase` 直接使用 SQLx SQLite 驱动，不包装现有 PG 仓储：
 
-- 接受绝对文件路径；调用方负责提供私有、可信、本地目录。测试使用独立临时文件库。
+- 接受绝对文件路径；S2 增加 Linux 私有目录、文件身份和协作式进程锁验证，
+  见[文件与迁移生命周期](sqlite-lifecycle.md)。测试使用独立临时文件库。
 - 一个写连接、最多四个只读连接；参数是开发基础的固定策略，不是新增配置项。
 - 每个新物理连接配置并核对 WAL、`synchronous=FULL`、外键、recursive triggers、
   关闭 read-uncommitted 及 5 秒 busy timeout。读连接另外以只读方式打开并启用 query-only。
@@ -40,24 +42,28 @@ TOML、配置模板或发行构建。即使启用该 feature，`AppConfig::valid
 拒绝浮点、整数、BLOB、溢出、精度下溢和非规范表示；可选字段通过
 `Option<SqliteDecimal>` 保留 NULL。规范化只去掉无意义尾零，不改变数值。
 
-**当前编解码器不是完整金额约束。** 它能往返整个 Rust Decimal 范围，
-并不检查某个业务列的 `numeric(24,8)` / `numeric(24,12)` / `numeric(20,8)` 限制，
-也不执行舍入、聚合或结算。上述限制由 S2/S4 的 schema 与操作实现负责。
+S2 的 `SqliteAmount` / `SqliteUnitPrice` / `SqliteSharingAmount` / `SqliteTokenRate`
+按列精度检查并恢复 SQLx/PG 的显示 scale；数据库 CHECK 使用相同精度规则。
+`SqliteDecimal` 仍是通用底层传输，不用于代替这些业务列类型。
+这里不执行舍入、聚合或结算；S4 的操作实现仍须遵守既有金额规则。
 TEXT 不能用于金额的字典序排序或 SQLite 原生 `SUM`、算术、NUMERIC/REAL `CAST`。
 
-S1 没有 schema、migration runner、仓储分派、进程独占锁、数据库身份检查、
-安全文件生命周期、备份命令或业务端到端支持。连接池回收/重开仍由 SQLx 按路径执行；
-调用方不得移动、替换或删除正在使用的目录/数据库文件。
-这些不是已获认证的生产操作边界，必须在 S2 定义并测试。
+S1 提交为 `5668ea4`。S2 的 `install_schema()` 通过独立的 `0001_baseline.sql`
+和 `0002_guards.sql` 一次性安装完整业务 schema。另有身份 metadata、原子 runner 和进程所有权。
+尚无仓储分派、备份命令或业务端到端支持。SQLx 仍按路径打开文件，不使用自定义 VFS；
+调用方不得移动、替换或删除进程已认领的目录/数据库文件，直到该进程退出。
+完整 schema 和归一化写入契约见[约束映射](sqlite-schema-mapping.md)。
+当前 bundled SQLite 还需处理[原生版本门槛](sqlite-lifecycle.md#原生-sqlite-版本门槛)，
+开发测试通过不能作为生产开放许可。
 
 ## 后端语义与实施决策
 
 ### 存储和金额
 
-拟采用 SQLite STRICT 表：UUID/时间/枚举/JSON 明确编码，布尔和计数用 INTEGER，
+已采用 SQLite STRICT 表：UUID/时间/枚举/JSON 明确编码，布尔和计数用 INTEGER，
 金额用 TEXT；所有适配位于持久化内部，业务继续使用既有类型。
-S2 必须固定 UUID、UTC 时间、JSON/数组、NULL 和默认值的编码契约，
-不能依赖 PG 自动 cast 或 SQLite affinity。
+S2 已固定这些编码、NULL、默认值和数据库校验；未来仓储必须使用列类型适配器，
+不能依赖 PG 自动 cast 或 SQLite affinity，也不能遗漏归一化写入字段。
 
 金额计算保持既有 Decimal 舍入顺序；8/12 位小数、拼车 ToZero 和越界整笔回滚
 见[契约基线](persistence-contracts.md)。SQLite 账户更新在独占写事务内读取、
@@ -66,9 +72,9 @@ checked Decimal 运算、验证列精度后写回；PG 保留其原生 NUMERIC S
 实现前须对齐 PG 聚合中间精度、最终范围与溢出失败规则；不能以 Rust 单值上限
 悄悄替代现有 SQL 聚合语义，或转为浮点绕过越界。
 
-数据库级保护不能只迁到 Rust。S2 建立当前有效约束逐项映射表，
-保留可等价的 CHECK/FK/唯一键/不可变与跨表触发器；金额精确验证如果需要连接注册函数，
-须先验证 SQLx 支持与未注册连接的 fail-closed 行为，再定 schema。
+数据库级保护没有迁出数据库。S2 保留 CHECK/FK/唯一键、不可变与跨表触发器，
+通过受保护的延迟 FK assertion 保留路由提交时校验。
+金额/文本/JSON 函数在每个物理连接注册，未注册连接写入 fail closed。
 不能用 TEXT 字符串比较冒充大小比较，也不能把删除 financial facts/receipts 的保护放宽。
 
 ### 并发和耐久
@@ -112,7 +118,7 @@ S6 才确定并同步 TOML、两个配置模板、compose/容器目录、CLI 和
 | 切片 | 交付与必须通过的验收 | 状态 |
 | --- | --- | --- |
 | S1 基础 | 可选驱动、文件读写连接、drop/cancel 回滚、TEXT Decimal 无损往返、生产配置仍拒绝 SQLite、CI 收集测试 | 已实现，测试范围见下 |
-| S2 schema 与生命周期 | 完整约束映射和 baseline、原子迁移、类型编码、单实例所有权、错误分类、路径/身份/关闭恢复负向测试 | 待实现 |
+| S2 schema 与生命周期 | 完整约束映射和 baseline、原子迁移、类型编码、单实例所有权、错误分类、路径/身份/关闭恢复负向测试 | 已实现；包括真实 PG schema/编码对照和完整 baseline 批次回滚 |
 | S3 身份与控制面 | 认证/会话/管理员 CLI、完整配置读写、编译失败和审计失败回滚、权限/版本/软删除/路由约束双后端契约 | 待实现 |
 | S4 事实与结算 | ingress/计量/独立投影/回执/pending、精确聚合、重复与冲突重放、未知费用、取消/崩溃与提交回复丢失 | 待实现 |
 | S5 Codex 与拼车 | OAuth/配额/paired projections、长事务替代协议、单实例 WAL 恢复、窗口费用及授权隔离 | 待实现 |
@@ -131,13 +137,17 @@ PG 的 COPY/锁/升级测试和 SQLite 的 busy/WAL/文件锁/迁移测试分别
 
 ```bash
 cargo test --locked --features sqlite-backend --test sqlite_foundation
-cargo clippy --locked --features sqlite-backend --lib --test sqlite_foundation
+cargo test --locked --features sqlite-backend --test control_plane_integration sqlite_parity
+cargo clippy --locked --workspace --all-targets --features sqlite-backend
 ```
 
-九项测试使用真实文件库，覆盖每个读连接与替换、写者互斥、读快照、显式/drop/cancel
-回滚、外键失败后的 DDL/DML 整体回滚、关闭重开、精确 Decimal 和错误表示拒绝、
-配置保持关闭，以及 BEGIN 等待外部写锁时取消后的连接恢复。它们不证明突然断电恢复、
-进程独占、生产迁移、真实仓储或财务原子性。
+测试使用真实文件库，覆盖 S1 的连接、快照、Decimal 和配置关闭契约，
+以及 S2 的协作式跨进程独占、kill/restart、全部 pending 迁移回滚、checksum/history
+漂移、延迟约束提交失败、迁移取消、身份保护和文件别名拒绝。
+同时覆盖完整业务 baseline 的安装、重开、整批回滚及直接 SQL 负向约束。
+PG 对照验证当前 34 表/401 列、类型、约束名、外键、seed、枚举排序、金额显示和时间量化；
+生命周期故障测试还使用最小测试表隔离故障点。SIGKILL 不等于断电测试。
+详细边界见[生命周期验收](sqlite-lifecycle.md)。
 常规 Rust CI 在既有 PostgreSQL gate 之外执行上述 feature 检查；
 没有运行转发压测或付费上游。
 

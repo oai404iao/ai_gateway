@@ -1,23 +1,35 @@
 //! File-backed SQLite primitive contracts; these are not backend feature-parity tests.
 
-#![cfg(feature = "sqlite-backend")]
+#![cfg(all(feature = "sqlite-backend", target_os = "linux"))]
 
-use std::{path::Path, str::FromStr, sync::Arc, time::Duration};
+use std::{os::unix::fs::PermissionsExt, path::Path, str::FromStr, sync::Arc, time::Duration};
 
 use ai_gateway::{
-    persistence::sqlite::{SqliteDatabase, SqliteDecimal},
+    persistence::sqlite::{
+        SqliteDatabase, SqliteDecimal, SqliteMigration, SqliteMigrationError, SqliteOpenError,
+    },
     runtime_config::AppConfig,
 };
 use rust_decimal::Decimal;
 use sqlx::{Connection, Row, SqliteConnection, sqlite::SqliteConnectOptions};
 use tokio::time::timeout;
 
+#[path = "contracts/sqlite_schema.rs"]
+mod sqlite_schema;
+
 async fn database() -> (tempfile::TempDir, SqliteDatabase) {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = private_directory();
     let db = SqliteDatabase::open(&directory.path().join("gateway.sqlite"))
         .await
         .unwrap();
     (directory, db)
+}
+
+fn private_directory() -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .unwrap()
 }
 
 async fn create_table(db: &SqliteDatabase) {
@@ -372,4 +384,585 @@ async fn foundation_does_not_enable_server_configuration_or_memory_databases() {
         .err()
         .expect("SQLite must remain disabled");
     assert!(error.to_string().contains("database URL must use postgres"));
+}
+
+const TEST_MIGRATION: SqliteMigration<'static> = SqliteMigration {
+    version: 1,
+    description: "test-only fixture, not the gateway business schema",
+    sql: "CREATE TABLE migration_fixture (id INTEGER PRIMARY KEY) STRICT;
+          INSERT INTO migration_fixture VALUES (1);",
+};
+
+async fn table_exists(db: &SqliteDatabase, name: &str) -> bool {
+    let mut reader = db.acquire_read().await.unwrap();
+    sqlx::query_scalar::<_, i64>("SELECT count(*) FROM sqlite_schema WHERE type='table' AND name=?")
+        .bind(name)
+        .fetch_one(&mut *reader)
+        .await
+        .unwrap()
+        == 1
+}
+
+#[tokio::test]
+async fn all_pending_migrations_and_history_rollback_together() {
+    let (_directory, db) = database().await;
+    let failed = [
+        TEST_MIGRATION,
+        SqliteMigration {
+            version: 2,
+            description: "deliberate constraint failure",
+            sql: "INSERT INTO migration_fixture VALUES (1);",
+        },
+    ];
+    assert!(db.migrate(&failed).await.is_err());
+    assert!(!table_exists(&db, "migration_fixture").await);
+    let mut reader = db.acquire_read().await.unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM _gateway_sqlite_migrations")
+            .fetch_one(&mut *reader)
+            .await
+            .unwrap(),
+        0
+    );
+    drop(reader);
+    assert_eq!(db.migrate(&[TEST_MIGRATION]).await.unwrap(), 1);
+    assert_eq!(db.migrate(&[TEST_MIGRATION]).await.unwrap(), 0);
+    db.close().await;
+}
+
+#[tokio::test]
+async fn migration_history_requires_an_exact_known_prefix() {
+    let (_directory, db) = database().await;
+    db.migrate(&[TEST_MIGRATION]).await.unwrap();
+    for manifest in [
+        vec![],
+        vec![SqliteMigration {
+            sql: "SELECT 1;",
+            ..TEST_MIGRATION
+        }],
+        vec![SqliteMigration {
+            description: "different description",
+            ..TEST_MIGRATION
+        }],
+    ] {
+        assert!(matches!(
+            db.migrate(&manifest).await,
+            Err(SqliteMigrationError::HistoryMismatch)
+        ));
+    }
+    let mut tx = db.begin_write().await.unwrap();
+    sqlx::query("UPDATE _gateway_sqlite_migrations SET version=2")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert!(matches!(
+        db.migrate(&[TEST_MIGRATION]).await,
+        Err(SqliteMigrationError::HistoryMismatch)
+    ));
+    db.close().await;
+}
+
+#[tokio::test]
+async fn invalid_and_nontransactional_manifests_are_rejected() {
+    let (_directory, db) = database().await;
+    for migration in [
+        SqliteMigration {
+            version: 2,
+            ..TEST_MIGRATION
+        },
+        SqliteMigration {
+            sql: "-- no-transaction\nSELECT 1;",
+            ..TEST_MIGRATION
+        },
+        SqliteMigration {
+            description: "",
+            ..TEST_MIGRATION
+        },
+        SqliteMigration {
+            sql: "",
+            ..TEST_MIGRATION
+        },
+    ] {
+        assert!(matches!(
+            db.migrate(&[migration]).await,
+            Err(SqliteMigrationError::InvalidManifest)
+        ));
+    }
+    db.close().await;
+}
+
+#[tokio::test]
+async fn migration_sql_cannot_commit_a_partial_batch() {
+    let (_directory, db) = database().await;
+    for sql in [
+        "COMMIT; CREATE TABLE escaped (id INTEGER) STRICT;",
+        "ROLLBACK; BEGIN; CREATE TABLE escaped (id INTEGER) STRICT;",
+    ] {
+        assert!(
+            db.migrate(&[
+                TEST_MIGRATION,
+                SqliteMigration {
+                    version: 2,
+                    description: "unexpected transaction control in migration SQL",
+                    sql,
+                },
+            ])
+            .await
+            .is_err()
+        );
+        assert!(!table_exists(&db, "migration_fixture").await);
+        assert!(!table_exists(&db, "escaped").await);
+    }
+    assert_eq!(db.migrate(&[TEST_MIGRATION]).await.unwrap(), 1);
+    db.close().await;
+}
+
+#[tokio::test]
+async fn deferred_constraint_commit_failure_rolls_back_migration_history() {
+    let (_directory, db) = database().await;
+    let migration = SqliteMigration {
+        version: 1,
+        description: "deferred constraint failure at commit",
+        sql: "CREATE TABLE parents (id INTEGER PRIMARY KEY) STRICT;
+              CREATE TABLE children (
+                id INTEGER REFERENCES parents(id) DEFERRABLE INITIALLY DEFERRED
+              ) STRICT;
+              INSERT INTO children VALUES (1);",
+    };
+    assert!(db.migrate(&[migration]).await.is_err());
+    assert!(!table_exists(&db, "parents").await);
+    assert!(!table_exists(&db, "children").await);
+    assert_eq!(db.migrate(&[TEST_MIGRATION]).await.unwrap(), 1);
+    db.close().await;
+}
+
+#[tokio::test]
+async fn concurrent_migration_calls_apply_once() {
+    let (_directory, db) = database().await;
+    let manifest = [TEST_MIGRATION];
+    let (left, right) = tokio::join!(db.migrate(&manifest), db.migrate(&manifest));
+    assert_eq!(left.unwrap() + right.unwrap(), 1);
+    db.close().await;
+}
+
+#[tokio::test]
+async fn cancelled_migration_rolls_back_and_discards_its_commit_hook() {
+    let (_directory, db) = database().await;
+    let db = Arc::new(db);
+    let mut tx = db.begin_write().await.unwrap();
+    let (started, ready) = tokio::sync::oneshot::channel();
+    let (resume, paused) = std::sync::mpsc::sync_channel(1);
+    let mut started = Some(started);
+    tx.lock_handle()
+        .await
+        .unwrap()
+        .set_update_hook(move |event| {
+            if event.table == "migration_fixture"
+                && let Some(started) = started.take()
+            {
+                started.send(()).unwrap();
+                paused.recv_timeout(Duration::from_secs(5)).unwrap();
+            }
+        });
+    tx.rollback().await.unwrap();
+    let task_db = Arc::clone(&db);
+    let task = tokio::spawn(async move { task_db.migrate(&[TEST_MIGRATION]).await });
+    timeout(Duration::from_secs(3), ready)
+        .await
+        .unwrap()
+        .unwrap();
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    resume.send(()).unwrap();
+    let mut tx = timeout(Duration::from_secs(3), db.begin_write())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM _gateway_sqlite_migrations")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap(),
+        0
+    );
+    tx.commit().await.unwrap();
+    assert!(!table_exists(&db, "migration_fixture").await);
+    assert_eq!(db.migrate(&[TEST_MIGRATION]).await.unwrap(), 1);
+    db.close().await;
+}
+
+#[tokio::test]
+async fn managed_identity_survives_reopen_and_cannot_be_updated() {
+    let (directory, db) = database().await;
+    let identity = db.database_id();
+    let mut tx = db.begin_write().await.unwrap();
+    for sql in [
+        "UPDATE _gateway_sqlite_identity SET database_id='different'",
+        "DELETE FROM _gateway_sqlite_identity",
+    ] {
+        assert!(sqlx::query(sql).execute(&mut *tx).await.is_err());
+    }
+    tx.rollback().await.unwrap();
+    db.close().await;
+    let reopened = SqliteDatabase::open(&directory.path().join("gateway.sqlite"))
+        .await
+        .unwrap();
+    assert_eq!(reopened.database_id(), identity);
+    reopened.close().await;
+}
+
+#[tokio::test]
+async fn concurrent_close_waits_for_logical_owner_before_immediate_reopen() {
+    let (directory, db) = database().await;
+    let mut db = Arc::new(db);
+    for _ in 0..16 {
+        let reader = db.acquire_read().await.unwrap();
+        let closing_db = Arc::clone(&db);
+        let first_close = tokio::spawn(async move { closing_db.close().await });
+        tokio::task::yield_now().await;
+        let closing_db = Arc::clone(&db);
+        let second_close = tokio::spawn(async move { closing_db.close().await });
+        tokio::task::yield_now().await;
+        assert!(!first_close.is_finished());
+        assert!(!second_close.is_finished());
+        reader.close().await.unwrap();
+        timeout(Duration::from_secs(3), first_close)
+            .await
+            .unwrap()
+            .unwrap();
+        timeout(Duration::from_secs(3), second_close)
+            .await
+            .unwrap()
+            .unwrap();
+        db = Arc::new(
+            SqliteDatabase::open(&directory.path().join("gateway.sqlite"))
+                .await
+                .unwrap(),
+        );
+    }
+    db.close().await;
+}
+
+#[tokio::test]
+async fn complete_bootstrap_marker_is_resumed_but_partial_markers_are_not_repaired() {
+    for contents in ["d3363a55-15bf-4d7d-b5a0-5e2e9a4c0001", "", "d3363a55"] {
+        let directory = private_directory();
+        let path = directory.path().join("gateway.sqlite");
+        let marker = directory.path().join("gateway.sqlite.identity");
+        std::fs::write(&path, []).unwrap();
+        std::fs::write(&marker, contents).unwrap();
+        for file in [&path, &marker] {
+            std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        if contents.len() == 36 {
+            let db = SqliteDatabase::open(&path).await.unwrap();
+            assert_eq!(db.database_id().to_string(), contents);
+            db.close().await;
+        } else {
+            assert!(matches!(
+                SqliteDatabase::open(&path).await,
+                Err(SqliteOpenError::ForeignDatabase)
+            ));
+            assert!(std::fs::read(&path).unwrap().is_empty());
+        }
+        assert_eq!(std::fs::read_to_string(marker).unwrap(), contents);
+    }
+}
+
+#[tokio::test]
+async fn foreign_database_is_rejected_without_changing_journal_mode() {
+    let directory = private_directory();
+    let path = directory.path().join("foreign.sqlite");
+    std::fs::File::create(&path).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let options = SqliteConnectOptions::new().filename(&path);
+    let mut connection = SqliteConnection::connect_with(&options).await.unwrap();
+    sqlx::query("CREATE TABLE foreign_table (id INTEGER)")
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    connection.close().await.unwrap();
+    let original = std::fs::read(&path).unwrap();
+    assert!(matches!(
+        SqliteDatabase::open(&path).await,
+        Err(SqliteOpenError::ForeignDatabase)
+    ));
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert!(!path.with_file_name("foreign.sqlite-wal").exists());
+}
+
+#[tokio::test]
+async fn newer_or_incomplete_managed_identity_is_rejected() {
+    for corruption in [
+        "PRAGMA user_version=2",
+        "PRAGMA application_id=17",
+        "DROP TABLE _gateway_sqlite_migrations",
+        "DROP TRIGGER gateway_identity_no_update",
+        "DROP TRIGGER gateway_identity_no_delete",
+    ] {
+        let (directory, db) = database().await;
+        let mut tx = db.begin_write().await.unwrap();
+        sqlx::query(corruption).execute(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+        db.close().await;
+        assert!(matches!(
+            SqliteDatabase::open(&directory.path().join("gateway.sqlite")).await,
+            Err(SqliteOpenError::ForeignDatabase)
+        ));
+    }
+}
+
+#[tokio::test]
+async fn private_directory_lock_covers_all_database_names() {
+    let (directory, db) = database().await;
+    for name in ["gateway.sqlite", "another.sqlite"] {
+        assert!(matches!(
+            SqliteDatabase::open(&directory.path().join(name)).await,
+            Err(SqliteOpenError::AlreadyOwned)
+        ));
+    }
+    assert!(!directory.path().join("another.sqlite").exists());
+    db.close().await;
+    let reopened = SqliteDatabase::open(&directory.path().join("gateway.sqlite"))
+        .await
+        .unwrap();
+    reopened.close().await;
+}
+
+#[tokio::test]
+async fn outstanding_connection_keeps_process_lease_after_database_drop() {
+    let (directory, db) = database().await;
+    let reader = db.acquire_read().await.unwrap();
+    drop(db);
+    assert!(matches!(
+        SqliteDatabase::open(&directory.path().join("gateway.sqlite")).await,
+        Err(SqliteOpenError::AlreadyOwned)
+    ));
+    reader.close().await.unwrap();
+    let reopened = timeout(Duration::from_secs(3), async {
+        loop {
+            match SqliteDatabase::open(&directory.path().join("gateway.sqlite")).await {
+                Ok(database) => break database,
+                Err(SqliteOpenError::AlreadyOwned) => {
+                    tokio::time::sleep(Duration::from_millis(10)).await
+                }
+                Err(error) => panic!("unexpected reopen failure: {error}"),
+            }
+        }
+    })
+    .await
+    .unwrap();
+    reopened.close().await;
+}
+
+#[tokio::test]
+async fn unsafe_permissions_and_file_aliases_are_rejected_without_repair() {
+    use std::os::unix::fs::symlink;
+
+    let directory = private_directory();
+    let path = directory.path().join("gateway.sqlite");
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(matches!(
+        SqliteDatabase::open(&path).await,
+        Err(SqliteOpenError::UnsafePath)
+    ));
+    assert!(!path.exists());
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::File::create(&path).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(matches!(
+        SqliteDatabase::open(&path).await,
+        Err(SqliteOpenError::UnsafePath)
+    ));
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let alias_directory = private_directory();
+    let alias = alias_directory.path().join("gateway.sqlite");
+    std::fs::hard_link(&path, &alias).unwrap();
+    assert!(matches!(
+        SqliteDatabase::open(&alias).await,
+        Err(SqliteOpenError::UnsafePath)
+    ));
+    let symlink_directory = private_directory();
+    symlink(&path, symlink_directory.path().join("gateway.sqlite")).unwrap();
+    assert!(
+        SqliteDatabase::open(&symlink_directory.path().join("gateway.sqlite"))
+            .await
+            .is_err()
+    );
+    symlink(directory.path(), symlink_directory.path().join("alias")).unwrap();
+    assert!(matches!(
+        SqliteDatabase::open(&symlink_directory.path().join("alias/gateway.sqlite")).await,
+        Err(SqliteOpenError::UnsafePath)
+    ));
+}
+
+#[tokio::test]
+async fn unsafe_sidecars_are_rejected_before_sqlite_opens_them() {
+    use std::os::unix::fs::symlink;
+
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let directory = private_directory();
+        let target_directory = private_directory();
+        let target = target_directory.path().join("target");
+        std::fs::write(&target, b"must not change").unwrap();
+        symlink(
+            &target,
+            directory.path().join(format!("gateway.sqlite{suffix}")),
+        )
+        .unwrap();
+        assert!(matches!(
+            SqliteDatabase::open(&directory.path().join("gateway.sqlite")).await,
+            Err(SqliteOpenError::UnsafePath)
+        ));
+        assert_eq!(std::fs::read(target).unwrap(), b"must not change");
+    }
+}
+
+#[tokio::test]
+async fn path_replacement_fences_the_live_database_even_if_restored() {
+    let (directory, db) = database().await;
+    let original = directory.path().join("gateway.sqlite");
+    let moved = directory.path().join("original.sqlite");
+    std::fs::rename(&original, &moved).unwrap();
+    std::fs::File::create(&original).unwrap();
+    std::fs::set_permissions(&original, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(matches!(
+        db.acquire_read().await,
+        Err(SqliteOpenError::IdentityChanged)
+    ));
+    std::fs::rename(&moved, &original).unwrap();
+    assert!(matches!(
+        db.begin_write().await,
+        Err(SqliteOpenError::IdentityChanged)
+    ));
+    db.close().await;
+}
+
+#[test]
+fn sqlite_owner_child_process() {
+    let Some(path) = std::env::var_os("AI_GATEWAY_SQLITE_OWNER_TEST") else {
+        return;
+    };
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        let path = std::path::PathBuf::from(path);
+        if std::env::var_os("AI_GATEWAY_SQLITE_EXPECT_OWNED").is_some() {
+            assert!(matches!(
+                SqliteDatabase::open(&path).await,
+                Err(SqliteOpenError::AlreadyOwned)
+            ));
+            return;
+        }
+        let db = SqliteDatabase::open(&path).await.unwrap();
+        db.migrate(&[TEST_MIGRATION]).await.unwrap();
+        let mut tx = db.begin_write().await.unwrap();
+        sqlx::query("CREATE TABLE interrupted_schema (id INTEGER) STRICT")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        std::fs::write(path.with_file_name("ready"), db.database_id().to_string()).unwrap();
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        tx.rollback().await.unwrap();
+        db.close().await;
+    });
+}
+
+#[tokio::test]
+async fn process_lease_remains_after_pool_close_and_cancelled_replacement() {
+    let (directory, db) = database().await;
+    let reader = db.acquire_read().await.unwrap();
+    reader.close().await.unwrap();
+    let _ = timeout(Duration::ZERO, db.acquire_read()).await;
+    db.close().await;
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "sqlite_owner_child_process", "--nocapture"])
+        .env(
+            "AI_GATEWAY_SQLITE_OWNER_TEST",
+            directory.path().join("gateway.sqlite"),
+        )
+        .env("AI_GATEWAY_SQLITE_EXPECT_OWNED", "1")
+        .stdout(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
+
+#[tokio::test]
+async fn unmarked_wal_database_is_rejected_without_touching_any_sidecar() {
+    let directory = private_directory();
+    let path = directory.path().join("foreign.sqlite");
+    std::fs::File::create(&path).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let options = SqliteConnectOptions::new()
+        .filename(&path)
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
+    let mut connection = SqliteConnection::connect_with(&options).await.unwrap();
+    sqlx::query("CREATE TABLE foreign_table (id INTEGER)")
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    let files = [
+        path.clone(),
+        path.with_file_name("foreign.sqlite-wal"),
+        path.with_file_name("foreign.sqlite-shm"),
+    ];
+    let contents: Vec<_> = files
+        .iter()
+        .map(|file| std::fs::read(file).unwrap())
+        .collect();
+    assert!(matches!(
+        SqliteDatabase::open(&path).await,
+        Err(SqliteOpenError::ForeignDatabase)
+    ));
+    for (file, original) in files.iter().zip(contents) {
+        assert_eq!(std::fs::read(file).unwrap(), original);
+    }
+    assert!(!path.with_file_name("foreign.sqlite.identity").exists());
+    connection.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn process_death_releases_ownership_and_recovers_committed_history_only() {
+    struct Child(std::process::Child);
+    impl Drop for Child {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let directory = private_directory();
+    let path = directory.path().join("gateway.sqlite");
+    let mut child = Child(
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "sqlite_owner_child_process", "--nocapture"])
+            .env("AI_GATEWAY_SQLITE_OWNER_TEST", &path)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let ready = path.with_file_name("ready");
+    timeout(Duration::from_secs(5), async {
+        while !ready.exists() {
+            assert!(child.0.try_wait().unwrap().is_none(), "child exited early");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(matches!(
+        SqliteDatabase::open(&path).await,
+        Err(SqliteOpenError::AlreadyOwned)
+    ));
+    child.0.kill().unwrap();
+    child.0.wait().unwrap();
+    let reopened = SqliteDatabase::open(&path).await.unwrap();
+    assert_eq!(
+        reopened.database_id().to_string(),
+        std::fs::read_to_string(ready).unwrap()
+    );
+    assert_eq!(reopened.migrate(&[TEST_MIGRATION]).await.unwrap(), 0);
+    assert!(table_exists(&reopened, "migration_fixture").await);
+    assert!(!table_exists(&reopened, "interrupted_schema").await);
+    reopened.close().await;
 }
