@@ -20,6 +20,10 @@ use tokio::time::timeout;
 mod sqlite_auth;
 #[path = "contracts/sqlite_control_plane.rs"]
 mod sqlite_control_plane;
+#[path = "contracts/sqlite_pipeline.rs"]
+mod sqlite_pipeline;
+#[path = "contracts/sqlite_queries.rs"]
+mod sqlite_queries;
 #[path = "contracts/sqlite_schema.rs"]
 mod sqlite_schema;
 
@@ -1036,6 +1040,87 @@ async fn repository_facades_dispatch_ordinary_operations_to_sqlite() {
             Some(operation),
         );
     }
+}
+
+/// The S4 facades keep the production `new(PgPool)` signatures, dispatch all
+/// read/write operations to SQLite, and derive every narrow handle from the one
+/// shared database instead of opening another pool.
+#[tokio::test]
+async fn s4_pipeline_and_query_facades_share_one_sqlite_database() {
+    use ai_gateway::persistence::{
+        ChannelGroupStatusWindow, DatabaseHealth, MeteringQueries, RequestLogFilter,
+        RequestLogQueries, RequestLogRepository, SettlementRepository,
+    };
+
+    let (_directory, database) = database().await;
+    assert_eq!(database.install_schema().await.unwrap(), 2);
+    let database = Arc::new(database);
+
+    let repository = RequestLogRepository::from_sqlite(Arc::clone(&database));
+    let queries = repository.queries();
+    let settlements = repository.settlements();
+    let metering = repository.metering();
+
+    // A second facade family derived from the same shared handle.
+    let standalone_queries = RequestLogQueries::from_sqlite(Arc::clone(&database));
+    let standalone_metering = MeteringQueries::from_sqlite(Arc::clone(&database));
+    let standalone_settlements = SettlementRepository::from_sqlite(Arc::clone(&database));
+
+    for filter in [RequestLogFilter {
+        limit: 10,
+        user_id: None,
+        api_key_id: None,
+        model: None,
+        api_format: None,
+        api_operation: None,
+        outcome: None,
+        started_after: None,
+        started_before: None,
+        billed: None,
+    }] {
+        assert!(queries.list_all(filter.clone()).await.unwrap().is_empty());
+        assert!(
+            standalone_queries
+                .list_all(filter)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            queries
+                .channel_group_status(ChannelGroupStatusWindow::Last24Hours)
+                .await
+                .unwrap()
+                .groups
+                .is_empty()
+        );
+    }
+
+    let counts = metering.reconciliation_counts().await.unwrap();
+    assert_eq!(
+        (counts.unknown, counts.invalid, counts.account_mismatch),
+        (0, 0, 0)
+    );
+    assert_eq!(
+        standalone_metering
+            .sharing_completed_costs(&[])
+            .await
+            .unwrap(),
+        Vec::new()
+    );
+    assert!(settlements.settle_pending(8).await.unwrap().is_empty());
+    assert!(
+        standalone_settlements
+            .settle_pending(8)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // Pool observation reads live counts without acquiring a connection.
+    let health = DatabaseHealth::from_sqlite(Arc::clone(&database));
+    assert!(health.size() >= 1);
+    assert!(health.idle() <= health.size() as usize);
 }
 
 fn system_settings() -> ai_gateway::persistence::SystemSettingsInput {

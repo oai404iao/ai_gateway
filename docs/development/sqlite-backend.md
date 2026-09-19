@@ -1,7 +1,7 @@
 # SQLite 双后端实施
 
 > 状态：部分实现。基于 `081d8c9`（第二阶段 PR #177）；S1 已提交，
-> S2 已提交为 `65d8fee`；S3 已实现认证、会话、管理员操作和普通控制面双后端分派。
+> S2 已提交为 `65d8fee`，S3 已提交为 `aec8103`；S4 已实现耐久计量、结算和费用查询分派。
 > 尚不能用 SQLite 启动 Gateway。最后核对：2026-09-18。
 
 前置工作见[持久化边界](persistence-boundaries.md)、
@@ -20,7 +20,7 @@
 - 启用前所有业务链路必须完整；不支持的后端必须在配置验证时拒绝，
   不能先启动后在某个请求上发现仓储未实现。
 
-## S1–S3 当前实现
+## S1–S4 当前实现
 
 `sqlite-backend` 是非默认 Cargo feature，仅编译
 `src/persistence/sqlite/`、仓储分派、文件库契约和 PG 对照测试；不改变生产组合根、
@@ -45,12 +45,13 @@ TOML、配置模板或发行构建。即使启用该 feature，`AppConfig::valid
 S2 的 `SqliteAmount` / `SqliteUnitPrice` / `SqliteSharingAmount` / `SqliteTokenRate`
 按列精度检查并恢复 SQLx/PG 的显示 scale；数据库 CHECK 使用相同精度规则。
 `SqliteDecimal` 仍是通用底层传输，不用于代替这些业务列类型。
-这里不执行舍入、聚合或结算；S4 的操作实现仍须遵守既有金额规则。
+这些底层适配器不执行舍入、聚合或结算；S4 操作实现遵守既有金额规则。
 TEXT 不能用于金额的字典序排序或 SQLite 原生 `SUM`、算术、NUMERIC/REAL `CAST`。
 
 S1 提交为 `5668ea4`。S2 的 `install_schema()` 通过独立的 `0001_baseline.sql`
 和 `0002_guards.sql` 一次性安装完整业务 schema。另有身份 metadata、原子 runner 和进程所有权。
 S3 仓储分派与双后端契约见[身份与控制面](sqlite-control-plane.md)；
+S4 耐久写入、精确聚合和故障恢复见[计量与结算](sqlite-metering.md)；
 尚无备份命令或完整业务端到端支持。SQLx 仍按路径打开文件，不使用自定义 VFS；
 调用方不得移动、替换或删除进程已认领的目录/数据库文件，直到该进程退出。
 完整 schema 和归一化写入契约见[约束映射](sqlite-schema-mapping.md)。
@@ -69,9 +70,9 @@ S2 已固定这些编码、NULL、默认值和数据库校验；未来仓储必�
 金额计算保持既有 Decimal 舍入顺序；8/12 位小数、拼车 ToZero 和越界整笔回滚
 见[契约基线](persistence-contracts.md)。SQLite 账户更新在独占写事务内读取、
 checked Decimal 运算、验证列精度后写回；PG 保留其原生 NUMERIC SQL。
-统计采用精确 Decimal 聚合，按有界批次扫描/投影，不把历史全表一次加载到内存。
-实现前须对齐 PG 聚合中间精度、最终范围与溢出失败规则；不能以 Rust 单值上限
-悄悄替代现有 SQL 聚合语义，或转为浮点绕过越界。
+统计采用精确整数单位聚合，再进入现有 Decimal 结果边界，按有界批次扫描/投影，
+不把历史全表一次加载到内存。S4 对照了 PG 聚合中间精度和最终解码；
+不能以 Rust 单值上限悄悄替代 SQL 中间态，或转为浮点绕过越界。
 
 数据库级保护没有迁出数据库。S2 保留 CHECK/FK/唯一键、不可变与跨表触发器，
 通过受保护的延迟 FK assertion 保留路由提交时校验。
@@ -121,7 +122,7 @@ S6 才确定并同步 TOML、两个配置模板、compose/容器目录、CLI 和
 | S1 基础 | 可选驱动、文件读写连接、drop/cancel 回滚、TEXT Decimal 无损往返、生产配置仍拒绝 SQLite、CI 收集测试 | 已实现，测试范围见下 |
 | S2 schema 与生命周期 | 完整约束映射和 baseline、原子迁移、类型编码、单实例所有权、错误分类、路径/身份/关闭恢复负向测试 | 已实现；包括真实 PG schema/编码对照和完整 baseline 批次回滚 |
 | S3 身份与控制面 | 认证/会话/管理员操作、完整配置读写、编译失败和审计失败回滚、权限/版本/软删除/路由约束双后端契约 | 已实现；CLI 底层 bootstrap/reset 操作已双后端，SQLite CLI 配置/组合根开放仍属 S6 |
-| S4 事实与结算 | ingress/计量/独立投影/回执/pending、精确聚合、重复与冲突重放、未知费用、取消/崩溃与提交回复丢失 | 待实现 |
+| S4 事实与结算 | ingress/计量/独立投影/回执/pending、精确聚合、重复与冲突重放、未知费用、取消/崩溃与提交回复丢失 | 已实现；同一套 PG/SQLite 财务和报告契约，取消及 SIGKILL 恢复 |
 | S5 Codex 与拼车 | OAuth/配额/paired projections、长事务替代协议、单实例 WAL 恢复、窗口费用及授权隔离 | 待实现 |
 | S6 可部署验收 | 组合根与配置开放、真实浏览器/CLI 系统链路双后端矩阵、SQLite 故障/备份恢复、运维说明与发行构建 | 待实现 |
 
@@ -159,6 +160,7 @@ PG 的 COPY/锁/升级测试和 SQLite 的 busy/WAL/文件锁/迁移测试分别
 cargo test --locked --features sqlite-backend --test sqlite_foundation
 cargo test --locked --features sqlite-backend --test control_plane_integration sqlite_parity
 cargo test --locked --features sqlite-backend --test control_plane_integration sqlite_s3_parity
+cargo test --locked --features sqlite-backend --test control_plane_integration sqlite_s4_parity
 cargo clippy --locked --workspace --all-targets --features sqlite-backend
 ```
 

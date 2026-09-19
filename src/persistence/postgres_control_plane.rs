@@ -1,6 +1,6 @@
 //! PostgreSQL repositories and shared persistence records; public dispatch lives in the facades.
 
-use super::metering::{MeteringRepository, MeteringWriteOutcome};
+use super::metering::{MeteringWriteOutcome, PostgresMeteringRepository};
 use super::storage_error::StorageError;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -1520,7 +1520,7 @@ impl ChannelGroupStatusWindow {
         }
     }
 
-    const fn bucket_seconds(self) -> i64 {
+    pub(super) const fn bucket_seconds(self) -> i64 {
         match self {
             Self::Last24Hours => 30 * 60,
             Self::Last3Days => 2 * 60 * 60,
@@ -1536,7 +1536,7 @@ impl ChannelGroupStatusWindow {
         }
     }
 
-    fn range(self, now: DateTime<Utc>) -> (DateTime<Utc>, DateTime<Utc>) {
+    pub(super) fn range(self, now: DateTime<Utc>) -> (DateTime<Utc>, DateTime<Utc>) {
         let bucket_seconds = self.bucket_seconds();
         let current_bucket_started_at = now.timestamp().div_euclid(bucket_seconds) * bucket_seconds;
         let started_at = current_bucket_started_at
@@ -1560,14 +1560,14 @@ impl StatisticsGranularity {
         }
     }
 
-    const fn max_range(self) -> chrono::Duration {
+    pub(super) const fn max_range(self) -> chrono::Duration {
         match self {
             Self::Hour => chrono::Duration::days(31),
             Self::Day => chrono::Duration::days(366),
         }
     }
 
-    const fn bucket_seconds(self) -> i64 {
+    pub(super) const fn bucket_seconds(self) -> i64 {
         match self {
             Self::Hour => 60 * 60,
             Self::Day => 24 * 60 * 60,
@@ -2339,70 +2339,70 @@ pub struct ControlPlaneConfigTemplateDetail {
 }
 
 #[derive(Clone)]
-pub struct RequestLogRepository {
+pub(super) struct PostgresRequestLogRepository {
     pool: PgPool,
 }
 
 #[derive(Clone)]
-pub struct RequestLogQueries {
+pub(super) struct PostgresRequestLogQueries {
     pool: PgPool,
 }
 
 #[derive(Clone)]
-pub struct SettlementRepository {
+pub(super) struct PostgresSettlementRepository {
     pool: PgPool,
 }
 
 #[derive(Clone)]
-pub struct MeteringQueries {
+pub(super) struct PostgresMeteringQueries {
     pub(crate) pool: PgPool,
 }
 
-impl MeteringQueries {
+impl PostgresMeteringQueries {
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
 }
 
-impl RequestLogQueries {
+impl PostgresRequestLogQueries {
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
 
     #[must_use]
-    pub fn metering(&self) -> MeteringQueries {
-        MeteringQueries::new(self.pool.clone())
+    pub fn metering(&self) -> PostgresMeteringQueries {
+        PostgresMeteringQueries::new(self.pool.clone())
     }
 }
 
-impl SettlementRepository {
+impl PostgresSettlementRepository {
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
 }
 
-impl RequestLogRepository {
+impl PostgresRequestLogRepository {
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
 
     #[must_use]
-    pub fn queries(&self) -> RequestLogQueries {
-        RequestLogQueries::new(self.pool.clone())
+    pub fn queries(&self) -> PostgresRequestLogQueries {
+        PostgresRequestLogQueries::new(self.pool.clone())
     }
 
     #[must_use]
-    pub fn settlements(&self) -> SettlementRepository {
-        SettlementRepository::new(self.pool.clone())
+    pub fn settlements(&self) -> PostgresSettlementRepository {
+        PostgresSettlementRepository::new(self.pool.clone())
     }
 
     #[must_use]
-    pub fn metering(&self) -> MeteringRepository {
-        MeteringRepository::new(self.pool.clone())
+    pub fn metering(&self) -> PostgresMeteringRepository {
+        PostgresMeteringRepository::new(self.pool.clone())
     }
 
     /// Appends encoded terminal events to the low-index durable ingress table.
@@ -2522,7 +2522,7 @@ impl RequestLogRepository {
     }
 }
 
-impl SettlementRepository {
+impl PostgresSettlementRepository {
     pub(crate) async fn settlement_backlog(
         &self,
     ) -> Result<RequestLogSettlementBacklog, RepositoryError> {
@@ -2543,7 +2543,7 @@ impl SettlementRepository {
     }
 }
 
-impl RequestLogRepository {
+impl PostgresRequestLogRepository {
     #[must_use]
     pub(crate) fn pool_status(&self) -> RequestLogPoolStatus {
         RequestLogPoolStatus {
@@ -2553,7 +2553,7 @@ impl RequestLogRepository {
     }
 }
 
-impl RequestLogQueries {
+impl PostgresRequestLogQueries {
     pub async fn list_for_user(
         &self,
         user_id: Uuid,
@@ -2590,7 +2590,7 @@ impl RequestLogQueries {
     }
 }
 
-impl MeteringQueries {
+impl PostgresMeteringQueries {
     pub async fn personal_usage(
         &self,
         user_id: Uuid,
@@ -2633,7 +2633,7 @@ impl MeteringQueries {
     }
 }
 
-impl RequestLogQueries {
+impl PostgresRequestLogQueries {
     pub async fn channel_group_status(
         &self,
         window: ChannelGroupStatusWindow,
@@ -2848,7 +2848,7 @@ impl RequestLogQueries {
     }
 }
 
-impl MeteringQueries {
+impl PostgresMeteringQueries {
     pub async fn cost_statistics(
         &self,
         filter: CostStatisticsFilter,
@@ -3361,7 +3361,7 @@ impl MeteringQueries {
     }
 }
 
-impl RequestLogRepository {
+impl PostgresRequestLogRepository {
     /// Inserts one terminal event without changing schema-owned defaults.
     ///
     /// A duplicate id is successful only if every field owned by this event is
@@ -3616,7 +3616,7 @@ impl RequestLogRepository {
     }
 }
 
-impl SettlementRepository {
+impl PostgresSettlementRepository {
     /// Claims and applies one eligible financial fact in a single transaction.
     ///
     /// The unique settlement receipt is the sole settlement claim. If a
@@ -3854,7 +3854,7 @@ impl SettlementRepository {
     }
 }
 
-fn redact_self_service_request_log(log: &mut ConsoleRequestLog) {
+pub(super) fn redact_self_service_request_log(log: &mut ConsoleRequestLog) {
     log.user_name = None;
     log.channel_id = None;
     log.channel_name = None;
@@ -4098,14 +4098,14 @@ fn empty_channel_group_status_group_model(
     }
 }
 
-fn success_rate(eligible_request_count: i64, succeeded_count: i64) -> Option<f64> {
+pub(super) fn success_rate(eligible_request_count: i64, succeeded_count: i64) -> Option<f64> {
     (eligible_request_count > 0).then_some(succeeded_count as f64 / eligible_request_count as f64)
 }
 
 #[derive(FromRow)]
-struct PersonalUsageDayRow {
-    date: NaiveDate,
-    request_count: i64,
+pub(super) struct PersonalUsageDayRow {
+    pub(super) date: NaiveDate,
+    pub(super) request_count: i64,
 }
 
 #[derive(FromRow)]
@@ -4139,28 +4139,28 @@ struct SpendLeaderboardPeriodRow {
 }
 
 #[derive(FromRow)]
-struct CostBucketMetricRow {
-    bucket_started_at: DateTime<Utc>,
-    model: String,
-    api_format: String,
-    request_count: i64,
-    total_tokens: i64,
-    cost_amount: rust_decimal::Decimal,
+pub(super) struct CostBucketMetricRow {
+    pub(super) bucket_started_at: DateTime<Utc>,
+    pub(super) model: String,
+    pub(super) api_format: String,
+    pub(super) request_count: i64,
+    pub(super) total_tokens: i64,
+    pub(super) cost_amount: rust_decimal::Decimal,
 }
 
 #[derive(FromRow)]
-struct CostModelMetricRow {
-    model: String,
-    api_format: String,
-    request_count: i64,
-    success_rate_request_count: i64,
-    succeeded_count: i64,
-    total_tokens: i64,
-    input_tokens: i64,
-    cached_input_tokens: i64,
-    cache_write_tokens: i64,
-    output_tokens: i64,
-    cost_amount: rust_decimal::Decimal,
+pub(super) struct CostModelMetricRow {
+    pub(super) model: String,
+    pub(super) api_format: String,
+    pub(super) request_count: i64,
+    pub(super) success_rate_request_count: i64,
+    pub(super) succeeded_count: i64,
+    pub(super) total_tokens: i64,
+    pub(super) input_tokens: i64,
+    pub(super) cached_input_tokens: i64,
+    pub(super) cache_write_tokens: i64,
+    pub(super) output_tokens: i64,
+    pub(super) cost_amount: rust_decimal::Decimal,
 }
 
 #[derive(FromRow)]
@@ -4229,7 +4229,7 @@ struct CostModelBuilder {
     cost_amount: rust_decimal::Decimal,
 }
 
-fn fold_personal_usage(
+pub(super) fn fold_personal_usage(
     rows: Vec<PersonalUsageDayRow>,
     started_on: NaiveDate,
     ended_on: NaiveDate,
@@ -4280,7 +4280,7 @@ fn fold_personal_usage(
     }
 }
 
-fn fold_cost_buckets(
+pub(super) fn fold_cost_buckets(
     rows: Vec<CostBucketMetricRow>,
     started_at: DateTime<Utc>,
     ended_at: DateTime<Utc>,
@@ -4339,7 +4339,7 @@ fn fold_cost_buckets(
         .collect()
 }
 
-fn fold_cost_models(rows: Vec<CostModelMetricRow>) -> Vec<CostStatisticsModel> {
+pub(super) fn fold_cost_models(rows: Vec<CostModelMetricRow>) -> Vec<CostStatisticsModel> {
     let mut models = BTreeMap::<(String, String), CostModelBuilder>::new();
     for row in rows {
         let model = models.entry((row.api_format, row.model)).or_default();

@@ -52,7 +52,7 @@ Docker image job 只依赖快速的路径分类，与 Rust、Console 和 E2E 并
 - Rust 1.97.1 format、默认 workspace 的
   Clippy/测试，包括 Codex Responses 与 Images 适配器集成路径；
 - 非默认 `sqlite-backend` feature 的 Clippy、[SQLite schema/生命周期契约](sqlite-backend.md)
-  以及真实 PostgreSQL schema/类型/seed 对照和 S3 同一套双后端操作契约；
+  以及真实 PostgreSQL schema/类型/seed 对照和 S3/S4 同一套双后端操作/财务契约；
   不代表完整双后端系统验收；
 - Console API 类型漂移、TypeScript、lint、组件测试和生产构建；
 - Chromium Playwright 模拟 API 的 UI E2E，并在失败时上传 trace/test results；

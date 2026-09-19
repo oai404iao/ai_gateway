@@ -17,7 +17,7 @@ const FACT_COLUMNS: &str = "id,started_at,completed_at,user_id,api_key_id,reques
      cached_input_unit_price,cache_write_unit_price,output_unit_price,cost_amount,peak_pricing";
 
 #[derive(Clone)]
-pub struct MeteringRepository {
+pub(super) struct PostgresMeteringRepository {
     pool: PgPool,
 }
 
@@ -34,7 +34,7 @@ pub struct MeteringReconciliationCounts {
     pub account_mismatch: i64,
 }
 
-impl MeteringRepository {
+impl PostgresMeteringRepository {
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
         Self { pool }

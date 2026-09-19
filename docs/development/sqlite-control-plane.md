@@ -87,7 +87,7 @@ sharing ledger 认领和独立 sharing 管理列表属于 S5；它们经过一�
 检查，在开发 SQLite 构造器下返回 `UnsupportedBackendOperation` 内部错误，
 不会返回空成功或自动转用 PG。完整运行时快照与普通渠道组管理不经过这个检查。
 
-S4 的 ingress、计量/结算、统计仍未实现 SQLite 分派。任何这些后续操作缺失时，
+S4 的 ingress、计量/结算、统计已实现，见[计量与结算](sqlite-metering.md)。S5 操作缺失时，
 生产配置不得开放；同样保留[原生 SQLite 版本门槛](sqlite-lifecycle.md#原生-sqlite-版本门槛)。
 
 ## 验证

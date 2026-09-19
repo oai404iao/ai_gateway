@@ -1,7 +1,8 @@
 # 持久化操作接口
 
 > 状态：当前。第二阶段 P2 的操作边界；生产仍只支持 PostgreSQL，
-> 开发 feature 下的 SQLite 身份/普通控制面见 [S3 实现](sqlite-control-plane.md)。
+> 开发 feature 下的 SQLite 身份/普通控制面见 [S3](sqlite-control-plane.md)，
+> 耐久财务链路与查询见 [S4](sqlite-metering.md)。
 
 整体演进见[持久化边界设计](persistence-boundaries.md)，业务不变量和费用路径清单见
 [契约基线](persistence-contracts.md)。P3 已实现[独立计量事实/回执](independent-metering.md)，
@@ -25,7 +26,8 @@
 这些是基于现有用例的具体接口，不是通用 ORM/CRUD/UoW 框架。
 `RequestLogRepository` 的 `queries()` / `settlements()` 和查询句柄的 `metering()` 只派生共享
 原池的窄句柄，不创建新池；结算 worker 只持有 `SettlementRepository`。
-生产继续使用原控制面池与日志流水线池，不增加配置。
+生产 PG 继续使用原控制面池与日志流水线池，不增加配置。
+SQLite 开发构造器的所有写仓储共享一个 `Arc<SqliteDatabase>` 和唯一写池。
 
 SQL 仍集中在 `src/persistence/`。公共仓储通过 `backend_auth.rs` /
 `backend_control_plane.rs` 显式分派；原 `mod.rs` 中的 PG SQL/行映射和共享 DTO

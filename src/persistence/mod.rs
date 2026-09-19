@@ -4,6 +4,8 @@ mod auth;
 pub(crate) mod backend;
 mod backend_auth;
 mod backend_control_plane;
+mod backend_pipeline;
+mod backend_queries;
 mod codex;
 mod codex_sharing;
 mod codex_write;
@@ -26,6 +28,8 @@ pub use auth::{
 pub use backend::{BackendKind, UnsupportedBackendOperation};
 pub use backend_auth::AuthRepository;
 pub use backend_control_plane::{ControlPlaneRepository, PreparedControlPlaneChange};
+pub use backend_pipeline::{MeteringRepository, RequestLogRepository, SettlementRepository};
+pub use backend_queries::{MeteringQueries, RequestLogQueries};
 pub use codex::{
     CodexCredentialBatchInput, CodexCredentialBatchOperation, CodexCredentialBatchTarget,
     CodexCredentialCreate, CodexCredentialExportBundle, CodexCredentialExportInput,
@@ -37,7 +41,7 @@ pub use codex::{
 };
 pub use codex_write::{CodexQuotaReset, CodexRefresh};
 pub use health::DatabaseHealth;
-pub use metering::{MeteringReconciliationCounts, MeteringRepository, MeteringWriteOutcome};
+pub use metering::{MeteringReconciliationCounts, MeteringWriteOutcome};
 pub use migrations::{MIGRATOR, MigrationRunError, run_migrations};
 pub use postgres_control_plane::*;
 pub use storage_error::{StorageError, StorageFailureKind};

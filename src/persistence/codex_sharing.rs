@@ -89,7 +89,7 @@ impl PostgresControlPlaneRepository {
     }
 }
 
-impl crate::persistence::MeteringQueries {
+impl super::postgres_control_plane::PostgresMeteringQueries {
     pub async fn sharing_completed_costs(
         &self,
         ids: &[Uuid],

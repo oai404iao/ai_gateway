@@ -32,7 +32,8 @@
 独立财务来源与升级边界见[独立计量事实](development/independent-metering.md)，
 成对备份与恢复入口见[0063 演练](development/persistence-rehearsal.md)。
 第三阶段见 [SQLite 双后端实施](development/sqlite-backend.md)；
-目前已实现 schema/生命周期及[身份与控制面切片](development/sqlite-control-plane.md)，
+目前已实现 schema/生命周期、[身份与控制面](development/sqlite-control-plane.md)
+以及[计量与结算](development/sqlite-metering.md)，
 生产仍只支持 PostgreSQL。
 
 当文档之间出现差异时，按以下优先级判断：

@@ -63,7 +63,7 @@ enum PreparedControlPlaneChangeVariant<'a> {
 }
 
 impl<'a> PreparedControlPlaneChange<'a> {
-    pub(crate) fn from_postgres(change: PostgresPreparedControlPlaneChange<'a>) -> Self {
+    fn from_postgres(change: PostgresPreparedControlPlaneChange<'a>) -> Self {
         Self {
             variant: PreparedControlPlaneChangeVariant::Postgres(change),
         }

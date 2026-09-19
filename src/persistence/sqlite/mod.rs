@@ -1,12 +1,16 @@
 //! SQLite storage and development repositories, not a selectable server backend.
 //! SQL access stays in persistence; application code must use operation-specific repositories.
 
+mod aggregate;
 mod auth;
 mod control_plane;
 mod decimal;
 mod functions;
+mod leaderboard;
 mod migrations;
 mod ownership;
+mod pipeline;
+mod queries;
 mod schema;
 mod types;
 
@@ -17,6 +21,10 @@ pub use decimal::{
     SqliteUnitPrice,
 };
 pub use migrations::{SqliteMigration, SqliteMigrationError};
+pub use pipeline::{
+    SqliteMeteringRepository, SqliteRequestLogRepository, SqliteSettlementRepository,
+};
+pub use queries::{SqliteMeteringQueries, SqliteRequestLogQueries};
 pub use types::{SqliteDate, SqliteTimestamp, SqliteUuid};
 
 use std::{
@@ -65,14 +73,16 @@ impl From<rustix::io::Errno> for SqliteOpenError {
 }
 
 /// Development-only file database. Call `install_schema` before accessing business tables.
-/// The parent `AuthRepository` / `ControlPlaneRepository` facades can dispatch to it through
-/// their `from_sqlite` constructors; the server composition root still rejects SQLite.
+/// The parent `AuthRepository`, `ControlPlaneRepository`, pipeline, and query facades can
+/// dispatch to it through their `from_sqlite` constructors; the server composition root
+/// still rejects SQLite.
 /// All openers must cooperate, and claimed paths must remain unchanged until process exit.
 /// Closing pools allows same-process reuse; another process must wait for this process to exit.
 pub struct SqliteDatabase {
     pools: Mutex<Option<Arc<DatabasePools>>>,
     database_id: Uuid,
     owner_closed: tokio::sync::watch::Receiver<()>,
+    leaderboard_refresh: tokio::sync::Mutex<()>,
 }
 
 struct DatabasePools {
@@ -106,6 +116,17 @@ impl SqliteDatabase {
             .busy_timeout(BUSY_TIMEOUT)
             .pragma("recursive_triggers", "ON")
             .pragma("read_uncommitted", "OFF")
+            .pragma("temp_store", "FILE")
+            .collation("ag_decimal", |left, right| {
+                let left_value = rust_decimal::Decimal::from_str_exact(left);
+                let right_value = rust_decimal::Decimal::from_str_exact(right);
+                match (left_value, right_value) {
+                    (Ok(left), Ok(right)) => left.cmp(&right),
+                    (Ok(_), Err(_)) => std::cmp::Ordering::Less,
+                    (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
+                    (Err(_), Err(_)) => left.cmp(right),
+                }
+            })
             .collation("ag_api_format", |left, right| {
                 let rank = |value: &str| {
                     crate::domain::ApiFormat::ALL
@@ -160,6 +181,7 @@ impl SqliteDatabase {
                     }))),
                     database_id,
                     owner_closed,
+                    leaderboard_refresh: tokio::sync::Mutex::new(()),
                 })
             }
             Err(error) => {
@@ -182,6 +204,19 @@ impl SqliteDatabase {
 
     pub fn database_id(&self) -> Uuid {
         self.database_id
+    }
+
+    /// Live connection counts for both pools, without acquiring a connection.
+    /// Returns `None` when the database is closed.
+    pub(crate) fn connection_counts(&self) -> Option<(u32, usize)> {
+        let pools = self.pools().ok()?;
+        Some((
+            pools.writer.size().saturating_add(pools.readers.size()),
+            pools
+                .writer
+                .num_idle()
+                .saturating_add(pools.readers.num_idle()),
+        ))
     }
 
     pub async fn acquire_read(&self) -> Result<PoolConnection<Sqlite>, SqliteOpenError> {
@@ -267,6 +302,7 @@ async fn verify_connection(
         ("PRAGMA read_uncommitted", 0),
         ("PRAGMA busy_timeout", BUSY_TIMEOUT.as_millis() as i64),
         ("PRAGMA query_only", i64::from(read_only)),
+        ("PRAGMA temp_store", 1),
     ] {
         let actual: i64 = sqlx::query_scalar(query)
             .fetch_one(&mut *connection)

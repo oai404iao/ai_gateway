@@ -52,6 +52,7 @@ dependencies = [
  "md-5",
  "mime_guess",
  "multer",
+ "num-bigint",
  "rand 0.9.5",
  "regex",
  "reqwest",
