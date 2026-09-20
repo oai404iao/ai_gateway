@@ -70,12 +70,16 @@ async fn apply_next_migration_batch(
     transaction: &mut Transaction<'_, Postgres>,
 ) -> Result<bool, MigrationRunError> {
     let connection = &mut **transaction;
-    connection.ensure_migrations_table().await?;
-    if let Some(version) = connection.dirty_version().await? {
+    connection
+        .ensure_migrations_table("_sqlx_migrations")
+        .await?;
+    if let Some(version) = connection.dirty_version("_sqlx_migrations").await? {
         return Err(MigrateError::Dirty(version).into());
     }
 
-    let applied = connection.list_applied_migrations().await?;
+    let applied = connection
+        .list_applied_migrations("_sqlx_migrations")
+        .await?;
     validate_applied_migrations(&applied)?;
     let applied = applied
         .into_iter()
@@ -102,7 +106,7 @@ async fn apply_next_migration_batch(
         .map_or(pending.len(), |index| index + 1);
     let has_more = batch_len < pending.len();
     for migration in pending.into_iter().take(batch_len) {
-        connection.apply(migration).await?;
+        connection.apply("_sqlx_migrations", migration).await?;
     }
     Ok(has_more)
 }
@@ -130,7 +134,7 @@ mod tests {
         let enum_additions = MIGRATOR
             .iter()
             .filter(|migration| {
-                let sql = migration.sql.to_ascii_lowercase();
+                let sql = migration.sql.as_str().to_ascii_lowercase();
                 sql.contains("alter type") && sql.contains("add value")
             })
             .map(|migration| migration.version)

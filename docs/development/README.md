@@ -18,6 +18,12 @@
 - [持久化行为契约基线](persistence-contracts.md)：金额、结算原子性、重放、约束测试和费用读写路径；
   明确独立计量事实实施前的已知限制。
 - [持久化操作接口](persistence-interfaces.md)：P2 的专属事务操作、窄仓储句柄、PG 错误与池观测边界。
+- [SQLite 双后端实施](sqlite-backend.md)：第三阶段范围、开发基础、分阶段契约与生产启用门槛；尚不可部署。
+- [SQLite 文件与迁移生命周期](sqlite-lifecycle.md)：协作式进程 lease、数据库身份、原子迁移与故障验收。
+- [SQLite schema 约束映射](sqlite-schema-mapping.md)：0063 后完整业务 baseline、数据库保护、类型编码与归一化写入契约。
+- [SQLite 身份与控制面](sqlite-control-plane.md)：S3 后端分派、完整认证/管理操作与双后端契约；生产配置仍关闭。
+- [SQLite 耐久计量、结算与查询](sqlite-metering.md)：S4 原子财务链路、精确聚合、独立查询投影和取消/崩溃恢复。
+- [SQLite Codex 与拼车](sqlite-codex.md)：S5 OAuth/配额/成对投影、外部调用 fencing、账本所有权与 WAL 恢复。
 - [独立计量事实与结算回执](independent-metering.md)：P3 的财务来源、pending 工作集合、独立投影和 0063 停机切换。
 - [0063 升级与成对备份恢复演练](persistence-rehearsal.md)：P4 的手动小数据量演练、PG dump/restore、spool/WAL 配对及 10/30 分钟预算。
 - [Codex 拼车金额账本](codex-sharing.md)：固定席位、窗口准入、WAL 恢复与单实例边界。

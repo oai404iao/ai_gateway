@@ -568,18 +568,16 @@ impl ControlPlaneReloader {
     pub async fn reload(&self) -> Result<(), ReloadError> {
         self.coordinator.reload().await.map_err(ReloadError::from)
     }
-    pub fn spawn(self, frequency: Duration) {
-        tokio::spawn(async move {
-            let mut ticker = interval(frequency);
-            ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    pub async fn run(self, frequency: Duration) {
+        let mut ticker = interval(frequency);
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        ticker.tick().await;
+        loop {
             ticker.tick().await;
-            loop {
-                ticker.tick().await;
-                if let Err(error) = self.reload().await {
-                    tracing::error!(error = %error, "control-plane reload failed; retaining previous snapshot");
-                }
+            if let Err(error) = self.reload().await {
+                tracing::error!(error = %error, "control-plane reload failed; retaining previous snapshot");
             }
-        });
+        }
     }
 }
 #[derive(Debug, Error)]

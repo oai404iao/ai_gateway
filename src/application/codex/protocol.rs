@@ -312,43 +312,47 @@ pub async fn exchange_code(
     })
 }
 
-pub async fn refresh_tokens(
+pub fn prepare_refresh_request(
     client: &Client,
     endpoints: &CodexEndpoints,
     refresh_token: &str,
-    response_header_timeout: Duration,
-    stream_idle_timeout: Duration,
-) -> Result<RefreshedTokens, CodexConnectorError> {
+) -> Result<reqwest::Request, CodexConnectorError> {
     #[derive(serde::Serialize)]
     struct RefreshRequest<'a> {
         client_id: &'static str,
         grant_type: &'static str,
         refresh_token: &'a str,
     }
-    #[derive(Deserialize)]
-    struct RefreshResponse {
-        id_token: Option<String>,
-        access_token: Option<String>,
-        refresh_token: Option<String>,
-    }
-
     let request_body = serde_json::to_vec(&RefreshRequest {
         client_id: CODEX_OAUTH_CLIENT_ID,
         grant_type: "refresh_token",
         refresh_token,
     })
     .map_err(|_| CodexConnectorError::InvalidTokenResponse)?;
-    let response = timeout(
-        response_header_timeout,
-        client
-            .post(endpoints.token_url()?)
-            .header(CONTENT_TYPE, "application/json")
-            .body(request_body)
-            .send(),
-    )
-    .await
-    .map_err(|_| CodexConnectorError::UpstreamTimeout)?
-    .map_err(|_| CodexConnectorError::UpstreamUnavailable)?;
+    client
+        .post(endpoints.token_url()?)
+        .header(CONTENT_TYPE, "application/json")
+        .body(request_body)
+        .build()
+        .map_err(|_| CodexConnectorError::UpstreamUnavailable)
+}
+
+pub async fn refresh_tokens(
+    client: &Client,
+    request: reqwest::Request,
+    response_header_timeout: Duration,
+    stream_idle_timeout: Duration,
+) -> Result<RefreshedTokens, CodexConnectorError> {
+    #[derive(Deserialize)]
+    struct RefreshResponse {
+        id_token: Option<String>,
+        access_token: Option<String>,
+        refresh_token: Option<String>,
+    }
+    let response = timeout(response_header_timeout, client.execute(request))
+        .await
+        .map_err(|_| CodexConnectorError::UpstreamTimeout)?
+        .map_err(|_| CodexConnectorError::UpstreamUnavailable)?;
     let status = response.status();
     let body = read_body(response, stream_idle_timeout, MAX_TOKEN_RESPONSE_BYTES).await?;
     if !status.is_success() {
@@ -492,8 +496,7 @@ pub async fn fetch_quota(
     })
 }
 
-#[allow(clippy::too_many_arguments)] // mirrors the authenticated quota-fetch request surface
-pub async fn consume_quota_reset_credit(
+pub fn prepare_quota_reset_request(
     client: &Client,
     endpoints: &CodexEndpoints,
     identity: &CodexOutboundIdentity,
@@ -501,30 +504,35 @@ pub async fn consume_quota_reset_credit(
     account_id: Option<&str>,
     is_fedramp: bool,
     redeem_request_id: &str,
-    response_header_timeout: Duration,
-    stream_idle_timeout: Duration,
-) -> Result<CodexQuotaResetResult, CodexConnectorError> {
+) -> Result<reqwest::Request, CodexConnectorError> {
     let request_body = serde_json::to_vec(&ConsumeQuotaResetCreditRequest {
         redeem_request_id: redeem_request_id.to_owned(),
     })
     .map_err(|_| CodexConnectorError::InvalidQuotaResponse)?;
-    let response = timeout(
-        response_header_timeout,
-        client
-            .post(endpoints.quota_reset_url()?)
-            .headers(codex_headers(
-                identity,
-                access_token,
-                account_id,
-                is_fedramp,
-            )?)
-            .header(CONTENT_TYPE, "application/json")
-            .body(request_body)
-            .send(),
-    )
-    .await
-    .map_err(|_| CodexConnectorError::UpstreamTimeout)?
-    .map_err(|_| CodexConnectorError::UpstreamUnavailable)?;
+    client
+        .post(endpoints.quota_reset_url()?)
+        .headers(codex_headers(
+            identity,
+            access_token,
+            account_id,
+            is_fedramp,
+        )?)
+        .header(CONTENT_TYPE, "application/json")
+        .body(request_body)
+        .build()
+        .map_err(|_| CodexConnectorError::UpstreamUnavailable)
+}
+
+pub async fn consume_quota_reset_credit(
+    client: &Client,
+    request: reqwest::Request,
+    response_header_timeout: Duration,
+    stream_idle_timeout: Duration,
+) -> Result<CodexQuotaResetResult, CodexConnectorError> {
+    let response = timeout(response_header_timeout, client.execute(request))
+        .await
+        .map_err(|_| CodexConnectorError::UpstreamTimeout)?
+        .map_err(|_| CodexConnectorError::UpstreamUnavailable)?;
     let status = response.status();
     let body = read_body(
         response,
@@ -1230,7 +1238,7 @@ mod tests {
             .allowed
         );
 
-        let reset = consume_quota_reset_credit(
+        let request = prepare_quota_reset_request(
             &client,
             &endpoints,
             &identity,
@@ -1238,6 +1246,11 @@ mod tests {
             Some("account-123"),
             true,
             "redeem-123",
+        )
+        .unwrap();
+        let reset = consume_quota_reset_credit(
+            &client,
+            request,
             Duration::from_secs(2),
             Duration::from_secs(2),
         )

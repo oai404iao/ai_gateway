@@ -42,7 +42,9 @@ Console listener 提供。无论是否启用 UI，本文件描述的 API 行为�
    该命令仅在不存在 `active admin` 时成功，并自动执行数据库迁移。
 4. 启动服务：`cargo run`。
 
-启动时服务会应用 migration、从 PostgreSQL 编译不可变数据面快照、启动配置重载和请求日志 worker。空控制面可以启动，但没有有效 API Key 和路由规则时无法代理请求。
+启动时服务会应用 migration、从选定数据库编译不可变数据面快照、启动配置重载和请求日志 worker。
+默认步骤使用 PostgreSQL；Linux SQLite 的配置、CLI 停机要求和备份恢复见[专用指南](sqlite.md)。
+空控制面可以启动，但没有有效 API Key 和路由规则时无法代理请求。
 
 服务不读取 dotenv。JWT Ed25519 私钥和公钥通过受限文件路径配置，不写入 TOML。
 

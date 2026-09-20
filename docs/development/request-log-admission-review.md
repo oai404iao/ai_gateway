@@ -7,7 +7,7 @@
 
 对比背景：[Monoize 工程研究](../reference/monoize-engineering-study.md)。
 本次检查 `src/application/request_log.rs`、`src/request_log_spool.rs`、
-`src/workers/durable_request_log.rs` 及 `src/persistence/mod.rs`。
+`src/workers/durable_request_log.rs` 及 `src/persistence/postgres_control_plane.rs`。
 拼车另有预占 WAL，不能将其 fail-closed 保证外推给普通请求。
 参见[日志流水线](request-log-durability.md)和[拼车账本](codex-sharing.md)。
 

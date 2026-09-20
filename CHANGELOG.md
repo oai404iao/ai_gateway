@@ -9,6 +9,11 @@ Versioning.
 
 ### Added
 
+- Add the complete Linux SQLite backend, with atomic migrations, exact financial
+  settlement, Codex/sharing persistence, shared single-writer ownership, and
+  offline `backup-sqlite` / `restore-sqlite` paired recovery.
+- Ship SQLite support in container/release builds and run real browser/CLI system
+  acceptance against both PostgreSQL and SQLite.
 - Persist independent immutable metering facts and unique settlement receipts,
   allowing billing and sharing recovery to continue while log projection is delayed.
   Migration 0063 requires an offline cutover of all instances; direct binary rollback
@@ -18,6 +23,8 @@ Versioning.
 
 ### Fixed
 
+- Close incomplete PostgreSQL ingress COPY connections on cancellation, including
+  cancellation before the COPY stream is returned, instead of returning a busy socket to the pool.
 - Require synchronously durable request-log admission before client dispatch.
   Reserve terminal recovery slots, reject unavailable/full logging with
   `503 request_log_unavailable`, and replay complete terminals idempotently.

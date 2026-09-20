@@ -232,12 +232,12 @@ async fn settlement_rolls_back_claims_and_all_accounts_on_overflow_or_missing_up
                 } else {
                     ("api_keys", seed.key)
                 };
-                sqlx::raw_sql(&format!(
+                sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
                     "CREATE FUNCTION contract_skip_update() RETURNS trigger LANGUAGE plpgsql AS $$
                      BEGIN IF NEW.id = '{id}'::uuid THEN RETURN NULL; END IF; RETURN NEW; END $$;
                      CREATE TRIGGER contract_skip_update BEFORE UPDATE ON {table}
                      FOR EACH ROW EXECUTE FUNCTION contract_skip_update();"
-                ))
+                )))
                 .execute(&database.pool)
                 .await
                 .unwrap();

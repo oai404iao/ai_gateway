@@ -1,6 +1,11 @@
 //! Prepared control-plane changes: validation precedes atomic audit and commit.
 
-use super::*;
+use crate::domain::AutomaticDisableTrigger;
+use chrono::{DateTime, Utc};
+use sqlx::{Postgres, Transaction};
+use uuid::Uuid;
+
+use crate::persistence::*;
 
 enum Audit {
     Admin(Uuid),
@@ -12,16 +17,17 @@ enum Audit {
 
 /// Dropping a prepared change rolls it back. Callers must validate its complete
 /// runtime records before committing, then publish only after commit succeeds.
-pub struct PreparedControlPlaneChange<'a> {
-    repository: &'a ControlPlaneRepository,
+pub(super) struct PostgresPreparedControlPlaneChange<'a> {
+    repository: &'a PostgresControlPlaneRepository,
     transaction: Transaction<'a, Postgres>,
     mutations: Vec<MutationResult>,
     audit: Audit,
 }
 
-impl PreparedControlPlaneChange<'_> {
+impl PostgresPreparedControlPlaneChange<'_> {
+    /// Reads the complete pending candidate through the open transaction.
     pub async fn runtime_records(&mut self) -> Result<RuntimeConfigRecords, RepositoryError> {
-        ControlPlaneRepository::load_runtime_transaction(&mut self.transaction).await
+        PostgresControlPlaneRepository::load_runtime_transaction(&mut self.transaction).await
     }
 
     pub async fn commit(mut self) -> Result<(Vec<MutationResult>, Uuid), RepositoryError> {
@@ -57,16 +63,23 @@ impl PreparedControlPlaneChange<'_> {
         }
         Ok((self.mutations, correlation_id))
     }
+
+    /// Discards the pending change. Equivalent to dropping it, but it reports
+    /// a rollback failure instead of leaving it to connection teardown.
+    pub async fn rollback(self) -> Result<(), RepositoryError> {
+        self.transaction.rollback().await?;
+        Ok(())
+    }
 }
 
-impl ControlPlaneRepository {
+impl PostgresControlPlaneRepository {
     fn prepared<'a>(
         &'a self,
         transaction: Transaction<'a, Postgres>,
         mutations: Vec<MutationResult>,
         audit: Audit,
-    ) -> PreparedControlPlaneChange<'a> {
-        PreparedControlPlaneChange {
+    ) -> PostgresPreparedControlPlaneChange<'a> {
+        PostgresPreparedControlPlaneChange {
             repository: self,
             transaction,
             mutations,
@@ -101,7 +114,7 @@ impl ControlPlaneRepository {
     pub async fn prepare_manual_reload(
         &self,
         actor: Uuid,
-    ) -> Result<PreparedControlPlaneChange<'_>, RepositoryError> {
+    ) -> Result<PostgresPreparedControlPlaneChange<'_>, RepositoryError> {
         let transaction = self.admin_write(actor).await?;
         Ok(self.prepared(transaction, Vec::new(), Audit::Reload(actor)))
     }
@@ -110,7 +123,7 @@ impl ControlPlaneRepository {
         &self,
         user_id: Uuid,
         input: UserSettingsInput,
-    ) -> Result<(UserSettingsView, PreparedControlPlaneChange<'_>), RepositoryError> {
+    ) -> Result<(UserSettingsView, PostgresPreparedControlPlaneChange<'_>), RepositoryError> {
         let mut transaction = self.begin_serializable().await?;
         let settings = self
             .update_user_settings(&mut transaction, user_id, input)
@@ -126,7 +139,7 @@ impl ControlPlaneRepository {
         &self,
         actor: Uuid,
         mutation: ControlPlaneMutation,
-    ) -> Result<PreparedControlPlaneChange<'_>, RepositoryError> {
+    ) -> Result<PostgresPreparedControlPlaneChange<'_>, RepositoryError> {
         let mut transaction = self.admin_write(actor).await?;
         let result = self
             .apply_control_plane_mutation(&mut transaction, mutation)
@@ -138,7 +151,7 @@ impl ControlPlaneRepository {
         &self,
         actor: Uuid,
         input: ChannelBatchUpdateInput,
-    ) -> Result<PreparedControlPlaneChange<'_>, RepositoryError> {
+    ) -> Result<PostgresPreparedControlPlaneChange<'_>, RepositoryError> {
         let mut transaction = self.admin_write(actor).await?;
         let results = self.update_channels_batch(&mut transaction, input).await?;
         Ok(self.prepared(transaction, results, Audit::Admin(actor)))
@@ -149,7 +162,7 @@ impl ControlPlaneRepository {
         actor: Uuid,
         input: CodexCredentialCreate,
         oauth_flow_id: Option<Uuid>,
-    ) -> Result<PreparedControlPlaneChange<'_>, RepositoryError> {
+    ) -> Result<PostgresPreparedControlPlaneChange<'_>, RepositoryError> {
         let mut transaction = self.admin_write(actor).await?;
         let result = self
             .insert_codex_credential(&mut transaction, input, oauth_flow_id)
@@ -163,7 +176,7 @@ impl ControlPlaneRepository {
         channel_id: Uuid,
         input: CodexCredentialUpdateInput,
         expected_updated_at: DateTime<Utc>,
-    ) -> Result<PreparedControlPlaneChange<'_>, RepositoryError> {
+    ) -> Result<PostgresPreparedControlPlaneChange<'_>, RepositoryError> {
         let mut transaction = self.admin_write(actor).await?;
         let result = self
             .update_codex_credential(&mut transaction, channel_id, input, expected_updated_at)
@@ -176,7 +189,7 @@ impl ControlPlaneRepository {
         actor: Uuid,
         channel_id: Uuid,
         expected_updated_at: DateTime<Utc>,
-    ) -> Result<PreparedControlPlaneChange<'_>, RepositoryError> {
+    ) -> Result<PostgresPreparedControlPlaneChange<'_>, RepositoryError> {
         let mut transaction = self.admin_write(actor).await?;
         let result = self
             .delete_codex_credential(&mut transaction, channel_id, expected_updated_at)
@@ -189,7 +202,7 @@ impl ControlPlaneRepository {
         actor: Uuid,
         channel_group_id: Uuid,
         input: CodexCredentialBatchInput,
-    ) -> Result<PreparedControlPlaneChange<'_>, RepositoryError> {
+    ) -> Result<PostgresPreparedControlPlaneChange<'_>, RepositoryError> {
         let mut transaction = self.admin_write(actor).await?;
         let results = self
             .update_codex_credentials_batch(&mut transaction, channel_group_id, input)
@@ -201,7 +214,7 @@ impl ControlPlaneRepository {
         &self,
         actor: Uuid,
         input: UserBatchUpdateInput,
-    ) -> Result<PreparedControlPlaneChange<'_>, RepositoryError> {
+    ) -> Result<PostgresPreparedControlPlaneChange<'_>, RepositoryError> {
         let mut transaction = self.admin_write(actor).await?;
         let results = self
             .update_users_batch(&mut transaction, actor, input)
@@ -213,7 +226,7 @@ impl ControlPlaneRepository {
         &self,
         actor: Uuid,
         input: SelfApiKeyCreate,
-    ) -> Result<PreparedControlPlaneChange<'_>, RepositoryError> {
+    ) -> Result<PostgresPreparedControlPlaneChange<'_>, RepositoryError> {
         let mut transaction = self.self_service_write(actor).await?;
         let result = self
             .create_own_api_key(&mut transaction, actor, input)
@@ -227,7 +240,7 @@ impl ControlPlaneRepository {
         id: Uuid,
         input: SelfApiKeyUpdate,
         expected_updated_at: DateTime<Utc>,
-    ) -> Result<PreparedControlPlaneChange<'_>, RepositoryError> {
+    ) -> Result<PostgresPreparedControlPlaneChange<'_>, RepositoryError> {
         let mut transaction = self.self_service_write(actor).await?;
         let result = self
             .update_own_api_key(&mut transaction, actor, id, input, expected_updated_at)
@@ -240,7 +253,7 @@ impl ControlPlaneRepository {
         actor: Uuid,
         id: Uuid,
         reason: String,
-    ) -> Result<PreparedControlPlaneChange<'_>, RepositoryError> {
+    ) -> Result<PostgresPreparedControlPlaneChange<'_>, RepositoryError> {
         let mut transaction = self.self_service_write(actor).await?;
         let result = self
             .revoke_own_api_key(&mut transaction, actor, id, reason)
@@ -253,7 +266,7 @@ impl ControlPlaneRepository {
         actor: Uuid,
         id: Uuid,
         expected_updated_at: DateTime<Utc>,
-    ) -> Result<PreparedControlPlaneChange<'_>, RepositoryError> {
+    ) -> Result<PostgresPreparedControlPlaneChange<'_>, RepositoryError> {
         let mut transaction = self.self_service_write(actor).await?;
         let result = self
             .delete_own_api_key(&mut transaction, actor, id, expected_updated_at)
@@ -265,7 +278,7 @@ impl ControlPlaneRepository {
         &self,
         actor: Uuid,
         inputs: Vec<SyncedModelInput>,
-    ) -> Result<PreparedControlPlaneChange<'_>, RepositoryError> {
+    ) -> Result<PostgresPreparedControlPlaneChange<'_>, RepositoryError> {
         let mut transaction = self.admin_write(actor).await?;
         let results = self.apply_catalog_models(&mut transaction, inputs).await?;
         Ok(self.prepared(transaction, results, Audit::Admin(actor)))
@@ -275,7 +288,7 @@ impl ControlPlaneRepository {
         &self,
         channel_id: Uuid,
         trigger: &AutomaticDisableTrigger,
-    ) -> Result<Option<PreparedControlPlaneChange<'_>>, RepositoryError> {
+    ) -> Result<Option<PostgresPreparedControlPlaneChange<'_>>, RepositoryError> {
         let mut transaction = self.begin_serializable().await?;
         let Some(result) = self
             .automatically_disable_channel(&mut transaction, channel_id, trigger)
@@ -294,7 +307,7 @@ impl ControlPlaneRepository {
     pub async fn prepare_channel_recovery(
         &self,
         channel_id: Uuid,
-    ) -> Result<Option<PreparedControlPlaneChange<'_>>, RepositoryError> {
+    ) -> Result<Option<PostgresPreparedControlPlaneChange<'_>>, RepositoryError> {
         let mut transaction = self.begin_serializable().await?;
         let Some(result) = self
             .automatically_recover_channel(&mut transaction, channel_id)

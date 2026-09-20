@@ -1,7 +1,7 @@
 # 项目级系统 E2E
 
 > 状态：当前。第一阶段覆盖浏览器、Codex HTTP/WS、Pi、共享事件样本、
-> 隔离故障注入及逐请求同步的生产日志准入；未知 usage 只保留待核对。
+> 隔离故障注入及逐请求同步的生产日志准入；S6 增加 PG/SQLite 矩阵与成对备份恢复。
 
 ## 目标与分层
 
@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | 后端、PG、协议回归 | `tests/` | 快速定位服务端规则和故障 |
 | UI 组件/浏览器 | `web/console/src/`、`web/console/e2e/` | MSW 或模拟 Console API |
-| 系统验收 | `e2e/run.py` | 真实浏览器、CLI、生产二进制、临时 PostgreSQL |
+| 系统验收 | `e2e/run.py --backend postgres\|sqlite` | 真实浏览器、CLI、生产二进制、临时 PG 或 SQLite |
 | 真实服务 | `scripts/run-real-upstream-smoke.sh` | 付费、显式授权 |
 | 性能 | `tools/forwarding-perf/` | 独立、手动 opt-in，不由本套件运行 |
 
@@ -20,7 +20,7 @@
 
 `console-route-to-settlement`：
 
-1. 使用真实 bootstrap-admin CLI 初始化空数据库及 migrations。
+1. 使用真实 bootstrap-admin CLI 初始化空数据库及 migrations，再通过 reset-admin-password CLI 设置登录密码。
 2. 通过 Console API 准备用户余额、价格、渠道、协议路由和测试 Key，不直接写业务 SQL。
 3. 浏览器从 Gateway 嵌入的 SPA 登录，不启动 Vite、不拦截 API。
 4. 验证 HttpOnly/Secure/SameSite=Lax refresh cookie；reload 后验证真实 refresh 和轮换。
@@ -56,7 +56,8 @@
 
 ## 耐久性与故障场景
 
-`db-outage-kill-replay` 暂停本轮 PostgreSQL 容器，确认新请求已写入 checkpoint 后的
+`db-outage-kill-replay` 暂停本轮 PostgreSQL 容器；SQLite 则由测试进程取得原生写锁但不写业务数据。
+确认新请求已写入 checkpoint 后的
 spool，再 SIGKILL Gateway；恢复 DB 并用原配置/spool 启动，核验最终日志及一次结算。
 
 `duplicate-replay-no-double-charge` 在 Gateway 停止时只回退私有 checkpoint，模拟 DB 已提交、
@@ -93,6 +94,16 @@ Codex 分别显式运行 HTTP 与 WS；没有跨协议转换矩阵，也未覆�
 
 ## 本地运行
 
+同一个已构建二进制分别运行 `--backend postgres` 与 `--backend sqlite`。
+SQLite 需要 `sqlite-backend,embedded-console-ui` 两个 feature，且不依赖 Docker。
+两种后端都运行全部浏览器、真实 CLI、请求计量与故障场景，并启用拼车账本。
+SQLite 额外核验：
+
+- 活跃 serve 拒绝备份及管理员 CLI；
+- 停机备份与恢复保持账本、未决请求、原费用/余额/额度；
+- 损坏清单内容、已有目标拒绝恢复；
+- 恢复写入 ENOSPC 时不发布目标，验证 staging 原子发布边界。
+
 要求 Linux、C 编译器、Python 3.11+、Docker daemon、OpenSSL、Node、项目固定 Rust/pnpm，
 以及 `e2e/clients.json` 指定的 Codex/Pi CLI。数据库镜像按 digest 固定，
 WS 依赖按版本与 wheel hash 固定；首次运行可能下载依赖。只使用容器内 psql。
@@ -106,7 +117,7 @@ CI 安装这些依赖并验证 namespace 创建，不关闭沙箱或全局 user-
 pnpm --dir web/console install --frozen-lockfile
 pnpm --dir web/console exec playwright install --with-deps chromium
 pnpm --dir web/console build
-cargo build --locked --features embedded-console-ui
+cargo build --locked --features embedded-console-ui,sqlite-backend
 
 # 在自己的工具目录安装固定客户端，不使用个人登录状态
 npm install --prefix target/system-e2e-client --ignore-scripts --no-audit --no-fund @openai/codex@0.154.0
@@ -147,7 +158,7 @@ debug 模式仍依赖 `web/console/dist`。`--output` 只接受 `target/system-e
 
 ## CI
 
-`reusable-quality.yml` 的 `system-e2e` 在 Rust 或现有浏览器门禁被选中时运行，
+`reusable-quality.yml` 的 `system-e2e` 在 Rust 或现有浏览器门禁被选中时以 PG/SQLite matrix 运行，
 构建嵌入式二进制并执行离线测试和完整系统链路，纳入 `quality-gate`/`ci-gate`。
 根 `e2e/`、`mock/` 可执行文件变更选择 Rust/Console/文档检查；其 Markdown 只选文档。
 PR 不写 Rust cache；系统测试报告保留七天。CI 安装固定客户端，不访问付费模型。
@@ -160,5 +171,5 @@ PR 不写 Rust cache；系统测试报告保留七天。CI 安装固定客户端
 - [x] 真实进程 kill/restart、重复重放以及进程局部 ENOSPC/EACCES/同步 EIO 注入。
 - [x] 根据[日志准入审查](request-log-admission-review.md)完成生产策略决策、独立实现与验证。
 
-生产改动增加派发前日志准入和本地恢复语义，不修改 schema 或计费公式，不增加 SQLite。
+第一阶段增加派发前日志准入和本地恢复语义，未包含 SQLite；S6 已补充双后端与停机恢复矩阵。
 待核对记录的自动核对/补账、所有文件系统故障组合和性能验证不在本轮完成声明中。

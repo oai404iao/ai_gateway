@@ -34,6 +34,10 @@ console_body_bytes = 262_144
 auth_body_bytes = 16_384
 
 [database]
+# SQLite variant: url = "sqlite:///var/lib/ai-gateway/sqlite/gateway.sqlite"
+# Remove password_file and use docker-compose.sqlite.yaml (Linux/local volumes only).
+# SQLite max_connections is one writer plus readers (minimum 2, suggested 5);
+# connect_timeout_seconds bounds pool acquisition, with a fixed 5s SQLite busy timeout.
 # Prefer a password file over embedding credentials in TOML. Relative paths
 # are resolved from the process working directory. Inline URL passwords remain
 # supported for managed databases, but url and password_file are mutually
@@ -92,6 +96,7 @@ queue_capacity = 1_024
 # and settlement. Four connections cover the four roles; adding connections
 # without adding worker concurrency usually increases database contention.
 database_max_connections = 4
+# PostgreSQL-only log pool size. SQLite shares database.max_connections across all repositories.
 # Production baseline for the COPY ingress and single final-table projector.
 # On machines below 4 GiB, halve these values; on 16+ GiB database hosts,
 # benchmark 8_192/4_096 before increasing worker concurrency.

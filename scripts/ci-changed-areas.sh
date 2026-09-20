@@ -55,7 +55,7 @@ while IFS= read -r path; do
         web/console/*)
             console=true
             ;;
-        Dockerfile | .dockerignore | docker-compose*.yml | config.example.toml | deploy/* | LICENSE | LICENSES/*)
+        Dockerfile | .dockerignore | docker-compose*.yml | docker-compose*.yaml | config.example.toml | deploy/* | LICENSE | LICENSES/*)
             image=true
             ;;
         *.md | docs/* | .agents/*)

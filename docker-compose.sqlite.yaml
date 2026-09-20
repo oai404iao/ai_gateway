@@ -1,0 +1,50 @@
+# Single-instance local-volume SQLite stack. Build locally until a SQLite-enabled release is selected.
+name: ${COMPOSE_PROJECT_NAME:-ai-gateway-sqlite}
+services:
+  gateway:
+    image: ${AI_GATEWAY_SQLITE_IMAGE:-ai-gateway:sqlite-local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    stop_grace_period: 3m
+    ports:
+      - "${AI_GATEWAY_BIND_ADDRESS:-127.0.0.1}:${AI_GATEWAY_PORT:-3000}:3000"
+      - "${AI_GATEWAY_CONSOLE_BIND_ADDRESS:-127.0.0.1}:${AI_GATEWAY_CONSOLE_PORT:-3001}:3001"
+    volumes:
+      - type: bind
+        source: ${AI_GATEWAY_CONFIG_FILE:-./config/config.sqlite.toml}
+        target: /run/config/ai-gateway.toml
+        read_only: true
+      - gateway-sqlite:/var/lib/ai-gateway/sqlite
+      - gateway-spool:/var/lib/ai-gateway/request-log-spool
+      - gateway-image-edit-spool:/var/lib/ai-gateway/image-edit-spool
+    secrets:
+      - console_jwt_private
+      - console_jwt_public
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+      - /run/ai-gateway:size=2m,mode=0700
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    logging:
+      driver: local
+      options:
+        max-size: "50m"
+        max-file: "5"
+secrets:
+  console_jwt_private:
+    file: ${AI_GATEWAY_CONSOLE_JWT_PRIVATE_FILE:-./config/console-jwt-private.pem}
+  console_jwt_public:
+    file: ${AI_GATEWAY_CONSOLE_JWT_PUBLIC_FILE:-./config/console-jwt-public.pem}
+volumes:
+  gateway-sqlite:
+  gateway-spool:
+  gateway-image-edit-spool:

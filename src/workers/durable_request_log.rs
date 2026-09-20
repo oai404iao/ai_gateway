@@ -109,7 +109,6 @@ impl DurableRequestLogWorker {
             wake_sender.clone(),
             config.queue_capacity,
             projection_sender.clone(),
-            config.database_max_connections,
             Arc::clone(&metrics),
         );
 
@@ -149,6 +148,7 @@ impl DurableRequestLogWorker {
             admission,
             Arc::clone(&metrics),
         ));
+        let database_max_connections = repository.pool_status().capacity;
         let telemetry_task = tokio::spawn(run_telemetry_reporter(
             repository,
             Arc::clone(&spool),
@@ -159,7 +159,7 @@ impl DurableRequestLogWorker {
         let sink = DurableRequestLogSink::new(Arc::clone(&spool), wake_sender, metrics);
         tracing::info!(
             spool_directory = %spool.directory().display(),
-            database_max_connections = config.database_max_connections,
+            database_max_connections,
             ingest_batch_size = config.ingest_batch_size,
             projection_batch_size = config.projection_batch_size,
             metrics_interval_seconds = config.metrics_interval_seconds,
@@ -439,7 +439,6 @@ struct DurableRequestLogSettings {
     settlement_interval: Duration,
     spool_sync_interval: Duration,
     spool_compaction_threshold_bytes: u64,
-    database_max_connections: u32,
     metrics_interval: Option<Duration>,
     shutdown_drain: Duration,
 }
@@ -454,7 +453,6 @@ impl From<&RequestLoggingConfig> for DurableRequestLogSettings {
             settlement_interval: Duration::from_millis(config.settlement_interval_milliseconds),
             spool_sync_interval: Duration::from_millis(config.spool_sync_interval_milliseconds),
             spool_compaction_threshold_bytes: config.spool_compaction_threshold_bytes,
-            database_max_connections: config.database_max_connections,
             metrics_interval: (config.metrics_interval_seconds > 0)
                 .then(|| Duration::from_secs(config.metrics_interval_seconds)),
             shutdown_drain: Duration::from_secs(config.shutdown_drain_seconds),
@@ -1130,7 +1128,6 @@ async fn run_telemetry_reporter(
                     &repository,
                     &spool,
                     &metrics,
-                    settings.database_max_connections,
                 ).await;
                 let now = Instant::now();
                 emit_telemetry_transitions(&state.observe(&sample, now), &sample);
@@ -1168,7 +1165,6 @@ async fn run_telemetry_reporter(
                         &repository,
                         &spool,
                         &metrics,
-                        settings.database_max_connections,
                     ).await;
                     emit_metrics(&sample);
                 }
@@ -1182,7 +1178,6 @@ async fn load_telemetry_sample(
     repository: &RequestLogRepository,
     spool: &RequestLogSpool,
     metrics: &RequestLogPipelineMetrics,
-    database_pool_capacity: u32,
 ) -> RequestLogTelemetrySample {
     let sampled_at = Utc::now();
     // Capture pressure before issuing the two health queries. SQLx returns
@@ -1225,7 +1220,7 @@ async fn load_telemetry_sample(
         },
         database_pool_size: pool_before_queries.size,
         database_pool_idle: pool_before_queries.idle,
-        database_pool_capacity,
+        database_pool_capacity: pool_before_queries.capacity,
     }
 }
 
@@ -1604,6 +1599,79 @@ mod telemetry_tests {
             database_pool_idle: 3,
             database_pool_capacity: 4,
         }
+    }
+
+    #[tokio::test]
+    async fn postgres_pool_capacity_comes_from_the_log_pool() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(7)
+            .connect_lazy("postgresql://localhost/capacity_test")
+            .unwrap();
+        let repository = crate::persistence::RequestLogRepository::new(pool.clone());
+        assert_eq!(repository.pool_status().capacity, 7);
+        pool.close().await;
+    }
+
+    #[cfg(all(feature = "sqlite-backend", target_os = "linux"))]
+    #[tokio::test]
+    async fn sqlite_monitor_and_telemetry_use_shared_pool_capacity() {
+        use crate::{
+            observability::RequestLogPipelineMetrics,
+            persistence::{RequestLogRepository, sqlite::SqliteDatabase},
+        };
+        use std::{os::unix::fs::PermissionsExt, sync::Arc};
+
+        let directory = tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .unwrap();
+        let database = Arc::new(
+            SqliteDatabase::open_with_limits(
+                &directory.path().join("gateway.sqlite"),
+                2,
+                Duration::from_secs(5),
+            )
+            .await
+            .unwrap(),
+        );
+        database.install_schema().await.unwrap();
+        let repository = RequestLogRepository::from_sqlite(Arc::clone(&database));
+        let config = RequestLoggingConfig {
+            spool_directory: directory.path().join("spool"),
+            database_max_connections: 4,
+            metrics_interval_seconds: 0,
+            ..RequestLoggingConfig::default()
+        };
+        let (sink, worker) = super::DurableRequestLogWorker::start(repository.clone(), &config)
+            .await
+            .unwrap();
+        let snapshot = worker.monitor().snapshot().await;
+        assert_eq!(snapshot.database_pool_capacity, 2);
+
+        let reader = database.acquire_read().await.unwrap();
+        let writer = database.begin_write().await.unwrap();
+        let metrics = RequestLogPipelineMetrics::default();
+        let (sample, ()) = tokio::join!(
+            biased;
+            super::load_telemetry_sample(&repository, &worker.spool, &metrics),
+            async {
+                drop(reader);
+                writer.rollback().await.unwrap();
+            },
+        );
+        assert_eq!(sample.database_pool_capacity, 2);
+        assert_eq!(sample.database_pool_size, 2);
+        assert_eq!(sample.database_pool_idle, 0);
+        let now = Instant::now();
+        let mut state = RequestLogTelemetryState::default();
+        assert!(state.observe(&sample, now).is_empty());
+        assert_eq!(
+            state.observe(&sample, now + super::DATABASE_POOL_SATURATED_AFTER),
+            vec![TelemetryTransition::DatabasePoolSaturated]
+        );
+        drop(sink);
+        worker.shutdown().await;
+        database.close().await;
     }
 
     #[test]

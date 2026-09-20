@@ -1,6 +1,14 @@
 //! Immutable financial facts, independent of the request-log projection.
 
-use super::*;
+use chrono::{DateTime, Utc};
+use serde_json::{Value, json};
+use sqlx::{FromRow, PgPool, Postgres, Transaction};
+use uuid::Uuid;
+
+use crate::domain::RequestLogEvent;
+
+use super::RepositoryError;
+use super::postgres_control_plane::{IngestReceipt, RequestLogIngestRecord};
 
 const FACT_COLUMNS: &str = "id,started_at,completed_at,user_id,api_key_id,request_source,api_format,api_operation,\
      request_protocol,client_model,upstream_model,model_rule_id,channel_group_id,channel_id,\
@@ -9,7 +17,7 @@ const FACT_COLUMNS: &str = "id,started_at,completed_at,user_id,api_key_id,reques
      cached_input_unit_price,cache_write_unit_price,output_unit_price,cost_amount,peak_pricing";
 
 #[derive(Clone)]
-pub struct MeteringRepository {
+pub(super) struct PostgresMeteringRepository {
     pool: PgPool,
 }
 
@@ -26,7 +34,7 @@ pub struct MeteringReconciliationCounts {
     pub account_mismatch: i64,
 }
 
-impl MeteringRepository {
+impl PostgresMeteringRepository {
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
@@ -132,12 +140,12 @@ async fn write_facts(
         return Ok(Vec::new());
     }
     let input = Value::Array(events.iter().map(fact_input).collect());
-    let inserted: Vec<Uuid> = sqlx::query_scalar(&format!(
+    let inserted: Vec<Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "INSERT INTO request_metering_facts ({FACT_COLUMNS})
          SELECT {FACT_COLUMNS}
          FROM jsonb_populate_recordset(NULL::request_metering_facts,$1)
          ON CONFLICT (id) DO NOTHING RETURNING id"
-    ))
+    )))
     .bind(&input)
     .fetch_all(&mut **transaction)
     .await?;

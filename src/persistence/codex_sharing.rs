@@ -1,7 +1,12 @@
 //! Sharing configuration and bounded background reconciliation queries.
 
-use super::*;
+use chrono::{DateTime, Utc};
+use serde_json::{Value, json};
+use sqlx::{Postgres, Transaction};
+use uuid::Uuid;
+
 use crate::domain::codex_sharing::{SharingGroup, SharingGroupInput, SharingRecord, SharingWindow};
+use crate::persistence::*;
 
 const GROUP_JSON: &str = "jsonb_build_object('id',s.id,\
      'credential_id',s.credential_id,'name',s.name,'enabled',s.enabled,'seats',s.seats,\
@@ -14,7 +19,7 @@ const GROUP_JSON: &str = "jsonb_build_object('id',s.id,\
      'group_max_concurrent_requests',s.group_max_concurrent_requests,\
      'updated_at',s.updated_at)";
 
-impl ControlPlaneRepository {
+impl PostgresControlPlaneRepository {
     pub(super) async fn load_sharing_only_channels(
         transaction: &mut Transaction<'_, Postgres>,
     ) -> Result<Vec<Uuid>, RepositoryError> {
@@ -68,12 +73,12 @@ impl ControlPlaneRepository {
         &self,
         user: Option<Uuid>,
     ) -> Result<Vec<SharingGroup>, RepositoryError> {
-        let values = sqlx::query_scalar::<_, Value>(&format!(
+        let values = sqlx::query_scalar::<_, Value>(sqlx::AssertSqlSafe(format!(
             "SELECT {GROUP_JSON} FROM codex_sharing_groups s \
              WHERE $1::uuid IS NULL OR (s.seats @> jsonb_build_array($1::uuid) AND EXISTS \
              (SELECT 1 FROM users u WHERE u.id=$1 AND u.status='active' \
               AND u.deleted_at IS NULL AND NOT u.is_system)) ORDER BY s.id"
-        ))
+        )))
         .bind(user)
         .fetch_all(&self.pool)
         .await?;
@@ -84,7 +89,7 @@ impl ControlPlaneRepository {
     }
 }
 
-impl super::MeteringQueries {
+impl super::postgres_control_plane::PostgresMeteringQueries {
     pub async fn sharing_completed_costs(
         &self,
         ids: &[Uuid],
@@ -101,7 +106,7 @@ impl super::MeteringQueries {
     }
 }
 
-impl ControlPlaneRepository {
+impl PostgresControlPlaneRepository {
     pub(super) async fn load_sharing_transaction(
         transaction: &mut Transaction<'_, Postgres>,
     ) -> Result<Vec<SharingRecord>, RepositoryError> {
@@ -126,8 +131,9 @@ impl ControlPlaneRepository {
              ) SELECT id,credential_id,window_kind,scheduled_reset_at,used_percent,checked_at \
                FROM observed WHERE observed_count=expected_count",
         ).fetch_all(&mut **transaction).await?;
-        let rows = sqlx::query_as::<_, (Value, Vec<Uuid>, Vec<Uuid>)>(&format!(
-            "SELECT {GROUP_JSON},\
+        let rows =
+            sqlx::query_as::<_, (Value, Vec<Uuid>, Vec<Uuid>)>(sqlx::AssertSqlSafe(format!(
+                "SELECT {GROUP_JSON},\
              ARRAY(SELECT p.channel_id FROM codex_oauth_credential_channels p \
                    WHERE p.credential_id=s.credential_id),\
              ARRAY(SELECT p.channel_id FROM codex_oauth_credentials c \
@@ -136,9 +142,9 @@ impl ControlPlaneRepository {
                      (COALESCE(c.account_id,'')=s.provider_account_id \
                       AND c.user_id=s.provider_user_id)) \
              FROM codex_sharing_groups s ORDER BY s.id"
-        ))
-        .fetch_all(&mut **transaction)
-        .await?;
+            )))
+            .fetch_all(&mut **transaction)
+            .await?;
         rows.into_iter()
             .map(|(value, channel_ids, protected_channel_ids)| {
                 let group: SharingGroup =
@@ -169,9 +175,9 @@ pub(super) async fn save_group(
         return Err(RepositoryError::Validation);
     }
     input.name = input.name.trim().to_owned();
-    let before = sqlx::query_scalar::<_, Value>(&format!(
+    let before = sqlx::query_scalar::<_, Value>(sqlx::AssertSqlSafe(format!(
         "SELECT {GROUP_JSON} FROM codex_sharing_groups s WHERE id=$1 FOR UPDATE"
-    ))
+    )))
     .bind(id)
     .fetch_optional(&mut **transaction)
     .await?;

@@ -65,8 +65,7 @@ def exercise_faults(resources, binary, data, count, warmups, protocols):
     results = []
     with Upstream("unused") as upstream:
         set_upstream(data, upstream.url)
-        resources.docker("pause", resources.container)
-        try:
+        with resources.database_outage():
             dispatch()
             journal = resources.directory / "spool/events.log"
             checkpoint = resources.directory / "spool/checkpoint"
@@ -74,8 +73,6 @@ def exercise_faults(resources, binary, data, count, warmups, protocols):
             offset = int.from_bytes(old_checkpoint or b"\0" * 8, "little")
             wait_until(lambda: journal.stat().st_size > offset)
             stop_gateway(resources)
-        finally:
-            resources.docker("unpause", resources.container)
         count += 1
         protocols = [*protocols, "non_stream"]
         start_gateway(resources, binary, data, "gateway-recovered")
@@ -91,10 +88,7 @@ def exercise_faults(resources, binary, data, count, warmups, protocols):
             checkpoint.write_bytes(old_checkpoint)
         start_gateway(resources, binary, data, "gateway-duplicate-replay")
         wait_until(lambda: api("/system/load")["request_log"]["spool_pending_bytes"] == 0)
-        wait_until(lambda: resources.docker(
-            "exec", resources.container, "psql", "-U", "postgres", "-d", resources.database_name,
-            "-Atc", "SELECT count(*) FROM request_log_ingest",
-        ) == "0")
+        wait_until(resources.ingress_empty)
         verify_settlement(data, count, warmups, protocols)
         check(len(upstream.scenario.evidence) == 1, "recovery redispatched a model request")
         results.append({"id": "duplicate-replay-no-double-charge", "status": "passed"})

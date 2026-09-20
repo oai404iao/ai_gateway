@@ -76,6 +76,18 @@ mod metering_fixtures;
 mod persistence_contracts;
 #[path = "contracts/interfaces.rs"]
 mod persistence_interfaces;
+#[cfg(all(feature = "sqlite-backend", target_os = "linux"))]
+#[path = "contracts/sqlite_parity.rs"]
+mod sqlite_parity;
+#[cfg(all(feature = "sqlite-backend", target_os = "linux"))]
+#[path = "contracts/sqlite_s3_parity.rs"]
+mod sqlite_s3_parity;
+#[cfg(all(feature = "sqlite-backend", target_os = "linux"))]
+#[path = "contracts/sqlite_s4_parity.rs"]
+mod sqlite_s4_parity;
+#[cfg(all(feature = "sqlite-backend", target_os = "linux"))]
+#[path = "contracts/sqlite_s5_parity.rs"]
+mod sqlite_s5_parity;
 
 const DEFAULT_ADMIN_URL: &str = "postgres://ai_gateway:ai_gateway@127.0.0.1:5432/postgres";
 const PASSWORD_FILE_ADMIN_URL: &str = "postgres://ai_gateway@127.0.0.1:5432/postgres";
@@ -1167,7 +1179,7 @@ impl TestDatabase {
             .await
             .expect("configured PostgreSQL administrator database must be available");
         let name = format!("ai_gateway_test_{}", Uuid::new_v4().simple());
-        sqlx::query(&format!("CREATE DATABASE \"{name}\""))
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE DATABASE \"{name}\"")))
             .execute(&admin)
             .await
             .expect("temporary integration-test database must be creatable");
@@ -1183,10 +1195,13 @@ impl TestDatabase {
 
     async fn cleanup(self) {
         self.pool.close().await;
-        sqlx::query(&format!("DROP DATABASE \"{}\" WITH (FORCE)", self.name))
-            .execute(&self.admin)
-            .await
-            .expect("temporary integration-test database must be removable");
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DROP DATABASE \"{}\" WITH (FORCE)",
+            self.name
+        )))
+        .execute(&self.admin)
+        .await
+        .expect("temporary integration-test database must be removable");
         self.admin.close().await;
     }
 }
@@ -2222,7 +2237,6 @@ async fn codex_sharing_pins_credentials_and_settles_money_across_api_keys() {
         persistence::RepositoryError,
     };
     use rust_decimal::Decimal;
-    use sqlx::Connection;
 
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;

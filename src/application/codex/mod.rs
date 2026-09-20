@@ -1,6 +1,9 @@
 mod attempt;
 mod protocol;
 mod runtime;
+#[cfg(all(test, feature = "sqlite-backend", target_os = "linux"))]
+#[path = "../../../tests/contracts/sqlite_codex_application.rs"]
+mod sqlite_tests;
 
 use std::{collections::HashMap, sync::Arc};
 
@@ -33,7 +36,8 @@ use super::{CodexCredentialBatchResult, ControlPlaneCoordinator, ControlPlaneErr
 use protocol::{
     CodexEndpoints, build_authorize_url, consume_quota_reset_credit, exchange_code, fetch_models,
     fetch_quota, generate_oauth_state, generate_pkce, parse_callback_url, parse_identity,
-    parse_jwt_expiration, refresh_tokens, state_hash, state_matches,
+    parse_jwt_expiration, prepare_quota_reset_request, prepare_refresh_request, refresh_tokens,
+    state_hash, state_matches,
 };
 
 pub(crate) use attempt::{CodexAttemptError, PreparedCodexAttempt};
@@ -392,7 +396,7 @@ impl CodexConnectorService {
         let outbound_identity = self.outbound_identity();
         let quota_lock = self.quota_lock(channel_id).await;
         let _guard = quota_lock.lock().await;
-        let (record, reset_operation) = self
+        let (record, mut reset_operation) = self
             .repository
             .lock_codex_quota_reset(channel_id)
             .await?
@@ -401,7 +405,7 @@ impl CodexConnectorService {
         let (client, policy) = self.client_for_proxy(record.proxy_id)?;
         let requested_at = Utc::now();
         let redeem_request_id = Uuid::new_v4();
-        let reset = consume_quota_reset_credit(
+        let request = prepare_quota_reset_request(
             &client,
             &self.endpoints,
             &outbound_identity,
@@ -409,6 +413,11 @@ impl CodexConnectorService {
             record.account_id.as_deref(),
             record.is_fedramp,
             &redeem_request_id.to_string(),
+        )?;
+        reset_operation.prepare_dispatch().await?;
+        let reset = consume_quota_reset_credit(
+            &client,
+            request,
             policy.timeouts().response_header(),
             policy.timeouts().stream_idle(),
         )
@@ -615,7 +624,7 @@ impl CodexConnectorService {
         channel_id: Uuid,
         observed_generation: Option<i64>,
     ) -> Result<(), CodexConnectorError> {
-        let (record, refresh) = self
+        let (record, mut refresh) = self
             .repository
             .lock_codex_refresh(channel_id)
             .await?
@@ -631,10 +640,11 @@ impl CodexConnectorService {
             return Err(CodexConnectorError::CredentialReauthenticationRequired);
         }
         let (client, policy) = self.client_for_proxy(record.proxy_id)?;
+        let request = prepare_refresh_request(&client, &self.endpoints, &record.refresh_token)?;
+        refresh.prepare_dispatch().await?;
         let refreshed = match refresh_tokens(
             &client,
-            &self.endpoints,
-            &record.refresh_token,
+            request,
             policy.timeouts().response_header(),
             policy.timeouts().stream_idle(),
         )

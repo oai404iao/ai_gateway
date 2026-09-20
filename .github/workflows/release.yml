@@ -92,8 +92,8 @@ jobs:
 
       - run: pnpm --dir web/console install --frozen-lockfile
       - run: pnpm --dir web/console build
-      - run: cargo clippy --locked --all-targets --features embedded-console-ui
-      - run: cargo test --locked --features embedded-console-ui --lib console_ui
+      - run: cargo clippy --locked --all-targets --features embedded-console-ui,sqlite-backend
+      - run: cargo test --locked --features embedded-console-ui,sqlite-backend --lib console_ui
 
   publish-platform-images:
     name: publish-platform-image (${{ matrix.arch }})

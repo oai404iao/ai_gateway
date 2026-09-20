@@ -37,6 +37,10 @@ console_body_bytes = 262_144
 auth_body_bytes = 16_384
 
 [database]
+# Linux builds with sqlite-backend also accept sqlite:///absolute/private/gateway.sqlite.
+# For SQLite remove password_file; create its parent as owned 0700 on local storage.
+# max_connections then counts one writer plus readers (minimum 2, suggested 5).
+# connect_timeout_seconds bounds pool acquisition; SQLite busy timeout is fixed at 5s.
 # Prefer a password file over embedding credentials in TOML. Relative paths
 # are resolved from the process working directory. Inline URL passwords remain
 # supported for managed databases, but url and password_file are mutually
@@ -97,6 +101,7 @@ queue_capacity = 1_024
 # and settlement. Four connections cover the four roles; adding connections
 # without adding worker concurrency usually increases database contention.
 database_max_connections = 4
+# PostgreSQL-only log pool size. SQLite shares database.max_connections across all repositories.
 # Production baseline for the COPY ingress and single final-table projector.
 # On machines below 4 GiB, halve these values; on 16+ GiB database hosts,
 # benchmark 8_192/4_096 before increasing worker concurrency.

@@ -12,14 +12,14 @@ use uuid::Uuid;
 
 use crate::domain::{ConsoleSessionPurpose, UserRole};
 
-use super::{DEFAULT_ADMIN_GROUP_ID, DEFAULT_USER_GROUP_ID, RepositoryError};
+use crate::persistence::{DEFAULT_ADMIN_GROUP_ID, DEFAULT_USER_GROUP_ID, RepositoryError};
 
 #[derive(Clone)]
-pub struct AuthRepository {
+pub(super) struct PostgresAuthRepository {
     pool: PgPool,
 }
 
-impl AuthRepository {
+impl PostgresAuthRepository {
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
@@ -412,7 +412,9 @@ impl AuthRepository {
             return Err(RepositoryError::TemporaryPasswordUnavailable);
         }
 
-        let before = super::user_audit(&mut transaction, user_id).await?;
+        let before =
+            crate::persistence::postgres_control_plane::user_audit(&mut transaction, user_id)
+                .await?;
         let expires_at = Utc::now()
             .checked_add_signed(
                 chrono::Duration::from_std(temporary_password_ttl)
@@ -450,7 +452,10 @@ impl AuthRepository {
         .bind(actor_user_id)
         .bind(user_id)
         .bind(before)
-        .bind(super::user_audit(&mut transaction, user_id).await?)
+        .bind(
+            crate::persistence::postgres_control_plane::user_audit(&mut transaction, user_id)
+                .await?,
+        )
         .bind(correlation_id.to_string())
         .execute(&mut *transaction)
         .await?;
@@ -505,7 +510,9 @@ impl AuthRepository {
             return Ok(None);
         }
 
-        let before = super::user_audit(&mut transaction, user_id).await?;
+        let before =
+            crate::persistence::postgres_control_plane::user_audit(&mut transaction, user_id)
+                .await?;
         let auth_version = sqlx::query_scalar::<_, i64>(
             "UPDATE users SET \
              password_hash=$2,password_changed_at=now(),auth_version=auth_version+1, \
@@ -539,7 +546,10 @@ impl AuthRepository {
         .bind(user_id)
         .bind(&user.role)
         .bind(before)
-        .bind(super::user_audit(&mut transaction, user_id).await?)
+        .bind(
+            crate::persistence::postgres_control_plane::user_audit(&mut transaction, user_id)
+                .await?,
+        )
         .bind(Uuid::new_v4().to_string())
         .execute(&mut *transaction)
         .await?;
