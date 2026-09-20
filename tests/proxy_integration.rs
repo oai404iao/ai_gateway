@@ -802,6 +802,8 @@ fn configured_proxy_with_policy_and_transforms(
     };
     let template_id = transforms.template.as_ref().map(|_| Uuid::new_v4());
     let channel = |id: Uuid, group_id: Uuid, api_format: &str| ChannelRecord {
+        credential: None,
+        credential_binding_revision: Uuid::nil(),
         id,
         channel_group_id: group_id,
         api_format: api_format.into(),
@@ -1276,6 +1278,8 @@ fn session_affinity_proxy(first_upstream_url: &str, second_upstream_url: &str) -
     let second_channel_id = Uuid::new_v4();
     let model_rule_id = Uuid::new_v4();
     let channel = |id: Uuid, name: &str, base_url: &str| ChannelRecord {
+        credential: None,
+        credential_binding_revision: Uuid::nil(),
         id,
         channel_group_id: group_id,
         api_format: "open_ai_chat_completions".into(),

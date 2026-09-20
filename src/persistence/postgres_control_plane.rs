@@ -511,6 +511,10 @@ pub struct ChannelRecord {
     pub available_models: Vec<String>,
     pub test_model: Option<String>,
     pub test_pricing_model_id: Option<Uuid>,
+    #[sqlx(skip)]
+    pub credential: Option<super::CredentialIdentity>,
+    #[sqlx(skip)]
+    pub credential_binding_revision: Uuid,
 }
 impl fmt::Debug for ChannelRecord {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -886,10 +890,8 @@ pub struct ChannelCreateInput {
     pub response_header_timeout_ms: Option<i32>,
     #[serde(default)]
     pub stream_idle_timeout_ms: Option<i32>,
-    pub upstream_auth_kind: String,
-    #[serde(default)]
-    pub upstream_auth_header_name: Option<String>,
-    pub upstream_api_key: Option<String>,
+    #[serde(deserialize_with = "required_credential_id")]
+    pub credential_id: Option<Uuid>,
     #[serde(default)]
     pub available_models: Vec<String>,
     #[serde(default)]
@@ -928,12 +930,8 @@ pub struct ChannelInput {
     pub response_header_timeout_ms: Option<i32>,
     #[serde(default)]
     pub stream_idle_timeout_ms: Option<i32>,
-    pub upstream_auth_kind: String,
-    #[serde(default)]
-    pub upstream_auth_header_name: Option<String>,
-    /// Absent keeps the current secret; null explicitly clears it.
-    #[serde(default, deserialize_with = "deserialize_optional_string")]
-    pub upstream_api_key: Option<Option<String>>,
+    #[serde(deserialize_with = "required_credential_id")]
+    pub credential_id: Option<Uuid>,
     #[serde(default)]
     pub available_models: Vec<String>,
     #[serde(default)]
@@ -1073,6 +1071,11 @@ where
 {
     Option::<Uuid>::deserialize(deserializer).map(Some)
 }
+fn required_credential_id<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Uuid>, D::Error> {
+    Option::<Uuid>::deserialize(deserializer)
+}
 fn deserialize_optional_document<'de, D>(deserializer: D) -> Result<Option<Value>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -1095,9 +1098,7 @@ pub(crate) struct ChannelMutationInput {
     pub(crate) connect_timeout_ms: Option<i32>,
     pub(crate) response_header_timeout_ms: Option<i32>,
     pub(crate) stream_idle_timeout_ms: Option<i32>,
-    pub(crate) upstream_auth_kind: String,
-    pub(crate) upstream_auth_header_name: Option<String>,
-    pub(crate) upstream_api_key: Option<Option<String>>,
+    pub(crate) credential_id: Option<Uuid>,
     pub(crate) available_models: Vec<String>,
     pub(crate) test_model: Option<String>,
     pub(crate) test_pricing_model_id: Option<Uuid>,
@@ -1120,9 +1121,7 @@ impl From<ChannelCreateInput> for ChannelMutationInput {
             connect_timeout_ms: value.connect_timeout_ms,
             response_header_timeout_ms: value.response_header_timeout_ms,
             stream_idle_timeout_ms: value.stream_idle_timeout_ms,
-            upstream_auth_kind: value.upstream_auth_kind,
-            upstream_auth_header_name: value.upstream_auth_header_name,
-            upstream_api_key: Some(value.upstream_api_key),
+            credential_id: value.credential_id,
             available_models: value.available_models,
             test_model: value.test_model,
             test_pricing_model_id: value.test_pricing_model_id,
@@ -1147,9 +1146,7 @@ impl From<ChannelInput> for ChannelMutationInput {
             connect_timeout_ms: value.connect_timeout_ms,
             response_header_timeout_ms: value.response_header_timeout_ms,
             stream_idle_timeout_ms: value.stream_idle_timeout_ms,
-            upstream_auth_kind: value.upstream_auth_kind,
-            upstream_auth_header_name: value.upstream_auth_header_name,
-            upstream_api_key: value.upstream_api_key,
+            credential_id: value.credential_id,
             available_models: value.available_models,
             test_model: value.test_model,
             test_pricing_model_id: value.test_pricing_model_id,
@@ -1184,6 +1181,16 @@ impl From<ConfigTemplateInput> for ConfigTemplateMutationInput {
 }
 
 pub enum ControlPlaneMutation {
+    CreateUpstreamCredential(super::UpstreamCredentialInput),
+    UpdateUpstreamCredential {
+        id: Uuid,
+        input: super::UpstreamCredentialInput,
+        expected_updated_at: DateTime<Utc>,
+    },
+    DeleteUpstreamCredential {
+        id: Uuid,
+        expected_updated_at: DateTime<Utc>,
+    },
     SaveCodexSharing {
         id: Uuid,
         input: crate::domain::codex_sharing::SharingGroupInput,
@@ -1902,9 +1909,7 @@ pub struct ControlPlaneChannel {
     pub connect_timeout_ms: Option<i32>,
     pub response_header_timeout_ms: Option<i32>,
     pub stream_idle_timeout_ms: Option<i32>,
-    pub upstream_auth_kind: String,
-    pub upstream_auth_header_name: Option<String>,
-    pub upstream_credential_configured: bool,
+    pub credential_id: Option<Uuid>,
     pub available_models: Vec<String>,
     pub test_model: Option<String>,
     pub test_pricing_model_id: Option<Uuid>,
@@ -1933,10 +1938,7 @@ pub struct ControlPlaneChannelDetail {
     pub connect_timeout_ms: Option<i32>,
     pub response_header_timeout_ms: Option<i32>,
     pub stream_idle_timeout_ms: Option<i32>,
-    pub upstream_auth_kind: String,
-    pub upstream_auth_header_name: Option<String>,
-    pub upstream_api_key: Option<String>,
-    pub upstream_credential_configured: bool,
+    pub credential_id: Option<Uuid>,
     pub available_models: Vec<String>,
     pub test_model: Option<String>,
     pub test_pricing_model_id: Option<Uuid>,
@@ -2007,9 +2009,7 @@ struct ControlPlaneChannelRow {
     connect_timeout_ms: Option<i32>,
     response_header_timeout_ms: Option<i32>,
     stream_idle_timeout_ms: Option<i32>,
-    upstream_auth_kind: String,
-    upstream_auth_header_name: Option<String>,
-    upstream_credential_configured: bool,
+    credential_id: Option<Uuid>,
     available_models: Vec<String>,
     test_model: Option<String>,
     test_pricing_model_id: Option<Uuid>,
@@ -2144,9 +2144,7 @@ impl From<ControlPlaneChannelRow> for ControlPlaneChannel {
             connect_timeout_ms: value.connect_timeout_ms,
             response_header_timeout_ms: value.response_header_timeout_ms,
             stream_idle_timeout_ms: value.stream_idle_timeout_ms,
-            upstream_auth_kind: value.upstream_auth_kind,
-            upstream_auth_header_name: value.upstream_auth_header_name,
-            upstream_credential_configured: value.upstream_credential_configured,
+            credential_id: value.credential_id,
             available_models: value.available_models,
             test_model: value.test_model,
             test_pricing_model_id: value.test_pricing_model_id,
@@ -4845,6 +4843,37 @@ pub(crate) fn deleted_api_key_secret(id: Uuid) -> String {
 }
 
 impl PostgresControlPlaneRepository {
+    pub async fn upstream_credentials(
+        &self,
+    ) -> Result<Vec<super::UpstreamCredentialView>, RepositoryError> {
+        let mut tx = self.pool.begin().await?;
+        let records = super::upstream_credentials::pg_records(&mut tx).await?;
+        let bindings = super::upstream_credentials::pg_bindings(&mut tx).await?;
+        tx.commit().await?;
+        Ok(records
+            .iter()
+            .filter(|record| record.deleted_at.is_none())
+            .map(|record| record.view(&bindings))
+            .collect())
+    }
+
+    pub async fn upstream_credential_detail(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<super::UpstreamCredentialDetail>, RepositoryError> {
+        let mut tx = self.pool.begin().await?;
+        let record = super::upstream_credentials::pg_records(&mut tx)
+            .await?
+            .into_iter()
+            .find(|record| record.id == id && record.deleted_at.is_none());
+        let bindings = super::upstream_credentials::pg_bindings(&mut tx).await?;
+        tx.commit().await?;
+        Ok(record.map(|record| super::UpstreamCredentialDetail {
+            credential: record.view(&bindings),
+            secret: record.secret,
+        }))
+    }
+
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
@@ -5166,7 +5195,13 @@ impl PostgresControlPlaneRepository {
         .map(Into::into)
         .collect();
         let groups = sqlx::query_as::<_, ChannelGroupRecord>("SELECT id, name, api_format::text AS api_format, connector_kind, request_compression, sharing_only, enabled FROM channel_groups WHERE deleted_at IS NULL ORDER BY id").fetch_all(&mut **transaction).await?;
-        let channels = sqlx::query_as::<_, ChannelRecord>("SELECT c.id, c.channel_group_id, c.api_format::text AS api_format, c.name, c.base_url, c.enabled, c.supports_websocket, c.supports_standalone_web_search, c.auto_disabled, c.auto_disable_allowed, c.billing_multiplier, c.proxy_id, c.config_template_id, c.override_document, c.connect_timeout_ms, c.response_header_timeout_ms, c.stream_idle_timeout_ms, c.upstream_auth_kind, c.upstream_auth_header_name, c.upstream_api_key, c.available_models, c.test_model, c.test_pricing_model_id FROM channels c JOIN channel_groups g ON g.id=c.channel_group_id AND g.deleted_at IS NULL WHERE c.deleted_at IS NULL ORDER BY c.id").fetch_all(&mut **transaction).await?;
+        let mut channels = sqlx::query_as::<_, ChannelRecord>("SELECT c.id, c.channel_group_id, c.api_format::text AS api_format, c.name, c.base_url, c.enabled, c.supports_websocket, c.supports_standalone_web_search, c.auto_disabled, c.auto_disable_allowed, c.billing_multiplier, c.proxy_id, c.config_template_id, c.override_document, c.connect_timeout_ms, c.response_header_timeout_ms, c.stream_idle_timeout_ms, c.upstream_auth_kind, c.upstream_auth_header_name, c.upstream_api_key, c.available_models, c.test_model, c.test_pricing_model_id FROM channels c JOIN channel_groups g ON g.id=c.channel_group_id AND g.deleted_at IS NULL WHERE c.deleted_at IS NULL ORDER BY c.id").fetch_all(&mut **transaction).await?;
+        super::upstream_credentials::resolve_bindings(
+            &mut channels,
+            &groups,
+            &super::upstream_credentials::pg_records(transaction).await?,
+            &super::upstream_credentials::pg_bindings(transaction).await?,
+        )?;
         let proxies = sqlx::query_as::<_, ProxyRecord>("SELECT id, name, proxy_url, username, password, no_proxy_hosts, enabled FROM proxies ORDER BY id").fetch_all(&mut **transaction).await?;
         let templates = sqlx::query_as::<_, ConfigTemplateRecord>(
             "SELECT id, name, description, document, enabled FROM config_templates ORDER BY id",
@@ -5360,7 +5395,19 @@ impl PostgresControlPlaneRepository {
         let api_keys = sqlx::query_as::<_, ControlPlaneApiKey>("SELECT k.id, k.user_id, u.status AS user_status, k.name, k.secret_value AS secret, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount, k.updated_at FROM api_keys k JOIN users u ON u.id=k.user_id WHERE NOT k.is_system AND k.deleted_at IS NULL AND u.deleted_at IS NULL ORDER BY k.id").fetch_all(&self.pool).await?;
         let api_key_policies = sqlx::query_as::<_, ControlPlaneApiKeyPolicy>("SELECT id,name,allowed_group_ids,allowed_channel_ids,enabled,created_at,updated_at FROM api_key_policies ORDER BY id").fetch_all(&self.pool).await?;
         let channel_groups = sqlx::query_as::<_, ControlPlaneChannelGroup>("SELECT id,name,api_format::text AS api_format,connector_kind,connector_pool_id,request_compression,sharing_only,enabled,status_statistics_enabled,updated_at FROM channel_groups WHERE deleted_at IS NULL ORDER BY id").fetch_all(&self.pool).await?;
-        let channels = sqlx::query_as::<_, ControlPlaneChannelRow>("SELECT c.id,c.channel_group_id,c.api_format::text AS api_format,g.connector_kind,(g.connector_kind <> 'openai_compatible') AS provider_managed,c.name,c.base_url,CASE WHEN g.connector_kind='codex_oauth' THEN (c.enabled AND COALESCE(co.enabled,false)) ELSE c.enabled END AS enabled,c.supports_websocket,c.supports_standalone_web_search,c.auto_disabled,c.auto_disabled_reason,c.auto_disable_allowed,c.billing_multiplier,c.proxy_id,c.config_template_id,c.connect_timeout_ms,c.response_header_timeout_ms,c.stream_idle_timeout_ms,c.upstream_auth_kind,c.upstream_auth_header_name,(c.upstream_api_key IS NOT NULL) AS upstream_credential_configured,c.available_models,c.test_model,c.test_pricing_model_id,c.created_at,c.updated_at FROM channels c JOIN channel_groups g ON g.id=c.channel_group_id AND g.deleted_at IS NULL LEFT JOIN codex_oauth_credential_channels projection ON projection.channel_id=c.id LEFT JOIN codex_oauth_credentials co ON co.channel_id=projection.credential_id WHERE c.deleted_at IS NULL AND (g.connector_kind <> 'codex_oauth' OR (co.channel_id IS NOT NULL AND co.deleted_at IS NULL)) ORDER BY c.id").fetch_all(&self.pool).await?;
+        let channels = sqlx::query_as::<_, ControlPlaneChannelRow>(
+            "SELECT c.id,c.channel_group_id,c.api_format::text AS api_format,g.connector_kind,
+             (g.connector_kind <> 'openai_compatible') AS provider_managed,c.name,c.base_url,
+             CASE WHEN g.connector_kind='codex_oauth' THEN (c.enabled AND COALESCE(co.enabled,false)) ELSE c.enabled END AS enabled,
+             c.supports_websocket,c.supports_standalone_web_search,c.auto_disabled,c.auto_disabled_reason,
+             c.auto_disable_allowed,c.billing_multiplier,c.proxy_id,c.config_template_id,c.connect_timeout_ms,
+             c.response_header_timeout_ms,c.stream_idle_timeout_ms,c.credential_id,c.available_models,
+             c.test_model,c.test_pricing_model_id,c.created_at,c.updated_at
+             FROM channels c JOIN channel_groups g ON g.id=c.channel_group_id AND g.deleted_at IS NULL
+             LEFT JOIN codex_oauth_credential_channels projection ON projection.channel_id=c.id
+             LEFT JOIN codex_oauth_credentials co ON co.channel_id=projection.credential_id
+             WHERE c.deleted_at IS NULL AND (g.connector_kind <> 'codex_oauth' OR (co.channel_id IS NOT NULL AND co.deleted_at IS NULL))
+             ORDER BY c.id").fetch_all(&self.pool).await?;
         let channels = channels.into_iter().map(Into::into).collect::<Vec<_>>();
         let model_rule_rows = sqlx::query_as::<_, ControlPlaneModelRuleRow>(
             "SELECT profile.id,model.id AS model_id, \
@@ -5457,7 +5504,17 @@ impl PostgresControlPlaneRepository {
         id: Uuid,
     ) -> Result<Option<ControlPlaneChannelDetail>, RepositoryError> {
         sqlx::query_as::<_, ControlPlaneChannelDetail>(
-            "SELECT c.id,c.channel_group_id,c.api_format::text AS api_format,g.connector_kind,(g.connector_kind <> 'openai_compatible') AS provider_managed,c.name,c.base_url,CASE WHEN g.connector_kind='codex_oauth' THEN (c.enabled AND COALESCE(co.enabled,false)) ELSE c.enabled END AS enabled,c.supports_websocket,c.supports_standalone_web_search,c.auto_disabled,c.auto_disabled_reason,c.auto_disable_allowed,c.billing_multiplier,c.proxy_id,c.config_template_id,c.override_document,c.connect_timeout_ms,c.response_header_timeout_ms,c.stream_idle_timeout_ms,c.upstream_auth_kind,c.upstream_auth_header_name,c.upstream_api_key,(c.upstream_api_key IS NOT NULL) AS upstream_credential_configured,c.available_models,c.test_model,c.test_pricing_model_id,c.created_at,c.updated_at FROM channels c JOIN channel_groups g ON g.id=c.channel_group_id AND g.deleted_at IS NULL LEFT JOIN codex_oauth_credential_channels projection ON projection.channel_id=c.id LEFT JOIN codex_oauth_credentials co ON co.channel_id=projection.credential_id WHERE c.id=$1 AND c.deleted_at IS NULL AND (g.connector_kind <> 'codex_oauth' OR (co.channel_id IS NOT NULL AND co.deleted_at IS NULL))",
+            "SELECT c.id,c.channel_group_id,c.api_format::text AS api_format,g.connector_kind,
+             (g.connector_kind <> 'openai_compatible') AS provider_managed,c.name,c.base_url,
+             CASE WHEN g.connector_kind='codex_oauth' THEN (c.enabled AND COALESCE(co.enabled,false)) ELSE c.enabled END AS enabled,
+             c.supports_websocket,c.supports_standalone_web_search,c.auto_disabled,c.auto_disabled_reason,
+             c.auto_disable_allowed,c.billing_multiplier,c.proxy_id,c.config_template_id,c.override_document,
+             c.connect_timeout_ms,c.response_header_timeout_ms,c.stream_idle_timeout_ms,c.credential_id,
+             c.available_models,c.test_model,c.test_pricing_model_id,c.created_at,c.updated_at
+             FROM channels c JOIN channel_groups g ON g.id=c.channel_group_id AND g.deleted_at IS NULL
+             LEFT JOIN codex_oauth_credential_channels projection ON projection.channel_id=c.id
+             LEFT JOIN codex_oauth_credentials co ON co.channel_id=projection.credential_id
+             WHERE c.id=$1 AND c.deleted_at IS NULL AND (g.connector_kind <> 'codex_oauth' OR (co.channel_id IS NOT NULL AND co.deleted_at IS NULL))",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -6311,6 +6368,26 @@ impl PostgresControlPlaneRepository {
                 )
                 .await
             }
+            ControlPlaneMutation::CreateUpstreamCredential(input) => {
+                super::upstream_credentials::pg_save(transaction, Uuid::new_v4(), input, None).await
+            }
+            ControlPlaneMutation::UpdateUpstreamCredential {
+                id,
+                input,
+                expected_updated_at,
+            } => {
+                super::upstream_credentials::pg_save(
+                    transaction,
+                    id,
+                    input,
+                    Some(expected_updated_at),
+                )
+                .await
+            }
+            ControlPlaneMutation::DeleteUpstreamCredential {
+                id,
+                expected_updated_at,
+            } => super::upstream_credentials::pg_delete(transaction, id, expected_updated_at).await,
             ControlPlaneMutation::CreateProxy(input) => {
                 proxy_insert(transaction, Uuid::new_v4(), input).await
             }
@@ -7242,7 +7319,16 @@ async fn channel_audit(
     // Audit snapshots remain allowlisted even though authorized detail reads
     // expose the stored credential and transform document for editing.
     let value = sqlx::query_scalar::<_, Value>(
-        "SELECT json_build_object('id',id,'channel_group_id',channel_group_id,'api_format',api_format,'name',name,'base_url',base_url,'enabled',enabled,'supports_websocket',supports_websocket,'supports_standalone_web_search',supports_standalone_web_search,'auto_disabled',auto_disabled,'auto_disabled_reason',auto_disabled_reason,'auto_disable_allowed',auto_disable_allowed,'billing_multiplier',billing_multiplier,'proxy_id',proxy_id,'config_template_id',config_template_id,'connect_timeout_ms',connect_timeout_ms,'response_header_timeout_ms',response_header_timeout_ms,'stream_idle_timeout_ms',stream_idle_timeout_ms,'upstream_auth_kind',upstream_auth_kind,'upstream_auth_header_name',upstream_auth_header_name,'upstream_credential_configured',(upstream_api_key IS NOT NULL),'available_models',available_models,'test_model',test_model,'test_pricing_model_id',test_pricing_model_id,'deleted_at',deleted_at,'deleted_by',deleted_by,'created_at',created_at,'updated_at',updated_at) FROM channels WHERE id=$1 FOR UPDATE",
+        "SELECT json_build_object('id',id,'channel_group_id',channel_group_id,'api_format',api_format,
+         'name',name,'base_url',base_url,'enabled',enabled,'supports_websocket',supports_websocket,
+         'supports_standalone_web_search',supports_standalone_web_search,'auto_disabled',auto_disabled,
+         'auto_disabled_reason',auto_disabled_reason,'auto_disable_allowed',auto_disable_allowed,
+         'billing_multiplier',billing_multiplier,'proxy_id',proxy_id,'config_template_id',config_template_id,
+         'connect_timeout_ms',connect_timeout_ms,'response_header_timeout_ms',response_header_timeout_ms,
+         'stream_idle_timeout_ms',stream_idle_timeout_ms,'credential_id',credential_id,
+         'available_models',available_models,'test_model',test_model,'test_pricing_model_id',test_pricing_model_id,
+         'deleted_at',deleted_at,'deleted_by',deleted_by,'created_at',created_at,'updated_at',updated_at)
+         FROM channels WHERE id=$1 FOR UPDATE",
     )
     .bind(id)
     .fetch_optional(&mut **transaction)
@@ -8543,7 +8629,7 @@ async fn channel_resource_soft_delete(
              connect_timeout_ms=NULL,response_header_timeout_ms=NULL, \
              stream_idle_timeout_ms=NULL, \
              upstream_auth_kind='none',upstream_auth_header_name=NULL, \
-             upstream_api_key=NULL,available_models='{}'::text[], \
+             upstream_api_key=NULL,credential_id=NULL,available_models='{}'::text[], \
              test_model=NULL,test_pricing_model_id=NULL, \
              deleted_at=now(),deleted_by=$2 \
          WHERE id=ANY($1) AND deleted_at IS NULL",
@@ -8624,6 +8710,12 @@ async fn channel_insert(
     if connector_kind != "openai_compatible" {
         return Err(RepositoryError::Validation);
     }
+    super::upstream_credentials::pg_validate_binding(
+        transaction,
+        input.credential_id,
+        &input.base_url,
+    )
+    .await?;
     if input
         .override_document
         .as_ref()
@@ -8632,9 +8724,6 @@ async fn channel_insert(
         return Err(RepositoryError::Validation);
     }
     if ApiFormat::parse(&input.api_format).is_none() {
-        return Err(RepositoryError::Validation);
-    }
-    if matches!(input.upstream_api_key, Some(None)) && input.upstream_auth_kind != "none" {
         return Err(RepositoryError::Validation);
     }
     if input
@@ -8688,10 +8777,9 @@ async fn channel_insert(
         return Err(RepositoryError::NotFound);
     }
     let updated_at = if create {
-        sqlx::query_scalar("INSERT INTO channels (id,channel_group_id,api_format,name,base_url,enabled,billing_multiplier,proxy_id,config_template_id,override_document,connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms,upstream_auth_kind,upstream_auth_header_name,upstream_api_key,available_models,test_model,test_pricing_model_id,auto_disable_allowed,supports_websocket,supports_standalone_web_search) VALUES ($1,$2,$3::api_format,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING updated_at").bind(id).bind(input.channel_group_id).bind(&input.api_format).bind(&input.name).bind(&input.base_url).bind(input.enabled).bind(input.billing_multiplier.unwrap_or_else(default_billing_multiplier)).bind(input.proxy_id).bind(input.config_template_id).bind(&override_document).bind(input.connect_timeout_ms).bind(input.response_header_timeout_ms).bind(input.stream_idle_timeout_ms).bind(&input.upstream_auth_kind).bind(&input.upstream_auth_header_name).bind(input.upstream_api_key.flatten()).bind(&input.available_models).bind(&input.test_model).bind(input.test_pricing_model_id).bind(input.auto_disable_allowed).bind(input.supports_websocket).bind(input.supports_standalone_web_search).fetch_one(&mut **transaction).await?
+        sqlx::query_scalar("INSERT INTO channels (id,channel_group_id,api_format,name,base_url,enabled,billing_multiplier,proxy_id,config_template_id,override_document,connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms,upstream_auth_kind,credential_id,available_models,test_model,test_pricing_model_id,auto_disable_allowed,supports_websocket,supports_standalone_web_search) VALUES ($1,$2,$3::api_format,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'none',$14,$15,$16,$17,$18,$19,$20) RETURNING updated_at").bind(id).bind(input.channel_group_id).bind(&input.api_format).bind(&input.name).bind(&input.base_url).bind(input.enabled).bind(input.billing_multiplier.unwrap_or_else(default_billing_multiplier)).bind(input.proxy_id).bind(input.config_template_id).bind(&override_document).bind(input.connect_timeout_ms).bind(input.response_header_timeout_ms).bind(input.stream_idle_timeout_ms).bind(input.credential_id).bind(&input.available_models).bind(&input.test_model).bind(input.test_pricing_model_id).bind(input.auto_disable_allowed).bind(input.supports_websocket).bind(input.supports_standalone_web_search).fetch_one(&mut **transaction).await?
     } else {
-        let credential_present = input.upstream_api_key.is_some();
-        sqlx::query_scalar("UPDATE channels SET channel_group_id=$2,api_format=$3::api_format,name=$4,base_url=$5,enabled=$6,billing_multiplier=COALESCE($7,billing_multiplier),proxy_id=$8,config_template_id=$9,override_document=CASE WHEN $10 THEN $11 ELSE override_document END,connect_timeout_ms=$12,response_header_timeout_ms=$13,stream_idle_timeout_ms=$14,upstream_auth_kind=$15,upstream_auth_header_name=$16,upstream_api_key=CASE WHEN $17 THEN $18 ELSE upstream_api_key END,available_models=$19,test_model=$20,test_pricing_model_id=$21,auto_disable_allowed=$22,supports_websocket=$23,supports_standalone_web_search=$24 WHERE id=$1 AND updated_at=$25 AND deleted_at IS NULL RETURNING updated_at").bind(id).bind(input.channel_group_id).bind(&input.api_format).bind(&input.name).bind(&input.base_url).bind(input.enabled).bind(input.billing_multiplier).bind(input.proxy_id).bind(input.config_template_id).bind(override_document_present).bind(&override_document).bind(input.connect_timeout_ms).bind(input.response_header_timeout_ms).bind(input.stream_idle_timeout_ms).bind(&input.upstream_auth_kind).bind(&input.upstream_auth_header_name).bind(credential_present).bind(input.upstream_api_key.flatten()).bind(&input.available_models).bind(&input.test_model).bind(input.test_pricing_model_id).bind(input.auto_disable_allowed).bind(input.supports_websocket).bind(input.supports_standalone_web_search).bind(expected_updated_at.expect("PUT version")).fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?
+        sqlx::query_scalar("UPDATE channels SET channel_group_id=$2,api_format=$3::api_format,name=$4,base_url=$5,enabled=$6,billing_multiplier=COALESCE($7,billing_multiplier),proxy_id=$8,config_template_id=$9,override_document=CASE WHEN $10 THEN $11 ELSE override_document END,connect_timeout_ms=$12,response_header_timeout_ms=$13,stream_idle_timeout_ms=$14,credential_id=$15,available_models=$16,test_model=$17,test_pricing_model_id=$18,auto_disable_allowed=$19,supports_websocket=$20,supports_standalone_web_search=$21 WHERE id=$1 AND updated_at=$22 AND deleted_at IS NULL RETURNING updated_at").bind(id).bind(input.channel_group_id).bind(&input.api_format).bind(&input.name).bind(&input.base_url).bind(input.enabled).bind(input.billing_multiplier).bind(input.proxy_id).bind(input.config_template_id).bind(override_document_present).bind(&override_document).bind(input.connect_timeout_ms).bind(input.response_header_timeout_ms).bind(input.stream_idle_timeout_ms).bind(input.credential_id).bind(&input.available_models).bind(&input.test_model).bind(input.test_pricing_model_id).bind(input.auto_disable_allowed).bind(input.supports_websocket).bind(input.supports_standalone_web_search).bind(expected_updated_at.expect("PUT version")).fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?
     };
     Ok(MutationResult {
         id,
@@ -9547,6 +9635,8 @@ pub enum RepositoryError {
     ProtectedUserGroup,
     #[error("the proxy is still assigned to a channel or pending OAuth flow")]
     ProxyInUse,
+    #[error("upstream credential is referenced by a channel")]
+    CredentialInUse,
     #[error("an administrator cannot delete their own account")]
     CannotDeleteSelf,
     #[error("the last active administrator cannot be deleted")]

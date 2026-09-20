@@ -371,6 +371,8 @@ fn gateway(
             enabled: true,
         }],
         channels: vec![ChannelRecord {
+            credential: None,
+            credential_binding_revision: Uuid::nil(),
             id: channel_id,
             channel_group_id: group_id,
             api_format: format.api_format_name().into(),

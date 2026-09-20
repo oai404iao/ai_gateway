@@ -13,6 +13,8 @@ import {
   CHANNEL,
   CHANNEL_DELETION_IMPACT,
   CHANNEL_DETAIL,
+  UPSTREAM_CREDENTIAL,
+  UPSTREAM_CREDENTIAL_DETAIL,
   CHANNEL_GROUP,
   CHANNEL_GROUP_STATUS_REPORT,
   CONFIG_TEMPLATE,
@@ -216,6 +218,9 @@ export const handlers = [
     }),
   ),
   http.get("/console/v1/routing/channels", () => HttpResponse.json([CHANNEL])),
+  http.get("/console/v1/routing/upstream-credentials", () => HttpResponse.json([UPSTREAM_CREDENTIAL])),
+  http.get("/console/v1/routing/upstream-credentials/:id", () =>
+    HttpResponse.json(UPSTREAM_CREDENTIAL_DETAIL, { headers: { ETag: `"${UPSTREAM_CREDENTIAL.updated_at}"` } })),
   http.get("/console/v1/routing/channels/:id", () =>
     HttpResponse.json(CHANNEL_DETAIL, {
       headers: { ETag: `"${CHANNEL.updated_at}"` },

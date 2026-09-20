@@ -1798,6 +1798,8 @@ mod tests {
                 .iter()
                 .zip(group_ids.iter())
                 .map(|(id, group_id)| ChannelRecord {
+                    credential: None,
+                    credential_binding_revision: Uuid::nil(),
                     id: *id,
                     channel_group_id: *group_id,
                     api_format: format.as_str().into(),
@@ -2069,6 +2071,8 @@ mod tests {
                 enabled: true,
             }],
             channels: vec![ChannelRecord {
+                credential: None,
+                credential_binding_revision: Uuid::nil(),
                 id: channel_id,
                 channel_group_id: group_id,
                 api_format: "open_ai_chat_completions".into(),

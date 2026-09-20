@@ -431,6 +431,19 @@ impl ResponsesWebSocketSession {
                 return SessionAction::Close;
             }
             SelectionResult::NoHealthyChannel { rule } => {
+                let error = if parsed.previous_response_id {
+                    ProxyError {
+                        status: StatusCode::NOT_FOUND,
+                        message: PREVIOUS_RESPONSE_NOT_FOUND_MESSAGE.to_owned(),
+                        error_type: "invalid_request_error",
+                        code: Some(PREVIOUS_RESPONSE_NOT_FOUND_CODE),
+                        param: None,
+                        authenticate: false,
+                        retry_after: None,
+                    }
+                } else {
+                    ProxyError::websocket_unavailable()
+                };
                 self.proxy.record_no_healthy_channel(
                     &api_key,
                     RequestLogSource::Client,
@@ -442,11 +455,17 @@ impl ResponsesWebSocketSession {
                     &rule,
                     started_wall_at,
                     started_at,
+                    &error,
                 );
+                if parsed.previous_response_id {
+                    self.release_pinned(pinned.take());
+                    send_previous_response_not_found(client).await;
+                    return SessionAction::Continue;
+                }
                 // A 503 wrapped event is treated as terminal server overload
                 // by Codex. 426 remains a transport failure, allowing its WS
                 // retry budget to reach HTTP fallback without replaying here.
-                send_proxy_error(client, ProxyError::websocket_unavailable()).await;
+                send_proxy_error(client, error).await;
                 return SessionAction::Close;
             }
         };
@@ -1446,6 +1465,11 @@ async fn reject_previous_response_not_found(
         Some(PREVIOUS_RESPONSE_NOT_FOUND_CODE),
         PREVIOUS_RESPONSE_NOT_FOUND_MESSAGE,
     );
+    send_previous_response_not_found(client).await;
+    SessionAction::Continue
+}
+
+async fn send_previous_response_not_found(client: &mut WebSocket) {
     send_json(
         client,
         json!({
@@ -1459,7 +1483,6 @@ async fn reject_previous_response_not_found(
         }),
     )
     .await;
-    SessionAction::Continue
 }
 
 async fn send_proxy_error(client: &mut WebSocket, error: ProxyError) {

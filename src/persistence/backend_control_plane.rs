@@ -110,6 +110,27 @@ pub struct ControlPlaneRepository {
 }
 
 impl ControlPlaneRepository {
+    pub async fn upstream_credentials(
+        &self,
+    ) -> Result<Vec<super::UpstreamCredentialView>, RepositoryError> {
+        match &self.backend {
+            Backend::Postgres(repository) => repository.upstream_credentials().await,
+            #[cfg(feature = "sqlite-backend")]
+            Backend::Sqlite(repository) => repository.upstream_credentials().await,
+        }
+    }
+
+    pub async fn upstream_credential_detail(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<super::UpstreamCredentialDetail>, RepositoryError> {
+        match &self.backend {
+            Backend::Postgres(repository) => repository.upstream_credential_detail(id).await,
+            #[cfg(feature = "sqlite-backend")]
+            Backend::Sqlite(repository) => repository.upstream_credential_detail(id).await,
+        }
+    }
+
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
         Self {

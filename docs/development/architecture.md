@@ -162,6 +162,12 @@ OpenAI-compatible edit 直接回放，或在模型别名存在时使用原 bound
 
 ## 进程内 Upstream Connector
 
+普通渠道通过 `credential_id` 引用独立上游身份，仓储在控制面事务内解析静态认证、
+精确 Base URL 范围与启用状态，再编译完整快照；数据面不逐请求读取凭证数据库。
+通用凭证轮换不改变渠道、模型或权限；Codex 身份仍走下述专属生命周期。
+凭证 revision 与渠道 binding revision 共同参与 WebSocket 连接身份，池归还路径也验证
+最新有效范围，避免在轮换或改绑期间借出的旧连接重新入池。
+
 `src/application/connector.rs` 是静态链接的 Connector registry。代理主循环只调用统一的
 prepare、body adaptation、URL、Header injection、pre-header retry capability 和 response
 observation 接口，不包含 provider 的 OAuth claim、路径或 Header 细节。

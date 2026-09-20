@@ -522,6 +522,8 @@ struct GatewayHarness {
 
 #[derive(Clone, Copy)]
 struct WebSocketControls {
+    credential_revision: u128,
+    credential_binding_revision: u128,
     system_enabled: bool,
     user_enabled: bool,
     proxy_permission: bool,
@@ -539,6 +541,8 @@ struct WebSocketControls {
 impl Default for WebSocketControls {
     fn default() -> Self {
         Self {
+            credential_revision: 1,
+            credential_binding_revision: 1,
             system_enabled: true,
             user_enabled: true,
             proxy_permission: true,
@@ -571,9 +575,9 @@ async fn gateway_harness_with_controls(
     outbound_proxy: Option<ProxyRecord>,
     controls: WebSocketControls,
 ) -> GatewayHarness {
-    let api_key_id = Uuid::new_v4();
-    let group_id = Uuid::new_v4();
-    let channel_id = Uuid::new_v4();
+    let api_key_id = Uuid::from_u128(101);
+    let group_id = Uuid::from_u128(102);
+    let channel_id = Uuid::from_u128(103);
     let proxy_id = outbound_proxy.as_ref().map(|proxy| proxy.id);
     let mut records = ControlPlaneRecords {
         api_keys: vec![ApiKeyRecord {
@@ -608,6 +612,11 @@ async fn gateway_harness_with_controls(
             enabled: controls.group_enabled,
         }],
         channels: vec![ChannelRecord {
+            credential: Some(ai_gateway::persistence::CredentialIdentity {
+                id: Uuid::from_u128(104),
+                revision: Uuid::from_u128(controls.credential_revision),
+            }),
+            credential_binding_revision: Uuid::from_u128(controls.credential_binding_revision),
             id: channel_id,
             channel_group_id: group_id,
             api_format: "open_ai_responses".into(),
@@ -1204,6 +1213,70 @@ async fn responses_websocket_reports_missing_state_without_dispatching_increment
         logs[1].error_code.as_deref(),
         Some("previous_response_not_found")
     );
+}
+
+#[tokio::test]
+async fn credential_disabling_rotation_and_rebinding_invalidate_pinned_continuations() {
+    for controls in [
+        WebSocketControls {
+            channel_enabled: false,
+            ..WebSocketControls::default()
+        },
+        WebSocketControls {
+            credential_revision: 2,
+            ..WebSocketControls::default()
+        },
+        WebSocketControls {
+            credential_binding_revision: 2,
+            ..WebSocketControls::default()
+        },
+    ] {
+        let upstream = start_mock_upstream().await;
+        let gateway = gateway_harness(&upstream).await;
+        let (mut websocket, _) = connect_async(websocket_request(
+            gateway.server.address,
+            CLIENT_KEY,
+            "credential-revision",
+        ))
+        .await
+        .unwrap();
+        let first = response_create(&mut websocket, None).await;
+        let response_id = completed_response_id(&first).to_owned();
+        let replacement = gateway_harness_with_controls(&upstream, None, controls).await;
+        gateway
+            .runtime
+            .replace_snapshot(replacement.runtime.snapshot());
+        let missing = response_create(&mut websocket, Some(&response_id)).await;
+        assert_previous_response_not_found(&missing);
+        assert_eq!(upstream.requests().len(), 1);
+        assert_eq!(upstream.handshakes().len(), 1);
+        if !controls.channel_enabled {
+            let recovered = gateway_harness_with_controls(
+                &upstream,
+                None,
+                WebSocketControls {
+                    credential_revision: 3,
+                    ..WebSocketControls::default()
+                },
+            )
+            .await;
+            gateway
+                .runtime
+                .replace_snapshot(recovered.runtime.snapshot());
+        }
+        let retried = response_create(&mut websocket, None).await;
+        assert_eq!(completed_response_id(&retried), "resp-2");
+        assert_eq!(upstream.handshakes().len(), 2);
+        close_and_wait(websocket).await;
+        assert!(
+            gateway
+                .logs
+                .events()
+                .iter()
+                .any(|event| event.response_status_code == Some(404)
+                    && event.error_code.as_deref() == Some("previous_response_not_found"))
+        );
+    }
 }
 
 #[tokio::test]

@@ -1,11 +1,11 @@
 # 上游身份、渠道能力与路由目标重构
 
-> 状态：提案。三个阶段在同一 PR 中按独立 commit 推进；当前先实施第一阶段。
-> 本文描述目标设计与验收条件，不代表现有运行时已经支持。协议转换不在本次范围。
+> 状态：部分实现。第一阶段已实现并通过验收；第二、三阶段仍为设计。
+> 三个阶段在同一 PR 中按独立 commit 推进。协议转换不在本次范围。
 
 ## 范围与决策
 
-现有普通渠道同时保存接入地址、认证材料、协议格式和模型目录；Codex 则把一个逻辑身份
+重构前普通渠道同时保存接入地址、认证材料、协议格式和模型目录；Codex 则把一个逻辑身份
 投影为 Responses、Images 两个渠道。搜索依附 Responses 能力开关。
 当前实现入口见[架构](architecture.md)、[Codex Connector](codex-oauth-connector.md)、
 [数据库架构](database-architecture.md)和[拼车账本](codex-sharing.md)。
@@ -97,6 +97,9 @@ HTTP/JSON、HTTP/SSE、WebSocket、multipart 是经过验证的支持组合，�
 PostgreSQL 与 SQLite 均追加有序 migration，不修改已发布迁移。
 每个存量有认证的普通渠道创建独立凭证，回填相同认证材料和该渠道的精确目标范围；
 即使密钥文本相同也不合并。无认证渠道保留空引用。迁移后渠道不再保存认证材料副本。
+第一阶段暂保留渠道表的三个旧认证列为空，并用约束/触发器禁止写入材料；这样不用在
+SQLite 中提前重建渠道及其全部历史外键，也无需重写旧 Codex 投影函数。
+它们不再是 Console 契约或认证来源，后续渠道能力重构可一并删除这些空列。
 
 Codex 公共身份沿用既有 credential UUID，也就是既有 Responses channel UUID。
 两个投影都引用该公共身份。第一阶段可以保留专属表历史列名 `channel_id`，但其含义是
@@ -157,6 +160,8 @@ Console 新增凭证管理入口；渠道表单选择凭证并展示身份，不
 并对已空闲、当前借出及之后归还的连接执行同一有效性检查；仅清理空闲池不足以保证失效。
 旧连接失效后的 continuation 返回 `404 previous_response_not_found` 且不 dispatch；
 无 previous-response 的新请求重新连接。禁止用显示名称或更新时间精度代替 generation。
+渠道另外持有 `credential_binding_revision`，每次改绑推进，避免 A → 空/B → A 后旧连接
+重新变得有效；无认证绑定也受该 revision 隔离。
 
 入站/出站 Header 白名单、Codex 隐私归一化、客户端权限、Images 不可重试、
 WebSocket 连接局部状态和拼车准入顺序全部维持。无需更改请求白名单。
@@ -173,6 +178,12 @@ WebSocket 连接局部状态和拼车准入顺序全部维持。无需更改请�
 8. Console 组件与浏览器验证创建凭证、跨渠道复用、轮换及冲突处理。
 9. 运行格式、lint、Rust/Console 全量检查、API drift、双后端系统 E2E 和真实上游 smoke。
    付费 smoke 已获本任务授权；性能压测未获授权，不运行。
+
+本阶段已通过 PostgreSQL/SQLite 全量测试、存量迁移与拒绝升级测试、Console 契约和
+组件测试、33 项浏览器 E2E，以及两种后端的真实浏览器/Codex/Pi 系统验收。
+已授权的真实上游 smoke 共 8 项通过，涵盖 Chat Completions、Responses HTTP/SSE/WS、
+独立搜索及 Images 生成/编辑。前端全量测试使用 `--maxWorkers=2` 通过；
+默认并发曾触发现有共享席位和模型价格测试的异步等待失败，未改动这些无关测试。
 
 ## 第二阶段：渠道能力
 

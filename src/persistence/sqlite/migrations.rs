@@ -45,6 +45,10 @@ pub struct SqliteMigration<'a> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum SqliteMigrationError {
+    #[error(
+        "channel {channel_id} has invalid legacy authentication or credential scope; repair or delete it before upgrading"
+    )]
+    LegacyCredential { channel_id: Uuid },
     #[error("SQLite migration manifest is invalid or requests nontransactional execution")]
     InvalidManifest,
     #[error("SQLite migration history differs from this binary")]
@@ -214,6 +218,28 @@ pub(super) async fn run(
     }
     let applied = validate_history(&mut transaction, migrations).await?;
     for migration in &migrations[applied..] {
+        if migration.version == 4
+            && migration.description == "independent upstream credential identities"
+        {
+            let rows = sqlx::query_as::<_, (super::SqliteUuid, String, String, String, Option<String>, Option<String>)>(
+                "SELECT c.id,c.name,c.base_url,c.upstream_auth_kind,c.upstream_auth_header_name,c.upstream_api_key
+                 FROM channels c JOIN channel_groups g ON g.id=c.channel_group_id
+                 WHERE c.deleted_at IS NULL AND g.connector_kind='openai_compatible' ORDER BY c.id")
+                .fetch_all(&mut *transaction).await?;
+            for (channel_id, name, target, kind, header, secret) in rows {
+                if !crate::persistence::upstream_credentials::validate_legacy_auth(
+                    &name,
+                    &target,
+                    &kind,
+                    header.as_deref(),
+                    secret.as_deref(),
+                ) {
+                    return Err(SqliteMigrationError::LegacyCredential {
+                        channel_id: channel_id.0,
+                    });
+                }
+            }
+        }
         sqlx::Executor::execute(
             &mut *transaction,
             sqlx::AssertSqlSafe(migration.sql.to_owned()),

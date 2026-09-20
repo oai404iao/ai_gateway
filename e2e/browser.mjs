@@ -32,6 +32,28 @@ try {
   const storage = await page.evaluate(() => Object.entries(localStorage));
   assert.ok(storage.every(([key]) => !/token|session|auth/i.test(key)), "auth must not persist in localStorage");
 
+  const credentialUrl = `${data.console}/console/v1/routing/upstream-credentials/${data.upstream_credential_id}`;
+  const credentialLoaded = page.waitForResponse((response) => response.url() === credentialUrl && response.request().method() === "GET");
+  await page.goto(`${data.console}/admin/routing/upstream-credentials/${data.upstream_credential_id}`);
+  const credentialEtag = (await credentialLoaded).headers().etag;
+  await expect(page.getByLabel("Name", { exact: true })).toHaveValue("System E2E shared identity");
+  await expect(page.getByLabel("Credential secret", { exact: true })).toHaveValue("");
+  await expect(page.getByRole("button", { name: "Delete credential", exact: true })).toBeDisabled();
+  await expect(page.getByRole("link", { name: "system-e2e-disabled-reference", exact: true })).toBeVisible();
+  await page.getByLabel("Credential secret", { exact: true }).fill(data.upstream_rotated_secret);
+  const credentialSaving = page.waitForResponse((response) => response.url() === credentialUrl && response.request().method() === "PUT");
+  await page.getByRole("button", { name: "Save credential", exact: true }).click();
+  const credentialSaved = await credentialSaving;
+  assert.equal(credentialSaved.status(), 200);
+  assert.equal(credentialSaved.request().headers()["if-match"], credentialEtag);
+  const credentialRead = await context.request.get(credentialUrl, { headers: { Authorization: `Bearer ${data.token}` } });
+  const credential = await credentialRead.json();
+  assert.equal(credential.secret, data.upstream_rotated_secret);
+  assert.equal(credential.channel_ids.length, 2);
+  await page.goto(`${data.console}/admin/routing/channels/${data.channel_id}`);
+  await expect(page.getByLabel("Upstream credential", { exact: true })).toContainText("System E2E shared identity");
+  await expect(page.getByLabel("Upstream API key", { exact: true })).toHaveCount(0);
+
   const protocolUrl = `${data.console}/console/v1${data.protocol_path}`;
   const loaded = page.waitForResponse((response) =>
     response.url() === protocolUrl && response.request().method() === "GET",
@@ -75,6 +97,7 @@ try {
   console.log(JSON.stringify({
     id: "console-route-to-settlement", status: "passed",
     browser: browser.version(), refresh_rotated: true, etag_checked: true,
+    shared_upstream_credential_rotated: true,
   }));
 } finally {
   await browser.close();

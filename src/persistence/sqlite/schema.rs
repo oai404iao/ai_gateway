@@ -18,4 +18,9 @@ pub(super) const MIGRATIONS: &[SqliteMigration<'static>] = &[
         description: "durable Codex external-operation fences",
         sql: include_str!("../../../migrations/sqlite/0003_codex_operations.sql"),
     },
+    SqliteMigration {
+        version: 4,
+        description: "independent upstream credential identities",
+        sql: include_str!("../../../migrations/sqlite/0004_upstream_credentials.sql"),
+    },
 ];

@@ -15,6 +15,10 @@ const COMMIT_BARRIERS: &[i64] = &[34, 46];
 
 #[derive(Debug, Error)]
 pub enum MigrationRunError {
+    #[error(
+        "channel {channel_id} has invalid legacy authentication or credential scope; repair or delete it before upgrading"
+    )]
+    LegacyCredential { channel_id: uuid::Uuid },
     #[error(transparent)]
     Database(#[from] sqlx::Error),
     #[error(transparent)]
@@ -106,6 +110,24 @@ async fn apply_next_migration_batch(
         .map_or(pending.len(), |index| index + 1);
     let has_more = batch_len < pending.len();
     for migration in pending.into_iter().take(batch_len) {
+        if migration.version == 64 {
+            let rows = sqlx::query_as::<_, (uuid::Uuid, String, String, String, Option<String>, Option<String>)>(
+                "SELECT c.id,c.name,c.base_url,c.upstream_auth_kind,c.upstream_auth_header_name,c.upstream_api_key
+                 FROM channels c JOIN channel_groups g ON g.id=c.channel_group_id
+                 WHERE c.deleted_at IS NULL AND g.connector_kind='openai_compatible' ORDER BY c.id")
+                .fetch_all(&mut *connection).await?;
+            for (channel_id, name, target, kind, header, secret) in rows {
+                if !super::upstream_credentials::validate_legacy_auth(
+                    &name,
+                    &target,
+                    &kind,
+                    header.as_deref(),
+                    secret.as_deref(),
+                ) {
+                    return Err(MigrationRunError::LegacyCredential { channel_id });
+                }
+            }
+        }
         connection.apply("_sqlx_migrations", migration).await?;
     }
     Ok(has_more)

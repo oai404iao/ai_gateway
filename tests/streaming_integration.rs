@@ -133,6 +133,8 @@ fn proxy_service_with_network_policy(
             enabled: true,
         }],
         channels: vec![ChannelRecord {
+            credential: None,
+            credential_binding_revision: Uuid::nil(),
             id: channel_id,
             channel_group_id: group_id,
             api_format: "open_ai_chat_completions".into(),

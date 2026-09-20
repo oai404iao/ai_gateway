@@ -429,6 +429,7 @@ impl ProxyService {
                     &rule,
                     started_wall_at,
                     started_at,
+                    &ProxyError::no_healthy_channel(),
                 );
                 return Err(ProxyError::no_healthy_channel());
             }
@@ -969,12 +970,8 @@ impl ProxyService {
         rule: &CompiledModelRule,
         started_at: chrono::DateTime<chrono::Utc>,
         started: Instant,
+        error: &ProxyError,
     ) {
-        let error = if request_protocol == RequestProtocol::WebSocket {
-            ProxyError::websocket_unavailable()
-        } else {
-            ProxyError::no_healthy_channel()
-        };
         let event = RequestLogEvent {
             id: Uuid::new_v4(),
             started_at,

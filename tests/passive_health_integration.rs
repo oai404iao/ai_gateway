@@ -237,6 +237,8 @@ fn proxy_fixture_with_retry_and_candidates(
             .zip(group_ids.iter())
             .zip(upstream_urls)
             .map(|((id, group_id), base_url)| ChannelRecord {
+                credential: None,
+                credential_binding_revision: Uuid::nil(),
                 id: *id,
                 channel_group_id: *group_id,
                 api_format: "open_ai_chat_completions".into(),

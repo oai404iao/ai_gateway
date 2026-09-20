@@ -3,7 +3,6 @@ import type {
   ConnectorKind,
   RequestCompression,
   SelectionStrategy,
-  UpstreamAuthKind,
   UserRole,
 } from "@/api/types";
 import { translate } from "@/app/i18n";
@@ -26,7 +25,6 @@ export const CONNECTOR_KINDS: readonly ConnectorKind[] = [
 
 export const REQUEST_COMPRESSIONS: readonly RequestCompression[] = ["default", "zstd"];
 
-export const UPSTREAM_AUTH_KINDS: readonly UpstreamAuthKind[] = ["none", "bearer", "header"];
 
 /** Permissions recognized by the data plane. */
 export const PERMISSIONS = ["proxy", "models.read"] as const;
@@ -80,11 +78,6 @@ export function connectorKindLabel(value: ConnectorKind): string {
 
 export function requestCompressionLabel(value: RequestCompression): string {
   return value === "default" ? translate("Default") : "Zstandard (zstd)";
-}
-
-export function upstreamAuthKindLabel(value: UpstreamAuthKind): string {
-  if (value === "none") return translate("No upstream auth");
-  return value === "bearer" ? translate("Bearer token") : translate("Custom header");
 }
 
 export function outcomeLabel(value: string): string {

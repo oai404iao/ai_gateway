@@ -310,9 +310,7 @@ export const CHANNEL: ChannelView = {
   connect_timeout_ms: null,
   response_header_timeout_ms: null,
   stream_idle_timeout_ms: null,
-  upstream_auth_kind: "bearer",
-  upstream_auth_header_name: null,
-  upstream_credential_configured: true,
+  credential_id: "00000000-0000-0000-0000-000000000023",
   available_models: ["openai/gpt-4o-mini"],
   test_model: "openai/gpt-4o-mini",
   test_pricing_model_id: "00000000-0000-0000-0000-000000000030",
@@ -331,8 +329,22 @@ export const CHANNEL_DETAIL: ChannelDetailView = {
       },
     },
   },
-  upstream_api_key: "sk-upstream-test-secret",
 };
+
+export const UPSTREAM_CREDENTIAL = {
+  id: CHANNEL.credential_id!,
+  name: "Shared upstream identity",
+  kind: "bearer" as const,
+  header_name: null,
+  allowed_base_urls: [CHANNEL.base_url],
+  enabled: true,
+  provider_managed: false,
+  channel_ids: [CHANNEL.id],
+  created_at: CHANNEL.created_at,
+  updated_at: CHANNEL.updated_at,
+};
+
+export const UPSTREAM_CREDENTIAL_DETAIL = { ...UPSTREAM_CREDENTIAL, secret: "sk-upstream-test-secret" };
 
 export const API_KEY_OPTIONS: SelfApiKeyOptions = {
   policy_id: API_KEY_POLICY.id,

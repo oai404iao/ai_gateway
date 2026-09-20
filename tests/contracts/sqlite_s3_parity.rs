@@ -73,7 +73,7 @@ impl Backend {
                 .install_schema()
                 .await
                 .expect("infrastructure: SQLite schema must install"),
-            3
+            4
         );
         Self::Sqlite {
             directory,
@@ -410,9 +410,7 @@ async fn world(repositories: &Repositories) -> World {
             connect_timeout_ms: None,
             response_header_timeout_ms: None,
             stream_idle_timeout_ms: None,
-            upstream_auth_kind: "none".into(),
-            upstream_auth_header_name: None,
-            upstream_api_key: None,
+            credential_id: None,
             available_models: vec!["parity-model".into()],
             test_model: None,
             test_pricing_model_id: None,
@@ -1412,9 +1410,7 @@ fn channel_input(group: Uuid, name: &str) -> ChannelInput {
         connect_timeout_ms: None,
         response_header_timeout_ms: None,
         stream_idle_timeout_ms: None,
-        upstream_auth_kind: "none".into(),
-        upstream_auth_header_name: None,
-        upstream_api_key: None,
+        credential_id: None,
         available_models: vec!["parity-model".into()],
         test_model: None,
         test_pricing_model_id: None,
@@ -2564,9 +2560,344 @@ async fn channel_lifecycle_contract_matches_across_backends() {
     run_contract(channel_lifecycle_contract).await;
 }
 
+#[tokio::test]
+async fn reusable_upstream_identity_contract_matches_across_backends() {
+    run_contract(reusable_upstream_identity_contract).await;
+}
+
+async fn reusable_upstream_identity_contract(repositories: Repositories) {
+    use ai_gateway::{domain::UpstreamAuth, persistence::UpstreamCredentialInput};
+    let world = world(&repositories).await;
+    let repository = &repositories.control_plane;
+    let runtime = Arc::new(RuntimeConfig::new(
+        compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap(),
+    ));
+    let coordinator = ControlPlaneCoordinator::new(
+        repository.clone(),
+        Arc::clone(&runtime),
+        RoutingRuntime::new(PassiveHealthPolicy::default()),
+    );
+    let mut input = UpstreamCredentialInput {
+        name: "shared identity".into(),
+        kind: "bearer".into(),
+        header_name: None,
+        secret: Some("identity-first-secret".into()),
+        enabled: true,
+        allowed_base_urls: vec!["https://upstream.example.test".into()],
+    };
+    let created = coordinator
+        .mutate(
+            world.admin,
+            ControlPlaneMutation::CreateUpstreamCredential(input.clone()),
+        )
+        .await
+        .unwrap();
+    let id = created.id;
+    assert!(
+        !created
+            .after_redacted
+            .to_string()
+            .contains("identity-first-secret")
+    );
+    let channel = listed_channel(&repositories, world.channel).await;
+    coordinator
+        .mutate(
+            world.admin,
+            ControlPlaneMutation::UpdateChannel {
+                id: world.channel,
+                input: ChannelInput {
+                    credential_id: Some(id),
+                    ..channel_input(world.group, "bound identity")
+                },
+                expected_updated_at: channel.updated_at,
+            },
+        )
+        .await
+        .unwrap();
+    let second = coordinator.mutate(world.admin, ControlPlaneMutation::CreateChannel(
+        serde_json::from_value(json!({
+            "channel_group_id": world.group, "api_format": "open_ai_chat_completions",
+            "name": "second identity reference", "base_url": "https://upstream.example.test",
+            "credential_id": id, "enabled": false, "available_models": ["parity-model"],
+        })).unwrap(),
+    )).await.unwrap().id;
+    let bound = repository
+        .upstream_credential_detail(id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(bound.credential.channel_ids.len(), 2);
+    let original_revision = repository
+        .load()
+        .await
+        .unwrap()
+        .channels
+        .into_iter()
+        .find(|channel| channel.id == world.channel)
+        .unwrap()
+        .credential
+        .unwrap()
+        .revision;
+    let old_version = bound.credential.updated_at;
+    input.secret = Some("identity-rotated-secret".into());
+    let rotated = coordinator
+        .mutate(
+            world.admin,
+            ControlPlaneMutation::UpdateUpstreamCredential {
+                id,
+                input: input.clone(),
+                expected_updated_at: old_version,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(runtime.snapshot().channel(world.channel).unwrap().upstream_auth(),
+        UpstreamAuth::Bearer(secret) if secret.as_ref()=="identity-rotated-secret")
+    );
+    for record in repository.load().await.unwrap().channels {
+        if [world.channel, second].contains(&record.id) {
+            assert_eq!(
+                record.upstream_api_key.as_deref(),
+                Some("identity-rotated-secret")
+            );
+            assert_ne!(record.credential.unwrap().revision, original_revision);
+        }
+    }
+    assert!(
+        coordinator
+            .mutate(
+                world.admin,
+                ControlPlaneMutation::UpdateUpstreamCredential {
+                    id,
+                    input: input.clone(),
+                    expected_updated_at: old_version,
+                }
+            )
+            .await
+            .is_err()
+    );
+    let before = runtime.snapshot();
+    let mut invalid_scope = input.clone();
+    invalid_scope.allowed_base_urls = vec!["https://unrelated.example.test".into()];
+    assert!(
+        coordinator
+            .mutate(
+                world.admin,
+                ControlPlaneMutation::UpdateUpstreamCredential {
+                    id,
+                    input: invalid_scope,
+                    expected_updated_at: rotated.updated_at,
+                }
+            )
+            .await
+            .is_err()
+    );
+    assert!(Arc::ptr_eq(&before, &runtime.snapshot()));
+    let mut invalid_kind = input.clone();
+    invalid_kind.kind = "header".into();
+    invalid_kind.header_name = Some("x-api-key".into());
+    assert!(
+        coordinator
+            .mutate(
+                world.admin,
+                ControlPlaneMutation::UpdateUpstreamCredential {
+                    id,
+                    input: invalid_kind,
+                    expected_updated_at: rotated.updated_at,
+                }
+            )
+            .await
+            .is_err()
+    );
+    input.secret = None;
+    input.enabled = false;
+    let disabled = coordinator
+        .mutate(
+            world.admin,
+            ControlPlaneMutation::UpdateUpstreamCredential {
+                id,
+                input: input.clone(),
+                expected_updated_at: rotated.updated_at,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(runtime.snapshot().channel(world.channel).is_none());
+    assert!(
+        coordinator
+            .mutate(
+                world.admin,
+                ControlPlaneMutation::DeleteUpstreamCredential {
+                    id,
+                    expected_updated_at: disabled.updated_at,
+                }
+            )
+            .await
+            .is_err()
+    );
+    input.enabled = true;
+    coordinator
+        .mutate(
+            world.admin,
+            ControlPlaneMutation::UpdateUpstreamCredential {
+                id,
+                input,
+                expected_updated_at: disabled.updated_at,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(runtime.snapshot().channel(world.channel).is_some());
+    let original_binding = repository
+        .load()
+        .await
+        .unwrap()
+        .channels
+        .into_iter()
+        .find(|channel| channel.id == world.channel)
+        .unwrap()
+        .credential_binding_revision;
+    let channel = listed_channel(&repositories, world.channel).await;
+    coordinator
+        .mutate(
+            world.admin,
+            ControlPlaneMutation::UpdateChannel {
+                id: world.channel,
+                input: channel_input(world.group, "unbound identity"),
+                expected_updated_at: channel.updated_at,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        runtime
+            .snapshot()
+            .channel(world.channel)
+            .unwrap()
+            .upstream_auth(),
+        UpstreamAuth::None
+    ));
+    let channel = listed_channel(&repositories, world.channel).await;
+    coordinator
+        .mutate(
+            world.admin,
+            ControlPlaneMutation::UpdateChannel {
+                id: world.channel,
+                input: ChannelInput {
+                    credential_id: Some(id),
+                    ..channel_input(world.group, "restored identity")
+                },
+                expected_updated_at: channel.updated_at,
+            },
+        )
+        .await
+        .unwrap();
+    let rebound = repository
+        .load()
+        .await
+        .unwrap()
+        .channels
+        .into_iter()
+        .find(|channel| channel.id == world.channel)
+        .unwrap()
+        .credential_binding_revision;
+    assert_ne!(original_binding, rebound);
+    let channel = listed_channel(&repositories, world.channel).await;
+    coordinator
+        .mutate(
+            world.admin,
+            ControlPlaneMutation::UpdateChannel {
+                id: world.channel,
+                input: channel_input(world.group, "unbound again"),
+                expected_updated_at: channel.updated_at,
+            },
+        )
+        .await
+        .unwrap();
+    let remaining = repository
+        .upstream_credential_detail(id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(remaining.credential.channel_ids, [second]);
+    assert_eq!(remaining.secret.as_deref(), Some("identity-rotated-secret"));
+    assert!(
+        coordinator
+            .mutate(
+                world.admin,
+                ControlPlaneMutation::DeleteUpstreamCredential {
+                    id,
+                    expected_updated_at: remaining.credential.updated_at,
+                }
+            )
+            .await
+            .is_err()
+    );
+    let channel = listed_channel(&repositories, second).await;
+    coordinator
+        .mutate(
+            world.admin,
+            ControlPlaneMutation::UpdateChannel {
+                id: second,
+                input: ChannelInput {
+                    enabled: false,
+                    ..channel_input(world.group, "unbound second")
+                },
+                expected_updated_at: channel.updated_at,
+            },
+        )
+        .await
+        .unwrap();
+    coordinator
+        .mutate(
+            world.admin,
+            ControlPlaneMutation::DeleteUpstreamCredential {
+                id,
+                expected_updated_at: remaining.credential.updated_at,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        repository
+            .upstream_credential_detail(id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let serialized =
+        serde_json::to_string(&repository.upstream_credentials().await.unwrap()).unwrap();
+    assert!(!serialized.contains("identity-rotated-secret"));
+    assert!(
+        !serde_json::to_string(&repository.audit_logs(100).await.unwrap())
+            .unwrap()
+            .contains("identity-rotated-secret")
+    );
+}
+
 async fn channel_lifecycle_contract(repositories: Repositories) {
     let world = world(&repositories).await;
     let repository = &repositories.control_plane;
+    let credential = commit_mutation(
+        &repositories,
+        world.admin,
+        ControlPlaneMutation::CreateUpstreamCredential(
+            ai_gateway::persistence::UpstreamCredentialInput {
+                name: "Reusable channel identity".into(),
+                kind: "bearer".into(),
+                header_name: None,
+                secret: Some("upstream-secret".into()),
+                allowed_base_urls: vec![
+                    "https://upstream-v2.example.test".into(),
+                    "https://upstream.example.test".into(),
+                ],
+                enabled: true,
+            },
+        ),
+    )
+    .await
+    .id;
 
     // Supporting resources for the update.
     let proxy = commit_mutation(
@@ -2617,9 +2948,7 @@ async fn channel_lifecycle_contract(repositories: Repositories) {
             connect_timeout_ms: Some(1_500),
             response_header_timeout_ms: Some(45_000),
             stream_idle_timeout_ms: Some(60_000),
-            upstream_auth_kind: "bearer".into(),
-            upstream_auth_header_name: None,
-            upstream_api_key: Some(Some("upstream-secret".into())),
+            credential_id: Some(credential),
             available_models: vec!["parity-model".into(), "parity-model-v2".into()],
             test_model: None,
             test_pricing_model_id: None,
@@ -2655,9 +2984,7 @@ async fn channel_lifecycle_contract(repositories: Repositories) {
                 connect_timeout_ms: Some(1_500),
                 response_header_timeout_ms: Some(45_000),
                 stream_idle_timeout_ms: Some(60_000),
-                upstream_auth_kind: "bearer".into(),
-                upstream_auth_header_name: None,
-                upstream_api_key: Some(Some("upstream-secret".into())),
+                credential_id: Some(credential),
                 available_models: vec!["parity-model".into(), "parity-model-v2".into()],
                 test_model: None,
                 test_pricing_model_id: None,
@@ -2668,10 +2995,7 @@ async fn channel_lifecycle_contract(repositories: Repositories) {
     .await;
     assert_eq!(updated.action, "update");
     assert!(updated.after_redacted.get("upstream_api_key").is_none());
-    assert_eq!(
-        updated.after_redacted["upstream_credential_configured"],
-        true
-    );
+    assert_eq!(updated.after_redacted["credential_id"], json!(credential));
     let detail = repository
         .control_plane_channel_detail(world.channel)
         .await
@@ -2691,14 +3015,20 @@ async fn channel_lifecycle_contract(repositories: Repositories) {
     assert_eq!(detail.connect_timeout_ms, Some(1_500));
     assert_eq!(detail.response_header_timeout_ms, Some(45_000));
     assert_eq!(detail.stream_idle_timeout_ms, Some(60_000));
-    assert_eq!(detail.upstream_auth_kind, "bearer");
-    assert_eq!(detail.upstream_auth_header_name, None);
-    assert_eq!(detail.upstream_api_key.as_deref(), Some("upstream-secret"));
-    assert!(detail.upstream_credential_configured);
+    assert_eq!(detail.credential_id, Some(credential));
+    assert_eq!(
+        repository
+            .upstream_credential_detail(credential)
+            .await
+            .unwrap()
+            .unwrap()
+            .secret
+            .as_deref(),
+        Some("upstream-secret")
+    );
     assert_eq!(detail.available_models, ["parity-model", "parity-model-v2"]);
 
-    // Omitted fields preserve their stored values; a present null credential
-    // clears it and must agree with the auth kind.
+    // A channel edit preserves the referenced identity without writing its secret.
     let preserve = commit_mutation(
         &repositories,
         world.admin,
@@ -2706,7 +3036,7 @@ async fn channel_lifecycle_contract(repositories: Repositories) {
             id: world.channel,
             input: ChannelInput {
                 name: "Parity Channel v3".into(),
-                upstream_auth_kind: "bearer".into(),
+                credential_id: Some(credential),
                 ..channel_input(world.group, "Parity Channel v2")
             },
             expected_updated_at: expected_etag(detail.updated_at),
@@ -2720,7 +3050,7 @@ async fn channel_lifecycle_contract(repositories: Repositories) {
         .unwrap()
         .unwrap();
     assert_eq!(detail.billing_multiplier, decimal("1.5"));
-    assert_eq!(detail.upstream_api_key.as_deref(), Some("upstream-secret"));
+    assert_eq!(detail.credential_id, Some(credential));
     assert_eq!(
         detail.override_document["request_headers"]["set"]["x-channel"],
         "on"
@@ -2732,8 +3062,7 @@ async fn channel_lifecycle_contract(repositories: Repositories) {
         ControlPlaneMutation::UpdateChannel {
             id: world.channel,
             input: ChannelInput {
-                upstream_auth_kind: "none".into(),
-                upstream_api_key: Some(None),
+                credential_id: None,
                 ..channel_input(world.group, "Parity Channel v3")
             },
             expected_updated_at: expected_etag(detail.updated_at),
@@ -2746,9 +3075,17 @@ async fn channel_lifecycle_contract(repositories: Repositories) {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(detail.upstream_auth_kind, "none");
-    assert_eq!(detail.upstream_api_key, None);
-    assert!(!detail.upstream_credential_configured);
+    assert_eq!(detail.credential_id, None);
+    assert_eq!(
+        repository
+            .upstream_credential_detail(credential)
+            .await
+            .unwrap()
+            .unwrap()
+            .secret
+            .as_deref(),
+        Some("upstream-secret")
+    );
 
     // A batch update maps each target version and is all-or-nothing.
     let listed = listed_channel(&repositories, world.channel).await;
@@ -3471,9 +3808,7 @@ async fn authorization_and_etag_rollback_contract(repositories: Repositories) {
                     connect_timeout_ms: None,
                     response_header_timeout_ms: None,
                     stream_idle_timeout_ms: None,
-                    upstream_auth_kind: "none".into(),
-                    upstream_auth_header_name: None,
-                    upstream_api_key: None,
+                    credential_id: None,
                     available_models: vec!["parity-model".into()],
                     test_model: None,
                     test_pricing_model_id: None,
@@ -3862,9 +4197,7 @@ async fn authorization_and_etag_rollback_contract(repositories: Repositories) {
             connect_timeout_ms: None,
             response_header_timeout_ms: None,
             stream_idle_timeout_ms: None,
-            upstream_auth_kind: "none".into(),
-            upstream_auth_header_name: None,
-            upstream_api_key: None,
+            credential_id: None,
             available_models: vec!["parity-model".into()],
             test_model: None,
             test_pricing_model_id: None,
@@ -4427,9 +4760,7 @@ async fn missing_and_soft_deleted_resource_contract(repositories: Repositories) 
             connect_timeout_ms: None,
             response_header_timeout_ms: None,
             stream_idle_timeout_ms: None,
-            upstream_auth_kind: "none".into(),
-            upstream_auth_header_name: None,
-            upstream_api_key: None,
+            credential_id: None,
             available_models: vec!["parity-model".into()],
             test_model: None,
             test_pricing_model_id: None,
@@ -4579,9 +4910,7 @@ async fn missing_and_soft_deleted_resource_contract(repositories: Repositories) 
             connect_timeout_ms: None,
             response_header_timeout_ms: None,
             stream_idle_timeout_ms: None,
-            upstream_auth_kind: "none".into(),
-            upstream_auth_header_name: None,
-            upstream_api_key: None,
+            credential_id: None,
             available_models: vec!["probe-priced".into()],
             test_model: Some("probe-priced".into()),
             test_pricing_model_id: Some(priced),
@@ -4723,9 +5052,7 @@ async fn codex_projection_and_validation_contract(repositories: Repositories) {
                 connect_timeout_ms: None,
                 response_header_timeout_ms: None,
                 stream_idle_timeout_ms: None,
-                upstream_auth_kind: "none".into(),
-                upstream_auth_header_name: None,
-                upstream_api_key: None,
+                credential_id: None,
                 available_models: vec!["probe".into()],
                 test_model: None,
                 test_pricing_model_id: None,
@@ -4767,9 +5094,7 @@ async fn codex_projection_and_validation_contract(repositories: Repositories) {
                     connect_timeout_ms: None,
                     response_header_timeout_ms: None,
                     stream_idle_timeout_ms: None,
-                    upstream_auth_kind: "none".into(),
-                    upstream_auth_header_name: None,
-                    upstream_api_key: None,
+                    credential_id: None,
                     available_models: vec!["probe".into()],
                     test_model: None,
                     test_pricing_model_id: None,
@@ -4808,9 +5133,7 @@ async fn codex_projection_and_validation_contract(repositories: Repositories) {
                     connect_timeout_ms: None,
                     response_header_timeout_ms: None,
                     stream_idle_timeout_ms: None,
-                    upstream_auth_kind: "none".into(),
-                    upstream_auth_header_name: None,
-                    upstream_api_key: None,
+                    credential_id: None,
                     available_models: vec!["other".into()],
                     test_model: Some("probe-priced".into()),
                     test_pricing_model_id: Some(priced),
@@ -4842,9 +5165,7 @@ async fn codex_projection_and_validation_contract(repositories: Repositories) {
                     connect_timeout_ms: None,
                     response_header_timeout_ms: None,
                     stream_idle_timeout_ms: None,
-                    upstream_auth_kind: "none".into(),
-                    upstream_auth_header_name: None,
-                    upstream_api_key: None,
+                    credential_id: None,
                     available_models: vec!["probe".into()],
                     test_model: None,
                     test_pricing_model_id: None,

@@ -13,6 +13,7 @@
 ## API 使用者
 
 需要给用户分配固定席位共享 Codex 凭证时，参见 [Codex 拼车](codex-sharing.md)。
+普通渠道的密钥复用、轮换、目标范围及 Console 升级见[上游凭证管理](upstream-credentials.md)。
 
 公共数据面只提供：
 

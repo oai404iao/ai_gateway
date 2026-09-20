@@ -59,6 +59,9 @@ MCowBQYDK2VwAyEAQvs1EKtSBUS0aGjOVZhD2kqVMSiXHugcTiZTZyZxWiQ=
 -----END PUBLIC KEY-----
 "#;
 
+#[path = "support/upstream_credentials.rs"]
+mod upstream_credentials;
+
 struct TestDatabase {
     pool: PgPool,
     admin: PgPool,
@@ -1336,6 +1339,112 @@ async fn request(
     headers: &[(&str, &str)],
 ) -> axum::response::Response {
     request_with_token(app, &app.access_token, method, path, body, headers).await
+}
+
+#[tokio::test]
+async fn upstream_credential_contract_is_secret_safe_versioned_and_strict() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let path = "/console/v1/routing/upstream-credentials";
+    let input = serde_json::json!({
+        "name": "spec shared identity", "kind": "header", "header_name": "x-api-key",
+        "secret": "spec-identity-secret", "enabled": true,
+        "allowed_base_urls": ["HTTPS://EXAMPLE.TEST:443/"],
+    });
+    let created = request(&app, "POST", path, input.clone(), &[]).await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let id = body_json(created).await["id"].as_str().unwrap().to_owned();
+    let detail_path = format!("{path}/{id}");
+    let listed = body_json(request(&app, "GET", path, serde_json::json!({}), &[]).await).await;
+    let listed = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|value| value["id"] == id)
+        .unwrap();
+    assert!(listed.get("secret").is_none());
+    assert_eq!(
+        listed["allowed_base_urls"],
+        serde_json::json!(["https://example.test"])
+    );
+    let detail = request(&app, "GET", &detail_path, serde_json::json!({}), &[]).await;
+    assert_eq!(detail.headers()["cache-control"], "no-store");
+    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    let detail = body_json(detail).await;
+    assert_eq!(detail["secret"], "spec-identity-secret");
+    assert_eq!(detail["kind"], "header");
+    assert_eq!(detail["provider_managed"], false);
+    assert_eq!(detail["channel_ids"], serde_json::json!([]));
+    let mut invalid = input.clone();
+    invalid["secret"] = serde_json::Value::Null;
+    assert_eq!(
+        request(&app, "PUT", &detail_path, invalid, &[("if-match", &etag)])
+            .await
+            .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let mut invalid = input.clone();
+    invalid["header_name"] = serde_json::json!("x-forwarded-for");
+    assert_eq!(
+        request(&app, "POST", path, invalid, &[]).await.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let mut invalid = input.clone();
+    invalid["allowed_base_urls"] = serde_json::json!(["https://secret@example.test"]);
+    assert_eq!(
+        request(&app, "POST", path, invalid, &[]).await.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let mut updated = input;
+    updated["secret"] = serde_json::json!("spec-rotated-secret");
+    assert_eq!(
+        request(
+            &app,
+            "PUT",
+            &detail_path,
+            updated.clone(),
+            &[("if-match", &etag)]
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(&app, "PUT", &detail_path, updated, &[("if-match", &etag)])
+            .await
+            .status(),
+        StatusCode::CONFLICT
+    );
+    let detail = request(&app, "GET", &detail_path, serde_json::json!({}), &[]).await;
+    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    assert_eq!(
+        request(
+            &app,
+            "DELETE",
+            &detail_path,
+            serde_json::json!({}),
+            &[("if-match", &etag)]
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(&app, "GET", &detail_path, serde_json::json!({}), &[])
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    let id: Uuid = id.parse().unwrap();
+    let tombstone: (Option<String>, bool, bool) = sqlx::query_as(
+        "SELECT secret,enabled,deleted_at IS NOT NULL FROM upstream_credentials WHERE id=$1",
+    )
+    .bind(id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(tombstone, (None, false, true));
+    database.cleanup().await;
 }
 
 async fn request_with_token(
@@ -3983,7 +4092,7 @@ async fn model_delete_hides_routing_clears_probes_and_preserves_history() {
             "name": "model-delete-channel",
             "base_url": "https://model-delete.example.test",
             "enabled": true,
-            "upstream_auth_kind": "none",
+            "credential_id": null,
             "available_models": ["model-delete-wire"],
             "test_model": "model-delete-wire",
             "test_pricing_model_id": model_id,
@@ -5494,7 +5603,7 @@ async fn model_rule_hierarchy_separates_pricing_from_candidate_models() {
             "name": "spec-rule-channel",
             "base_url": "https://upstream.example.test",
             "enabled": true,
-            "upstream_auth_kind": "none",
+            "credential_id": null,
             "available_models": ["spec-wire-model", "spec-wire-fallback"],
         }),
         &[],
@@ -5768,6 +5877,14 @@ async fn model_rule_hierarchy_separates_pricing_from_candidate_models() {
 async fn channel_deletion_reconfirms_changed_impact_and_normalizes_dependencies() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
+    let credential_id = Uuid::new_v4();
+    upstream_credentials::insert(
+        &database.pool,
+        credential_id,
+        "https://delete-target.example.test",
+        "delete-upstream-secret",
+    )
+    .await;
     let group = request(
         &app,
         "POST",
@@ -5802,8 +5919,7 @@ async fn channel_deletion_reconfirms_changed_impact_and_normalizes_dependencies(
                 "api_format": "open_ai_chat_completions",
                 "request_headers": {"set": {"x-delete-test": "present"}}
             },
-            "upstream_auth_kind": "bearer",
-            "upstream_api_key": "delete-upstream-secret",
+            "credential_id": credential_id,
             "available_models": ["delete-wire-model"],
         }),
         &[],
@@ -5843,7 +5959,7 @@ async fn channel_deletion_reconfirms_changed_impact_and_normalizes_dependencies(
             "name": "channel-delete-fallback",
             "base_url": "https://delete-fallback.example.test",
             "enabled": true,
-            "upstream_auth_kind": "none",
+            "credential_id": null,
             "available_models": ["delete-fallback-wire"],
         }),
         &[],
@@ -6075,10 +6191,7 @@ async fn channel_deletion_reconfirms_changed_impact_and_normalizes_dependencies(
     .fetch_one(&database.pool)
     .await
     .unwrap();
-    assert_eq!(
-        deletion_audit.0["upstream_credential_configured"],
-        serde_json::json!(false)
-    );
+    assert_eq!(deletion_audit.0["credential_id"], serde_json::Value::Null);
     assert!(deletion_audit.0.get("upstream_api_key").is_none());
     assert!(
         deletion_audit
@@ -6168,7 +6281,7 @@ async fn channel_deletion_reconfirms_changed_impact_and_normalizes_dependencies(
             "name": "channel-delete-target",
             "base_url": "https://replacement.example.test",
             "enabled": true,
-            "upstream_auth_kind": "none",
+            "credential_id": null,
             "available_models": ["replacement-wire"],
         }),
         &[],
@@ -6236,7 +6349,7 @@ async fn channel_group_deletion_cascades_tombstones_and_unbinds_every_dependency
                 "name": name,
                 "base_url": "https://group-delete.example.test",
                 "enabled": true,
-                "upstream_auth_kind": "none",
+                "credential_id": null,
                 "available_models": ["group-delete-wire"],
             }),
             &[],
@@ -6440,7 +6553,7 @@ async fn channel_group_deletion_cascades_tombstones_and_unbinds_every_dependency
             "name": "invalid-deleted-parent",
             "base_url": "https://invalid.example.test",
             "enabled": false,
-            "upstream_auth_kind": "none",
+            "credential_id": null,
             "available_models": [],
         }),
         &[],
@@ -6761,7 +6874,7 @@ async fn channel_and_template_details_return_stored_editable_values() {
             "base_url": "https://legacy-weight.example.test",
             "enabled": true,
             "weight": 1,
-            "upstream_auth_kind": "none",
+            "credential_id": null,
         }),
         &[],
     )
@@ -6790,6 +6903,14 @@ async fn channel_and_template_details_return_stored_editable_values() {
     let template_id = body_json(template).await["id"].as_str().unwrap().to_owned();
 
     let upstream_api_key = "sk-upstream-detail-secret";
+    let credential_id = Uuid::new_v4();
+    upstream_credentials::insert(
+        &database.pool,
+        credential_id,
+        "https://editable-detail.example.test",
+        upstream_api_key,
+    )
+    .await;
     let override_document = serde_json::json!({
         "version": 1,
         "api_format": "open_ai_chat_completions",
@@ -6808,8 +6929,7 @@ async fn channel_and_template_details_return_stored_editable_values() {
             "billing_multiplier": "1.5",
             "config_template_id": template_id,
             "override_document": override_document,
-            "upstream_auth_kind": "bearer",
-            "upstream_api_key": upstream_api_key,
+            "credential_id": credential_id,
             "available_models": ["editable-detail-model"],
         }),
         &[],
@@ -6857,7 +6977,11 @@ async fn channel_and_template_details_return_stored_editable_values() {
         .to_owned();
     let channel_detail = body_json(channel_detail).await;
     assert_eq!(channel_detail["override_document"], override_document);
-    assert_eq!(channel_detail["upstream_api_key"], upstream_api_key);
+    assert_eq!(
+        channel_detail["credential_id"],
+        serde_json::json!(credential_id)
+    );
+    assert!(channel_detail.get("upstream_api_key").is_none());
     assert!(channel_detail.get("weight").is_none());
     assert_eq!(channel_detail["billing_multiplier"], "1.500000000000");
 
@@ -6872,7 +6996,7 @@ async fn channel_and_template_details_return_stored_editable_values() {
             "base_url": "https://editable-detail.example.test",
             "enabled": true,
             "weight": 1,
-            "upstream_auth_kind": "bearer",
+            "credential_id": credential_id,
         }),
         &[("if-match", &channel_etag)],
     )
@@ -6951,7 +7075,7 @@ async fn channel_responses_capabilities_are_responses_only_and_default_to_opt_in
             "enabled": true,
             "supports_websocket": true,
             "supports_standalone_web_search": true,
-            "upstream_auth_kind": "none",
+            "credential_id": null,
         }),
         &[],
     )
@@ -7002,7 +7126,7 @@ async fn channel_responses_capabilities_are_responses_only_and_default_to_opt_in
             "base_url": "https://chat-websocket.example.test",
             "enabled": true,
             "supports_websocket": true,
-            "upstream_auth_kind": "none",
+            "credential_id": null,
         }),
         &[],
     )
@@ -7020,7 +7144,7 @@ async fn channel_responses_capabilities_are_responses_only_and_default_to_opt_in
             "base_url": "https://chat-search.example.test",
             "enabled": true,
             "supports_standalone_web_search": true,
-            "upstream_auth_kind": "none",
+            "credential_id": null,
         }),
         &[],
     )
@@ -7060,7 +7184,7 @@ async fn images_control_plane_rejects_scheduled_probes_and_sse_transforms() {
             "name": "invalid-images-probe",
             "base_url": "https://images.example.test",
             "enabled": true,
-            "upstream_auth_kind": "none",
+            "credential_id": null,
             "available_models": ["gpt-image-2"],
             "test_model": "gpt-image-2",
         }),
@@ -7079,7 +7203,7 @@ async fn images_control_plane_rejects_scheduled_probes_and_sse_transforms() {
             "name": "images-generation",
             "base_url": "https://images.example.test",
             "enabled": true,
-            "upstream_auth_kind": "none",
+            "credential_id": null,
             "available_models": ["gpt-image-2"],
         }),
         &[],
@@ -7128,6 +7252,14 @@ async fn channel_model_discovery_uses_draft_network_and_auth_settings() {
     });
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
+    let credential_id = Uuid::new_v4();
+    upstream_credentials::insert(
+        &database.pool,
+        credential_id,
+        &format!("http://{address}"),
+        "spec-model-discovery-secret",
+    )
+    .await;
 
     let response = request(
         &app,
@@ -7143,8 +7275,7 @@ async fn channel_model_discovery_uses_draft_network_and_auth_settings() {
                     "set": {"x-model-discovery": "console-spec"}
                 }
             },
-            "upstream_auth_kind": "bearer",
-            "upstream_api_key": "spec-model-discovery-secret"
+            "credential_id": credential_id
         }),
         &[],
     )
@@ -7190,7 +7321,7 @@ async fn channel_batch_updates_are_atomic_versioned_and_published_once() {
                 "name": format!("batch-channel-{suffix}"),
                 "base_url": format!("https://batch-{suffix}.example.test"),
                 "enabled": true,
-                "upstream_auth_kind": "none",
+                "credential_id": null,
                 "available_models": [],
             }),
             &[],
@@ -7410,7 +7541,7 @@ async fn administrator_can_manually_recover_an_auto_disabled_channel() {
             "name": "manual-recovery-channel",
             "base_url": "https://manual-recovery.example.test",
             "enabled": true,
-            "upstream_auth_kind": "none",
+            "credential_id": null,
             "available_models": [],
         }),
         &[],
@@ -7516,7 +7647,7 @@ async fn api_key_policy_only_stores_selectable_targets() {
             "name": "policy-target-channel",
             "base_url": "https://upstream.example.test",
             "enabled": true,
-            "upstream_auth_kind": "none",
+            "credential_id": null,
             "available_models": [],
         }),
         &[],
@@ -7600,7 +7731,7 @@ async fn self_api_key_create_reports_policy_preconditions() {
             "name": "self-key-channel",
             "base_url": "https://upstream.example.test",
             "enabled": true,
-            "upstream_auth_kind": "none",
+            "credential_id": null,
             "available_models": [],
         }),
         &[],
@@ -8120,7 +8251,7 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
             "base_url": "https://legacy-statistics.example.test",
             "enabled": true,
             "status_statistics_enabled": true,
-            "upstream_auth_kind": "none",
+            "credential_id": null,
         }),
         &[],
     )
@@ -8139,7 +8270,7 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
             "name": format!("statistics-channel-{group_id}"),
             "base_url": "https://statistics.example.test",
             "enabled": true,
-            "upstream_auth_kind": "none",
+            "credential_id": null,
             "available_models": ["statistics-model"],
         }),
         &[],
@@ -8687,6 +8818,36 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     )
     .await;
     assert_eq!(user_system_load.status(), StatusCode::FORBIDDEN);
+    for (method, path) in [
+        ("GET", "/console/v1/routing/upstream-credentials"),
+        ("POST", "/console/v1/routing/upstream-credentials"),
+        (
+            "GET",
+            "/console/v1/routing/upstream-credentials/00000000-0000-0000-0000-000000000001",
+        ),
+        (
+            "PUT",
+            "/console/v1/routing/upstream-credentials/00000000-0000-0000-0000-000000000001",
+        ),
+        (
+            "DELETE",
+            "/console/v1/routing/upstream-credentials/00000000-0000-0000-0000-000000000001",
+        ),
+    ] {
+        assert_eq!(
+            request_with_token(
+                &app,
+                &regular_session.access_token,
+                method,
+                path,
+                serde_json::json!({}),
+                &[]
+            )
+            .await
+            .status(),
+            StatusCode::FORBIDDEN
+        );
+    }
 
     let user_system_costs = request_with_token(
         &app,

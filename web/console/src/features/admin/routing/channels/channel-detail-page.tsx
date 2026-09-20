@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useParams, useSearchParams } from "react-router";
+import { Link, useParams, useSearchParams } from "react-router";
 import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
 import { ConfigurationSaveBar } from "@/features/admin/model-setup/configuration-save-bar";
 import { Copy, RefreshCwIcon } from "lucide-react";
@@ -34,7 +34,6 @@ import { Spinner } from "@/components/ui/spinner";
 import { AdminDetailShell } from "@/features/admin/components/admin-detail-shell";
 import { TransformDocumentEditor } from "@/features/admin/transforms/transform-document-editor";
 import { DetailField } from "@/components/shared/detail-field";
-import { ApiKeyValue } from "@/components/shared/api-key-value";
 import { StringListField } from "@/components/shared/string-list-field";
 import { DecimalField, NullableNumberField } from "@/components/shared/decimal-field";
 import { StatusBadge } from "@/components/shared/status-badge";
@@ -53,6 +52,7 @@ import {
   usePreviewChannelDeletion,
   useProxies,
   useUpdateChannel,
+  useUpstreamCredentials,
 } from "@/features/admin/api";
 import { ApiError, controlPlaneMutationErrorMessage } from "@/api/errors";
 import type {
@@ -61,9 +61,8 @@ import type {
   ChannelDeletionImpact,
   ChannelInput,
   ChannelModelDiscoveryInput,
-  UpstreamAuthKind,
 } from "@/api/types";
-import { UPSTREAM_AUTH_KINDS, apiFormatLabel, upstreamAuthKindLabel } from "@/lib/permissions";
+import { apiFormatLabel } from "@/lib/permissions";
 import {
   channelUpdateRoutingImpact,
   type ChannelRoutingImpact,
@@ -127,20 +126,11 @@ const schema = z.object({
   connect_timeout_ms: z.number().int().positive().nullable(),
   response_header_timeout_ms: z.number().int().positive().nullable(),
   stream_idle_timeout_ms: z.number().int().positive().nullable(),
-  upstream_auth_kind: z.enum(["none", "bearer", "header"]),
-  upstream_auth_header_name: z.string().trim().nullable(),
-  upstream_api_key: z.string(),
+  credential_id: z.string().nullable(),
   available_models: z.array(z.string().trim().min(1, "Model ID is required.")),
   test_model: z.string().nullable(),
   test_pricing_model_id: z.string().nullable(),
 }).superRefine((value, context) => {
-  if (value.upstream_auth_kind === "header" && !value.upstream_auth_header_name) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["upstream_auth_header_name"],
-      message: "A custom header name is required.",
-    });
-  }
   if (new Set(value.available_models).size !== value.available_models.length) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
@@ -209,9 +199,7 @@ const empty: FormState = {
   connect_timeout_ms: null,
   response_header_timeout_ms: null,
   stream_idle_timeout_ms: null,
-  upstream_auth_kind: "bearer",
-  upstream_auth_header_name: null,
-  upstream_api_key: "",
+  credential_id: null,
   available_models: [],
   test_model: null,
   test_pricing_model_id: null,
@@ -233,6 +221,7 @@ export function ChannelDetailPage() {
   );
   const returnsToSetup = returnTo.startsWith("/admin/model-setup");
   const { data, etag, isLoading, error, refetch } = useChannel(id);
+  const credentials = useUpstreamCredentials();
   const copySource = useChannel(copyFrom ?? "");
   const create = useCreateChannel();
   const update = useUpdateChannel(id);
@@ -291,9 +280,7 @@ export function ChannelDetailPage() {
         connect_timeout_ms: data.data.connect_timeout_ms,
         response_header_timeout_ms: data.data.response_header_timeout_ms,
         stream_idle_timeout_ms: data.data.stream_idle_timeout_ms,
-        upstream_auth_kind: data.data.upstream_auth_kind,
-        upstream_auth_header_name: data.data.upstream_auth_header_name,
-        upstream_api_key: data.data.upstream_api_key ?? "",
+        credential_id: data.data.credential_id,
         available_models: data.data.available_models,
         test_model: data.data.test_model,
         test_pricing_model_id: data.data.test_pricing_model_id,
@@ -383,9 +370,7 @@ export function ChannelDetailPage() {
       connect_timeout_ms: source.connect_timeout_ms,
       response_header_timeout_ms: source.response_header_timeout_ms,
       stream_idle_timeout_ms: source.stream_idle_timeout_ms,
-      upstream_auth_kind: source.upstream_auth_kind,
-      upstream_auth_header_name: source.upstream_auth_header_name,
-      upstream_api_key: "",
+      credential_id: source.credential_id,
       available_models: source.available_models,
       test_model:
         apiFormat === "open_ai_images" ? null : source.test_model,
@@ -449,13 +434,6 @@ export function ChannelDetailPage() {
       );
       return;
     }
-    if (
-      state.upstream_auth_kind === "header" &&
-      !state.upstream_auth_header_name?.trim()
-    ) {
-      toast.error(t("A custom header name is required."));
-      return;
-    }
 
     let overrideDocument: unknown;
     try {
@@ -475,17 +453,6 @@ export function ChannelDetailPage() {
       return;
     }
 
-    const upstreamApiKey =
-      state.upstream_auth_kind === "none"
-        ? null
-        : state.upstream_api_key.trim()
-          ? state.upstream_api_key
-          : data?.data.upstream_api_key ?? null;
-    if (state.upstream_auth_kind !== "none" && !upstreamApiKey) {
-      toast.error(t("An upstream API key is required when upstream auth is enabled."));
-      return;
-    }
-
     const input: ChannelModelDiscoveryInput = {
       api_format: state.api_format,
       base_url: state.base_url.trim(),
@@ -495,12 +462,7 @@ export function ChannelDetailPage() {
       connect_timeout_ms: state.connect_timeout_ms,
       response_header_timeout_ms: state.response_header_timeout_ms,
       stream_idle_timeout_ms: state.stream_idle_timeout_ms,
-      upstream_auth_kind: state.upstream_auth_kind,
-      upstream_auth_header_name:
-        state.upstream_auth_kind === "header"
-          ? state.upstream_auth_header_name?.trim() || null
-          : null,
-      upstream_api_key: upstreamApiKey,
+      credential_id: state.credential_id,
     };
 
     try {
@@ -580,14 +542,6 @@ export function ChannelDetailPage() {
       setRoutingImpact(impact);
       return;
     }
-    if (
-      isNew &&
-      parsed.data.upstream_auth_kind !== "none" &&
-      parsed.data.upstream_api_key.trim() === ""
-    ) {
-      toast.error(t("An upstream API key is required when upstream auth is enabled."));
-      return;
-    }
     setRoutingImpact([]);
     setValidation(null);
     setSubmitting(true);
@@ -610,15 +564,7 @@ export function ChannelDetailPage() {
           connect_timeout_ms: parsed.data.connect_timeout_ms,
           response_header_timeout_ms: parsed.data.response_header_timeout_ms,
           stream_idle_timeout_ms: parsed.data.stream_idle_timeout_ms,
-          upstream_auth_kind: parsed.data.upstream_auth_kind as UpstreamAuthKind,
-          upstream_auth_header_name:
-            parsed.data.upstream_auth_kind === "header"
-              ? parsed.data.upstream_auth_header_name
-              : null,
-          upstream_api_key:
-            parsed.data.upstream_auth_kind === "none"
-              ? null
-              : parsed.data.upstream_api_key || null,
+          credential_id: parsed.data.credential_id,
           available_models: parsed.data.available_models,
           test_model: parsed.data.test_model,
           test_pricing_model_id: parsed.data.test_pricing_model_id,
@@ -628,7 +574,6 @@ export function ChannelDetailPage() {
         toast.success(t("Channel created"));
         navigate(returnTo, { replace: true });
       } else {
-        // On edit, omit upstream_api_key when blank to keep the current secret.
         const input: ChannelInput = {
           channel_group_id: parsed.data.channel_group_id,
           api_format: parsed.data.api_format as ApiFormat,
@@ -645,22 +590,13 @@ export function ChannelDetailPage() {
           connect_timeout_ms: parsed.data.connect_timeout_ms,
           response_header_timeout_ms: parsed.data.response_header_timeout_ms,
           stream_idle_timeout_ms: parsed.data.stream_idle_timeout_ms,
-          upstream_auth_kind: parsed.data.upstream_auth_kind as UpstreamAuthKind,
-          upstream_auth_header_name:
-            parsed.data.upstream_auth_kind === "header"
-              ? parsed.data.upstream_auth_header_name
-              : null,
+          credential_id: parsed.data.credential_id,
           available_models: parsed.data.available_models,
           test_model: parsed.data.test_model,
           test_pricing_model_id: parsed.data.test_pricing_model_id,
         };
         if (overrideDocument !== undefined) {
           input.override_document = overrideDocument;
-        }
-        if (parsed.data.upstream_auth_kind === "none") {
-          input.upstream_api_key = null;
-        } else if (parsed.data.upstream_api_key !== "") {
-          input.upstream_api_key = parsed.data.upstream_api_key;
         }
         await update.mutateAsync({ input, ifMatch: etag });
         markSaved();
@@ -837,17 +773,19 @@ export function ChannelDetailPage() {
                 />
                 <DetailField
                   label={t("Credential configured")}
-                  value={data.data.upstream_credential_configured ? t("yes") : t("no")}
+                  value={data.data.credential_id ? t("yes") : t("no")}
                 />
                 <DetailField
                   label={t("Billing multiplier")}
                   value={formatDecimal(data.data.billing_multiplier)}
                 />
                 <DetailField
-                  label={t("Upstream API key")}
+                  label={t("Upstream credential")}
                   value={
-                    data.data.upstream_api_key ? (
-                      <ApiKeyValue value={data.data.upstream_api_key} className="max-w-xl" />
+                    data.data.credential_id ? (
+                      <Link to={`/admin/routing/upstream-credentials/${data.data.credential_id}`}>
+                        {credentials.data?.find((credential) => credential.id === data.data.credential_id)?.name ?? data.data.credential_id}
+                      </Link>
                     ) : (
                       "—"
                     )
@@ -870,7 +808,7 @@ export function ChannelDetailPage() {
                 <AlertTitle>{t("Review the copied supplier")}</AlertTitle>
                 <AlertDescription>
                   {t(
-                    "Connection, routing, and model settings were copied. Enter a unique name and re-enter the upstream credential before saving.",
+                    "Connection, routing, and model settings were copied. The upstream credential reference is shared; rotating it affects every referencing channel.",
                   )}
                 </AlertDescription>
               </Alert>
@@ -1057,69 +995,32 @@ export function ChannelDetailPage() {
                     </FieldDescription>
                   </Field>
                   <Field>
-                    <FieldLabel>{t("Upstream auth kind")}</FieldLabel>
+                    <FieldLabel htmlFor="credential_id">{t("Upstream credential")}</FieldLabel>
                     <Select
-                      value={state.upstream_auth_kind}
-                      onValueChange={(value) => {
-                        const upstreamAuthKind = value as UpstreamAuthKind;
-                        patch({
-                          upstream_auth_kind: upstreamAuthKind,
-                          upstream_auth_header_name:
-                            upstreamAuthKind === "header"
-                              ? state.upstream_auth_header_name
-                              : null,
-                        });
-                      }}
+                      value={state.credential_id ?? "__none__"}
+                      onValueChange={(value) => patch({ credential_id: value === "__none__" ? null : value })}
+                      disabled={credentials.isLoading || Boolean(credentials.error)}
                     >
-                      <SelectTrigger>
+                      <SelectTrigger id="credential_id">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
                         <SelectGroup>
-                          {UPSTREAM_AUTH_KINDS.map((kind) => (
-                            <SelectItem key={kind} value={kind}>
-                              {upstreamAuthKindLabel(kind)}
+                          <SelectItem value="__none__">{t("None")}</SelectItem>
+                          {(credentials.data ?? []).filter((credential) => !credential.provider_managed).map((credential) => (
+                            <SelectItem key={credential.id} value={credential.id}>
+                              {credential.name}{!credential.enabled ? ` · ${t("Disabled")}` : ""}
                             </SelectItem>
                           ))}
                         </SelectGroup>
                       </SelectContent>
                     </Select>
+                    <FieldDescription>
+                      <Link to="/admin/routing/upstream-credentials">{t("Manage upstream credentials")}</Link>
+                      {" · "}{t("The credential must allow this exact Base URL.")}
+                    </FieldDescription>
+                    {credentials.error ? <FieldError>{t("Could not load upstream credentials.")}</FieldError> : null}
                   </Field>
-                  {state.upstream_auth_kind === "header" ? (
-                    <Field data-invalid={Boolean(fieldError("upstream_auth_header_name"))}>
-                      <FieldLabel htmlFor="header_name">{t("Header name")}</FieldLabel>
-                      <Input
-                        id="header_name"
-                        value={state.upstream_auth_header_name ?? ""}
-                        onChange={(event) =>
-                          patch({ upstream_auth_header_name: event.target.value || null })
-                        }
-                        placeholder="x-api-key"
-                        aria-invalid={Boolean(fieldError("upstream_auth_header_name"))}
-                      />
-                      {fieldError("upstream_auth_header_name") ? (
-                        <FieldError>{fieldError("upstream_auth_header_name")}</FieldError>
-                      ) : null}
-                    </Field>
-                  ) : null}
-                  {state.upstream_auth_kind !== "none" ? (
-                    <Field>
-                      <FieldLabel htmlFor="upstream_api_key">
-                        {t("Upstream API key")}{" "}
-                        {!isNew ? (
-                          <span className="text-xs text-muted-foreground">
-                            {t("(leave blank to keep current)")}
-                          </span>
-                        ) : null}
-                      </FieldLabel>
-                      <Input
-                        id="upstream_api_key"
-                        value={state.upstream_api_key}
-                        onChange={(event) => patch({ upstream_api_key: event.target.value })}
-                        autoComplete="off"
-                      />
-                    </Field>
-                  ) : null}
                   <NullableNumberField
                     label={t("Connect timeout (ms)")}
                     value={state.connect_timeout_ms}

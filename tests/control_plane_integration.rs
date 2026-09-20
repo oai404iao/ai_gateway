@@ -89,6 +89,172 @@ mod sqlite_s4_parity;
 #[path = "contracts/sqlite_s5_parity.rs"]
 mod sqlite_s5_parity;
 
+#[path = "support/upstream_credentials.rs"]
+mod upstream_credentials;
+
+async fn retarget_credential(pool: &sqlx::PgPool, channel: Uuid, target: &str) {
+    sqlx::query(
+        "UPDATE upstream_credentials SET allowed_base_urls=jsonb_build_array($2::text)
+        WHERE id=(SELECT credential_id FROM channels WHERE id=$1)",
+    )
+    .bind(channel)
+    .bind(target)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+async fn migrate_before_upstream_identities(database: &TestDatabase) {
+    use sqlx::migrate::Migrate;
+    let mut connection = database.pool.acquire().await.unwrap();
+    connection
+        .ensure_migrations_table("_sqlx_migrations")
+        .await
+        .unwrap();
+    for migration in MIGRATOR.iter().filter(|migration| migration.version < 64) {
+        connection
+            .apply("_sqlx_migrations", migration)
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn upstream_identity_migration_preserves_credentials_and_codex_projection_ids() {
+    let database = TestDatabase::new_unmigrated().await;
+    migrate_before_upstream_identities(&database).await;
+    let seed = seed(&database.pool).await;
+    for (name, kind, header, secret) in [
+        (
+            "same secret second identity",
+            "bearer",
+            None,
+            Some("upstream-secret"),
+        ),
+        (
+            "header identity",
+            "header",
+            Some("x-api-key"),
+            Some("header-test-secret"),
+        ),
+        ("unauthenticated identity", "none", None, None),
+    ] {
+        sqlx::query("INSERT INTO channels(id,channel_group_id,api_format,name,base_url,enabled,upstream_auth_kind,upstream_auth_header_name,upstream_api_key)
+            VALUES($1,$2,'open_ai_chat_completions',$3,'https://example.test',false,$4,$5,$6)")
+            .bind(Uuid::new_v4()).bind(seed.group).bind(name).bind(kind).bind(header).bind(secret)
+            .execute(&database.pool).await.unwrap();
+    }
+    let codex_group = Uuid::new_v4();
+    let codex = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO channel_groups(id,name,api_format,connector_kind,enabled)
+        VALUES($1,'legacy codex identities','open_ai_responses','codex_oauth',true)",
+    )
+    .bind(codex_group)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO channels(id,channel_group_id,api_format,name,base_url,upstream_auth_kind,supports_websocket)
+        VALUES($1,$2,'open_ai_responses','legacy codex account','https://codex.test','none',true)")
+        .bind(codex).bind(codex_group).execute(&database.pool).await.unwrap();
+    sqlx::query("INSERT INTO codex_oauth_credentials(channel_id,channel_group_id,label,account_id,user_id,
+        id_token,access_token,refresh_token,last_refreshed_at,refresh_generation)
+        VALUES($1,$2,'legacy account','legacy-account','legacy-user','id-test-token','access-test-token','refresh-test-token',now(),7)")
+        .bind(codex).bind(codex_group).execute(&database.pool).await.unwrap();
+    let before: Vec<(String, Uuid)> = sqlx::query_as("SELECT api_format::text,channel_id FROM codex_oauth_credential_channels ORDER BY api_format")
+        .fetch_all(&database.pool).await.unwrap();
+    ai_gateway::persistence::run_migrations(&database.pool)
+        .await
+        .unwrap();
+    let after: Vec<(String, Uuid)> = sqlx::query_as("SELECT api_format::text,channel_id FROM codex_oauth_credential_channels ORDER BY api_format")
+        .fetch_all(&database.pool).await.unwrap();
+    assert_eq!(before, after);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM upstream_credentials")
+            .fetch_one(&database.pool)
+            .await
+            .unwrap(),
+        4
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM upstream_credentials WHERE secret='upstream-secret'"
+        )
+        .fetch_one(&database.pool)
+        .await
+        .unwrap(),
+        2
+    );
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM channels WHERE upstream_api_key IS NOT NULL OR upstream_auth_kind<>'none'")
+        .fetch_one(&database.pool).await.unwrap(), 0);
+    let bindings: Vec<Uuid> = sqlx::query_scalar("SELECT credential_id FROM channels WHERE id IN (SELECT channel_id FROM codex_oauth_credential_channels)")
+        .fetch_all(&database.pool).await.unwrap();
+    assert_eq!(bindings, [codex, codex]);
+    let state: (i64, String, String) = sqlx::query_as("SELECT refresh_generation,access_token,refresh_token FROM codex_oauth_credentials WHERE channel_id=$1")
+        .bind(codex).fetch_one(&database.pool).await.unwrap();
+    assert_eq!(
+        state,
+        (7, "access-test-token".into(), "refresh-test-token".into())
+    );
+    let repository = ControlPlaneRepository::new(database.pool.clone());
+    repository
+        .ensure_system_settings(system_settings())
+        .await
+        .unwrap();
+    let records = repository.load_runtime().await.unwrap();
+    compile_runtime_config(records).unwrap();
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn invalid_disabled_identity_blocks_postgres_upgrade_atomically_and_without_secret_details() {
+    let database = TestDatabase::new_unmigrated().await;
+    migrate_before_upstream_identities(&database).await;
+    let seed = seed(&database.pool).await;
+    sqlx::query("UPDATE channels SET enabled=false,upstream_api_key=$2 WHERE id=$1")
+        .bind(seed.channel)
+        .bind("private-test-secret\r\ninjected")
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    let error = ai_gateway::persistence::run_migrations(&database.pool)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains(&seed.channel.to_string()));
+    assert!(!error.contains("private-test-secret"));
+    assert!(
+        !sqlx::query_scalar::<_, bool>("SELECT to_regclass('upstream_credentials') IS NOT NULL")
+            .fetch_one(&database.pool)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT max(version) FROM _sqlx_migrations")
+            .fetch_one(&database.pool)
+            .await
+            .unwrap(),
+        63
+    );
+    sqlx::query("UPDATE channels SET upstream_api_key='repaired-test-secret' WHERE id=$1")
+        .bind(seed.channel)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    ai_gateway::persistence::run_migrations(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT secret FROM upstream_credentials WHERE id=$1")
+            .bind(seed.channel)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap(),
+        "repaired-test-secret"
+    );
+    database.cleanup().await;
+}
+
 const DEFAULT_ADMIN_URL: &str = "postgres://ai_gateway:ai_gateway@127.0.0.1:5432/postgres";
 const PASSWORD_FILE_ADMIN_URL: &str = "postgres://ai_gateway@127.0.0.1:5432/postgres";
 const TEST_PNG_BASE64: &str =
@@ -275,6 +441,12 @@ async fn matching_proxy_status_asynchronously_auto_disables_an_opted_in_channel(
             .with_state(UpstreamState(Arc::new(Mutex::new(
                 UpstreamMode::Immediate(StatusCode::TOO_MANY_REQUESTS),
             )))),
+    )
+    .await;
+    retarget_credential(
+        &database.pool,
+        seed.channel,
+        &format!("http://{}", upstream.address),
     )
     .await;
     sqlx::query(
@@ -1734,7 +1906,24 @@ async fn seed(pool: &PgPool) -> Seed {
             .await
             .unwrap();
     }
-    let channel_query = if normalized_routing {
+    let independent_credentials: bool =
+        sqlx::query_scalar("SELECT to_regclass('upstream_credentials') IS NOT NULL")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    if independent_credentials {
+        upstream_credentials::insert(
+            pool,
+            seed.channel,
+            "https://example.test",
+            "upstream-secret",
+        )
+        .await;
+    }
+    let channel_query = if independent_credentials {
+        "INSERT INTO channels (id,channel_group_id,api_format,name,base_url,enabled,upstream_auth_kind,credential_id,available_models)
+         VALUES($1,$2,'open_ai_chat_completions',$3,'https://example.test',true,'none',$1,ARRAY['upstream-v1']::text[])"
+    } else if normalized_routing {
         "INSERT INTO channels \
          (id,channel_group_id,api_format,name,base_url,enabled,upstream_auth_kind, \
           upstream_api_key,available_models) \
@@ -2205,6 +2394,12 @@ async fn direct_seat_migration_preserves_existing_money_and_pending_reservations
     .execute(&database.pool)
     .await
     .unwrap();
+    for migration in MIGRATOR.iter().filter(|migration| migration.version > 62) {
+        sqlx::raw_sql(migration.sql.clone())
+            .execute(&database.pool)
+            .await
+            .unwrap();
+    }
     let snapshot = compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap();
     sharing.publish(snapshot.sharing());
     sharing.flush().await.unwrap();
@@ -2268,6 +2463,12 @@ async fn codex_sharing_pins_credentials_and_settles_money_across_api_keys() {
     .execute(&database.pool)
     .await
     .unwrap();
+    retarget_credential(
+        &database.pool,
+        seed.channel,
+        &format!("http://{}", upstream.address),
+    )
+    .await;
     sqlx::query("UPDATE channels SET base_url=$1 WHERE id=$2")
         .bind(format!("http://{}", upstream.address))
         .bind(seed.channel)
@@ -6500,6 +6701,12 @@ async fn settled_usage_updates_the_live_soft_quota_before_snapshot_reload() {
     .execute(&database.pool)
     .await
     .unwrap();
+    retarget_credential(
+        &database.pool,
+        seed.channel,
+        &format!("http://{}", upstream_server.address),
+    )
+    .await;
     sqlx::query("UPDATE channels SET base_url = $1 WHERE id = $2")
         .bind(format!("http://{}", upstream_server.address))
         .bind(seed.channel)
@@ -7698,7 +7905,7 @@ async fn manual_channel_disable_publishes_an_unavailable_route() {
             "channel_group_id": seed.group, "api_format": "open_ai_chat_completions",
             "name": format!("test-channel-{}", seed.channel), "base_url": "https://example.test",
             "enabled": false,
-            "upstream_auth_kind": "bearer",
+            "credential_id": seed.channel,
             "available_models": ["upstream-v1"]
         }),
         &[("if-match", &etag)],
@@ -7775,7 +7982,7 @@ async fn disabled_only_group_channel_can_remove_the_last_routed_model() {
             "name": format!("test-channel-{}", seed.channel),
             "base_url": "https://example.test",
             "enabled": false,
-            "upstream_auth_kind": "bearer",
+            "credential_id": seed.channel,
             "available_models": ["different-upstream"]
         }),
         &[("if-match", &etag)],
@@ -7833,7 +8040,7 @@ async fn disabled_only_group_channel_can_remove_the_last_routed_model() {
             "name": format!("test-channel-{}", seed.channel),
             "base_url": "https://example.test",
             "enabled": false,
-            "upstream_auth_kind": "bearer",
+            "credential_id": seed.channel,
             "available_models": ["upstream-v1"]
         }),
         &[("if-match", &etag)],
@@ -7893,8 +8100,7 @@ async fn adding_a_group_channel_does_not_change_existing_route_candidates() {
             "name": format!("later-member-{}", Uuid::new_v4()),
             "base_url": "https://later-member.example.test",
             "enabled": true,
-            "upstream_auth_kind": "bearer",
-            "upstream_api_key": "other-upstream-secret",
+            "credential_id": null,
             "available_models": ["upstream-v1"]
         }),
     )
@@ -7934,7 +8140,7 @@ async fn model_incompatible_direct_channel_publishes_a_disconnected_route() {
             "channel_group_id": seed.group, "api_format": "open_ai_chat_completions",
             "name": format!("test-channel-{}", seed.channel), "base_url": "https://example.test",
             "enabled": true,
-            "upstream_auth_kind": "bearer",
+            "credential_id": seed.channel,
             "available_models": ["different-upstream"]
         }),
         &[("if-match", &etag)],
@@ -8238,7 +8444,7 @@ async fn proxy_template_management_exposes_editable_documents_and_keeps_audits_r
         "connect_timeout_ms": 11,
         "response_header_timeout_ms": 22,
         "stream_idle_timeout_ms": 33,
-        "upstream_auth_kind": "bearer",
+        "credential_id": seed.channel,
         "available_models": ["upstream-v1"]
     });
     assert_eq!(
@@ -8286,7 +8492,11 @@ async fn proxy_template_management_exposes_editable_documents_and_keeps_audits_r
         channel_read["override_document"],
         valid_channel["override_document"]
     );
-    assert_eq!(channel_read["upstream_api_key"], "upstream-secret");
+    assert_eq!(
+        channel_read["credential_id"],
+        serde_json::json!(seed.channel)
+    );
+    assert!(channel_read.get("upstream_api_key").is_none());
     assert!(channel_read.to_string().contains(channel_value));
     let mut metadata_only_channel = valid_channel.clone();
     metadata_only_channel
@@ -8505,38 +8715,78 @@ async fn overly_long_revoke_reason_is_a_safe_unprocessable_response() {
 }
 
 #[tokio::test]
-async fn management_channel_credentials_are_visible_kept_replaced_and_cleared_safely() {
+async fn independent_credentials_rotate_disable_and_restrict_all_bound_channels() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
-    let (app, _) = admin_app(database.pool.clone(), seed.user).await;
-    let path = format!("/console/v1/routing/channels/{}", seed.channel);
+    let (app, runtime) = admin_app(database.pool.clone(), seed.user).await;
+    let path = format!("/console/v1/routing/upstream-credentials/{}", seed.channel);
     let detail = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
     assert_eq!(detail.status(), StatusCode::OK);
     assert_eq!(detail.headers()["cache-control"], "no-store");
     let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
     let detail: serde_json::Value =
         serde_json::from_slice(&detail.into_body().collect().await.unwrap().to_bytes()).unwrap();
-    assert_eq!(detail["upstream_credential_configured"], true);
-    assert_eq!(detail["upstream_api_key"], "upstream-secret");
-
-    let update = |credential: serde_json::Value| {
+    assert_eq!(detail["secret"], "upstream-secret");
+    let second = admin_request(
+        app.clone(),
+        "POST",
+        "/console/v1/routing/channels",
         serde_json::json!({
             "channel_group_id": seed.group, "api_format": "open_ai_chat_completions",
-            "name": format!("test-channel-{}", seed.channel), "base_url": "https://example.test",
-            "enabled": true, "upstream_auth_kind": "bearer",
-            "available_models": ["upstream-v1"], "upstream_api_key": credential
-        })
-    };
+            "name": "shared identity channel", "base_url": "https://example.test",
+            "enabled": true, "credential_id": seed.channel, "available_models": ["upstream-v1"]
+        }),
+    )
+    .await;
+    assert_eq!(second.status(), StatusCode::CREATED);
+    let second: serde_json::Value =
+        serde_json::from_slice(&second.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let second_id: Uuid = serde_json::from_value(second["id"].clone()).unwrap();
+    let update = serde_json::json!({
+        "name": "shared identity", "kind": "bearer", "enabled": true,
+        "secret": "replaced-secret", "allowed_base_urls": ["https://example.test"]
+    });
+    let rotated = admin_request_with_headers(
+        app.clone(),
+        "PUT",
+        &path,
+        update.clone(),
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(rotated.status(), StatusCode::OK);
+    for id in [seed.channel, second_id] {
+        assert!(
+            matches!(runtime.snapshot().channel(id).unwrap().upstream_auth(),
+            ai_gateway::domain::UpstreamAuth::Bearer(secret) if secret.as_ref() == "replaced-secret")
+        );
+    }
+    assert_eq!(
+        admin_request_with_headers(
+            app.clone(),
+            "PUT",
+            &path,
+            update.clone(),
+            &[("if-match", &etag)]
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    let current = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
+    let etag = current.headers()["etag"].to_str().unwrap().to_owned();
+    let mut keep_input = update.clone();
+    keep_input.as_object_mut().unwrap().remove("secret");
     let keep = admin_request_with_headers(
         app.clone(),
         "PUT",
         &path,
-        update(serde_json::json!("replaced-secret")),
+        keep_input.clone(),
         &[("if-match", &etag)],
     )
     .await;
     assert_eq!(keep.status(), StatusCode::OK);
-    let secret: String = sqlx::query_scalar("SELECT upstream_api_key FROM channels WHERE id=$1")
+    let secret: String = sqlx::query_scalar("SELECT secret FROM upstream_credentials WHERE id=$1")
         .bind(seed.channel)
         .fetch_one(&database.pool)
         .await
@@ -8544,28 +8794,63 @@ async fn management_channel_credentials_are_visible_kept_replaced_and_cleared_sa
     assert_eq!(secret, "replaced-secret");
     let current = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
     let etag = current.headers()["etag"].to_str().unwrap().to_owned();
-    let keep = admin_request_with_headers(app.clone(), "PUT", &path, serde_json::json!({
-        "channel_group_id": seed.group, "api_format": "open_ai_chat_completions", "name": format!("test-channel-{}", seed.channel),
-        "base_url": "https://example.test", "enabled": true, "upstream_auth_kind": "bearer", "available_models": ["upstream-v1"]
-    }), &[("if-match", &etag)]).await;
-    assert_eq!(keep.status(), StatusCode::OK);
-    let secret: String = sqlx::query_scalar("SELECT upstream_api_key FROM channels WHERE id=$1")
-        .bind(seed.channel)
-        .fetch_one(&database.pool)
+    let mut invalid = keep_input.clone();
+    invalid["allowed_base_urls"] = serde_json::json!(["https://wrong-target.test"]);
+    assert_eq!(
+        admin_request_with_headers(app.clone(), "PUT", &path, invalid, &[("if-match", &etag)])
+            .await
+            .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    keep_input["enabled"] = serde_json::json!(false);
+    assert_eq!(
+        admin_request_with_headers(
+            app.clone(),
+            "PUT",
+            &path,
+            keep_input,
+            &[("if-match", &etag)]
+        )
         .await
-        .unwrap();
-    assert_eq!(secret, "replaced-secret");
+        .status(),
+        StatusCode::OK
+    );
+    assert!(runtime.snapshot().channel(seed.channel).is_none());
+    assert!(runtime.snapshot().channel(second_id).is_none());
     let current = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
     let etag = current.headers()["etag"].to_str().unwrap().to_owned();
-    let invalid_clear = admin_request_with_headers(
+    assert_eq!(
+        admin_request_with_headers(
+            app.clone(),
+            "DELETE",
+            &path,
+            serde_json::json!({}),
+            &[("if-match", &etag)]
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    let list = admin_request(
         app,
-        "PUT",
-        &path,
-        update(serde_json::Value::Null),
-        &[("if-match", &etag)],
+        "GET",
+        "/console/v1/routing/upstream-credentials",
+        serde_json::json!({}),
     )
     .await;
-    assert_eq!(invalid_clear.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let list = String::from_utf8(
+        list.into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(!list.contains("replaced-secret"));
+    let audit: String = sqlx::query_scalar("SELECT coalesce(json_agg(after_redacted)::text,'[]') FROM audit_logs WHERE object_type='upstream_credential'")
+        .fetch_one(&database.pool).await.unwrap();
+    assert!(!audit.contains("replaced-secret"));
     database.cleanup().await;
 }
 
@@ -8587,7 +8872,7 @@ async fn channel_documents_are_rejected_and_never_escape_audit_allowlists() {
             "channel_group_id": seed.group, "api_format": "open_ai_chat_completions",
             "name": format!("rejected-channel-{}", Uuid::new_v4()),
             "base_url": "https://example.test", "enabled": true,
-            "upstream_auth_kind": "bearer", "upstream_api_key": "upstream-secret",
+            "credential_id": seed.channel,
             "available_models": ["upstream-v1"],
             "override_document": {"headers": {"Authorization": "rejected-create-secret"}}
         }),
@@ -8630,8 +8915,8 @@ async fn channel_documents_are_rejected_and_never_escape_audit_allowlists() {
     let valid_update = serde_json::json!({
         "channel_group_id": seed.group, "api_format": "open_ai_chat_completions",
         "name": format!("test-channel-{}", seed.channel), "base_url": "https://example.test",
-        "enabled": true, "upstream_auth_kind": "bearer",
-        "available_models": ["upstream-v1"], "upstream_api_key": "upstream-secret",
+        "enabled": true, "credential_id": seed.channel,
+        "available_models": ["upstream-v1"],
         "override_document": {}
     });
     assert_eq!(
@@ -8674,8 +8959,8 @@ async fn channel_documents_are_rejected_and_never_escape_audit_allowlists() {
     let rejected_update = serde_json::json!({
         "channel_group_id": seed.group, "api_format": "open_ai_chat_completions",
         "name": format!("test-channel-{}", seed.channel), "base_url": "https://example.test",
-        "enabled": true, "upstream_auth_kind": "bearer",
-        "available_models": ["upstream-v1"], "upstream_api_key": "upstream-secret",
+        "enabled": true, "credential_id": seed.channel,
+        "available_models": ["upstream-v1"],
         "override_document": {"headers": {"Authorization": "rejected-secret"}}
     });
     let audits_before_update: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_logs")
@@ -9667,6 +9952,12 @@ async fn flat_route_candidate_migration_snapshots_groups_and_allows_repeated_cha
         .ensure_system_settings(system_settings())
         .await
         .unwrap();
+    for migration in MIGRATOR.iter().filter(|migration| migration.version > 62) {
+        sqlx::raw_sql(migration.sql.clone())
+            .execute(&database.pool)
+            .await
+            .unwrap();
+    }
     let snapshot = compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap();
     let rule = snapshot
         .model_rule(ApiFormat::OpenAiChatCompletions, seed.client_model.as_str())
@@ -10708,7 +10999,7 @@ async fn cross_format_enabled_route_is_rejected() {
         .execute(&database.pool)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO channels (id, channel_group_id, api_format, name, base_url, enabled, upstream_auth_kind, upstream_api_key, available_models) VALUES ($1, $2, 'open_ai_responses', $3, 'https://example.test', true, 'bearer', 'upstream-secret', ARRAY['upstream-v1']::text[])")
+    sqlx::query("INSERT INTO channels (id, channel_group_id, api_format, name, base_url, enabled, upstream_auth_kind, available_models) VALUES ($1, $2, 'open_ai_responses', $3, 'https://example.test', true, 'none', ARRAY['upstream-v1']::text[])")
         .bind(channel)
         .bind(group)
         .bind(format!("responses-channel-{channel}"))
@@ -11043,6 +11334,12 @@ async fn proxy_request_logs_reach_postgres_for_terminal_and_rejected_requests() 
         Router::new()
             .route("/v1/chat/completions", post(upstream))
             .with_state(state.clone()),
+    )
+    .await;
+    retarget_credential(
+        &database.pool,
+        seed.channel,
+        &format!("http://{}", upstream_server.address),
     )
     .await;
     sqlx::query("UPDATE channels SET base_url = $1 WHERE id = $2")
@@ -11407,6 +11704,12 @@ async fn saturated_request_log_queue_does_not_delay_proxy_responses_and_drains_a
         Router::new()
             .route("/v1/chat/completions", post(upstream))
             .with_state(state),
+    )
+    .await;
+    retarget_credential(
+        &database.pool,
+        seed.channel,
+        &format!("http://{}", upstream_server.address),
     )
     .await;
     sqlx::query("UPDATE channels SET base_url = $1 WHERE id = $2")

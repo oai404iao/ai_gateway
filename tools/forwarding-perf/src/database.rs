@@ -306,19 +306,29 @@ async fn seed(
         ),
     ] {
         sqlx::query(
+            "INSERT INTO upstream_credentials(id,name,kind,secret,allowed_base_urls)
+             VALUES($1,$2,'bearer',$3,jsonb_build_array($4::text))",
+        )
+        .bind(channel_id)
+        .bind(name)
+        .bind(UPSTREAM_API_KEY)
+        .bind(mock_base_url)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
             "INSERT INTO channels
              (id,channel_group_id,api_format,name,base_url,enabled,
-              upstream_auth_kind,upstream_api_key,available_models,
+              upstream_auth_kind,credential_id,available_models,
               auto_disable_allowed)
              VALUES ($1,$2,$3::api_format,$4,$5,true,
-                     'bearer',$6,$7,false)",
+                     'none',$6,$7,false)",
         )
         .bind(channel_id)
         .bind(group_id)
         .bind(api_kind.database_name())
         .bind(name)
         .bind(mock_base_url)
-        .bind(UPSTREAM_API_KEY)
+        .bind(channel_id)
         .bind(models)
         .execute(&mut *transaction)
         .await?;

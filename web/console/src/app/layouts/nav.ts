@@ -74,6 +74,7 @@ export const NAV_SECTIONS: NavSection[] = [
     roles: ["admin"],
     items: [
       { label: "Model configuration", path: "/admin/routing/model-rules", icon: Workflow },
+      { label: "Upstream credentials", path: "/admin/routing/upstream-credentials", icon: KeyRound },
       { label: "Price sync", path: "/admin/catalog", icon: GalleryVerticalEnd },
     ],
   },

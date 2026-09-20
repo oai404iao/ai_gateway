@@ -15,6 +15,7 @@ mod queries;
 mod schema;
 mod sharing;
 mod types;
+mod upstream_credentials;
 
 pub use auth::SqliteAuthRepository;
 pub(crate) use codex::operation::SqliteCodexOperation;

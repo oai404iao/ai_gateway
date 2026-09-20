@@ -309,9 +309,7 @@ function routingChannel({
     connect_timeout_ms: null,
     response_header_timeout_ms: null,
     stream_idle_timeout_ms: null,
-    upstream_auth_kind: providerManaged ? "none" : "bearer",
-    upstream_auth_header_name: null,
-    upstream_credential_configured: !providerManaged,
+    credential_id: null,
     available_models:
       apiFormat === "open_ai_images" ? ["gpt-image-2"] : ["gpt-5-codex"],
     test_model:
@@ -1237,6 +1235,9 @@ export async function mockConsoleApi(page: Page): Promise<void> {
     if (path === "/console/v1/routing/channels" && method === "GET") {
       return route.fulfill({ status: 200, json: E2E_ROUTING_CHANNELS });
     }
+    if (path === "/console/v1/routing/upstream-credentials" && method === "GET") {
+      return route.fulfill({ status: 200, json: [] });
+    }
     if (
       path === `/console/v1/routing/channels/${E2E_STANDARD_CHANNEL_ID}` &&
       method === "GET"
@@ -1250,7 +1251,6 @@ export async function mockConsoleApi(page: Page): Promise<void> {
         json: {
           ...channel,
           override_document: {},
-          upstream_api_key: "e2e-upstream-secret",
         },
       });
     }

@@ -227,6 +227,16 @@ pub fn router(state: ConsoleState) -> Router {
             get(list_channels).post(create_channel),
         )
         .route(
+            "/console/v1/routing/upstream-credentials",
+            get(list_upstream_credentials).post(create_upstream_credential),
+        )
+        .route(
+            "/console/v1/routing/upstream-credentials/{id}",
+            get(get_upstream_credential)
+                .put(update_upstream_credential)
+                .delete(delete_upstream_credential),
+        )
+        .route(
             "/console/v1/routing/channels/models/discover",
             post(discover_channel_models),
         )
@@ -1777,7 +1787,86 @@ async fn discover_channel_models(
     State(state): State<ConsoleState>,
     Json(input): Json<ChannelModelDiscoveryInput>,
 ) -> Result<Json<ChannelModelDiscoveryResponse>, ConsoleError> {
-    Ok(Json(state.channel_models.discover(input).await?))
+    let credential = match input.credential_id {
+        Some(id) => Some(
+            state
+                .coordinator
+                .upstream_credential_detail(id)
+                .await?
+                .ok_or(ConsoleError::NotFound)?,
+        ),
+        None => None,
+    };
+    Ok(Json(
+        state.channel_models.discover(input, credential).await?,
+    ))
+}
+
+async fn list_upstream_credentials(
+    State(state): State<ConsoleState>,
+) -> Result<Json<Vec<crate::persistence::UpstreamCredentialView>>, ConsoleError> {
+    Ok(Json(state.coordinator.upstream_credentials().await?))
+}
+
+async fn get_upstream_credential(
+    State(state): State<ConsoleState>,
+    Path(id): Path<Uuid>,
+) -> Result<Response, ConsoleError> {
+    let detail = state
+        .coordinator
+        .upstream_credential_detail(id)
+        .await?
+        .ok_or(ConsoleError::NotFound)?;
+    resource_response(to_json(detail))
+}
+
+async fn create_upstream_credential(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Json(input): Json<crate::persistence::UpstreamCredentialInput>,
+) -> Result<(StatusCode, Json<MutationResponse>), ConsoleError> {
+    mutate_created(
+        &state,
+        principal,
+        ControlPlaneMutation::CreateUpstreamCredential(input),
+    )
+    .await
+}
+
+async fn update_upstream_credential(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(input): Json<crate::persistence::UpstreamCredentialInput>,
+) -> Result<Json<MutationResponse>, ConsoleError> {
+    mutate(
+        &state,
+        principal,
+        ControlPlaneMutation::UpdateUpstreamCredential {
+            id,
+            input,
+            expected_updated_at: if_match(&headers)?,
+        },
+    )
+    .await
+}
+
+async fn delete_upstream_credential(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<MutationResponse>, ConsoleError> {
+    mutate(
+        &state,
+        principal,
+        ControlPlaneMutation::DeleteUpstreamCredential {
+            id,
+            expected_updated_at: if_match(&headers)?,
+        },
+    )
+    .await
 }
 
 async fn update_channels_batch(
@@ -2879,6 +2968,7 @@ fn repository_error_message(error: &crate::persistence::RepositoryError) -> &'st
         crate::persistence::RepositoryError::ProviderManagedResource => "provider_managed_resource",
         crate::persistence::RepositoryError::ProtectedUserGroup => "protected_user_group",
         crate::persistence::RepositoryError::ProxyInUse => "proxy_in_use",
+        crate::persistence::RepositoryError::CredentialInUse => "credential_in_use",
         crate::persistence::RepositoryError::CannotDeleteSelf => "cannot_delete_self",
         crate::persistence::RepositoryError::LastAdministrator => "last_administrator",
         crate::persistence::RepositoryError::CannotDisableSelf => "cannot_disable_self",
@@ -2907,6 +2997,7 @@ fn repository_status(error: &crate::persistence::RepositoryError) -> StatusCode 
         | crate::persistence::RepositoryError::ProviderManagedResource
         | crate::persistence::RepositoryError::ProtectedUserGroup
         | crate::persistence::RepositoryError::ProxyInUse
+        | crate::persistence::RepositoryError::CredentialInUse
         | crate::persistence::RepositoryError::CannotDeleteSelf
         | crate::persistence::RepositoryError::LastAdministrator
         | crate::persistence::RepositoryError::CannotDisableSelf

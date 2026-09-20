@@ -192,10 +192,40 @@ async fn legacy_identity_proxy_exports_and_batch_rollback_match() {
 
 async fn crud(c: Context) {
     let r = c.repo.codex_credential(c.id).await.unwrap().unwrap();
+    let identity = c
+        .repo
+        .upstream_credential_detail(c.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(identity.credential.provider_managed);
+    assert_eq!(identity.credential.kind, "codex_oauth");
+    assert!(identity.secret.is_none());
+    assert_eq!(identity.credential.channel_ids.len(), 2);
+    assert!(
+        c.repo
+            .prepare_mutation(
+                c.admin,
+                ai_gateway::persistence::ControlPlaneMutation::DeleteUpstreamCredential {
+                    id: c.id,
+                    expected_updated_at: identity.credential.updated_at,
+                }
+            )
+            .await
+            .is_err()
+    );
     assert_eq!(r.projection_channel_ids.len(), 2);
     assert_eq!(r.refresh_generation, 0);
     assert_eq!(r.user_id.as_deref(), Some("member-one"));
     let records = c.repo.load_runtime().await.unwrap();
+    for channel in records
+        .control_plane
+        .channels
+        .iter()
+        .filter(|channel| r.projection_channel_ids.contains(&channel.id))
+    {
+        assert_eq!(channel.credential.unwrap().id, c.id);
+    }
     let images = records
         .control_plane
         .groups
@@ -289,6 +319,14 @@ async fn crud(c: Context) {
         "disabled"
     );
     let current = c.repo.codex_credential(c.id).await.unwrap().unwrap();
+    let identity = c
+        .repo
+        .upstream_credential_detail(c.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!identity.credential.enabled);
+    assert_eq!(identity.credential.name, "Renamed");
     c.repo
         .prepare_codex_credentials_batch(
             c.admin,
@@ -308,6 +346,15 @@ async fn crud(c: Context) {
         .unwrap();
     let current = c.repo.codex_credential(c.id).await.unwrap().unwrap();
     assert!(current.enabled);
+    assert!(
+        c.repo
+            .upstream_credential_detail(c.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .credential
+            .enabled
+    );
     assert_eq!(current.label, "Renamed");
     c.repo
         .prepare_codex_credential_delete(c.admin, c.id, current.updated_at)
@@ -317,6 +364,13 @@ async fn crud(c: Context) {
         .await
         .unwrap();
     assert!(c.repo.codex_credential(c.id).await.unwrap().is_none());
+    assert!(
+        c.repo
+            .upstream_credential_detail(c.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert!(c.repo.load_codex_credentials().await.unwrap().is_empty());
     let listed = c.repo.control_plane_lists().await.unwrap();
     assert!(

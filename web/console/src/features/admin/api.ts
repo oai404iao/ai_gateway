@@ -60,6 +60,10 @@ import type {
   UserGroupInput,
   UserGroupView,
   UserUpdateInput,
+  UpstreamCredentialView,
+  UpstreamCredentialDetail,
+  UpstreamCredentialInput,
+  UpstreamCredentialCreateInput,
 } from "@/api/types";
 
 type ListResult<T> = ReturnType<typeof useQuery<T[]>>;
@@ -121,6 +125,24 @@ function makeUpdate<TBody>(
       },
     });
   };
+}
+
+const CREDENTIALS_KEY = ["console", "upstream-credentials"] as const;
+const credentialDetailKey = (id: string) => [...CREDENTIALS_KEY, id] as const;
+const CREDENTIALS_PATH = "/routing/upstream-credentials";
+export const useUpstreamCredentials = makeList<UpstreamCredentialView>(CREDENTIALS_PATH, CREDENTIALS_KEY);
+export const useUpstreamCredential = makeDetail<UpstreamCredentialDetail>(CREDENTIALS_PATH, credentialDetailKey);
+export const useCreateUpstreamCredential = makeCreate<UpstreamCredentialCreateInput, MutationResponse>(CREDENTIALS_PATH, CREDENTIALS_KEY);
+export const useUpdateUpstreamCredential = makeUpdate<UpstreamCredentialInput>(CREDENTIALS_PATH, CREDENTIALS_KEY, credentialDetailKey);
+export function useDeleteUpstreamCredential(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (ifMatch: string) => apiSend<MutationResponse>(`${CREDENTIALS_PATH}/${id}`, "DELETE", undefined, { ifMatch }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: CREDENTIALS_KEY });
+      queryClient.removeQueries({ queryKey: credentialDetailKey(id) });
+    },
+  });
 }
 
 // ---- Users ----

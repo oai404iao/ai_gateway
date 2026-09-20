@@ -77,6 +77,41 @@ pub struct SqliteControlPlaneRepository {
 }
 
 impl SqliteControlPlaneRepository {
+    pub async fn upstream_credentials(
+        &self,
+    ) -> Result<Vec<crate::persistence::UpstreamCredentialView>, RepositoryError> {
+        let mut connection = self.read().await?;
+        let mut tx = connection.begin().await?;
+        let records = super::upstream_credentials::records(&mut tx).await?;
+        let bindings = super::upstream_credentials::bindings(&mut tx).await?;
+        tx.commit().await?;
+        Ok(records
+            .iter()
+            .filter(|record| record.deleted_at.is_none())
+            .map(|record| record.view(&bindings))
+            .collect())
+    }
+
+    pub async fn upstream_credential_detail(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<crate::persistence::UpstreamCredentialDetail>, RepositoryError> {
+        let mut connection = self.read().await?;
+        let mut tx = connection.begin().await?;
+        let record = super::upstream_credentials::records(&mut tx)
+            .await?
+            .into_iter()
+            .find(|record| record.id == id && record.deleted_at.is_none());
+        let bindings = super::upstream_credentials::bindings(&mut tx).await?;
+        tx.commit().await?;
+        Ok(
+            record.map(|record| crate::persistence::UpstreamCredentialDetail {
+                credential: record.view(&bindings),
+                secret: record.secret,
+            }),
+        )
+    }
+
     #[must_use]
     pub fn new(database: Arc<SqliteDatabase>) -> Self {
         Self { database }
@@ -179,8 +214,8 @@ impl SqliteControlPlaneRepository {
         .await?
         .into_iter()
         .map(ChannelGroupRow::into_record)
-        .collect();
-        let channels = sqlx::query_as::<_, ChannelRecordRow>(
+        .collect::<Vec<_>>();
+        let mut channels = sqlx::query_as::<_, ChannelRecordRow>(
             "SELECT c.id,c.channel_group_id,c.api_format,c.name,c.base_url,c.enabled, \
                     c.supports_websocket,c.supports_standalone_web_search,c.auto_disabled, \
                     c.auto_disable_allowed,c.billing_multiplier,c.proxy_id,c.config_template_id, \
@@ -196,6 +231,12 @@ impl SqliteControlPlaneRepository {
         .into_iter()
         .map(ChannelRecordRow::into_record)
         .collect::<Result<Vec<_>, _>>()?;
+        crate::persistence::upstream_credentials::resolve_bindings(
+            &mut channels,
+            &groups,
+            &super::upstream_credentials::records(connection).await?,
+            &super::upstream_credentials::bindings(connection).await?,
+        )?;
         let proxies = sqlx::query_as::<_, ProxyRecordRow>(
             "SELECT id,name,proxy_url,username,password,no_proxy_hosts,enabled FROM proxies ORDER BY id",
         )
@@ -487,6 +528,8 @@ struct ChannelRecordRow {
 impl ChannelRecordRow {
     fn into_record(self) -> Result<ChannelRecord, RepositoryError> {
         Ok(ChannelRecord {
+            credential: None,
+            credential_binding_revision: Uuid::nil(),
             id: self.id.0,
             channel_group_id: self.channel_group_id.0,
             api_format: self.api_format,
@@ -1042,8 +1085,7 @@ impl SqliteControlPlaneRepository {
                     c.supports_websocket,c.supports_standalone_web_search,c.auto_disabled, \
                     c.auto_disabled_reason,c.auto_disable_allowed,c.billing_multiplier,c.proxy_id, \
                     c.config_template_id,c.connect_timeout_ms,c.response_header_timeout_ms, \
-                    c.stream_idle_timeout_ms,c.upstream_auth_kind,c.upstream_auth_header_name, \
-                    (c.upstream_api_key IS NOT NULL) AS upstream_credential_configured, \
+                    c.stream_idle_timeout_ms,c.credential_id, \
                     c.available_models,c.test_model,c.test_pricing_model_id,c.created_at,c.updated_at \
              FROM channels AS c \
              JOIN channel_groups AS g ON g.id=c.channel_group_id AND g.deleted_at IS NULL \
@@ -1166,9 +1208,7 @@ impl SqliteControlPlaneRepository {
                     c.supports_websocket,c.supports_standalone_web_search,c.auto_disabled, \
                     c.auto_disabled_reason,c.auto_disable_allowed,c.billing_multiplier,c.proxy_id, \
                     c.config_template_id,c.override_document,c.connect_timeout_ms, \
-                    c.response_header_timeout_ms,c.stream_idle_timeout_ms,c.upstream_auth_kind, \
-                    c.upstream_auth_header_name,c.upstream_api_key, \
-                    (c.upstream_api_key IS NOT NULL) AS upstream_credential_configured, \
+                    c.response_header_timeout_ms,c.stream_idle_timeout_ms,c.credential_id, \
                     c.available_models,c.test_model,c.test_pricing_model_id,c.created_at,c.updated_at \
              FROM channels AS c \
              JOIN channel_groups AS g ON g.id=c.channel_group_id AND g.deleted_at IS NULL \
@@ -1510,9 +1550,7 @@ struct ConsoleChannelRow {
     connect_timeout_ms: Option<i32>,
     response_header_timeout_ms: Option<i32>,
     stream_idle_timeout_ms: Option<i32>,
-    upstream_auth_kind: String,
-    upstream_auth_header_name: Option<String>,
-    upstream_credential_configured: bool,
+    credential_id: Option<SqliteUuid>,
     available_models: String,
     test_model: Option<String>,
     test_pricing_model_id: Option<SqliteUuid>,
@@ -1542,9 +1580,7 @@ impl ConsoleChannelRow {
             connect_timeout_ms: self.connect_timeout_ms,
             response_header_timeout_ms: self.response_header_timeout_ms,
             stream_idle_timeout_ms: self.stream_idle_timeout_ms,
-            upstream_auth_kind: self.upstream_auth_kind,
-            upstream_auth_header_name: self.upstream_auth_header_name,
-            upstream_credential_configured: self.upstream_credential_configured,
+            credential_id: self.credential_id.map(|id| id.0),
             available_models: string_list(&self.available_models)?,
             test_model: self.test_model,
             test_pricing_model_id: self.test_pricing_model_id.map(|value| value.0),
@@ -1576,10 +1612,7 @@ struct ControlPlaneChannelDetailRow {
     connect_timeout_ms: Option<i32>,
     response_header_timeout_ms: Option<i32>,
     stream_idle_timeout_ms: Option<i32>,
-    upstream_auth_kind: String,
-    upstream_auth_header_name: Option<String>,
-    upstream_api_key: Option<String>,
-    upstream_credential_configured: bool,
+    credential_id: Option<SqliteUuid>,
     available_models: String,
     test_model: Option<String>,
     test_pricing_model_id: Option<SqliteUuid>,
@@ -1610,10 +1643,7 @@ impl ControlPlaneChannelDetailRow {
             connect_timeout_ms: self.connect_timeout_ms,
             response_header_timeout_ms: self.response_header_timeout_ms,
             stream_idle_timeout_ms: self.stream_idle_timeout_ms,
-            upstream_auth_kind: self.upstream_auth_kind,
-            upstream_auth_header_name: self.upstream_auth_header_name,
-            upstream_api_key: self.upstream_api_key,
-            upstream_credential_configured: self.upstream_credential_configured,
+            credential_id: self.credential_id.map(|id| id.0),
             available_models: string_list(&self.available_models)?,
             test_model: self.test_model,
             test_pricing_model_id: self.test_pricing_model_id.map(|value| value.0),
@@ -3306,8 +3336,7 @@ async fn channel_audit(
                 supports_standalone_web_search,auto_disabled,auto_disabled_reason, \
                 auto_disable_allowed,billing_multiplier,proxy_id,config_template_id, \
                 connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms, \
-                upstream_auth_kind,upstream_auth_header_name, \
-                (upstream_api_key IS NOT NULL) AS upstream_credential_configured, \
+                credential_id, \
                 available_models,test_model,test_pricing_model_id,deleted_at,deleted_by, \
                 created_at,updated_at \
          FROM channels WHERE id=?",
@@ -3334,9 +3363,7 @@ async fn channel_audit(
         "connect_timeout_ms": row.connect_timeout_ms,
         "response_header_timeout_ms": row.response_header_timeout_ms,
         "stream_idle_timeout_ms": row.stream_idle_timeout_ms,
-        "upstream_auth_kind": row.upstream_auth_kind,
-        "upstream_auth_header_name": row.upstream_auth_header_name,
-        "upstream_credential_configured": row.upstream_credential_configured,
+        "credential_id": row.credential_id.map(|id| id.0),
         "available_models": string_list(&row.available_models)?,
         "test_model": row.test_model,
         "test_pricing_model_id": row.test_pricing_model_id.map(|value| value.0),
@@ -3366,9 +3393,7 @@ struct ChannelAuditRow {
     connect_timeout_ms: Option<i32>,
     response_header_timeout_ms: Option<i32>,
     stream_idle_timeout_ms: Option<i32>,
-    upstream_auth_kind: String,
-    upstream_auth_header_name: Option<String>,
-    upstream_credential_configured: bool,
+    credential_id: Option<SqliteUuid>,
     available_models: String,
     test_model: Option<String>,
     test_pricing_model_id: Option<SqliteUuid>,
@@ -4584,6 +4609,21 @@ async fn apply_control_plane_mutation(
             model_protocol_rule_update(transaction, model_rule_id, id, input, expected_updated_at)
                 .await
         }
+        ControlPlaneMutation::CreateUpstreamCredential(input) => {
+            super::upstream_credentials::save(transaction, Uuid::new_v4(), input, None).await
+        }
+        ControlPlaneMutation::UpdateUpstreamCredential {
+            id,
+            input,
+            expected_updated_at,
+        } => {
+            super::upstream_credentials::save(transaction, id, input, Some(expected_updated_at))
+                .await
+        }
+        ControlPlaneMutation::DeleteUpstreamCredential {
+            id,
+            expected_updated_at,
+        } => super::upstream_credentials::delete(transaction, id, expected_updated_at).await,
         ControlPlaneMutation::CreateProxy(input) => {
             proxy_insert(transaction, Uuid::new_v4(), input).await
         }
@@ -5694,6 +5734,12 @@ async fn channel_insert(
     if connector_kind != "openai_compatible" {
         return Err(RepositoryError::Validation);
     }
+    super::upstream_credentials::validate_binding(
+        transaction,
+        input.credential_id,
+        &input.base_url,
+    )
+    .await?;
     if input
         .override_document
         .as_ref()
@@ -5702,9 +5748,6 @@ async fn channel_insert(
         return Err(RepositoryError::Validation);
     }
     if ApiFormat::parse(&input.api_format).is_none() {
-        return Err(RepositoryError::Validation);
-    }
-    if matches!(input.upstream_api_key, Some(None)) && input.upstream_auth_kind != "none" {
         return Err(RepositoryError::Validation);
     }
     if input
@@ -5760,10 +5803,10 @@ async fn channel_insert(
             "INSERT INTO channels \
              (id,channel_group_id,api_format,name,base_url,enabled,billing_multiplier,proxy_id, \
               config_template_id,override_document,connect_timeout_ms,response_header_timeout_ms, \
-              stream_idle_timeout_ms,upstream_auth_kind,upstream_auth_header_name,upstream_api_key, \
+              stream_idle_timeout_ms,upstream_auth_kind,credential_id, \
               available_models,test_model,test_pricing_model_id,auto_disable_allowed, \
               supports_websocket,supports_standalone_web_search) \
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING updated_at",
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'none',?,?,?,?,?,?,?) RETURNING updated_at",
         )
         .bind(SqliteUuid(id))
         .bind(SqliteUuid(input.channel_group_id))
@@ -5780,9 +5823,7 @@ async fn channel_insert(
         .bind(input.connect_timeout_ms)
         .bind(input.response_header_timeout_ms)
         .bind(input.stream_idle_timeout_ms)
-        .bind(&input.upstream_auth_kind)
-        .bind(&input.upstream_auth_header_name)
-        .bind(input.upstream_api_key.flatten())
+        .bind(input.credential_id.map(SqliteUuid))
         .bind(json_text(&input.available_models)?)
         .bind(&input.test_model)
         .bind(input.test_pricing_model_id.map(SqliteUuid))
@@ -5792,14 +5833,12 @@ async fn channel_insert(
         .fetch_one(&mut **transaction)
         .await?
     } else {
-        let credential_present = input.upstream_api_key.is_some();
         sqlx::query_scalar::<_, SqliteTimestamp>(
             "UPDATE channels SET channel_group_id=?,api_format=?,name=?,base_url=?,enabled=?, \
                     billing_multiplier=COALESCE(?,billing_multiplier),proxy_id=?,config_template_id=?, \
                     override_document=CASE WHEN ? THEN ? ELSE override_document END, \
                     connect_timeout_ms=?,response_header_timeout_ms=?,stream_idle_timeout_ms=?, \
-                    upstream_auth_kind=?,upstream_auth_header_name=?, \
-                    upstream_api_key=CASE WHEN ? THEN ? ELSE upstream_api_key END, \
+                    credential_id=?, \
                     available_models=?,test_model=?,test_pricing_model_id=?,auto_disable_allowed=?, \
                     supports_websocket=?,supports_standalone_web_search=?,updated_at=ag_now() \
              WHERE id=? AND updated_at=? AND deleted_at IS NULL RETURNING updated_at",
@@ -5817,10 +5856,7 @@ async fn channel_insert(
         .bind(input.connect_timeout_ms)
         .bind(input.response_header_timeout_ms)
         .bind(input.stream_idle_timeout_ms)
-        .bind(&input.upstream_auth_kind)
-        .bind(&input.upstream_auth_header_name)
-        .bind(credential_present)
-        .bind(input.upstream_api_key.flatten())
+        .bind(input.credential_id.map(SqliteUuid))
         .bind(json_text(&input.available_models)?)
         .bind(&input.test_model)
         .bind(input.test_pricing_model_id.map(SqliteUuid))
@@ -6030,7 +6066,7 @@ async fn channel_resource_soft_delete(
              base_url='https://deleted.invalid',billing_multiplier=1,proxy_id=NULL, \
              config_template_id=NULL,override_document='{}',connect_timeout_ms=NULL, \
              response_header_timeout_ms=NULL,stream_idle_timeout_ms=NULL, \
-             upstream_auth_kind='none',upstream_auth_header_name=NULL,upstream_api_key=NULL, \
+             upstream_auth_kind='none',upstream_auth_header_name=NULL,upstream_api_key=NULL,credential_id=NULL, \
              available_models='[]',test_model=NULL,test_pricing_model_id=NULL, \
              deleted_at=ag_now(),deleted_by=?,updated_at=ag_now() \
          WHERE channels.deleted_at IS NULL \

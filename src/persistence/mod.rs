@@ -17,6 +17,7 @@ mod postgres_control_plane;
 #[cfg(feature = "sqlite-backend")]
 pub mod sqlite;
 mod storage_error;
+mod upstream_credentials;
 
 use auth::PostgresAuthRepository;
 pub use auth::{
@@ -44,3 +45,6 @@ pub use metering::{MeteringReconciliationCounts, MeteringWriteOutcome};
 pub use migrations::{MIGRATOR, MigrationRunError, run_migrations};
 pub use postgres_control_plane::*;
 pub use storage_error::{StorageError, StorageFailureKind};
+pub use upstream_credentials::{
+    CredentialIdentity, UpstreamCredentialDetail, UpstreamCredentialInput, UpstreamCredentialView,
+};

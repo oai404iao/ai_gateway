@@ -52,6 +52,11 @@ attempt 不会在中途观察到新设置；OAuth authorization、Models 与 quo
 
 ## 持久化模型
 
+`upstream_credentials` 为每个 Codex credential 提供同 UUID 的公共身份；两个 managed
+channel 的 `credential_id` 必须与 canonical 投影映射一致。数据库触发器在原 Codex
+事务中同步名称、启用、Token 变化对应的连接 revision 和墓碑，不复制 OAuth Token。
+普通凭证 API 只能读取其安全身份摘要，不能更新、改绑或删除；共享账本仍使用原 UUID。
+
 `channel_groups.connector_kind` 决定该组使用的 Connector。Codex group 可以使用
 `open_ai_responses` 或 `open_ai_images`，保存后 Connector 类型和格式不可修改。
 

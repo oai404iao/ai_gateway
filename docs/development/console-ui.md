@@ -52,6 +52,11 @@ Console API/UI 不可达。
 
 ## 4. 目录与契约
 
+`/admin/routing/upstream-credentials` 提供独立凭证列表及详情，普通渠道表单只选择
+nullable `credential_id`。凭证详情展示受影响渠道、显式轮换输入和受 ETag 保护的修改；
+Codex 身份为只读入口并跳转至专属管理页。相关边界见
+[上游凭证管理](../user/upstream-credentials.md)。
+
 `/codex-sharing` 是本人金额视图；`/admin/codex-sharing` 和其详情页负责不依赖用户组的固定
 席位配置、ETag 保存和逐席位用量。它们位于 `src/features/codex-sharing/`，不与只读 Codex
 官方配额页混用；本人金额接口不返回其他成员或凭证信息。API Key 编辑器把席位可选的逻辑凭证

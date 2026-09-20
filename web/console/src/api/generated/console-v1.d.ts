@@ -873,6 +873,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/routing/upstream-credentials": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listUpstreamCredentials"];
+        put?: never;
+        post: operations["createUpstreamCredential"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/routing/upstream-credentials/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getUpstreamCredential"];
+        /** @description Updates all referencing channels atomically. Kind is immutable. Omitting secret preserves it; null is rejected. Codex identities require provider-specific management. */
+        put: operations["updateUpstreamCredential"];
+        post?: never;
+        /** @description Clears a static secret and preserves the identity tombstone. Any non-deleted referencing channel, including disabled channels, blocks deletion. Codex identities require provider-specific management. */
+        delete: operations["deleteUpstreamCredential"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/routing/channels": {
         parameters: {
             query?: never;
@@ -935,7 +969,8 @@ export interface paths {
         post?: never;
         /**
          * @description Irreversibly tombstones one ordinary OpenAI-compatible channel,
-         *     erases its upstream URL, credential, network settings, and transforms, and atomically
+         *     erases its upstream URL, network settings, and transforms, unbinds its credential
+         *     without deleting the shared identity or secret, and atomically
          *     normalizes routing candidates plus API Key and Policy assignments.
          *     Provider-managed channels must use their connector lifecycle.
          */
@@ -1582,8 +1617,6 @@ export interface components {
          * @enum {string}
          */
         RequestCompression: "default" | "zstd";
-        /** @enum {string} */
-        UpstreamAuthKind: "none" | "bearer" | "header";
         /** @enum {string} */
         ModelSyncAction: "price_update" | "import";
         /** @enum {string} */
@@ -2366,9 +2399,8 @@ export interface components {
             connect_timeout_ms: number | null;
             response_header_timeout_ms: number | null;
             stream_idle_timeout_ms: number | null;
-            upstream_auth_kind: components["schemas"]["UpstreamAuthKind"];
-            upstream_auth_header_name: string | null;
-            upstream_credential_configured: boolean;
+            /** Format: uuid */
+            credential_id: string | null;
             available_models: string[];
             /** @description Available upstream wire model used by periodic scheduled tests; unsupported for Images and provider-managed channels. */
             test_model: string | null;
@@ -2383,8 +2415,37 @@ export interface components {
         ChannelDetailView: components["schemas"]["ChannelView"] & {
             /** @description Stored channel transform overrides returned for administrator editing. */
             override_document: components["schemas"]["JsonValue"];
-            /** @description Stored upstream credential returned for administrator review and editing. */
-            upstream_api_key: string | null;
+        };
+        UpstreamCredentialView: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** @enum {string} */
+            kind: "bearer" | "header" | "codex_oauth";
+            header_name: string | null;
+            allowed_base_urls: string[];
+            enabled: boolean;
+            provider_managed: boolean;
+            channel_ids: string[];
+            created_at: components["schemas"]["DateTime"];
+            updated_at: components["schemas"]["DateTime"];
+        };
+        UpstreamCredentialDetail: components["schemas"]["UpstreamCredentialView"] & {
+            secret: string | null;
+        };
+        UpstreamCredentialInput: {
+            name: string;
+            /** @enum {string} */
+            kind: "bearer" | "header";
+            header_name?: string | null;
+            /** @description Omit to preserve the existing secret. Null and blank secrets are rejected. */
+            secret?: string;
+            /** @description Exact normalized HTTP(S) Base URL scopes, not origins or path prefixes. */
+            allowed_base_urls: string[];
+            enabled: boolean;
+        };
+        UpstreamCredentialCreateInput: components["schemas"]["UpstreamCredentialInput"] & {
+            secret: string;
         };
         ChannelDeletionImpact: {
             /** @enum {string} */
@@ -3470,9 +3531,8 @@ export interface components {
             connect_timeout_ms?: number | null;
             response_header_timeout_ms?: number | null;
             stream_idle_timeout_ms?: number | null;
-            upstream_auth_kind: components["schemas"]["UpstreamAuthKind"];
-            upstream_auth_header_name?: string | null;
-            upstream_api_key?: string | null;
+            /** Format: uuid */
+            credential_id: string | null;
             available_models?: string[];
             /** @description Must be one of available_models when set; unsupported for Images and provider-managed channels. */
             test_model?: string | null;
@@ -3519,9 +3579,8 @@ export interface components {
             connect_timeout_ms?: number | null;
             response_header_timeout_ms?: number | null;
             stream_idle_timeout_ms?: number | null;
-            upstream_auth_kind: components["schemas"]["UpstreamAuthKind"];
-            upstream_auth_header_name?: string | null;
-            upstream_api_key?: string | null;
+            /** Format: uuid */
+            credential_id: string | null;
             available_models?: string[];
             /** @description Must be one of available_models when set; unsupported for Images and provider-managed channels. */
             test_model?: string | null;
@@ -3547,9 +3606,8 @@ export interface components {
             connect_timeout_ms?: number | null;
             response_header_timeout_ms?: number | null;
             stream_idle_timeout_ms?: number | null;
-            upstream_auth_kind: components["schemas"]["UpstreamAuthKind"];
-            upstream_auth_header_name?: string | null;
-            upstream_api_key?: string | null;
+            /** Format: uuid */
+            credential_id: string | null;
         };
         ChannelModelDiscoveryResponse: {
             models: string[];
@@ -5855,6 +5913,145 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+        };
+    };
+    listUpstreamCredentials: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Administrator-only credential identities. Secrets are never included. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpstreamCredentialView"][];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    createUpstreamCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpstreamCredentialCreateInput"];
+            };
+        };
+        responses: {
+            /** @description Static credential created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    getUpstreamCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Administrator-only detail. Static secrets are readable; OAuth tokens remain in the provider-specific lifecycle. */
+            200: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpstreamCredentialDetail"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    updateUpstreamCredential: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag from the preceding GET; stale values yield `409`. */
+                "If-Match": components["parameters"]["IfMatch"];
+            };
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpstreamCredentialInput"];
+            };
+        };
+        responses: {
+            /** @description Credential updated and complete runtime snapshot published. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    deleteUpstreamCredential: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag from the preceding GET; stale values yield `409`. */
+                "If-Match": components["parameters"]["IfMatch"];
+            };
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Credential deleted. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
         };
     };
     listChannels: {

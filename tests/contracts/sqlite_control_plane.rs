@@ -50,7 +50,7 @@ async fn repository() -> (
     SqliteControlPlaneRepository,
 ) {
     let (directory, database) = database().await;
-    assert_eq!(database.install_schema().await.unwrap(), 3);
+    assert_eq!(database.install_schema().await.unwrap(), 4);
     let database = Arc::new(database);
     let repository = SqliteControlPlaneRepository::new(Arc::clone(&database));
     (directory, database, repository)
@@ -342,7 +342,7 @@ async fn console_reads_expose_lists_details_audit_and_self_service_options() {
         .unwrap();
     assert_eq!(detail.name, "Ordinary Channel");
     assert_eq!(detail.api_format, "open_ai_chat_completions");
-    assert!(detail.upstream_api_key.is_none());
+    assert!(detail.credential_id.is_none());
     assert!(
         repository
             .control_plane_channel_detail(Uuid::nil())
@@ -1305,9 +1305,7 @@ async fn provider_managed_codex_resources_are_isolated_from_ordinary_management(
                     connect_timeout_ms: None,
                     response_header_timeout_ms: None,
                     stream_idle_timeout_ms: None,
-                    upstream_auth_kind: "none".into(),
-                    upstream_auth_header_name: None,
-                    upstream_api_key: None,
+                    credential_id: None,
                     available_models: vec!["gpt-5".into()],
                     test_model: None,
                     test_pricing_model_id: None,

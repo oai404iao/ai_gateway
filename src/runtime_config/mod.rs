@@ -921,6 +921,12 @@ fn compile_with_sharing(
                     channel.auto_disabled,
                     channel.test_model.as_deref().map(Arc::<str>::from),
                     upstream_policy,
+                )
+                .with_credential_identity(
+                    channel
+                        .credential
+                        .map(|credential| (credential.id, credential.revision)),
+                    channel.credential_binding_revision,
                 ),
             );
             probe_channels.insert(channel.id, Arc::clone(&compiled));
@@ -2757,6 +2763,8 @@ mod tests {
             enabled: true,
         };
         let channel = |id, group_id| ChannelRecord {
+            credential: None,
+            credential_binding_revision: Uuid::nil(),
             id,
             channel_group_id: group_id,
             api_format: "open_ai_chat_completions".into(),

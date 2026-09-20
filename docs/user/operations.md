@@ -863,10 +863,11 @@ HTTP、仅允许非商业用途并带独立限流，因此结果只适合作为�
 不会排除基础模型；显式价格更新会更新相同匹配条件的目录倍率，同时保留其他本地请求倍率和全部
 管理员维护的 UTC 时段倍率。
 
-渠道与变换模板的列表接口只返回摘要字段；管理员读取单条详情时，渠道响应还会返回
-`upstream_api_key` 与 `override_document`，模板响应会返回 `document`，供 Console
-编辑页回显和直接修改。上述详情响应仍使用 `Cache-Control: no-store`，审计日志继续排除
-上游密钥和变换文档。
+渠道与变换模板的列表接口只返回摘要字段；渠道详情返回 `credential_id` 与
+`override_document`，模板详情返回 `document`。上游密钥改在独立凭证详情中供管理员读取和
+轮换，渠道不再写入或返回密钥。详情响应使用 `Cache-Control: no-store`，审计继续排除
+上游密钥和变换文档。复用、目标范围、停用及旧 Console 脚本迁移见
+[上游凭证管理](upstream-credentials.md)。
 
 `GET /console/v1/system/load` 是只读、管理员权限的当前实例快照。Linux 上从 procfs
 采样主机与网关进程 CPU、内存、load average、RSS、文件描述符和线程数；不支持的平台将对应字段

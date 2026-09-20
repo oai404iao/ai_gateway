@@ -169,7 +169,7 @@ describe("ChannelDetailPage", () => {
     ).toBeInTheDocument();
   });
 
-  it("loads and resubmits the stored upstream key and override document", async () => {
+  it("loads and resubmits the credential reference and override document without a secret", async () => {
     seedAuthenticatedSession();
     let submitted: ChannelInput | undefined;
     server.use(
@@ -193,9 +193,7 @@ describe("ChannelDetailPage", () => {
         .getByLabelText(/available upstream models/i)
         .closest('[data-slot="field"]'),
     ).toHaveClass("xl:col-span-2");
-    expect(screen.getByLabelText(/upstream api key/i)).toHaveValue(
-      CHANNEL_DETAIL.upstream_api_key,
-    );
+    expect(screen.queryByLabelText(/upstream api key/i)).not.toBeInTheDocument();
     await user.click(screen.getByRole("tab", { name: /json configuration/i }));
     expect(screen.getByLabelText(/transform document json/i)).toHaveValue(
       JSON.stringify(CHANNEL_DETAIL.override_document, null, 2),
@@ -206,7 +204,8 @@ describe("ChannelDetailPage", () => {
       expect(submitted).toBeDefined();
     });
     expect(submitted?.override_document).toEqual(CHANNEL_DETAIL.override_document);
-    expect(submitted?.upstream_api_key).toBe(CHANNEL_DETAIL.upstream_api_key);
+    expect(submitted?.credential_id).toBe(CHANNEL_DETAIL.credential_id);
+    expect(submitted).not.toHaveProperty("upstream_api_key");
     expect(submitted?.auto_disable_allowed).toBe(true);
     expect(submitted?.supports_websocket).toBe(false);
     expect(submitted?.billing_multiplier).toBe(CHANNEL.billing_multiplier);
@@ -633,8 +632,7 @@ describe("ChannelDetailPage", () => {
     expect(discoveryInput).toMatchObject({
       api_format: CHANNEL.api_format,
       base_url: CHANNEL.base_url,
-      upstream_auth_kind: CHANNEL.upstream_auth_kind,
-      upstream_api_key: CHANNEL_DETAIL.upstream_api_key,
+      credential_id: CHANNEL.credential_id,
       override_document: CHANNEL_DETAIL.override_document,
     });
     expect(submitted?.available_models).toEqual([

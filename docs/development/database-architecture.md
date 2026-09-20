@@ -28,6 +28,7 @@
 
 | 领域 | 主要表 | 责任 |
 | --- | --- | --- |
+| 上游身份 | `upstream_credentials` | 可复用静态认证材料、精确接入范围、连接 revision 与 Codex 公共身份。 |
 | 身份与授权 | `users`、`user_groups`、`user_sessions`、`user_invitations`、`registration_invitation_codes`、`api_key_policies`、`api_keys` | Console 身份、角色、生命周期、注册/邀请、用户可选路由边界和具体 Key 限制。 |
 | 模型与路由 | `models`、`model_routing_profiles`、`model_rules`、`model_rule_routing_tiers`、`model_rule_routing_candidates`、`channel_groups`、`channels`、`proxies`、`config_templates`、`system_settings` | 客户端模型价格、协议规则、候选级上游 wire 模型、路由层级/权重、格式隔离、Connector、网络/变换和数据库动态系统策略。 |
 | Codex Connector | `connector_pools`、`codex_oauth_credentials`、`codex_oauth_credential_channels`、`codex_oauth_flows`、`codex_quota_window_periods`、`codex_quota_reset_events`、`user_group_codex_quota_visibility` | 共享逻辑凭证、Responses/Images 投影、OAuth、quota 历史和用户组可见性。 |
@@ -35,6 +36,21 @@
 | 计量与结算 | `request_metering_facts`、`request_settlements`、`request_settlement_pending` | 不可变财务事实、唯一结算回执和可索引的未结算工作集合。 |
 
 ## 关键当前语义
+
+### 独立上游凭证
+
+PostgreSQL `0064` 与 SQLite `0004` 引入 `upstream_credentials`，普通渠道通过
+`channels.credential_id` 引用唯一静态认证材料。旧认证列被清空且不可再写入；
+运行时仓储在同一个读取事务中解析身份、目标范围、启用状态和渠道引用。
+`src/persistence/upstream_credentials.rs` 拥有共享验证，SQLite 实现位于同名后端模块。
+停用渠道也阻止删除或收窄目标范围。凭证 revision 与渠道 binding revision 独立推进，
+使密钥轮换、禁用/恢复及 A → B → A 改绑均不会恢复旧连接身份。
+
+Codex 保留历史 credential UUID，公共身份与两种 canonical 投影同步，Token/配额仍由
+专属表维护；不得通过通用 CRUD 绕过生命周期或拼车保护。
+升级预检也覆盖停用草稿；非法认证或作用域使整批迁移回滚。
+使用说明见[上游凭证管理](../user/upstream-credentials.md)，后续阶段见
+[身份与能力设计](upstream-identity-capabilities.md)。
 
 ### 格式、模型和路由
 

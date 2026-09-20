@@ -3,7 +3,7 @@
 mod dialer;
 
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     fmt,
     sync::{
         Arc, Mutex,
@@ -140,6 +140,80 @@ fn hash_headers(hasher: &mut Sha256, headers: &HeaderMap) {
     for (name, value) in values {
         hash_value(hasher, name);
         hash_value(hasher, value);
+    }
+}
+
+#[cfg(test)]
+mod credential_tests {
+    use super::*;
+    use crate::domain::{ApiFormat, UpstreamAuth};
+
+    fn key(credential: Uuid, revision: Uuid) -> UpstreamWebSocketKey {
+        let channel = CompiledChannel::new(
+            Uuid::from_u128(1),
+            Uuid::from_u128(2),
+            ApiFormat::OpenAiResponses,
+            Url::parse("https://upstream.test").unwrap(),
+            UpstreamAuth::Bearer(Arc::from("same-test-secret")),
+            HashSet::new(),
+        )
+        .with_credential_identity(Some((credential, revision)), Uuid::nil());
+        UpstreamWebSocketKey::new(
+            Uuid::from_u128(3),
+            WebSocketClientIdentity::new(&"/v1/responses".parse().unwrap(), &HeaderMap::new()),
+            &channel,
+            "test-model",
+            &Url::parse("wss://upstream.test/v1/responses").unwrap(),
+            &HeaderMap::new(),
+            1024,
+        )
+    }
+
+    #[test]
+    fn identical_secrets_do_not_share_identity_or_revision() {
+        let original = key(Uuid::from_u128(4), Uuid::from_u128(5));
+        assert_ne!(original, key(Uuid::from_u128(6), Uuid::from_u128(5)));
+        assert_ne!(original, key(Uuid::from_u128(4), Uuid::from_u128(7)));
+    }
+
+    #[tokio::test]
+    async fn a_connection_returned_after_credential_invalidation_is_discarded() {
+        let pool = UpstreamWebSocketPool::new();
+        pool.configure(ResponsesWebSocketSettings::new(
+            true,
+            4,
+            Duration::from_secs(60),
+            Duration::from_secs(120),
+        ));
+        let old = key(Uuid::from_u128(4), Uuid::from_u128(5));
+        let current = key(Uuid::from_u128(4), Uuid::from_u128(6));
+        {
+            let mut state = pool.inner.state.lock().unwrap();
+            state.active_api_keys.insert(current.api_key_id);
+            state.active_channels = Some(HashMap::from([(
+                current.channel_id,
+                (
+                    Arc::clone(&current.connectivity_fingerprint),
+                    current.outbound_network_policy_fingerprint,
+                ),
+            )]));
+        }
+        let (commands, _command_receiver) = mpsc::channel(1);
+        let (_incoming, messages) = mpsc::channel(1);
+        let connection = UpstreamWebSocket {
+            commands,
+            messages,
+            pump: tokio::spawn(std::future::pending()),
+            closed: Arc::new(AtomicBool::new(false)),
+            created_at: Instant::now(),
+        };
+        pool.record_connected();
+        pool.release(old, connection);
+        let snapshot = pool.snapshot();
+        assert_eq!(snapshot.leased_connections, 0);
+        assert_eq!(snapshot.idle_connections, 0);
+        assert_eq!(snapshot.discarded_total, 1);
+        assert!(pool.acquire(&current).is_none());
     }
 }
 
@@ -359,6 +433,22 @@ struct PoolInner {
 struct PoolState {
     idle: VecDeque<IdleWebSocket>,
     settings: ResponsesWebSocketSettings,
+    active_channels: Option<HashMap<Uuid, (Arc<str>, OutboundNetworkPolicyFingerprint)>>,
+    active_api_keys: HashSet<Uuid>,
+}
+
+impl PoolState {
+    fn permits(&self, key: &UpstreamWebSocketKey) -> bool {
+        self.active_channels.as_ref().is_none_or(|channels| {
+            self.active_api_keys.contains(&key.api_key_id)
+                && channels
+                    .get(&key.channel_id)
+                    .is_some_and(|(identity, network)| {
+                        identity == &key.connectivity_fingerprint
+                            && network == &key.outbound_network_policy_fingerprint
+                    })
+        })
+    }
 }
 
 impl UpstreamWebSocketPool {
@@ -369,6 +459,8 @@ impl UpstreamWebSocketPool {
                 state: Mutex::new(PoolState {
                     idle: VecDeque::new(),
                     settings: ResponsesWebSocketSettings::default(),
+                    active_channels: None,
+                    active_api_keys: HashSet::new(),
                 }),
                 leased_connections: AtomicU64::new(0),
                 hits_total: AtomicU64::new(0),
@@ -406,7 +498,7 @@ impl UpstreamWebSocketPool {
             .expect("websocket pool mutex poisoned");
         let discarded = prune_idle(&mut state, now);
         record_discarded(&self.inner, discarded);
-        if !state.settings.enabled() {
+        if !state.settings.enabled() || !state.permits(key) {
             self.inner.misses_total.fetch_add(1, Ordering::Relaxed);
             return None;
         }
@@ -435,6 +527,7 @@ impl UpstreamWebSocketPool {
         let settings = state.settings;
         let mut discarded = prune_idle(&mut state, now);
         if !settings.enabled()
+            || !state.permits(&key)
             || settings.max_idle_connections() == 0
             || connection.age(now) >= settings.max_connection_age()
             || !connection.is_clean()
@@ -512,6 +605,25 @@ impl UpstreamWebSocketPool {
             .lock()
             .expect("websocket pool mutex poisoned");
         state.settings = settings;
+        state.active_api_keys = active_api_keys.clone();
+        state.active_channels = Some(
+            active_channels
+                .iter()
+                .filter_map(|id| {
+                    snapshot.channel(*id).map(|channel| {
+                        (
+                            *id,
+                            (
+                                Arc::clone(channel.connectivity_fingerprint()),
+                                channel
+                                    .upstream_policy()
+                                    .outbound_network_policy_fingerprint(),
+                            ),
+                        )
+                    })
+                })
+                .collect(),
+        );
         let mut discarded = prune_idle(&mut state, Instant::now());
         let before = state.idle.len();
         state.idle.retain(|entry| {

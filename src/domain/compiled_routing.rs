@@ -715,6 +715,21 @@ pub struct CompiledChannel {
     upstream_policy: CompiledChannelUpstreamPolicy,
 }
 impl CompiledChannel {
+    pub(crate) fn with_credential_identity(
+        mut self,
+        identity: Option<(Uuid, Uuid)>,
+        binding_revision: Uuid,
+    ) -> Self {
+        if identity.is_some() || !binding_revision.is_nil() {
+            let (id, revision) = identity.unwrap_or((Uuid::nil(), Uuid::nil()));
+            self.connectivity_fingerprint = Arc::from(format!(
+                "{}#{binding_revision}/{id}/{revision}",
+                self.base_url
+            ));
+        }
+        self
+    }
+
     #[must_use]
     pub fn id(&self) -> Uuid {
         self.id

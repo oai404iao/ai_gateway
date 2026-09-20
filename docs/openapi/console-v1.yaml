@@ -1590,6 +1590,102 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorBody" }
 
+  /routing/upstream-credentials:
+    get:
+      tags: [Channels]
+      operationId: listUpstreamCredentials
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Administrator-only credential identities. Secrets are never included.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/UpstreamCredentialView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Channels]
+      operationId: createUpstreamCredential
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpstreamCredentialCreateInput" }
+      responses:
+        "201":
+          description: Static credential created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /routing/upstream-credentials/{id}:
+    get:
+      tags: [Channels]
+      operationId: getUpstreamCredential
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Administrator-only detail. Static secrets are readable; OAuth tokens remain in the provider-specific lifecycle.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UpstreamCredentialDetail" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [Channels]
+      operationId: updateUpstreamCredential
+      description: Updates all referencing channels atomically. Kind is immutable. Omitting secret preserves it; null is rejected. Codex identities require provider-specific management.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpstreamCredentialInput" }
+      responses:
+        "200":
+          description: Credential updated and complete runtime snapshot published.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+    delete:
+      tags: [Channels]
+      operationId: deleteUpstreamCredential
+      description: Clears a static secret and preserves the identity tombstone. Any non-deleted referencing channel, including disabled channels, blocks deletion. Codex identities require provider-specific management.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "200":
+          description: Credential deleted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
   /routing/channels:
     get:
       tags: [Channels]
@@ -1722,7 +1818,8 @@ paths:
       operationId: deleteChannel
       description: |
         Irreversibly tombstones one ordinary OpenAI-compatible channel,
-        erases its upstream URL, credential, network settings, and transforms, and atomically
+        erases its upstream URL, network settings, and transforms, unbinds its credential
+        without deleting the shared identity or secret, and atomically
         normalizes routing candidates plus API Key and Policy assignments.
         Provider-managed channels must use their connector lifecycle.
       security: [{ bearerAuth: [] }]
@@ -2968,9 +3065,6 @@ components:
       description: >
         Upstream request-body compression for Responses HTTP requests.
         `default` sends identity JSON; `zstd` uses Zstandard level 3.
-    UpstreamAuthKind:
-      type: string
-      enum: [none, bearer, header]
     ModelSyncAction:
       type: string
       enum: [price_update, import]
@@ -4069,8 +4163,7 @@ components:
          auto_disabled, auto_disabled_reason, auto_disable_allowed,
          billing_multiplier, proxy_id,
          config_template_id, connect_timeout_ms, response_header_timeout_ms,
-         stream_idle_timeout_ms, upstream_auth_kind, upstream_auth_header_name,
-         upstream_credential_configured, available_models, test_model,
+         stream_idle_timeout_ms, credential_id, available_models, test_model,
          test_pricing_model_id, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
@@ -4102,9 +4195,7 @@ components:
         connect_timeout_ms: { type: integer, nullable: true }
         response_header_timeout_ms: { type: integer, nullable: true }
         stream_idle_timeout_ms: { type: integer, nullable: true }
-        upstream_auth_kind: { $ref: "#/components/schemas/UpstreamAuthKind" }
-        upstream_auth_header_name: { type: string, nullable: true }
-        upstream_credential_configured: { type: boolean }
+        credential_id: { type: string, format: uuid, nullable: true }
         available_models:
           type: array
           items: { type: string }
@@ -4124,15 +4215,62 @@ components:
       allOf:
         - $ref: "#/components/schemas/ChannelView"
         - type: object
-          required: [override_document, upstream_api_key]
+          required: [override_document]
           properties:
             override_document:
               allOf: [{ $ref: "#/components/schemas/JsonValue" }]
               description: Stored channel transform overrides returned for administrator editing.
-            upstream_api_key:
-              type: string
-              nullable: true
-              description: Stored upstream credential returned for administrator review and editing.
+
+    UpstreamCredentialView:
+      type: object
+      required: [id, name, kind, header_name, allowed_base_urls, enabled, provider_managed, channel_ids, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        kind: { type: string, enum: [bearer, header, codex_oauth] }
+        header_name: { type: string, nullable: true }
+        allowed_base_urls: { type: array, items: { type: string } }
+        enabled: { type: boolean }
+        provider_managed: { type: boolean }
+        channel_ids: { type: array, items: { type: string, format: uuid } }
+        created_at: { $ref: "#/components/schemas/DateTime" }
+        updated_at: { $ref: "#/components/schemas/DateTime" }
+
+    UpstreamCredentialDetail:
+      allOf:
+        - $ref: "#/components/schemas/UpstreamCredentialView"
+        - type: object
+          required: [secret]
+          properties:
+            secret: { type: string, nullable: true }
+
+    UpstreamCredentialInput:
+      type: object
+      additionalProperties: false
+      required: [name, kind, allowed_base_urls, enabled]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        kind: { type: string, enum: [bearer, header] }
+        header_name: { type: string, nullable: true }
+        secret:
+          type: string
+          minLength: 1
+          description: Omit to preserve the existing secret. Null and blank secrets are rejected.
+        allowed_base_urls:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { type: string, format: uri }
+          description: Exact normalized HTTP(S) Base URL scopes, not origins or path prefixes.
+        enabled: { type: boolean }
+
+    UpstreamCredentialCreateInput:
+      allOf:
+        - $ref: "#/components/schemas/UpstreamCredentialInput"
+        - type: object
+          required: [secret]
+          properties:
+            secret: { type: string, minLength: 1 }
 
     ChannelDeletionImpact:
       type: object
@@ -5770,8 +5908,9 @@ components:
 
     ChannelCreateInput:
       type: object
+      additionalProperties: false
       required:
-        [channel_group_id, api_format, name, base_url, enabled, upstream_auth_kind]
+        [channel_group_id, api_format, name, base_url, enabled, credential_id]
       properties:
         channel_group_id: { type: string, format: uuid }
         api_format: { $ref: "#/components/schemas/ApiFormat" }
@@ -5803,9 +5942,7 @@ components:
         connect_timeout_ms: { type: integer, minimum: 1, nullable: true }
         response_header_timeout_ms: { type: integer, minimum: 1, nullable: true }
         stream_idle_timeout_ms: { type: integer, minimum: 1, nullable: true }
-        upstream_auth_kind: { $ref: "#/components/schemas/UpstreamAuthKind" }
-        upstream_auth_header_name: { type: string, nullable: true }
-        upstream_api_key: { type: string, nullable: true }
+        credential_id: { type: string, format: uuid, nullable: true }
         available_models:
           type: array
           items: { type: string }
@@ -5821,8 +5958,9 @@ components:
 
     ChannelInput:
       type: object
+      additionalProperties: false
       required:
-        [channel_group_id, api_format, name, base_url, enabled, upstream_auth_kind]
+        [channel_group_id, api_format, name, base_url, enabled, credential_id]
       properties:
         channel_group_id: { type: string, format: uuid }
         api_format: { $ref: "#/components/schemas/ApiFormat" }
@@ -5855,9 +5993,7 @@ components:
         connect_timeout_ms: { type: integer, minimum: 1, nullable: true }
         response_header_timeout_ms: { type: integer, minimum: 1, nullable: true }
         stream_idle_timeout_ms: { type: integer, minimum: 1, nullable: true }
-        upstream_auth_kind: { $ref: "#/components/schemas/UpstreamAuthKind" }
-        upstream_auth_header_name: { type: string, nullable: true }
-        upstream_api_key: { type: string, nullable: true }
+        credential_id: { type: string, format: uuid, nullable: true }
         available_models:
           type: array
           items: { type: string }
@@ -5873,7 +6009,8 @@ components:
 
     ChannelModelDiscoveryInput:
       type: object
-      required: [api_format, base_url, upstream_auth_kind]
+      additionalProperties: false
+      required: [api_format, base_url, credential_id]
       properties:
         api_format: { $ref: "#/components/schemas/ApiFormat" }
         base_url:
@@ -5888,9 +6025,7 @@ components:
         connect_timeout_ms: { type: integer, minimum: 1, nullable: true }
         response_header_timeout_ms: { type: integer, minimum: 1, nullable: true }
         stream_idle_timeout_ms: { type: integer, minimum: 1, nullable: true }
-        upstream_auth_kind: { $ref: "#/components/schemas/UpstreamAuthKind" }
-        upstream_auth_header_name: { type: string, nullable: true }
-        upstream_api_key: { type: string, nullable: true }
+        credential_id: { type: string, format: uuid, nullable: true }
 
     ChannelModelDiscoveryResponse:
       type: object

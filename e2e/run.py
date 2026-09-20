@@ -344,10 +344,20 @@ def seed(console, password, upstream):
     group, _ = api("/routing/channel-groups", "POST", {
         "name": "system-e2e", "api_format": "open_ai_responses", "enabled": True,
     })
+    upstream_secret = secrets.token_urlsafe(24)
+    credential, _ = api("/routing/upstream-credentials", "POST", {
+        "name": "System E2E shared identity", "kind": "bearer", "secret": upstream_secret,
+        "allowed_base_urls": [upstream], "enabled": True,
+    })
     channel, _ = api("/routing/channels", "POST", {
         "channel_group_id": group["id"], "api_format": "open_ai_responses",
         "name": "system-e2e", "base_url": upstream, "enabled": True,
-        "upstream_auth_kind": "none", "available_models": ["e2e-before", "e2e-wire"],
+        "credential_id": credential["id"], "available_models": ["e2e-before", "e2e-wire"],
+    })
+    api("/routing/channels", "POST", {
+        "channel_group_id": group["id"], "api_format": "open_ai_responses",
+        "name": "system-e2e-disabled-reference", "base_url": upstream, "enabled": False,
+        "credential_id": credential["id"], "available_models": ["e2e-wire"],
     })
     model, _ = api("/models", "POST", {
         "source_model_id": "e2e-client", "display_name": "System E2E model", "enabled": True,
@@ -376,6 +386,8 @@ def seed(console, password, upstream):
         "console": console, "password": password, "token": token, "user_id": user,
         "api_key": key["secret"], "api_key_id": key["id"], "channel_id": channel["id"],
         "channel_group_id": group["id"], "protocol_path": path,
+        "upstream_credential_id": credential["id"], "upstream_secret": upstream_secret,
+        "upstream_rotated_secret": secrets.token_urlsafe(24),
     }
 
 
@@ -383,6 +395,13 @@ def set_upstream(data, url, websocket=False):
     def api(path, method="GET", body=None, etag=None):
         return request(data["console"], "/console/v1" + path, method, body, data["token"], etag)
 
+    credential_path = f"/routing/upstream-credentials/{data['upstream_credential_id']}"
+    credential, headers = api(credential_path)
+    api(credential_path, "PUT", {
+        "name": credential["name"], "kind": credential["kind"], "enabled": credential["enabled"],
+        "header_name": credential["header_name"],
+        "allowed_base_urls": sorted(set(credential["allowed_base_urls"] + [url])),
+    }, headers["ETag"])
     if websocket:
         settings, headers = api("/system/settings")
         settings.pop("updated_at", None)
@@ -395,7 +414,7 @@ def set_upstream(data, url, websocket=False):
     api(path, "PUT", {
         "channel_group_id": data["channel_group_id"], "api_format": "open_ai_responses",
         "name": "system-e2e", "base_url": url, "enabled": True,
-        "upstream_auth_kind": "none", "available_models": ["e2e-before", "e2e-wire"],
+        "credential_id": data["upstream_credential_id"], "available_models": ["e2e-before", "e2e-wire"],
         "supports_websocket": websocket,
     }, headers["ETag"])
 
@@ -562,7 +581,7 @@ def main():
             with Upstream(marker) as upstream:
                 report["stage"] = "provision"
                 data = seed(console, password, upstream.url)
-                secret_values.extend([data["token"], data["api_key"]])
+                secret_values.extend([data["token"], data["api_key"], data["upstream_secret"], data["upstream_rotated_secret"]])
                 data["public"] = f"http://127.0.0.1:{public_port}"
                 report["stage"] = "browser"
                 browser_env = {

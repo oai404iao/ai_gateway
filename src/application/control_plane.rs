@@ -42,6 +42,19 @@ struct UpstreamClientCleanup {
 }
 
 impl ControlPlaneCoordinator {
+    pub async fn upstream_credentials(
+        &self,
+    ) -> Result<Vec<crate::persistence::UpstreamCredentialView>, ControlPlaneError> {
+        Ok(self.repository.upstream_credentials().await?)
+    }
+
+    pub async fn upstream_credential_detail(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<crate::persistence::UpstreamCredentialDetail>, ControlPlaneError> {
+        Ok(self.repository.upstream_credential_detail(id).await?)
+    }
+
     #[must_use]
     pub fn new(
         repository: ControlPlaneRepository,
