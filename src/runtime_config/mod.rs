@@ -10,10 +10,7 @@ use std::{
 
 use arc_swap::ArcSwap;
 use regex::Regex;
-use reqwest::{
-    Url,
-    header::{HeaderName, HeaderValue},
-};
+use reqwest::{Url, header::HeaderName};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use sqlx::postgres::PgConnectOptions;
@@ -42,7 +39,7 @@ use crate::{
         SystemSessionAffinityRuleInput, SystemSessionAffinitySettingsInput, SystemSettingsInput,
         SystemSettingsRecord, valid_api_hosts, valid_codex_settings_input,
     },
-    request_policy::{client_header_allowed, client_header_explicitly_ignored},
+    request_policy::client_header_allowed,
     transforms::{TransformCompileError, TransformPlan, compile_document, declared_api_format},
 };
 
@@ -2364,65 +2361,12 @@ fn validate_rule(record: &ModelRuleRecord) -> Result<(), ConfigError> {
     Ok(())
 }
 fn compile_auth(channel: &ChannelRecord) -> Result<UpstreamAuth, ConfigError> {
-    match channel.upstream_auth_kind.as_str() {
-        "none"
-            if channel.upstream_auth_header_name.is_none()
-                && channel.upstream_api_key.is_none() =>
-        {
-            Ok(UpstreamAuth::None)
-        }
-        "bearer" if channel.upstream_auth_header_name.is_none() => Ok(UpstreamAuth::Bearer(
-            secret_header(channel.upstream_api_key.as_deref())?,
-        )),
-        "header" => {
-            let name = channel
-                .upstream_auth_header_name
-                .as_deref()
-                .ok_or_else(|| {
-                    ConfigError::Compile("header upstream auth requires a header name".into())
-                })?;
-            let name = HeaderName::from_bytes(name.as_bytes())
-                .map_err(|_| ConfigError::Compile("invalid upstream auth header name".into()))?;
-            if matches!(
-                name.as_str(),
-                "authorization"
-                    | "host"
-                    | "content-length"
-                    | "content-encoding"
-                    | "connection"
-                    | "transfer-encoding"
-                    | "accept-encoding"
-                    | "proxy-authorization"
-                    | "proxy-authenticate"
-                    | "keep-alive"
-                    | "te"
-                    | "trailer"
-                    | "upgrade"
-                    | "proxy-connection"
-            ) || client_header_explicitly_ignored(&name)
-            {
-                return Err(ConfigError::Compile(
-                    "unsafe upstream auth header name".into(),
-                ));
-            }
-            Ok(UpstreamAuth::Header {
-                name,
-                value: secret_header(channel.upstream_api_key.as_deref())?,
-            })
-        }
-        _ => Err(ConfigError::Compile(
-            "invalid upstream auth configuration".into(),
-        )),
-    }
-}
-fn secret_header(value: Option<&str>) -> Result<Arc<str>, ConfigError> {
-    let value =
-        value.ok_or_else(|| ConfigError::Compile("upstream auth requires credentials".into()))?;
-    require("upstream auth credential", value)?;
-    HeaderValue::from_str(value).map_err(|_| {
-        ConfigError::Compile("upstream auth credential is not a valid HTTP header value".into())
-    })?;
-    Ok(Arc::from(value))
+    UpstreamAuth::compile(
+        &channel.upstream_auth_kind,
+        channel.upstream_auth_header_name.as_deref(),
+        channel.upstream_api_key.as_deref(),
+    )
+    .map_err(|error| ConfigError::Compile(error.to_string()))
 }
 fn parse_format(value: &str) -> Result<ApiFormat, ConfigError> {
     ApiFormat::parse(value).ok_or_else(|| ConfigError::Compile("unsupported API format".into()))

@@ -8,7 +8,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use reqwest::{Url, header::HeaderName};
+use reqwest::Url;
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use super::{
     ApiFormat, ApiKeyHash, CompiledAdvancedBilling, ConnectorKind, RequestCompression,
-    SystemRuntimeSettings,
+    SystemRuntimeSettings, UpstreamAuth,
 };
 use crate::transforms::TransformPlan;
 
@@ -693,26 +693,6 @@ fn bit_is_set(words: &[u64], slot: usize) -> bool {
     words
         .get(slot / u64::BITS as usize)
         .is_some_and(|bits| bits & (1_u64 << (slot % u64::BITS as usize)) != 0)
-}
-
-#[derive(Clone)]
-pub enum UpstreamAuth {
-    None,
-    Bearer(Arc<str>),
-    Header { name: HeaderName, value: Arc<str> },
-}
-impl fmt::Debug for UpstreamAuth {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::None => f.write_str("UpstreamAuth::None"),
-            Self::Bearer(_) => f.write_str("UpstreamAuth::Bearer(REDACTED)"),
-            Self::Header { name, .. } => f
-                .debug_struct("UpstreamAuth::Header")
-                .field("name", name)
-                .field("value", &"REDACTED")
-                .finish(),
-        }
-    }
 }
 
 #[derive(Clone, Debug)]

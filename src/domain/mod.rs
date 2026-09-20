@@ -10,6 +10,7 @@ mod connector;
 mod console_auth;
 mod request_log;
 mod system_settings;
+mod upstream_credential;
 
 pub use api_format::ApiFormat;
 pub use api_key::ApiKeyHash;
@@ -24,7 +25,7 @@ pub use compiled_routing::{
     CompiledConfigTemplate, CompiledModelRule, CompiledProxy, CompiledRouteTier,
     CompiledRuntimeConfig, CompiledScheduledTestModel, CompiledUnavailableRouteCandidate,
     ModelPriceSnapshot, ModelRouteKey, NoProxyHost, NoProxyHostError,
-    OutboundNetworkPolicyFingerprint, SelectionStrategy, UpstreamAuth,
+    OutboundNetworkPolicyFingerprint, SelectionStrategy,
 };
 pub use connector::{ConnectorKind, RequestCompression};
 pub use console_auth::{ConsolePrincipal, ConsoleSessionPurpose, UserRole};
@@ -42,3 +43,4 @@ pub use system_settings::{
     ScheduledTestingSettings, SessionAffinityKeySource, SessionAffinityRule,
     SessionAffinitySettings, SystemRuntimeSettings, UpstreamTimeoutDefaults,
 };
+pub use upstream_credential::{CredentialTarget, UpstreamAuth, UpstreamCredentialError};
