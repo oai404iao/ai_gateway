@@ -200,7 +200,7 @@ fn uuid_array(ids: &[Uuid]) -> String {
     Value::Array(ids.iter().map(|id| json!(id.to_string())).collect()).to_string()
 }
 
-fn push_receipt_list(builder: &mut QueryBuilder<'_, Sqlite>, receipts: &[IngestReceipt]) {
+fn push_receipt_list(builder: &mut QueryBuilder<Sqlite>, receipts: &[IngestReceipt]) {
     let mut separated = builder.separated(", ");
     for receipt in receipts {
         separated.push_bind(*receipt);
@@ -377,14 +377,16 @@ impl SqliteRequestLogRepository {
             .to_string();
 
             let mut transaction = self.database.begin_write().await.map_err(open_failure)?;
-            let inserted =
-                sqlx::query_scalar::<_, SqliteUuid>(&batch_insert(LOG_TABLE, &LOG_FIELDS))
-                    .bind(&carrier)
-                    .fetch_all(&mut *transaction)
-                    .await?
-                    .into_iter()
-                    .map(|id| id.0)
-                    .collect::<HashSet<_>>();
+            let inserted = sqlx::query_scalar::<_, SqliteUuid>(sqlx::AssertSqlSafe(batch_insert(
+                LOG_TABLE,
+                &LOG_FIELDS,
+            )))
+            .bind(&carrier)
+            .fetch_all(&mut *transaction)
+            .await?
+            .into_iter()
+            .map(|id| id.0)
+            .collect::<HashSet<_>>();
 
             let mut needs_existing = HashSet::new();
             for (index, _) in &valid {
@@ -573,11 +575,14 @@ impl SqliteRequestLogRepository {
         })
     }
 
-    /// Reports both database pools because SQLite has no separate request-log
-    /// pool; capacity still comes from the configured request-logging setting.
+    /// SQLite shares both database pools with the control plane rather than owning a log pool.
     pub(crate) fn pool_status(&self) -> RequestLogPoolStatus {
         let Ok(pools) = self.database.pools() else {
-            return RequestLogPoolStatus { size: 0, idle: 0 };
+            return RequestLogPoolStatus {
+                size: 0,
+                idle: 0,
+                capacity: 0,
+            };
         };
         RequestLogPoolStatus {
             size: pools.writer.size().saturating_add(pools.readers.size()),
@@ -585,6 +590,11 @@ impl SqliteRequestLogRepository {
                 .writer
                 .num_idle()
                 .saturating_add(pools.readers.num_idle()),
+            capacity: pools
+                .writer
+                .options()
+                .get_max_connections()
+                .saturating_add(pools.readers.options().get_max_connections()),
         }
     }
 }
@@ -996,12 +1006,15 @@ async fn write_facts(
         )
         .to_string();
         inserted.extend(
-            sqlx::query_scalar::<_, SqliteUuid>(&batch_insert(FACT_TABLE, &FACT_FIELDS))
-                .bind(&carrier)
-                .fetch_all(&mut **transaction)
-                .await?
-                .into_iter()
-                .map(|id| id.0),
+            sqlx::query_scalar::<_, SqliteUuid>(sqlx::AssertSqlSafe(batch_insert(
+                FACT_TABLE,
+                &FACT_FIELDS,
+            )))
+            .bind(&carrier)
+            .fetch_all(&mut **transaction)
+            .await?
+            .into_iter()
+            .map(|id| id.0),
         );
     }
 
@@ -1611,7 +1624,7 @@ mod tests {
             let database = SqliteDatabase::open(&directory.path().join("gateway.sqlite"))
                 .await
                 .unwrap();
-            assert_eq!(database.install_schema().await.unwrap(), 2);
+            assert_eq!(database.install_schema().await.unwrap(), 3);
             let database = Arc::new(database);
             let logs = SqliteRequestLogRepository::new(Arc::clone(&database));
             Self {
@@ -1631,7 +1644,7 @@ mod tests {
 
         async fn execute(&self, sql: &str) {
             let mut transaction = self.database.begin_write().await.unwrap();
-            sqlx::Executor::execute(&mut *transaction, sql)
+            sqlx::Executor::execute(&mut *transaction, sqlx::AssertSqlSafe(sql.to_owned()))
                 .await
                 .unwrap();
             transaction.commit().await.unwrap();
@@ -1642,7 +1655,7 @@ mod tests {
             sql: &str,
         ) -> T {
             let mut reader = self.database.acquire_read().await.unwrap();
-            sqlx::query_scalar(sql)
+            sqlx::query_scalar(sqlx::AssertSqlSafe(sql.to_owned()))
                 .fetch_one(&mut *reader)
                 .await
                 .unwrap()
@@ -2163,10 +2176,12 @@ mod tests {
         let mut plan = String::new();
         {
             let mut reader = fixture.database.acquire_read().await.unwrap();
-            for row in sqlx::query(&format!("EXPLAIN QUERY PLAN {PENDING_SCAN}"))
-                .fetch_all(&mut *reader)
-                .await
-                .unwrap()
+            for row in sqlx::query(sqlx::AssertSqlSafe(format!(
+                "EXPLAIN QUERY PLAN {PENDING_SCAN}"
+            )))
+            .fetch_all(&mut *reader)
+            .await
+            .unwrap()
             {
                 plan.push_str(&row.get::<String, _>("detail"));
                 plan.push('\n');

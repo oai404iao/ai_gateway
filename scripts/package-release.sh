@@ -49,6 +49,8 @@ install -m 0644 deploy/compose/env.example \
     "$stage/$archive_base/compose.env.example"
 install -m 0644 docker-compose.prd.yaml \
     "$stage/$archive_base/docker-compose.prd.yaml"
+install -m 0644 docker-compose.sqlite.yaml \
+    "$stage/$archive_base/docker-compose.sqlite.yaml"
 install -m 0644 \
     README.md \
     README.zh-CN.md \

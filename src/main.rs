@@ -1,3 +1,5 @@
+mod database;
+
 use std::{
     error::Error,
     io::{self, Read},
@@ -19,14 +21,13 @@ use ai_gateway::{
     models_dev::ModelsDevClient,
     observability,
     persistence::{
-        AuthRepository, ControlPlaneRepository, RequestLogRepository,
         SystemAutomaticDisableSettingsInput, SystemPassiveHealthSettingsInput,
         SystemRequestRetrySettingsInput, SystemScheduledTestingSettingsInput,
         SystemSessionAffinitySettingsInput, SystemSettingsInput, SystemUpstreamSettingsInput,
-        SystemWebSocketSettingsInput, run_migrations,
+        SystemWebSocketSettingsInput,
     },
     routing::{PassiveHealthPolicy, RoutingRuntime},
-    runtime_config::{AppConfig, RuntimeConfig, compile_runtime_config},
+    runtime_config::{AppConfig, BootstrapConfig, RuntimeConfig, compile_runtime_config},
     upstream::UpstreamClientRegistry,
     workers::{
         ChannelProbeWorker, CodexCredentialWorker, ControlPlaneReloader, DurableRequestLogWorker,
@@ -35,13 +36,13 @@ use ai_gateway::{
 };
 use axum::{Router, body::Body};
 use chrono::Utc;
+use database::Database;
 use hyper::body::Incoming;
 use hyper_util::{
     rt::{TokioExecutor, TokioIo},
     server::{conn::auto::Builder as AutoBuilder, graceful::GracefulConnection},
     service::TowerToHyperService,
 };
-use sqlx::postgres::PgPoolOptions;
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::watch,
@@ -68,6 +69,66 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Command::ResetAdminPassword { config_path, email } => {
             reset_admin_password(config_path, email).await
         }
+        Command::BackupSqlite {
+            config_path,
+            destination,
+        } => {
+            #[cfg(all(feature = "sqlite-backend", target_os = "linux"))]
+            {
+                let config = AppConfig::load(&config_path)?.validate()?;
+                let path = config
+                    .database
+                    .sqlite_path()?
+                    .ok_or("backup-sqlite requires a SQLite configuration")?;
+                ai_gateway::persistence::sqlite::backup::create(
+                    &path,
+                    &std::path::absolute(&config.request_logging.spool_directory)?,
+                    &destination,
+                )
+                .await?;
+                println!("SQLite database and spool snapshot created");
+                Ok(())
+            }
+            #[cfg(not(all(feature = "sqlite-backend", target_os = "linux")))]
+            {
+                let _ = (config_path, destination);
+                Err("SQLite backup requires a Linux sqlite-backend build".into())
+            }
+        }
+        Command::RestoreSqlite {
+            source,
+            destination,
+        } => {
+            #[cfg(all(feature = "sqlite-backend", target_os = "linux"))]
+            {
+                ai_gateway::persistence::sqlite::backup::restore(&source, &destination).await?;
+                println!(
+                    "SQLite snapshot restored; configure database/gateway.sqlite and spool under the destination"
+                );
+                Ok(())
+            }
+            #[cfg(not(all(feature = "sqlite-backend", target_os = "linux")))]
+            {
+                let _ = (source, destination);
+                Err("SQLite restore requires a Linux sqlite-backend build".into())
+            }
+        }
+        Command::VerifySqliteRestore { path, identity } => {
+            #[cfg(all(feature = "sqlite-backend", target_os = "linux"))]
+            {
+                let actual =
+                    ai_gateway::persistence::sqlite::backup::verify_database(&path).await?;
+                if actual.to_string() != identity {
+                    return Err("restored database identity mismatch".into());
+                }
+                Ok(())
+            }
+            #[cfg(not(all(feature = "sqlite-backend", target_os = "linux")))]
+            {
+                let _ = (path, identity);
+                Err("SQLite restore requires a Linux sqlite-backend build".into())
+            }
+        }
     }
 }
 
@@ -76,19 +137,24 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
     let gateway_started = Instant::now();
     let config = AppConfig::load(&config_path)?.validate()?;
     let _log_guard = observability::init(&config.observability.filter);
-    let database_connect_options = config.database.connect_options()?;
+    let database = Database::open(
+        &config.database,
+        Some(config.request_logging.database_max_connections),
+    )
+    .await?;
+    let result = serve_connected(config, &database, gateway_started_at, gateway_started).await;
+    database.close().await;
+    result
+}
 
-    let pool = PgPoolOptions::new()
-        .max_connections(config.database.max_connections)
-        .acquire_timeout(Duration::from_secs(config.database.connect_timeout_seconds))
-        .connect_with(
-            database_connect_options
-                .clone()
-                .application_name("ai-gateway-control-plane"),
-        )
-        .await?;
-    run_migrations(&pool).await?;
-    let repository = ControlPlaneRepository::new(pool.clone());
+async fn serve_connected(
+    config: BootstrapConfig,
+    database: &Database,
+    gateway_started_at: chrono::DateTime<Utc>,
+    gateway_started: Instant,
+) -> Result<(), Box<dyn Error>> {
+    let mut background_tasks = JoinSet::new();
+    let repository = database.control();
     repository
         .ensure_system_settings(SystemSettingsInput {
             api_hosts: Vec::new(),
@@ -145,12 +211,11 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
     } else {
         ai_gateway::codex_sharing::SharingRuntime::default()
     };
-    let sharing_worker = if let Some(ledger_id) = sharing.ledger_id() {
+    if let Some(ledger_id) = sharing.ledger_id() {
         let mut owner = repository.claim_sharing_ledger(ledger_id).await?;
         let sharing = sharing.clone();
-        let repository = ai_gateway::persistence::MeteringQueries::new(pool.clone());
-        Some(tokio::spawn(async move {
-            use sqlx::Connection;
+        let repository = database.logs().queries().metering();
+        background_tasks.spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(5));
             loop {
                 interval.tick().await;
@@ -173,24 +238,14 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
                     }
                 }
             }
-        }))
-    } else {
-        None
-    };
+        });
+    }
 
     let address = format!("{}:{}", config.server.host, config.server.port);
     let admission = AdmissionRuntime::new();
-    let request_log_connect_options =
-        database_connect_options.application_name("ai-gateway-request-log");
-    let request_log_pool = PgPoolOptions::new()
-        .max_connections(config.request_logging.database_max_connections)
-        .acquire_timeout(Duration::from_secs(config.database.connect_timeout_seconds))
-        .connect_with(request_log_connect_options)
-        .await?;
-    let spend_leaderboard_repository =
-        ai_gateway::persistence::MeteringQueries::new(request_log_pool.clone());
+    let spend_leaderboard_repository = database.logs().queries().metering();
     let (request_log_sink, request_log_worker) = DurableRequestLogWorker::start_with_admission(
-        RequestLogRepository::new(request_log_pool),
+        database.logs(),
         &config.request_logging,
         admission.clone(),
     )
@@ -233,7 +288,7 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
     .with_connector_registry(connectors)
     .with_sharing_runtime(sharing.clone());
     let system_metrics = SystemMetricsService::new_at(
-        pool.clone().into(),
+        database.health(),
         config.database.max_connections,
         gateway_started_at,
         gateway_started,
@@ -257,16 +312,17 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
         .console
         .as_ref()
         .map(|_| SpendLeaderboardWorker::start(spend_leaderboard_repository));
-    ControlPlaneReloader::from_coordinator(coordinator.clone()).spawn(Duration::from_secs(
-        config.runtime_config.reload_interval_seconds,
-    ));
+    background_tasks.spawn(
+        ControlPlaneReloader::from_coordinator(coordinator.clone()).run(Duration::from_secs(
+            config.runtime_config.reload_interval_seconds,
+        )),
+    );
     let listener = TcpListener::bind(&address).await?;
     tracing::info!(%address, "AI gateway public listener enabled");
     let public_router = http::router(proxy.clone());
 
     let console = if let Some(console) = config.console.as_ref() {
-        let auth =
-            ConsoleAuthService::from_config(AuthRepository::new(pool.clone()), &console.auth)?;
+        let auth = ConsoleAuthService::from_config(database.auth(), &console.auth)?;
         let channel_models =
             ChannelModelDiscoveryService::new(Arc::clone(&runtime), Arc::clone(&upstream_clients));
         let proxy_tests = ProxyTestService::new(
@@ -288,7 +344,7 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
             proxy_tests,
             model_sync,
             auth,
-            request_logs: ai_gateway::persistence::RequestLogQueries::new(pool.clone()),
+            request_logs: database.logs().queries(),
             system_metrics,
             console_body_bytes: config.request_limits.console_body_bytes,
             auth_body_bytes: config.request_limits.auth_body_bytes,
@@ -325,11 +381,9 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
         worker.shutdown().await;
     }
     request_log_worker.shutdown().await;
-    sharing.flush().await?;
-    if let Some(worker) = sharing_worker {
-        worker.abort();
-        let _ = worker.await;
-    }
+    let sharing_result = sharing.flush().await;
+    background_tasks.shutdown().await;
+    sharing_result?;
     serve_result?;
     Ok(())
 }
@@ -343,16 +397,13 @@ async fn bootstrap_admin(
     let _log_guard = observability::init(&config.observability.filter);
     let password = read_password_from_stdin()?;
     let password_hash = hash_console_password(password).await?;
-    let database_connect_options = config.database.connect_options()?;
-    let pool = PgPoolOptions::new()
-        .max_connections(config.database.max_connections)
-        .acquire_timeout(Duration::from_secs(config.database.connect_timeout_seconds))
-        .connect_with(database_connect_options.application_name("ai-gateway-bootstrap"))
-        .await?;
-    run_migrations(&pool).await?;
-    let id = AuthRepository::new(pool)
+    let database = Database::open(&config.database, None).await?;
+    let result = database
+        .auth()
         .bootstrap_admin(&email, &display_name, &password_hash)
-        .await?;
+        .await;
+    database.close().await;
+    let id = result?;
     println!("bootstrap administrator created: {id}");
     Ok(())
 }
@@ -362,16 +413,13 @@ async fn reset_admin_password(config_path: PathBuf, email: String) -> Result<(),
     let _log_guard = observability::init(&config.observability.filter);
     let password = read_password_from_stdin()?;
     let password_hash = hash_console_password(password).await?;
-    let database_connect_options = config.database.connect_options()?;
-    let pool = PgPoolOptions::new()
-        .max_connections(config.database.max_connections)
-        .acquire_timeout(Duration::from_secs(config.database.connect_timeout_seconds))
-        .connect_with(database_connect_options.application_name("ai-gateway-password-reset"))
-        .await?;
-    run_migrations(&pool).await?;
-    let reset = AuthRepository::new(pool)
+    let database = Database::open(&config.database, None).await?;
+    let result = database
+        .auth()
         .reset_active_admin_password(&email, &password_hash)
-        .await?;
+        .await;
+    database.close().await;
+    let reset = result?;
     if !reset {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -393,6 +441,18 @@ fn read_password_from_stdin() -> Result<String, io::Error> {
 }
 
 enum Command {
+    VerifySqliteRestore {
+        path: PathBuf,
+        identity: String,
+    },
+    BackupSqlite {
+        config_path: PathBuf,
+        destination: PathBuf,
+    },
+    RestoreSqlite {
+        source: PathBuf,
+        destination: PathBuf,
+    },
     Serve {
         config_path: PathBuf,
     },
@@ -414,6 +474,18 @@ fn parse_command(arguments: Vec<String>) -> Result<Command, io::Error> {
             config_path: PathBuf::from(DEFAULT_CONFIG_PATH),
         });
     };
+    if command == "verify-sqlite-restore" {
+        if arguments.len() != 3 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid restore verification arguments",
+            ));
+        }
+        return Ok(Command::VerifySqliteRestore {
+            path: arguments[1].clone().into(),
+            identity: arguments[2].clone(),
+        });
+    }
     if matches!(command.as_str(), "--version" | "-V") {
         if arguments.len() != 1 {
             return Err(io::Error::new(
@@ -422,6 +494,46 @@ fn parse_command(arguments: Vec<String>) -> Result<Command, io::Error> {
             ));
         }
         return Ok(Command::Version);
+    }
+    if matches!(command.as_str(), "backup-sqlite" | "restore-sqlite") {
+        let mut values = std::collections::BTreeMap::new();
+        let source_flag = if command == "backup-sqlite" {
+            "--config"
+        } else {
+            "--source"
+        };
+        let mut args = arguments[1..].iter();
+        while let Some(flag) = args.next() {
+            let value = args.next().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "missing snapshot flag value")
+            })?;
+            if (flag != "--destination" && flag != source_flag)
+                || values.insert(flag.as_str(), PathBuf::from(value)).is_some()
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "unknown or duplicate snapshot flag",
+                ));
+            }
+        }
+        let destination = values.remove("--destination").ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "--destination is required")
+        })?;
+        return if command == "backup-sqlite" {
+            Ok(Command::BackupSqlite {
+                config_path: values
+                    .remove("--config")
+                    .unwrap_or_else(|| DEFAULT_CONFIG_PATH.into()),
+                destination,
+            })
+        } else {
+            Ok(Command::RestoreSqlite {
+                source: values.remove("--source").ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "--source is required")
+                })?,
+                destination,
+            })
+        };
     }
     if command == "bootstrap-admin" {
         let mut config_path = PathBuf::from(DEFAULT_CONFIG_PATH);

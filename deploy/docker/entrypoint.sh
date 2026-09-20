@@ -7,6 +7,7 @@ config_source=/run/config/ai-gateway.toml
 config_target="$runtime_dir/config.toml"
 spool_dir=/var/lib/ai-gateway/request-log-spool
 image_edit_spool_dir=/var/lib/ai-gateway/image-edit-spool
+sqlite_dir=/var/lib/ai-gateway/sqlite
 
 case "${1:-}" in
     --version|-V)
@@ -17,6 +18,9 @@ esac
 install -d -m 0700 -o ai-gateway -g ai-gateway "$runtime_dir" "$secret_dir"
 install -d -m 0750 -o ai-gateway -g ai-gateway "$spool_dir"
 install -d -m 0700 -o ai-gateway -g ai-gateway "$image_edit_spool_dir"
+if [ -d "$sqlite_dir" ]; then
+    install -d -m 0700 -o ai-gateway -g ai-gateway "$sqlite_dir"
+fi
 
 if [ ! -f "$config_source" ]; then
     echo "ai-gateway: missing configuration mount at $config_source" >&2
@@ -35,7 +39,9 @@ copy_secret() {
     install -m 0400 -o ai-gateway -g ai-gateway "$source" "$target"
 }
 
-copy_secret postgres_password
+if [ -f /run/secrets/postgres_password ]; then
+    copy_secret postgres_password
+fi
 copy_secret console_jwt_private
 copy_secret console_jwt_public
 

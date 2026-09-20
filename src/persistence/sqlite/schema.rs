@@ -13,4 +13,9 @@ pub(super) const MIGRATIONS: &[SqliteMigration<'static>] = &[
         description: "business constraints and derived projections",
         sql: include_str!("../../../migrations/sqlite/0002_guards.sql"),
     },
+    SqliteMigration {
+        version: 3,
+        description: "durable Codex external-operation fences",
+        sql: include_str!("../../../migrations/sqlite/0003_codex_operations.sql"),
+    },
 ];

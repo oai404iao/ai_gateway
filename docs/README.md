@@ -33,8 +33,8 @@
 成对备份与恢复入口见[0063 演练](development/persistence-rehearsal.md)。
 第三阶段见 [SQLite 双后端实施](development/sqlite-backend.md)；
 目前已实现 schema/生命周期、[身份与控制面](development/sqlite-control-plane.md)
-以及[计量与结算](development/sqlite-metering.md)，
-生产仍只支持 PostgreSQL。
+以及[计量与结算](development/sqlite-metering.md)、[Codex 与拼车](development/sqlite-codex.md)，
+Linux SQLite 的配置、停机备份与恢复见[部署指南](user/sqlite.md)。
 
 当文档之间出现差异时，按以下优先级判断：
 

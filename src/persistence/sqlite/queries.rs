@@ -110,18 +110,18 @@ impl SqliteRequestLogQueries {
         let mut connection = self.database.acquire_read().await.map_err(open_failure)?;
         let row = match owner_user_id {
             Some(user_id) => {
-                sqlx::query_as::<_, ConsoleRequestLogRow>(&format!(
+                sqlx::query_as::<_, ConsoleRequestLogRow>(sqlx::AssertSqlSafe(format!(
                     "{CONSOLE_REQUEST_LOG_SELECT} WHERE log.id = ? AND log.user_id = ?"
-                ))
+                )))
                 .bind(SqliteUuid(id))
                 .bind(SqliteUuid(user_id))
                 .fetch_optional(&mut *connection)
                 .await?
             }
             None => {
-                sqlx::query_as::<_, ConsoleRequestLogRow>(&format!(
+                sqlx::query_as::<_, ConsoleRequestLogRow>(sqlx::AssertSqlSafe(format!(
                     "{CONSOLE_REQUEST_LOG_SELECT} WHERE log.id = ?"
-                ))
+                )))
                 .bind(SqliteUuid(id))
                 .fetch_optional(&mut *connection)
                 .await?

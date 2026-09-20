@@ -2,6 +2,7 @@
 """Own the disposable database, production gateway, clients, and safe report."""
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -11,6 +12,7 @@ import secrets
 import shutil
 import signal
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -87,8 +89,9 @@ def redact(text, values):
 
 
 class Resources:
-    def __init__(self, directory):
+    def __init__(self, directory, backend="postgres"):
         self.directory = directory
+        self.backend = backend
         temporary = directory / "tmp"
         temporary.mkdir()
         self.processes = []
@@ -157,6 +160,11 @@ class Resources:
         return result.stdout.decode().strip()
 
     def database(self):
+        if self.backend == "sqlite":
+            directory = self.directory / "database"
+            directory.mkdir(mode=0o700)
+            self.database_file = directory / "gateway.sqlite"
+            return "sqlite://" + str(self.database_file), ""
         self.container = "ai-gateway-e2e-" + secrets.token_hex(8)
         password = secrets.token_hex(24)
         database = "ai_gateway_e2e_" + secrets.token_hex(8)
@@ -180,6 +188,34 @@ class Resources:
 
         wait_until(ready)
         return f"postgres://postgres:{password}@{address}/{database}", password
+
+    @contextmanager
+    def database_outage(self):
+        if self.backend == "postgres":
+            self.docker("pause", self.container)
+            try:
+                yield
+            finally:
+                self.docker("unpause", self.container)
+        else:
+            # Test-only contention: take SQLite's writer lock without mutating application data.
+            connection = sqlite3.connect(str(self.database_file), timeout=10)
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                yield
+            finally:
+                connection.rollback()
+                connection.close()
+
+    def ingress_empty(self):
+        if self.backend == "postgres":
+            return self.docker("exec", self.container, "psql", "-U", "postgres", "-d", self.database_name,
+                               "-Atc", "SELECT count(*) FROM request_log_ingest") == "0"
+        connection = sqlite3.connect(f"file:{self.database_file}?mode=ro", uri=True)
+        try:
+            return connection.execute("SELECT count(*) FROM request_log_ingest").fetchone()[0] == 0
+        finally:
+            connection.close()
 
     def close(self):
         errors = []
@@ -261,6 +297,8 @@ settlement_interval_milliseconds = 100
 shutdown_drain_seconds = 5
 [request_retry]
 enabled = false
+[codex_sharing]
+enabled = true
 [observability]
 filter = "ai_gateway=info,tower_http=warn"
 """)
@@ -270,6 +308,11 @@ filter = "ai_gateway=info,tower_http=warn"
         str(binary), "bootstrap-admin", "--config", str(config),
         "--email", "system-e2e@example.test", "--display-name", "System E2E", "--password-stdin",
     ], "bootstrap", stdin=(password + "\n").encode())
+    password = secrets.token_urlsafe(24)
+    resources.run([
+        str(binary), "reset-admin-password", "--config", str(config),
+        "--email", "system-e2e@example.test", "--password-stdin",
+    ], "reset-admin-password", stdin=(password + "\n").encode())
     gateway, _ = resources.start([str(binary), str(config)], "gateway")
     resources.gateway = gateway
     console = f"http://localhost:{console_port}"
@@ -468,6 +511,7 @@ def verify_settlement(data, expected_count, zero_count=0, protocols=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, default=ROOT / "target/debug/ai-gateway")
+    parser.add_argument("--backend", choices=("postgres", "sqlite"), default="postgres")
     parser.add_argument("--codex", default=shutil.which("codex"))
     parser.add_argument("--pi", default=shutil.which("pi"))
     parser.add_argument("--output", type=Path, help="new directory under target/system-e2e")
@@ -485,12 +529,12 @@ def main():
 
     previous = {sig: signal.signal(sig, interrupt) for sig in (signal.SIGINT, signal.SIGTERM)}
     with tempfile.TemporaryDirectory(prefix="system-e2e-private-", dir=ROOT / "target") as temporary:
-        resources = Resources(Path(temporary))
+        resources = Resources(Path(temporary), args.backend)
         try:
             check(args.binary.is_file(), "build embedded-console-ui binary first")
             check(args.codex is not None, "install the pinned Codex CLI")
             check(args.pi is not None, "install the pinned Pi CLI")
-            for command in ("docker", "node", "openssl", "cc"):
+            for command in ("node", "openssl", "cc", *(("docker",) if args.backend == "postgres" else ())):
                 check(shutil.which(command), f"{command} is required")
             report["source_commit"] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT).decode().strip()
             report["working_tree_dirty"] = bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT))
@@ -503,7 +547,9 @@ def main():
                         harness.update(str(path.relative_to(ROOT)).encode())
                         harness.update(path.read_bytes())
             report["harness_sha256"] = harness.hexdigest()
-            report["postgres_image"] = POSTGRES
+            report["backend"] = args.backend
+            if args.backend == "postgres":
+                report["postgres_image"] = POSTGRES
             report["stage"] = "database"
             database, db_password = resources.database()
             secret_values.extend([database, db_password])
@@ -572,6 +618,10 @@ def main():
             )
             report["scenarios"].extend(faults)
             report["settlement"] = settlement
+            if args.backend == "sqlite":
+                report["stage"] = "sqlite-backup-restore"
+                from sqlite_recovery import exercise_backup
+                report["scenarios"].extend(exercise_backup(resources, args.binary.resolve(), data, settlement["logs"], warmups))
             report["status"] = "passed"
         except Exception as error:
             interrupted = isinstance(error, (InterruptedError, KeyboardInterrupt))

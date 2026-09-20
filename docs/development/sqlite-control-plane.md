@@ -35,7 +35,7 @@
 
 `bootstrap-admin` / `reset-admin-password` 的底层仓储操作已支持 SQLite；
 本阶段**不开放**命令行的 SQLite 配置路径。serve、两个 CLI 的文件生命周期组合、
-stdin/配置/容器端到端开放属于 S6，不能绕过 `AppConfig::validate`。
+S6 已接通 stdin/配置/容器路径，仍由 `AppConfig::validate` 统一检查。
 密码哈希、token 和 JWT 的应用层策略不变。
 
 ### 普通控制面
@@ -48,7 +48,7 @@ stdin/配置/容器端到端开放属于 S6，不能绕过 `AppConfig::validate`
 
 完整 runtime snapshot 在同一个读事务中加载，包含 Codex credential projection、
 拼车 canonical/protected channels、身份别名、完整 quota windows 和 sharing-only 限制。
-这些记录的读取是控制面完整快照所需，不意味着 S5 OAuth/额度/WAL 已实现。
+这些读取由 S3 引入；专属 OAuth/额度/WAL 操作见 [S5](sqlite-codex.md)。
 
 ## 事务与金额
 
@@ -80,15 +80,14 @@ S3 双后端契约同时发现并修复 PostgreSQL 代理列表/审计的正则�
 含 URL userinfo 时仍去除凭据/query/fragment，但保留原 scheme，不产生控制字符。
 这不改变上游代理实际使用的连接 URL。
 
-## 明确未实现的后续操作
+## 后续切片边界
 
 SQLite Codex credential 管理/视图、OAuth flow、token refresh、quota 更新/history/reset、
-sharing ledger 认领和独立 sharing 管理列表属于 S5；它们经过一个明确的 PG-only
-检查，在开发 SQLite 构造器下返回 `UnsupportedBackendOperation` 内部错误，
-不会返回空成功或自动转用 PG。完整运行时快照与普通渠道组管理不经过这个检查。
+sharing ledger 认领和独立 sharing 管理列表已在 [S5](sqlite-codex.md) 接通，
+不再经过 PG-only 拒绝占位。
 
-S4 的 ingress、计量/结算、统计已实现，见[计量与结算](sqlite-metering.md)。S5 操作缺失时，
-生产配置不得开放；同样保留[原生 SQLite 版本门槛](sqlite-lifecycle.md#原生-sqlite-版本门槛)。
+S4 的 ingress、计量/结算、统计见[计量与结算](sqlite-metering.md)。S6 已开放 Linux 部署；
+文件限制与[原生 SQLite 版本门槛](sqlite-lifecycle.md#原生-sqlite-版本门槛)仍强制执行。
 
 ## 验证
 
@@ -115,4 +114,4 @@ cargo test --locked --workspace --features sqlite-backend
 - 大额整数精确加法，以及负余额加半个最小单位时只舍入最终结果。
 
 CI 在既有 PG gate 之外运行 SQLite 文件库契约及 `control_plane_integration sqlite_`。
-这些测试不替代 S6 的真实浏览器/CLI 系统验收，也未运行付费上游或转发压测。
+这些仓储测试与 S6 的真实浏览器/CLI 双后端系统验收互补；不运行付费模型或转发压测。

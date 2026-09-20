@@ -175,10 +175,10 @@ async fn storage_classification_preserves_database_failure_distinctions() {
         ("22003", "", StorageFailureKind::Internal),
         ("08006", "", StorageFailureKind::Internal),
     ] {
-        let error = sqlx::query(&format!(
+        let error = sqlx::query(sqlx::AssertSqlSafe(format!(
             "DO $$ BEGIN RAISE EXCEPTION 'contract failure'
              USING ERRCODE='{code}', CONSTRAINT='{constraint}'; END $$"
-        ))
+        )))
         .execute(&database.pool)
         .await
         .unwrap_err();

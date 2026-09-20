@@ -73,7 +73,7 @@ use super::{
 /// backend contract tests exercise the same neutral DTOs.
 #[derive(Clone)]
 pub struct SqliteControlPlaneRepository {
-    database: Arc<SqliteDatabase>,
+    pub(super) database: Arc<SqliteDatabase>,
 }
 
 impl SqliteControlPlaneRepository {
@@ -2573,7 +2573,7 @@ fn validate_admin_api_key_input(
 
 /// Audit attribution for one prepared change, mirroring the PostgreSQL
 /// `Audit` classification.
-enum AuditKind {
+pub(super) enum AuditKind {
     Admin(Uuid),
     SelfService(Uuid),
     System,
@@ -2646,7 +2646,7 @@ impl SqlitePreparedControlPlaneChange {
 }
 
 impl SqliteControlPlaneRepository {
-    fn prepared(
+    pub(super) fn prepared(
         &self,
         transaction: Transaction<'static, Sqlite>,
         mutations: Vec<MutationResult>,
@@ -2659,7 +2659,7 @@ impl SqliteControlPlaneRepository {
         }
     }
 
-    async fn admin_write(
+    pub(super) async fn admin_write(
         &self,
         actor: Uuid,
     ) -> Result<Transaction<'static, Sqlite>, RepositoryError> {
@@ -2878,8 +2878,8 @@ async fn update_user_settings(
 // Audit projections
 // ---------------------------------------------------------------------------
 
-async fn insert_user_audit(
-    transaction: &mut Transaction<'static, Sqlite>,
+pub(super) async fn insert_user_audit(
+    transaction: &mut Transaction<'_, Sqlite>,
     actor: Uuid,
     actor_role: &str,
     mutation: &MutationResult,
@@ -3005,9 +3005,9 @@ async fn key_audit(
     transaction: &mut Transaction<'static, Sqlite>,
     id: Uuid,
 ) -> Result<Value, RepositoryError> {
-    let row = sqlx::query_as::<_, KeyAuditRow>(&format!(
+    let row = sqlx::query_as::<_, KeyAuditRow>(sqlx::AssertSqlSafe(format!(
         "SELECT {KEY_AUDIT_COLUMNS} FROM api_keys WHERE id=? AND is_system=0"
-    ))
+    )))
     .bind(SqliteUuid(id))
     .fetch_optional(&mut **transaction)
     .await?
@@ -3020,9 +3020,9 @@ async fn key_audit_for_user(
     id: Uuid,
     user_id: Uuid,
 ) -> Result<Value, RepositoryError> {
-    let row = sqlx::query_as::<_, KeyAuditRow>(&format!(
+    let row = sqlx::query_as::<_, KeyAuditRow>(sqlx::AssertSqlSafe(format!(
         "SELECT {KEY_AUDIT_COLUMNS} FROM api_keys WHERE id=? AND user_id=? AND is_system=0"
-    ))
+    )))
     .bind(SqliteUuid(id))
     .bind(SqliteUuid(user_id))
     .fetch_optional(&mut **transaction)
@@ -7094,7 +7094,7 @@ const SHARING_GROUP_SELECT: &str = "SELECT id,credential_id,provider_account_id,
      group_max_concurrent_requests,updated_at FROM codex_sharing_groups WHERE id=?";
 
 #[derive(FromRow)]
-struct SharingGroupAuditRow {
+pub(super) struct SharingGroupAuditRow {
     id: SqliteUuid,
     credential_id: SqliteUuid,
     name: String,
@@ -7111,7 +7111,7 @@ struct SharingGroupAuditRow {
 }
 
 impl SharingGroupAuditRow {
-    fn into_value(self) -> Result<Value, RepositoryError> {
+    pub(super) fn into_value(self) -> Result<Value, RepositoryError> {
         let seats: Vec<Option<Uuid>> =
             serde_json::from_str(&self.seats).map_err(|_| RepositoryError::Validation)?;
         Ok(json!({
@@ -7120,9 +7120,9 @@ impl SharingGroupAuditRow {
             "name": self.name,
             "enabled": self.enabled,
             "seats": seats,
-            "primary_limit_amount": json_decimal(self.primary_limit_amount.0),
-            "secondary_limit_amount": json_decimal(self.secondary_limit_amount.0),
-            "request_reservation_amount": json_decimal(self.request_reservation_amount.0),
+            "primary_limit_amount": format!("{:.8}",self.primary_limit_amount.0),
+            "secondary_limit_amount": format!("{:.8}",self.secondary_limit_amount.0),
+            "request_reservation_amount": format!("{:.8}",self.request_reservation_amount.0),
             "user_requests_per_minute": self.user_requests_per_minute,
             "group_requests_per_minute": self.group_requests_per_minute,
             "user_max_concurrent_requests": self.user_max_concurrent_requests,

@@ -68,6 +68,9 @@ impl From<sqlx::Error> for super::RepositoryError {
 
 #[cfg(feature = "sqlite-backend")]
 fn classify_sqlite(error: &dyn sqlx::error::DatabaseError) -> StorageFailureKind {
+    if error.message() == "codex_operation_pending" {
+        return StorageFailureKind::Conflict;
+    }
     if matches!(
         error.message(),
         "routing_dependency:channels_channel_group_id_api_format_fkey"

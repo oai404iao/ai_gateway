@@ -13,7 +13,7 @@ use reqwest::header::{HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use sqlx::{FromRow, PgPool, Postgres, QueryBuilder, Transaction, postgres::PgPoolCopyExt};
+use sqlx::{FromRow, PgPool, Postgres, QueryBuilder, Transaction};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -2384,6 +2384,21 @@ impl PostgresSettlementRepository {
     }
 }
 
+struct IngressCopyConnection {
+    connection: sqlx::pool::PoolConnection<Postgres>,
+    completed: bool,
+}
+
+impl Drop for IngressCopyConnection {
+    fn drop(&mut self) {
+        // Cancellation can occur before COPY yields its abort-capable stream. Returning that
+        // socket to the pool can leave PostgreSQL waiting for input and block pool shutdown.
+        if !self.completed {
+            self.connection.close_on_drop();
+        }
+    }
+}
+
 impl PostgresRequestLogRepository {
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
@@ -2427,8 +2442,12 @@ impl PostgresRequestLogRepository {
             append_copy_bytea(&mut data, &record.payload);
             data.push(b'\n');
         }
-        let mut copy = self
-            .pool
+        let mut connection = IngressCopyConnection {
+            connection: self.pool.acquire().await?,
+            completed: false,
+        };
+        let mut copy = connection
+            .connection
             .copy_in_raw(
                 "COPY request_log_ingest (request_log_id,schema_version,payload) \
                  FROM STDIN WITH (FORMAT text)",
@@ -2438,7 +2457,9 @@ impl PostgresRequestLogRepository {
             let _ = copy.abort("request-log ingress copy failed").await;
             return Err(error.into());
         }
-        copy.finish().await.map_err(RepositoryError::from)
+        let rows = copy.finish().await?;
+        connection.completed = true;
+        Ok(rows)
     }
 
     pub(crate) async fn load_ingest_batch(
@@ -2549,6 +2570,7 @@ impl PostgresRequestLogRepository {
         RequestLogPoolStatus {
             size: self.pool.size(),
             idle: self.pool.num_idle(),
+            capacity: self.pool.options().get_max_connections(),
         }
     }
 }
@@ -2929,7 +2951,7 @@ impl PostgresMeteringQueries {
                       api_format",
             filter.granularity.bucket_expression()
         );
-        let bucket_rows = sqlx::query_as::<_, CostBucketMetricRow>(&bucket_sql)
+        let bucket_rows = sqlx::query_as::<_, CostBucketMetricRow>(sqlx::AssertSqlSafe(bucket_sql))
             .bind(filter.started_at)
             .bind(filter.ended_at)
             .bind(filter.user_id)
@@ -4449,6 +4471,7 @@ pub(crate) struct RequestLogSettlementBacklog {
 pub(crate) struct RequestLogPoolStatus {
     pub size: u32,
     pub idle: usize,
+    pub capacity: u32,
 }
 
 #[derive(FromRow)]

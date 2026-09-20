@@ -383,17 +383,15 @@ async fn decimal_decoder_rejects_corruption_and_lossy_storage() {
 }
 
 #[tokio::test]
-async fn foundation_does_not_enable_server_configuration_or_memory_databases() {
+async fn server_configuration_accepts_files_but_never_memory_databases() {
     for path in [":memory:", "", "gateway.sqlite", "/"] {
         assert!(SqliteDatabase::open(Path::new(path)).await.is_err());
     }
     let mut config: AppConfig = toml::from_str(include_str!("../config.example.toml")).unwrap();
     config.database.url = "sqlite:///gateway.sqlite".into();
-    let error = config
-        .validate()
-        .err()
-        .expect("SQLite must remain disabled");
-    assert!(error.to_string().contains("database URL must use postgres"));
+    config.database.password_file = None;
+    assert!(config.validate().is_ok());
+    assert!(unsafe { libsqlite3_sys::sqlite3_libversion_number() } >= 3_051_003);
 }
 
 const TEST_MIGRATION: SqliteMigration<'static> = SqliteMigration {
@@ -981,11 +979,11 @@ async fn process_death_releases_ownership_and_recovers_committed_history_only() 
 /// the SQLite development constructors dispatch the ordinary operations.
 #[tokio::test]
 async fn repository_facades_dispatch_ordinary_operations_to_sqlite() {
-    use ai_gateway::persistence::{AuthRepository, BackendKind, ControlPlaneRepository};
+    use ai_gateway::persistence::{AuthRepository, ControlPlaneRepository};
     use uuid::Uuid;
 
     let (_directory, database) = database().await;
-    assert_eq!(database.install_schema().await.unwrap(), 2);
+    assert_eq!(database.install_schema().await.unwrap(), 3);
     let database = Arc::new(database);
 
     let auth = AuthRepository::from_sqlite(Arc::clone(&database));
@@ -1012,34 +1010,21 @@ async fn repository_facades_dispatch_ordinary_operations_to_sqlite() {
         vec!["https://gateway.example.test"]
     );
 
-    // The S5-only Codex/sharing operations fail closed instead of reporting an
-    // empty success through the SQLite backend.
-    let error = control_plane
-        .sharing_groups(None)
-        .await
-        .expect_err("SQLite has no sharing implementation yet");
+    assert!(control_plane.sharing_groups(None).await.unwrap().is_empty());
     assert!(
-        unsupported_operation(&error).is_some_and(|operation| {
-            operation.backend() == BackendKind::Sqlite && operation.operation() == "sharing_groups"
-        }),
-        "the backend gap must stay a typed unsupported-operation failure: {error}"
+        control_plane
+            .codex_credentials(Uuid::nil())
+            .await
+            .unwrap()
+            .is_empty()
     );
-    for (operation, error) in [
-        (
-            "codex_credentials",
-            control_plane.codex_credentials(Uuid::nil()).await.err(),
-        ),
-        (
-            "lock_codex_refresh",
-            control_plane.lock_codex_refresh(Uuid::nil()).await.err(),
-        ),
-    ] {
-        let error = error.unwrap_or_else(|| panic!("{operation} must fail closed on SQLite"));
-        assert_eq!(
-            unsupported_operation(&error).map(|unsupported| unsupported.operation()),
-            Some(operation),
-        );
-    }
+    assert!(
+        control_plane
+            .lock_codex_refresh(Uuid::nil())
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 /// The S4 facades keep the production `new(PgPool)` signatures, dispatch all
@@ -1053,7 +1038,7 @@ async fn s4_pipeline_and_query_facades_share_one_sqlite_database() {
     };
 
     let (_directory, database) = database().await;
-    assert_eq!(database.install_schema().await.unwrap(), 2);
+    assert_eq!(database.install_schema().await.unwrap(), 3);
     let database = Arc::new(database);
 
     let repository = RequestLogRepository::from_sqlite(Arc::clone(&database));
@@ -1142,19 +1127,4 @@ fn system_settings() -> ai_gateway::persistence::SystemSettingsInput {
         }
     }))
     .unwrap()
-}
-
-/// Walks the storage failure chain to the typed backend-gap source.
-fn unsupported_operation(
-    error: &ai_gateway::persistence::RepositoryError,
-) -> Option<&ai_gateway::persistence::UnsupportedBackendOperation> {
-    let mut source = std::error::Error::source(error)?;
-    loop {
-        if let Some(operation) =
-            source.downcast_ref::<ai_gateway::persistence::UnsupportedBackendOperation>()
-        {
-            return Some(operation);
-        }
-        source = source.source()?;
-    }
 }

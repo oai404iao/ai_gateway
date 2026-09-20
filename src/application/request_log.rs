@@ -165,7 +165,6 @@ pub struct RequestLogPipelineMonitor {
     notification_capacity: usize,
     projection_sender: Arc<Mutex<Option<mpsc::Sender<()>>>>,
     projection_capacity: usize,
-    database_capacity: u32,
     metrics: Arc<RequestLogPipelineMetrics>,
 }
 
@@ -177,7 +176,6 @@ impl RequestLogPipelineMonitor {
         notification_sender: mpsc::Sender<()>,
         notification_capacity: usize,
         projection_sender: mpsc::Sender<()>,
-        database_capacity: u32,
         metrics: Arc<RequestLogPipelineMetrics>,
     ) -> Self {
         Self {
@@ -187,7 +185,6 @@ impl RequestLogPipelineMonitor {
             notification_capacity,
             projection_sender: Arc::new(Mutex::new(Some(projection_sender))),
             projection_capacity: 1,
-            database_capacity,
             metrics,
         }
     }
@@ -239,7 +236,7 @@ impl RequestLogPipelineMonitor {
             settlement_failures_total: metrics.settlement_failures_total,
             database_pool_size: u64::from(pool_before_queries.size),
             database_pool_idle: usize_to_u64(pool_before_queries.idle),
-            database_pool_capacity: u64::from(self.database_capacity),
+            database_pool_capacity: u64::from(pool_before_queries.capacity),
         }
     }
 

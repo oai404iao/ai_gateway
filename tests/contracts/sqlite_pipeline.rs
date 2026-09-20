@@ -58,7 +58,7 @@ struct Pipeline {
 impl Pipeline {
     async fn new() -> Self {
         let (directory, database) = database().await;
-        assert_eq!(database.install_schema().await.unwrap(), 2);
+        assert_eq!(database.install_schema().await.unwrap(), 3);
         let database = Arc::new(database);
         let logs = SqliteRequestLogRepository::new(Arc::clone(&database));
         Self {
@@ -78,7 +78,7 @@ impl Pipeline {
 
     async fn execute(&self, sql: &str) {
         let mut transaction = self.database.begin_write().await.unwrap();
-        sqlx::Executor::execute(&mut *transaction, sql)
+        sqlx::Executor::execute(&mut *transaction, sqlx::AssertSqlSafe(sql.to_owned()))
             .await
             .unwrap();
         transaction.commit().await.unwrap();
@@ -88,7 +88,8 @@ impl Pipeline {
     /// message without committing, so schema guards stay observable.
     async fn attempt(&self, sql: &str) -> Result<(), String> {
         let mut transaction = self.database.begin_write().await.unwrap();
-        match sqlx::Executor::execute(&mut *transaction, sql).await {
+        match sqlx::Executor::execute(&mut *transaction, sqlx::AssertSqlSafe(sql.to_owned())).await
+        {
             Ok(_) => {
                 transaction.commit().await.unwrap();
                 Ok(())
@@ -105,7 +106,7 @@ impl Pipeline {
         for<'r> T: sqlx::Decode<'r, sqlx::Sqlite> + sqlx::Type<sqlx::Sqlite> + Send + Unpin,
     {
         let mut reader = self.database.acquire_read().await.unwrap();
-        sqlx::query_scalar(sql)
+        sqlx::query_scalar(sqlx::AssertSqlSafe(sql.to_owned()))
             .fetch_one(&mut *reader)
             .await
             .unwrap()

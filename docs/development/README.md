@@ -23,6 +23,7 @@
 - [SQLite schema 约束映射](sqlite-schema-mapping.md)：0063 后完整业务 baseline、数据库保护、类型编码与归一化写入契约。
 - [SQLite 身份与控制面](sqlite-control-plane.md)：S3 后端分派、完整认证/管理操作与双后端契约；生产配置仍关闭。
 - [SQLite 耐久计量、结算与查询](sqlite-metering.md)：S4 原子财务链路、精确聚合、独立查询投影和取消/崩溃恢复。
+- [SQLite Codex 与拼车](sqlite-codex.md)：S5 OAuth/配额/成对投影、外部调用 fencing、账本所有权与 WAL 恢复。
 - [独立计量事实与结算回执](independent-metering.md)：P3 的财务来源、pending 工作集合、独立投影和 0063 停机切换。
 - [0063 升级与成对备份恢复演练](persistence-rehearsal.md)：P4 的手动小数据量演练、PG dump/restore、spool/WAL 配对及 10/30 分钟预算。
 - [Codex 拼车金额账本](codex-sharing.md)：固定席位、窗口准入、WAL 恢复与单实例边界。

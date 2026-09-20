@@ -1,7 +1,7 @@
 # SQLite 文件与迁移生命周期
 
 > 状态：当前。S2 的所有权、数据库身份、完整业务 baseline 和迁移执行器已实现；
-> 尚未接入 serve/bootstrap/reset 或生产配置。核对：2026-09-18。
+> S6 已接入 serve/bootstrap/reset 和备份恢复。核对：2026-09-20。
 
 范围与后续门槛见 [SQLite 双后端实施](sqlite-backend.md)，业务 schema 和写入契约见
 [约束映射](sqlite-schema-mapping.md)。实现位于 `src/persistence/sqlite/`。
@@ -19,18 +19,15 @@
 - 文件权限不防同 UID/root 攻击；不支持不合作的直接 SQLite 写入、运行中复制/替换/
   移动/删除目录或数据库，也不声称消除了任意路径替换的 TOCTOU。
 
-这不是自定义 VFS 或已认证的部署保证；SQLite 生产配置仍关闭。
+这不是自定义 VFS 或任意文件系统保证；部署须遵守[单实例边界](../user/sqlite.md)。
 
 ### 原生 SQLite 版本门槛
 
-当前锁定的 `libsqlite3-sys 0.30.1` bundled 源码为 SQLite 3.46.0。
-2026-09-18 核对 [SQLite 官方 WAL-reset bug 说明](https://www.sqlite.org/wal.html)，
-该版本没有后续 WAL-reset 修复。官方列出的已修复版本包括 3.51.3+、
-以及回移修复的 3.44.6 / 3.50.7。
-
-这不是本轮已修复的问题。生产开放前必须升级/选择已修复的原生 SQLite，
-核对实际链接版本并重跑迁移、恢复与双后端测试；不能因普通测试通过或只有一个
-应用写池，就宣称已经排除所有 native checkpoint/连接关闭竞争。
+S6 将 SQLx 升级到 0.9.0，锁定 `libsqlite3-sys 0.37.0` bundled SQLite 3.51.3。
+2026-09-20 核对 [SQLite 官方 WAL-reset bug 说明](https://www.sqlite.org/wal.html)：
+3.51.3 包含该修复。打开文件前调用 `sqlite3_libversion_number`，
+拒绝低于 3.51.3 的实际 native 库；不依赖宿主机 `sqlite3` CLI 版本作为证明。
+S2 曾使用的 3.46.0 不再是可部署构建。连接策略、原子迁移和恢复契约继续保留。
 
 ## 两层所有权
 
@@ -43,8 +40,9 @@
 2. **逻辑 opener**：同一进程同一时刻只能有一个 `SqliteDatabase` opener；
    关闭全部池/句柄后可在该进程重开同一路径。另一个进程必须等待原进程退出。
    池关闭会等待借出的连接归还；丢弃数据库但仍持有连接时仍拒绝第二个 opener。
+   S5 provider 操作和拼车 ledger guard 同样保留逻辑 opener，关闭须等待其释放。
 
-保留进程 lease 是有意的 fail-closed 选择：SQLx 0.8.6 的 replacement connection
+保留进程 lease 是有意的 fail-closed 选择：S2 基于 SQLx 0.8.6 发现的 replacement connection
 可在注册 native callback 前被取消，后台 SQLite worker 不一定已终止。
 仅在 `after_connect` 中挂一个 Arc 不能证明其整个 native 生命周期都受保护。
 此外，SQLite 使用 POSIX 文件锁，过早关闭同进程额外打开的数据库描述符也可能释放锁。
@@ -86,14 +84,15 @@ marker 不是密码学认证；不防同 UID 伪造整套文件。
 marker 不完整时不猜测、不重建；若中断发生在 marker fsync 前且数据库仍空，
 需要人工确认后处理整套未初始化文件，不能据此删掉可能存在的业务数据。
 
-未来备份必须包含 `.identity`、同一时点数据库及 spool/拼车 WAL。
-不能只拷贝一个正在使用的 `.sqlite` 文件；本轮未实现备份/导入命令。
+备份包含 `.identity`、同一时点数据库及 spool/拼车 WAL。
+不能只拷贝正在使用的 `.sqlite` 文件；S6 提供[停机备份恢复命令](../user/sqlite.md)，不提供 PG 导入。
 
 ## 原子 migration runner
 
 `SqliteDatabase::migrate` 接收受信任的、已审查的 SQLite 专属 manifest。
-`install_schema()` 使用 `migrations/sqlite/` 中两个版本：完整表/索引/seed，
-以及业务 guard/派生/延迟约束。尚未自动接入生产命令。
+`install_schema()` 使用 `migrations/sqlite/` 中三个版本：完整表/索引/seed、
+业务 guard/派生/延迟约束、S5 Codex 外部调用 intent 与 fencing。
+serve 和管理员 CLI 在读取业务记录前执行；备份仅核对当前完整历史，不自动升级来源。
 
 规则：
 

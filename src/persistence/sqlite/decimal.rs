@@ -5,7 +5,7 @@ use sqlx::{
     Decode, Encode, Sqlite, Type, ValueRef,
     encode::IsNull,
     error::BoxDynError,
-    sqlite::{SqliteArgumentValue, SqliteTypeInfo, SqliteValueRef},
+    sqlite::{SqliteArgumentsBuffer, SqliteTypeInfo, SqliteValueRef},
 };
 
 /// Bind only to TEXT columns; SQLite NUMERIC affinity/arithmetic can silently lose precision.
@@ -58,10 +58,7 @@ impl<const P: u32, const S: u32> Type<Sqlite> for SqliteNumeric<P, S> {
 }
 
 impl<'q, const P: u32, const S: u32> Encode<'q, Sqlite> for SqliteNumeric<P, S> {
-    fn encode_by_ref(
-        &self,
-        arguments: &mut Vec<SqliteArgumentValue<'q>>,
-    ) -> Result<IsNull, BoxDynError> {
+    fn encode_by_ref(&self, arguments: &mut SqliteArgumentsBuffer) -> Result<IsNull, BoxDynError> {
         Self::new(self.0)?;
         SqliteDecimal(self.0).encode_by_ref(arguments)
     }
@@ -84,10 +81,7 @@ impl Type<Sqlite> for SqliteDecimal {
 }
 
 impl<'q> Encode<'q, Sqlite> for SqliteDecimal {
-    fn encode_by_ref(
-        &self,
-        arguments: &mut Vec<SqliteArgumentValue<'q>>,
-    ) -> Result<IsNull, BoxDynError> {
+    fn encode_by_ref(&self, arguments: &mut SqliteArgumentsBuffer) -> Result<IsNull, BoxDynError> {
         <String as Encode<'q, Sqlite>>::encode(self.0.normalize().to_string(), arguments)
     }
 }

@@ -132,12 +132,16 @@ pub(super) async fn initialize(pool: &SqlitePool, identity: Uuid) -> Result<Uuid
     for (_, ddl) in IDENTITY_GUARDS {
         sqlx::Executor::execute(&mut *transaction, ddl).await?;
     }
-    sqlx::query(&format!("PRAGMA application_id = {APPLICATION_ID}"))
-        .execute(&mut *transaction)
-        .await?;
-    sqlx::query(&format!("PRAGMA user_version = {IDENTITY_VERSION}"))
-        .execute(&mut *transaction)
-        .await?;
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "PRAGMA application_id = {APPLICATION_ID}"
+    )))
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "PRAGMA user_version = {IDENTITY_VERSION}"
+    )))
+    .execute(&mut *transaction)
+    .await?;
     transaction.commit().await?;
     Ok(identity)
 }
@@ -158,7 +162,7 @@ fn validate_manifest(migrations: &[SqliteMigration<'_>]) -> Result<(), SqliteMig
     Ok(())
 }
 
-async fn validate_history(
+pub(super) async fn validate_history(
     connection: &mut SqliteConnection,
     migrations: &[SqliteMigration<'_>],
 ) -> Result<usize, SqliteMigrationError> {
@@ -210,7 +214,11 @@ pub(super) async fn run(
     }
     let applied = validate_history(&mut transaction, migrations).await?;
     for migration in &migrations[applied..] {
-        sqlx::Executor::execute(&mut *transaction, migration.sql).await?;
+        sqlx::Executor::execute(
+            &mut *transaction,
+            sqlx::AssertSqlSafe(migration.sql.to_owned()),
+        )
+        .await?;
         if rollback_observed.load(Ordering::Acquire) {
             return Err(SqliteMigrationError::InvalidManifest);
         }

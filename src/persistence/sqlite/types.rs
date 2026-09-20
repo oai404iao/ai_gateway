@@ -5,7 +5,7 @@ use sqlx::{
     Decode, Encode, Sqlite, Type,
     encode::IsNull,
     error::BoxDynError,
-    sqlite::{SqliteArgumentValue, SqliteTypeInfo, SqliteValueRef},
+    sqlite::{SqliteArgumentsBuffer, SqliteTypeInfo, SqliteValueRef},
 };
 use uuid::Uuid;
 
@@ -47,7 +47,7 @@ macro_rules! text_type {
         impl<'q> Encode<'q, Sqlite> for $name {
             fn encode_by_ref(
                 &self,
-                arguments: &mut Vec<SqliteArgumentValue<'q>>,
+                arguments: &mut SqliteArgumentsBuffer,
             ) -> Result<IsNull, BoxDynError> {
                 let text = ($format)(self.0);
                 let _: $inner = ($parse)(&text)?;

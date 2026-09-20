@@ -1,8 +1,9 @@
-//! SQLite storage and development repositories, not a selectable server backend.
+//! Single-owner SQLite storage, migrations, exact types and repository implementations.
 //! SQL access stays in persistence; application code must use operation-specific repositories.
 
 mod aggregate;
 mod auth;
+mod codex;
 mod control_plane;
 mod decimal;
 mod functions;
@@ -12,9 +13,11 @@ mod ownership;
 mod pipeline;
 mod queries;
 mod schema;
+mod sharing;
 mod types;
 
 pub use auth::SqliteAuthRepository;
+pub(crate) use codex::operation::SqliteCodexOperation;
 pub use control_plane::{SqliteControlPlaneRepository, SqlitePreparedControlPlaneChange};
 pub use decimal::{
     SqliteAmount, SqliteDecimal, SqliteNumeric, SqliteSharingAmount, SqliteTokenRate,
@@ -25,6 +28,7 @@ pub use pipeline::{
     SqliteMeteringRepository, SqliteRequestLogRepository, SqliteSettlementRepository,
 };
 pub use queries::{SqliteMeteringQueries, SqliteRequestLogQueries};
+pub(crate) use sharing::SqliteSharingLease;
 pub use types::{SqliteDate, SqliteTimestamp, SqliteUuid};
 
 use std::{
@@ -41,6 +45,8 @@ use sqlx::{
 use uuid::Uuid;
 
 use ownership::DatabaseOwner;
+#[cfg(target_os = "linux")]
+pub mod backup;
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -60,6 +66,10 @@ pub enum SqliteOpenError {
     UnsupportedFilesystem,
     #[error("SQLite database is closed")]
     Closed,
+    #[error("SQLite requires at least two connections and a positive acquire timeout")]
+    InvalidLimits,
+    #[error("SQLite native version must be at least 3.51.3 (WAL-reset fix)")]
+    UnsupportedVersion,
     #[error("SQLite filesystem operation failed")]
     Io(#[from] std::io::Error),
     #[error("SQLite connection failed")]
@@ -72,10 +82,7 @@ impl From<rustix::io::Errno> for SqliteOpenError {
     }
 }
 
-/// Development-only file database. Call `install_schema` before accessing business tables.
-/// The parent `AuthRepository`, `ControlPlaneRepository`, pipeline, and query facades can
-/// dispatch to it through their `from_sqlite` constructors; the server composition root
-/// still rejects SQLite.
+/// Owned file database. Call `install_schema` before accessing business tables.
 /// All openers must cooperate, and claimed paths must remain unchanged until process exit.
 /// Closing pools allows same-process reuse; another process must wait for this process to exit.
 pub struct SqliteDatabase {
@@ -83,6 +90,9 @@ pub struct SqliteDatabase {
     database_id: Uuid,
     owner_closed: tokio::sync::watch::Receiver<()>,
     leaderboard_refresh: tokio::sync::Mutex<()>,
+    codex_operations:
+        Mutex<std::collections::HashMap<Uuid, std::sync::Weak<tokio::sync::Mutex<()>>>>,
+    sharing_owner: Arc<tokio::sync::Mutex<()>>,
 }
 
 struct DatabasePools {
@@ -93,12 +103,26 @@ struct DatabasePools {
 
 impl SqliteDatabase {
     pub async fn open(path: &Path) -> Result<Self, SqliteOpenError> {
+        Self::open_with_limits(path, 5, Duration::from_secs(30)).await
+    }
+
+    pub async fn open_with_limits(
+        path: &Path,
+        max_connections: u32,
+        acquire_timeout: Duration,
+    ) -> Result<Self, SqliteOpenError> {
+        if max_connections < 2 || acquire_timeout.is_zero() {
+            return Err(SqliteOpenError::InvalidLimits);
+        }
+        if unsafe { libsqlite3_sys::sqlite3_libversion_number() } < 3_051_003 {
+            return Err(SqliteOpenError::UnsupportedVersion);
+        }
         let owner = Arc::new(DatabaseOwner::acquire(path)?);
         let (sender, receiver) = tokio::sync::oneshot::channel();
         // Caller cancellation must not abandon initialization between opening the driver and
         // attaching its native lifetime lease. Runtime shutdown requires closing databases first.
         tokio::spawn(async move {
-            let result = Self::open_owned(owner).await;
+            let result = Self::open_owned(owner, max_connections, acquire_timeout).await;
             if let Err(Ok(database)) = sender.send(result) {
                 database.close().await;
             }
@@ -106,7 +130,11 @@ impl SqliteDatabase {
         receiver.await.map_err(|_| SqliteOpenError::Closed)?
     }
 
-    async fn open_owned(owner: Arc<DatabaseOwner>) -> Result<Self, SqliteOpenError> {
+    async fn open_owned(
+        owner: Arc<DatabaseOwner>,
+        max_connections: u32,
+        acquire_timeout: Duration,
+    ) -> Result<Self, SqliteOpenError> {
         let connection_owner = Arc::clone(&owner);
         let options = SqliteConnectOptions::new()
             .filename(owner.path())
@@ -152,6 +180,7 @@ impl SqliteDatabase {
         owner.verify()?;
         let options = options.journal_mode(SqliteJournalMode::Wal);
         let writer = pool_options(1, false, Arc::clone(&owner))
+            .acquire_timeout(acquire_timeout)
             .connect_with(options.clone())
             .await?;
         let database_id = match migrations::initialize(&writer, owner.database_id()).await {
@@ -161,7 +190,8 @@ impl SqliteDatabase {
                 return Err(error);
             }
         };
-        let readers = pool_options(4, true, Arc::clone(&owner))
+        let readers = pool_options(max_connections - 1, true, Arc::clone(&owner))
+            .acquire_timeout(acquire_timeout)
             .connect_with(
                 options
                     .create_if_missing(false)
@@ -182,6 +212,8 @@ impl SqliteDatabase {
                     database_id,
                     owner_closed,
                     leaderboard_refresh: tokio::sync::Mutex::new(()),
+                    codex_operations: Mutex::new(std::collections::HashMap::new()),
+                    sharing_owner: Arc::new(tokio::sync::Mutex::new(())),
                 })
             }
             Err(error) => {

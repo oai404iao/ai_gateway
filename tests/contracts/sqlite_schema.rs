@@ -18,13 +18,13 @@ const CODEX_CHANNEL: &str = "50000000-0000-0000-0000-000000000002";
 
 async fn schema() -> (tempfile::TempDir, SqliteDatabase) {
     let (directory, db) = database().await;
-    assert_eq!(db.install_schema().await.unwrap(), 2);
+    assert_eq!(db.install_schema().await.unwrap(), 3);
     (directory, db)
 }
 
 async fn execute(db: &SqliteDatabase, sql: &str) -> Result<(), sqlx::Error> {
     let mut tx = db.begin_write().await.unwrap();
-    sqlx::Executor::execute(&mut *tx, sql).await?;
+    sqlx::Executor::execute(&mut *tx, sqlx::AssertSqlSafe(sql.to_owned())).await?;
     tx.commit().await
 }
 
@@ -55,7 +55,7 @@ where
     for<'r> T: sqlx::Decode<'r, sqlx::Sqlite> + sqlx::Type<sqlx::Sqlite> + Send + Unpin,
 {
     let mut reader = db.acquire_read().await.unwrap();
-    sqlx::query_scalar(query)
+    sqlx::query_scalar(sqlx::AssertSqlSafe(query.to_owned()))
         .fetch_one(&mut *reader)
         .await
         .unwrap()
@@ -68,10 +68,12 @@ async fn complete_baseline_has_all_columns_constraints_and_seeds_and_reopens() {
         serde_json::from_str(include_str!("../fixtures/sqlite-schema-inventory.json")).unwrap();
     let mut reader = db.acquire_read().await.unwrap();
     for (table, expected) in inventory.as_object().unwrap() {
-        let rows = sqlx::query(&format!("PRAGMA table_xinfo('{table}')"))
-            .fetch_all(&mut *reader)
-            .await
-            .unwrap();
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "PRAGMA table_xinfo('{table}')"
+        )))
+        .fetch_all(&mut *reader)
+        .await
+        .unwrap();
         let columns: Vec<String> = rows.iter().map(|row| row.get("name")).collect();
         assert_eq!(
             serde_json::to_value(columns).unwrap(),
@@ -154,7 +156,7 @@ async fn complete_baseline_and_guards_rollback_as_one_pending_batch() {
     assert!(!table_exists(&db, "users").await);
     assert!(!table_exists(&db, "request_metering_facts").await);
     assert!(!table_exists(&db, "_gateway_routing_assertions").await);
-    assert_eq!(db.install_schema().await.unwrap(), 2);
+    assert_eq!(db.install_schema().await.unwrap(), 3);
     db.close().await;
 }
 
@@ -418,10 +420,10 @@ async fn normalized_writes_keep_one_transaction_timestamp_and_require_functions(
     let (directory, db) = schema().await;
     seed(&db).await;
     let mut tx = db.begin_write().await.unwrap();
-    assert!(sqlx::query(&format!("UPDATE users SET display_name='Renamed',updated_at='2001-01-01T00:00:00.000000Z' WHERE id='{USER}'")).execute(&mut *tx).await.is_err());
-    sqlx::query(&format!(
+    assert!(sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE users SET display_name='Renamed',updated_at='2001-01-01T00:00:00.000000Z' WHERE id='{USER}'"))).execute(&mut *tx).await.is_err());
+    sqlx::query(sqlx::AssertSqlSafe(format!(
         "UPDATE users SET display_name='Renamed',updated_at=ag_now() WHERE id='{USER}'"
-    ))
+    )))
     .execute(&mut *tx)
     .await
     .unwrap();
@@ -429,23 +431,25 @@ async fn normalized_writes_keep_one_transaction_timestamp_and_require_functions(
         .fetch_one(&mut *tx)
         .await
         .unwrap();
-    let persisted: String =
-        sqlx::query_scalar(&format!("SELECT updated_at FROM users WHERE id='{USER}'"))
-            .fetch_one(&mut *tx)
-            .await
-            .unwrap();
+    let persisted: String = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT updated_at FROM users WHERE id='{USER}'"
+    )))
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
     assert_eq!(persisted, stamp);
-    sqlx::query(&format!(
+    sqlx::query(sqlx::AssertSqlSafe(format!(
         "UPDATE models SET updated_at=ag_now(),display_name='Renamed Model' WHERE id='{MODEL}'"
-    ))
+    )))
     .execute(&mut *tx)
     .await
     .unwrap();
-    let model_stamp: String =
-        sqlx::query_scalar(&format!("SELECT updated_at FROM models WHERE id='{MODEL}'"))
-            .fetch_one(&mut *tx)
-            .await
-            .unwrap();
+    let model_stamp: String = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT updated_at FROM models WHERE id='{MODEL}'"
+    )))
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
     assert_eq!(model_stamp, stamp);
     tx.commit().await.unwrap();
     db.close().await;
@@ -455,9 +459,9 @@ async fn normalized_writes_keep_one_transaction_timestamp_and_require_functions(
     .await
     .unwrap();
     assert!(
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             "UPDATE users SET balance_amount='1' WHERE id='{USER}'"
-        ))
+        )))
         .execute(&mut raw)
         .await
         .is_err()

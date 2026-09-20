@@ -1,8 +1,9 @@
 # SQLite 双后端实施
 
-> 状态：部分实现。基于 `081d8c9`（第二阶段 PR #177）；S1 已提交，
-> S2 已提交为 `65d8fee`，S3 已提交为 `aec8103`；S4 已实现耐久计量、结算和费用查询分派。
-> 尚不能用 SQLite 启动 Gateway。最后核对：2026-09-18。
+> 状态：当前双后端实现。基于 `081d8c9`（第二阶段 PR #177）；S1 已提交，
+> S2 已提交为 `65d8fee`，S3 为 `aec8103`，S4 为 `dc25eb4`；
+> S5 已实现 Codex 与拼车仓储及外部调用 fencing，本地门禁及真实上游回归均通过。
+> S6 已接通 Linux 配置、serve/CLI、停机备份恢复与双后端系统验收。最后核对：2026-09-20。
 
 前置工作见[持久化边界](persistence-boundaries.md)、
 [操作接口](persistence-interfaces.md)和[独立计量事实](independent-metering.md)。
@@ -20,17 +21,18 @@
 - 启用前所有业务链路必须完整；不支持的后端必须在配置验证时拒绝，
   不能先启动后在某个请求上发现仓储未实现。
 
-## S1–S4 当前实现
+## S1–S6 当前实现
 
-`sqlite-backend` 是非默认 Cargo feature，仅编译
-`src/persistence/sqlite/`、仓储分派、文件库契约和 PG 对照测试；不改变生产组合根、
-TOML、配置模板或发行构建。即使启用该 feature，`AppConfig::validate` 仍拒绝 `sqlite:`。
+`sqlite-backend` 是非默认 Cargo feature；官方 Docker/发行构建显式包含它。
+Linux 构建接受 `sqlite:///absolute/path`，其他构建在配置验证时拒绝。
+使用说明见[SQLite 部署与恢复](../user/sqlite.md)。
 
 `SqliteDatabase` 直接使用 SQLx SQLite 驱动，不包装现有 PG 仓储：
 
 - 接受绝对文件路径；S2 增加 Linux 私有目录、文件身份和协作式进程锁验证，
   见[文件与迁移生命周期](sqlite-lifecycle.md)。测试使用独立临时文件库。
-- 一个写连接、最多四个只读连接；参数是开发基础的固定策略，不是新增配置项。
+- 一个写连接，其余为只读连接；`database.max_connections` 是总上限（最少 2）。
+  `SqliteDatabase::open` 测试入口保留 1+4 默认；生产使用 `open_with_limits`。
 - 每个新物理连接配置并核对 WAL、`synchronous=FULL`、外键、recursive triggers、
   关闭 read-uncommitted 及 5 秒 busy timeout。读连接另外以只读方式打开并启用 query-only。
 - 写事务由 SQLx `BEGIN IMMEDIATE` 管理，持有唯一写连接；提交、显式回滚、drop/cancel
@@ -52,11 +54,12 @@ S1 提交为 `5668ea4`。S2 的 `install_schema()` 通过独立的 `0001_baselin
 和 `0002_guards.sql` 一次性安装完整业务 schema。另有身份 metadata、原子 runner 和进程所有权。
 S3 仓储分派与双后端契约见[身份与控制面](sqlite-control-plane.md)；
 S4 耐久写入、精确聚合和故障恢复见[计量与结算](sqlite-metering.md)；
-尚无备份命令或完整业务端到端支持。SQLx 仍按路径打开文件，不使用自定义 VFS；
+S5 增加 `0003_codex_operations.sql`，见 [Codex 与拼车](sqlite-codex.md)；
+S6 提供停机成对备份恢复和双后端系统测试。SQLx 仍按路径打开文件，不使用自定义 VFS；
 调用方不得移动、替换或删除进程已认领的目录/数据库文件，直到该进程退出。
 完整 schema 和归一化写入契约见[约束映射](sqlite-schema-mapping.md)。
-当前 bundled SQLite 还需处理[原生版本门槛](sqlite-lifecycle.md#原生-sqlite-版本门槛)，
-开发测试通过不能作为生产开放许可。
+当前 SQLx 0.9.0 与 `libsqlite3-sys 0.37.0` bundled SQLite 3.51.3
+满足[原生版本门槛](sqlite-lifecycle.md#原生-sqlite-版本门槛)，打开时仍核对实际链接版本。
 
 ## 后端语义与实施决策
 
@@ -89,7 +92,7 @@ PG 行锁/advisory lock 与 SQLite 单写事务不机械对应：
 
 - 账户结算原子包含回执、余额、额度和 pending 删除，UUID 重放不重复扣款。
 - Codex refresh/reset 现有锁跨越外部 HTTP；SQLite 全局写锁不能照搬成长网络事务。
-  S5 必须先设计 generation/专属操作锁及必要的 lease/fencing，覆盖取消和外部结果不确定，
+  S5 使用 generation/version CAS、专属操作锁及耐久 intent fencing，覆盖取消和外部结果不确定，
   不自动重试 token 轮换/兑换，不在此基础切片偷偷改变 PG 行为。
 - 拼车单实例所有权须覆盖启动、CLI 管理命令、全部池及恢复。
   进程内单写连接不是进程独占证明；busy timeout 也不是重试授权。
@@ -112,19 +115,19 @@ SQLite 使用独立 migration 历史：新库 baseline 对齐当前完整 schema
 失败、取消、并发启动、未来版本和外部数据库误选必须有拒绝/回滚测试。
 后续每次 schema 变更同时维护两种后端的迁移与契约。
 
-S6 才确定并同步 TOML、两个配置模板、compose/容器目录、CLI 和运维文档；
-不静默把现有 PG 的连接数或密码配置解释成 SQLite 参数。
+S6 同步 TOML、两个配置模板、compose/容器目录、CLI 和运维文档。
+SQLite 拒绝 password_file；日志没有独立数据库池，连接预算语义在模板中明确说明。
 
 ## 实施切片和退出条件
 
 | 切片 | 交付与必须通过的验收 | 状态 |
 | --- | --- | --- |
-| S1 基础 | 可选驱动、文件读写连接、drop/cancel 回滚、TEXT Decimal 无损往返、生产配置仍拒绝 SQLite、CI 收集测试 | 已实现，测试范围见下 |
+| S1 基础 | 可选驱动、文件读写连接、drop/cancel 回滚、TEXT Decimal 无损往返、初期配置关闭、CI 收集测试 | 已实现，配置门禁由 S6 开放 |
 | S2 schema 与生命周期 | 完整约束映射和 baseline、原子迁移、类型编码、单实例所有权、错误分类、路径/身份/关闭恢复负向测试 | 已实现；包括真实 PG schema/编码对照和完整 baseline 批次回滚 |
-| S3 身份与控制面 | 认证/会话/管理员操作、完整配置读写、编译失败和审计失败回滚、权限/版本/软删除/路由约束双后端契约 | 已实现；CLI 底层 bootstrap/reset 操作已双后端，SQLite CLI 配置/组合根开放仍属 S6 |
+| S3 身份与控制面 | 认证/会话/管理员操作、完整配置读写、编译失败和审计失败回滚、权限/版本/软删除/路由约束双后端契约 | 已实现；S6 同时接通管理员 CLI |
 | S4 事实与结算 | ingress/计量/独立投影/回执/pending、精确聚合、重复与冲突重放、未知费用、取消/崩溃与提交回复丢失 | 已实现；同一套 PG/SQLite 财务和报告契约，取消及 SIGKILL 恢复 |
-| S5 Codex 与拼车 | OAuth/配额/paired projections、长事务替代协议、单实例 WAL 恢复、窗口费用及授权隔离 | 待实现 |
-| S6 可部署验收 | 组合根与配置开放、真实浏览器/CLI 系统链路双后端矩阵、SQLite 故障/备份恢复、运维说明与发行构建 | 待实现 |
+| S5 Codex 与拼车 | OAuth/配额/paired projections、长事务替代协议、单实例 WAL 恢复、窗口费用及授权隔离 | 已完成；本地门禁及已授权真实上游回归通过，见专项文档 |
+| S6 可部署验收 | 组合根与配置开放、真实浏览器/CLI 系统链路双后端矩阵、SQLite 故障/备份恢复、运维说明与发行构建 | 已实现；当前验证结果以本轮交付记录为准 |
 
 S3–S5 的公共仓储使用显式后端分派和后端私有行映射，保留既有窄操作接口；
 不要求业务理解 SQLx Any、方言或原始 executor。不以空 SQLite 分支或 Mock 仓储宣称完成。
@@ -136,17 +139,16 @@ PostgreSQL 实现改名为 `PostgresAuthRepository` / `PostgresControlPlaneRepos
 认证全部 24 个方法已完整分派。普通控制面读写、预提交变更、用户设置、自助 API Key、
 批量更新、目录同步和审计读取同样已分派。
 
-S5 专属的 Codex 方法当前仍只有 PostgreSQL 实现：`codex_credentials`、`codex_credential`、
+S5 专属的 Codex 方法已全部双后端分派：`codex_credentials`、`codex_credential`、
 `codex_credential_view`、`load_codex_credentials`、`export_codex_credentials`、
 `create_codex_oauth_flow`、`codex_oauth_flow`、`cleanup_codex_oauth_flows`、
 `set_codex_user_id_if_missing`、`codex_quota_window_history`、`self_codex_quota_credentials`、
 `self_codex_quota_window_history`、`persist_codex_quota`、`record_codex_quota_reset`、
 `mark_codex_credential_error`、`lock_codex_refresh`、`lock_codex_quota_reset`、
 `prepare_codex_credential_{create,update,delete}`、`prepare_codex_credentials_batch`、
-`claim_sharing_ledger`、`sharing_groups`。它们统一经单一 PostgreSQL-only 访问器返回
-`UnsupportedBackendOperation`（经 `RepositoryError::Storage`/内部错误类别映射），
-不返回空成功、不伪装成业务 `Validation`，也不改变任何应用签名。
-生产组合根仍拒绝 SQLite 配置，因此该门面不对生产暴露。
+`claim_sharing_ledger`、`sharing_groups`。原 PG-only 拒绝占位已移除；
+provider 操作与账本使用不透明后端中立 guard。所有 SQLite 仓储共享一个 owner；
+关停先排空 worker、释放后台任务，再关闭数据库；错误出口也关闭数据库。
 
 正式启用必须覆盖同一套行为契约：金额逐位相等、权限与快照一致、
 软删除历史身份可追溯、一份事实/回执/账户效果、日志阻塞时仍结算、未知不记零、
@@ -161,6 +163,8 @@ cargo test --locked --features sqlite-backend --test sqlite_foundation
 cargo test --locked --features sqlite-backend --test control_plane_integration sqlite_parity
 cargo test --locked --features sqlite-backend --test control_plane_integration sqlite_s3_parity
 cargo test --locked --features sqlite-backend --test control_plane_integration sqlite_s4_parity
+cargo test --locked --features sqlite-backend --test control_plane_integration sqlite_s5_parity
+cargo test --locked --features sqlite-backend --lib application::codex::sqlite_tests
 cargo clippy --locked --workspace --all-targets --features sqlite-backend
 ```
 
@@ -172,7 +176,29 @@ PG 对照验证当前 34 表/401 列、类型、约束名、外键、seed、枚�
 生命周期故障测试还使用最小测试表隔离故障点。SIGKILL 不等于断电测试。
 详细边界见[生命周期验收](sqlite-lifecycle.md)。
 常规 Rust CI 在既有 PostgreSQL gate 之外执行上述 feature 检查；
-没有运行转发压测或付费上游。
+转发压测仍仅限显式授权；应用 dispatch 边界变更另需已授权付费上游回归。
+
+### S6 验收记录
+
+2026-09-20，本轮工作树验证：
+
+- 默认 workspace：588 项通过；SQLite workspace：732 项通过。各自保留 11 项原有
+  opt-in 忽略项，不把这些项算作已执行；已授权真实上游脚本另行执行，8 项全部通过。
+- 默认 Clippy 及 `sqlite-backend,embedded-console-ui` workspace/all-targets Clippy
+  均以 `-D warnings` 通过；嵌入 UI 的 6 项服务测试通过。
+- UI build、Docker release build、只读容器启动/健康/UID 10001 与 0700/0600
+  文件权限、镜像 `--version` 和本地 release archive 打包通过。
+- 使用从该 Docker 镜像提取的 **release 二进制** 执行两后端系统矩阵：
+  PG 13 个场景、SQLite 17 个场景通过，均确认 16 条日志及 `0.000135` 总费用，
+  清理通过。SQLite 额外场景包含备份排他、未知记录/账本恢复、损坏/已有目标拒绝、
+  ENOSPC staging 不发布。
+- Python harness 的 16 项测试、浏览器安全诊断测试、CI 路径分类、Python/YAML/Shell
+  语法及文档检查通过。没有执行性能压测或发布镜像/标签。
+
+升级 SQLx 时，既有 PG ingress-outage 测试暴露了 COPY 尚未返回 stream 就被取消的连接
+回池问题。现在以专属 guard 在未完成 COPY 时关闭该连接，正常完成仍复用；
+原故障用例与完整双后端回归均通过。迁移仍使用原 `_sqlx_migrations` 历史和事务屏障，
+动态 SQL 的 `AssertSqlSafe` 仅包裹既有受控 SQL 片段，业务值继续绑定参数。
 
 ## 外部依据
 

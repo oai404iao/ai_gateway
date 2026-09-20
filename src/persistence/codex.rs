@@ -462,14 +462,14 @@ impl PostgresControlPlaneRepository {
         &self,
         channel_group_id: Uuid,
     ) -> Result<Vec<CodexCredentialView>, RepositoryError> {
-        sqlx::query_as::<_, CodexCredentialView>(&credential_view_select(
+        sqlx::query_as::<_, CodexCredentialView>(sqlx::AssertSqlSafe(credential_view_select(
             "WHERE credential.connector_pool_id=( \
                  SELECT connector_pool_id FROM channel_groups \
                  WHERE id=$1 AND connector_kind=$2 \
              ) \
              AND credential.deleted_at IS NULL \
              ORDER BY credential.label,credential.channel_id",
-        ))
+        )))
         .bind(channel_group_id)
         .bind(CODEX_CONNECTOR_KIND)
         .fetch_all(&self.pool)
@@ -481,9 +481,9 @@ impl PostgresControlPlaneRepository {
         &self,
         channel_id: Uuid,
     ) -> Result<Option<CodexCredentialView>, RepositoryError> {
-        sqlx::query_as::<_, CodexCredentialView>(&credential_view_select(
+        sqlx::query_as::<_, CodexCredentialView>(sqlx::AssertSqlSafe(credential_view_select(
             "WHERE credential.channel_id=$1 AND credential.deleted_at IS NULL",
-        ))
+        )))
         .bind(channel_id)
         .fetch_optional(&self.pool)
         .await
@@ -561,14 +561,16 @@ impl PostgresControlPlaneRepository {
         &self,
         user_id: Uuid,
     ) -> Result<Vec<SelfCodexQuotaCredentialView>, RepositoryError> {
-        sqlx::query_as::<_, SelfCodexQuotaCredentialView>(&self_credential_view_select(
-            "WHERE console_user.id=$1 \
+        sqlx::query_as::<_, SelfCodexQuotaCredentialView>(sqlx::AssertSqlSafe(
+            self_credential_view_select(
+                "WHERE console_user.id=$1 \
              AND console_user.status='active' \
              AND console_user.deleted_at IS NULL \
              AND credential.deleted_at IS NULL \
              ORDER BY visibility.channel_group_id,credential.channel_id",
-            2,
-            3,
+                2,
+                3,
+            ),
         ))
         .bind(user_id)
         .bind(CODEX_CONNECTOR_KIND)
@@ -587,8 +589,8 @@ impl PostgresControlPlaneRepository {
         if !(1..=500).contains(&limit_per_window) {
             return Err(RepositoryError::Validation);
         }
-        let credential =
-            sqlx::query_as::<_, SelfCodexQuotaCredentialView>(&self_credential_view_select(
+        let credential = sqlx::query_as::<_, SelfCodexQuotaCredentialView>(sqlx::AssertSqlSafe(
+            self_credential_view_select(
                 "WHERE console_user.id=$1 \
                  AND console_user.status='active' \
                  AND console_user.deleted_at IS NULL \
@@ -596,14 +598,15 @@ impl PostgresControlPlaneRepository {
                  AND credential.deleted_at IS NULL",
                 3,
                 4,
-            ))
-            .bind(user_id)
-            .bind(channel_id)
-            .bind(CODEX_CONNECTOR_KIND)
-            .bind(CODEX_RESPONSES_API_FORMAT)
-            .fetch_optional(&self.pool)
-            .await?
-            .ok_or(RepositoryError::NotFound)?;
+            ),
+        ))
+        .bind(user_id)
+        .bind(channel_id)
+        .bind(CODEX_CONNECTOR_KIND)
+        .bind(CODEX_RESPONSES_API_FORMAT)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(RepositoryError::NotFound)?;
         let periods = sqlx::query_as::<_, SelfCodexQuotaWindowPeriodView>(
             "WITH ranked AS ( \
                  SELECT period.window_kind,period.window_seconds,period.started_at, \
@@ -676,9 +679,9 @@ impl PostgresControlPlaneRepository {
         &self,
         channel_id: Uuid,
     ) -> Result<Option<CodexCredentialRecord>, RepositoryError> {
-        sqlx::query_as::<_, CodexCredentialRecord>(&credential_select(
+        sqlx::query_as::<_, CodexCredentialRecord>(sqlx::AssertSqlSafe(credential_select(
             "WHERE c.channel_id=$1 AND c.deleted_at IS NULL",
-        ))
+        )))
         .bind(channel_id)
         .fetch_optional(&self.pool)
         .await
@@ -690,9 +693,9 @@ impl PostgresControlPlaneRepository {
         transaction: &mut Transaction<'_, Postgres>,
         channel_id: Uuid,
     ) -> Result<Option<CodexCredentialRecord>, RepositoryError> {
-        sqlx::query_as::<_, CodexCredentialRecord>(&credential_select(
+        sqlx::query_as::<_, CodexCredentialRecord>(sqlx::AssertSqlSafe(credential_select(
             "WHERE c.channel_id=$1 AND c.deleted_at IS NULL FOR UPDATE OF c,ch",
-        ))
+        )))
         .bind(channel_id)
         .fetch_optional(&mut **transaction)
         .await
@@ -702,9 +705,9 @@ impl PostgresControlPlaneRepository {
     pub async fn load_codex_credentials(
         &self,
     ) -> Result<Vec<CodexCredentialRecord>, RepositoryError> {
-        sqlx::query_as::<_, CodexCredentialRecord>(&credential_select(
+        sqlx::query_as::<_, CodexCredentialRecord>(sqlx::AssertSqlSafe(credential_select(
             "WHERE c.deleted_at IS NULL ORDER BY c.channel_id",
-        ))
+        )))
         .fetch_all(&self.pool)
         .await
         .map_err(RepositoryError::from)
@@ -769,24 +772,25 @@ impl PostgresControlPlaneRepository {
         .ok_or(RepositoryError::NotFound)?;
 
         let records = if selected_ids.is_empty() {
-            sqlx::query_as::<_, CodexCredentialRecord>(&credential_select(
+            sqlx::query_as::<_, CodexCredentialRecord>(sqlx::AssertSqlSafe(credential_select(
                 "WHERE c.connector_pool_id=$1 AND c.deleted_at IS NULL \
                  ORDER BY c.label,c.channel_id",
-            ))
+            )))
             .bind(pool.connector_pool_id)
             .fetch_all(&self.pool)
             .await?
         } else {
             let selected_ids = selected_ids.into_iter().collect::<Vec<_>>();
-            let records = sqlx::query_as::<_, CodexCredentialRecord>(&credential_select(
-                "WHERE c.connector_pool_id=$1 AND c.channel_id=ANY($2) \
+            let records =
+                sqlx::query_as::<_, CodexCredentialRecord>(sqlx::AssertSqlSafe(credential_select(
+                    "WHERE c.connector_pool_id=$1 AND c.channel_id=ANY($2) \
                  AND c.deleted_at IS NULL \
                  ORDER BY c.label,c.channel_id",
-            ))
-            .bind(pool.connector_pool_id)
-            .bind(&selected_ids)
-            .fetch_all(&self.pool)
-            .await?;
+                )))
+                .bind(pool.connector_pool_id)
+                .bind(&selected_ids)
+                .fetch_all(&self.pool)
+                .await?;
             if records.len() != selected_ids.len() {
                 return Err(RepositoryError::NotFound);
             }

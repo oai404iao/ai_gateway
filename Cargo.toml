@@ -7,8 +7,8 @@ license = "AGPL-3.0-only"
 repository = "https://github.com/oai404iao/ai_gateway"
 
 [features]
-# Development foundation only; does not enable SQLite in the server configuration.
-sqlite-backend = ["sqlx/sqlite", "dep:rustix", "dep:libsqlite3-sys", "dep:md5", "dep:num-bigint"]
+# Enables the Linux single-instance SQLite backend; default builds remain PostgreSQL-only.
+sqlite-backend = ["sqlx/sqlite", "tokio/process", "dep:rustix", "dep:libsqlite3-sys", "dep:md5", "dep:num-bigint"]
 # Embeds the built `web/console/dist` static assets into the binary and serves
 # them from the Console listener when `[console].ui_enabled` is set. Building
 # with this feature requires `pnpm --dir web/console build` to have produced
@@ -39,7 +39,7 @@ rand = "0.9"
 rust_decimal = { version = "1.36", features = ["serde"] }
 rustix = { version = "1.1", optional = true, features = ["fs", "process"] }
 # Native callbacks use SQLx's semver-exempt handle; upgrade the SQLx/SQLite FFI pins together.
-libsqlite3-sys = { version = "=0.30.1", optional = true, default-features = false }
+libsqlite3-sys = { version = "=0.37.0", optional = true, default-features = false }
 md5 = { package = "md-5", version = "0.10", optional = true }
 num-bigint = { version = "0.4.8", optional = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
@@ -47,7 +47,7 @@ secrecy = "0.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["raw_value"] }
 sha2 = "0.11"
-sqlx = { version = "=0.8.6", default-features = false, features = ["postgres", "runtime-tokio-rustls", "migrate", "chrono", "uuid", "json", "rust_decimal", "macros"] }
+sqlx = { version = "=0.9.0", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls-ring", "migrate", "chrono", "uuid", "json", "rust_decimal", "macros"] }
 subtle = "2.6"
 tempfile = "3.20"
 thiserror = "2.0"

@@ -216,7 +216,48 @@ pub struct DatabaseConfig {
     pub connect_timeout_seconds: u64,
 }
 impl DatabaseConfig {
+    pub fn sqlite_path(&self) -> Result<Option<PathBuf>, ConfigError> {
+        let url = Url::parse(&self.url)
+            .map_err(|_| ConfigError::Compile("database URL is invalid".into()))?;
+        if url.scheme() != "sqlite" {
+            return Ok(None);
+        }
+        if !cfg!(all(feature = "sqlite-backend", target_os = "linux")) {
+            return Err(ConfigError::Compile(
+                "SQLite requires a Linux build with sqlite-backend".into(),
+            ));
+        }
+        let path = self
+            .url
+            .strip_prefix("sqlite://")
+            .filter(|path| path.starts_with('/') && !path.starts_with("//"))
+            .ok_or_else(|| {
+                ConfigError::Compile("SQLite URL must be sqlite:///absolute/path".into())
+            })?;
+        let path = urlencoding::decode(path)
+            .map_err(|_| ConfigError::Compile("SQLite path encoding is invalid".into()))?;
+        if url.host_str().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+            || self.password_file.is_some()
+            || path.contains(['\0', '\\', '?', '#'])
+            || path
+                .split('/')
+                .any(|part| part == "." || part == ".." || part == ":memory:")
+            || path.ends_with('/')
+            || self.max_connections < 2
+        {
+            return Err(ConfigError::Compile("SQLite requires an absolute file path, no password/URL options, and at least two connections".into()));
+        }
+        Ok(Some(PathBuf::from(path.as_ref())))
+    }
+
     pub fn connect_options(&self) -> Result<PgConnectOptions, ConfigError> {
+        if self.sqlite_path()?.is_some() {
+            return Err(ConfigError::Compile(
+                "PostgreSQL connection options cannot be used for SQLite".into(),
+            ));
+        }
         let mut options = self
             .url
             .parse::<PgConnectOptions>()
@@ -2458,6 +2499,9 @@ fn validate_database(database: &DatabaseConfig) -> Result<(), ConfigError> {
         return Err(ConfigError::Compile(
             "database limits must be greater than zero".into(),
         ));
+    }
+    if database.sqlite_path()?.is_some() {
+        return Ok(());
     }
     let url = Url::parse(&database.url)
         .map_err(|_| ConfigError::Compile("database URL is invalid".into()))?;

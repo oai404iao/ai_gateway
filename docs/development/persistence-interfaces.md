@@ -1,8 +1,8 @@
 # 持久化操作接口
 
-> 状态：当前。第二阶段 P2 的操作边界；生产仍只支持 PostgreSQL，
+> 状态：当前。第二阶段 P2 的操作边界；S6 已支持 PostgreSQL 和 Linux SQLite，
 > 开发 feature 下的 SQLite 身份/普通控制面见 [S3](sqlite-control-plane.md)，
-> 耐久财务链路与查询见 [S4](sqlite-metering.md)。
+> 耐久财务链路与查询见 [S4](sqlite-metering.md)，Codex provider 操作和拼车 lease 见 [S5](sqlite-codex.md)。
 
 整体演进见[持久化边界设计](persistence-boundaries.md)，业务不变量和费用路径清单见
 [契约基线](persistence-contracts.md)。P3 已实现[独立计量事实/回执](independent-metering.md)，
@@ -102,6 +102,6 @@ checkpoint 仍只等待 COPY 耐久接收。
 同时保留 P1 金额/事务/重放测试、完整控制面与 Console spec 测试。
 涉及 Codex 请求路径时执行经授权的真实上游 smoke；系统 E2E 验证原耐久流水线。
 
-尚未改变：生产仍只支持 PostgreSQL，不提供自动补账、事实清理或日志 TTL。
+S6 已增加 Linux SQLite 部署；仍不提供自动补账、事实清理或日志 TTL。
 P3 已移除日志认领权；事实/回执不可删改，日志删除不能删除财务证据。
 原有 Codex 长事务与外部结果不确定边界仍存在。

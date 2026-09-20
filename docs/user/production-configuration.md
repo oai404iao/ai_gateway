@@ -2,6 +2,7 @@
 
 > 状态：当前。参数默认值仍以配置模板和 `src/runtime_config/mod.rs` 为准。
 
+本页描述默认 PostgreSQL 配置；Linux 文件后端见 [SQLite 部署](sqlite.md)。
 仓库默认配置面向单个 Gateway 进程与单节点 PostgreSQL，基线机器为：
 
 - 4–8 个 CPU 核心。

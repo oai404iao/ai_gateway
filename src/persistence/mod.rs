@@ -1,8 +1,8 @@
 //! Repository operations with explicit backend dispatch; SQLite is not yet selectable in production.
 
 mod auth;
-pub(crate) mod backend;
 mod backend_auth;
+mod backend_codex;
 mod backend_control_plane;
 mod backend_pipeline;
 mod backend_queries;
@@ -25,8 +25,8 @@ pub use auth::{
     RegistrationInvitationCodeInput, RegistrationInvitationCodeMutation, SessionRotation,
     SessionUser, TemporaryPasswordCreated,
 };
-pub use backend::{BackendKind, UnsupportedBackendOperation};
 pub use backend_auth::AuthRepository;
+pub use backend_codex::{CodexQuotaReset, CodexRefresh, SharingLedgerLease};
 pub use backend_control_plane::{ControlPlaneRepository, PreparedControlPlaneChange};
 pub use backend_pipeline::{MeteringRepository, RequestLogRepository, SettlementRepository};
 pub use backend_queries::{MeteringQueries, RequestLogQueries};
@@ -39,7 +39,6 @@ pub use codex::{
     CodexQuotaWindowPeriodView, CodexTokenRefreshUpdate, SelfCodexQuotaCredentialView,
     SelfCodexQuotaWindowHistory, SelfCodexQuotaWindowPeriodView,
 };
-pub use codex_write::{CodexQuotaReset, CodexRefresh};
 pub use health::DatabaseHealth;
 pub use metering::{MeteringReconciliationCounts, MeteringWriteOutcome};
 pub use migrations::{MIGRATOR, MigrationRunError, run_migrations};

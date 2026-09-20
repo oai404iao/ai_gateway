@@ -28,9 +28,13 @@
 </p>
 
 `ai-gateway` is a self-hosted LLM request gateway built with Rust, Axum,
-Tokio, SQLx, and PostgreSQL. It keeps routing on an immutable in-memory
+Tokio, SQLx, and PostgreSQL (or SQLite on Linux). It keeps routing on an immutable in-memory
 snapshot, streams responses without whole-body buffering, and provides a
 separate management Console for users and administrators.
+
+PostgreSQL remains the default. For single-instance local-file deployment,
+see [SQLite setup and offline recovery](docs/user/sqlite.md); source builds require
+`--features sqlite-backend`, while official container/release builds include it.
 
 ## ✨ Features
 

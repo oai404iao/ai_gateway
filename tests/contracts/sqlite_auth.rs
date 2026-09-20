@@ -36,7 +36,7 @@ struct AuditEntry {
 
 async fn auth() -> (tempfile::TempDir, Arc<SqliteDatabase>, SqliteAuthRepository) {
     let (directory, database) = database().await;
-    assert_eq!(database.install_schema().await.unwrap(), 2);
+    assert_eq!(database.install_schema().await.unwrap(), 3);
     let database = Arc::new(database);
     let repository = SqliteAuthRepository::new(Arc::clone(&database));
     (directory, database, repository)
@@ -44,7 +44,7 @@ async fn auth() -> (tempfile::TempDir, Arc<SqliteDatabase>, SqliteAuthRepository
 
 async fn execute(database: &SqliteDatabase, sql: &str) {
     let mut transaction = database.begin_write().await.unwrap();
-    sqlx::Executor::execute(&mut *transaction, sql)
+    sqlx::Executor::execute(&mut *transaction, sqlx::AssertSqlSafe(sql.to_owned()))
         .await
         .unwrap();
     transaction.commit().await.unwrap();
@@ -102,7 +102,7 @@ where
     for<'r> T: sqlx::Decode<'r, sqlx::Sqlite> + sqlx::Type<sqlx::Sqlite> + Send + Unpin,
 {
     let mut reader = database.acquire_read().await.unwrap();
-    sqlx::query_scalar(sql)
+    sqlx::query_scalar(sqlx::AssertSqlSafe(sql.to_owned()))
         .fetch_one(&mut *reader)
         .await
         .unwrap()

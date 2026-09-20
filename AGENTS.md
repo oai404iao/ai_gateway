@@ -8,7 +8,7 @@
 
 ## What is ai-gateway?
 
-`ai-gateway` is a single-binary Rust production service intended to forward LLM requests in the OpenAI Chat Completions, Responses, and Images formats. It uses Axum/Tokio for HTTP, reqwest for upstream requests, PostgreSQL/SQLx for persistence, and `ArcSwap` for immutable runtime configuration snapshots. Rust 2024 with the single Rust 1.97.1 toolchain pinned by `rust-toolchain.toml` is required for development, CI, and release builds. The Cargo workspace also contains the development-only `ai-gateway-perf` package under `tools/forwarding-perf/`; it is never linked into the production binary.
+`ai-gateway` is a single-binary Rust production service intended to forward LLM requests in the OpenAI Chat Completions, Responses, and Images formats. It uses Axum/Tokio for HTTP, reqwest for upstream requests, PostgreSQL or Linux SQLite through SQLx for persistence, and `ArcSwap` for immutable runtime configuration snapshots. Rust 2024 with the single Rust 1.97.1 toolchain pinned by `rust-toolchain.toml` is required for development, CI, and release builds. The Cargo workspace also contains the development-only `ai-gateway-perf` package under `tools/forwarding-perf/`; it is never linked into the production binary.
 
 The project is licensed under `AGPL-3.0-only`. Third-party license texts and
 attributions that must accompany binary redistribution live in `LICENSES/`
@@ -110,6 +110,8 @@ cargo check
 cargo fmt --check
 cargo clippy --all-targets               # also run with --features embedded-console-ui when that path changes
 cargo test                                # unit + local/PostgreSQL integration (needs `docker compose up -d`)
+cargo test --locked --workspace --features sqlite-backend # full dual-backend contracts, including CLI/backup
+cargo clippy --locked --workspace --all-targets --features sqlite-backend
 cargo test --features embedded-console-ui --lib console_ui # embedded-UI serving tests (needs built web/console/dist)
 cargo test --test console_spec_integration # OpenAPI spec/Console-API drift tests (needs PostgreSQL)
 cargo test --package ai-gateway-perf       # Fast unit tests for the manual performance tooling; does not run a benchmark
@@ -188,6 +190,19 @@ performance run.** Building the tool or running
 `cargo test --package ai-gateway-perf` is safe and does not execute load.
 
 ## Configuration Rules
+
+- `sqlite-backend` enables the complete SQLite backend on Linux. Official Docker/release builds
+  include it alongside `embedded-console-ui`; Cargo's default remains PostgreSQL-only.
+  `database.url = "sqlite:///absolute/private/gateway.sqlite"` requires a dedicated owned 0700
+  directory and no `password_file`. All repositories share one database owner and one writer;
+  `database.max_connections` counts that writer plus readers, while the separate request-log
+  pool setting is PostgreSQL-only. See [SQLite deployment](docs/user/sqlite.md) before changing
+  selection, lifecycle, backup, or container storage.
+- `backup-sqlite` and `restore-sqlite` are offline paired database/spool operations. Never restore
+  a partial staging directory, move an owned live database, clear uncertain Codex intents, or
+  treat a refreshed page/restart as a financial reset. Native SQLite must remain at least 3.51.3.
+  SQLite changes require the real browser/CLI system suite with `--backend sqlite` as well as
+  PostgreSQL regression; the suite and its fault injection use synthetic, isolated state.
 
 - The normal serve command loads the first CLI argument as TOML, defaulting to ignored `./config/config.toml` in the current working directory (`src/main.rs`). It does not use an XDG configuration directory. `bootstrap-admin` is a one-time first-admin CLI and `reset-admin-password` is an emergency active-admin recovery CLI; both require `--password-stdin`. There is no dotenv support or automatic local-override merge.
 - Keep `config.example.toml`, `deploy/compose/config.example.toml`, and the deserialization types in `src/runtime_config/mod.rs` synchronized whenever configuration changes. The container template deliberately differs only in listener/database/spool/secret paths and enabled embedded Console settings.

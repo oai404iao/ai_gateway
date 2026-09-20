@@ -1,7 +1,7 @@
 # SQLite 完整 schema 与约束映射
 
 > 状态：当前 S2 实现。业务 baseline 对齐 `081d8c9` 的 PostgreSQL
-> 0001–0063 最终 schema；S3 开发仓储已接入，尚未开放生产启动配置。核对日期：2026-09-18。
+> 0001–0063 最终 schema；S3–S5 仓储已接入，S6 已开放 Linux 部署。核对日期：2026-09-20。
 
 整体进度见 [SQLite 双后端实施](sqlite-backend.md)，原子安装、文件身份和
 进程独占见[文件与迁移生命周期](sqlite-lifecycle.md)。S2 完成不代表 S3–S6
@@ -14,6 +14,7 @@
 - `migrations/sqlite/0001_baseline.sql`：34 个 STRICT 业务表、401 列、主键、
   唯一键、56 个外键、183 个原 CHECK 名称及额外存储检查、索引和默认组 seed。
 - `migrations/sqlite/0002_guards.sql`：跨表保护、不可变性、派生投影和延迟路由约束。
+- `migrations/sqlite/0003_codex_operations.sql`：S5 外部 provider 操作的耐久 intent 及更新 fencing。
 
 | 范围 | 已实现表 |
 | --- | --- |
@@ -25,8 +26,8 @@
 
 PG 基线有 34 个主键、19 个 UNIQUE constraint 和 55 个非内部 trigger。
 SQLite 保留约束语义，不要求相同的物理对象数；ingress 序列改为
-`INTEGER PRIMARY KEY AUTOINCREMENT`。四个 `_gateway_*` 内部表不计入业务表：
-身份、迁移历史、路由真值常量及路由 assertion。
+`INTEGER PRIMARY KEY AUTOINCREMENT`。五个 `_gateway_*` 内部表不计入业务表：
+身份、迁移历史、路由真值常量、路由 assertion 及 Codex 未决操作。
 
 `tests/fixtures/sqlite-schema-inventory.json` 固定当前 PG 列顺序、原类型与约束名。
 `tests/contracts/sqlite_parity.rs` 在真正执行完 PG migration 的新库上对照该清单、
@@ -76,7 +77,7 @@ SQLite 表结构、外键列/目标/删除动作，以及默认组 UUID、名称
 币种和费用一致性仍在数据库检查。
 
 不能使用 TEXT 字典序或 SQLite `SUM`、浮点运算、NUMERIC/REAL CAST 计算金额。
-S4 仓储尚须落实 checked Decimal 更新与精确聚合；S2 没有添加第二套结算业务逻辑。
+S4 仓储已落实 checked Decimal 更新与精确聚合；S2 没有添加第二套结算业务逻辑。
 
 ## 数据库保护与归一化写入契约
 
@@ -110,7 +111,7 @@ INSERT/UPDATE，再 `RAISE(IGNORE)`”：这种方案会破坏 `ON CONFLICT`、�
 4. 更新带 `updated_at` 的表时显式 `SET updated_at=ag_now()`；派生更新触发器也遵守
    此规则。不得使用连接外系统时间或 SQL `CURRENT_TIMESTAMP` 混入其他编码。
 
-这是 S3 已遵守、S5 必须继续遵守的内部写入契约，不是公共 API 变更，也不承诺 PG 原始 SQL
+这是 S3–S5 遵守的内部写入契约，不是公共 API 变更，也不承诺 PG 原始 SQL
 可以逐字执行。数据库仍独立保护跨表业务不变量；没有将保护替换成应用层断言。
 
 ### 延迟路由约束
@@ -145,6 +146,6 @@ BUSY/LOCKED 为 Conflict；约束、类型/长度与 schema 函数拒绝为 Inva
 时间量化及派生 UUID。文件/进程与取消/重启测试见[生命周期验收](sqlite-lifecycle.md)。
 
 S2 的 schema、编码、约束、错误分类、原子迁移和所有权已实现。
-生产配置保持关闭；S3 身份/普通控制面仓储见[当前实现](sqlite-control-plane.md)。
+S6 部署见[用户指南](../user/sqlite.md)；S3 身份/普通控制面仓储见[当前实现](sqlite-control-plane.md)。
 其余业务仓储、完整双后端系统验收、备份恢复与原生 SQLite 版本升级门槛仍属于
 后续切片，不能以 S2 测试代替。

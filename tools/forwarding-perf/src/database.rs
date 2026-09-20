@@ -65,7 +65,7 @@ impl TemporaryDatabase {
             .connect(admin_url)
             .await?;
         let name = format!("ai_gateway_perf_{}", Uuid::new_v4().simple());
-        sqlx::query(&format!("CREATE DATABASE \"{name}\""))
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE DATABASE \"{name}\"")))
             .execute(&admin)
             .await?;
         database_url.set_path(&format!("/{name}"));
@@ -94,9 +94,11 @@ impl TemporaryDatabase {
                 database_url: database_url_string,
             }),
             Err(error) => {
-                let _ = sqlx::query(&format!("DROP DATABASE \"{name}\" WITH (FORCE)"))
-                    .execute(&admin)
-                    .await;
+                let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "DROP DATABASE \"{name}\" WITH (FORCE)"
+                )))
+                .execute(&admin)
+                .await;
                 admin.close().await;
                 Err(error)
             }
@@ -166,9 +168,12 @@ impl TemporaryDatabase {
             if !self.name.starts_with("ai_gateway_perf_") {
                 return Err("refusing to drop a database without the performance prefix".into());
             }
-            sqlx::query(&format!("DROP DATABASE \"{}\" WITH (FORCE)", self.name))
-                .execute(&self.admin)
-                .await?;
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "DROP DATABASE \"{}\" WITH (FORCE)",
+                self.name
+            )))
+            .execute(&self.admin)
+            .await?;
         }
         self.admin.close().await;
         Ok(())

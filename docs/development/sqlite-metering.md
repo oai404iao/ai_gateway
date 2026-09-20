@@ -1,6 +1,6 @@
 # SQLite 耐久计量、结算与查询
 
-> 状态：当前 S4 实现。仅供 `sqlite-backend` 开发验证；生产配置仍关闭。
+> 状态：当前 S4 实现；S6 已开放 Linux `sqlite-backend` 配置。
 > PostgreSQL 行为基线见[独立计量事实](independent-metering.md)，完整进度见
 > [SQLite 双后端实施](sqlite-backend.md)。
 
@@ -23,7 +23,7 @@
 `IngestReceipt`、journal payload 和 worker 方法保持 crate-private，
 没有为测试开放 executor 或新增公共 HTTP 接口。
 `DatabaseHealth` / 日志池观测读取现有 writer+reader 池的计数，不获取连接；
-生产容量配置与组合根接线仍属于 S6。
+S6 组合根共享唯一数据库，容量由 `database.max_connections` 配置。
 
 ## 写入和恢复
 
@@ -56,7 +56,7 @@ SQLite 不模拟 PostgreSQL COPY；使用有界绑定批次的 INSERT，整批�
 
 `priced`、`zero_by_policy`、`unknown`、`invalid`、`not_applicable` 分类与 PG 保持一致；
 Key 所有者不匹配不扣款，未知费用不记零。拼车费用读取只取合格事实，
-不等待普通账户回执，也不更新拼车 WAL；S5 协议尚未实现。
+不等待普通账户回执，也不直接更新拼车 WAL；对账消费者见 [S5](sqlite-codex.md)。
 
 取消到达 COMMIT 之后，结果仍可能不确定；恢复按不可变 UUID 回执核对，而不是重放
 某条余额 UPDATE。SIGKILL 测试覆盖已提交回执保留、未提交账户修改回滚及 pending 恢复，
@@ -71,7 +71,7 @@ Key 所有者不匹配不扣款，未知费用不记零。拼车费用读取只�
 
 - 每个 `numeric(24,8)` 金额转换为八位小数的整数单位，用 `BigInt` 精确累计。
   `Decimal::checked_add` 可能降低 scale，不能充当 SQL SUM 的精确中间态。
-- 聚合结束才进入锁定 SQLx 0.8.6 的 PG NUMERIC → Decimal 解码边界，
+- 聚合结束才进入锁定 SQLx 0.9.0 的 PG NUMERIC → Decimal 解码边界，
   然后使用既有共享报告折叠规则。这里保留现有结果类型及其容量/显示语义，
   不将旧 API 扩展为任意精度金额，也不重新计算历史费用。
 - 普通账户结算使用有界列金额和 checked Decimal；任何最终列溢出整笔回滚。
@@ -112,6 +112,5 @@ cargo test --locked --workspace --features sqlite-backend
 - `sqlite_s4_parity.rs` 对 PG 和 SQLite 执行相同操作与断言，
   对比规范化时钟后的序列化报告，覆盖金额容量和微秒日/月/周/状态桶边界。
 
-S4 未开放 SQLite 生产配置，也未实现 S5 OAuth/额度/WAL 协议或 S6 CLI、备份恢复、
-完整系统部署验收。[原生 SQLite 修复版本门槛](sqlite-lifecycle.md#原生-sqlite-版本门槛)
-仍必须在生产开放前解决。
+[S5](sqlite-codex.md) 接通 OAuth/额度/WAL 协议；S6 接通 CLI、停机备份恢复及双后端系统测试。
+部署边界见[用户指南](../user/sqlite.md)，原生版本与文件约束见[生命周期](sqlite-lifecycle.md)。

@@ -7,7 +7,11 @@
 `ai-gateway` 是一个单二进制 Rust 网关，用于转发 OpenAI 兼容请求。它向客户端提供
 Chat Completions、Responses、Codex standalone web search、非流式 JSON Images generation
 与 multipart Images edit API，
-根据 PostgreSQL 控制面完成路由，并将请求转发到已配置的上游提供商。
+根据 PostgreSQL 或 Linux SQLite 控制面完成路由，并将请求转发到已配置的上游提供商。
+
+下方快速启动沿用默认 PostgreSQL。单实例本地文件部署见
+[SQLite 配置与停机恢复](docs/user/sqlite.md)；源码构建需加 `sqlite-backend` feature，
+官方容器/发行构建包含该功能。
 
 文档已按读者分类整理，统一入口见[文档中心](docs/README.md)：用户文档、开发与
 设计文档、OpenAI 外部参考和历史归档。

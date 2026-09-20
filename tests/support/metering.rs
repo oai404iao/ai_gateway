@@ -12,10 +12,10 @@ pub async fn copy_log_fixtures(pool: &PgPool) {
     .fetch_one(pool)
     .await
     .unwrap();
-    sqlx::query(&format!(
+    sqlx::query(sqlx::AssertSqlSafe(format!(
         "INSERT INTO request_metering_facts ({columns})
          SELECT {columns} FROM request_logs ON CONFLICT (id) DO NOTHING",
-    ))
+    )))
     .execute(pool)
     .await
     .unwrap();

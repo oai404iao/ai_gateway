@@ -55,7 +55,7 @@ struct Queries {
 impl Queries {
     async fn new() -> Self {
         let (directory, database) = database().await;
-        assert_eq!(database.install_schema().await.unwrap(), 2);
+        assert_eq!(database.install_schema().await.unwrap(), 3);
         let database = Arc::new(database);
         let request_logs =
             ai_gateway::persistence::sqlite::SqliteRequestLogQueries::new(Arc::clone(&database));
@@ -70,7 +70,7 @@ impl Queries {
 
     async fn execute(&self, sql: &str) {
         let mut transaction = self.database.begin_write().await.unwrap();
-        sqlx::Executor::execute(&mut *transaction, sql)
+        sqlx::Executor::execute(&mut *transaction, sqlx::AssertSqlSafe(sql.to_owned()))
             .await
             .unwrap_or_else(|error| panic!("SQL failed: {error}\n{sql}"));
         transaction.commit().await.unwrap();
@@ -81,7 +81,7 @@ impl Queries {
         for<'r> T: sqlx::Decode<'r, sqlx::Sqlite> + sqlx::Type<sqlx::Sqlite> + Send + Unpin,
     {
         let mut reader = self.database.acquire_read().await.unwrap();
-        sqlx::query_scalar(sql)
+        sqlx::query_scalar(sqlx::AssertSqlSafe(sql.to_owned()))
             .fetch_one(&mut *reader)
             .await
             .unwrap()

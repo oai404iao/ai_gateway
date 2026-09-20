@@ -2,8 +2,7 @@
 //! ingress, immutable financial facts, the independent query-log projection,
 //! and single-transaction settlement.
 //!
-//! Every S4 operation is implemented by both backends; no S4 call fails closed
-//! through [`UnsupportedBackendOperation`]. Derived handles clone the same
+//! Every operation is implemented by both backends. Derived handles clone the same
 //! database handle, so a SQLite facade never opens an additional pool.
 
 use sqlx::PgPool;

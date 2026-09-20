@@ -1,5 +1,5 @@
 //! Control-plane backend dispatch and opaque prepared changes.
-//! SQLite Codex operations remain fail-closed until S5; production configuration is still PG-only.
+//! PostgreSQL and SQLite retain private SQL implementations behind the same operations.
 
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
@@ -138,28 +138,6 @@ impl ControlPlaneRepository {
             Backend::Postgres(repository) => repository.proxy_record(id).await,
             #[cfg(feature = "sqlite-backend")]
             Backend::Sqlite(repository) => repository.proxy_record(id).await,
-        }
-    }
-
-    /// Selects the PostgreSQL implementation for operations the current SQLite
-    /// slice does not implement.
-    ///
-    /// This is the single explicit PostgreSQL-only accessor: it converts the
-    /// selected SQLite backend into a typed internal failure so a missing
-    /// implementation can never look like a successful empty result.
-    #[cfg_attr(not(feature = "sqlite-backend"), allow(dead_code, unused_variables))]
-    fn postgres(
-        &self,
-        operation: &'static str,
-    ) -> Result<&PostgresControlPlaneRepository, RepositoryError> {
-        match &self.backend {
-            Backend::Postgres(repository) => Ok(repository),
-            #[cfg(feature = "sqlite-backend")]
-            Backend::Sqlite(_) => Err(super::backend::UnsupportedBackendOperation::new(
-                super::backend::BackendKind::Sqlite,
-                operation,
-            )
-            .into()),
         }
     }
 
@@ -557,10 +535,17 @@ impl ControlPlaneRepository {
         input: CodexCredentialCreate,
         oauth_flow_id: Option<Uuid>,
     ) -> Result<PreparedControlPlaneChange<'_>, RepositoryError> {
-        self.postgres("prepare_codex_credential_create")?
-            .prepare_codex_credential_create(actor, input, oauth_flow_id)
-            .await
-            .map(PreparedControlPlaneChange::from_postgres)
+        match &self.backend {
+            Backend::Postgres(r) => r
+                .prepare_codex_credential_create(actor, input, oauth_flow_id)
+                .await
+                .map(PreparedControlPlaneChange::from_postgres),
+            #[cfg(feature = "sqlite-backend")]
+            Backend::Sqlite(r) => r
+                .prepare_codex_credential_create(actor, input, oauth_flow_id)
+                .await
+                .map(PreparedControlPlaneChange::from_sqlite),
+        }
     }
 
     pub async fn prepare_codex_credential_update(
@@ -570,10 +555,17 @@ impl ControlPlaneRepository {
         input: CodexCredentialUpdateInput,
         expected_updated_at: DateTime<Utc>,
     ) -> Result<PreparedControlPlaneChange<'_>, RepositoryError> {
-        self.postgres("prepare_codex_credential_update")?
-            .prepare_codex_credential_update(actor, channel_id, input, expected_updated_at)
-            .await
-            .map(PreparedControlPlaneChange::from_postgres)
+        match &self.backend {
+            Backend::Postgres(r) => r
+                .prepare_codex_credential_update(actor, channel_id, input, expected_updated_at)
+                .await
+                .map(PreparedControlPlaneChange::from_postgres),
+            #[cfg(feature = "sqlite-backend")]
+            Backend::Sqlite(r) => r
+                .prepare_codex_credential_update(actor, channel_id, input, expected_updated_at)
+                .await
+                .map(PreparedControlPlaneChange::from_sqlite),
+        }
     }
 
     pub async fn prepare_codex_credential_delete(
@@ -582,10 +574,17 @@ impl ControlPlaneRepository {
         channel_id: Uuid,
         expected_updated_at: DateTime<Utc>,
     ) -> Result<PreparedControlPlaneChange<'_>, RepositoryError> {
-        self.postgres("prepare_codex_credential_delete")?
-            .prepare_codex_credential_delete(actor, channel_id, expected_updated_at)
-            .await
-            .map(PreparedControlPlaneChange::from_postgres)
+        match &self.backend {
+            Backend::Postgres(r) => r
+                .prepare_codex_credential_delete(actor, channel_id, expected_updated_at)
+                .await
+                .map(PreparedControlPlaneChange::from_postgres),
+            #[cfg(feature = "sqlite-backend")]
+            Backend::Sqlite(r) => r
+                .prepare_codex_credential_delete(actor, channel_id, expected_updated_at)
+                .await
+                .map(PreparedControlPlaneChange::from_sqlite),
+        }
     }
 
     pub async fn prepare_codex_credentials_batch(
@@ -594,28 +593,39 @@ impl ControlPlaneRepository {
         channel_group_id: Uuid,
         input: CodexCredentialBatchInput,
     ) -> Result<PreparedControlPlaneChange<'_>, RepositoryError> {
-        self.postgres("prepare_codex_credentials_batch")?
-            .prepare_codex_credentials_batch(actor, channel_group_id, input)
-            .await
-            .map(PreparedControlPlaneChange::from_postgres)
+        match &self.backend {
+            Backend::Postgres(r) => r
+                .prepare_codex_credentials_batch(actor, channel_group_id, input)
+                .await
+                .map(PreparedControlPlaneChange::from_postgres),
+            #[cfg(feature = "sqlite-backend")]
+            Backend::Sqlite(r) => r
+                .prepare_codex_credentials_batch(actor, channel_group_id, input)
+                .await
+                .map(PreparedControlPlaneChange::from_sqlite),
+        }
     }
 
     pub async fn codex_credentials(
         &self,
         channel_group_id: Uuid,
     ) -> Result<Vec<CodexCredentialView>, RepositoryError> {
-        self.postgres("codex_credentials")?
-            .codex_credentials(channel_group_id)
-            .await
+        match &self.backend {
+            Backend::Postgres(r) => r.codex_credentials(channel_group_id).await,
+            #[cfg(feature = "sqlite-backend")]
+            Backend::Sqlite(r) => r.codex_credentials(channel_group_id).await,
+        }
     }
 
     pub async fn codex_credential_view(
         &self,
         channel_id: Uuid,
     ) -> Result<Option<CodexCredentialView>, RepositoryError> {
-        self.postgres("codex_credential_view")?
-            .codex_credential_view(channel_id)
-            .await
+        match &self.backend {
+            Backend::Postgres(r) => r.codex_credential_view(channel_id).await,
+            #[cfg(feature = "sqlite-backend")]
+            Backend::Sqlite(r) => r.codex_credential_view(channel_id).await,
+        }
     }
 
     pub async fn codex_quota_window_history(
@@ -623,18 +633,28 @@ impl ControlPlaneRepository {
         channel_id: Uuid,
         limit_per_window: i64,
     ) -> Result<CodexQuotaWindowHistory, RepositoryError> {
-        self.postgres("codex_quota_window_history")?
-            .codex_quota_window_history(channel_id, limit_per_window)
-            .await
+        match &self.backend {
+            Backend::Postgres(r) => {
+                r.codex_quota_window_history(channel_id, limit_per_window)
+                    .await
+            }
+            #[cfg(feature = "sqlite-backend")]
+            Backend::Sqlite(r) => {
+                r.codex_quota_window_history(channel_id, limit_per_window)
+                    .await
+            }
+        }
     }
 
     pub async fn self_codex_quota_credentials(
         &self,
         user_id: Uuid,
     ) -> Result<Vec<SelfCodexQuotaCredentialView>, RepositoryError> {
-        self.postgres("self_codex_quota_credentials")?
-            .self_codex_quota_credentials(user_id)
-            .await
+        match &self.backend {
+            Backend::Postgres(r) => r.self_codex_quota_credentials(user_id).await,
+            #[cfg(feature = "sqlite-backend")]
+            Backend::Sqlite(r) => r.self_codex_quota_credentials(user_id).await,
+        }
     }
 
     pub async fn self_codex_quota_window_history(
@@ -643,26 +663,38 @@ impl ControlPlaneRepository {
         channel_id: Uuid,
         limit_per_window: i64,
     ) -> Result<SelfCodexQuotaWindowHistory, RepositoryError> {
-        self.postgres("self_codex_quota_window_history")?
-            .self_codex_quota_window_history(user_id, channel_id, limit_per_window)
-            .await
+        match &self.backend {
+            Backend::Postgres(r) => {
+                r.self_codex_quota_window_history(user_id, channel_id, limit_per_window)
+                    .await
+            }
+            #[cfg(feature = "sqlite-backend")]
+            Backend::Sqlite(r) => {
+                r.self_codex_quota_window_history(user_id, channel_id, limit_per_window)
+                    .await
+            }
+        }
     }
 
     pub async fn codex_credential(
         &self,
         channel_id: Uuid,
     ) -> Result<Option<CodexCredentialRecord>, RepositoryError> {
-        self.postgres("codex_credential")?
-            .codex_credential(channel_id)
-            .await
+        match &self.backend {
+            Backend::Postgres(r) => r.codex_credential(channel_id).await,
+            #[cfg(feature = "sqlite-backend")]
+            Backend::Sqlite(r) => r.codex_credential(channel_id).await,
+        }
     }
 
     pub async fn load_codex_credentials(
         &self,
     ) -> Result<Vec<CodexCredentialRecord>, RepositoryError> {
-        self.postgres("load_codex_credentials")?
-            .load_codex_credentials()
-            .await
+        match &self.backend {
+            Backend::Postgres(r) => r.load_codex_credentials().await,
+            #[cfg(feature = "sqlite-backend")]
+            Backend::Sqlite(r) => r.load_codex_credentials().await,
+        }
     }
 
     pub async fn set_codex_user_id_if_missing(
@@ -670,9 +702,11 @@ impl ControlPlaneRepository {
         channel_id: Uuid,
         user_id: &str,
     ) -> Result<bool, RepositoryError> {
-        self.postgres("set_codex_user_id_if_missing")?
-            .set_codex_user_id_if_missing(channel_id, user_id)
-            .await
+        match &self.backend {
+            Backend::Postgres(r) => r.set_codex_user_id_if_missing(channel_id, user_id).await,
+            #[cfg(feature = "sqlite-backend")]
+            Backend::Sqlite(r) => r.set_codex_user_id_if_missing(channel_id, user_id).await,
+        }
     }
 
     pub async fn export_codex_credentials(
@@ -680,9 +714,11 @@ impl ControlPlaneRepository {
         channel_group_id: Uuid,
         input: CodexCredentialExportInput,
     ) -> Result<CodexCredentialExportBundle, RepositoryError> {
-        self.postgres("export_codex_credentials")?
-            .export_codex_credentials(channel_group_id, input)
-            .await
+        match &self.backend {
+            Backend::Postgres(r) => r.export_codex_credentials(channel_group_id, input).await,
+            #[cfg(feature = "sqlite-backend")]
+            Backend::Sqlite(r) => r.export_codex_credentials(channel_group_id, input).await,
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -696,17 +732,33 @@ impl ControlPlaneRepository {
         code_verifier: String,
         expires_at: DateTime<Utc>,
     ) -> Result<CodexOauthFlowRecord, RepositoryError> {
-        self.postgres("create_codex_oauth_flow")?
-            .create_codex_oauth_flow(
-                actor_user_id,
-                channel_group_id,
-                input,
-                redirect_uri,
-                state_hash,
-                code_verifier,
-                expires_at,
-            )
-            .await
+        match &self.backend {
+            Backend::Postgres(r) => {
+                r.create_codex_oauth_flow(
+                    actor_user_id,
+                    channel_group_id,
+                    input,
+                    redirect_uri,
+                    state_hash,
+                    code_verifier,
+                    expires_at,
+                )
+                .await
+            }
+            #[cfg(feature = "sqlite-backend")]
+            Backend::Sqlite(r) => {
+                r.create_codex_oauth_flow(
+                    actor_user_id,
+                    channel_group_id,
+                    input,
+                    redirect_uri,
+                    state_hash,
+                    code_verifier,
+                    expires_at,
+                )
+                .await
+            }
+        }
     }
 
     pub async fn codex_oauth_flow(
@@ -714,9 +766,11 @@ impl ControlPlaneRepository {
         id: Uuid,
         actor_user_id: Uuid,
     ) -> Result<Option<CodexOauthFlowRecord>, RepositoryError> {
-        self.postgres("codex_oauth_flow")?
-            .codex_oauth_flow(id, actor_user_id)
-            .await
+        match &self.backend {
+            Backend::Postgres(r) => r.codex_oauth_flow(id, actor_user_id).await,
+            #[cfg(feature = "sqlite-backend")]
+            Backend::Sqlite(r) => r.codex_oauth_flow(id, actor_user_id).await,
+        }
     }
 
     pub async fn persist_codex_quota(
@@ -724,9 +778,11 @@ impl ControlPlaneRepository {
         channel_id: Uuid,
         quota: CodexQuotaUpdate,
     ) -> Result<(), RepositoryError> {
-        self.postgres("persist_codex_quota")?
-            .persist_codex_quota(channel_id, quota)
-            .await
+        match &self.backend {
+            Backend::Postgres(r) => r.persist_codex_quota(channel_id, quota).await,
+            #[cfg(feature = "sqlite-backend")]
+            Backend::Sqlite(r) => r.persist_codex_quota(channel_id, quota).await,
+        }
     }
 
     pub async fn record_codex_quota_reset(
@@ -738,16 +794,31 @@ impl ControlPlaneRepository {
         outcome: CodexQuotaResetOutcome,
         windows_reset: i32,
     ) -> Result<Uuid, RepositoryError> {
-        self.postgres("record_codex_quota_reset")?
-            .record_codex_quota_reset(
-                actor_user_id,
-                channel_id,
-                event_id,
-                requested_at,
-                outcome,
-                windows_reset,
-            )
-            .await
+        match &self.backend {
+            Backend::Postgres(r) => {
+                r.record_codex_quota_reset(
+                    actor_user_id,
+                    channel_id,
+                    event_id,
+                    requested_at,
+                    outcome,
+                    windows_reset,
+                )
+                .await
+            }
+            #[cfg(feature = "sqlite-backend")]
+            Backend::Sqlite(r) => {
+                r.record_codex_quota_reset(
+                    actor_user_id,
+                    channel_id,
+                    event_id,
+                    requested_at,
+                    outcome,
+                    windows_reset,
+                )
+                .await
+            }
+        }
     }
 
     pub async fn mark_codex_credential_error(
@@ -757,48 +828,86 @@ impl ControlPlaneRepository {
         code: &str,
         summary: &str,
     ) -> Result<(), RepositoryError> {
-        self.postgres("mark_codex_credential_error")?
-            .mark_codex_credential_error(channel_id, permanent, code, summary)
-            .await
+        match &self.backend {
+            Backend::Postgres(r) => {
+                r.mark_codex_credential_error(channel_id, permanent, code, summary)
+                    .await
+            }
+            #[cfg(feature = "sqlite-backend")]
+            Backend::Sqlite(r) => {
+                r.mark_codex_credential_error(channel_id, permanent, code, summary)
+                    .await
+            }
+        }
     }
 
     pub async fn cleanup_codex_oauth_flows(&self) -> Result<u64, RepositoryError> {
-        self.postgres("cleanup_codex_oauth_flows")?
-            .cleanup_codex_oauth_flows()
-            .await
+        match &self.backend {
+            Backend::Postgres(r) => r.cleanup_codex_oauth_flows().await,
+            #[cfg(feature = "sqlite-backend")]
+            Backend::Sqlite(r) => r.cleanup_codex_oauth_flows().await,
+        }
     }
 
     pub async fn claim_sharing_ledger(
         &self,
         ledger_id: Uuid,
-    ) -> Result<sqlx::PgConnection, RepositoryError> {
-        self.postgres("claim_sharing_ledger")?
-            .claim_sharing_ledger(ledger_id)
-            .await
+    ) -> Result<super::SharingLedgerLease, RepositoryError> {
+        match &self.backend {
+            Backend::Postgres(r) => r
+                .claim_sharing_ledger(ledger_id)
+                .await
+                .map(super::SharingLedgerLease::postgres),
+            #[cfg(feature = "sqlite-backend")]
+            Backend::Sqlite(r) => r
+                .claim_sharing_ledger(ledger_id)
+                .await
+                .map(super::SharingLedgerLease::sqlite),
+        }
     }
 
     pub async fn sharing_groups(
         &self,
         user: Option<Uuid>,
     ) -> Result<Vec<SharingGroup>, RepositoryError> {
-        self.postgres("sharing_groups")?.sharing_groups(user).await
+        match &self.backend {
+            Backend::Postgres(r) => r.sharing_groups(user).await,
+            #[cfg(feature = "sqlite-backend")]
+            Backend::Sqlite(r) => r.sharing_groups(user).await,
+        }
     }
 
     pub async fn lock_codex_refresh(
         &self,
         channel_id: Uuid,
     ) -> Result<Option<(CodexCredentialRecord, CodexRefresh<'_>)>, RepositoryError> {
-        self.postgres("lock_codex_refresh")?
-            .lock_codex_refresh(channel_id)
-            .await
+        match &self.backend {
+            Backend::Postgres(r) => Ok(r
+                .lock_codex_refresh(channel_id)
+                .await?
+                .map(|(record, guard)| (record, CodexRefresh::postgres(guard)))),
+            #[cfg(feature = "sqlite-backend")]
+            Backend::Sqlite(r) => Ok(r
+                .reserve_codex_operation(channel_id, "refresh")
+                .await?
+                .map(|(record, guard)| (record, CodexRefresh::sqlite(guard)))),
+        }
     }
 
     pub async fn lock_codex_quota_reset(
         &self,
         channel_id: Uuid,
     ) -> Result<Option<(CodexCredentialRecord, CodexQuotaReset<'_>)>, RepositoryError> {
-        self.postgres("lock_codex_quota_reset")?
-            .lock_codex_quota_reset(channel_id)
-            .await
+        match &self.backend {
+            Backend::Postgres(r) => Ok(r
+                .lock_codex_quota_reset(channel_id)
+                .await?
+                .map(|(record, guard)| (record, CodexQuotaReset::postgres(guard)))),
+            #[cfg(feature = "sqlite-backend")]
+            Backend::Sqlite(r) => Ok(r
+                .reserve_codex_operation(channel_id, "quota_reset")
+                .await?
+                .map(|(record, guard)| (record, CodexQuotaReset::sqlite(guard)))),
+        }
     }
 }

@@ -47,7 +47,7 @@ async fn compare(postgres: &super::TestDatabase, sqlite: &SqliteDatabase) {
     let sqlite_tables: Vec<String> = sqlx::query_scalar(
         "SELECT name FROM sqlite_schema WHERE type='table'
          AND name NOT IN ('_gateway_sqlite_identity','_gateway_sqlite_migrations',
-             '_gateway_true','_gateway_routing_assertions','sqlite_sequence') ORDER BY name",
+             '_gateway_true','_gateway_routing_assertions','_gateway_codex_operations','sqlite_sequence') ORDER BY name",
     )
     .fetch_all(&mut *reader)
     .await

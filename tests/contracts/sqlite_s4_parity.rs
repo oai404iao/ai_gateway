@@ -45,11 +45,13 @@ impl Backend {
     async fn exec(&self, sql: &str) -> Result<(), sqlx::Error> {
         match self {
             Self::Pg(db) => {
-                sqlx::raw_sql(sql).execute(&db.pool).await?;
+                sqlx::raw_sql(sqlx::AssertSqlSafe(sql.to_owned()))
+                    .execute(&db.pool)
+                    .await?;
             }
             Self::Sq(_, db) => {
                 let mut tx = db.begin_write().await.unwrap();
-                sqlx::raw_sql(&sql.replace("now()", "ag_now()"))
+                sqlx::raw_sql(sqlx::AssertSqlSafe(sql.replace("now()", "ag_now()")))
                     .execute(&mut *tx)
                     .await?;
                 tx.commit().await?;
@@ -60,8 +62,11 @@ impl Backend {
     async fn count(&self, table: &str) -> i64 {
         let sql = format!("SELECT count(*) FROM {table}");
         match self {
-            Self::Pg(db) => sqlx::query_scalar(&sql).fetch_one(&db.pool).await.unwrap(),
-            Self::Sq(_, db) => sqlx::query_scalar(&sql)
+            Self::Pg(db) => sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+                .fetch_one(&db.pool)
+                .await
+                .unwrap(),
+            Self::Sq(_, db) => sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
                 .fetch_one(&mut *db.acquire_read().await.unwrap())
                 .await
                 .unwrap(),

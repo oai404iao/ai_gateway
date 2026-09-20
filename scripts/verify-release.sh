@@ -23,8 +23,8 @@ pnpm --dir web/console lint
 pnpm --dir web/console test
 pnpm --dir web/console build
 
-cargo clippy --locked --all-targets --features embedded-console-ui
-cargo test --locked --features embedded-console-ui --lib console_ui
+cargo clippy --locked --all-targets --features embedded-console-ui,sqlite-backend
+cargo test --locked --features embedded-console-ui,sqlite-backend --lib console_ui
 
 docker compose -f docker-compose.prd.yaml config --quiet
 image="ai-gateway:release-check-${version}"

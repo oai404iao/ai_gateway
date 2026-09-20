@@ -85,7 +85,7 @@ impl TestDatabase {
             .await
             .expect("PostgreSQL admin database available");
         let name = format!("ai_gateway_spec_{}", Uuid::new_v4().simple());
-        sqlx::query(&format!("CREATE DATABASE \"{name}\""))
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE DATABASE \"{name}\"")))
             .execute(&admin)
             .await
             .expect("temp database creatable");
@@ -101,10 +101,13 @@ impl TestDatabase {
 
     async fn cleanup(self) {
         self.pool.close().await;
-        sqlx::query(&format!("DROP DATABASE \"{}\" WITH (FORCE)", self.name))
-            .execute(&self.admin)
-            .await
-            .expect("temp database removable");
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DROP DATABASE \"{}\" WITH (FORCE)",
+            self.name
+        )))
+        .execute(&self.admin)
+        .await
+        .expect("temp database removable");
         self.admin.close().await;
     }
 }

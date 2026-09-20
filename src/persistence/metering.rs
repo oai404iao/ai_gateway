@@ -140,12 +140,12 @@ async fn write_facts(
         return Ok(Vec::new());
     }
     let input = Value::Array(events.iter().map(fact_input).collect());
-    let inserted: Vec<Uuid> = sqlx::query_scalar(&format!(
+    let inserted: Vec<Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "INSERT INTO request_metering_facts ({FACT_COLUMNS})
          SELECT {FACT_COLUMNS}
          FROM jsonb_populate_recordset(NULL::request_metering_facts,$1)
          ON CONFLICT (id) DO NOTHING RETURNING id"
-    ))
+    )))
     .bind(&input)
     .fetch_all(&mut **transaction)
     .await?;

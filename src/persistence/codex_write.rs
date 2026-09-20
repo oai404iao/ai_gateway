@@ -7,13 +7,13 @@ use uuid::Uuid;
 use crate::persistence::*;
 
 /// Keeps the credential locked until a refresh outcome is committed or dropped.
-pub struct CodexRefresh<'a> {
+pub(super) struct PostgresCodexRefresh<'a> {
     repository: &'a PostgresControlPlaneRepository,
     transaction: Transaction<'a, Postgres>,
     channel_id: Uuid,
 }
 
-pub struct CodexQuotaReset<'a> {
+pub(super) struct PostgresCodexQuotaReset<'a> {
     repository: &'a PostgresControlPlaneRepository,
     transaction: Transaction<'a, Postgres>,
     channel_id: Uuid,
@@ -24,7 +24,7 @@ impl PostgresControlPlaneRepository {
     pub async fn lock_codex_refresh(
         &self,
         channel_id: Uuid,
-    ) -> Result<Option<(CodexCredentialRecord, CodexRefresh<'_>)>, RepositoryError> {
+    ) -> Result<Option<(CodexCredentialRecord, PostgresCodexRefresh<'_>)>, RepositoryError> {
         let mut transaction = self.pool.begin().await?;
         let Some(record) = self
             .codex_credential_for_update(&mut transaction, channel_id)
@@ -34,7 +34,7 @@ impl PostgresControlPlaneRepository {
         };
         Ok(Some((
             record,
-            CodexRefresh {
+            PostgresCodexRefresh {
                 repository: self,
                 transaction,
                 channel_id,
@@ -45,7 +45,7 @@ impl PostgresControlPlaneRepository {
     pub async fn lock_codex_quota_reset(
         &self,
         channel_id: Uuid,
-    ) -> Result<Option<(CodexCredentialRecord, CodexQuotaReset<'_>)>, RepositoryError> {
+    ) -> Result<Option<(CodexCredentialRecord, PostgresCodexQuotaReset<'_>)>, RepositoryError> {
         let mut transaction = self.pool.begin().await?;
         let Some(record) = self
             .codex_credential_for_update(&mut transaction, channel_id)
@@ -56,7 +56,7 @@ impl PostgresControlPlaneRepository {
         let credits_available = record.quota_reset_credits_available;
         Ok(Some((
             record,
-            CodexQuotaReset {
+            PostgresCodexQuotaReset {
                 repository: self,
                 transaction,
                 channel_id,
@@ -66,7 +66,7 @@ impl PostgresControlPlaneRepository {
     }
 }
 
-impl CodexRefresh<'_> {
+impl PostgresCodexRefresh<'_> {
     pub async fn unchanged(self) -> Result<(), RepositoryError> {
         self.transaction.commit().await?;
         Ok(())
@@ -107,7 +107,7 @@ impl CodexRefresh<'_> {
     }
 }
 
-impl CodexQuotaReset<'_> {
+impl PostgresCodexQuotaReset<'_> {
     pub async fn complete(
         mut self,
         actor: Uuid,
