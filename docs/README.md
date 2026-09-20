@@ -23,6 +23,9 @@
 配置专用 Codex 共享凭证时，参见[拼车使用说明](user/codex-sharing.md)和
 [金额账本实现](development/codex-sharing.md)。该功能仅支持单实例。
 
+上游实体重构计划见[身份、渠道能力与路由目标设计](development/upstream-identity-capabilities.md)；
+这是分阶段提案，不代表当前运行时已经实现。
+
 ## 来源优先级
 
 项目级验收入口见[系统 E2E](development/system-e2e.md)；
