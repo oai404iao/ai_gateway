@@ -61,6 +61,8 @@ import type {
   UserGroupView,
   UserUpdateInput,
   UpstreamCredentialView,
+  UpstreamAccessView,
+  UpstreamAccessInput,
   UpstreamCredentialDetail,
   UpstreamCredentialInput,
   UpstreamCredentialCreateInput,
@@ -126,6 +128,14 @@ function makeUpdate<TBody>(
     });
   };
 }
+
+const ACCESSES_KEY = ["console", "upstream-accesses"] as const;
+const accessDetailKey = (id: string) => [...ACCESSES_KEY, id] as const;
+const ACCESSES_PATH = "/routing/accesses";
+export const useUpstreamAccesses = makeList<UpstreamAccessView>(ACCESSES_PATH, ACCESSES_KEY);
+export const useUpstreamAccess = makeDetail<UpstreamAccessView>(ACCESSES_PATH, accessDetailKey);
+export const useCreateUpstreamAccess = makeCreate<UpstreamAccessInput, MutationResponse>(ACCESSES_PATH, ACCESSES_KEY);
+export const useUpdateUpstreamAccess = makeUpdate<UpstreamAccessInput>(ACCESSES_PATH, ACCESSES_KEY, accessDetailKey);
 
 const CREDENTIALS_KEY = ["console", "upstream-credentials"] as const;
 const credentialDetailKey = (id: string) => [...CREDENTIALS_KEY, id] as const;

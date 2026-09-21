@@ -1342,6 +1342,96 @@ async fn request(
 }
 
 #[tokio::test]
+async fn upstream_access_contract_is_versioned_and_does_not_create_authority() {
+    let database = TestDatabase::new().await;
+    let mut transaction = database.pool.begin().await.unwrap();
+    sqlx::raw_sql(include_str!(
+        "../src/persistence/capability_cutover/postgres-schema.sql"
+    ))
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+    transaction.commit().await.unwrap();
+    let app = app(database.pool.clone()).await;
+    let path = "/console/v1/routing/accesses";
+    let input = serde_json::json!({
+        "name": "Spec access", "connector_kind": "openai_compatible",
+        "base_url": "https://spec-access.test/private-path", "enabled": false,
+        "proxy_id": null, "connect_timeout_ms": null,
+        "response_header_timeout_ms": 30000, "stream_idle_timeout_ms": null,
+    });
+    assert_eq!(
+        request_with_token(&app, "", "GET", path, serde_json::json!({}), &[])
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let created = request(&app, "POST", path, input.clone(), &[]).await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let id = body_json(created).await["id"].as_str().unwrap().to_owned();
+    let detail_path = format!("{path}/{id}");
+    let detail = request(&app, "GET", &detail_path, serde_json::json!({}), &[]).await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    assert_eq!(detail.headers()["cache-control"], "no-store");
+    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    let before = body_json(detail).await;
+    assert_eq!(before["enabled"], false);
+    assert!(before.get("credential_id").is_none());
+    let mut changed = input.clone();
+    changed["name"] = serde_json::json!("Renamed access");
+    assert_eq!(
+        request(
+            &app,
+            "PUT",
+            &detail_path,
+            changed.clone(),
+            &[("if-match", &etag)]
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(&app, "PUT", &detail_path, changed, &[("if-match", &etag)])
+            .await
+            .status(),
+        StatusCode::CONFLICT
+    );
+    let detail = request(&app, "GET", &detail_path, serde_json::json!({}), &[]).await;
+    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    let after = body_json(detail).await;
+    assert_ne!(before["revision"], after["revision"]);
+    let mut invalid = input.clone();
+    invalid["connector_kind"] = serde_json::json!("codex_oauth");
+    assert_eq!(
+        request(&app, "PUT", &detail_path, invalid, &[("if-match", &etag)])
+            .await
+            .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let mut invalid = input;
+    invalid["credential_id"] = serde_json::json!(Uuid::new_v4());
+    assert_eq!(
+        request(&app, "POST", path, invalid, &[]).await.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let authority: i64 = sqlx::query_scalar(
+        "SELECT (SELECT count(*) FROM upstream_channels)+(SELECT count(*) FROM channel_capabilities)
+              +(SELECT count(*) FROM model_capability_candidates)+(SELECT count(*) FROM api_key_capability_grants)",
+    ).fetch_one(&database.pool).await.unwrap();
+    assert_eq!(authority, 0);
+    let audit: Vec<serde_json::Value> = sqlx::query_scalar(
+        "SELECT after_redacted FROM audit_logs WHERE object_type='upstream_access'",
+    )
+    .fetch_all(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(audit.len(), 2);
+    assert!(audit.iter().all(|event| event["base_url"] == "[REDACTED]"));
+    database.cleanup().await;
+}
+
+#[tokio::test]
 async fn upstream_credential_contract_is_secret_safe_versioned_and_strict() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;

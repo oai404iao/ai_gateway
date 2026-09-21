@@ -154,18 +154,13 @@ impl SqliteControlPlaneRepository {
             .bind(SqliteUuid(channel_id))
             .fetch_one(&mut **transaction)
             .await?;
-            sqlx::query(
-                "UPDATE channels SET updated_at=ag_now(),\
-                 name=?2,base_url=?3,enabled=true,proxy_id=?4,available_models=?5, \
-                 supports_websocket=true,supports_standalone_web_search=true \
-                 WHERE id=?1",
+            crate::persistence::upstream_topology::codex::sqlite_reconfigure(
+                transaction,
+                channel_id,
+                &input.label,
+                Some(&input.base_url),
+                input.proxy_id,
             )
-            .bind(SqliteUuid(channel_id))
-            .bind(input.label.trim())
-            .bind(&input.base_url)
-            .bind(input.proxy_id.map(SqliteUuid))
-            .bind(sqlx::types::Json(&input.available_models))
-            .execute(&mut **transaction)
             .await?;
 
             let quota = input.quota.as_ref().filter(|quota| {
@@ -366,12 +361,14 @@ impl SqliteControlPlaneRepository {
         .fetch_optional(&mut **transaction)
         .await?
         .ok_or(RepositoryError::Conflict)?;
-        sqlx::query("UPDATE channels SET updated_at=ag_now(),name=?2,proxy_id=?3 WHERE id=?1")
-            .bind(SqliteUuid(channel_id))
-            .bind(input.label.trim())
-            .bind(input.proxy_id.map(SqliteUuid))
-            .execute(&mut **transaction)
-            .await?;
+        crate::persistence::upstream_topology::codex::sqlite_reconfigure(
+            transaction,
+            channel_id,
+            &input.label,
+            None,
+            input.proxy_id,
+        )
+        .await?;
 
         Ok(MutationResult {
             id: channel_id,
@@ -1320,28 +1317,30 @@ async fn codex_credential_audit(
     transaction: &mut Transaction<'_, Sqlite>,
     channel_id: Uuid,
 ) -> Result<Value, RepositoryError> {
-    let c = sqlx::query_as::<_, CodexCredentialRecordRow>(sqlx::AssertSqlSafe(credential_select(
-        "WHERE c.channel_id=? AND c.deleted_at IS NULL",
-    )))
+    let record = sqlx::query_scalar::<_, sqlx::types::Json<Value>>(
+        "SELECT json_object(
+             'id',c.channel_id,'channel_group_id',ch.group_id,'connector_pool_id',c.connector_pool_id,
+             'label',c.label,'email',c.email,'account_id',c.account_id,'user_id',c.user_id,'plan_type',c.plan_type,
+             'is_fedramp',json(CASE c.is_fedramp WHEN 1 THEN 'true' ELSE 'false' END),
+             'access_token_expires_at',c.access_token_expires_at,'last_refreshed_at',c.last_refreshed_at,
+             'quota_threshold_percent',c.quota_threshold_percent,'runtime_status',c.runtime_status,
+             'proxy_id',access.proxy_id,'enabled',json(CASE c.enabled WHEN 1 THEN 'true' ELSE 'false' END),
+             'access_id',access.id,'access_revision',access.revision,'binding_revision',ch.binding_revision,
+             'base_url','[REDACTED]',
+             'capabilities',json((
+                 SELECT json_group_array(json_object('id',cap.id,'operation',cap.operation,
+                     'available_models',json(cap.available_models),'transports',json(cap.transports),
+                     'enabled',json(CASE cap.enabled WHEN 1 THEN 'true' ELSE 'false' END)))
+                 FROM (SELECT * FROM channel_capabilities WHERE channel_id=ch.id AND deleted_at IS NULL ORDER BY operation) cap
+             )),
+             'created_at',c.created_at,'updated_at',c.updated_at)
+         FROM codex_oauth_credentials c JOIN upstream_channels ch ON ch.id=c.channel_id
+         JOIN upstream_accesses access ON access.id=ch.access_id
+         WHERE c.channel_id=? AND c.deleted_at IS NULL",
+    )
     .bind(SqliteUuid(channel_id))
     .fetch_optional(&mut **transaction)
     .await?
-    .ok_or(RepositoryError::NotFound)?
-    .0;
-    let rows=sqlx::query_as::<_,(String,SqliteUuid,SqliteUuid,sqlx::types::Json<Vec<String>>,bool,bool)>(
-        "SELECT p.api_format,p.channel_id,ch.channel_group_id,ch.available_models,ch.supports_websocket,ch.supports_standalone_web_search
-         FROM codex_oauth_credential_channels p JOIN channels ch ON ch.id=p.channel_id
-         WHERE p.credential_id=? ORDER BY p.api_format")
-        .bind(SqliteUuid(channel_id)).fetch_all(&mut **transaction).await?;
-    let projections:Vec<_>=rows.into_iter().map(|(format,id,group,models,ws,search)|json!({
-        "api_format":format,"channel_id":id.0,"channel_group_id":group.0,"available_models":models.0,
-        "supports_websocket":ws,"supports_standalone_web_search":search})).collect();
-    Ok(json!({
-        "id":c.channel_id,"channel_group_id":c.channel_group_id,"connector_pool_id":c.connector_pool_id,
-        "label":c.label,"email":c.email,"account_id":c.account_id,"user_id":c.user_id,"plan_type":c.plan_type,
-        "is_fedramp":c.is_fedramp,"access_token_expires_at":c.access_token_expires_at,
-        "last_refreshed_at":c.last_refreshed_at,"quota_threshold_percent":c.quota_threshold_percent,
-        "runtime_status":c.runtime_status,"proxy_id":c.proxy_id,"enabled":c.enabled,
-        "available_models":c.available_models,"projections":projections,"created_at":c.created_at,"updated_at":c.updated_at
-    }))
+    .ok_or(RepositoryError::NotFound)?;
+    Ok(record.0)
 }

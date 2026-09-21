@@ -231,6 +231,14 @@ pub fn router(state: ConsoleState) -> Router {
             get(list_upstream_credentials).post(create_upstream_credential),
         )
         .route(
+            "/console/v1/routing/accesses",
+            get(list_upstream_accesses).post(create_upstream_access),
+        )
+        .route(
+            "/console/v1/routing/accesses/{id}",
+            get(get_upstream_access).put(update_upstream_access),
+        )
+        .route(
             "/console/v1/routing/upstream-credentials/{id}",
             get(get_upstream_credential)
                 .put(update_upstream_credential)
@@ -1800,6 +1808,68 @@ async fn discover_channel_models(
     Ok(Json(
         state.channel_models.discover(input, credential).await?,
     ))
+}
+
+async fn list_upstream_accesses(
+    State(state): State<ConsoleState>,
+) -> Result<Json<Vec<crate::persistence::UpstreamAccessRecord>>, ConsoleError> {
+    Ok(Json(
+        state
+            .coordinator
+            .topology()
+            .await?
+            .upstream_accesses
+            .into_iter()
+            .filter(|access| access.deleted_at.is_none())
+            .collect(),
+    ))
+}
+
+async fn get_upstream_access(
+    State(state): State<ConsoleState>,
+    Path(id): Path<Uuid>,
+) -> Result<Response, ConsoleError> {
+    let access = state
+        .coordinator
+        .topology()
+        .await?
+        .upstream_accesses
+        .into_iter()
+        .find(|access| access.id == id && access.deleted_at.is_none())
+        .ok_or(ConsoleError::NotFound)?;
+    resource_response(to_json(access))
+}
+
+async fn create_upstream_access(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Json(input): Json<crate::persistence::UpstreamAccessInput>,
+) -> Result<(StatusCode, Json<MutationResponse>), ConsoleError> {
+    mutate_created(
+        &state,
+        principal,
+        ControlPlaneMutation::CreateUpstreamAccess(input),
+    )
+    .await
+}
+
+async fn update_upstream_access(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(input): Json<crate::persistence::UpstreamAccessInput>,
+) -> Result<Json<MutationResponse>, ConsoleError> {
+    mutate(
+        &state,
+        principal,
+        ControlPlaneMutation::UpdateUpstreamAccess {
+            id,
+            input,
+            expected_updated_at: if_match(&headers)?,
+        },
+    )
+    .await
 }
 
 async fn list_upstream_credentials(

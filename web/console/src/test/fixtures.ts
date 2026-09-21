@@ -39,7 +39,24 @@ import type {
   SystemSettings,
   UserGroupView,
   UserSettings,
+  UpstreamAccessView,
 } from "@/api/types";
+
+export const UPSTREAM_ACCESS: UpstreamAccessView = {
+  id: "00000000-0000-0000-0000-000000001401",
+  name: "Primary access",
+  connector_kind: "openai_compatible",
+  base_url: "https://api.example.test",
+  proxy_id: null,
+  connect_timeout_ms: null,
+  response_header_timeout_ms: 30000,
+  stream_idle_timeout_ms: null,
+  enabled: true,
+  revision: "00000000-0000-0000-0000-000000001402",
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-02T00:00:00Z",
+  deleted_at: null,
+};
 
 export const ADMIN_USER: ConsoleUser = {
   id: "00000000-0000-0000-0000-000000000001",

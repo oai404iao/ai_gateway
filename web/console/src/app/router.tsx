@@ -194,6 +194,12 @@ const CodexOauthPage = lazy(
 const CodexImportPage = lazy(
   () => import("@/features/admin/providers/codex-oauth/codex-import-page"),
 );
+const AccessesPage = lazy(() =>
+  import("@/features/admin/routing/accesses/accesses-page").then((m) => ({ default: m.AccessesPage })),
+);
+const AccessDetailPage = lazy(() =>
+  import("@/features/admin/routing/accesses/access-detail-page").then((m) => ({ default: m.AccessDetailPage })),
+);
 const CredentialsPage = lazy(() =>
   import("@/features/admin/routing/credentials/credentials-page").then((m) => ({ default: m.CredentialsPage })),
 );
@@ -338,6 +344,8 @@ function appRouteElements() {
               <Route path="/admin/routing/channels" element={<ChannelsPage />} />
               <Route path="/admin/routing/channels/:id" element={<ChannelDetailPage />} />
               <Route path="/admin/routing/upstream-credentials" element={<CredentialsPage />} />
+              <Route path="/admin/routing/accesses" element={<AccessesPage />} />
+              <Route path="/admin/routing/accesses/:id" element={<AccessDetailPage />} />
               <Route path="/admin/routing/upstream-credentials/:id" element={<CredentialDetailPage />} />
               <Route path="/admin/routing/model-rules" element={<ModelRulesPage />} />
               <Route

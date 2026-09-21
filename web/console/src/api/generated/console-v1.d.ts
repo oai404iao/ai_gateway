@@ -873,6 +873,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/routing/accesses": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listUpstreamAccesses"];
+        put?: never;
+        /** @description Creates an access without credentials, channels, capabilities, routes or grants. */
+        post: operations["createUpstreamAccess"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/routing/accesses/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getUpstreamAccess"];
+        /** @description Connector kind is immutable. Target scope is checked against every non-deleted binding, including disabled channels. Changes invalidate the access revision without changing grants or capability configuration. */
+        put: operations["updateUpstreamAccess"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/routing/upstream-credentials": {
         parameters: {
             query?: never;
@@ -2415,6 +2449,36 @@ export interface components {
         ChannelDetailView: components["schemas"]["ChannelView"] & {
             /** @description Stored channel transform overrides returned for administrator editing. */
             override_document: components["schemas"]["JsonValue"];
+        };
+        UpstreamAccessView: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            connector_kind: components["schemas"]["ConnectorKind"];
+            base_url: string;
+            /** Format: uuid */
+            proxy_id: string | null;
+            connect_timeout_ms: number | null;
+            response_header_timeout_ms: number | null;
+            stream_idle_timeout_ms: number | null;
+            enabled: boolean;
+            /** Format: uuid */
+            revision: string;
+            created_at: components["schemas"]["DateTime"];
+            updated_at: components["schemas"]["DateTime"];
+            /** Format: date-time */
+            deleted_at: string | null;
+        };
+        UpstreamAccessInput: {
+            name: string;
+            connector_kind: components["schemas"]["ConnectorKind"];
+            base_url: string;
+            /** Format: uuid */
+            proxy_id?: string | null;
+            connect_timeout_ms?: number | null;
+            response_header_timeout_ms?: number | null;
+            stream_idle_timeout_ms?: number | null;
+            enabled: boolean;
         };
         UpstreamCredentialView: {
             /** Format: uuid */
@@ -5913,6 +5977,116 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+        };
+    };
+    listUpstreamAccesses: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Administrator-only upstream accesses, excluding tombstones. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpstreamAccessView"][];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    createUpstreamAccess: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpstreamAccessInput"];
+            };
+        };
+        responses: {
+            /** @description Access created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    getUpstreamAccess: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Access network settings; authentication belongs to credential identities. */
+            200: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpstreamAccessView"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    updateUpstreamAccess: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag from the preceding GET; stale values yield `409`. */
+                "If-Match": components["parameters"]["IfMatch"];
+            };
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpstreamAccessInput"];
+            };
+        };
+        responses: {
+            /** @description Access updated. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
         };
     };
     listUpstreamCredentials: {

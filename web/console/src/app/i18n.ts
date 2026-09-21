@@ -7,6 +7,18 @@ export type ConsoleLocale = "en-US" | "zh-CN";
 const STORAGE_KEY = "ai-gateway-console.locale";
 
 const zhCN: Record<string, string> = {
+  "Upstream accesses": "上游接入",
+  "Upstream access": "上游接入",
+  "New access": "新建接入",
+  "Access settings": "接入设置",
+  "Save access": "保存接入",
+  "Access saved": "接入已保存",
+  "Could not save upstream access.": "无法保存上游接入。",
+  "This access was changed elsewhere. Reloading.": "此接入已被其他操作修改，正在重新加载。",
+  "Connector, Base URL and network settings. Credentials and capabilities are configured separately.": "管理连接器、Base URL 与网络设置。凭证和接口能力分别配置。",
+  "Network changes affect all referencing channels and must satisfy every credential scope.": "网络设置变更会影响所有引用渠道，且必须符合每个凭证的目标范围。",
+  "Creating an access does not create channels, enable capabilities or grant API key access.": "创建接入不会创建渠道、启用接口能力或扩展 API Key 授权。",
+  "Leave blank to use the operation default.": "留空以使用接口操作的默认值。",
   "Upstream credentials": "上游凭证",
   "Upstream credential": "上游凭证",
   "Manage upstream credentials": "管理上游凭证",

@@ -962,18 +962,13 @@ impl PostgresControlPlaneRepository {
             .bind(channel_id)
             .fetch_one(&mut **transaction)
             .await?;
-            sqlx::query(
-                "UPDATE channels SET \
-                 name=$2,base_url=$3,enabled=true,proxy_id=$4,available_models=$5, \
-                 supports_websocket=true,supports_standalone_web_search=true \
-                 WHERE id=$1",
+            super::upstream_topology::codex::pg_reconfigure(
+                transaction,
+                channel_id,
+                &input.label,
+                Some(&input.base_url),
+                input.proxy_id,
             )
-            .bind(channel_id)
-            .bind(input.label.trim())
-            .bind(&input.base_url)
-            .bind(input.proxy_id)
-            .bind(&input.available_models)
-            .execute(&mut **transaction)
             .await?;
 
             let quota = input.quota.as_ref().filter(|quota| {
@@ -1174,12 +1169,14 @@ impl PostgresControlPlaneRepository {
         .fetch_optional(&mut **transaction)
         .await?
         .ok_or(RepositoryError::Conflict)?;
-        sqlx::query("UPDATE channels SET name=$2,proxy_id=$3 WHERE id=$1")
-            .bind(channel_id)
-            .bind(input.label.trim())
-            .bind(input.proxy_id)
-            .execute(&mut **transaction)
-            .await?;
+        super::upstream_topology::codex::pg_reconfigure(
+            transaction,
+            channel_id,
+            &input.label,
+            None,
+            input.proxy_id,
+        )
+        .await?;
 
         Ok(MutationResult {
             id: channel_id,
@@ -2097,33 +2094,28 @@ async fn codex_credential_audit(
 ) -> Result<Value, RepositoryError> {
     sqlx::query_scalar::<_, Value>(
         "SELECT json_build_object( \
-             'id',c.channel_id,'channel_group_id',c.channel_group_id, \
+             'id',c.channel_id,'channel_group_id',ch.group_id, \
              'connector_pool_id',c.connector_pool_id,'label',c.label, \
              'email',c.email,'account_id',c.account_id,'user_id',c.user_id, \
              'plan_type',c.plan_type, \
              'is_fedramp',c.is_fedramp,'access_token_expires_at',c.access_token_expires_at, \
              'last_refreshed_at',c.last_refreshed_at, \
              'quota_threshold_percent',c.quota_threshold_percent, \
-             'runtime_status',c.runtime_status,'proxy_id',ch.proxy_id, \
-             'enabled',c.enabled,'available_models',ch.available_models, \
-             'projections',( \
-                 SELECT json_agg( \
-                     json_build_object( \
-                         'api_format',projection.api_format, \
-                         'channel_id',projection.channel_id, \
-                         'channel_group_id',projection_channel.channel_group_id, \
-                         'available_models',projection_channel.available_models, \
-                         'supports_websocket',projection_channel.supports_websocket, \
-                         'supports_standalone_web_search',projection_channel.supports_standalone_web_search \
-                     ) ORDER BY projection.api_format \
-                 ) \
-                 FROM codex_oauth_credential_channels AS projection \
-                 JOIN channels AS projection_channel ON projection_channel.id=projection.channel_id \
-                 WHERE projection.credential_id=c.channel_id \
+             'runtime_status',c.runtime_status,'proxy_id',access.proxy_id, \
+             'enabled',c.enabled,'access_id',access.id,'access_revision',access.revision, \
+             'binding_revision',ch.binding_revision,'base_url','[REDACTED]', \
+             'capabilities',( \
+                 SELECT COALESCE(json_agg( \
+                     json_build_object('id',cap.id,'operation',cap.operation, \
+                         'available_models',cap.available_models,'transports',cap.transports, \
+                         'enabled',cap.enabled) ORDER BY cap.operation \
+                 ),'[]'::json) FROM channel_capabilities cap \
+                 WHERE cap.channel_id=ch.id AND cap.deleted_at IS NULL \
              ), \
              'created_at',c.created_at,'updated_at',c.updated_at) \
-         FROM codex_oauth_credentials c JOIN channels ch ON ch.id=c.channel_id \
-         WHERE c.channel_id=$1 AND c.deleted_at IS NULL FOR UPDATE OF c,ch",
+         FROM codex_oauth_credentials c JOIN upstream_channels ch ON ch.id=c.channel_id \
+         JOIN upstream_accesses access ON access.id=ch.access_id \
+         WHERE c.channel_id=$1 AND c.deleted_at IS NULL FOR UPDATE OF c,ch,access",
     )
     .bind(channel_id)
     .fetch_optional(&mut **transaction)

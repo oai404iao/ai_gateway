@@ -17,7 +17,7 @@ use chrono::{DateTime, Utc};
 use reqwest::Url;
 use serde::Serialize;
 use serde_json::Value;
-use sqlx::{PgPool, postgres::PgPoolOptions};
+use sqlx::{Acquire, PgPool, postgres::PgPoolOptions};
 use uuid::Uuid;
 
 const GROUP: Uuid = Uuid::from_u128(0x4000_0000_0000_0000_0000_0000_0000_0001);
@@ -91,6 +91,21 @@ fn assert_topology(expected: &UpstreamTopologyRecords, loaded: &UpstreamTopology
         sorted(&expected.policy_grants),
         sorted(&loaded.policy_grants)
     );
+}
+
+fn access_input(
+    record: &ai_gateway::persistence::UpstreamAccessRecord,
+) -> ai_gateway::persistence::UpstreamAccessInput {
+    ai_gateway::persistence::UpstreamAccessInput {
+        name: record.name.clone(),
+        connector_kind: record.connector_kind,
+        base_url: record.base_url.clone(),
+        proxy_id: record.proxy_id,
+        connect_timeout_ms: record.connect_timeout_ms,
+        response_header_timeout_ms: record.response_header_timeout_ms,
+        stream_idle_timeout_ms: record.stream_idle_timeout_ms,
+        enabled: record.enabled,
+    }
 }
 
 struct TestDatabase {
@@ -381,6 +396,71 @@ async fn postgres_cutover_round_trips_legacy_configuration() {
             .await
             .expect("canonical records must resolve credentials and grants");
     assert_compiled_snapshot(records);
+    let logical = loaded
+        .logical_channels
+        .iter()
+        .find(|channel| channel.id == CHANNEL)
+        .unwrap();
+    let access = loaded
+        .upstream_accesses
+        .iter()
+        .find(|access| access.id == logical.access_id)
+        .unwrap();
+    let mut changed_access = access_input(access);
+    changed_access.name = "Renamed access".into();
+    let mutation = ai_gateway::persistence::upstream_topology::accesses::pg_save(
+        &mut transaction,
+        access.id,
+        &changed_access,
+        Some(access.updated_at),
+    )
+    .await
+    .unwrap();
+    assert!(
+        !mutation
+            .after_redacted
+            .to_string()
+            .contains(&access.base_url)
+    );
+    assert_ne!(
+        mutation.after_redacted["revision"],
+        access.revision.to_string()
+    );
+    assert!(matches!(
+        ai_gateway::persistence::upstream_topology::accesses::pg_save(
+            &mut transaction,
+            access.id,
+            &changed_access,
+            Some(access.updated_at),
+        )
+        .await,
+        Err(ai_gateway::persistence::RepositoryError::Conflict)
+    ));
+    let mut savepoint = transaction.begin().await.unwrap();
+    let credential = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO upstream_credentials(id,name,kind,secret,allowed_base_urls)
+         VALUES ($1,'Scope test','bearer','synthetic-test-secret',jsonb_build_array($2::text))",
+    )
+    .bind(credential)
+    .bind(&access.base_url)
+    .execute(&mut *savepoint)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE upstream_channels SET credential_id=$2,enabled=false,binding_revision=$3 WHERE id=$1")
+        .bind(logical.id).bind(credential).bind(Uuid::new_v4()).execute(&mut *savepoint).await.unwrap();
+    changed_access.base_url = "https://outside-scope.test".into();
+    assert!(
+        ai_gateway::persistence::upstream_topology::accesses::pg_save(
+            &mut savepoint,
+            access.id,
+            &changed_access,
+            Some(mutation.updated_at),
+        )
+        .await
+        .is_err()
+    );
+    savepoint.rollback().await.unwrap();
     let group_history = decode::<GroupIdentityRegistryRecord>(
         sqlx::query_scalar::<_, String>(
             "SELECT jsonb_build_object('id',id,'label',label,'created_at',created_at,
@@ -528,7 +608,45 @@ async fn postgres_cutover_round_trips_legacy_configuration() {
             .unwrap(),
         3
     );
-    transaction.rollback().await.unwrap();
+    let credential_version: DateTime<Utc> =
+        sqlx::query_scalar("SELECT updated_at FROM codex_oauth_credentials WHERE channel_id=$1")
+            .bind(CODEX_CHANNEL)
+            .fetch_one(&mut *transaction)
+            .await
+            .unwrap();
+    transaction.commit().await.unwrap();
+    let repository = ai_gateway::persistence::ControlPlaneRepository::new(database.pool.clone());
+    let change = repository
+        .prepare_codex_credential_update(
+            USER,
+            CODEX_CHANNEL,
+            ai_gateway::persistence::CodexCredentialUpdateInput {
+                label: "Canonical audit label".into(),
+                enabled: true,
+                proxy_id: None,
+                quota_threshold_percent: 90,
+            },
+            credential_version,
+        )
+        .await
+        .unwrap();
+    let (mutations, _) = change.commit().await.unwrap();
+    assert_eq!(mutations[0].after_redacted["base_url"], "[REDACTED]");
+    assert_eq!(
+        mutations[0].after_redacted["capabilities"]
+            .as_array()
+            .unwrap()
+            .len(),
+        4
+    );
+    assert_eq!(
+        mutations[0].before_redacted["access_id"],
+        mutations[0].after_redacted["access_id"]
+    );
+    assert_eq!(
+        mutations[0].before_redacted["access_revision"],
+        mutations[0].after_redacted["access_revision"]
+    );
     database.cleanup().await;
 }
 
@@ -816,6 +934,69 @@ mod sqlite_backend {
                 )
                 .is_some()
         );
+        let logical = &loaded.logical_channels[0];
+        let access = &loaded.upstream_accesses[0];
+        let mut changed_access = access_input(access);
+        changed_access.name = "Renamed access".into();
+        sqlx::query("SELECT ag_set_time(?)")
+            .bind(access.updated_at.timestamp_micros() + 1_000_000)
+            .execute(&mut *transaction)
+            .await
+            .unwrap();
+        let mutation = ai_gateway::persistence::upstream_topology::accesses::sqlite_save(
+            &mut transaction,
+            access.id,
+            &changed_access,
+            Some(access.updated_at),
+        )
+        .await
+        .unwrap();
+        assert!(
+            !mutation
+                .after_redacted
+                .to_string()
+                .contains(&access.base_url)
+        );
+        assert_ne!(
+            mutation.after_redacted["revision"],
+            access.revision.to_string()
+        );
+        assert!(matches!(
+            ai_gateway::persistence::upstream_topology::accesses::sqlite_save(
+                &mut transaction,
+                access.id,
+                &changed_access,
+                Some(access.updated_at),
+            )
+            .await,
+            Err(ai_gateway::persistence::RepositoryError::Conflict)
+        ));
+        let mut savepoint = transaction.begin().await.unwrap();
+        let credential = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO upstream_credentials(id,name,kind,secret,allowed_base_urls)
+             VALUES (?,'Scope test','bearer','synthetic-test-secret',json_array(?))",
+        )
+        .bind(credential.to_string())
+        .bind(&access.base_url)
+        .execute(&mut *savepoint)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE upstream_channels SET credential_id=?,enabled=0,binding_revision=?,updated_at=ag_now() WHERE id=?")
+            .bind(credential.to_string()).bind(Uuid::new_v4().to_string()).bind(logical.id.to_string())
+            .execute(&mut *savepoint).await.unwrap();
+        changed_access.base_url = "https://outside-scope.test".into();
+        assert!(
+            ai_gateway::persistence::upstream_topology::accesses::sqlite_save(
+                &mut savepoint,
+                access.id,
+                &changed_access,
+                Some(mutation.updated_at),
+            )
+            .await
+            .is_err()
+        );
+        savepoint.rollback().await.unwrap();
 
         let group_history = decode::<GroupIdentityRegistryRecord>(
             sqlx::query_scalar::<_, String>(

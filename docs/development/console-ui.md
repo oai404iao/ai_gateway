@@ -8,6 +8,11 @@
 可展开子菜单与 `/admin/system/:section` 页面共用此定义。旧 `/admin/system` 地址跳转
 到基础设置；每个分类切换时重建表单，保留完整 API 配置及 ETag，只挂载当前分类控件。
 
+[上游实体联合重构](upstream-identity-capabilities.md)实施中的接入管理位于
+`src/features/admin/routing/accesses/`，独立管理连接器、Base URL、代理和超时，
+不在该表单配置凭证或隐式扩展接口能力/授权。该入口依赖尚未完成的联合数据库切换，
+不能作为独立功能发布到旧数据库。
+
 ## 1. 运行边界
 
 Console UI 是管理 `ai-gateway` 的 React 单页应用，不是聊天产品或第三方 Widget。

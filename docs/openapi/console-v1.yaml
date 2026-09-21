@@ -1590,6 +1590,85 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorBody" }
 
+  /routing/accesses:
+    get:
+      tags: [Channels]
+      operationId: listUpstreamAccesses
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Administrator-only upstream accesses, excluding tombstones.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/UpstreamAccessView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Channels]
+      operationId: createUpstreamAccess
+      description: Creates an access without credentials, channels, capabilities, routes or grants.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpstreamAccessInput" }
+      responses:
+        "201":
+          description: Access created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /routing/accesses/{id}:
+    get:
+      tags: [Channels]
+      operationId: getUpstreamAccess
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Access network settings; authentication belongs to credential identities.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UpstreamAccessView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [Channels]
+      operationId: updateUpstreamAccess
+      description: Connector kind is immutable. Target scope is checked against every non-deleted binding, including disabled channels. Changes invalidate the access revision without changing grants or capability configuration.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpstreamAccessInput" }
+      responses:
+        "200":
+          description: Access updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
   /routing/upstream-credentials:
     get:
       tags: [Channels]
@@ -4220,6 +4299,38 @@ components:
             override_document:
               allOf: [{ $ref: "#/components/schemas/JsonValue" }]
               description: Stored channel transform overrides returned for administrator editing.
+
+    UpstreamAccessView:
+      type: object
+      required: [id, name, connector_kind, base_url, proxy_id, connect_timeout_ms, response_header_timeout_ms, stream_idle_timeout_ms, enabled, revision, created_at, updated_at, deleted_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        connector_kind: { $ref: "#/components/schemas/ConnectorKind" }
+        base_url: { type: string }
+        proxy_id: { type: string, format: uuid, nullable: true }
+        connect_timeout_ms: { type: integer, minimum: 1, nullable: true }
+        response_header_timeout_ms: { type: integer, minimum: 1, nullable: true }
+        stream_idle_timeout_ms: { type: integer, minimum: 1, nullable: true }
+        enabled: { type: boolean }
+        revision: { type: string, format: uuid }
+        created_at: { $ref: "#/components/schemas/DateTime" }
+        updated_at: { $ref: "#/components/schemas/DateTime" }
+        deleted_at: { type: string, format: date-time, nullable: true }
+
+    UpstreamAccessInput:
+      type: object
+      additionalProperties: false
+      required: [name, connector_kind, base_url, enabled]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        connector_kind: { $ref: "#/components/schemas/ConnectorKind" }
+        base_url: { type: string, minLength: 1 }
+        proxy_id: { type: string, format: uuid, nullable: true }
+        connect_timeout_ms: { type: integer, minimum: 1, nullable: true }
+        response_header_timeout_ms: { type: integer, minimum: 1, nullable: true }
+        stream_idle_timeout_ms: { type: integer, minimum: 1, nullable: true }
+        enabled: { type: boolean }
 
     UpstreamCredentialView:
       type: object

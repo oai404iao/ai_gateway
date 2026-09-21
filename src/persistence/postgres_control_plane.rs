@@ -1216,6 +1216,17 @@ impl From<ConfigTemplateInput> for ConfigTemplateMutationInput {
 }
 
 pub enum ControlPlaneMutation {
+    CreateUpstreamAccess(super::UpstreamAccessInput),
+    UpdateUpstreamAccess {
+        id: Uuid,
+        input: super::UpstreamAccessInput,
+        expected_updated_at: DateTime<Utc>,
+    },
+    SaveOperationRule {
+        id: Uuid,
+        input: super::OperationRuleInput,
+        expected_updated_at: Option<DateTime<Utc>>,
+    },
     CreateUpstreamCredential(super::UpstreamCredentialInput),
     UpdateUpstreamCredential {
         id: Uuid,
@@ -4878,6 +4889,16 @@ pub(crate) fn deleted_api_key_secret(id: Uuid) -> String {
 }
 
 impl PostgresControlPlaneRepository {
+    pub async fn topology(&self) -> Result<super::UpstreamTopologyRecords, RepositoryError> {
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *transaction)
+            .await?;
+        let topology = super::upstream_topology::pg_load(&mut transaction).await?;
+        transaction.commit().await?;
+        Ok(topology)
+    }
+
     pub async fn upstream_credentials(
         &self,
     ) -> Result<Vec<super::UpstreamCredentialView>, RepositoryError> {
@@ -6149,6 +6170,41 @@ impl PostgresControlPlaneRepository {
         mutation: ControlPlaneMutation,
     ) -> Result<MutationResult, RepositoryError> {
         match mutation {
+            ControlPlaneMutation::CreateUpstreamAccess(input) => {
+                super::upstream_topology::accesses::pg_save(
+                    transaction,
+                    Uuid::new_v4(),
+                    &input,
+                    None,
+                )
+                .await
+            }
+            ControlPlaneMutation::UpdateUpstreamAccess {
+                id,
+                input,
+                expected_updated_at,
+            } => {
+                super::upstream_topology::accesses::pg_save(
+                    transaction,
+                    id,
+                    &input,
+                    Some(expected_updated_at),
+                )
+                .await
+            }
+            ControlPlaneMutation::SaveOperationRule {
+                id,
+                input,
+                expected_updated_at,
+            } => {
+                super::upstream_topology::rules::pg_save(
+                    transaction,
+                    id,
+                    &input,
+                    expected_updated_at,
+                )
+                .await
+            }
             ControlPlaneMutation::SaveCodexSharing {
                 id,
                 input,

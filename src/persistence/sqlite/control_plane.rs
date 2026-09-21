@@ -77,6 +77,16 @@ pub struct SqliteControlPlaneRepository {
 }
 
 impl SqliteControlPlaneRepository {
+    pub async fn topology(
+        &self,
+    ) -> Result<crate::persistence::UpstreamTopologyRecords, RepositoryError> {
+        let mut connection = self.read().await?;
+        let mut transaction = connection.begin().await?;
+        let topology = crate::persistence::upstream_topology::sqlite_load(&mut transaction).await?;
+        transaction.commit().await?;
+        Ok(topology)
+    }
+
     pub async fn upstream_credentials(
         &self,
     ) -> Result<Vec<crate::persistence::UpstreamCredentialView>, RepositoryError> {
@@ -4342,6 +4352,41 @@ async fn apply_control_plane_mutation(
     mutation: ControlPlaneMutation,
 ) -> Result<MutationResult, RepositoryError> {
     match mutation {
+        ControlPlaneMutation::CreateUpstreamAccess(input) => {
+            crate::persistence::upstream_topology::accesses::sqlite_save(
+                transaction,
+                Uuid::new_v4(),
+                &input,
+                None,
+            )
+            .await
+        }
+        ControlPlaneMutation::UpdateUpstreamAccess {
+            id,
+            input,
+            expected_updated_at,
+        } => {
+            crate::persistence::upstream_topology::accesses::sqlite_save(
+                transaction,
+                id,
+                &input,
+                Some(expected_updated_at),
+            )
+            .await
+        }
+        ControlPlaneMutation::SaveOperationRule {
+            id,
+            input,
+            expected_updated_at,
+        } => {
+            crate::persistence::upstream_topology::rules::sqlite_save(
+                transaction,
+                id,
+                &input,
+                expected_updated_at,
+            )
+            .await
+        }
         ControlPlaneMutation::SaveCodexSharing {
             id,
             input,

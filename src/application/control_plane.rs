@@ -42,6 +42,12 @@ struct UpstreamClientCleanup {
 }
 
 impl ControlPlaneCoordinator {
+    pub async fn topology(
+        &self,
+    ) -> Result<crate::persistence::UpstreamTopologyRecords, ControlPlaneError> {
+        Ok(self.repository.topology().await?)
+    }
+
     pub async fn upstream_credentials(
         &self,
     ) -> Result<Vec<crate::persistence::UpstreamCredentialView>, ControlPlaneError> {

@@ -19,6 +19,8 @@ use sqlx::SqliteConnection;
 use super::RepositoryError;
 use crate::domain::{ApiOperation, CapabilitySettings, ConnectorKind};
 
+pub mod accesses;
+pub(crate) mod codex;
 pub mod rules;
 mod runtime;
 mod snapshot;

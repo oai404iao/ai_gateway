@@ -110,6 +110,14 @@ pub struct ControlPlaneRepository {
 }
 
 impl ControlPlaneRepository {
+    pub async fn topology(&self) -> Result<super::UpstreamTopologyRecords, RepositoryError> {
+        match &self.backend {
+            Backend::Postgres(repository) => repository.topology().await,
+            #[cfg(feature = "sqlite-backend")]
+            Backend::Sqlite(repository) => repository.topology().await,
+        }
+    }
+
     pub async fn upstream_credentials(
         &self,
     ) -> Result<Vec<super::UpstreamCredentialView>, RepositoryError> {
