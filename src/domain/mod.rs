@@ -4,6 +4,7 @@ mod api_format;
 mod api_key;
 mod api_operation;
 mod billing;
+mod channel_capability;
 pub mod codex_sharing;
 mod compiled_routing;
 mod connector;
@@ -19,6 +20,7 @@ pub use billing::{
     AdvancedBilling, AdvancedBillingError, BillingWeekday, CompiledAdvancedBilling,
     LongContextTier, RequestBillingMultiplier, TimeBillingMultiplier,
 };
+pub use channel_capability::{CapabilityError, CapabilitySettings, CapabilityTransport};
 pub use compiled_routing::{
     ApiKeyPermission, AuthorizationProfile, ChannelTimeoutPolicy, CompiledApiKey,
     CompiledCandidate, CompiledChannel, CompiledChannelGroup, CompiledChannelUpstreamPolicy,

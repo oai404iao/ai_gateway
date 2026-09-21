@@ -24,7 +24,8 @@
 [金额账本实现](development/codex-sharing.md)。该功能仅支持单实例。
 
 上游实体重构计划见[身份、渠道能力与路由目标设计](development/upstream-identity-capabilities.md)；
-其中第一阶段独立凭证身份已实现并通过验收，后续能力与路由阶段仍是设计。
+其中第一阶段独立凭证身份已实现并通过验收；能力与路由改为联合切换，
+目前仅完成迁移规划核心，尚未切换数据库、运行时及 Console。
 当前管理边界见[上游凭证管理](user/upstream-credentials.md)。
 
 ## 来源优先级

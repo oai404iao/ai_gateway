@@ -6,6 +6,7 @@ mod backend_codex;
 mod backend_control_plane;
 mod backend_pipeline;
 mod backend_queries;
+pub mod capability_cutover;
 mod codex;
 mod codex_sharing;
 mod codex_write;
