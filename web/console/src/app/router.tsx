@@ -200,6 +200,42 @@ const AccessesPage = lazy(() =>
 const AccessDetailPage = lazy(() =>
   import("@/features/admin/routing/accesses/access-detail-page").then((m) => ({ default: m.AccessDetailPage })),
 );
+const GroupsPage = lazy(() =>
+  import("@/features/admin/routing/groups/groups-page").then((m) => ({ default: m.GroupsPage })),
+);
+const GroupDetailPage = lazy(() =>
+  import("@/features/admin/routing/groups/group-detail-page").then((m) => ({ default: m.GroupDetailPage })),
+);
+const LogicalChannelsPage = lazy(() =>
+  import("@/features/admin/routing/logical-channels/logical-channels-page").then((m) => ({
+    default: m.LogicalChannelsPage,
+  })),
+);
+const LogicalChannelDetailPage = lazy(() =>
+  import("@/features/admin/routing/logical-channels/logical-channel-detail-page").then((m) => ({
+    default: m.LogicalChannelDetailPage,
+  })),
+);
+const CapabilitiesPage = lazy(() =>
+  import("@/features/admin/routing/capabilities/capabilities-page").then((m) => ({
+    default: m.CapabilitiesPage,
+  })),
+);
+const CapabilityDetailPage = lazy(() =>
+  import("@/features/admin/routing/capabilities/capability-detail-page").then((m) => ({
+    default: m.CapabilityDetailPage,
+  })),
+);
+const OperationRulesPage = lazy(() =>
+  import("@/features/admin/routing/operation-rules/operation-rules-page").then((m) => ({
+    default: m.OperationRulesPage,
+  })),
+);
+const OperationRuleDetailPage = lazy(() =>
+  import("@/features/admin/routing/operation-rules/operation-rule-detail-page").then((m) => ({
+    default: m.OperationRuleDetailPage,
+  })),
+);
 const CredentialsPage = lazy(() =>
   import("@/features/admin/routing/credentials/credentials-page").then((m) => ({ default: m.CredentialsPage })),
 );
@@ -345,6 +381,29 @@ function appRouteElements() {
               <Route path="/admin/routing/channels/:id" element={<ChannelDetailPage />} />
               <Route path="/admin/routing/upstream-credentials" element={<CredentialsPage />} />
               <Route path="/admin/routing/accesses" element={<AccessesPage />} />
+              <Route path="/admin/routing/groups" element={<GroupsPage />} />
+              <Route path="/admin/routing/groups/:id" element={<GroupDetailPage />} />
+              <Route
+                path="/admin/routing/logical-channels"
+                element={<LogicalChannelsPage />}
+              />
+              <Route
+                path="/admin/routing/logical-channels/:id"
+                element={<LogicalChannelDetailPage />}
+              />
+              <Route path="/admin/routing/capabilities" element={<CapabilitiesPage />} />
+              <Route
+                path="/admin/routing/capabilities/:id"
+                element={<CapabilityDetailPage />}
+              />
+              <Route
+                path="/admin/routing/operation-rules"
+                element={<OperationRulesPage />}
+              />
+              <Route
+                path="/admin/routing/operation-rules/:id"
+                element={<OperationRuleDetailPage />}
+              />
               <Route path="/admin/routing/accesses/:id" element={<AccessDetailPage />} />
               <Route path="/admin/routing/upstream-credentials/:id" element={<CredentialDetailPage />} />
               <Route path="/admin/routing/model-rules" element={<ModelRulesPage />} />

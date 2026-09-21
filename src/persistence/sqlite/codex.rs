@@ -11,7 +11,6 @@ use std::collections::{BTreeSet, HashSet};
 use uuid::Uuid;
 
 const CODEX_CONNECTOR_KIND: &str = "codex_oauth";
-const CODEX_RESPONSES_API_FORMAT: &str = "open_ai_responses";
 const QUOTA_WINDOW_IDENTITY_TOLERANCE: Duration = Duration::seconds(90);
 const MANUAL_RESET_MATCH_WINDOW: Duration = Duration::minutes(15);
 
@@ -162,6 +161,13 @@ impl SqliteControlPlaneRepository {
                 input.proxy_id,
             )
             .await?;
+            crate::persistence::upstream_topology::codex::sqlite_update_credential_lifecycle(
+                transaction,
+                channel_id,
+                input.enabled,
+                true,
+            )
+            .await?;
 
             let quota = input.quota.as_ref().filter(|quota| {
                 existing_quota_checked_at.is_none_or(|checked_at| quota.checked_at >= checked_at.0)
@@ -244,22 +250,18 @@ impl SqliteControlPlaneRepository {
         }
 
         let channel_id = Uuid::new_v4();
-        let updated_at = sqlx::query_scalar::<_, SqliteTimestamp>(
-            "INSERT INTO channels \
-             (id,channel_group_id,api_format,name,base_url,enabled,billing_multiplier, \
-              proxy_id,override_document,upstream_auth_kind,available_models, \
-              auto_disable_allowed,supports_websocket,supports_standalone_web_search) \
-             VALUES (?1,?2,?3,?4,?5,true,1,?6,'{}','none',?7,false,true,true) \
-             RETURNING updated_at",
+        crate::persistence::upstream_topology::codex::sqlite_create(
+            transaction,
+            crate::persistence::upstream_topology::codex::CodexCanonicalCreate {
+                credential_id: channel_id,
+                group_id: input.channel_group_id,
+                label: input.label.trim(),
+                base_url: &input.base_url,
+                proxy_id: input.proxy_id,
+                enabled: input.enabled,
+                available_models: &input.available_models,
+            },
         )
-        .bind(SqliteUuid(channel_id))
-        .bind(SqliteUuid(input.channel_group_id))
-        .bind(CODEX_RESPONSES_API_FORMAT)
-        .bind(input.label.trim())
-        .bind(input.base_url)
-        .bind(input.proxy_id.map(SqliteUuid))
-        .bind(sqlx::types::Json(&input.available_models))
-        .fetch_one(&mut **transaction)
         .await?;
 
         let quota = input.quota.as_ref();
@@ -270,7 +272,7 @@ impl SqliteControlPlaneRepository {
         } else {
             "disabled"
         };
-        sqlx::query(
+        let updated_at = sqlx::query_scalar::<_, SqliteTimestamp>(
             "INSERT INTO codex_oauth_credentials \
              (channel_id,channel_group_id,connector_pool_id,label,email,account_id,user_id,plan_type,is_fedramp,id_token, \
               access_token,refresh_token,access_token_expires_at,last_refreshed_at, \
@@ -278,7 +280,8 @@ impl SqliteControlPlaneRepository {
               primary_used_percent,primary_window_seconds,primary_reset_at, \
               secondary_used_percent,secondary_window_seconds,secondary_reset_at, \
               quota_reset_credits_available,quota_checked_at) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27)",
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27) \
+             RETURNING updated_at",
         )
         .bind(SqliteUuid(channel_id))
         .bind(SqliteUuid(input.channel_group_id))
@@ -307,7 +310,7 @@ impl SqliteControlPlaneRepository {
         .bind(quota.and_then(|quota| quota.secondary_reset_at).map(SqliteTimestamp))
         .bind(quota.and_then(|quota| quota.reset_credits_available))
         .bind(quota.map(|quota| quota.checked_at).map(SqliteTimestamp))
-        .execute(&mut **transaction)
+        .fetch_one(&mut **transaction)
         .await?;
         if let Some(quota) = quota {
             reconcile_codex_quota_windows(transaction, channel_id, quota).await?;
@@ -367,6 +370,13 @@ impl SqliteControlPlaneRepository {
             &input.label,
             None,
             input.proxy_id,
+        )
+        .await?;
+        crate::persistence::upstream_topology::codex::sqlite_update_credential_lifecycle(
+            transaction,
+            channel_id,
+            input.enabled,
+            false,
         )
         .await?;
 
@@ -955,6 +965,13 @@ async fn set_codex_credential_enabled(
     .fetch_optional(&mut **transaction)
     .await?
     .ok_or(RepositoryError::Conflict)?;
+    crate::persistence::upstream_topology::codex::sqlite_update_credential_lifecycle(
+        transaction,
+        channel_id,
+        enabled,
+        false,
+    )
+    .await?;
     Ok(MutationResult {
         id: channel_id,
         object_type: "codex_oauth_credential",
@@ -1008,11 +1025,7 @@ async fn delete_codex_credential(
     .fetch_optional(&mut **transaction)
     .await?
     .ok_or(RepositoryError::Conflict)?;
-    sqlx::query("UPDATE channels SET updated_at=ag_now(),name=?2,proxy_id=NULL WHERE id=?1")
-        .bind(SqliteUuid(channel_id))
-        .bind(format!("deleted-codex-{channel_id}"))
-        .execute(&mut **transaction)
-        .await?;
+    crate::persistence::upstream_topology::codex::sqlite_delete(transaction, channel_id).await?;
     Ok(MutationResult {
         id: channel_id,
         object_type: "codex_oauth_credential",
@@ -1211,11 +1224,15 @@ fn open_failure(error: super::SqliteOpenError) -> RepositoryError {
 
 fn credential_select(suffix: &str) -> String {
     format!(
-        "SELECT c.*,ch.proxy_id,ch.available_models,
-      (SELECT json_group_array(channel_id) FROM
-        (SELECT channel_id FROM codex_oauth_credential_channels
-         WHERE credential_id=c.channel_id ORDER BY api_format)) AS projection_channel_ids
-      FROM codex_oauth_credentials c JOIN channels ch ON ch.id=c.channel_id {suffix}"
+        "SELECT c.*,access.proxy_id AS proxy_id,
+      capability.available_models AS available_models,
+      '[]' AS projection_channel_ids
+      FROM codex_oauth_credentials c
+      JOIN upstream_channels channel ON channel.id=c.channel_id
+      JOIN upstream_accesses access ON access.id=channel.access_id
+      LEFT JOIN channel_capabilities capability
+        ON capability.channel_id=channel.id AND capability.operation='responses'
+       AND capability.deleted_at IS NULL {suffix}"
     )
 }
 

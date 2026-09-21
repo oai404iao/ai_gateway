@@ -239,6 +239,44 @@ pub fn router(state: ConsoleState) -> Router {
             get(get_upstream_access).put(update_upstream_access),
         )
         .route(
+            "/console/v1/routing/groups",
+            get(list_routing_groups).post(create_routing_group),
+        )
+        .route(
+            "/console/v1/routing/groups/{id}",
+            get(get_routing_group)
+                .put(update_routing_group)
+                .delete(delete_routing_group),
+        )
+        .route(
+            "/console/v1/routing/logical-channels",
+            get(list_logical_channels).post(create_logical_channel),
+        )
+        .route(
+            "/console/v1/routing/logical-channels/{id}",
+            get(get_logical_channel)
+                .put(update_logical_channel)
+                .delete(delete_logical_channel),
+        )
+        .route(
+            "/console/v1/routing/capabilities",
+            get(list_channel_capabilities).post(create_channel_capability),
+        )
+        .route(
+            "/console/v1/routing/capabilities/{id}",
+            get(get_channel_capability)
+                .put(update_channel_capability)
+                .delete(delete_channel_capability),
+        )
+        .route(
+            "/console/v1/routing/operation-rules",
+            get(list_operation_rules).post(create_operation_rule),
+        )
+        .route(
+            "/console/v1/routing/operation-rules/{id}",
+            get(get_operation_rule).put(update_operation_rule),
+        )
+        .route(
             "/console/v1/routing/upstream-credentials/{id}",
             get(get_upstream_credential)
                 .put(update_upstream_credential)
@@ -1867,6 +1905,329 @@ async fn update_upstream_access(
             id,
             input,
             expected_updated_at: if_match(&headers)?,
+        },
+    )
+    .await
+}
+
+async fn canonical_topology(
+    state: &ConsoleState,
+) -> Result<crate::persistence::UpstreamTopologyRecords, ConsoleError> {
+    Ok(state.coordinator.topology().await?)
+}
+
+async fn list_routing_groups(
+    State(state): State<ConsoleState>,
+) -> Result<Json<Vec<crate::persistence::RoutingGroupRecord>>, ConsoleError> {
+    Ok(Json(
+        canonical_topology(&state)
+            .await?
+            .routing_groups
+            .into_iter()
+            .filter(|group| group.deleted_at.is_none())
+            .collect(),
+    ))
+}
+
+async fn get_routing_group(
+    State(state): State<ConsoleState>,
+    Path(id): Path<Uuid>,
+) -> Result<Response, ConsoleError> {
+    let group = canonical_topology(&state)
+        .await?
+        .routing_groups
+        .into_iter()
+        .find(|group| group.id == id && group.deleted_at.is_none())
+        .ok_or(ConsoleError::NotFound)?;
+    resource_response(to_json(group))
+}
+
+async fn create_routing_group(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Json(input): Json<crate::persistence::RoutingGroupInput>,
+) -> Result<(StatusCode, Json<MutationResponse>), ConsoleError> {
+    mutate_created(
+        &state,
+        principal,
+        ControlPlaneMutation::SaveRoutingGroup {
+            id: Uuid::new_v4(),
+            input,
+            expected: None,
+        },
+    )
+    .await
+}
+
+async fn update_routing_group(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(input): Json<crate::persistence::RoutingGroupInput>,
+) -> Result<Json<MutationResponse>, ConsoleError> {
+    mutate(
+        &state,
+        principal,
+        ControlPlaneMutation::SaveRoutingGroup {
+            id,
+            input,
+            expected: Some(if_match(&headers)?),
+        },
+    )
+    .await
+}
+
+async fn delete_routing_group(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<MutationResponse>, ConsoleError> {
+    mutate(
+        &state,
+        principal,
+        ControlPlaneMutation::DeleteRoutingGroup {
+            id,
+            expected: if_match(&headers)?,
+        },
+    )
+    .await
+}
+
+async fn list_logical_channels(
+    State(state): State<ConsoleState>,
+) -> Result<Json<Vec<crate::persistence::LogicalChannelRecord>>, ConsoleError> {
+    Ok(Json(
+        canonical_topology(&state)
+            .await?
+            .logical_channels
+            .into_iter()
+            .filter(|channel| channel.deleted_at.is_none())
+            .collect(),
+    ))
+}
+
+async fn get_logical_channel(
+    State(state): State<ConsoleState>,
+    Path(id): Path<Uuid>,
+) -> Result<Response, ConsoleError> {
+    let channel = canonical_topology(&state)
+        .await?
+        .logical_channels
+        .into_iter()
+        .find(|channel| channel.id == id && channel.deleted_at.is_none())
+        .ok_or(ConsoleError::NotFound)?;
+    resource_response(to_json(channel))
+}
+
+async fn create_logical_channel(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Json(input): Json<crate::persistence::LogicalChannelInput>,
+) -> Result<(StatusCode, Json<MutationResponse>), ConsoleError> {
+    mutate_created(
+        &state,
+        principal,
+        ControlPlaneMutation::SaveLogicalChannel {
+            id: Uuid::new_v4(),
+            input,
+            expected: None,
+        },
+    )
+    .await
+}
+
+async fn update_logical_channel(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(input): Json<crate::persistence::LogicalChannelInput>,
+) -> Result<Json<MutationResponse>, ConsoleError> {
+    mutate(
+        &state,
+        principal,
+        ControlPlaneMutation::SaveLogicalChannel {
+            id,
+            input,
+            expected: Some(if_match(&headers)?),
+        },
+    )
+    .await
+}
+
+async fn delete_logical_channel(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<MutationResponse>, ConsoleError> {
+    mutate(
+        &state,
+        principal,
+        ControlPlaneMutation::DeleteLogicalChannel {
+            id,
+            expected: if_match(&headers)?,
+        },
+    )
+    .await
+}
+
+async fn list_channel_capabilities(
+    State(state): State<ConsoleState>,
+) -> Result<Json<Vec<crate::persistence::ChannelCapabilityRecord>>, ConsoleError> {
+    Ok(Json(
+        canonical_topology(&state)
+            .await?
+            .channel_capabilities
+            .into_iter()
+            .filter(|capability| capability.deleted_at.is_none())
+            .collect(),
+    ))
+}
+
+async fn get_channel_capability(
+    State(state): State<ConsoleState>,
+    Path(id): Path<Uuid>,
+) -> Result<Response, ConsoleError> {
+    let capability = canonical_topology(&state)
+        .await?
+        .channel_capabilities
+        .into_iter()
+        .find(|capability| capability.id == id && capability.deleted_at.is_none())
+        .ok_or(ConsoleError::NotFound)?;
+    resource_response(to_json(capability))
+}
+
+async fn create_channel_capability(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Json(input): Json<crate::persistence::ChannelCapabilityInput>,
+) -> Result<(StatusCode, Json<MutationResponse>), ConsoleError> {
+    mutate_created(
+        &state,
+        principal,
+        ControlPlaneMutation::SaveChannelCapability {
+            id: Uuid::new_v4(),
+            input,
+            expected: None,
+        },
+    )
+    .await
+}
+
+async fn update_channel_capability(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(input): Json<crate::persistence::ChannelCapabilityInput>,
+) -> Result<Json<MutationResponse>, ConsoleError> {
+    mutate(
+        &state,
+        principal,
+        ControlPlaneMutation::SaveChannelCapability {
+            id,
+            input,
+            expected: Some(if_match(&headers)?),
+        },
+    )
+    .await
+}
+
+async fn delete_channel_capability(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<MutationResponse>, ConsoleError> {
+    mutate(
+        &state,
+        principal,
+        ControlPlaneMutation::DeleteChannelCapability {
+            id,
+            expected: if_match(&headers)?,
+        },
+    )
+    .await
+}
+
+/// Projects one rule and its tier graph into the atomic input shape the Console
+/// edits, plus the version fields used for `ETag`/`If-Match`.
+fn operation_rule_view(
+    topology: &crate::persistence::UpstreamTopologyRecords,
+    rule: &crate::persistence::OperationRuleRecord,
+) -> serde_json::Value {
+    let mut value = to_json(crate::persistence::upstream_topology::rules::rule_input(
+        topology, rule,
+    ));
+    let object = value
+        .as_object_mut()
+        .expect("operation rule input serializes to an object");
+    object.insert("id".into(), to_json(rule.id));
+    object.insert("created_at".into(), to_json(rule.created_at));
+    object.insert("updated_at".into(), to_json(rule.updated_at));
+    value
+}
+
+async fn list_operation_rules(
+    State(state): State<ConsoleState>,
+) -> Result<Json<Vec<serde_json::Value>>, ConsoleError> {
+    let topology = canonical_topology(&state).await?;
+    Ok(Json(
+        topology
+            .operation_rules
+            .iter()
+            .map(|rule| operation_rule_view(&topology, rule))
+            .collect(),
+    ))
+}
+
+async fn get_operation_rule(
+    State(state): State<ConsoleState>,
+    Path(id): Path<Uuid>,
+) -> Result<Response, ConsoleError> {
+    let topology = canonical_topology(&state).await?;
+    let rule = topology
+        .operation_rules
+        .iter()
+        .find(|rule| rule.id == id)
+        .ok_or(ConsoleError::NotFound)?;
+    resource_response(operation_rule_view(&topology, rule))
+}
+
+async fn create_operation_rule(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Json(input): Json<crate::persistence::OperationRuleInput>,
+) -> Result<(StatusCode, Json<MutationResponse>), ConsoleError> {
+    mutate_created(
+        &state,
+        principal,
+        ControlPlaneMutation::SaveOperationRule {
+            id: Uuid::new_v4(),
+            input,
+            expected_updated_at: None,
+        },
+    )
+    .await
+}
+
+async fn update_operation_rule(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(input): Json<crate::persistence::OperationRuleInput>,
+) -> Result<Json<MutationResponse>, ConsoleError> {
+    mutate(
+        &state,
+        principal,
+        ControlPlaneMutation::SaveOperationRule {
+            id,
+            input,
+            expected_updated_at: Some(if_match(&headers)?),
         },
     )
     .await

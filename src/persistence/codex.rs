@@ -431,10 +431,10 @@ LEFT JOIN LATERAL ( \
             WHERE period.window_kind='secondary' \
         ),0) END AS secondary_window_cost_amount \
     FROM codex_quota_window_periods AS period \
-    LEFT JOIN codex_oauth_credential_channels AS projection \
-      ON projection.credential_id=credential.channel_id \
+    LEFT JOIN channel_identity_registry AS identity \
+      ON identity.codex_credential_id=credential.channel_id \
     LEFT JOIN request_metering_facts AS log \
-      ON log.channel_id=projection.channel_id \
+      ON log.channel_id=identity.id \
      AND log.cost_amount IS NOT NULL \
      AND log.started_at>=period.started_at \
      AND log.started_at<LEAST(now(),period.scheduled_reset_at) \
@@ -534,9 +534,9 @@ impl PostgresControlPlaneRepository {
              FROM ranked AS period \
              LEFT JOIN LATERAL ( \
                  SELECT sum(log.cost_amount) AS cost_amount \
-                 FROM codex_oauth_credential_channels AS projection \
-                 JOIN request_metering_facts AS log ON log.channel_id=projection.channel_id \
-                 WHERE projection.credential_id=period.credential_id \
+                 FROM channel_identity_registry AS identity \
+                 JOIN request_metering_facts AS log ON log.channel_id=identity.id \
+                 WHERE identity.codex_credential_id=period.credential_id \
                    AND log.cost_amount IS NOT NULL \
                    AND log.started_at>=period.started_at \
                    AND log.started_at<COALESCE( \
@@ -646,9 +646,9 @@ impl PostgresControlPlaneRepository {
              FROM ranked AS period \
              LEFT JOIN LATERAL ( \
                  SELECT sum(log.cost_amount) AS cost_amount \
-                 FROM codex_oauth_credential_channels AS projection \
-                 JOIN request_metering_facts AS log ON log.channel_id=projection.channel_id \
-                 WHERE projection.credential_id=$2 \
+                 FROM channel_identity_registry AS identity \
+                 JOIN request_metering_facts AS log ON log.channel_id=identity.id \
+                 WHERE identity.codex_credential_id=$2 \
                    AND log.cost_amount IS NOT NULL \
                    AND log.started_at>=period.started_at \
                    AND log.started_at<COALESCE( \
@@ -694,7 +694,7 @@ impl PostgresControlPlaneRepository {
         channel_id: Uuid,
     ) -> Result<Option<CodexCredentialRecord>, RepositoryError> {
         sqlx::query_as::<_, CodexCredentialRecord>(sqlx::AssertSqlSafe(credential_select(
-            "WHERE c.channel_id=$1 AND c.deleted_at IS NULL FOR UPDATE OF c,ch",
+            "WHERE c.channel_id=$1 AND c.deleted_at IS NULL FOR UPDATE OF c,channel",
         )))
         .bind(channel_id)
         .fetch_optional(&mut **transaction)
@@ -970,6 +970,13 @@ impl PostgresControlPlaneRepository {
                 input.proxy_id,
             )
             .await?;
+            super::upstream_topology::codex::pg_update_credential_lifecycle(
+                transaction,
+                channel_id,
+                input.enabled,
+                true,
+            )
+            .await?;
 
             let quota = input.quota.as_ref().filter(|quota| {
                 existing_quota_checked_at.is_none_or(|checked_at| quota.checked_at >= checked_at)
@@ -1052,22 +1059,18 @@ impl PostgresControlPlaneRepository {
         }
 
         let channel_id = Uuid::new_v4();
-        let updated_at = sqlx::query_scalar::<_, DateTime<Utc>>(
-            "INSERT INTO channels \
-             (id,channel_group_id,api_format,name,base_url,enabled,billing_multiplier, \
-              proxy_id,override_document,upstream_auth_kind,available_models, \
-              auto_disable_allowed,supports_websocket,supports_standalone_web_search) \
-             VALUES ($1,$2,$3::api_format,$4,$5,true,1,$6,'{}','none',$7,false,true,true) \
-             RETURNING updated_at",
+        super::upstream_topology::codex::pg_create(
+            transaction,
+            super::upstream_topology::codex::CodexCanonicalCreate {
+                credential_id: channel_id,
+                group_id: input.channel_group_id,
+                label: input.label.trim(),
+                base_url: &input.base_url,
+                proxy_id: input.proxy_id,
+                enabled: input.enabled,
+                available_models: &input.available_models,
+            },
         )
-        .bind(channel_id)
-        .bind(input.channel_group_id)
-        .bind(CODEX_RESPONSES_API_FORMAT)
-        .bind(input.label.trim())
-        .bind(input.base_url)
-        .bind(input.proxy_id)
-        .bind(&input.available_models)
-        .fetch_one(&mut **transaction)
         .await?;
 
         let quota = input.quota.as_ref();
@@ -1078,7 +1081,7 @@ impl PostgresControlPlaneRepository {
         } else {
             "disabled"
         };
-        sqlx::query(
+        let updated_at = sqlx::query_scalar::<_, DateTime<Utc>>(
             "INSERT INTO codex_oauth_credentials \
              (channel_id,channel_group_id,connector_pool_id,label,email,account_id,user_id,plan_type,is_fedramp,id_token, \
               access_token,refresh_token,access_token_expires_at,last_refreshed_at, \
@@ -1086,7 +1089,8 @@ impl PostgresControlPlaneRepository {
               primary_used_percent,primary_window_seconds,primary_reset_at, \
               secondary_used_percent,secondary_window_seconds,secondary_reset_at, \
               quota_reset_credits_available,quota_checked_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)",
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27) \
+             RETURNING updated_at",
         )
         .bind(channel_id)
         .bind(input.channel_group_id)
@@ -1115,7 +1119,7 @@ impl PostgresControlPlaneRepository {
         .bind(quota.and_then(|quota| quota.secondary_reset_at))
         .bind(quota.and_then(|quota| quota.reset_credits_available))
         .bind(quota.map(|quota| quota.checked_at))
-        .execute(&mut **transaction)
+        .fetch_one(&mut **transaction)
         .await?;
         if let Some(quota) = quota {
             reconcile_codex_quota_windows(transaction, channel_id, quota).await?;
@@ -1175,6 +1179,13 @@ impl PostgresControlPlaneRepository {
             &input.label,
             None,
             input.proxy_id,
+        )
+        .await?;
+        super::upstream_topology::codex::pg_update_credential_lifecycle(
+            transaction,
+            channel_id,
+            input.enabled,
+            false,
         )
         .await?;
 
@@ -1773,10 +1784,15 @@ fn credential_view_select(suffix: &str) -> String {
                 credential.secondary_reset_at,window_costs.secondary_window_cost_amount, \
                 credential.quota_reset_credits_available,credential.quota_checked_at, \
                 credential.last_error_code,credential.last_error_summary, \
-                channel.proxy_id,credential.enabled,channel.available_models, \
+                access.proxy_id,credential.enabled, \
+                COALESCE(capability.available_models,ARRAY[]::text[]) AS available_models, \
                 credential.created_at,credential.updated_at \
          FROM codex_oauth_credentials AS credential \
-         JOIN channels AS channel ON channel.id=credential.channel_id \
+         JOIN upstream_channels AS channel ON channel.id=credential.channel_id \
+         JOIN upstream_accesses AS access ON access.id=channel.access_id \
+         LEFT JOIN channel_capabilities AS capability \
+           ON capability.channel_id=channel.id AND capability.operation='responses' \
+          AND capability.deleted_at IS NULL \
          {CODEX_CURRENT_WINDOW_COSTS_LATERAL} \
          {suffix}"
     )
@@ -1813,12 +1829,7 @@ fn self_credential_view_select(
 fn credential_select(suffix: &str) -> String {
     format!(
         "SELECT c.channel_id,c.channel_group_id,c.connector_pool_id, \
-                ARRAY( \
-                    SELECT projection.channel_id \
-                    FROM codex_oauth_credential_channels AS projection \
-                    WHERE projection.credential_id=c.channel_id \
-                    ORDER BY projection.api_format \
-                ) AS projection_channel_ids, \
+                ARRAY[]::uuid[] AS projection_channel_ids, \
                 c.label,c.email,c.account_id,c.user_id,c.plan_type, \
                 c.is_fedramp,c.id_token,c.access_token,c.refresh_token, \
                 c.access_token_expires_at,c.last_refreshed_at,c.refresh_generation, \
@@ -1828,8 +1839,16 @@ fn credential_select(suffix: &str) -> String {
                 c.primary_reset_at,c.secondary_used_percent,c.secondary_window_seconds, \
                 c.secondary_reset_at,c.quota_reset_credits_available,c.quota_checked_at, \
                 c.last_error_code,c.last_error_summary, \
-                ch.proxy_id,c.enabled,ch.available_models,c.created_at,c.updated_at \
-         FROM codex_oauth_credentials c JOIN channels ch ON ch.id=c.channel_id {suffix}"
+                access.proxy_id,c.enabled, \
+                COALESCE(capability.available_models,ARRAY[]::text[]) AS available_models, \
+                c.created_at,c.updated_at \
+         FROM codex_oauth_credentials c \
+         JOIN upstream_channels channel ON channel.id=c.channel_id \
+         JOIN upstream_accesses access ON access.id=channel.access_id \
+         LEFT JOIN channel_capabilities capability \
+           ON capability.channel_id=channel.id AND capability.operation='responses' \
+          AND capability.deleted_at IS NULL \
+         {suffix}"
     )
 }
 
@@ -1949,6 +1968,13 @@ async fn set_codex_credential_enabled(
     .fetch_optional(&mut **transaction)
     .await?
     .ok_or(RepositoryError::Conflict)?;
+    super::upstream_topology::codex::pg_update_credential_lifecycle(
+        transaction,
+        channel_id,
+        enabled,
+        false,
+    )
+    .await?;
     Ok(MutationResult {
         id: channel_id,
         object_type: "codex_oauth_credential",
@@ -2002,11 +2028,7 @@ async fn delete_codex_credential(
     .fetch_optional(&mut **transaction)
     .await?
     .ok_or(RepositoryError::Conflict)?;
-    sqlx::query("UPDATE channels SET name=$2,proxy_id=NULL WHERE id=$1")
-        .bind(channel_id)
-        .bind(format!("deleted-codex-{channel_id}"))
-        .execute(&mut **transaction)
-        .await?;
+    super::upstream_topology::codex::pg_delete(transaction, channel_id).await?;
     Ok(MutationResult {
         id: channel_id,
         object_type: "codex_oauth_credential",

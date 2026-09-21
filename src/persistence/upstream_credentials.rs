@@ -1,6 +1,6 @@
 //! Shared credential contracts, scope enforcement, and PostgreSQL identity operations.
 
-use std::{collections::HashMap, fmt};
+use std::fmt;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use sqlx::{PgConnection, Postgres, Transaction};
 use uuid::Uuid;
 
-use super::{ChannelGroupRecord, ChannelRecord, MutationResult, RepositoryError};
+use super::{MutationResult, RepositoryError};
 use crate::domain::{CredentialTarget, UpstreamAuth};
 
 #[derive(Clone, Copy, Debug)]
@@ -229,68 +229,6 @@ pub(crate) fn prepare_record(
     Ok(record)
 }
 
-pub(crate) fn resolve_bindings(
-    channels: &mut [ChannelRecord],
-    groups: &[ChannelGroupRecord],
-    credentials: &[CredentialRecord],
-    bindings: &[CredentialBinding],
-) -> Result<(), RepositoryError> {
-    let credentials = credentials
-        .iter()
-        .map(|credential| (credential.id, credential))
-        .collect::<HashMap<_, _>>();
-    for credential in credentials.values() {
-        credential.validate()?;
-    }
-    let bindings = bindings
-        .iter()
-        .map(|(channel, credential, projection, revision)| {
-            (*channel, (*credential, *projection, *revision))
-        })
-        .collect::<HashMap<_, _>>();
-    let groups = groups
-        .iter()
-        .map(|group| (group.id, group.connector_kind.as_str()))
-        .collect::<HashMap<_, _>>();
-    for channel in channels {
-        let (credential_id, projection, binding_revision) = bindings
-            .get(&channel.id)
-            .copied()
-            .ok_or(RepositoryError::Validation)?;
-        channel.credential_binding_revision = binding_revision;
-        let managed = groups.get(&channel.channel_group_id) == Some(&"codex_oauth");
-        if managed && (projection.is_none() || projection != credential_id) {
-            return Err(RepositoryError::Validation);
-        }
-        channel.upstream_auth_kind = "none".into();
-        channel.upstream_auth_header_name = None;
-        channel.upstream_api_key = None;
-        channel.credential = None;
-        let Some(id) = credential_id else {
-            continue;
-        };
-        let credential = credentials.get(&id).ok_or(RepositoryError::Validation)?;
-        if managed != (credential.kind == "codex_oauth") {
-            return Err(RepositoryError::Validation);
-        }
-        channel.credential = Some(CredentialIdentity {
-            id,
-            revision: credential.revision,
-        });
-        if !managed {
-            if credential.deleted_at.is_some() {
-                return Err(RepositoryError::Validation);
-            }
-            credential.allows_target(&channel.base_url)?;
-            channel.enabled &= credential.enabled;
-            channel.upstream_auth_kind = credential.kind.clone();
-            channel.upstream_auth_header_name = credential.header_name.clone();
-            channel.upstream_api_key = credential.secret.clone();
-        }
-    }
-    Ok(())
-}
-
 pub(crate) async fn pg_records(
     connection: &mut PgConnection,
 ) -> Result<Vec<CredentialRecord>, RepositoryError> {
@@ -307,9 +245,10 @@ pub(crate) async fn pg_records(
 pub(crate) async fn pg_bindings(
     connection: &mut PgConnection,
 ) -> Result<Vec<CredentialBinding>, RepositoryError> {
+    // Live canonical logical channels own credential scope, including disabled
+    // and unrouted drafts; the legacy physical channel table is no longer read.
     Ok(sqlx::query_as(
-        "SELECT c.id,c.credential_id,p.credential_id,c.credential_binding_revision FROM channels c
-         LEFT JOIN codex_oauth_credential_channels p ON p.channel_id=c.id
+        "SELECT c.id,c.credential_id,NULL::uuid,c.binding_revision FROM upstream_channels c \
          WHERE c.deleted_at IS NULL ORDER BY c.id",
     )
     .fetch_all(connection)
@@ -339,7 +278,9 @@ pub(crate) async fn pg_save(
     };
     let record = prepare_record(id, input, previous.as_ref(), expected)?;
     for target in sqlx::query_scalar::<_, String>(
-        "SELECT base_url FROM channels WHERE credential_id=$1 AND deleted_at IS NULL",
+        "SELECT access.base_url FROM upstream_channels channel \
+         JOIN upstream_accesses access ON access.id=channel.access_id \
+         WHERE channel.credential_id=$1 AND channel.deleted_at IS NULL",
     )
     .bind(id)
     .fetch_all(&mut **transaction)

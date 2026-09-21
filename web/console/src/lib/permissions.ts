@@ -1,5 +1,7 @@
 import type {
   ApiFormat,
+  ApiOperation,
+  CapabilityTransport,
   ConnectorKind,
   RequestCompression,
   SelectionStrategy,
@@ -24,6 +26,21 @@ export const CONNECTOR_KINDS: readonly ConnectorKind[] = [
 ];
 
 export const REQUEST_COMPRESSIONS: readonly RequestCompression[] = ["default", "zstd"];
+
+export const API_OPERATIONS: readonly ApiOperation[] = [
+  "chat_completions",
+  "responses",
+  "standalone_web_search",
+  "images_generation",
+  "images_edit",
+];
+
+export const CAPABILITY_TRANSPORTS: readonly CapabilityTransport[] = [
+  "http_json",
+  "http_sse",
+  "websocket",
+  "multipart",
+];
 
 
 /** Permissions recognized by the data plane. */
@@ -78,6 +95,35 @@ export function connectorKindLabel(value: ConnectorKind): string {
 
 export function requestCompressionLabel(value: RequestCompression): string {
   return value === "default" ? translate("Default") : "Zstandard (zstd)";
+}
+
+/** OpenAI operation names intentionally remain in English product terms. */
+export function apiOperationLabel(value: ApiOperation): string {
+  switch (value) {
+    case "chat_completions":
+      return "Chat Completions";
+    case "responses":
+      return "Responses";
+    case "standalone_web_search":
+      return "Standalone web search";
+    case "images_generation":
+      return "Images generation";
+    case "images_edit":
+      return "Images edit";
+  }
+}
+
+export function capabilityTransportLabel(value: CapabilityTransport): string {
+  switch (value) {
+    case "http_json":
+      return "HTTP JSON";
+    case "http_sse":
+      return "HTTP SSE";
+    case "websocket":
+      return "WebSocket";
+    case "multipart":
+      return "Multipart";
+  }
 }
 
 export function outcomeLabel(value: string): string {

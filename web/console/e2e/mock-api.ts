@@ -350,6 +350,88 @@ const E2E_ROUTING_CHANNELS = [
 ];
 export const E2E_STANDARD_CHANNEL_ID = E2E_ROUTING_CHANNELS[0].id;
 
+const E2E_ROUTING_GROUP_ID = "00000000-0000-0000-0000-0000000002a0";
+
+const E2E_ROUTING_GROUPS = [
+  {
+    id: E2E_ROUTING_GROUP_ID,
+    name: "Standard group",
+    enabled: true,
+    sharing_only: false,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-02T00:00:00Z",
+    deleted_at: null,
+  },
+];
+
+const E2E_LOGICAL_CHANNELS = [
+  {
+    id: E2E_STANDARD_CHANNEL_ID,
+    group_id: E2E_ROUTING_GROUP_ID,
+    access_id: "00000000-0000-0000-0000-0000000000a1",
+    credential_id: null,
+    name: "Upstream A",
+    enabled: true,
+    binding_revision: "00000000-0000-0000-0000-0000000000b1",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-02T00:00:00Z",
+    deleted_at: null,
+  },
+];
+
+const E2E_CHANNEL_CAPABILITIES = [
+  {
+    id: "00000000-0000-0000-0000-0000000000c1",
+    channel_id: E2E_STANDARD_CHANNEL_ID,
+    settings: {
+      operation: "chat_completions",
+      transports: ["http_json"],
+      enabled: true,
+      available_models: ["gpt-5"],
+      request_compression: "default",
+      test_model: null,
+      test_pricing_model_id: null,
+      auto_disable_allowed: false,
+    },
+    auto_disabled: false,
+    auto_disable_reason: null,
+    auto_disable_at: null,
+    status_statistics_enabled: false,
+    config_template_id: null,
+    override_document: {},
+    billing_multiplier: "1",
+    revision: "00000000-0000-0000-0000-0000000000c2",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-02T00:00:00Z",
+    deleted_at: null,
+  },
+];
+
+const E2E_OPERATION_RULES = [
+  {
+    id: "00000000-0000-0000-0000-0000000000d1",
+    model_routing_profile_id: "00000000-0000-0000-0000-0000000000d2",
+    operation: "chat_completions",
+    enabled: true,
+    routing_tiers: [
+      {
+        priority: 0,
+        selection_strategy: "weighted_random",
+        candidates: [
+          {
+            capability_id: "00000000-0000-0000-0000-0000000000c1",
+            upstream_model: "gpt-5",
+            weight: 1,
+          },
+        ],
+      },
+    ],
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-02T00:00:00Z",
+  },
+];
+
+
 export const E2E_SEARCH_MODEL_RULE = {
   id: "00000000-0000-0000-0000-000000000124",
   model_id: E2E_SEARCH_MODEL.id,
@@ -1294,6 +1376,62 @@ export async function mockConsoleApi(page: Page): Promise<void> {
           id: E2E_STANDARD_CHANNEL_ID,
           correlation_id: "00000000-0000-0000-0000-0000000003ff",
         },
+      });
+    }
+    if (path === "/console/v1/routing/accesses" && method === "GET") {
+      return route.fulfill({ status: 200, json: [] });
+    }
+    if (path === "/console/v1/routing/groups" && method === "GET") {
+      return route.fulfill({ status: 200, json: E2E_ROUTING_GROUPS });
+    }
+    if (
+      path === `/console/v1/routing/groups/${E2E_STANDARD_GROUP_ID}` &&
+      method === "GET"
+    ) {
+      return route.fulfill({
+        status: 200,
+        headers: { ETag: `"${E2E_ROUTING_GROUPS[0].updated_at}"` },
+        json: E2E_ROUTING_GROUPS[0],
+      });
+    }
+    if (path === "/console/v1/routing/logical-channels" && method === "GET") {
+      return route.fulfill({ status: 200, json: E2E_LOGICAL_CHANNELS });
+    }
+    if (
+      path === `/console/v1/routing/logical-channels/${E2E_STANDARD_CHANNEL_ID}` &&
+      method === "GET"
+    ) {
+      return route.fulfill({
+        status: 200,
+        headers: { ETag: `"${E2E_LOGICAL_CHANNELS[0].updated_at}"` },
+        json: E2E_LOGICAL_CHANNELS[0],
+      });
+    }
+    if (path === "/console/v1/routing/capabilities" && method === "GET") {
+      return route.fulfill({ status: 200, json: E2E_CHANNEL_CAPABILITIES });
+    }
+    if (
+      path ===
+        `/console/v1/routing/capabilities/${E2E_CHANNEL_CAPABILITIES[0].id}` &&
+      method === "GET"
+    ) {
+      return route.fulfill({
+        status: 200,
+        headers: { ETag: `"${E2E_CHANNEL_CAPABILITIES[0].updated_at}"` },
+        json: E2E_CHANNEL_CAPABILITIES[0],
+      });
+    }
+    if (path === "/console/v1/routing/operation-rules" && method === "GET") {
+      return route.fulfill({ status: 200, json: E2E_OPERATION_RULES });
+    }
+    if (
+      path === `/console/v1/routing/operation-rules/${E2E_OPERATION_RULES[0].id}` &&
+      method === "GET"
+    ) {
+      return route.fulfill({
+        status: 200,
+        headers: { ETag: `"${E2E_OPERATION_RULES[0].updated_at}"` },
+        json: E2E_OPERATION_RULES[0],
       });
     }
     if (path === "/console/v1/routing/model-rules" && method === "GET") {

@@ -907,6 +907,149 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/routing/groups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Administrator-only canonical routing groups, excluding tombstones. */
+        get: operations["listRoutingGroups"];
+        put?: never;
+        /** @description Creates an organization-only group. It never creates channels, enables capabilities, configures routes, or grants API key access. */
+        post: operations["createRoutingGroup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/routing/groups/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getRoutingGroup"];
+        /** @description Replaces organization and the sharing switch. Enabling sharing-only requires every live member channel to use the Codex OAuth connector and never grants access by itself. */
+        put: operations["updateRoutingGroup"];
+        post?: never;
+        /** @description Soft-deletes the group. Any non-deleted member channel, including disabled or unrouted channels, blocks deletion; nothing cascades. */
+        delete: operations["deleteRoutingGroup"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/routing/logical-channels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Administrator-only canonical logical channels, excluding tombstones. */
+        get: operations["listLogicalChannels"];
+        put?: never;
+        /** @description Binds one access and at most one credential to a group. It never creates capabilities, routes, or grants. */
+        post: operations["createLogicalChannel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/routing/logical-channels/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getLogicalChannel"];
+        /** @description Replaces the group/access/credential binding. `credential_id` is required and nullable; omitting it is rejected. Rebinding invalidates connection identity. */
+        put: operations["updateLogicalChannel"];
+        post?: never;
+        /** @description Soft-deletes the logical channel. Shared credentials and accesses are never deleted with it. */
+        delete: operations["deleteLogicalChannel"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/routing/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Administrator-only canonical channel capabilities, excluding tombstones. */
+        get: operations["listChannelCapabilities"];
+        put?: never;
+        /** @description Declares one operation, transport set and model catalog for an ordinary logical channel. Codex capability identities are created by credential import. It never enables routing or grants access. */
+        post: operations["createChannelCapability"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/routing/capabilities/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getChannelCapability"];
+        /** @description Replaces transports, catalog, transforms and compression. The owning channel and operation are immutable. Existing Codex capabilities can be configured independently. Changes invalidate the capability revision without rewriting routes or grants. */
+        put: operations["updateChannelCapability"];
+        post?: never;
+        /** @description Soft-deletes an ordinary capability. Dependent routing candidates must be withdrawn first. Codex capabilities are deleted through their credential lifecycle. */
+        delete: operations["deleteChannelCapability"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/routing/operation-rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Administrator-only per-operation routing rules with their explicit capability/model tiers. */
+        get: operations["listOperationRules"];
+        put?: never;
+        /** @description Creates one operation rule and replaces its tier graph atomically. Candidates reference a capability and wire model; they never reference legacy channels. */
+        post: operations["createOperationRule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/routing/operation-rules/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getOperationRule"];
+        /** @description Replaces the tier graph atomically. The model routing profile and operation are immutable. Every candidate must resolve to a live capability of the same operation advertising the wire model. */
+        put: operations["updateOperationRule"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/routing/upstream-credentials": {
         parameters: {
             query?: never;
@@ -2479,6 +2622,137 @@ export interface components {
             response_header_timeout_ms?: number | null;
             stream_idle_timeout_ms?: number | null;
             enabled: boolean;
+        };
+        RoutingGroupView: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            enabled: boolean;
+            /** @description Codex-only. When set, every live member channel must use the Codex OAuth connector. */
+            sharing_only: boolean;
+            created_at: components["schemas"]["DateTime"];
+            updated_at: components["schemas"]["DateTime"];
+            /** Format: date-time */
+            deleted_at: string | null;
+        };
+        RoutingGroupInput: {
+            name: string;
+            enabled: boolean;
+            /**
+             * @description Codex-only; rejected unless every live member channel uses the Codex OAuth connector.
+             * @default false
+             */
+            sharing_only: boolean;
+        };
+        LogicalChannelView: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            group_id: string;
+            /** Format: uuid */
+            access_id: string;
+            /**
+             * Format: uuid
+             * @description Null means the channel sends no upstream authentication.
+             */
+            credential_id: string | null;
+            name: string;
+            enabled: boolean;
+            /** Format: uuid */
+            binding_revision: string;
+            created_at: components["schemas"]["DateTime"];
+            updated_at: components["schemas"]["DateTime"];
+            /** Format: date-time */
+            deleted_at: string | null;
+        };
+        LogicalChannelInput: {
+            /** Format: uuid */
+            group_id: string;
+            /** Format: uuid */
+            access_id: string;
+            /**
+             * Format: uuid
+             * @description Required and nullable. Omitting the field is rejected so an update can never silently detach authentication.
+             */
+            credential_id: string | null;
+            name: string;
+            enabled: boolean;
+        };
+        /** @enum {string} */
+        CapabilityTransport: "http_json" | "http_sse" | "websocket" | "multipart";
+        CapabilitySettings: {
+            operation: components["schemas"]["ApiOperation"];
+            /** @description Only connector-implemented operation/transport combinations are accepted. */
+            transports: components["schemas"]["CapabilityTransport"][];
+            enabled: boolean;
+            available_models: string[];
+            request_compression: components["schemas"]["RequestCompression"];
+            test_model: string | null;
+            /**
+             * Format: uuid
+             * @description Probe pricing model; both probe fields are set or null together.
+             */
+            test_pricing_model_id: string | null;
+            auto_disable_allowed: boolean;
+        };
+        ChannelCapabilityView: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            channel_id: string;
+            settings: components["schemas"]["CapabilitySettings"];
+            auto_disabled: boolean;
+            auto_disable_reason: string | null;
+            /** Format: date-time */
+            auto_disable_at: string | null;
+            status_statistics_enabled: boolean;
+            /** Format: uuid */
+            config_template_id: string | null;
+            /** @description Stored capability transform overrides returned for administrator editing. */
+            override_document: components["schemas"]["JsonValue"];
+            billing_multiplier: components["schemas"]["Decimal"];
+            /** Format: uuid */
+            revision: string;
+            created_at: components["schemas"]["DateTime"];
+            updated_at: components["schemas"]["DateTime"];
+            /** Format: date-time */
+            deleted_at: string | null;
+        };
+        ChannelCapabilityInput: {
+            /** Format: uuid */
+            channel_id: string;
+            settings: components["schemas"]["CapabilitySettings"];
+            /** @default false */
+            status_statistics_enabled: boolean;
+            /** Format: uuid */
+            config_template_id?: string | null;
+            /** @default {} */
+            override_document: components["schemas"]["JsonValue"];
+            billing_multiplier?: components["schemas"]["Decimal"];
+        };
+        OperationCandidateInput: {
+            /** Format: uuid */
+            capability_id: string;
+            upstream_model: string;
+            weight: number;
+        };
+        OperationTierInput: {
+            priority: number;
+            selection_strategy: components["schemas"]["SelectionStrategy"];
+            candidates: components["schemas"]["OperationCandidateInput"][];
+        };
+        OperationRuleInput: {
+            /** Format: uuid */
+            model_routing_profile_id: string;
+            operation: components["schemas"]["ApiOperation"];
+            enabled: boolean;
+            routing_tiers: components["schemas"]["OperationTierInput"][];
+        };
+        OperationRuleView: components["schemas"]["OperationRuleInput"] & {
+            /** Format: uuid */
+            id: string;
+            created_at: components["schemas"]["DateTime"];
+            updated_at: components["schemas"]["DateTime"];
         };
         UpstreamCredentialView: {
             /** Format: uuid */
@@ -6074,6 +6348,536 @@ export interface operations {
         };
         responses: {
             /** @description Access updated. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    listRoutingGroups: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Canonical routing groups. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoutingGroupView"][];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    createRoutingGroup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RoutingGroupInput"];
+            };
+        };
+        responses: {
+            /** @description Group created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    getRoutingGroup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Canonical routing group. */
+            200: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoutingGroupView"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    updateRoutingGroup: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag from the preceding GET; stale values yield `409`. */
+                "If-Match": components["parameters"]["IfMatch"];
+            };
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RoutingGroupInput"];
+            };
+        };
+        responses: {
+            /** @description Group updated. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    deleteRoutingGroup: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag from the preceding GET; stale values yield `409`. */
+                "If-Match": components["parameters"]["IfMatch"];
+            };
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Group deleted. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    listLogicalChannels: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Canonical logical channels. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LogicalChannelView"][];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    createLogicalChannel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LogicalChannelInput"];
+            };
+        };
+        responses: {
+            /** @description Logical channel created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    getLogicalChannel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Canonical logical channel. */
+            200: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LogicalChannelView"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    updateLogicalChannel: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag from the preceding GET; stale values yield `409`. */
+                "If-Match": components["parameters"]["IfMatch"];
+            };
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LogicalChannelInput"];
+            };
+        };
+        responses: {
+            /** @description Logical channel updated. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    deleteLogicalChannel: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag from the preceding GET; stale values yield `409`. */
+                "If-Match": components["parameters"]["IfMatch"];
+            };
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Logical channel deleted. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    listChannelCapabilities: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Canonical channel capabilities. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChannelCapabilityView"][];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    createChannelCapability: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChannelCapabilityInput"];
+            };
+        };
+        responses: {
+            /** @description Capability created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    getChannelCapability: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Canonical channel capability. */
+            200: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChannelCapabilityView"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    updateChannelCapability: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag from the preceding GET; stale values yield `409`. */
+                "If-Match": components["parameters"]["IfMatch"];
+            };
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChannelCapabilityInput"];
+            };
+        };
+        responses: {
+            /** @description Capability updated. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    deleteChannelCapability: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag from the preceding GET; stale values yield `409`. */
+                "If-Match": components["parameters"]["IfMatch"];
+            };
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Capability deleted. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    listOperationRules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Canonical operation rules. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperationRuleView"][];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    createOperationRule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OperationRuleInput"];
+            };
+        };
+        responses: {
+            /** @description Operation rule created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    getOperationRule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Canonical operation rule with its tier graph. */
+            200: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperationRuleView"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    updateOperationRule: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag from the preceding GET; stale values yield `409`. */
+                "If-Match": components["parameters"]["IfMatch"];
+            };
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OperationRuleInput"];
+            };
+        };
+        responses: {
+            /** @description Operation rule replaced. */
             200: {
                 headers: {
                     [name: string]: unknown;

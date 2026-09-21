@@ -1432,6 +1432,151 @@ async fn upstream_access_contract_is_versioned_and_does_not_create_authority() {
 }
 
 #[tokio::test]
+async fn canonical_topology_contract_has_versioned_immutable_capability_identity() {
+    let database = TestDatabase::new().await;
+    let mut transaction = database.pool.begin().await.unwrap();
+    sqlx::raw_sql(include_str!(
+        "../src/persistence/capability_cutover/postgres-schema.sql"
+    ))
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+    ai_gateway::persistence::capability_cutover::activation::postgres(&mut transaction)
+        .await
+        .unwrap();
+    transaction.commit().await.unwrap();
+    let app = app(database.pool.clone()).await;
+    let mut owners = Vec::new();
+    for (path, input) in [
+        (
+            "/console/v1/routing/groups",
+            serde_json::json!({"name": "Canonical group", "enabled": true}),
+        ),
+        (
+            "/console/v1/routing/accesses",
+            serde_json::json!({
+                "name": "Canonical access", "enabled": true,
+                "connector_kind": "openai_compatible", "base_url": "https://canonical.test"
+            }),
+        ),
+    ] {
+        let response = request(&app, "POST", path, input, &[]).await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        owners.push(body_json(response).await["id"].as_str().unwrap().to_owned());
+    }
+    let input = serde_json::json!({
+        "group_id": owners[0], "access_id": owners[1], "credential_id": null,
+        "name": "Canonical channel", "enabled": true,
+    });
+    let response = request(
+        &app,
+        "POST",
+        "/console/v1/routing/logical-channels",
+        input,
+        &[],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let channel = body_json(response).await["id"].as_str().unwrap().to_owned();
+    let mut input = serde_json::json!({
+        "channel_id": channel,
+        "settings": {
+            "operation": "images_generation", "transports": ["http_json"],
+            "enabled": false, "available_models": ["image-wire"],
+            "request_compression": "default", "test_model": null,
+            "test_pricing_model_id": null, "auto_disable_allowed": false
+        }
+    });
+    let response = request(
+        &app,
+        "POST",
+        "/console/v1/routing/capabilities",
+        input.clone(),
+        &[],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let capability = body_json(response).await["id"].as_str().unwrap().to_owned();
+    let path = format!("/console/v1/routing/capabilities/{capability}");
+    let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    assert_eq!(detail.headers()["cache-control"], "no-store");
+    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    input["settings"]["enabled"] = serde_json::json!(true);
+    assert_eq!(
+        request(&app, "PUT", &path, input.clone(), &[("if-match", &etag)])
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(&app, "PUT", &path, input.clone(), &[("if-match", &etag)])
+            .await
+            .status(),
+        StatusCode::CONFLICT
+    );
+    let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
+    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    input["settings"]["operation"] = serde_json::json!("images_edit");
+    input["settings"]["transports"] = serde_json::json!(["multipart"]);
+    assert_eq!(
+        request(&app, "PUT", &path, input, &[("if-match", &etag)])
+            .await
+            .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let authority: i64 = sqlx::query_scalar(
+        "SELECT (SELECT count(*) FROM model_capability_candidates)
+              +(SELECT count(*) FROM api_key_capability_grants)
+              +(SELECT count(*) FROM api_key_policy_capability_grants)",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(authority, 0);
+    let channel_path = format!("/console/v1/routing/logical-channels/{channel}");
+    let detail = request(&app, "GET", &channel_path, serde_json::json!({}), &[]).await;
+    let channel_etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    assert_eq!(
+        request(
+            &app,
+            "DELETE",
+            &channel_path,
+            serde_json::json!({}),
+            &[("if-match", &channel_etag)]
+        )
+        .await
+        .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        request(
+            &app,
+            "DELETE",
+            &path,
+            serde_json::json!({}),
+            &[("if-match", &etag)]
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(
+            &app,
+            "DELETE",
+            &channel_path,
+            serde_json::json!({}),
+            &[("if-match", &channel_etag)]
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    database.cleanup().await;
+}
+
+#[tokio::test]
 async fn upstream_credential_contract_is_secret_safe_versioned_and_strict() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;

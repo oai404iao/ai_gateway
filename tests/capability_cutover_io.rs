@@ -692,6 +692,80 @@ fn assert_compiled_snapshot(records: ai_gateway::persistence::ControlPlaneRecord
     }
 }
 #[tokio::test]
+async fn postgres_activation_retargets_codex_and_supports_native_lifecycle() {
+    use ai_gateway::persistence::{
+        CodexCredentialCreate, ControlPlaneRepository, capability_cutover::activation,
+    };
+
+    let database = TestDatabase::new().await;
+    run_migrations(&database.pool).await.unwrap();
+    seed(&database.pool).await;
+    let mut transaction = database.pool.begin().await.unwrap();
+    sqlx::raw_sql(include_str!(
+        "../src/persistence/capability_cutover/postgres-schema.sql"
+    ))
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+    activation::postgres(&mut transaction).await.unwrap();
+    transaction.commit().await.unwrap();
+
+    let repository = ControlPlaneRepository::new(database.pool.clone());
+    let input = CodexCredentialCreate {
+        channel_group_id: CODEX_GROUP,
+        label: "Canonical import".into(),
+        enabled: true,
+        proxy_id: None,
+        quota_threshold_percent: 95,
+        base_url: "https://codex.test".into(),
+        email: Some("new@test.invalid".into()),
+        account_id: Some("new-account".into()),
+        user_id: Some("new-user".into()),
+        plan_type: None,
+        is_fedramp: false,
+        id_token: "synthetic-id".into(),
+        access_token: "synthetic-access".into(),
+        refresh_token: "synthetic-refresh".into(),
+        access_token_expires_at: None,
+        available_models: vec!["wire".into()],
+        quota: None,
+    };
+    let created = repository
+        .prepare_codex_credential_create(USER, input, None)
+        .await
+        .unwrap()
+        .commit()
+        .await
+        .unwrap()
+        .0[0]
+        .id;
+    let legacy: i64 = sqlx::query_scalar("SELECT count(*) FROM channels WHERE id=$1")
+        .bind(created)
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(legacy, 0);
+    let row = repository.codex_credential(created).await.unwrap().unwrap();
+    assert_eq!(row.available_models, ["wire"]);
+    repository
+        .prepare_codex_credential_delete(USER, created, row.updated_at)
+        .await
+        .unwrap()
+        .commit()
+        .await
+        .unwrap();
+    assert!(
+        repository
+            .codex_credential(created)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    drop(repository);
+    database.cleanup().await;
+}
+
+#[tokio::test]
 async fn postgres_cutover_refuses_a_nonempty_destination() {
     let database = TestDatabase::new().await;
     run_migrations(&database.pool)

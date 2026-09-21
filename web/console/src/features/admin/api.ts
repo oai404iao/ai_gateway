@@ -63,6 +63,14 @@ import type {
   UpstreamCredentialView,
   UpstreamAccessView,
   UpstreamAccessInput,
+  RoutingGroupView,
+  RoutingGroupInput,
+  LogicalChannelView,
+  LogicalChannelInput,
+  ChannelCapabilityView,
+  ChannelCapabilityInput,
+  OperationRuleView,
+  OperationRuleInput,
   UpstreamCredentialDetail,
   UpstreamCredentialInput,
   UpstreamCredentialCreateInput,
@@ -136,6 +144,148 @@ export const useUpstreamAccesses = makeList<UpstreamAccessView>(ACCESSES_PATH, A
 export const useUpstreamAccess = makeDetail<UpstreamAccessView>(ACCESSES_PATH, accessDetailKey);
 export const useCreateUpstreamAccess = makeCreate<UpstreamAccessInput, MutationResponse>(ACCESSES_PATH, ACCESSES_KEY);
 export const useUpdateUpstreamAccess = makeUpdate<UpstreamAccessInput>(ACCESSES_PATH, ACCESSES_KEY, accessDetailKey);
+
+// ---- Canonical routing topology ----
+const ROUTING_GROUPS_KEY = ["console", "routing-groups"] as const;
+const routingGroupDetailKey = (id: string) => [...ROUTING_GROUPS_KEY, id] as const;
+const ROUTING_GROUPS_PATH = "/routing/groups";
+export const useRoutingGroups = makeList<RoutingGroupView>(ROUTING_GROUPS_PATH, ROUTING_GROUPS_KEY);
+export const useRoutingGroup = makeDetail<RoutingGroupView>(ROUTING_GROUPS_PATH, routingGroupDetailKey);
+export const useCreateRoutingGroup = makeCreate<RoutingGroupInput, MutationResponse>(
+  ROUTING_GROUPS_PATH,
+  ROUTING_GROUPS_KEY,
+);
+export function useUpdateRoutingGroup(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ input, ifMatch }: { input: RoutingGroupInput; ifMatch: string }) =>
+      apiPut<MutationResponse>(`${ROUTING_GROUPS_PATH}/${id}`, input, ifMatch),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ROUTING_GROUPS_KEY });
+      void queryClient.invalidateQueries({ queryKey: routingGroupDetailKey(id) });
+      void queryClient.invalidateQueries({ queryKey: LOGICAL_CHANNELS_KEY });
+    },
+  });
+}
+export function useDeleteRoutingGroup(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ifMatch }: { ifMatch: string }) =>
+      apiSend<MutationResponse>(`${ROUTING_GROUPS_PATH}/${id}`, "DELETE", undefined, { ifMatch }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ROUTING_GROUPS_KEY });
+      void queryClient.invalidateQueries({ queryKey: LOGICAL_CHANNELS_KEY });
+      queryClient.removeQueries({ queryKey: routingGroupDetailKey(id) });
+    },
+  });
+}
+
+const LOGICAL_CHANNELS_KEY = ["console", "logical-channels"] as const;
+const logicalChannelDetailKey = (id: string) => [...LOGICAL_CHANNELS_KEY, id] as const;
+const LOGICAL_CHANNELS_PATH = "/routing/logical-channels";
+export const useLogicalChannels = makeList<LogicalChannelView>(
+  LOGICAL_CHANNELS_PATH,
+  LOGICAL_CHANNELS_KEY,
+);
+export const useLogicalChannel = makeDetail<LogicalChannelView>(
+  LOGICAL_CHANNELS_PATH,
+  logicalChannelDetailKey,
+);
+export const useCreateLogicalChannel = makeCreate<LogicalChannelInput, MutationResponse>(
+  LOGICAL_CHANNELS_PATH,
+  LOGICAL_CHANNELS_KEY,
+);
+export function useUpdateLogicalChannel(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ input, ifMatch }: { input: LogicalChannelInput; ifMatch: string }) =>
+      apiPut<MutationResponse>(`${LOGICAL_CHANNELS_PATH}/${id}`, input, ifMatch),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: LOGICAL_CHANNELS_KEY });
+      void queryClient.invalidateQueries({ queryKey: logicalChannelDetailKey(id) });
+      void queryClient.invalidateQueries({ queryKey: CAPABILITIES_KEY });
+    },
+  });
+}
+export function useDeleteLogicalChannel(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ifMatch }: { ifMatch: string }) =>
+      apiSend<MutationResponse>(`${LOGICAL_CHANNELS_PATH}/${id}`, "DELETE", undefined, { ifMatch }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: LOGICAL_CHANNELS_KEY });
+      void queryClient.invalidateQueries({ queryKey: CAPABILITIES_KEY });
+      queryClient.removeQueries({ queryKey: logicalChannelDetailKey(id) });
+    },
+  });
+}
+
+const CAPABILITIES_KEY = ["console", "channel-capabilities"] as const;
+const capabilityDetailKey = (id: string) => [...CAPABILITIES_KEY, id] as const;
+const CAPABILITIES_PATH = "/routing/capabilities";
+export const useChannelCapabilities = makeList<ChannelCapabilityView>(
+  CAPABILITIES_PATH,
+  CAPABILITIES_KEY,
+);
+export const useChannelCapability = makeDetail<ChannelCapabilityView>(
+  CAPABILITIES_PATH,
+  capabilityDetailKey,
+);
+export const useCreateChannelCapability = makeCreate<ChannelCapabilityInput, MutationResponse>(
+  CAPABILITIES_PATH,
+  CAPABILITIES_KEY,
+);
+export function useUpdateChannelCapability(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ input, ifMatch }: { input: ChannelCapabilityInput; ifMatch: string }) =>
+      apiPut<MutationResponse>(`${CAPABILITIES_PATH}/${id}`, input, ifMatch),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: CAPABILITIES_KEY });
+      void queryClient.invalidateQueries({ queryKey: capabilityDetailKey(id) });
+      void queryClient.invalidateQueries({ queryKey: OPERATION_RULES_KEY });
+    },
+  });
+}
+export function useDeleteChannelCapability(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ifMatch }: { ifMatch: string }) =>
+      apiSend<MutationResponse>(`${CAPABILITIES_PATH}/${id}`, "DELETE", undefined, { ifMatch }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: CAPABILITIES_KEY });
+      void queryClient.invalidateQueries({ queryKey: OPERATION_RULES_KEY });
+      queryClient.removeQueries({ queryKey: capabilityDetailKey(id) });
+    },
+  });
+}
+
+const OPERATION_RULES_KEY = ["console", "operation-rules"] as const;
+const operationRuleDetailKey = (id: string) => [...OPERATION_RULES_KEY, id] as const;
+const OPERATION_RULES_PATH = "/routing/operation-rules";
+export const useOperationRules = makeList<OperationRuleView>(
+  OPERATION_RULES_PATH,
+  OPERATION_RULES_KEY,
+);
+export const useOperationRule = makeDetail<OperationRuleView>(
+  OPERATION_RULES_PATH,
+  operationRuleDetailKey,
+);
+export const useCreateOperationRule = makeCreate<OperationRuleInput, MutationResponse>(
+  OPERATION_RULES_PATH,
+  OPERATION_RULES_KEY,
+);
+export function useUpdateOperationRule(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ input, ifMatch }: { input: OperationRuleInput; ifMatch: string }) =>
+      apiPut<MutationResponse>(`${OPERATION_RULES_PATH}/${id}`, input, ifMatch),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: OPERATION_RULES_KEY });
+      void queryClient.invalidateQueries({ queryKey: operationRuleDetailKey(id) });
+    },
+  });
+}
 
 const CREDENTIALS_KEY = ["console", "upstream-credentials"] as const;
 const credentialDetailKey = (id: string) => [...CREDENTIALS_KEY, id] as const;

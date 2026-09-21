@@ -20,7 +20,10 @@ use super::RepositoryError;
 use crate::domain::{ApiOperation, CapabilitySettings, ConnectorKind};
 
 pub mod accesses;
+pub mod capabilities;
+pub mod channels;
 pub(crate) mod codex;
+pub mod groups;
 pub mod rules;
 mod runtime;
 mod snapshot;

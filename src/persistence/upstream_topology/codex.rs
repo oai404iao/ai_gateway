@@ -1,4 +1,7 @@
-//! Codex identity edits must not reset independently configured capabilities.
+//! Canonical Codex identity create, lifecycle, reconfigure, and delete.
+//!
+//! Live edits write only the canonical topology; reconfiguring an identity never resets its
+//! independently configured capability switches or model catalog.
 
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
@@ -131,6 +134,420 @@ pub(crate) async fn sqlite_reconfigure(
         .bind(SqliteUuid(credential_id)).execute(&mut **transaction).await?;
     sqlx::query("UPDATE upstream_credentials SET name=?,updated_at=ag_now() WHERE id=? AND kind='codex_oauth' AND deleted_at IS NULL")
         .bind(label.trim()).bind(SqliteUuid(credential_id)).execute(&mut **transaction).await?;
+    Ok(())
+}
+
+/// Canonical rows a live Codex import must create. The stable credential UUID
+/// is the logical channel id and the upstream credential id; no legacy channel
+/// row, route, or grant is created.
+pub(crate) struct CodexCanonicalCreate<'a> {
+    pub credential_id: Uuid,
+    pub group_id: Uuid,
+    pub label: &'a str,
+    pub base_url: &'a str,
+    pub proxy_id: Option<Uuid>,
+    pub enabled: bool,
+    pub available_models: &'a [String],
+}
+
+struct CodexCapabilityPlan {
+    operation: &'static str,
+    transports: Vec<&'static str>,
+    enabled: bool,
+    request_compression: &'static str,
+}
+
+/// Responses and standalone search keep their previous default-on switches;
+/// the Images capabilities start disabled. Capability switches never encode the
+/// credential lifecycle, which lives on `upstream_credentials`.
+fn codex_capability_plan(group_request_compression: &str) -> Vec<CodexCapabilityPlan> {
+    let responses_compression = if group_request_compression == "zstd" {
+        "zstd"
+    } else {
+        "default"
+    };
+    vec![
+        CodexCapabilityPlan {
+            operation: "responses",
+            transports: vec!["http_sse", "websocket"],
+            enabled: true,
+            request_compression: responses_compression,
+        },
+        CodexCapabilityPlan {
+            operation: "standalone_web_search",
+            transports: vec!["http_json"],
+            enabled: true,
+            request_compression: "default",
+        },
+        CodexCapabilityPlan {
+            operation: "images_generation",
+            transports: vec!["http_json"],
+            enabled: false,
+            request_compression: "default",
+        },
+        CodexCapabilityPlan {
+            operation: "images_edit",
+            transports: vec!["multipart"],
+            enabled: false,
+            request_compression: "default",
+        },
+    ]
+}
+
+pub(crate) async fn pg_create(
+    transaction: &mut Transaction<'_, Postgres>,
+    input: CodexCanonicalCreate<'_>,
+) -> Result<(), RepositoryError> {
+    let (group_name, sharing_only, request_compression, status_statistics_enabled): (
+        String,
+        bool,
+        String,
+        bool,
+    ) = sqlx::query_as(
+        "SELECT name,sharing_only,request_compression,status_statistics_enabled \
+         FROM channel_groups WHERE id=$1",
+    )
+    .bind(input.group_id)
+    .fetch_optional(&mut **transaction)
+    .await?
+    .ok_or(RepositoryError::Validation)?;
+    sqlx::query(
+        "INSERT INTO routing_groups (id,name,enabled,sharing_only) \
+         VALUES ($1,$2,true,$3) ON CONFLICT (id) DO NOTHING",
+    )
+    .bind(input.group_id)
+    .bind(&group_name)
+    .bind(sharing_only)
+    .execute(&mut **transaction)
+    .await?;
+    sqlx::query(
+        "INSERT INTO group_identity_registry (id,label,created_at,canonical_group_id) \
+         SELECT g.id,g.name,g.created_at,g.id FROM routing_groups g WHERE g.id=$1 \
+         ON CONFLICT (id) DO NOTHING",
+    )
+    .bind(input.group_id)
+    .execute(&mut **transaction)
+    .await?;
+    sqlx::query(
+        "INSERT INTO upstream_credentials (id,name,kind,enabled) VALUES ($1,$2,'codex_oauth',$3)",
+    )
+    .bind(input.credential_id)
+    .bind(input.label.trim())
+    .bind(input.enabled)
+    .execute(&mut **transaction)
+    .await?;
+    let access_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO upstream_accesses (id,name,connector_kind,base_url,proxy_id,enabled) \
+         VALUES ($1,$2,'codex_oauth',$3,$4,true)",
+    )
+    .bind(access_id)
+    .bind(input.label.trim())
+    .bind(input.base_url)
+    .bind(input.proxy_id)
+    .execute(&mut **transaction)
+    .await?;
+    sqlx::query(
+        "INSERT INTO upstream_channels (id,group_id,access_id,credential_id,name,enabled) \
+         VALUES ($1,$2,$3,$1,$4,true)",
+    )
+    .bind(input.credential_id)
+    .bind(input.group_id)
+    .bind(access_id)
+    .bind(input.label.trim())
+    .execute(&mut **transaction)
+    .await?;
+    let models = input.available_models.to_vec();
+    for plan in codex_capability_plan(&request_compression) {
+        let capability_id = Uuid::new_v4();
+        let transports = plan
+            .transports
+            .iter()
+            .map(|transport| (*transport).to_owned())
+            .collect::<Vec<_>>();
+        sqlx::query(
+            "INSERT INTO channel_capabilities \
+             (id,channel_id,operation,transports,enabled,available_models,request_compression, \
+              status_statistics_enabled,auto_disable_allowed) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,false)",
+        )
+        .bind(capability_id)
+        .bind(input.credential_id)
+        .bind(plan.operation)
+        .bind(&transports)
+        .bind(plan.enabled)
+        .bind(&models)
+        .bind(plan.request_compression)
+        .bind(status_statistics_enabled)
+        .execute(&mut **transaction)
+        .await?;
+        sqlx::query(
+            "INSERT INTO channel_identity_registry \
+             (id,label,canonical_channel_id,codex_credential_id,capability_id) \
+             VALUES ($1,$2,$3,$3,$1)",
+        )
+        .bind(capability_id)
+        .bind(input.label.trim())
+        .bind(input.credential_id)
+        .execute(&mut **transaction)
+        .await?;
+    }
+    sqlx::query(
+        "INSERT INTO channel_identity_registry \
+         (id,label,canonical_channel_id,codex_credential_id,capability_id) \
+         VALUES ($1,$2,$1,$1,NULL)",
+    )
+    .bind(input.credential_id)
+    .bind(input.label.trim())
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
+
+#[cfg(feature = "sqlite-backend")]
+pub(crate) async fn sqlite_create(
+    transaction: &mut Transaction<'_, sqlx::Sqlite>,
+    input: CodexCanonicalCreate<'_>,
+) -> Result<(), RepositoryError> {
+    use crate::persistence::sqlite::SqliteUuid;
+    let (group_name, sharing_only, request_compression, status_statistics_enabled): (
+        String,
+        bool,
+        String,
+        bool,
+    ) = sqlx::query_as(
+        "SELECT name,sharing_only,request_compression,status_statistics_enabled \
+         FROM channel_groups WHERE id=?1",
+    )
+    .bind(SqliteUuid(input.group_id))
+    .fetch_optional(&mut **transaction)
+    .await?
+    .ok_or(RepositoryError::Validation)?;
+    sqlx::query(
+        "INSERT OR IGNORE INTO routing_groups (id,name,enabled,sharing_only) VALUES (?1,?2,1,?3)",
+    )
+    .bind(SqliteUuid(input.group_id))
+    .bind(&group_name)
+    .bind(sharing_only)
+    .execute(&mut **transaction)
+    .await?;
+    sqlx::query(
+        "INSERT OR IGNORE INTO group_identity_registry (id,label,created_at,canonical_group_id) \
+         SELECT g.id,g.name,g.created_at,g.id FROM routing_groups g WHERE g.id=?1",
+    )
+    .bind(SqliteUuid(input.group_id))
+    .execute(&mut **transaction)
+    .await?;
+    sqlx::query(
+        "INSERT INTO upstream_credentials (id,name,kind,enabled) VALUES (?1,?2,'codex_oauth',?3)",
+    )
+    .bind(SqliteUuid(input.credential_id))
+    .bind(input.label.trim())
+    .bind(input.enabled)
+    .execute(&mut **transaction)
+    .await?;
+    let access_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO upstream_accesses (id,name,connector_kind,base_url,proxy_id,enabled) \
+         VALUES (?1,?2,'codex_oauth',?3,?4,1)",
+    )
+    .bind(SqliteUuid(access_id))
+    .bind(input.label.trim())
+    .bind(input.base_url)
+    .bind(input.proxy_id.map(SqliteUuid))
+    .execute(&mut **transaction)
+    .await?;
+    sqlx::query(
+        "INSERT INTO upstream_channels (id,group_id,access_id,credential_id,name,enabled) \
+         VALUES (?1,?2,?3,?1,?4,1)",
+    )
+    .bind(SqliteUuid(input.credential_id))
+    .bind(SqliteUuid(input.group_id))
+    .bind(SqliteUuid(access_id))
+    .bind(input.label.trim())
+    .execute(&mut **transaction)
+    .await?;
+    let models = input.available_models.to_vec();
+    for plan in codex_capability_plan(&request_compression) {
+        let capability_id = Uuid::new_v4();
+        let transports = plan
+            .transports
+            .iter()
+            .map(|transport| (*transport).to_owned())
+            .collect::<Vec<_>>();
+        sqlx::query(
+            "INSERT INTO channel_capabilities \
+             (id,channel_id,operation,transports,enabled,available_models,request_compression, \
+              status_statistics_enabled,auto_disable_allowed) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,0)",
+        )
+        .bind(SqliteUuid(capability_id))
+        .bind(SqliteUuid(input.credential_id))
+        .bind(plan.operation)
+        .bind(sqlx::types::Json(&transports))
+        .bind(plan.enabled)
+        .bind(sqlx::types::Json(&models))
+        .bind(plan.request_compression)
+        .bind(status_statistics_enabled)
+        .execute(&mut **transaction)
+        .await?;
+        sqlx::query(
+            "INSERT INTO channel_identity_registry \
+             (id,label,canonical_channel_id,codex_credential_id,capability_id) \
+             VALUES (?1,?2,?3,?3,?1)",
+        )
+        .bind(SqliteUuid(capability_id))
+        .bind(input.label.trim())
+        .bind(SqliteUuid(input.credential_id))
+        .execute(&mut **transaction)
+        .await?;
+    }
+    sqlx::query(
+        "INSERT INTO channel_identity_registry \
+         (id,label,canonical_channel_id,codex_credential_id,capability_id) \
+         VALUES (?1,?2,?1,?1,NULL)",
+    )
+    .bind(SqliteUuid(input.credential_id))
+    .bind(input.label.trim())
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
+
+/// Enables or disables the canonical credential lifecycle and advances its
+/// revision. The per-capability switches and model catalog are never touched.
+pub(crate) async fn pg_update_credential_lifecycle(
+    transaction: &mut Transaction<'_, Postgres>,
+    credential_id: Uuid,
+    enabled: bool,
+    rotate: bool,
+) -> Result<(), RepositoryError> {
+    let changed = sqlx::query(
+        "UPDATE upstream_credentials SET enabled=$2, \
+         revision=CASE WHEN $3 OR enabled IS DISTINCT FROM $2 THEN gen_random_uuid() \
+                       ELSE revision END \
+         WHERE id=$1 AND kind='codex_oauth' AND deleted_at IS NULL",
+    )
+    .bind(credential_id)
+    .bind(enabled)
+    .bind(rotate)
+    .execute(&mut **transaction)
+    .await?
+    .rows_affected();
+    if changed == 0 {
+        return Err(RepositoryError::NotFound);
+    }
+    Ok(())
+}
+
+#[cfg(feature = "sqlite-backend")]
+pub(crate) async fn sqlite_update_credential_lifecycle(
+    transaction: &mut Transaction<'_, sqlx::Sqlite>,
+    credential_id: Uuid,
+    enabled: bool,
+    rotate: bool,
+) -> Result<(), RepositoryError> {
+    use crate::persistence::sqlite::SqliteUuid;
+    let changed = sqlx::query(
+        "UPDATE upstream_credentials SET enabled=?2,updated_at=ag_now(), \
+         revision=CASE WHEN ?3 OR enabled IS NOT ?2 THEN ag_md5_uuid(hex(randomblob(32))) \
+                       ELSE revision END \
+         WHERE id=?1 AND kind='codex_oauth' AND deleted_at IS NULL",
+    )
+    .bind(SqliteUuid(credential_id))
+    .bind(enabled)
+    .bind(rotate)
+    .execute(&mut **transaction)
+    .await?
+    .rows_affected();
+    if changed == 0 {
+        return Err(RepositoryError::NotFound);
+    }
+    Ok(())
+}
+
+/// Tombstones the canonical Codex topology. Sharing and pending-operation
+/// checks happen in the caller; the SQLite guard triggers fail closed here.
+pub(crate) async fn pg_delete(
+    transaction: &mut Transaction<'_, Postgres>,
+    credential_id: Uuid,
+) -> Result<(), RepositoryError> {
+    sqlx::query(
+        "UPDATE channel_capabilities SET enabled=false,auto_disabled=false, \
+         auto_disable_reason=NULL,auto_disable_at=NULL,deleted_at=now(),revision=gen_random_uuid() \
+         WHERE channel_id=$1 AND deleted_at IS NULL",
+    )
+    .bind(credential_id)
+    .execute(&mut **transaction)
+    .await?;
+    sqlx::query(
+        "UPDATE upstream_channels SET enabled=false,deleted_at=now(), \
+         binding_revision=gen_random_uuid() WHERE id=$1 AND deleted_at IS NULL",
+    )
+    .bind(credential_id)
+    .execute(&mut **transaction)
+    .await?;
+    sqlx::query(
+        "UPDATE upstream_accesses SET enabled=false,deleted_at=now(),revision=gen_random_uuid() \
+         WHERE id=(SELECT access_id FROM upstream_channels WHERE id=$1) AND deleted_at IS NULL \
+           AND NOT EXISTS(SELECT 1 FROM upstream_channels c \
+                          WHERE c.access_id=upstream_accesses.id AND c.id<>$1 \
+                            AND c.deleted_at IS NULL)",
+    )
+    .bind(credential_id)
+    .execute(&mut **transaction)
+    .await?;
+    sqlx::query(
+        "UPDATE upstream_credentials SET enabled=false,deleted_at=now(),revision=gen_random_uuid() \
+         WHERE id=$1 AND kind='codex_oauth' AND deleted_at IS NULL",
+    )
+    .bind(credential_id)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
+
+#[cfg(feature = "sqlite-backend")]
+pub(crate) async fn sqlite_delete(
+    transaction: &mut Transaction<'_, sqlx::Sqlite>,
+    credential_id: Uuid,
+) -> Result<(), RepositoryError> {
+    use crate::persistence::sqlite::SqliteUuid;
+    sqlx::query(
+        "UPDATE channel_capabilities SET enabled=0,auto_disabled=0,auto_disable_reason=NULL, \
+         auto_disable_at=NULL,deleted_at=ag_now(),updated_at=ag_now(), \
+         revision=ag_md5_uuid(hex(randomblob(32))) \
+         WHERE channel_id=?1 AND deleted_at IS NULL",
+    )
+    .bind(SqliteUuid(credential_id))
+    .execute(&mut **transaction)
+    .await?;
+    sqlx::query(
+        "UPDATE upstream_channels SET enabled=0,deleted_at=ag_now(),updated_at=ag_now(), \
+         binding_revision=ag_md5_uuid(hex(randomblob(32))) WHERE id=?1 AND deleted_at IS NULL",
+    )
+    .bind(SqliteUuid(credential_id))
+    .execute(&mut **transaction)
+    .await?;
+    sqlx::query(
+        "UPDATE upstream_accesses SET enabled=0,deleted_at=ag_now(),updated_at=ag_now(), \
+         revision=ag_md5_uuid(hex(randomblob(32))) \
+         WHERE id=(SELECT access_id FROM upstream_channels WHERE id=?1) AND deleted_at IS NULL \
+           AND NOT EXISTS(SELECT 1 FROM upstream_channels c \
+                          WHERE c.access_id=upstream_accesses.id AND c.id<>?1 \
+                            AND c.deleted_at IS NULL)",
+    )
+    .bind(SqliteUuid(credential_id))
+    .execute(&mut **transaction)
+    .await?;
+    sqlx::query(
+        "UPDATE upstream_credentials SET enabled=0,deleted_at=ag_now(),updated_at=ag_now(), \
+         revision=ag_md5_uuid(hex(randomblob(32))) \
+         WHERE id=?1 AND kind='codex_oauth' AND deleted_at IS NULL",
+    )
+    .bind(SqliteUuid(credential_id))
+    .execute(&mut **transaction)
+    .await?;
     Ok(())
 }
 

@@ -1227,6 +1227,33 @@ pub enum ControlPlaneMutation {
         input: super::OperationRuleInput,
         expected_updated_at: Option<DateTime<Utc>>,
     },
+    SaveRoutingGroup {
+        id: Uuid,
+        input: super::RoutingGroupInput,
+        expected: Option<DateTime<Utc>>,
+    },
+    SaveLogicalChannel {
+        id: Uuid,
+        input: super::LogicalChannelInput,
+        expected: Option<DateTime<Utc>>,
+    },
+    SaveChannelCapability {
+        id: Uuid,
+        input: super::ChannelCapabilityInput,
+        expected: Option<DateTime<Utc>>,
+    },
+    DeleteRoutingGroup {
+        id: Uuid,
+        expected: DateTime<Utc>,
+    },
+    DeleteLogicalChannel {
+        id: Uuid,
+        expected: DateTime<Utc>,
+    },
+    DeleteChannelCapability {
+        id: Uuid,
+        expected: DateTime<Utc>,
+    },
     CreateUpstreamCredential(super::UpstreamCredentialInput),
     UpdateUpstreamCredential {
         id: Uuid,
@@ -5213,66 +5240,7 @@ impl PostgresControlPlaneRepository {
     pub(crate) async fn load_transaction(
         transaction: &mut Transaction<'_, Postgres>,
     ) -> Result<ControlPlaneRecords, RepositoryError> {
-        let api_keys = sqlx::query_as::<_, ApiKeyRecord>("SELECT k.id, k.user_id, u.status AS user_status, u.websocket_enabled AS user_websocket_enabled, g.filter_fast_mode AS user_filter_fast_mode, k.secret_value, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount FROM api_keys k JOIN users u ON u.id = k.user_id AND u.deleted_at IS NULL JOIN user_groups g ON g.id=u.user_group_id AND g.deleted_at IS NULL WHERE NOT k.is_system AND k.deleted_at IS NULL ORDER BY k.id").fetch_all(&mut **transaction).await?;
-        let models = sqlx::query_as::<_, ModelRecord>("SELECT id,source_model_id,currency,price_unit_tokens,price_effective_at,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,advanced_billing FROM models WHERE deleted_at IS NULL ORDER BY id").fetch_all(&mut **transaction).await?;
-        let model_rules = sqlx::query_as::<_, ModelRuleRecordRow>(
-            "SELECT r.id,m.source_model_id AS client_model,r.api_format::text AS api_format, \
-                    m.id AS model_id,m.enabled AS model_enabled,m.currency AS model_currency, \
-                    m.price_unit_tokens,m.price_effective_at,m.input_unit_price, \
-                    m.cached_input_unit_price,m.cache_write_unit_price,m.output_unit_price, \
-                    m.advanced_billing, \
-                    COALESCE(( \
-                        SELECT jsonb_agg(jsonb_build_object( \
-                            'priority',tier.priority, \
-                            'selection_strategy',tier.selection_strategy, \
-                            'candidates',COALESCE(( \
-                                SELECT jsonb_agg(jsonb_build_object( \
-                                    'channel_id',candidate.channel_id, \
-                                    'upstream_model',candidate.upstream_model, \
-                                    'weight',candidate.weight \
-                                ) ORDER BY candidate.channel_id,candidate.upstream_model) \
-                                FROM model_rule_routing_candidates AS candidate \
-                                WHERE candidate.model_rule_id=tier.model_rule_id \
-                                  AND candidate.priority=tier.priority \
-                            ),'[]'::jsonb) \
-                        ) ORDER BY tier.priority) \
-                        FROM model_rule_routing_tiers AS tier \
-                        WHERE tier.model_rule_id=r.id \
-                    ),'[]'::jsonb) AS routing_tiers, \
-                    r.enabled \
-             FROM model_rules AS r \
-             JOIN model_routing_profiles AS profile ON profile.id=r.model_routing_profile_id \
-             JOIN models AS m ON m.id=profile.model_id AND m.deleted_at IS NULL \
-             ORDER BY r.id",
-        )
-        .fetch_all(&mut **transaction)
-        .await?
-        .into_iter()
-        .map(Into::into)
-        .collect();
-        let groups = sqlx::query_as::<_, ChannelGroupRecord>("SELECT id, name, api_format::text AS api_format, connector_kind, request_compression, sharing_only, enabled FROM channel_groups WHERE deleted_at IS NULL ORDER BY id").fetch_all(&mut **transaction).await?;
-        let mut channels = sqlx::query_as::<_, ChannelRecord>("SELECT c.id, c.channel_group_id, c.api_format::text AS api_format, c.name, c.base_url, c.enabled, c.supports_websocket, c.supports_standalone_web_search, c.auto_disabled, c.auto_disable_allowed, c.billing_multiplier, c.proxy_id, c.config_template_id, c.override_document, c.connect_timeout_ms, c.response_header_timeout_ms, c.stream_idle_timeout_ms, c.upstream_auth_kind, c.upstream_auth_header_name, c.upstream_api_key, c.available_models, c.test_model, c.test_pricing_model_id FROM channels c JOIN channel_groups g ON g.id=c.channel_group_id AND g.deleted_at IS NULL WHERE c.deleted_at IS NULL ORDER BY c.id").fetch_all(&mut **transaction).await?;
-        super::upstream_credentials::resolve_bindings(
-            &mut channels,
-            &groups,
-            &super::upstream_credentials::pg_records(transaction).await?,
-            &super::upstream_credentials::pg_bindings(transaction).await?,
-        )?;
-        let proxies = sqlx::query_as::<_, ProxyRecord>("SELECT id, name, proxy_url, username, password, no_proxy_hosts, enabled FROM proxies ORDER BY id").fetch_all(&mut **transaction).await?;
-        let templates = sqlx::query_as::<_, ConfigTemplateRecord>(
-            "SELECT id, name, description, document, enabled FROM config_templates ORDER BY id",
-        )
-        .fetch_all(&mut **transaction)
-        .await?;
-        Ok(ControlPlaneRecords {
-            api_keys,
-            models,
-            model_rules,
-            groups,
-            channels,
-            proxies,
-            templates,
-        })
+        super::upstream_topology::pg_load_control_plane(transaction).await
     }
 
     pub(crate) async fn begin_serializable(
@@ -5331,7 +5299,7 @@ impl PostgresControlPlaneRepository {
             return Ok(None);
         }
 
-        let before = channel_audit(transaction, id).await?;
+        let before = capability_audit(transaction, id).await?;
         if !before["deleted_at"].is_null() {
             return Ok(None);
         }
@@ -5343,8 +5311,9 @@ impl PostgresControlPlaneRepository {
         }
         let reason = automatic_disable_reason(trigger);
         let updated_at = sqlx::query_scalar(
-            "UPDATE channels
-             SET auto_disabled=true, auto_disabled_reason=$2
+            "UPDATE channel_capabilities
+             SET auto_disabled=true, auto_disable_reason=$2, auto_disable_at=now(),
+                 revision=gen_random_uuid()
              WHERE id=$1 AND deleted_at IS NULL
              RETURNING updated_at",
         )
@@ -5355,10 +5324,10 @@ impl PostgresControlPlaneRepository {
         .ok_or(RepositoryError::NotFound)?;
         Ok(Some(MutationResult {
             id,
-            object_type: "channel",
+            object_type: "channel_capability",
             action: "auto_disable",
             before_redacted: before,
-            after_redacted: channel_audit(transaction, id).await?,
+            after_redacted: capability_audit(transaction, id).await?,
             created_secret: None,
             reason: Some(reason),
             updated_at,
@@ -5380,7 +5349,7 @@ impl PostgresControlPlaneRepository {
             return Ok(None);
         }
 
-        let before = channel_audit(transaction, id).await?;
+        let before = capability_audit(transaction, id).await?;
         if !before["deleted_at"].is_null() {
             return Ok(None);
         }
@@ -5391,8 +5360,9 @@ impl PostgresControlPlaneRepository {
         }
         let reason = "scheduled test succeeded".to_owned();
         let updated_at = sqlx::query_scalar(
-            "UPDATE channels
-             SET auto_disabled=false, auto_disabled_reason=NULL
+            "UPDATE channel_capabilities
+             SET auto_disabled=false, auto_disable_reason=NULL, auto_disable_at=NULL,
+                 revision=gen_random_uuid()
              WHERE id=$1 AND deleted_at IS NULL
              RETURNING updated_at",
         )
@@ -5402,10 +5372,10 @@ impl PostgresControlPlaneRepository {
         .ok_or(RepositoryError::NotFound)?;
         Ok(Some(MutationResult {
             id,
-            object_type: "channel",
+            object_type: "channel_capability",
             action: "auto_recover",
             before_redacted: before,
-            after_redacted: channel_audit(transaction, id).await?,
+            after_redacted: capability_audit(transaction, id).await?,
             created_secret: None,
             reason: Some(reason),
             updated_at,
@@ -6204,6 +6174,35 @@ impl PostgresControlPlaneRepository {
                     expected_updated_at,
                 )
                 .await
+            }
+            ControlPlaneMutation::SaveRoutingGroup {
+                id,
+                input,
+                expected,
+            } => super::upstream_topology::groups::pg_save(transaction, id, &input, expected).await,
+            ControlPlaneMutation::SaveLogicalChannel {
+                id,
+                input,
+                expected,
+            } => {
+                super::upstream_topology::channels::pg_save(transaction, id, &input, expected).await
+            }
+            ControlPlaneMutation::SaveChannelCapability {
+                id,
+                input,
+                expected,
+            } => {
+                super::upstream_topology::capabilities::pg_save(transaction, id, &input, expected)
+                    .await
+            }
+            ControlPlaneMutation::DeleteRoutingGroup { id, expected } => {
+                super::upstream_topology::groups::pg_delete(transaction, id, expected).await
+            }
+            ControlPlaneMutation::DeleteLogicalChannel { id, expected } => {
+                super::upstream_topology::channels::pg_delete(transaction, id, expected).await
+            }
+            ControlPlaneMutation::DeleteChannelCapability { id, expected } => {
+                super::upstream_topology::capabilities::pg_delete(transaction, id, expected).await
             }
             ControlPlaneMutation::SaveCodexSharing {
                 id,
@@ -7402,6 +7401,29 @@ async fn group_audit(
         return Err(RepositoryError::NotFound);
     };
     Ok(value)
+}
+async fn capability_audit(
+    transaction: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+) -> Result<Value, RepositoryError> {
+    sqlx::query_scalar::<_, Value>(
+        "SELECT jsonb_build_object(
+         'id',id,'channel_id',channel_id,'operation',operation,'transports',transports,
+         'enabled',enabled,'available_models',available_models,
+         'request_compression',request_compression,'test_model',test_model,
+         'test_pricing_model_id',test_pricing_model_id,'auto_disabled',auto_disabled,
+         'auto_disable_reason',auto_disable_reason,'auto_disable_at',auto_disable_at,
+         'auto_disable_allowed',auto_disable_allowed,
+         'status_statistics_enabled',status_statistics_enabled,
+         'config_template_id',config_template_id,
+         'billing_multiplier',billing_multiplier,'revision',revision,
+         'created_at',created_at,'updated_at',updated_at,'deleted_at',deleted_at)
+         FROM channel_capabilities WHERE id=$1 FOR UPDATE",
+    )
+    .bind(id)
+    .fetch_optional(&mut **transaction)
+    .await?
+    .ok_or(RepositoryError::NotFound)
 }
 async fn channel_audit(
     transaction: &mut Transaction<'_, Postgres>,

@@ -40,6 +40,10 @@ import type {
   UserGroupView,
   UserSettings,
   UpstreamAccessView,
+  RoutingGroupView,
+  LogicalChannelView,
+  ChannelCapabilityView,
+  OperationRuleView,
 } from "@/api/types";
 
 export const UPSTREAM_ACCESS: UpstreamAccessView = {
@@ -1087,4 +1091,75 @@ export const OWN_SHARING: SelfCodexSharingView = {
   request_reservation_amount: "0.10",
   user_requests_per_minute: 30, user_max_concurrent_requests: 1,
   usage: SHARING_USAGE,
+};
+
+export const ROUTING_GROUP: RoutingGroupView = {
+  id: "00000000-0000-0000-0000-000000001501",
+  name: "Primary group",
+  enabled: true,
+  sharing_only: false,
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-02T00:00:00Z",
+  deleted_at: null,
+};
+
+export const LOGICAL_CHANNEL: LogicalChannelView = {
+  id: "00000000-0000-0000-0000-000000001601",
+  group_id: ROUTING_GROUP.id,
+  access_id: UPSTREAM_ACCESS.id,
+  credential_id: UPSTREAM_CREDENTIAL.id,
+  name: "Primary channel",
+  enabled: true,
+  binding_revision: "00000000-0000-0000-0000-000000001602",
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-02T00:00:00Z",
+  deleted_at: null,
+};
+
+export const CHANNEL_CAPABILITY: ChannelCapabilityView = {
+  id: "00000000-0000-0000-0000-000000001701",
+  channel_id: LOGICAL_CHANNEL.id,
+  settings: {
+    operation: "responses",
+    transports: ["http_json", "http_sse"],
+    enabled: true,
+    available_models: ["gpt-5", "gpt-5-mini"],
+    request_compression: "default",
+    test_model: null,
+    test_pricing_model_id: null,
+    auto_disable_allowed: false,
+  },
+  auto_disabled: false,
+  auto_disable_reason: null,
+  auto_disable_at: null,
+  status_statistics_enabled: false,
+  config_template_id: null,
+  override_document: {},
+  billing_multiplier: "1",
+  revision: "00000000-0000-0000-0000-000000001702",
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-02T00:00:00Z",
+  deleted_at: null,
+};
+
+export const OPERATION_RULE: OperationRuleView = {
+  id: "00000000-0000-0000-0000-000000001801",
+  model_routing_profile_id: "00000000-0000-0000-0000-000000001802",
+  operation: "responses",
+  enabled: true,
+  routing_tiers: [
+    {
+      priority: 0,
+      selection_strategy: "weighted_random",
+      candidates: [
+        {
+          capability_id: CHANNEL_CAPABILITY.id,
+          upstream_model: "gpt-5",
+          weight: 1,
+        },
+      ],
+    },
+  ],
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-02T00:00:00Z",
 };

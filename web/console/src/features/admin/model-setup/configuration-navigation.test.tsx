@@ -27,13 +27,13 @@ describe("configuration navigation", () => {
       name: "Model routing configuration",
     });
     await user.click(
-      screen.getByRole("button", { name: "Model rules" }),
+      screen.getByRole("button", { name: "Operation rules" }),
     );
 
-    expect(window.location.pathname).toBe("/admin/routing/model-rules");
+    expect(window.location.pathname).toBe("/admin/routing/operation-rules");
     expect(navigation).toBeInTheDocument();
     expect(
-      await screen.findByRole("heading", { name: "Model Rules" }),
+      await screen.findByRole("heading", { name: "Operation rules" }),
     ).toBeInTheDocument();
   });
 });

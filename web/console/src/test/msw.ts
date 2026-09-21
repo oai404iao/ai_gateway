@@ -16,6 +16,10 @@ import {
   UPSTREAM_CREDENTIAL,
   UPSTREAM_CREDENTIAL_DETAIL,
   UPSTREAM_ACCESS,
+  ROUTING_GROUP,
+  LOGICAL_CHANNEL,
+  CHANNEL_CAPABILITY,
+  OPERATION_RULE,
   CHANNEL_GROUP,
   CHANNEL_GROUP_STATUS_REPORT,
   CONFIG_TEMPLATE,
@@ -318,6 +322,37 @@ export const handlers = [
     HttpResponse.json({
       id: "00000000-0000-0000-0000-0000000000f1",
       correlation_id: "11111111-0000-0000-0000-000000000000",
+    }),
+  ),
+
+  http.get("/console/v1/routing/groups", () => HttpResponse.json([ROUTING_GROUP])),
+  http.get("/console/v1/routing/groups/:id", () =>
+    HttpResponse.json(ROUTING_GROUP, {
+      headers: { ETag: `"${ROUTING_GROUP.updated_at}"` },
+    }),
+  ),
+  http.get("/console/v1/routing/logical-channels", () =>
+    HttpResponse.json([LOGICAL_CHANNEL]),
+  ),
+  http.get("/console/v1/routing/logical-channels/:id", () =>
+    HttpResponse.json(LOGICAL_CHANNEL, {
+      headers: { ETag: `"${LOGICAL_CHANNEL.updated_at}"` },
+    }),
+  ),
+  http.get("/console/v1/routing/capabilities", () =>
+    HttpResponse.json([CHANNEL_CAPABILITY]),
+  ),
+  http.get("/console/v1/routing/capabilities/:id", () =>
+    HttpResponse.json(CHANNEL_CAPABILITY, {
+      headers: { ETag: `"${CHANNEL_CAPABILITY.updated_at}"` },
+    }),
+  ),
+  http.get("/console/v1/routing/operation-rules", () =>
+    HttpResponse.json([OPERATION_RULE]),
+  ),
+  http.get("/console/v1/routing/operation-rules/:id", () =>
+    HttpResponse.json(OPERATION_RULE, {
+      headers: { ETag: `"${OPERATION_RULE.updated_at}"` },
     }),
   ),
 

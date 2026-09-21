@@ -33,12 +33,11 @@ use sqlx::{
 use uuid::Uuid;
 
 use crate::{
-    domain::{ApiFormat, ApiOperation, AutomaticDisableTrigger, RequestCompression},
+    domain::{ApiFormat, AutomaticDisableTrigger, RequestCompression},
     persistence::{
-        ApiKeyPolicyInput, ApiKeyRecord, ApiKeyTargetChannel, ApiKeyTargetGroup,
-        ChannelBatchUpdateInput, ChannelDeletionImpact, ChannelDeletionPlan, ChannelDeletionTarget,
-        ChannelGroupInput, ChannelGroupRecord, ChannelMutationInput, ChannelRecord,
-        ConfigTemplateMutationInput, ConfigTemplateRecord, ConsoleApiKey, ConsoleAuditLog,
+        ApiKeyPolicyInput, ApiKeyTargetChannel, ApiKeyTargetGroup, ChannelBatchUpdateInput,
+        ChannelDeletionImpact, ChannelDeletionPlan, ChannelDeletionTarget, ChannelGroupInput,
+        ChannelMutationInput, ConfigTemplateMutationInput, ConsoleApiKey, ConsoleAuditLog,
         ControlPlaneApiKey, ControlPlaneApiKeyPolicy, ControlPlaneChannel,
         ControlPlaneChannelDetail, ControlPlaneChannelGroup, ControlPlaneConfigTemplate,
         ControlPlaneConfigTemplateDetail, ControlPlaneLists, ControlPlaneModel,
@@ -49,12 +48,12 @@ use crate::{
         DeletionImpactApiKeyRow, DeletionImpactChannel, DeletionImpactChannelRow,
         DeletionImpactFingerprint, DeletionImpactRootRow, DeletionImpactRuleState,
         DeletionImpactUserGroup, DeletionImpactVisibilityRow, FORWARDING_SETTINGS_KEY, ModelInput,
-        ModelProtocolRuleCreateInput, ModelProtocolRuleInput, ModelRecord, ModelRuleCreateInput,
-        ModelRuleRecord, ModelRuleRoutingStatus, ModelRuleRoutingTier, MutationResult,
-        ProxyCreateInput, ProxyInput, ProxyRecord, RepositoryError, RuntimeConfigRecords,
-        SYSTEM_PROBE_API_KEY_ID, SYSTEM_PROBE_API_KEY_NAME, SYSTEM_PROBE_DISPLAY_NAME,
-        SYSTEM_PROBE_USER_ID, SelfApiKeyChannelOption, SelfApiKeyCreate, SelfApiKeyCurrent,
-        SelfApiKeyGroupOption, SelfApiKeyOptions, SelfApiKeyPolicy, SelfApiKeySharingAccess,
+        ModelProtocolRuleCreateInput, ModelProtocolRuleInput, ModelRuleCreateInput,
+        ModelRuleRoutingStatus, ModelRuleRoutingTier, MutationResult, ProxyCreateInput, ProxyInput,
+        ProxyRecord, RepositoryError, RuntimeConfigRecords, SYSTEM_PROBE_API_KEY_ID,
+        SYSTEM_PROBE_API_KEY_NAME, SYSTEM_PROBE_DISPLAY_NAME, SYSTEM_PROBE_USER_ID,
+        SelfApiKeyChannelOption, SelfApiKeyCreate, SelfApiKeyCurrent, SelfApiKeyGroupOption,
+        SelfApiKeyOptions, SelfApiKeyPolicy, SelfApiKeySharingAccess,
         SelfApiKeySharingCredentialOption, SelfApiKeyUpdate, SystemProbeIdentity,
         SystemSettingsInput, SystemSettingsRecord, SystemSettingsView, UserBatchUpdateInput,
         UserGroupInput, UserInput, UserSettingsInput, UserSettingsView, UserUpdateInput,
@@ -172,106 +171,7 @@ impl SqliteControlPlaneRepository {
     async fn load_transaction(
         transaction: &mut Transaction<'_, Sqlite>,
     ) -> Result<ControlPlaneRecords, RepositoryError> {
-        let connection = &mut **transaction;
-        let api_keys = sqlx::query_as::<_, ApiKeyRecordRow>(
-            "SELECT k.id,k.user_id,u.status AS user_status,u.websocket_enabled AS user_websocket_enabled, \
-                    g.filter_fast_mode AS user_filter_fast_mode,k.secret_value,k.status,k.expires_at, \
-                    k.allowed_api_formats,k.permissions,k.allowed_group_ids,k.allowed_channel_ids, \
-                    k.requests_per_minute,k.max_concurrent_requests,k.quota_limit_amount,k.quota_used_amount \
-             FROM api_keys AS k \
-             JOIN users AS u ON u.id=k.user_id AND u.deleted_at IS NULL \
-             JOIN user_groups AS g ON g.id=u.user_group_id AND g.deleted_at IS NULL \
-             WHERE k.is_system=0 AND k.deleted_at IS NULL ORDER BY k.id",
-        )
-        .fetch_all(&mut *connection)
-        .await?
-        .into_iter()
-        .map(ApiKeyRecordRow::into_record)
-        .collect::<Result<Vec<_>, _>>()?;
-        let models = sqlx::query_as::<_, ModelRecordRow>(
-            "SELECT id,source_model_id,currency,price_unit_tokens,price_effective_at,input_unit_price, \
-                    cached_input_unit_price,cache_write_unit_price,output_unit_price,advanced_billing \
-             FROM models WHERE deleted_at IS NULL ORDER BY id",
-        )
-        .fetch_all(&mut *connection)
-        .await?
-        .into_iter()
-        .map(ModelRecordRow::into_record)
-        .collect::<Result<Vec<_>, _>>()?;
-        let rule_rows = sqlx::query_as::<_, RuntimeRuleRow>(
-            "SELECT r.id,m.source_model_id AS client_model,r.api_format AS api_format,m.id AS model_id, \
-                    m.enabled AS model_enabled,m.currency AS model_currency,m.price_unit_tokens, \
-                    m.price_effective_at,m.input_unit_price,m.cached_input_unit_price, \
-                    m.cache_write_unit_price,m.output_unit_price,m.advanced_billing,r.enabled \
-             FROM model_rules AS r \
-             JOIN model_routing_profiles AS profile ON profile.id=r.model_routing_profile_id \
-             JOIN models AS m ON m.id=profile.model_id AND m.deleted_at IS NULL \
-             ORDER BY r.id",
-        )
-        .fetch_all(&mut *connection)
-        .await?;
-        let mut tiers_by_rule = load_routing_tiers(connection).await?;
-        let mut model_rules = Vec::with_capacity(rule_rows.len());
-        for row in rule_rows {
-            let routing_tiers = tiers_by_rule.remove(&row.id.0).unwrap_or_default();
-            model_rules.push(row.into_record(routing_tiers)?);
-        }
-        let groups = sqlx::query_as::<_, ChannelGroupRow>(
-            "SELECT id,name,api_format,connector_kind,request_compression,sharing_only,enabled \
-             FROM channel_groups WHERE deleted_at IS NULL ORDER BY id",
-        )
-        .fetch_all(&mut *connection)
-        .await?
-        .into_iter()
-        .map(ChannelGroupRow::into_record)
-        .collect::<Vec<_>>();
-        let mut channels = sqlx::query_as::<_, ChannelRecordRow>(
-            "SELECT c.id,c.channel_group_id,c.api_format,c.name,c.base_url,c.enabled, \
-                    c.supports_websocket,c.supports_standalone_web_search,c.auto_disabled, \
-                    c.auto_disable_allowed,c.billing_multiplier,c.proxy_id,c.config_template_id, \
-                    c.override_document,c.connect_timeout_ms,c.response_header_timeout_ms, \
-                    c.stream_idle_timeout_ms,c.upstream_auth_kind,c.upstream_auth_header_name, \
-                    c.upstream_api_key,c.available_models,c.test_model,c.test_pricing_model_id \
-             FROM channels AS c \
-             JOIN channel_groups AS g ON g.id=c.channel_group_id AND g.deleted_at IS NULL \
-             WHERE c.deleted_at IS NULL ORDER BY c.id",
-        )
-        .fetch_all(&mut *connection)
-        .await?
-        .into_iter()
-        .map(ChannelRecordRow::into_record)
-        .collect::<Result<Vec<_>, _>>()?;
-        crate::persistence::upstream_credentials::resolve_bindings(
-            &mut channels,
-            &groups,
-            &super::upstream_credentials::records(connection).await?,
-            &super::upstream_credentials::bindings(connection).await?,
-        )?;
-        let proxies = sqlx::query_as::<_, ProxyRecordRow>(
-            "SELECT id,name,proxy_url,username,password,no_proxy_hosts,enabled FROM proxies ORDER BY id",
-        )
-        .fetch_all(&mut *connection)
-        .await?
-        .into_iter()
-        .map(ProxyRecordRow::into_record)
-        .collect::<Result<Vec<_>, _>>()?;
-        let templates = sqlx::query_as::<_, ConfigTemplateRecordRow>(
-            "SELECT id,name,description,document,enabled FROM config_templates ORDER BY id",
-        )
-        .fetch_all(&mut *connection)
-        .await?
-        .into_iter()
-        .map(ConfigTemplateRecordRow::into_record)
-        .collect::<Result<Vec<_>, _>>()?;
-        Ok(ControlPlaneRecords {
-            api_keys,
-            models,
-            model_rules,
-            groups,
-            channels,
-            proxies,
-            templates,
-        })
+        crate::persistence::upstream_topology::sqlite_load_control_plane(transaction).await
     }
 
     async fn load_system_settings_transaction(
@@ -358,223 +258,12 @@ fn json_column_optional(text: Option<String>) -> Result<Option<Value>, Repositor
     text.map(|value| parse_json(&value)).transpose()
 }
 
-#[derive(FromRow)]
-struct ApiKeyRecordRow {
-    id: SqliteUuid,
-    user_id: SqliteUuid,
-    user_status: String,
-    user_websocket_enabled: bool,
-    user_filter_fast_mode: bool,
-    secret_value: String,
-    status: String,
-    expires_at: Option<SqliteTimestamp>,
-    allowed_api_formats: String,
-    permissions: String,
-    allowed_group_ids: String,
-    allowed_channel_ids: String,
-    requests_per_minute: Option<i32>,
-    max_concurrent_requests: Option<i32>,
-    quota_limit_amount: Option<SqliteAmount>,
-    quota_used_amount: SqliteAmount,
-}
-
-impl ApiKeyRecordRow {
-    fn into_record(self) -> Result<ApiKeyRecord, RepositoryError> {
-        Ok(ApiKeyRecord {
-            id: self.id.0,
-            user_id: self.user_id.0,
-            user_status: self.user_status,
-            user_websocket_enabled: self.user_websocket_enabled,
-            user_filter_fast_mode: self.user_filter_fast_mode,
-            secret_value: self.secret_value,
-            status: self.status,
-            expires_at: self.expires_at.map(|value| value.0),
-            allowed_api_formats: string_list(&self.allowed_api_formats)?,
-            permissions: string_list(&self.permissions)?,
-            allowed_group_ids: uuid_list(&self.allowed_group_ids)?,
-            allowed_channel_ids: uuid_list(&self.allowed_channel_ids)?,
-            requests_per_minute: self.requests_per_minute,
-            max_concurrent_requests: self.max_concurrent_requests,
-            quota_limit_amount: self.quota_limit_amount.map(|value| value.0),
-            quota_used_amount: self.quota_used_amount.0,
-        })
-    }
-}
-
 fn string_list(text: &str) -> Result<Vec<String>, RepositoryError> {
     serde_json::from_str(text).map_err(|_| RepositoryError::Validation)
 }
 
 fn uuid_list(text: &str) -> Result<Vec<Uuid>, RepositoryError> {
     serde_json::from_str(text).map_err(|_| RepositoryError::Validation)
-}
-
-#[derive(FromRow)]
-struct ModelRecordRow {
-    id: SqliteUuid,
-    source_model_id: String,
-    currency: String,
-    price_unit_tokens: i64,
-    price_effective_at: SqliteTimestamp,
-    input_unit_price: SqliteUnitPrice,
-    cached_input_unit_price: SqliteUnitPrice,
-    cache_write_unit_price: SqliteUnitPrice,
-    output_unit_price: SqliteUnitPrice,
-    advanced_billing: String,
-}
-
-impl ModelRecordRow {
-    fn into_record(self) -> Result<ModelRecord, RepositoryError> {
-        Ok(ModelRecord {
-            id: self.id.0,
-            source_model_id: self.source_model_id,
-            currency: self.currency,
-            price_unit_tokens: self.price_unit_tokens,
-            price_effective_at: self.price_effective_at.0,
-            input_unit_price: self.input_unit_price.0,
-            cached_input_unit_price: self.cached_input_unit_price.0,
-            cache_write_unit_price: self.cache_write_unit_price.0,
-            output_unit_price: self.output_unit_price.0,
-            advanced_billing: json_column(&self.advanced_billing)?,
-        })
-    }
-}
-
-#[derive(FromRow)]
-struct RuntimeRuleRow {
-    id: SqliteUuid,
-    client_model: String,
-    api_format: String,
-    model_id: SqliteUuid,
-    model_enabled: bool,
-    model_currency: String,
-    price_unit_tokens: i64,
-    price_effective_at: SqliteTimestamp,
-    input_unit_price: SqliteUnitPrice,
-    cached_input_unit_price: SqliteUnitPrice,
-    cache_write_unit_price: SqliteUnitPrice,
-    output_unit_price: SqliteUnitPrice,
-    advanced_billing: String,
-    enabled: bool,
-}
-
-impl RuntimeRuleRow {
-    fn into_record(
-        self,
-        routing_tiers: Vec<ModelRuleRoutingTier>,
-    ) -> Result<ModelRuleRecord, RepositoryError> {
-        let api_operation = ApiOperation::for_legacy_format(&self.api_format);
-        Ok(ModelRuleRecord {
-            id: self.id.0,
-            client_model: self.client_model,
-            api_format: self.api_format,
-            api_operation,
-            model_id: self.model_id.0,
-            model_enabled: self.model_enabled,
-            model_currency: self.model_currency,
-            price_unit_tokens: self.price_unit_tokens,
-            price_effective_at: self.price_effective_at.0,
-            input_unit_price: self.input_unit_price.0,
-            cached_input_unit_price: self.cached_input_unit_price.0,
-            cache_write_unit_price: self.cache_write_unit_price.0,
-            output_unit_price: self.output_unit_price.0,
-            advanced_billing: json_column(&self.advanced_billing)?,
-            routing_tiers,
-            enabled: self.enabled,
-        })
-    }
-}
-
-#[derive(FromRow)]
-struct ChannelGroupRow {
-    id: SqliteUuid,
-    name: String,
-    api_format: String,
-    connector_kind: String,
-    request_compression: String,
-    sharing_only: bool,
-    enabled: bool,
-}
-
-impl ChannelGroupRow {
-    fn into_record(self) -> ChannelGroupRecord {
-        ChannelGroupRecord {
-            id: self.id.0,
-            name: self.name,
-            api_format: self.api_format,
-            connector_kind: self.connector_kind,
-            request_compression: self.request_compression,
-            sharing_only: self.sharing_only,
-            enabled: self.enabled,
-        }
-    }
-}
-
-#[derive(FromRow)]
-struct ChannelRecordRow {
-    id: SqliteUuid,
-    channel_group_id: SqliteUuid,
-    api_format: String,
-    name: String,
-    base_url: String,
-    enabled: bool,
-    supports_websocket: bool,
-    supports_standalone_web_search: bool,
-    auto_disabled: bool,
-    auto_disable_allowed: bool,
-    billing_multiplier: SqliteUnitPrice,
-    proxy_id: Option<SqliteUuid>,
-    config_template_id: Option<SqliteUuid>,
-    override_document: String,
-    connect_timeout_ms: Option<i32>,
-    response_header_timeout_ms: Option<i32>,
-    stream_idle_timeout_ms: Option<i32>,
-    upstream_auth_kind: String,
-    upstream_auth_header_name: Option<String>,
-    upstream_api_key: Option<String>,
-    available_models: String,
-    test_model: Option<String>,
-    test_pricing_model_id: Option<SqliteUuid>,
-}
-
-impl ChannelRecordRow {
-    fn into_record(self) -> Result<ChannelRecord, RepositoryError> {
-        Ok(ChannelRecord {
-            credential: None,
-            credential_binding_revision: Uuid::nil(),
-            id: self.id.0,
-            channel_group_id: self.channel_group_id.0,
-            api_format: self.api_format,
-            logical_channel_id: Uuid::nil(),
-            access_id: Uuid::nil(),
-            api_operation: None,
-            connector_kind: String::new(),
-            request_compression: String::new(),
-            access_revision: Uuid::nil(),
-            capability_revision: Uuid::nil(),
-            transports: Vec::new(),
-            name: self.name,
-            base_url: self.base_url,
-            enabled: self.enabled,
-            supports_websocket: self.supports_websocket,
-            supports_standalone_web_search: self.supports_standalone_web_search,
-            auto_disabled: self.auto_disabled,
-            auto_disable_allowed: self.auto_disable_allowed,
-            billing_multiplier: self.billing_multiplier.0,
-            proxy_id: self.proxy_id.map(|value| value.0),
-            config_template_id: self.config_template_id.map(|value| value.0),
-            override_document: json_column(&self.override_document)?,
-            connect_timeout_ms: self.connect_timeout_ms,
-            response_header_timeout_ms: self.response_header_timeout_ms,
-            stream_idle_timeout_ms: self.stream_idle_timeout_ms,
-            upstream_auth_kind: self.upstream_auth_kind,
-            upstream_auth_header_name: self.upstream_auth_header_name,
-            upstream_api_key: self.upstream_api_key,
-            available_models: string_list(&self.available_models)?,
-            test_model: self.test_model,
-            test_pricing_model_id: self.test_pricing_model_id.map(|value| value.0),
-        })
-    }
 }
 
 #[derive(FromRow)]
@@ -597,27 +286,6 @@ impl ProxyRecordRow {
             username: self.username,
             password: self.password,
             no_proxy_hosts: string_list(&self.no_proxy_hosts)?,
-            enabled: self.enabled,
-        })
-    }
-}
-
-#[derive(FromRow)]
-struct ConfigTemplateRecordRow {
-    id: SqliteUuid,
-    name: String,
-    description: Option<String>,
-    document: String,
-    enabled: bool,
-}
-
-impl ConfigTemplateRecordRow {
-    fn into_record(self) -> Result<ConfigTemplateRecord, RepositoryError> {
-        Ok(ConfigTemplateRecord {
-            id: self.id.0,
-            name: self.name,
-            description: self.description,
-            document: json_column(&self.document)?,
             enabled: self.enabled,
         })
     }
@@ -760,24 +428,26 @@ async fn load_sharing_only_channels(
 ) -> Result<Vec<Uuid>, RepositoryError> {
     let rows = sqlx::query_as::<_, ChannelIdRow>(
         "WITH restricted AS ( \
-             SELECT DISTINCT source.channel_id AS channel_id,source.user_id,source.account_id \
-             FROM codex_oauth_credentials AS source \
-             JOIN codex_oauth_credential_channels AS source_projection \
-               ON source_projection.credential_id=source.channel_id \
-             JOIN channels AS source_channel ON source_channel.id=source_projection.channel_id \
-             JOIN channel_groups AS source_group ON source_group.id=source_channel.channel_group_id \
-             WHERE source_group.sharing_only AND source.deleted_at IS NULL) \
-         SELECT projection.channel_id FROM restricted \
-         JOIN codex_oauth_credential_channels AS projection \
-           ON projection.credential_id=restricted.channel_id \
-         UNION \
-         SELECT projection.channel_id FROM restricted AS source \
-         JOIN codex_oauth_credentials AS alias \
-           ON source.user_id=alias.user_id \
-          AND COALESCE(source.account_id,'')=COALESCE(alias.account_id,'') \
-         JOIN codex_oauth_credential_channels AS projection \
-           ON projection.credential_id=alias.channel_id \
-         WHERE source.user_id IS NOT NULL AND alias.deleted_at IS NULL",
+             SELECT DISTINCT channel.credential_id AS credential_id, \
+                    identity.user_id AS user_id,COALESCE(identity.account_id,'') AS account_id \
+             FROM upstream_channels AS channel \
+             JOIN routing_groups AS source_group ON source_group.id=channel.group_id \
+             JOIN codex_oauth_credentials AS identity ON identity.channel_id=channel.credential_id \
+             WHERE source_group.sharing_only AND source_group.deleted_at IS NULL \
+               AND channel.deleted_at IS NULL AND channel.credential_id IS NOT NULL \
+               AND identity.deleted_at IS NULL), \
+         protected AS ( \
+             SELECT credential_id FROM restricted \
+             UNION \
+             SELECT alias.channel_id FROM restricted AS source \
+             JOIN codex_oauth_credentials AS alias ON alias.user_id=source.user_id \
+               AND COALESCE(alias.account_id,'')=source.account_id \
+             WHERE source.user_id IS NOT NULL AND alias.deleted_at IS NULL) \
+         SELECT DISTINCT capability.id AS channel_id \
+         FROM channel_capabilities AS capability \
+         JOIN upstream_channels AS channel ON channel.id=capability.channel_id \
+         WHERE channel.deleted_at IS NULL AND capability.deleted_at IS NULL \
+           AND channel.credential_id IN (SELECT credential_id FROM protected)",
     )
     .fetch_all(&mut *connection)
     .await?;
@@ -839,25 +509,32 @@ async fn load_sharing_transaction(
     .fetch_all(&mut *connection)
     .await?;
     let projections = sqlx::query_as::<_, SharingProjectionRow>(
-        "SELECT p.credential_id,p.channel_id FROM codex_oauth_credential_channels AS p \
-         ORDER BY p.credential_id,p.api_format",
+        "SELECT channel.credential_id AS credential_id,capability.id AS channel_id \
+         FROM upstream_channels AS channel \
+         JOIN channel_capabilities AS capability ON capability.channel_id=channel.id \
+         WHERE channel.deleted_at IS NULL AND capability.deleted_at IS NULL \
+           AND channel.credential_id IS NOT NULL \
+         ORDER BY channel.credential_id,capability.id",
     )
     .fetch_all(&mut *connection)
     .await?;
     // Protected identities follow both the canonical credential and any
     // recognizable provider alias, matching the PostgreSQL reader.
     let protected = sqlx::query_as::<_, SharingProjectionRow>(
-        "SELECT s.credential_id AS credential_id,p.channel_id AS channel_id \
+        "SELECT s.credential_id AS credential_id,capability.id AS channel_id \
          FROM codex_sharing_groups AS s \
-         JOIN codex_oauth_credentials AS c ON c.channel_id=s.credential_id \
-         JOIN codex_oauth_credential_channels AS p ON p.credential_id=c.channel_id \
+         JOIN upstream_channels AS channel ON channel.credential_id=s.credential_id \
+         JOIN channel_capabilities AS capability ON capability.channel_id=channel.id \
+         WHERE channel.deleted_at IS NULL AND capability.deleted_at IS NULL \
          UNION \
-         SELECT s.credential_id,p.channel_id \
+         SELECT s.credential_id,capability.id \
          FROM codex_sharing_groups AS s \
-         JOIN codex_oauth_credentials AS c \
-           ON COALESCE(c.account_id,'')=s.provider_account_id \
-          AND c.user_id=s.provider_user_id \
-         JOIN codex_oauth_credential_channels AS p ON p.credential_id=c.channel_id",
+         JOIN codex_oauth_credentials AS identity \
+           ON COALESCE(identity.account_id,'')=s.provider_account_id \
+          AND identity.user_id=s.provider_user_id \
+         JOIN upstream_channels AS channel ON channel.credential_id=identity.channel_id \
+         JOIN channel_capabilities AS capability ON capability.channel_id=channel.id \
+         WHERE channel.deleted_at IS NULL AND capability.deleted_at IS NULL",
     )
     .fetch_all(&mut *connection)
     .await?;
@@ -4387,6 +4064,65 @@ async fn apply_control_plane_mutation(
             )
             .await
         }
+        ControlPlaneMutation::SaveRoutingGroup {
+            id,
+            input,
+            expected,
+        } => {
+            crate::persistence::upstream_topology::groups::sqlite_save(
+                transaction,
+                id,
+                &input,
+                expected,
+            )
+            .await
+        }
+        ControlPlaneMutation::SaveLogicalChannel {
+            id,
+            input,
+            expected,
+        } => {
+            crate::persistence::upstream_topology::channels::sqlite_save(
+                transaction,
+                id,
+                &input,
+                expected,
+            )
+            .await
+        }
+        ControlPlaneMutation::SaveChannelCapability {
+            id,
+            input,
+            expected,
+        } => {
+            crate::persistence::upstream_topology::capabilities::sqlite_save(
+                transaction,
+                id,
+                &input,
+                expected,
+            )
+            .await
+        }
+        ControlPlaneMutation::DeleteRoutingGroup { id, expected } => {
+            crate::persistence::upstream_topology::groups::sqlite_delete(transaction, id, expected)
+                .await
+        }
+        ControlPlaneMutation::DeleteLogicalChannel { id, expected } => {
+            crate::persistence::upstream_topology::channels::sqlite_delete(
+                transaction,
+                id,
+                expected,
+            )
+            .await
+        }
+        ControlPlaneMutation::DeleteChannelCapability { id, expected } => {
+            crate::persistence::upstream_topology::capabilities::sqlite_delete(
+                transaction,
+                id,
+                expected,
+            )
+            .await
+        }
         ControlPlaneMutation::SaveCodexSharing {
             id,
             input,
@@ -6722,7 +6458,7 @@ async fn automatically_disable_channel(
     if !automatic_disable_matches(&settings, trigger) {
         return Ok(None);
     }
-    let before = channel_audit(transaction, id).await?;
+    let before = capability_audit(transaction, id).await?;
     if !before["deleted_at"].is_null()
         || before["enabled"].as_bool() != Some(true)
         || before["auto_disable_allowed"].as_bool() != Some(true)
@@ -6732,7 +6468,8 @@ async fn automatically_disable_channel(
     }
     let reason = automatic_disable_reason(trigger);
     let updated_at = sqlx::query_scalar::<_, SqliteTimestamp>(
-        "UPDATE channels SET auto_disabled=1,auto_disabled_reason=?,updated_at=ag_now() \
+        "UPDATE channel_capabilities SET auto_disabled=1,auto_disable_reason=?,auto_disable_at=ag_now(), \
+         revision=ag_md5_uuid(hex(randomblob(32))),updated_at=ag_now() \
          WHERE id=? AND deleted_at IS NULL RETURNING updated_at",
     )
     .bind(&reason)
@@ -6742,10 +6479,10 @@ async fn automatically_disable_channel(
     .ok_or(RepositoryError::NotFound)?;
     Ok(Some(MutationResult {
         id,
-        object_type: "channel",
+        object_type: "channel_capability",
         action: "auto_disable",
         before_redacted: before,
-        after_redacted: channel_audit(transaction, id).await?,
+        after_redacted: capability_audit(transaction, id).await?,
         created_secret: None,
         reason: Some(reason),
         updated_at: updated_at.0,
@@ -6761,7 +6498,7 @@ async fn automatically_recover_channel(
     if !settings.scheduled_testing.auto_recover {
         return Ok(None);
     }
-    let before = channel_audit(transaction, id).await?;
+    let before = capability_audit(transaction, id).await?;
     if !before["deleted_at"].is_null()
         || before["enabled"].as_bool() != Some(true)
         || before["auto_disabled"].as_bool() != Some(true)
@@ -6770,7 +6507,8 @@ async fn automatically_recover_channel(
     }
     let reason = "scheduled test succeeded".to_owned();
     let updated_at = sqlx::query_scalar::<_, SqliteTimestamp>(
-        "UPDATE channels SET auto_disabled=0,auto_disabled_reason=NULL,updated_at=ag_now() \
+        "UPDATE channel_capabilities SET auto_disabled=0,auto_disable_reason=NULL,auto_disable_at=NULL, \
+         revision=ag_md5_uuid(hex(randomblob(32))),updated_at=ag_now() \
          WHERE id=? AND deleted_at IS NULL RETURNING updated_at",
     )
     .bind(SqliteUuid(id))
@@ -6779,15 +6517,41 @@ async fn automatically_recover_channel(
     .ok_or(RepositoryError::NotFound)?;
     Ok(Some(MutationResult {
         id,
-        object_type: "channel",
+        object_type: "channel_capability",
         action: "auto_recover",
         before_redacted: before,
-        after_redacted: channel_audit(transaction, id).await?,
+        after_redacted: capability_audit(transaction, id).await?,
         created_secret: None,
         reason: Some(reason),
         updated_at: updated_at.0,
         correlation_id: None,
     }))
+}
+
+async fn capability_audit(
+    transaction: &mut Transaction<'static, Sqlite>,
+    id: Uuid,
+) -> Result<Value, RepositoryError> {
+    let row = sqlx::query_scalar::<_, String>(
+        "SELECT json_object( \
+             'id',id,'channel_id',channel_id,'operation',operation,'transports',json(transports), \
+             'enabled',json(CASE enabled WHEN 1 THEN 'true' ELSE 'false' END), \
+             'available_models',json(available_models),'request_compression',request_compression, \
+             'test_model',test_model,'test_pricing_model_id',test_pricing_model_id, \
+             'auto_disabled',json(CASE auto_disabled WHEN 1 THEN 'true' ELSE 'false' END), \
+             'auto_disable_reason',auto_disable_reason,'auto_disable_at',auto_disable_at, \
+             'auto_disable_allowed',json(CASE auto_disable_allowed WHEN 1 THEN 'true' ELSE 'false' END), \
+             'status_statistics_enabled',json(CASE status_statistics_enabled WHEN 1 THEN 'true' ELSE 'false' END), \
+             'config_template_id',config_template_id, \
+             'billing_multiplier',json(billing_multiplier),'revision',revision, \
+             'created_at',created_at,'updated_at',updated_at,'deleted_at',deleted_at) \
+         FROM channel_capabilities WHERE id=?",
+    )
+    .bind(SqliteUuid(id))
+    .fetch_optional(&mut **transaction)
+    .await?
+    .ok_or(RepositoryError::NotFound)?;
+    serde_json::from_str(&row).map_err(|_| RepositoryError::Validation)
 }
 
 // ---------------------------------------------------------------------------

@@ -14,14 +14,14 @@ const destinations: Array<{
 }> = [
   {
     lens: "routes",
-    path: "/admin/routing/model-rules",
-    label: "Model rules",
+    path: "/admin/routing/operation-rules",
+    label: "Operation rules",
     icon: Route,
   },
   {
     lens: "supply",
-    path: "/admin/routing/channels",
-    label: "Channels",
+    path: "/admin/routing/logical-channels",
+    label: "Logical channels",
     icon: Boxes,
   },
   {

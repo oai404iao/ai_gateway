@@ -50,6 +50,7 @@ tags:
   - name: Channels
   - name: ModelRules
   - name: CodexOAuth
+  - name: RoutingTopology
   - name: Proxies
   - name: Templates
   - name: RequestLogs
@@ -1660,6 +1661,383 @@ paths:
       responses:
         "200":
           description: Access updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /routing/groups:
+    get:
+      tags: [RoutingTopology]
+      operationId: listRoutingGroups
+      description: Administrator-only canonical routing groups, excluding tombstones.
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Canonical routing groups.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/RoutingGroupView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [RoutingTopology]
+      operationId: createRoutingGroup
+      description: Creates an organization-only group. It never creates channels, enables capabilities, configures routes, or grants API key access.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RoutingGroupInput" }
+      responses:
+        "201":
+          description: Group created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /routing/groups/{id}:
+    get:
+      tags: [RoutingTopology]
+      operationId: getRoutingGroup
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Canonical routing group.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RoutingGroupView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [RoutingTopology]
+      operationId: updateRoutingGroup
+      description: Replaces organization and the sharing switch. Enabling sharing-only requires every live member channel to use the Codex OAuth connector and never grants access by itself.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RoutingGroupInput" }
+      responses:
+        "200":
+          description: Group updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+    delete:
+      tags: [RoutingTopology]
+      operationId: deleteRoutingGroup
+      description: Soft-deletes the group. Any non-deleted member channel, including disabled or unrouted channels, blocks deletion; nothing cascades.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "200":
+          description: Group deleted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /routing/logical-channels:
+    get:
+      tags: [RoutingTopology]
+      operationId: listLogicalChannels
+      description: Administrator-only canonical logical channels, excluding tombstones.
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Canonical logical channels.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/LogicalChannelView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [RoutingTopology]
+      operationId: createLogicalChannel
+      description: Binds one access and at most one credential to a group. It never creates capabilities, routes, or grants.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LogicalChannelInput" }
+      responses:
+        "201":
+          description: Logical channel created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /routing/logical-channels/{id}:
+    get:
+      tags: [RoutingTopology]
+      operationId: getLogicalChannel
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Canonical logical channel.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LogicalChannelView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [RoutingTopology]
+      operationId: updateLogicalChannel
+      description: Replaces the group/access/credential binding. `credential_id` is required and nullable; omitting it is rejected. Rebinding invalidates connection identity.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LogicalChannelInput" }
+      responses:
+        "200":
+          description: Logical channel updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+    delete:
+      tags: [RoutingTopology]
+      operationId: deleteLogicalChannel
+      description: Soft-deletes the logical channel. Shared credentials and accesses are never deleted with it.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "200":
+          description: Logical channel deleted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /routing/capabilities:
+    get:
+      tags: [RoutingTopology]
+      operationId: listChannelCapabilities
+      description: Administrator-only canonical channel capabilities, excluding tombstones.
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Canonical channel capabilities.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ChannelCapabilityView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [RoutingTopology]
+      operationId: createChannelCapability
+      description: Declares one operation, transport set and model catalog for an ordinary logical channel. Codex capability identities are created by credential import. It never enables routing or grants access.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChannelCapabilityInput" }
+      responses:
+        "201":
+          description: Capability created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /routing/capabilities/{id}:
+    get:
+      tags: [RoutingTopology]
+      operationId: getChannelCapability
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Canonical channel capability.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChannelCapabilityView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [RoutingTopology]
+      operationId: updateChannelCapability
+      description: Replaces transports, catalog, transforms and compression. The owning channel and operation are immutable. Existing Codex capabilities can be configured independently. Changes invalidate the capability revision without rewriting routes or grants.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChannelCapabilityInput" }
+      responses:
+        "200":
+          description: Capability updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+    delete:
+      tags: [RoutingTopology]
+      operationId: deleteChannelCapability
+      description: Soft-deletes an ordinary capability. Dependent routing candidates must be withdrawn first. Codex capabilities are deleted through their credential lifecycle.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "200":
+          description: Capability deleted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /routing/operation-rules:
+    get:
+      tags: [RoutingTopology]
+      operationId: listOperationRules
+      description: Administrator-only per-operation routing rules with their explicit capability/model tiers.
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Canonical operation rules.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/OperationRuleView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [RoutingTopology]
+      operationId: createOperationRule
+      description: Creates one operation rule and replaces its tier graph atomically. Candidates reference a capability and wire model; they never reference legacy channels.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OperationRuleInput" }
+      responses:
+        "201":
+          description: Operation rule created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /routing/operation-rules/{id}:
+    get:
+      tags: [RoutingTopology]
+      operationId: getOperationRule
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Canonical operation rule with its tier graph.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OperationRuleView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [RoutingTopology]
+      operationId: updateOperationRule
+      description: Replaces the tier graph atomically. The model routing profile and operation are immutable. Every candidate must resolve to a live capability of the same operation advertising the wire model.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OperationRuleInput" }
+      responses:
+        "200":
+          description: Operation rule replaced.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/MutationResponse" }
@@ -4331,6 +4709,171 @@ components:
         response_header_timeout_ms: { type: integer, minimum: 1, nullable: true }
         stream_idle_timeout_ms: { type: integer, minimum: 1, nullable: true }
         enabled: { type: boolean }
+
+    RoutingGroupView:
+      type: object
+      required: [id, name, enabled, sharing_only, created_at, updated_at, deleted_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        enabled: { type: boolean }
+        sharing_only:
+          type: boolean
+          description: Codex-only. When set, every live member channel must use the Codex OAuth connector.
+        created_at: { $ref: "#/components/schemas/DateTime" }
+        updated_at: { $ref: "#/components/schemas/DateTime" }
+        deleted_at: { type: string, format: date-time, nullable: true }
+
+    RoutingGroupInput:
+      type: object
+      additionalProperties: false
+      required: [name, enabled]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        enabled: { type: boolean }
+        sharing_only:
+          type: boolean
+          default: false
+          description: Codex-only; rejected unless every live member channel uses the Codex OAuth connector.
+
+    LogicalChannelView:
+      type: object
+      required: [id, group_id, access_id, credential_id, name, enabled, binding_revision, created_at, updated_at, deleted_at]
+      properties:
+        id: { type: string, format: uuid }
+        group_id: { type: string, format: uuid }
+        access_id: { type: string, format: uuid }
+        credential_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Null means the channel sends no upstream authentication.
+        name: { type: string }
+        enabled: { type: boolean }
+        binding_revision: { type: string, format: uuid }
+        created_at: { $ref: "#/components/schemas/DateTime" }
+        updated_at: { $ref: "#/components/schemas/DateTime" }
+        deleted_at: { type: string, format: date-time, nullable: true }
+
+    LogicalChannelInput:
+      type: object
+      additionalProperties: false
+      required: [group_id, access_id, credential_id, name, enabled]
+      properties:
+        group_id: { type: string, format: uuid }
+        access_id: { type: string, format: uuid }
+        credential_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Required and nullable. Omitting the field is rejected so an update can never silently detach authentication.
+        name: { type: string, minLength: 1, maxLength: 100 }
+        enabled: { type: boolean }
+
+    CapabilityTransport:
+      type: string
+      enum: [http_json, http_sse, websocket, multipart]
+
+    CapabilitySettings:
+      type: object
+      additionalProperties: false
+      required: [operation, transports, enabled, available_models, request_compression, test_model, test_pricing_model_id, auto_disable_allowed]
+      properties:
+        operation: { $ref: "#/components/schemas/ApiOperation" }
+        transports:
+          type: array
+          description: Only connector-implemented operation/transport combinations are accepted.
+          items: { $ref: "#/components/schemas/CapabilityTransport" }
+        enabled: { type: boolean }
+        available_models:
+          type: array
+          items: { type: string }
+        request_compression: { $ref: "#/components/schemas/RequestCompression" }
+        test_model: { type: string, nullable: true }
+        test_pricing_model_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Probe pricing model; both probe fields are set or null together.
+        auto_disable_allowed: { type: boolean }
+
+    ChannelCapabilityView:
+      type: object
+      required: [id, channel_id, settings, auto_disabled, auto_disable_reason, auto_disable_at, status_statistics_enabled, config_template_id, override_document, billing_multiplier, revision, created_at, updated_at, deleted_at]
+      properties:
+        id: { type: string, format: uuid }
+        channel_id: { type: string, format: uuid }
+        settings: { $ref: "#/components/schemas/CapabilitySettings" }
+        auto_disabled: { type: boolean }
+        auto_disable_reason: { type: string, nullable: true }
+        auto_disable_at: { type: string, format: date-time, nullable: true }
+        status_statistics_enabled: { type: boolean }
+        config_template_id: { type: string, format: uuid, nullable: true }
+        override_document:
+          allOf: [{ $ref: "#/components/schemas/JsonValue" }]
+          description: Stored capability transform overrides returned for administrator editing.
+        billing_multiplier: { $ref: "#/components/schemas/Decimal" }
+        revision: { type: string, format: uuid }
+        created_at: { $ref: "#/components/schemas/DateTime" }
+        updated_at: { $ref: "#/components/schemas/DateTime" }
+        deleted_at: { type: string, format: date-time, nullable: true }
+
+    ChannelCapabilityInput:
+      type: object
+      additionalProperties: false
+      required: [channel_id, settings]
+      properties:
+        channel_id: { type: string, format: uuid }
+        settings: { $ref: "#/components/schemas/CapabilitySettings" }
+        status_statistics_enabled: { type: boolean, default: false }
+        config_template_id: { type: string, format: uuid, nullable: true }
+        override_document:
+          allOf: [{ $ref: "#/components/schemas/JsonValue" }]
+          default: {}
+        billing_multiplier: { $ref: "#/components/schemas/Decimal" }
+
+    OperationCandidateInput:
+      type: object
+      additionalProperties: false
+      required: [capability_id, upstream_model, weight]
+      properties:
+        capability_id: { type: string, format: uuid }
+        upstream_model: { type: string, minLength: 1, maxLength: 300 }
+        weight: { type: integer, minimum: 1 }
+
+    OperationTierInput:
+      type: object
+      additionalProperties: false
+      required: [priority, selection_strategy, candidates]
+      properties:
+        priority: { type: integer, minimum: 0 }
+        selection_strategy: { $ref: "#/components/schemas/SelectionStrategy" }
+        candidates:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/OperationCandidateInput" }
+
+    OperationRuleInput:
+      type: object
+      additionalProperties: false
+      required: [model_routing_profile_id, operation, enabled, routing_tiers]
+      properties:
+        model_routing_profile_id: { type: string, format: uuid }
+        operation: { $ref: "#/components/schemas/ApiOperation" }
+        enabled: { type: boolean }
+        routing_tiers:
+          type: array
+          items: { $ref: "#/components/schemas/OperationTierInput" }
+
+    OperationRuleView:
+      allOf:
+        - $ref: "#/components/schemas/OperationRuleInput"
+        - type: object
+          required: [id, created_at, updated_at]
+          properties:
+            id: { type: string, format: uuid }
+            created_at: { $ref: "#/components/schemas/DateTime" }
+            updated_at: { $ref: "#/components/schemas/DateTime" }
 
     UpstreamCredentialView:
       type: object

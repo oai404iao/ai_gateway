@@ -13,8 +13,8 @@ async fn window_cost(
     let mut sum = CostSum::default();
     let mut rows=sqlx::query_scalar::<_,SqliteAmount>(
         "SELECT f.cost_amount FROM request_metering_facts f
-         JOIN codex_oauth_credential_channels p ON p.channel_id=f.channel_id
-         WHERE p.credential_id=? AND f.cost_amount IS NOT NULL AND f.started_at>=? AND f.started_at<?")
+         JOIN channel_identity_registry identity ON identity.id=f.channel_id
+         WHERE identity.codex_credential_id=? AND f.cost_amount IS NOT NULL AND f.started_at>=? AND f.started_at<?")
         .bind(SqliteUuid(credential)).bind(SqliteTimestamp(start)).bind(SqliteTimestamp(end))
         .fetch(connection);
     while let Some(amount) = rows.try_next().await? {

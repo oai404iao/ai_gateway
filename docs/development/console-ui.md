@@ -12,6 +12,10 @@
 `src/features/admin/routing/accesses/`，独立管理连接器、Base URL、代理和超时，
 不在该表单配置凭证或隐式扩展接口能力/授权。该入口依赖尚未完成的联合数据库切换，
 不能作为独立功能发布到旧数据库。
+同目录的 `groups/`、`logical-channels/`、`capabilities/`、`operation-rules/`
+提供新拓扑的列表和版本化编辑；候选使用 `capability_id`。能力所属渠道和操作在
+创建后只读，Codex 既有能力的独立配置可修改。旧页面和授权流程尚未全部退役，
+操作规则仍需提供已有 profile UUID，因此这些界面不代表联合切换已经完成。
 
 ## 1. 运行边界
 

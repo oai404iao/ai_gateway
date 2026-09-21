@@ -30,6 +30,8 @@ pub(crate) async fn records(
 pub(super) async fn bindings(
     connection: &mut SqliteConnection,
 ) -> Result<Vec<CredentialBinding>, RepositoryError> {
+    // Live canonical logical channels own credential scope, including disabled
+    // and unrouted drafts; the legacy physical channel table is no longer read.
     let rows = sqlx::query_as::<
         _,
         (
@@ -39,8 +41,7 @@ pub(super) async fn bindings(
             SqliteUuid,
         ),
     >(
-        "SELECT c.id,c.credential_id,p.credential_id,c.credential_binding_revision FROM channels c
-         LEFT JOIN codex_oauth_credential_channels p ON p.channel_id=c.id
+        "SELECT c.id,c.credential_id,NULL,c.binding_revision FROM upstream_channels c
          WHERE c.deleted_at IS NULL ORDER BY c.id",
     )
     .fetch_all(connection)
@@ -77,7 +78,9 @@ pub(super) async fn save(
     };
     let record = prepare_record(id, input, previous.as_ref(), expected)?;
     for target in sqlx::query_scalar::<_, String>(
-        "SELECT base_url FROM channels WHERE credential_id=? AND deleted_at IS NULL",
+        "SELECT access.base_url FROM upstream_channels channel \
+         JOIN upstream_accesses access ON access.id=channel.access_id \
+         WHERE channel.credential_id=? AND channel.deleted_at IS NULL",
     )
     .bind(SqliteUuid(id))
     .fetch_all(&mut **transaction)

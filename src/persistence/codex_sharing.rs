@@ -23,24 +23,32 @@ impl PostgresControlPlaneRepository {
     pub(super) async fn load_sharing_only_channels(
         transaction: &mut Transaction<'_, Postgres>,
     ) -> Result<Vec<Uuid>, RepositoryError> {
-        // Protect identities across pools as well as both format projections.
-        // No token/identity material enters the compiled registry.
+        // Protect every capability bound to a sharing-only credential, plus
+        // capabilities reachable through the same provider identity in another
+        // pool. No token/identity material enters the compiled registry.
         Ok(sqlx::query_scalar(
-            "WITH restricted AS (SELECT DISTINCT source.channel_id,source.user_id,source.account_id \
-             FROM codex_oauth_credentials source \
-             JOIN codex_oauth_credential_channels source_projection ON source_projection.credential_id=source.channel_id \
-             JOIN channels source_channel ON source_channel.id=source_projection.channel_id \
-             JOIN channel_groups source_group ON source_group.id=source_channel.channel_group_id \
-             WHERE source_group.sharing_only AND source.deleted_at IS NULL) \
-             SELECT projection.channel_id FROM restricted \
-             JOIN codex_oauth_credential_channels projection ON projection.credential_id=restricted.channel_id \
-             UNION \
-             SELECT projection.channel_id FROM restricted source \
-             JOIN codex_oauth_credentials alias ON source.user_id=alias.user_id \
-                 AND COALESCE(source.account_id,'')=COALESCE(alias.account_id,'') \
-             JOIN codex_oauth_credential_channels projection ON projection.credential_id=alias.channel_id \
-             WHERE source.user_id IS NOT NULL AND alias.deleted_at IS NULL"
-        ).fetch_all(&mut **transaction).await?)
+            "WITH restricted AS (SELECT DISTINCT channel.credential_id,identity.user_id, \
+                 COALESCE(identity.account_id,'') AS account_id \
+             FROM upstream_channels channel \
+             JOIN routing_groups source_group ON source_group.id=channel.group_id \
+             JOIN codex_oauth_credentials identity ON identity.channel_id=channel.credential_id \
+             WHERE source_group.sharing_only AND source_group.deleted_at IS NULL \
+               AND channel.deleted_at IS NULL AND channel.credential_id IS NOT NULL \
+               AND identity.deleted_at IS NULL), \
+             protected AS ( \
+                 SELECT credential_id FROM restricted \
+                 UNION \
+                 SELECT alias.channel_id FROM restricted source \
+                 JOIN codex_oauth_credentials alias ON source.user_id=alias.user_id \
+                     AND COALESCE(alias.account_id,'')=source.account_id \
+                 WHERE source.user_id IS NOT NULL AND alias.deleted_at IS NULL) \
+             SELECT DISTINCT capability.id FROM channel_capabilities capability \
+             JOIN upstream_channels channel ON channel.id=capability.channel_id \
+             WHERE channel.deleted_at IS NULL AND capability.deleted_at IS NULL \
+               AND channel.credential_id IN (SELECT credential_id FROM protected)",
+        )
+        .fetch_all(&mut **transaction)
+        .await?)
     }
 
     pub async fn claim_sharing_ledger(
@@ -134,13 +142,17 @@ impl PostgresControlPlaneRepository {
         let rows =
             sqlx::query_as::<_, (Value, Vec<Uuid>, Vec<Uuid>)>(sqlx::AssertSqlSafe(format!(
                 "SELECT {GROUP_JSON},\
-             ARRAY(SELECT p.channel_id FROM codex_oauth_credential_channels p \
-                   WHERE p.credential_id=s.credential_id),\
-             ARRAY(SELECT p.channel_id FROM codex_oauth_credentials c \
-                   JOIN codex_oauth_credential_channels p ON p.credential_id=c.channel_id \
-                   WHERE c.channel_id=s.credential_id OR \
-                     (COALESCE(c.account_id,'')=s.provider_account_id \
-                      AND c.user_id=s.provider_user_id)) \
+             ARRAY(SELECT capability.id FROM upstream_channels channel \
+                   JOIN channel_capabilities capability ON capability.channel_id=channel.id \
+                   WHERE channel.deleted_at IS NULL AND capability.deleted_at IS NULL \
+                     AND channel.credential_id=s.credential_id),\
+             ARRAY(SELECT capability.id FROM upstream_channels channel \
+                   JOIN channel_capabilities capability ON capability.channel_id=channel.id \
+                   JOIN codex_oauth_credentials identity ON identity.channel_id=channel.credential_id \
+                   WHERE channel.deleted_at IS NULL AND capability.deleted_at IS NULL \
+                     AND (identity.channel_id=s.credential_id OR \
+                       (COALESCE(identity.account_id,'')=s.provider_account_id \
+                        AND identity.user_id=s.provider_user_id))) \
              FROM codex_sharing_groups s ORDER BY s.id"
             )))
             .fetch_all(&mut **transaction)

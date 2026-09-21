@@ -42,6 +42,36 @@ pub async fn pg_retarget_history(
 pub async fn sqlite_retarget_history(
     transaction: &mut Transaction<'_, sqlx::Sqlite>,
 ) -> Result<(), RepositoryError> {
+    sqlite_rebuild(
+        transaction,
+        &["request_logs", "request_metering_facts"],
+        &[
+            ("channels", "channel_identity_registry"),
+            ("channel_groups", "group_identity_registry"),
+            ("model_rules", "model_rule_identity_registry"),
+        ],
+    )
+    .await
+}
+
+#[cfg(feature = "sqlite-backend")]
+pub async fn sqlite_retarget_codex_identity(
+    transaction: &mut Transaction<'_, sqlx::Sqlite>,
+) -> Result<(), RepositoryError> {
+    sqlite_rebuild(
+        transaction,
+        &["codex_oauth_credentials"],
+        &[("channels", "upstream_credentials")],
+    )
+    .await
+}
+
+#[cfg(feature = "sqlite-backend")]
+async fn sqlite_rebuild(
+    transaction: &mut Transaction<'_, sqlx::Sqlite>,
+    tables: &[&str],
+    references: &[(&str, &str)],
+) -> Result<(), RepositoryError> {
     let connection = &mut **transaction;
     let enabled: bool = sqlx::query_scalar("PRAGMA foreign_keys")
         .fetch_one(&mut *connection)
@@ -69,7 +99,7 @@ pub async fn sqlite_retarget_history(
         .execute(&mut *connection)
         .await?;
     }
-    for table in ["request_logs", "request_metering_facts"] {
+    for &table in tables {
         let ddl: String =
             sqlx::query_scalar("SELECT sql FROM sqlite_schema WHERE type='table' AND name=?")
                 .bind(table)
@@ -99,11 +129,7 @@ pub async fn sqlite_retarget_history(
             return Err(RepositoryError::Validation);
         }
         let mut ddl = ddl.replacen(&prefix, &format!("CREATE TABLE {replacement} ("), 1);
-        for (old, new) in [
-            ("channels", "channel_identity_registry"),
-            ("channel_groups", "group_identity_registry"),
-            ("model_rules", "model_rule_identity_registry"),
-        ] {
+        for (old, new) in references {
             let reference = format!("REFERENCES {old} (id)");
             if ddl.matches(&reference).count() != 1 {
                 return Err(RepositoryError::Validation);
