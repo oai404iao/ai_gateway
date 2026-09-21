@@ -38,6 +38,15 @@ impl ApiOperation {
         }
     }
 
+    /// Baseline `model_rules` rows persist only an API format. Until the joint
+    /// capability cutover stores an explicit operation, a legacy row maps to
+    /// its format's default operation; sibling operations (standalone search,
+    /// image edit) stay unconfigured and fail closed instead of borrowing it.
+    #[must_use]
+    pub fn for_legacy_format(api_format: &str) -> Self {
+        ApiFormat::parse(api_format).map_or(Self::ChatCompletions, Self::legacy_default)
+    }
+
     #[must_use]
     pub const fn legacy_default(api_format: ApiFormat) -> Self {
         match api_format {

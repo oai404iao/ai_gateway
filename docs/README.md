@@ -25,7 +25,8 @@
 
 上游实体重构计划见[身份、渠道能力与路由目标设计](development/upstream-identity-capabilities.md)；
 其中第一阶段独立凭证身份已实现并通过验收；能力与路由改为联合切换，
-目前仅完成迁移规划核心，尚未切换数据库、运行时及 Console。
+新拓扑转存、历史引用迁移和快照编译已具备隔离测试覆盖，
+但启动迁移、服务加载入口、Codex 写入及 Console 尚未同步切换，任务分支不可发布。
 当前管理边界见[上游凭证管理](user/upstream-credentials.md)。
 
 ## 来源优先级

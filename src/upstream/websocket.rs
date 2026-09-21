@@ -146,7 +146,7 @@ fn hash_headers(hasher: &mut Sha256, headers: &HeaderMap) {
 #[cfg(test)]
 mod credential_tests {
     use super::*;
-    use crate::domain::{ApiFormat, UpstreamAuth};
+    use crate::domain::{ApiFormat, ApiOperation, ChannelIdentity, UpstreamAuth};
 
     fn key(credential: Uuid, revision: Uuid) -> UpstreamWebSocketKey {
         let channel = CompiledChannel::new(
@@ -157,7 +157,16 @@ mod credential_tests {
             UpstreamAuth::Bearer(Arc::from("same-test-secret")),
             HashSet::new(),
         )
-        .with_credential_identity(Some((credential, revision)), Uuid::nil());
+        .with_channel_identity(ChannelIdentity {
+            logical_channel_id: Uuid::from_u128(1),
+            access_id: Uuid::from_u128(2),
+            api_operation: ApiOperation::Responses,
+            credential_id: Some(credential),
+            credential_revision: Some(revision),
+            binding_revision: Uuid::nil(),
+            access_revision: Uuid::nil(),
+            capability_revision: Uuid::nil(),
+        });
         UpstreamWebSocketKey::new(
             Uuid::from_u128(3),
             WebSocketClientIdentity::new(&"/v1/responses".parse().unwrap(), &HeaderMap::new()),

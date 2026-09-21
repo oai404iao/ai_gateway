@@ -19,8 +19,9 @@ use uuid::Uuid;
 
 use crate::{
     domain::{
-        ApiFormat, AutomaticDisableTrigger, DEFAULT_CODEX_CLIENT_VERSION, DEFAULT_CODEX_ORIGINATOR,
-        DEFAULT_CODEX_USER_AGENT, DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS,
+        ApiFormat, ApiOperation, AutomaticDisableTrigger, DEFAULT_CODEX_CLIENT_VERSION,
+        DEFAULT_CODEX_ORIGINATOR, DEFAULT_CODEX_USER_AGENT,
+        DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS,
         DEFAULT_STANDALONE_WEB_SEARCH_RESPONSE_HEADER_TIMEOUT_SECONDS, MAX_REQUEST_RETRIES,
         RequestCompression, RequestLogEvent,
     },
@@ -346,7 +347,7 @@ pub struct UserSettingsInput {
     pub websocket_enabled: bool,
 }
 
-#[derive(FromRow)]
+#[derive(Deserialize, FromRow)]
 pub struct ApiKeyRecord {
     pub id: Uuid,
     pub user_id: Uuid,
@@ -388,7 +389,7 @@ impl fmt::Debug for ApiKeyRecord {
             .finish()
     }
 }
-#[derive(Clone, Debug, FromRow)]
+#[derive(Clone, Debug, Deserialize, FromRow)]
 pub struct ModelRecord {
     pub id: Uuid,
     pub source_model_id: String,
@@ -422,6 +423,7 @@ pub struct ModelRuleRecord {
     pub id: Uuid,
     pub client_model: String,
     pub api_format: String,
+    pub api_operation: ApiOperation,
     pub model_id: Uuid,
     pub model_enabled: bool,
     pub model_currency: String,
@@ -457,10 +459,12 @@ struct ModelRuleRecordRow {
 
 impl From<ModelRuleRecordRow> for ModelRuleRecord {
     fn from(row: ModelRuleRecordRow) -> Self {
+        let api_operation = ApiOperation::for_legacy_format(&row.api_format);
         Self {
             id: row.id,
             client_model: row.client_model,
             api_format: row.api_format,
+            api_operation,
             model_id: row.model_id,
             model_enabled: row.model_enabled,
             model_currency: row.model_currency,
@@ -486,11 +490,34 @@ pub struct ChannelGroupRecord {
     pub sharing_only: bool,
     pub enabled: bool,
 }
+/// One active routing capability.
+///
+/// Canonical snapshots key a channel by its capability id (`id`), and record
+/// the owning logical channel, access, operation, connector, compression, and
+/// the independent access/capability revisions. The legacy loader leaves the
+/// canonical fields at their defaults and the runtime derives protocol metadata
+/// from the legacy channel group until that loader is retired.
 #[derive(Clone, FromRow)]
 pub struct ChannelRecord {
     pub id: Uuid,
     pub channel_group_id: Uuid,
     pub api_format: String,
+    #[sqlx(skip)]
+    pub logical_channel_id: Uuid,
+    #[sqlx(skip)]
+    pub access_id: Uuid,
+    #[sqlx(skip)]
+    pub api_operation: Option<ApiOperation>,
+    #[sqlx(skip)]
+    pub connector_kind: String,
+    #[sqlx(skip)]
+    pub request_compression: String,
+    #[sqlx(skip)]
+    pub access_revision: Uuid,
+    #[sqlx(skip)]
+    pub capability_revision: Uuid,
+    #[sqlx(skip)]
+    pub transports: Vec<crate::domain::CapabilityTransport>,
     pub name: String,
     pub base_url: String,
     pub enabled: bool,
@@ -523,6 +550,14 @@ impl fmt::Debug for ChannelRecord {
             .field("id", &self.id)
             .field("channel_group_id", &self.channel_group_id)
             .field("api_format", &self.api_format)
+            .field("logical_channel_id", &self.logical_channel_id)
+            .field("access_id", &self.access_id)
+            .field("api_operation", &self.api_operation)
+            .field("connector_kind", &self.connector_kind)
+            .field("request_compression", &self.request_compression)
+            .field("access_revision", &self.access_revision)
+            .field("capability_revision", &self.capability_revision)
+            .field("transports", &self.transports)
             .field("name", &self.name)
             .field("base_url", &self.base_url)
             .field("enabled", &self.enabled)
@@ -552,7 +587,7 @@ impl fmt::Debug for ChannelRecord {
     }
 }
 
-#[derive(FromRow)]
+#[derive(Deserialize, FromRow)]
 pub struct ProxyRecord {
     pub id: Uuid,
     pub name: String,
@@ -577,7 +612,7 @@ impl fmt::Debug for ProxyRecord {
     }
 }
 
-#[derive(FromRow)]
+#[derive(Deserialize, FromRow)]
 pub struct ConfigTemplateRecord {
     pub id: Uuid,
     pub name: String,

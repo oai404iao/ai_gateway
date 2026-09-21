@@ -33,7 +33,7 @@ use sqlx::{
 use uuid::Uuid;
 
 use crate::{
-    domain::{ApiFormat, AutomaticDisableTrigger, RequestCompression},
+    domain::{ApiFormat, ApiOperation, AutomaticDisableTrigger, RequestCompression},
     persistence::{
         ApiKeyPolicyInput, ApiKeyRecord, ApiKeyTargetChannel, ApiKeyTargetGroup,
         ChannelBatchUpdateInput, ChannelDeletionImpact, ChannelDeletionPlan, ChannelDeletionTarget,
@@ -453,10 +453,12 @@ impl RuntimeRuleRow {
         self,
         routing_tiers: Vec<ModelRuleRoutingTier>,
     ) -> Result<ModelRuleRecord, RepositoryError> {
+        let api_operation = ApiOperation::for_legacy_format(&self.api_format);
         Ok(ModelRuleRecord {
             id: self.id.0,
             client_model: self.client_model,
             api_format: self.api_format,
+            api_operation,
             model_id: self.model_id.0,
             model_enabled: self.model_enabled,
             model_currency: self.model_currency,
@@ -533,6 +535,14 @@ impl ChannelRecordRow {
             id: self.id.0,
             channel_group_id: self.channel_group_id.0,
             api_format: self.api_format,
+            logical_channel_id: Uuid::nil(),
+            access_id: Uuid::nil(),
+            api_operation: None,
+            connector_kind: String::new(),
+            request_compression: String::new(),
+            access_revision: Uuid::nil(),
+            capability_revision: Uuid::nil(),
+            transports: Vec::new(),
             name: self.name,
             base_url: self.base_url,
             enabled: self.enabled,

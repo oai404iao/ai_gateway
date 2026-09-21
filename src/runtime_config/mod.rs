@@ -20,12 +20,13 @@ use zeroize::Zeroizing;
 
 use crate::{
     domain::{
-        AdvancedBilling, ApiFormat, ApiKeyHash, ApiKeyPermission, AuthorizationProfile,
-        AutomaticDisableSettings, ChannelTimeoutPolicy, CodexOutboundIdentity,
-        CodexRequestMetadataSettings, CompiledApiKey, CompiledCandidate, CompiledChannel,
-        CompiledChannelGroup, CompiledChannelUpstreamPolicy, CompiledConfigTemplate,
-        CompiledModelRule, CompiledProxy, CompiledRouteTier, CompiledRuntimeConfig,
-        CompiledScheduledTestModel, ConnectorKind, DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS,
+        AdvancedBilling, ApiFormat, ApiKeyHash, ApiKeyPermission, ApiOperation,
+        AuthorizationProfile, AutomaticDisableSettings, ChannelIdentity, ChannelTimeoutPolicy,
+        CodexOutboundIdentity, CodexRequestMetadataSettings, CompiledApiKey, CompiledCandidate,
+        CompiledChannel, CompiledChannelGroup, CompiledChannelUpstreamPolicy,
+        CompiledConfigTemplate, CompiledModelRule, CompiledProxy, CompiledRouteTier,
+        CompiledRuntimeConfig, CompiledScheduledTestModel, ConnectorKind,
+        DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS,
         DEFAULT_STANDALONE_WEB_SEARCH_RESPONSE_HEADER_TIMEOUT_SECONDS, MAX_REQUEST_RETRIES,
         ModelPriceSnapshot, ModelRouteKey, NoProxyHost, PassiveHealthSettings, RequestCompression,
         RequestRetrySettings, ResponsesWebSocketSettings, ScheduledTestingMode,
@@ -814,14 +815,16 @@ fn compile_with_sharing(
     }
     for group in all_groups.values() {
         if group.enabled {
-            groups.insert(
-                group.id,
-                Arc::new(CompiledChannelGroup::new_with_connector(
+            let compiled = if neutral_group(group) {
+                CompiledChannelGroup::new(group.id)
+            } else {
+                CompiledChannelGroup::new_with_connector(
                     group.id,
                     parse_format(&group.api_format)?,
                     parse_connector_kind(&group.connector_kind)?,
-                )),
-            );
+                )
+            };
+            groups.insert(group.id, Arc::new(compiled));
         }
     }
     let proxies = compile_proxies(records.proxies)?;
@@ -895,11 +898,10 @@ fn compile_with_sharing(
                 compile_timeouts(&channel)?,
                 system_settings.upstream_timeouts().connect(),
             );
-            let connector_kind =
-                parse_connector_kind(&all_groups[&channel.channel_group_id].connector_kind)?;
-            let request_compression = parse_request_compression(
-                &all_groups[&channel.channel_group_id].request_compression,
-            )?;
+            let group = &all_groups[&channel.channel_group_id];
+            let connector_kind = channel_connector_kind(&channel, group)?;
+            let request_compression = channel_request_compression(&channel, group)?;
+            let identity = compiled_channel_identity(&channel)?;
             let compiled = Arc::new(
                 CompiledChannel::new_with_connector_policy_automation_and_billing(
                     channel.id,
@@ -922,12 +924,8 @@ fn compile_with_sharing(
                     channel.test_model.as_deref().map(Arc::<str>::from),
                     upstream_policy,
                 )
-                .with_credential_identity(
-                    channel
-                        .credential
-                        .map(|credential| (credential.id, credential.revision)),
-                    channel.credential_binding_revision,
-                ),
+                .with_channel_identity(identity)
+                .with_transports(&channel.transports),
             );
             probe_channels.insert(channel.id, Arc::clone(&compiled));
             if !channel.auto_disabled && all_groups[&channel.channel_group_id].enabled {
@@ -1837,6 +1835,12 @@ fn compile_rules(
             continue;
         }
         let format = parse_format(&record.api_format)?;
+        let operation = record.api_operation;
+        if operation.api_format() != format {
+            return Err(ConfigError::Compile(
+                "model rule api_operation does not match its api_format".into(),
+            ));
+        }
         let mut unavailable_candidates = HashMap::<Uuid, Uuid>::new();
         let mut target_candidates = HashSet::new();
         let mut model_capable_candidates = HashSet::new();
@@ -1946,7 +1950,7 @@ fn compile_rules(
             model_capable_candidate_slots[slot / u64::BITS as usize] |=
                 1_u64 << (slot % u64::BITS as usize);
         }
-        let key = ModelRouteKey::new(format, Arc::<str>::from(record.client_model.as_str()));
+        let key = ModelRouteKey::new(operation, Arc::<str>::from(record.client_model.as_str()));
         let route_slot = result.len();
         let authorization_candidates = if model_capable_candidates.is_empty() {
             &target_candidates
@@ -1963,7 +1967,7 @@ fn compile_rules(
             record.id,
             record.model_id,
             Arc::from(record.client_model),
-            format,
+            operation,
             price_snapshot,
             advanced_billing,
             Arc::from(tiers),
@@ -2077,14 +2081,21 @@ fn validate_rule_references(
             let channel = channels.get(&candidate.channel_id).ok_or_else(|| {
                 ConfigError::Compile("model rule references a missing channel".into())
             })?;
-            let group = groups.get(&channel.channel_group_id).ok_or_else(|| {
-                ConfigError::Compile("model rule channel belongs to a missing channel group".into())
-            })?;
-            if parse_format(&channel.api_format)? != format
-                || parse_format(&group.api_format)? != format
-            {
+            if !groups.contains_key(&channel.channel_group_id) {
+                return Err(ConfigError::Compile(
+                    "model rule channel belongs to a missing channel group".into(),
+                ));
+            }
+            if parse_format(&channel.api_format)? != format {
                 return Err(ConfigError::Compile(
                     "model rule references a cross-format channel".into(),
+                ));
+            }
+            if let Some(channel_operation) = channel.api_operation
+                && channel_operation != record.api_operation
+            {
+                return Err(ConfigError::Compile(
+                    "model rule references a channel for a different operation".into(),
                 ));
             }
         }
@@ -2092,13 +2103,88 @@ fn validate_rule_references(
     Ok(())
 }
 
+/// Canonical routing groups carry only organization and enablement. A neutral
+/// group owns no connector, compression, or format; each capability channel
+/// owns that protocol metadata instead.
+fn neutral_group(record: &ChannelGroupRecord) -> bool {
+    record.api_format.is_empty()
+        && record.connector_kind.is_empty()
+        && record.request_compression.is_empty()
+}
+
+fn channel_connector_kind(
+    record: &ChannelRecord,
+    group: &ChannelGroupRecord,
+) -> Result<ConnectorKind, ConfigError> {
+    if record.connector_kind.is_empty() {
+        parse_connector_kind(&group.connector_kind)
+    } else {
+        parse_connector_kind(&record.connector_kind)
+    }
+}
+
+fn channel_request_compression(
+    record: &ChannelRecord,
+    group: &ChannelGroupRecord,
+) -> Result<RequestCompression, ConfigError> {
+    if record.request_compression.is_empty() {
+        parse_request_compression(&group.request_compression)
+    } else {
+        parse_request_compression(&record.request_compression)
+    }
+}
+
+/// Exact operation of one capability channel. Legacy rows persist only a
+/// format, so a canonical row always carries the explicit operation.
+fn channel_api_operation(record: &ChannelRecord) -> Result<ApiOperation, ConfigError> {
+    match record.api_operation {
+        Some(operation) => {
+            if parse_format(&record.api_format)? != operation.api_format() {
+                return Err(ConfigError::Compile(
+                    "channel api_operation does not match its api_format".into(),
+                ));
+            }
+            Ok(operation)
+        }
+        None => Ok(ApiOperation::for_legacy_format(&record.api_format)),
+    }
+}
+
+fn compiled_channel_identity(record: &ChannelRecord) -> Result<ChannelIdentity, ConfigError> {
+    Ok(ChannelIdentity {
+        logical_channel_id: if record.logical_channel_id.is_nil() {
+            record.id
+        } else {
+            record.logical_channel_id
+        },
+        access_id: record.access_id,
+        api_operation: channel_api_operation(record)?,
+        credential_id: record.credential.map(|credential| credential.id),
+        credential_revision: record.credential.map(|credential| credential.revision),
+        binding_revision: record.credential_binding_revision,
+        access_revision: record.access_revision,
+        capability_revision: record.capability_revision,
+    })
+}
+
 fn validate_group(record: &ChannelGroupRecord) -> Result<(), ConfigError> {
+    require("channel group name", &record.name)?;
+    if neutral_group(record) {
+        return Ok(());
+    }
+    if record.api_format.is_empty()
+        || record.connector_kind.is_empty()
+        || record.request_compression.is_empty()
+    {
+        return Err(ConfigError::Compile(
+            "channel group has incomplete protocol metadata".into(),
+        ));
+    }
     if record.sharing_only && record.connector_kind != "codex_oauth" {
         return Err(ConfigError::Compile(
             "sharing-only groups require Codex OAuth".into(),
         ));
     }
-    require("channel group name", &record.name)?;
     let api_format = parse_format(&record.api_format)?;
     let connector_kind = parse_connector_kind(&record.connector_kind)?;
     let request_compression = parse_request_compression(&record.request_compression)?;
@@ -2192,18 +2278,45 @@ fn validate_channel(
     let group = groups
         .get(&record.channel_group_id)
         .ok_or_else(|| ConfigError::Compile("channel references a missing group".into()))?;
-    if parse_format(&group.api_format)? != format {
+    if record.api_operation.is_none() && parse_format(&group.api_format)? != format {
         return Err(ConfigError::Compile(
             "channel and group use different API formats".into(),
         ));
     }
-    let connector_kind = parse_connector_kind(&group.connector_kind)?;
-    let codex_protocol_valid = match format {
-        ApiFormat::OpenAiResponses => record.supports_websocket,
-        ApiFormat::OpenAiImages => {
+    let connector_kind = channel_connector_kind(record, group)?;
+    let operation = channel_api_operation(record)?;
+    if record.api_operation.is_some() {
+        crate::domain::CapabilitySettings {
+            operation,
+            transports: record.transports.clone(),
+            enabled: record.enabled,
+            available_models: record.available_models.clone(),
+            request_compression: parse_request_compression(&record.request_compression)?,
+            test_model: record.test_model.clone(),
+            test_pricing_model_id: record.test_pricing_model_id,
+            auto_disable_allowed: record.auto_disable_allowed,
+        }
+        .validate(connector_kind)
+        .map_err(|error| ConfigError::Compile(error.to_string()))?;
+        if record.supports_websocket
+            != record
+                .transports
+                .contains(&crate::domain::CapabilityTransport::Websocket)
+            || record.supports_standalone_web_search
+                != (operation == ApiOperation::StandaloneWebSearch)
+        {
+            return Err(ConfigError::Compile(
+                "capability transport flags do not match its operation settings".into(),
+            ));
+        }
+    }
+    let codex_protocol_valid = match operation {
+        ApiOperation::ChatCompletions => false,
+        ApiOperation::Responses => record.api_operation.is_some() || record.supports_websocket,
+        ApiOperation::StandaloneWebSearch => !record.supports_websocket,
+        ApiOperation::ImagesGeneration | ApiOperation::ImagesEdit => {
             !record.supports_websocket && !record.supports_standalone_web_search
         }
-        ApiFormat::OpenAiChatCompletions => false,
     };
     if connector_kind == ConnectorKind::CodexOauth
         && (!codex_protocol_valid
@@ -2703,7 +2816,7 @@ pub enum ConfigError {
 mod tests {
     use std::collections::BTreeMap;
 
-    use crate::domain::{BillingWeekday, TimeBillingMultiplier};
+    use crate::domain::{ApiOperation, BillingWeekday, TimeBillingMultiplier};
     use crate::persistence::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ConfigTemplateRecord, ControlPlaneRecords,
         ModelRecord, ModelRuleRecord, ModelRuleRouteCandidate, ModelRuleRoutingTier, ProxyRecord,
@@ -2768,6 +2881,14 @@ mod tests {
             id,
             channel_group_id: group_id,
             api_format: "open_ai_chat_completions".into(),
+            logical_channel_id: Uuid::nil(),
+            access_id: Uuid::nil(),
+            api_operation: None,
+            connector_kind: String::new(),
+            request_compression: String::new(),
+            access_revision: Uuid::nil(),
+            capability_revision: Uuid::nil(),
+            transports: Vec::new(),
             name: id.to_string(),
             base_url: format!("https://{id}.test"),
             enabled: true,
@@ -2840,6 +2961,7 @@ mod tests {
                 id: Uuid::from_u128(20),
                 client_model: "client".into(),
                 api_format: "open_ai_chat_completions".into(),
+                api_operation: ApiOperation::ChatCompletions,
                 model_id: Uuid::from_u128(21),
                 model_enabled: true,
                 model_currency: "USD".into(),
@@ -2913,6 +3035,7 @@ mod tests {
             channel.api_format = "open_ai_responses".into();
         }
         records.model_rules[0].api_format = "open_ai_responses".into();
+        records.model_rules[0].api_operation = ApiOperation::Responses;
         records.groups[0].request_compression = "zstd".into();
 
         let snapshot = compile_control_plane(records).unwrap();
@@ -2940,6 +3063,7 @@ mod tests {
             ]
         });
         records.model_rules[0].api_format = "open_ai_responses".into();
+        records.model_rules[0].api_operation = ApiOperation::Responses;
 
         let error = compile_control_plane(records).unwrap_err();
         assert!(
@@ -3015,6 +3139,7 @@ mod tests {
             channel.api_format = "open_ai_images".into();
         }
         records.model_rules[0].api_format = "open_ai_images".into();
+        records.model_rules[0].api_operation = ApiOperation::ImagesGeneration;
         records.channels[0].test_model = Some("upstream".into());
         records.channels[0].test_pricing_model_id = Some(records.model_rules[0].model_id);
 
@@ -3966,6 +4091,7 @@ mod tests {
             id: Uuid::from_u128(22),
             client_model: "client-b".into(),
             api_format: "open_ai_chat_completions".into(),
+            api_operation: ApiOperation::ChatCompletions,
             model_id: Uuid::from_u128(23),
             model_enabled: true,
             model_currency: "USD".into(),
@@ -4055,6 +4181,58 @@ mod tests {
         });
 
         assert!(compile_control_plane(records).is_err());
+    }
+
+    #[test]
+    fn models_listing_unions_operations_of_one_format_without_duplicates() {
+        let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
+        for group in &mut records.groups {
+            group.api_format = "open_ai_images".into();
+        }
+        for channel in &mut records.channels {
+            channel.api_format = "open_ai_images".into();
+        }
+        records.model_rules[0].api_format = "open_ai_images".into();
+        records.model_rules[0].api_operation = ApiOperation::ImagesGeneration;
+        let mut edit = records.model_rules[0].clone();
+        edit.id = Uuid::from_u128(30);
+        edit.api_operation = ApiOperation::ImagesEdit;
+        records.model_rules.push(edit);
+        records.api_keys.push(ApiKeyRecord {
+            id: Uuid::from_u128(40),
+            user_id: Uuid::from_u128(140),
+            user_status: "active".into(),
+            user_websocket_enabled: false,
+            user_filter_fast_mode: false,
+            secret_value: "images-key".into(),
+            status: "active".into(),
+            expires_at: None,
+            allowed_api_formats: vec!["open_ai_images".into()],
+            permissions: vec!["proxy".into(), "models.read".into()],
+            allowed_group_ids: records.groups.iter().map(|group| group.id).collect(),
+            allowed_channel_ids: vec![],
+            requests_per_minute: None,
+            max_concurrent_requests: None,
+            quota_limit_amount: None,
+            quota_used_amount: Default::default(),
+        });
+
+        let snapshot = compile_control_plane(records).unwrap();
+        let key = snapshot.authenticate("images-key").unwrap();
+        assert!(
+            snapshot
+                .operation_rule(ApiOperation::ImagesGeneration, "client")
+                .is_some()
+        );
+        assert!(
+            snapshot
+                .operation_rule(ApiOperation::ImagesEdit, "client")
+                .is_some()
+        );
+        assert_eq!(
+            snapshot.models_for(&key, ApiFormat::OpenAiImages),
+            vec![Arc::from("client")]
+        );
     }
 
     fn proxy(id: Uuid, url: &str, enabled: bool) -> ProxyRecord {

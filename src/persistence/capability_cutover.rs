@@ -356,5 +356,9 @@ fn add_grants(
     );
 }
 
+pub mod history;
+pub mod io;
+pub mod transfer;
+
 #[cfg(test)]
 mod tests;

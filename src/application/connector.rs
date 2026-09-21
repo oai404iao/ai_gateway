@@ -44,9 +44,12 @@ impl UpstreamConnectorRegistry {
             ConnectorKind::OpenAiCompatible => Ok(PreparedUpstreamAttempt::OpenAiCompatible),
             ConnectorKind::CodexOauth => {
                 let service = self.codex.as_ref().ok_or(ConnectorUnavailable::Missing)?;
+                let credential_id = channel
+                    .credential_id()
+                    .ok_or(ConnectorUnavailable::Missing)?;
                 let attempt = PreparedCodexAttempt::prepare(
                     &service.runtime(),
-                    channel.id(),
+                    credential_id,
                     api_operation,
                     affinity_cache_hit,
                     client_headers,
@@ -71,7 +74,9 @@ impl UpstreamConnectorRegistry {
             ConnectorKind::CodexOauth => self.codex.as_ref().is_some_and(|service| {
                 // The model and request-specific affinity are unavailable during
                 // Upgrade, so draining credentials remain potential candidates.
-                service.runtime().credential(channel.id(), true).is_ok()
+                channel
+                    .credential_id()
+                    .is_some_and(|id| service.runtime().credential(id, true).is_ok())
             }),
         }
     }

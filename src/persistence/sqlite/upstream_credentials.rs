@@ -13,7 +13,7 @@ use crate::persistence::{
     },
 };
 
-pub(super) async fn records(
+pub(crate) async fn records(
     connection: &mut SqliteConnection,
 ) -> Result<Vec<CredentialRecord>, RepositoryError> {
     let rows = sqlx::query_scalar::<_, String>(

@@ -6,10 +6,11 @@ use serde::{Deserialize, Serialize};
 /// upstream behavior and therefore must not be used as API-key permissions or
 /// model-rule formats.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
 pub enum ConnectorKind {
     #[default]
+    #[serde(rename = "openai_compatible")]
     OpenAiCompatible,
+    #[serde(rename = "codex_oauth")]
     CodexOauth,
 }
 

@@ -21,6 +21,7 @@ pub use billing::{
     LongContextTier, RequestBillingMultiplier, TimeBillingMultiplier,
 };
 pub use channel_capability::{CapabilityError, CapabilitySettings, CapabilityTransport};
+pub(crate) use compiled_routing::ChannelIdentity;
 pub use compiled_routing::{
     ApiKeyPermission, AuthorizationProfile, ChannelTimeoutPolicy, CompiledApiKey,
     CompiledCandidate, CompiledChannel, CompiledChannelGroup, CompiledChannelUpstreamPolicy,

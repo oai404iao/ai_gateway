@@ -16,6 +16,9 @@ mod schema;
 mod sharing;
 mod types;
 mod upstream_credentials;
+pub(crate) use upstream_credentials::records as credential_records;
+#[cfg(test)]
+mod capability_history_tests;
 
 pub use auth::SqliteAuthRepository;
 pub(crate) use codex::operation::SqliteCodexOperation;

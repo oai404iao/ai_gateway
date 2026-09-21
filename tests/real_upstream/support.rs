@@ -332,6 +332,17 @@ async fn start_gateway_server(app: axum::Router) -> SmokeServer {
     SmokeServer { address, task }
 }
 
+/// Every operation the smoke request may exercise for one client format. The
+/// data plane routes by exact operation, so the fixture must seed each pool.
+fn smoke_operations(format: SmokeFormat) -> &'static [ApiOperation] {
+    match format {
+        SmokeFormat::ChatCompletions => &[ApiOperation::ChatCompletions],
+        SmokeFormat::Responses => &[ApiOperation::Responses],
+        SmokeFormat::StandaloneWebSearch => &[ApiOperation::StandaloneWebSearch],
+        SmokeFormat::Images => &[ApiOperation::ImagesGeneration, ApiOperation::ImagesEdit],
+    }
+}
+
 fn gateway(
     settings: &SmokeSettings,
     upstream_settings: &SmokeUpstream,
@@ -376,6 +387,14 @@ fn gateway(
             id: channel_id,
             channel_group_id: group_id,
             api_format: format.api_format_name().into(),
+            logical_channel_id: Uuid::nil(),
+            access_id: Uuid::nil(),
+            api_operation: None,
+            connector_kind: String::new(),
+            request_compression: String::new(),
+            access_revision: Uuid::nil(),
+            capability_revision: Uuid::nil(),
+            transports: Vec::new(),
             name: "real-upstream-smoke".into(),
             base_url: upstream_settings.base_url.clone(),
             enabled: true,
@@ -398,34 +417,38 @@ fn gateway(
             test_pricing_model_id: None,
         }],
         models: vec![],
-        model_rules: vec![ModelRuleRecord {
-            id: Uuid::new_v4(),
-            client_model: client_model.into(),
-            api_format: format.api_format_name().into(),
-            model_id: Uuid::new_v4(),
-            model_enabled: true,
-            model_currency: "USD".into(),
-            price_unit_tokens: 1_000_000,
-            price_effective_at: chrono::Utc::now(),
-            input_unit_price: Decimal::ONE,
-            cached_input_unit_price: Decimal::new(5, 1),
-            cache_write_unit_price: Decimal::new(25, 2),
-            output_unit_price: Decimal::from(2_i64),
-            advanced_billing: json!({
-                "long_context_tiers": [],
-                "request_multipliers": [],
-            }),
-            routing_tiers: vec![ModelRuleRoutingTier {
-                priority: 0,
-                selection_strategy: "weighted_random".into(),
-                candidates: vec![ModelRuleRouteCandidate {
-                    channel_id,
-                    upstream_model: upstream_model.into(),
-                    weight: 1,
+        model_rules: smoke_operations(format)
+            .iter()
+            .map(|operation| ModelRuleRecord {
+                id: Uuid::new_v4(),
+                client_model: client_model.into(),
+                api_format: format.api_format_name().into(),
+                api_operation: *operation,
+                model_id: Uuid::new_v4(),
+                model_enabled: true,
+                model_currency: "USD".into(),
+                price_unit_tokens: 1_000_000,
+                price_effective_at: chrono::Utc::now(),
+                input_unit_price: Decimal::ONE,
+                cached_input_unit_price: Decimal::new(5, 1),
+                cache_write_unit_price: Decimal::new(25, 2),
+                output_unit_price: Decimal::from(2_i64),
+                advanced_billing: json!({
+                    "long_context_tiers": [],
+                    "request_multipliers": [],
+                }),
+                routing_tiers: vec![ModelRuleRoutingTier {
+                    priority: 0,
+                    selection_strategy: "weighted_random".into(),
+                    candidates: vec![ModelRuleRouteCandidate {
+                        channel_id,
+                        upstream_model: upstream_model.into(),
+                        weight: 1,
+                    }],
                 }],
-            }],
-            enabled: true,
-        }],
+                enabled: true,
+            })
+            .collect(),
         proxies: vec![],
         templates: vec![],
     };

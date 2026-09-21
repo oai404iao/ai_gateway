@@ -60,6 +60,7 @@ fn rule(format: ApiFormat, candidates: Vec<ModelRuleRouteCandidate>) -> ModelRul
         id: id(1000),
         client_model: "priced-client-model".into(),
         api_format: format.as_str().into(),
+        api_operation: ApiOperation::legacy_default(format),
         model_id: id(1001),
         model_enabled: true,
         model_currency: "USD".into(),
