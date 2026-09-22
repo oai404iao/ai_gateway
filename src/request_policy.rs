@@ -50,6 +50,7 @@ impl RequestInterface {
         match api_operation {
             ApiOperation::ChatCompletions => Self::ChatCompletions,
             ApiOperation::Responses => Self::ResponsesHttp,
+            ApiOperation::ResponsesWebSocket => Self::ResponsesWebSocket,
             ApiOperation::StandaloneWebSearch => Self::StandaloneWebSearch,
             ApiOperation::ImagesGeneration => Self::ImagesGeneration,
             ApiOperation::ImagesEdit => Self::ImagesEdit,

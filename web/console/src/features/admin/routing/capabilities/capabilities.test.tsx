@@ -53,11 +53,11 @@ describe("channel capabilities", () => {
     ]));
   });
 
-  it("lists capabilities with their operation and transports", async () => {
+  it("lists operation capabilities without configurable transports", async () => {
     renderAt("/admin/routing/capabilities");
     expect(await screen.findByText("Primary channel")).toBeInTheDocument();
     expect(screen.getAllByText("Responses").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("HTTP JSON, HTTP SSE").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Transports")).not.toBeInTheDocument();
   });
 
   it("preserves operation settings and sends If-Match on update", async () => {
@@ -83,7 +83,7 @@ describe("channel capabilities", () => {
     );
     expect(submitted?.channel_id).toBe(LOGICAL_CHANNEL.id);
     expect(submitted?.settings.operation).toBe("responses");
-    expect(submitted?.settings.transports).toEqual(["http_json", "http_sse"]);
+    expect(submitted?.settings).not.toHaveProperty("transports");
     expect(ifMatch).toBe(`"${CHANNEL_CAPABILITY.updated_at}"`);
   });
 

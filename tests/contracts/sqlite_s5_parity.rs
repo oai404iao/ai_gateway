@@ -225,7 +225,7 @@ async fn crud(c: Context) {
         .filter(|capability| capability.channel_id == c.id && capability.deleted_at.is_none())
         .map(|capability| capability.id)
         .collect::<Vec<_>>();
-    assert_eq!(expected_ids.len(), 4);
+    assert_eq!(expected_ids.len(), 5);
     let runtime_channels = records
         .control_plane
         .channels
@@ -700,7 +700,7 @@ async fn sharing(c: Context) {
         .map(|capability| capability.id)
         .collect::<Vec<_>>();
     capabilities.sort_unstable();
-    assert_eq!(capabilities.len(), 4);
+    assert_eq!(capabilities.len(), 5);
     let mut channels = snapshot.sharing[0].channel_ids.clone();
     channels.sort_unstable();
     assert_eq!(channels, capabilities);
@@ -1001,7 +1001,7 @@ async fn recovery_and_costs(backend: &Backend, c: Context) {
         .await
         .unwrap();
     let topology = c.repo.topology().await.unwrap();
-    assert_eq!(record.channel_ids.len(), 4);
+    assert_eq!(record.channel_ids.len(), 5);
     let metered_capabilities = topology
         .channel_capabilities
         .iter()
@@ -1010,8 +1010,8 @@ async fn recovery_and_costs(backend: &Backend, c: Context) {
                 && capability.settings.operation != ApiOperation::StandaloneWebSearch
         })
         .collect::<Vec<_>>();
-    assert_eq!(metered_capabilities.len(), 3);
-    let expected_amount = Decimal::new(6, 8);
+    assert_eq!(metered_capabilities.len(), 4);
+    let expected_amount = Decimal::new(10, 8);
     let mut events = Vec::new();
     let mut leases = Vec::new();
     for (index, capability) in metered_capabilities.iter().enumerate() {
@@ -1031,7 +1031,11 @@ async fn recovery_and_costs(backend: &Backend, c: Context) {
         );
         event.api_operation = capability.settings.operation;
         event.api_format = event.api_operation.api_format();
-        event.request_protocol = RequestProtocol::NonStream;
+        event.request_protocol = if event.api_operation == ApiOperation::ResponsesWebSocket {
+            RequestProtocol::WebSocket
+        } else {
+            RequestProtocol::NonStream
+        };
         event.streamed = false;
         event.billing.as_mut().unwrap().cost_amount = Some(Decimal::new((index + 1) as i64, 8));
         let lease = runtime.reserve(&group, c.admin, event.id).await.unwrap();
@@ -1061,7 +1065,7 @@ async fn recovery_and_costs(backend: &Backend, c: Context) {
         .sharing_completed_costs(&runtime.pending().await)
         .await
         .unwrap();
-    assert_eq!(costs.len(), 3);
+    assert_eq!(costs.len(), 4);
     for (id, cost) in &costs {
         runtime.finish(*id, Some(*cost));
         runtime.finish(*id, Some(*cost));

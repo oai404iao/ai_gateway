@@ -16,18 +16,21 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use super::legacy_settings::{
+    Capability as ChannelCapabilityRecord, CapabilitySettings, Topology as UpstreamTopologyRecords,
+    operation_name,
+};
 use super::{
     CapabilityCutoverError, CapabilityCutoverIndex, CapabilityGrantOrigin, LegacyCapabilityTarget,
     LegacyChannelTarget, LegacyGroupTarget,
 };
 use crate::domain::{
-    ApiFormat, ApiOperation, CapabilitySettings, CapabilityTransport, ConnectorKind,
-    RequestCompression,
+    ApiFormat, ApiOperation, CapabilityTransport, ConnectorKind, RequestCompression,
 };
 use crate::persistence::upstream_topology::{
-    ApiKeyCapabilityGrantRecord, ApiKeyPolicyCapabilityGrantRecord, ChannelCapabilityRecord,
-    GrantOriginKind, LogicalChannelRecord, OperationCandidateRecord, OperationRuleRecord,
-    OperationTierRecord, RoutingGroupRecord, UpstreamAccessRecord, UpstreamTopologyRecords,
+    ApiKeyCapabilityGrantRecord, ApiKeyPolicyCapabilityGrantRecord, GrantOriginKind,
+    LogicalChannelRecord, OperationCandidateRecord, OperationRuleRecord, OperationTierRecord,
+    RoutingGroupRecord, UpstreamAccessRecord,
 };
 use crate::persistence::{ModelRoutingProfileBinding, ModelRuleRecord};
 
@@ -900,6 +903,7 @@ fn capability_transports(
     websocket: bool,
 ) -> Vec<CapabilityTransport> {
     match operation {
+        ApiOperation::ResponsesWebSocket => vec![CapabilityTransport::Websocket],
         ApiOperation::ChatCompletions => {
             vec![CapabilityTransport::HttpJson, CapabilityTransport::HttpSse]
         }
@@ -971,7 +975,7 @@ fn namespace_uuid(namespace: &[u8], id: Uuid, label: &str) -> Uuid {
 }
 
 fn capability_id(channel_id: Uuid, operation: ApiOperation) -> Uuid {
-    namespace_uuid(CAPABILITY_NAMESPACE, channel_id, operation.as_str())
+    namespace_uuid(CAPABILITY_NAMESPACE, channel_id, operation_name(operation))
 }
 
 fn access_id(logical_id: Uuid) -> Uuid {
@@ -1177,7 +1181,7 @@ mod tests {
             deleted_at: Some(ts(7)),
         };
         let records = resolve_runtime(
-            &output.topology,
+            &super::super::operation_split::upgrade(&output.topology).unwrap(),
             BaseControlPlaneRecords::default(),
             &[],
             &[credential],

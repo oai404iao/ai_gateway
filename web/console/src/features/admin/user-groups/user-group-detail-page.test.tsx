@@ -83,7 +83,7 @@ describe("UserGroupDetailPage", () => {
         HttpResponse.json([{ ...LOGICAL_CHANNEL, group_id: CODEX_QUOTA_GROUP.id }]),
       ),
       http.get("/console/v1/routing/accesses", () =>
-        HttpResponse.json([{ ...UPSTREAM_ACCESS, connector_kind: "codex_oauth" }]),
+        HttpResponse.json([{ ...UPSTREAM_ACCESS, connector_kind: "codex" }]),
       ),
       http.put("/console/v1/user-groups/:id", async ({ request }) => {
         submitted = await request.json();

@@ -71,9 +71,10 @@ const schema = z
   .object({
     model_routing_profile_id: z.string().regex(UUID, "Enter a valid routing profile ID."),
     operation: z.enum([
-      "chat_completions",
+      "chat_completion",
       "responses",
-      "standalone_web_search",
+      "responses-ws",
+      "web_search",
       "images_generation",
       "images_edit",
     ]),

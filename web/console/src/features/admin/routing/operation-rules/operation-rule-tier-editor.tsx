@@ -290,7 +290,7 @@ export function OperationRuleTierEditor({
                                                       {capabilityLabel(option)}
                                                     </span>
                                                     <span className="truncate text-xs text-muted-foreground">
-                                                      {option.settings.transports.join(", ")}
+                                                      {apiOperationLabel(option.settings.operation)}
                                                     </span>
                                                   </span>
                                                 </ComboboxItem>

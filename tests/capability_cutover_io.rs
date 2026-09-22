@@ -66,7 +66,10 @@ fn decode<T: for<'de> serde::Deserialize<'de>>(rows: Vec<String>) -> Vec<T> {
         .collect()
 }
 
-fn assert_topology(expected: &UpstreamTopologyRecords, loaded: &UpstreamTopologyRecords) {
+fn assert_topology<S: Serialize>(
+    expected: &UpstreamTopologyRecords<S>,
+    loaded: &UpstreamTopologyRecords<S>,
+) {
     assert_eq!(
         sorted(&expected.routing_groups),
         sorted(&loaded.routing_groups)
@@ -103,6 +106,146 @@ fn assert_topology(expected: &UpstreamTopologyRecords, loaded: &UpstreamTopology
         sorted(&expected.policy_grants),
         sorted(&loaded.policy_grants)
     );
+}
+
+async fn apply_operations_pg(transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>) {
+    use ai_gateway::persistence::capability_cutover::operation_split::storage;
+    storage::pg_prepare(transaction).await.unwrap();
+    sqlx::raw_sql(include_str!("../migrations/0066_six_operations.sql"))
+        .execute(&mut **transaction)
+        .await
+        .unwrap();
+    storage::pg_validate(transaction).await.unwrap();
+}
+
+fn operation_matrix_sql(sqlite: bool) -> String {
+    let rule = Uuid::from_u128(9001);
+    let mut sql = format!(
+        "INSERT INTO model_operation_rules(id,model_routing_profile_id,operation,enabled)
+         VALUES ('{rule}','{PROFILE}','responses',true);
+         INSERT INTO model_rule_identity_registry(id,label,created_at,canonical_rule_id)
+         SELECT id,'Matrix',created_at,id FROM model_operation_rules WHERE id='{rule}';"
+    );
+    for (index, transports) in [
+        vec!["http_json"],
+        vec!["websocket"],
+        vec!["http_json", "http_sse", "websocket"],
+    ]
+    .iter()
+    .enumerate()
+    {
+        let channel = Uuid::from_u128(9100 + index as u128);
+        let capability = Uuid::from_u128(9200 + index as u128);
+        let tier = Uuid::from_u128(9300 + index as u128);
+        let array = |values: &[&str]| {
+            if sqlite {
+                format!("'{}'", serde_json::to_string(values).unwrap())
+            } else {
+                format!(
+                    "ARRAY[{}]",
+                    values
+                        .iter()
+                        .map(|v| format!("'{v}'"))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )
+            }
+        };
+        let compression = if index == 1 { "default" } else { "zstd" };
+        let probe = if index == 1 {
+            "NULL,NULL".into()
+        } else {
+            format!("'wire-model','{MODEL}'")
+        };
+        let transports = array(transports);
+        let models = array(&["wire-model"]);
+        sql.push_str(&format!(
+            "INSERT INTO upstream_channels(id,group_id,access_id,credential_id,name,enabled)
+             SELECT '{channel}',group_id,access_id,credential_id,'Matrix {index}',true FROM upstream_channels WHERE id='{CHANNEL}';
+             INSERT INTO channel_capabilities(id,channel_id,operation,transports,available_models,request_compression,test_model,test_pricing_model_id,billing_multiplier)
+             VALUES ('{capability}','{channel}','responses',{transports},{models},'{compression}',{probe},'1.5');
+             INSERT INTO channel_identity_registry(id,label,canonical_channel_id,capability_id)
+             VALUES ('{capability}','Matrix {index}','{channel}','{capability}');
+             INSERT INTO model_capability_tiers(id,rule_id,operation,priority,strategy)
+             VALUES ('{tier}','{rule}','responses',{index},'weighted_round_robin');
+             INSERT INTO model_capability_candidates(tier_id,operation,capability_id,upstream_model,weight)
+             VALUES ('{tier}','responses','{capability}','wire-model',7);
+             INSERT INTO api_key_capability_grants(api_key_id,capability_id,origin_kind,origin_id)
+             VALUES ('{KEY}','{capability}','capability','{capability}');
+             INSERT INTO api_key_policy_capability_grants(policy_id,capability_id,origin_kind,origin_id)
+             VALUES ('{POLICY}','{capability}','group','{CODEX_GROUP}');"
+        ));
+    }
+    sql
+}
+
+#[tokio::test]
+async fn postgres_six_operations_split_only_existing_transport_routes_and_grants() {
+    let database = TestDatabase::new().await;
+    run_migrations(&database.pool).await.unwrap();
+    seed(&database.pool).await;
+    let mut transaction = database.pool.begin().await.unwrap();
+    sqlx::raw_sql(include_str!("../migrations/0065_upstream_capabilities.sql"))
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+    ai_gateway::persistence::capability_cutover::activation::postgres(&mut transaction)
+        .await
+        .unwrap();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(operation_matrix_sql(false)))
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+    let legacy = ai_gateway::persistence::upstream_topology::pg_load_legacy(&mut transaction)
+        .await
+        .unwrap();
+    let expected =
+        ai_gateway::persistence::capability_cutover::operation_split::upgrade(&legacy).unwrap();
+    apply_operations_pg(&mut transaction).await;
+    assert_topology(&expected, &pg_load(&mut transaction).await.unwrap());
+    transaction.commit().await.unwrap();
+    database.cleanup().await;
+}
+
+fn extend_registry_expectations(
+    output: &mut ai_gateway::persistence::capability_cutover::transfer::CapabilityCutoverTransfer,
+) {
+    let plan = ai_gateway::persistence::capability_cutover::operation_split::plan(&output.topology)
+        .unwrap();
+    for row in plan
+        .capabilities
+        .iter()
+        .filter(|row| row.id != row.source_id)
+    {
+        let source = output
+            .channel_identity_registry
+            .iter()
+            .find(|source| source.id == row.source_id)
+            .unwrap()
+            .clone();
+        output
+            .channel_identity_registry
+            .push(ChannelIdentityRegistryRecord {
+                id: row.id,
+                capability_id: Some(row.id),
+                ..source
+            });
+    }
+    for row in plan.rules.iter().filter(|row| row.id != row.source_id) {
+        let source = output
+            .rule_identity_registry
+            .iter()
+            .find(|source| source.id == row.source_id)
+            .unwrap()
+            .clone();
+        output
+            .rule_identity_registry
+            .push(RuleIdentityRegistryRecord {
+                id: row.id,
+                canonical_rule_id: Some(row.id),
+                ..source
+            });
+    }
 }
 
 fn access_input(
@@ -331,9 +474,7 @@ async fn seed(pool: &PgPool) {
 async fn exercise_canonical_authorization(
     repository: ai_gateway::persistence::ControlPlaneRepository,
 ) {
-    use ai_gateway::domain::{
-        ApiOperation, CapabilitySettings, CapabilityTransport, RequestCompression,
-    };
+    use ai_gateway::domain::{ApiOperation, CapabilitySettings, RequestCompression};
     use ai_gateway::persistence::{
         ApiKeyCreate, ApiKeyPolicyInput, ApiKeyUpdate, ChannelCapabilityInput,
         ControlPlaneMutation, SelfApiKeyCreate,
@@ -382,7 +523,6 @@ async fn exercise_canonical_authorization(
                     channel_id: CHANNEL,
                     settings: CapabilitySettings {
                         operation: ApiOperation::ImagesGeneration,
-                        transports: vec![CapabilityTransport::HttpJson],
                         enabled: false,
                         available_models: vec!["image-model".into()],
                         request_compression: RequestCompression::Default,
@@ -898,9 +1038,7 @@ async fn exercise_self_service_format_boundary(
     repository: &ai_gateway::persistence::ControlPlaneRepository,
     dormant_images: Uuid,
 ) {
-    use ai_gateway::domain::{
-        ApiOperation, CapabilitySettings, CapabilityTransport, RequestCompression,
-    };
+    use ai_gateway::domain::{ApiOperation, CapabilitySettings, RequestCompression};
     use ai_gateway::persistence::{
         ApiKeyCreate, ApiKeyPolicyInput, ChannelCapabilityInput, ControlPlaneMutation,
         LogicalChannelInput, RoutingGroupInput, SelfApiKeyUpdate,
@@ -945,7 +1083,6 @@ async fn exercise_self_service_format_boundary(
                 channel_id: channel,
                 settings: CapabilitySettings {
                     operation: ApiOperation::ImagesGeneration,
-                    transports: vec![CapabilityTransport::HttpJson],
                     enabled: true,
                     available_models: vec!["image-model".into()],
                     request_compression: RequestCompression::Default,
@@ -1096,6 +1233,70 @@ async fn exercise_self_service_format_boundary(
 }
 
 #[tokio::test]
+async fn six_operations_preserve_deleted_pricing_references_and_roll_back_atomically() {
+    let database = TestDatabase::new().await;
+    run_migrations(&database.pool).await.unwrap();
+    seed(&database.pool).await;
+    let mut transaction = database.pool.begin().await.unwrap();
+    sqlx::raw_sql(include_str!("../migrations/0065_upstream_capabilities.sql"))
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+    ai_gateway::persistence::capability_cutover::activation::postgres(&mut transaction)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE channel_capabilities SET test_model='wire-model',test_pricing_model_id=$1 WHERE channel_id=$2")
+        .bind(MODEL).bind(CHANNEL).execute(&mut *transaction).await.unwrap();
+    sqlx::query("UPDATE model_operation_rules SET enabled=false WHERE model_routing_profile_id=$1")
+        .bind(PROFILE)
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE channel_capabilities SET enabled=false,deleted_at=now() WHERE channel_id=$1",
+    )
+    .bind(CHANNEL)
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE models SET enabled=false,deleted_at=now(),deleted_by=$2 WHERE id=$1")
+        .bind(MODEL)
+        .bind(USER)
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+    transaction.commit().await.unwrap();
+
+    for commit in [false, true] {
+        let mut transaction = database.pool.begin().await.unwrap();
+        let old = ai_gateway::persistence::upstream_topology::pg_load_legacy(&mut transaction)
+            .await
+            .unwrap();
+        let expected =
+            ai_gateway::persistence::capability_cutover::operation_split::upgrade(&old).unwrap();
+        apply_operations_pg(&mut transaction).await;
+        assert_topology(&expected, &pg_load(&mut transaction).await.unwrap());
+        let guards: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_trigger WHERE tgname IN ('channel_capabilities_enforce_active_test_pricing_model','model_operation_rules_enforce_active_pricing_model') AND tgenabled='O'")
+            .fetch_one(&mut *transaction).await.unwrap();
+        assert_eq!(guards, 2);
+        if commit {
+            transaction.commit().await.unwrap();
+        } else {
+            transaction.rollback().await.unwrap();
+            let mut transaction = database.pool.begin().await.unwrap();
+            assert_topology(
+                &old,
+                &ai_gateway::persistence::upstream_topology::pg_load_legacy(&mut transaction)
+                    .await
+                    .unwrap(),
+            );
+            transaction.rollback().await.unwrap();
+        }
+    }
+    database.cleanup().await;
+}
+
+#[tokio::test]
 async fn postgres_history_queries_cover_old_and_canonical_codex_identities() {
     use ai_gateway::persistence::{CostStatisticsFilter, RequestLogQueries, StatisticsGranularity};
     let database = TestDatabase::new().await;
@@ -1139,6 +1340,7 @@ async fn postgres_history_queries_cover_old_and_canonical_codex_identities() {
     ai_gateway::persistence::capability_cutover::activation::postgres(&mut transaction)
         .await
         .unwrap();
+    apply_operations_pg(&mut transaction).await;
     let topology = pg_load(&mut transaction).await.unwrap();
     let capability = topology
         .channel_capabilities
@@ -1164,8 +1366,8 @@ async fn postgres_history_queries_cover_old_and_canonical_codex_identities() {
         .await
         .unwrap();
     sqlx::query(
-        "INSERT INTO channel_capabilities(id,channel_id,operation,transports,available_models,status_statistics_enabled)
-         VALUES ($1,$2,'images_generation',ARRAY['http_json'],ARRAY['idle-image'],true)",
+        "INSERT INTO channel_capabilities(id,channel_id,operation,available_models,status_statistics_enabled)
+         VALUES ($1,$2,'images_generation',ARRAY['idle-image'],true)",
     )
     .bind(Uuid::new_v4())
     .bind(CHANNEL)
@@ -1341,7 +1543,7 @@ async fn postgres_canonical_authorization_writes_preserve_fixed_grants() {
     .await;
     for (statement, target) in [
         (
-            "UPDATE channel_capabilities SET test_model='wire',test_pricing_model_id=$1 WHERE channel_id=$2 AND operation='chat_completions' AND deleted_at IS NULL",
+            "UPDATE channel_capabilities SET test_model='wire',test_pricing_model_id=$1 WHERE channel_id=$2 AND operation='chat_completion' AND deleted_at IS NULL",
             CHANNEL,
         ),
         (
@@ -1384,10 +1586,10 @@ async fn postgres_cutover_round_trips_legacy_configuration() {
         .await
         .expect("canonical DDL must apply to the temporary database");
 
-    let output = pg_transfer(&mut transaction, cutover_at())
+    let mut output = pg_transfer(&mut transaction, cutover_at())
         .await
         .expect("capability cutover must transfer");
-    let loaded = pg_load(&mut transaction)
+    let loaded = ai_gateway::persistence::upstream_topology::pg_load_legacy(&mut transaction)
         .await
         .expect("canonical topology must load");
 
@@ -1396,6 +1598,18 @@ async fn postgres_cutover_round_trips_legacy_configuration() {
     assert_eq!(output.topology.api_key_grants.len(), 1);
     assert_eq!(output.topology.policy_grants.len(), 1);
     assert_topology(&output.topology, &loaded);
+    let expected =
+        ai_gateway::persistence::capability_cutover::operation_split::upgrade(&loaded).unwrap();
+    sqlx::raw_sql(include_str!(
+        "../src/persistence/capability_cutover/lifecycle-postgres.sql"
+    ))
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+    apply_operations_pg(&mut transaction).await;
+    let loaded = pg_load(&mut transaction).await.unwrap();
+    assert_topology(&expected, &loaded);
+    extend_registry_expectations(&mut output);
     let rule = loaded
         .operation_rules
         .iter()
@@ -1554,7 +1768,7 @@ async fn postgres_cutover_round_trips_legacy_configuration() {
         sorted(&output.rule_identity_registry),
         sorted(&rule_history)
     );
-    assert_eq!(rule_history.len(), 3);
+    assert_eq!(rule_history.len(), output.rule_identity_registry.len());
 
     sqlx::query(
         "INSERT INTO request_metering_facts
@@ -1658,7 +1872,7 @@ async fn postgres_cutover_round_trips_legacy_configuration() {
             .fetch_one(&mut *transaction)
             .await
             .unwrap(),
-        3
+        4
     );
     let credential_version: DateTime<Utc> =
         sqlx::query_scalar("SELECT updated_at FROM codex_oauth_credentials WHERE channel_id=$1")
@@ -1689,7 +1903,7 @@ async fn postgres_cutover_round_trips_legacy_configuration() {
             .as_array()
             .unwrap()
             .len(),
-        4
+        5
     );
     assert_eq!(
         mutations[0].before_redacted["access_id"],
@@ -1740,6 +1954,13 @@ fn assert_compiled_snapshot(records: ai_gateway::persistence::ControlPlaneRecord
         if channel.api_operation() == ApiOperation::StandaloneWebSearch {
             assert!(channel.permits_transport(CapabilityTransport::HttpJson));
             assert!(!channel.permits_transport(CapabilityTransport::HttpSse));
+        } else if channel.api_operation() == ApiOperation::Responses {
+            assert!(channel.permits_transport(CapabilityTransport::HttpJson));
+            assert!(channel.permits_transport(CapabilityTransport::HttpSse));
+            assert!(!channel.permits_transport(CapabilityTransport::Websocket));
+        } else if channel.api_operation() == ApiOperation::ResponsesWebSocket {
+            assert!(channel.permits_transport(CapabilityTransport::Websocket));
+            assert!(!channel.permits_transport(CapabilityTransport::HttpJson));
         }
     }
 }
@@ -1759,6 +1980,7 @@ async fn postgres_activation_retargets_codex_and_supports_native_lifecycle() {
         .await
         .unwrap();
     activation::postgres(&mut transaction).await.unwrap();
+    apply_operations_pg(&mut transaction).await;
     transaction.commit().await.unwrap();
 
     let repository = ControlPlaneRepository::new(database.pool.clone());
@@ -1895,32 +2117,38 @@ mod sqlite_backend {
     const PRICE_EFFECTIVE_AT: &str = "2026-01-01T00:00:00.000000Z";
 
     async fn install_legacy_schema(database: &SqliteDatabase) {
+        database.migrate(&legacy_migrations()[..4]).await.unwrap();
+    }
+
+    fn legacy_migrations() -> [ai_gateway::persistence::sqlite::SqliteMigration<'static>; 5] {
         use ai_gateway::persistence::sqlite::SqliteMigration;
-        database
-            .migrate(&[
-                SqliteMigration {
-                    version: 1,
-                    description: "business schema after PostgreSQL 0063",
-                    sql: include_str!("../migrations/sqlite/0001_baseline.sql"),
-                },
-                SqliteMigration {
-                    version: 2,
-                    description: "business constraints and derived projections",
-                    sql: include_str!("../migrations/sqlite/0002_guards.sql"),
-                },
-                SqliteMigration {
-                    version: 3,
-                    description: "durable Codex external-operation fences",
-                    sql: include_str!("../migrations/sqlite/0003_codex_operations.sql"),
-                },
-                SqliteMigration {
-                    version: 4,
-                    description: "independent upstream credential identities",
-                    sql: include_str!("../migrations/sqlite/0004_upstream_credentials.sql"),
-                },
-            ])
-            .await
-            .unwrap();
+        [
+            SqliteMigration {
+                version: 1,
+                description: "business schema after PostgreSQL 0063",
+                sql: include_str!("../migrations/sqlite/0001_baseline.sql"),
+            },
+            SqliteMigration {
+                version: 2,
+                description: "business constraints and derived projections",
+                sql: include_str!("../migrations/sqlite/0002_guards.sql"),
+            },
+            SqliteMigration {
+                version: 3,
+                description: "durable Codex external-operation fences",
+                sql: include_str!("../migrations/sqlite/0003_codex_operations.sql"),
+            },
+            SqliteMigration {
+                version: 4,
+                description: "independent upstream credential identities",
+                sql: include_str!("../migrations/sqlite/0004_upstream_credentials.sql"),
+            },
+            SqliteMigration {
+                version: 5,
+                description: "canonical upstream operation capabilities",
+                sql: include_str!("../migrations/sqlite/0005_upstream_capabilities.sql"),
+            },
+        ]
     }
 
     async fn database() -> (tempfile::TempDir, SqliteDatabase) {
@@ -2115,7 +2343,7 @@ mod sqlite_backend {
         .await;
         for (statement, target) in [
             (
-                "UPDATE channel_capabilities SET test_model='wire',test_pricing_model_id=?1 WHERE channel_id=?2 AND operation='chat_completions' AND deleted_at IS NULL",
+                "UPDATE channel_capabilities SET updated_at=ag_now(),test_model='wire',test_pricing_model_id=?1 WHERE channel_id=?2 AND operation='chat_completion' AND deleted_at IS NULL",
                 CHANNEL,
             ),
             (
@@ -2147,6 +2375,37 @@ mod sqlite_backend {
     }
 
     #[tokio::test]
+    async fn sqlite_six_operations_split_only_existing_transport_routes_and_grants() {
+        let (_directory, database) = database().await;
+        install_legacy_schema(&database).await;
+        let mut transaction = database.begin_write().await.unwrap();
+        seed(&mut transaction).await;
+        transaction.commit().await.unwrap();
+        database.migrate(&legacy_migrations()).await.unwrap();
+        let mut transaction = database.begin_write().await.unwrap();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(operation_matrix_sql(true)))
+            .execute(&mut *transaction)
+            .await
+            .unwrap();
+        let legacy =
+            ai_gateway::persistence::upstream_topology::sqlite_load_legacy(&mut transaction)
+                .await
+                .unwrap();
+        let expected =
+            ai_gateway::persistence::capability_cutover::operation_split::upgrade(&legacy).unwrap();
+        transaction.commit().await.unwrap();
+        assert_eq!(database.install_schema().await.unwrap(), 1);
+        let mut transaction = database.begin_write().await.unwrap();
+        assert_topology(
+            &expected,
+            &ai_gateway::persistence::upstream_topology::sqlite_load(&mut transaction)
+                .await
+                .unwrap(),
+        );
+        transaction.commit().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn sqlite_cutover_round_trips_legacy_configuration() {
         let (_directory, database) = database().await;
         install_legacy_schema(&database).await;
@@ -2161,18 +2420,34 @@ mod sqlite_backend {
         .execute(&mut *transaction)
         .await
         .expect("canonical DDL must apply to the temporary database");
-        let output = sqlite_transfer(&mut transaction, cutover_at())
+        let mut output = sqlite_transfer(&mut transaction, cutover_at())
             .await
             .expect("capability cutover must transfer");
-        let loaded = sqlite_load(&mut transaction)
-            .await
-            .expect("canonical topology must load");
+        let loaded =
+            ai_gateway::persistence::upstream_topology::sqlite_load_legacy(&mut transaction)
+                .await
+                .expect("canonical topology must load");
 
         assert_eq!(output.topology.operation_rules.len(), 1);
         assert_eq!(output.topology.routing_groups.len(), 1);
         assert_eq!(output.topology.api_key_grants.len(), 1);
         assert_eq!(output.topology.policy_grants.len(), 1);
         assert_topology(&output.topology, &loaded);
+        transaction.rollback().await.unwrap();
+        database.migrate(&legacy_migrations()).await.unwrap();
+        let mut transaction = database.begin_write().await.unwrap();
+        let legacy =
+            ai_gateway::persistence::upstream_topology::sqlite_load_legacy(&mut transaction)
+                .await
+                .unwrap();
+        let expected =
+            ai_gateway::persistence::capability_cutover::operation_split::upgrade(&legacy).unwrap();
+        transaction.rollback().await.unwrap();
+        database.install_schema().await.unwrap();
+        let mut transaction = database.begin_write().await.unwrap();
+        let loaded = sqlite_load(&mut transaction).await.unwrap();
+        assert_topology(&expected, &loaded);
+        extend_registry_expectations(&mut output);
         let rule = loaded
             .operation_rules
             .iter()
@@ -2342,9 +2617,7 @@ mod sqlite_backend {
         assert_eq!(rule_history.len(), 1);
 
         sqlx::raw_sql(
-            "UPDATE channels SET test_model=NULL,test_pricing_model_id=NULL,updated_at=ag_now();
-             UPDATE channel_capabilities SET test_model=NULL,test_pricing_model_id=NULL,updated_at=ag_now();
-             UPDATE model_rules SET enabled=0,updated_at=ag_now();
+            "UPDATE channel_capabilities SET test_model=NULL,test_pricing_model_id=NULL,updated_at=ag_now();
              UPDATE model_operation_rules SET enabled=0,updated_at=ag_now();",
         ).execute(&mut *transaction).await.unwrap();
         sqlx::query("UPDATE models SET enabled=0,deleted_at=ag_now(),deleted_by=?,updated_at=ag_now() WHERE id=?")

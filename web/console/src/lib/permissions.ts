@@ -1,7 +1,6 @@
 import type {
   ApiFormat,
   ApiOperation,
-  CapabilityTransport,
   ConnectorKind,
   RequestCompression,
   SelectionStrategy,
@@ -21,25 +20,19 @@ export const SELECTION_STRATEGIES: readonly SelectionStrategy[] = [
 ];
 
 export const CONNECTOR_KINDS: readonly ConnectorKind[] = [
-  "openai_compatible",
-  "codex_oauth",
+  "general",
+  "codex",
 ];
 
 export const REQUEST_COMPRESSIONS: readonly RequestCompression[] = ["default", "zstd"];
 
 export const API_OPERATIONS: readonly ApiOperation[] = [
-  "chat_completions",
+  "chat_completion",
   "responses",
-  "standalone_web_search",
+  "responses-ws",
+  "web_search",
   "images_generation",
   "images_edit",
-];
-
-export const CAPABILITY_TRANSPORTS: readonly CapabilityTransport[] = [
-  "http_json",
-  "http_sse",
-  "websocket",
-  "multipart",
 ];
 
 
@@ -66,10 +59,11 @@ export function apiFormatLabel(value: ApiFormat): string {
 
 export function operationApiFormat(value: ApiOperation): ApiFormat {
   switch (value) {
-    case "chat_completions":
+    case "chat_completion":
       return "open_ai_chat_completions";
     case "responses":
-    case "standalone_web_search":
+    case "responses-ws":
+    case "web_search":
       return "open_ai_responses";
     case "images_generation":
     case "images_edit":
@@ -101,9 +95,9 @@ export function selectionStrategyLabel(value: SelectionStrategy): string {
 }
 
 export function connectorKindLabel(value: ConnectorKind): string {
-  return value === "openai_compatible"
-    ? translate("OpenAI-compatible")
-    : translate("Codex OAuth");
+  return value === "general"
+    ? translate("General")
+    : "Codex";
 }
 
 export function requestCompressionLabel(value: RequestCompression): string {
@@ -113,29 +107,18 @@ export function requestCompressionLabel(value: RequestCompression): string {
 /** OpenAI operation names intentionally remain in English product terms. */
 export function apiOperationLabel(value: ApiOperation): string {
   switch (value) {
-    case "chat_completions":
+    case "chat_completion":
       return "Chat Completions";
     case "responses":
       return "Responses";
-    case "standalone_web_search":
+    case "responses-ws":
+      return "Responses WebSocket";
+    case "web_search":
       return "Standalone web search";
     case "images_generation":
       return "Images generation";
     case "images_edit":
       return "Images edit";
-  }
-}
-
-export function capabilityTransportLabel(value: CapabilityTransport): string {
-  switch (value) {
-    case "http_json":
-      return "HTTP JSON";
-    case "http_sse":
-      return "HTTP SSE";
-    case "websocket":
-      return "WebSocket";
-    case "multipart":
-      return "Multipart";
   }
 }
 

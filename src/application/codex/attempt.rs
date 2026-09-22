@@ -55,10 +55,12 @@ impl PreparedCodexAttempt {
         outbound_identity: CodexOutboundIdentity,
     ) -> Result<Self, CodexCredentialUnavailable> {
         let request = match api_operation {
-            ApiOperation::Responses => CodexRequestContext::Responses(CodexRequestIdentity::new(
-                client_headers,
-                affinity_hash,
-            )),
+            ApiOperation::Responses | ApiOperation::ResponsesWebSocket => {
+                CodexRequestContext::Responses(CodexRequestIdentity::new(
+                    client_headers,
+                    affinity_hash,
+                ))
+            }
             ApiOperation::StandaloneWebSearch => CodexRequestContext::StandaloneWebSearch(
                 CodexRequestIdentity::new(client_headers, affinity_hash),
             ),

@@ -189,7 +189,7 @@ async fn canonical_create_lifecycle_and_delete_round_trip() {
         .iter()
         .filter(|capability| capability.channel_id == credential)
         .collect::<Vec<_>>();
-    assert_eq!(capabilities.len(), 4);
+    assert_eq!(capabilities.len(), 5);
     let capability = |operation| {
         capabilities
             .iter()
@@ -230,7 +230,7 @@ async fn canonical_create_lifecycle_and_delete_round_trip() {
     .fetch_one(&mut *reader)
     .await
     .unwrap();
-    assert_eq!(registry, 5);
+    assert_eq!(registry, 6);
     let kind: String = sqlx::query_scalar("SELECT kind FROM upstream_credentials WHERE id=?")
         .bind(credential.to_string())
         .fetch_one(&mut *reader)

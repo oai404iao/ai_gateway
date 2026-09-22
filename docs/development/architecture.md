@@ -13,15 +13,14 @@
 - `OpenAiImages`
 
 三种格式共享鉴权、选路、上游客户端和日志基础设施，但路由、变换、协议操作和 usage
-解析保持隔离，禁止跨格式回退或转换。`ApiOperation` 进一步区分 Chat Completions、
-Responses、standalone web search、Images generation 与 Images edit。Standalone web search
-复用 `OpenAiResponses` 路由与授权维度，但拥有独立 capability、请求契约、目标路径和日志
-operation；当前 Images 实现非流式 JSON generation 和非流式 multipart edit。
+解析保持隔离，禁止跨格式回退或转换。`ApiOperation` 进一步区分 `chat_completion`、
+`responses`、`responses-ws`、`web_search`、`images_edit` 与 `images_generation`。
+Responses HTTP、WS 和独立搜索同属 `OpenAiResponses`，但能力、路由、固定授权及日志操作
+相互独立；当前 Images 实现非流式 JSON generation 和非流式 multipart edit。
 
-客户端 API 格式与上游接入方式是两个维度。Channel Group 另有
-`ConnectorKind`：普通渠道使用 `openai_compatible`，Codex 订阅凭证使用
-`codex_oauth`；后者可投影为 `OpenAiResponses` 与 `OpenAiImages` 渠道，但不会新增
-provider-specific 客户端格式。
+客户端 API 格式与上游接入方式是两个维度。上游接入持有 `ConnectorKind`：
+普通连接器使用 `general`，Codex 使用 `codex`；凭证种类 `codex_oauth` 不变。
+逻辑渠道绑定接入与凭证，操作能力不引入 provider-specific 客户端格式。
 
 ## 运行拓扑
 

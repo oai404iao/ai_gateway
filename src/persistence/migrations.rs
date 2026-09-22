@@ -129,9 +129,15 @@ async fn apply_next_migration_batch(
                 }
             }
         }
+        if migration.version == 66 {
+            super::capability_cutover::operation_split::storage::pg_prepare(transaction).await?;
+        }
         (**transaction).apply("_sqlx_migrations", migration).await?;
         if migration.version == 65 {
             super::capability_cutover::activation::postgres(transaction).await?;
+        }
+        if migration.version == 66 {
+            super::capability_cutover::operation_split::storage::pg_validate(transaction).await?;
         }
     }
     Ok(has_more)

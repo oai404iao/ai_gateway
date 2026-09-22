@@ -200,14 +200,12 @@
       "channel_capabilities_request_compression_check",
       "channel_capabilities_request_compression_operation_check",
       "channel_capabilities_test_model_catalogue_check",
-      "channel_capabilities_test_model_pair_check",
-      "channel_capabilities_transports_check"
+      "channel_capabilities_test_model_pair_check"
     ],
     "columns": [
       "id",
       "channel_id",
       "operation",
-      "transports",
       "enabled",
       "available_models",
       "request_compression",
@@ -254,7 +252,6 @@
       "status_statistics_enabled": "bool",
       "test_model": "varchar",
       "test_pricing_model_id": "uuid",
-      "transports": "text[]",
       "updated_at": "timestamptz"
     }
   },

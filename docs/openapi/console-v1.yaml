@@ -1836,7 +1836,7 @@ paths:
     put:
       tags: [RoutingTopology]
       operationId: updateChannelCapability
-      description: Replaces transports, catalog, transforms and compression. The owning channel and operation are immutable. Existing Codex capabilities can be configured independently. Changes invalidate the capability revision without rewriting routes or grants.
+      description: Replaces catalog, transforms and compression. Transports are fixed by the operation. The owning channel and operation are immutable. Existing Codex capabilities can be configured independently. Changes invalidate the capability revision without rewriting routes or grants.
       security: [{ bearerAuth: [] }]
       parameters:
         - $ref: "#/components/parameters/PathId"
@@ -3148,13 +3148,13 @@ components:
       enum: [open_ai_chat_completions, open_ai_responses, open_ai_images]
     ApiOperation:
       type: string
-      enum: [chat_completions, responses, standalone_web_search, images_generation, images_edit]
+      enum: [chat_completion, responses, responses-ws, web_search, images_edit, images_generation]
     SelectionStrategy:
       type: string
       enum: [weighted_random, weighted_round_robin]
     ConnectorKind:
       type: string
-      enum: [openai_compatible, codex_oauth]
+      enum: [general, codex]
     RequestCompression:
       type: string
       enum: [default, zstd]
@@ -4325,20 +4325,12 @@ components:
         name: { type: string, minLength: 1, maxLength: 100 }
         enabled: { type: boolean }
 
-    CapabilityTransport:
-      type: string
-      enum: [http_json, http_sse, websocket, multipart]
-
     CapabilitySettings:
       type: object
       additionalProperties: false
-      required: [operation, transports, enabled, available_models, request_compression, test_model, test_pricing_model_id, auto_disable_allowed]
+      required: [operation, enabled, available_models, request_compression, test_model, test_pricing_model_id, auto_disable_allowed]
       properties:
         operation: { $ref: "#/components/schemas/ApiOperation" }
-        transports:
-          type: array
-          description: Only connector-implemented operation/transport combinations are accepted.
-          items: { $ref: "#/components/schemas/CapabilityTransport" }
         enabled: { type: boolean }
         available_models:
           type: array

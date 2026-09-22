@@ -191,6 +191,26 @@ async fn history_rebuild_preserves_rows_guards_and_rolls_back_as_one_transaction
             assert_eq!(history_state(&mut connection).await, original_state);
         }
     }
+    let before_operations = schema(&mut connection).await;
+    for commit in [false, true] {
+        let mut transaction = connection.begin_with("BEGIN IMMEDIATE").await.unwrap();
+        super::functions::set_transaction_time(&mut transaction)
+            .await
+            .unwrap();
+        crate::persistence::capability_cutover::operation_split::storage::sqlite_apply(
+            &mut transaction,
+        )
+        .await
+        .unwrap();
+        assert_eq!(history_state(&mut transaction).await, original_state);
+        if commit {
+            transaction.commit().await.unwrap();
+        } else {
+            transaction.rollback().await.unwrap();
+            assert_eq!(schema(&mut connection).await, before_operations);
+            assert_eq!(history_state(&mut connection).await, original_state);
+        }
+    }
     sqlx::query("PRAGMA foreign_keys=ON")
         .execute(&mut *connection)
         .await
@@ -227,8 +247,8 @@ async fn history_rebuild_preserves_rows_guards_and_rolls_back_as_one_transaction
         .await
         .unwrap();
     sqlx::query(
-        "INSERT INTO channel_capabilities(id,channel_id,operation,transports,available_models,status_statistics_enabled)
-         SELECT ag_md5_uuid(id||'idle-image'),id,'images_generation','[\"http_json\"]','[\"idle-image\"]',1
+        "INSERT INTO channel_capabilities(id,channel_id,operation,available_models,status_statistics_enabled)
+         SELECT ag_md5_uuid(id||'idle-image'),id,'images_generation','[\"idle-image\"]',1
          FROM upstream_channels",
     )
     .execute(&mut *transaction)

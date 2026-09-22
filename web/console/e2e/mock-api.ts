@@ -236,7 +236,7 @@ export const E2E_CODEX_GROUP = {
   id: E2E_CODEX_GROUP_ID,
   name: "Codex subscriptions",
   api_format: "open_ai_responses",
-  connector_kind: "codex_oauth",
+  connector_kind: "codex",
   connector_pool_id: E2E_CODEX_GROUP_ID,
   request_compression: "default",
   sharing_only: false,
@@ -249,7 +249,7 @@ const E2E_STANDARD_CHANNEL_GROUPS = Array.from({ length: 5 }, (_, index) => ({
   id: `00000000-0000-0000-0000-0000000002${index}`,
   name: index === 4 ? "target-group" : `standard-group-${index + 1}`,
   api_format: "open_ai_chat_completions",
-  connector_kind: "openai_compatible",
+  connector_kind: "general",
   connector_pool_id: null,
   request_compression: "default",
   sharing_only: false,
@@ -315,8 +315,7 @@ const E2E_CHANNEL_CAPABILITIES = [
     id: "00000000-0000-0000-0000-0000000000c1",
     channel_id: E2E_STANDARD_CHANNEL_ID,
     settings: {
-      operation: "chat_completions",
-      transports: ["http_json"],
+      operation: "chat_completion",
       enabled: true,
       available_models: ["gpt-5"],
       request_compression: "default",
@@ -342,7 +341,7 @@ const E2E_OPERATION_RULES = [
   {
     id: "00000000-0000-0000-0000-0000000000d1",
     model_routing_profile_id: "00000000-0000-0000-0000-0000000000d2",
-    operation: "chat_completions",
+    operation: "chat_completion",
     enabled: true,
     routing_tiers: [
       {
@@ -1145,7 +1144,7 @@ export async function mockConsoleApi(page: Page): Promise<void> {
     }
     if (path === "/console/v1/routing/accesses" && method === "GET") {
       return route.fulfill({ status: 200, json: [{
-        id: E2E_CODEX_GROUP_ID, name: "Codex access", connector_kind: "codex_oauth",
+        id: E2E_CODEX_GROUP_ID, name: "Codex access", connector_kind: "codex",
         base_url: "https://codex.test", proxy_id: null, enabled: true,
         connect_timeout_ms: null, response_header_timeout_ms: null, stream_idle_timeout_ms: null,
         revision: "00000000-0000-0000-0000-0000000000a2",

@@ -28,4 +28,9 @@ pub(crate) const MIGRATIONS: &[SqliteMigration<'static>] = &[
         description: "canonical upstream operation capabilities",
         sql: include_str!("../../../migrations/sqlite/0005_upstream_capabilities.sql"),
     },
+    SqliteMigration {
+        version: 6,
+        description: "six operation routing and connector names",
+        sql: include_str!("../../../migrations/sqlite/0006_six_operations.sql"),
+    },
 ];

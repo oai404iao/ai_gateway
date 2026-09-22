@@ -152,7 +152,6 @@ pub(crate) struct CodexCanonicalCreate<'a> {
 
 struct CodexCapabilityPlan {
     operation: &'static str,
-    transports: Vec<&'static str>,
     enabled: bool,
     request_compression: &'static str,
 }
@@ -164,25 +163,26 @@ fn codex_capability_plan() -> Vec<CodexCapabilityPlan> {
     vec![
         CodexCapabilityPlan {
             operation: "responses",
-            transports: vec!["http_sse", "websocket"],
             enabled: true,
             request_compression: "default",
         },
         CodexCapabilityPlan {
-            operation: "standalone_web_search",
-            transports: vec!["http_json"],
+            operation: "responses-ws",
+            enabled: true,
+            request_compression: "default",
+        },
+        CodexCapabilityPlan {
+            operation: "web_search",
             enabled: true,
             request_compression: "default",
         },
         CodexCapabilityPlan {
             operation: "images_generation",
-            transports: vec!["http_json"],
             enabled: false,
             request_compression: "default",
         },
         CodexCapabilityPlan {
             operation: "images_edit",
-            transports: vec!["multipart"],
             enabled: false,
             request_compression: "default",
         },
@@ -221,7 +221,7 @@ pub(crate) async fn pg_create(
     let access_id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO upstream_accesses (id,name,connector_kind,base_url,proxy_id,enabled) \
-         VALUES ($1,$2,'codex_oauth',$3,$4,true)",
+         VALUES ($1,$2,'codex',$3,$4,true)",
     )
     .bind(access_id)
     .bind(input.label.trim())
@@ -242,21 +242,15 @@ pub(crate) async fn pg_create(
     let models = input.available_models.to_vec();
     for plan in codex_capability_plan() {
         let capability_id = Uuid::new_v4();
-        let transports = plan
-            .transports
-            .iter()
-            .map(|transport| (*transport).to_owned())
-            .collect::<Vec<_>>();
         sqlx::query(
             "INSERT INTO channel_capabilities \
-             (id,channel_id,operation,transports,enabled,available_models,request_compression, \
+             (id,channel_id,operation,enabled,available_models,request_compression, \
               status_statistics_enabled,auto_disable_allowed) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,false)",
+             VALUES ($1,$2,$3,$4,$5,$6,$7,false)",
         )
         .bind(capability_id)
         .bind(input.credential_id)
         .bind(plan.operation)
-        .bind(&transports)
         .bind(plan.enabled)
         .bind(&models)
         .bind(plan.request_compression)
@@ -319,7 +313,7 @@ pub(crate) async fn sqlite_create(
     let access_id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO upstream_accesses (id,name,connector_kind,base_url,proxy_id,enabled) \
-         VALUES (?1,?2,'codex_oauth',?3,?4,1)",
+         VALUES (?1,?2,'codex',?3,?4,1)",
     )
     .bind(SqliteUuid(access_id))
     .bind(input.label.trim())
@@ -340,21 +334,15 @@ pub(crate) async fn sqlite_create(
     let models = input.available_models.to_vec();
     for plan in codex_capability_plan() {
         let capability_id = Uuid::new_v4();
-        let transports = plan
-            .transports
-            .iter()
-            .map(|transport| (*transport).to_owned())
-            .collect::<Vec<_>>();
         sqlx::query(
             "INSERT INTO channel_capabilities \
-             (id,channel_id,operation,transports,enabled,available_models,request_compression, \
+             (id,channel_id,operation,enabled,available_models,request_compression, \
               status_statistics_enabled,auto_disable_allowed) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,0)",
+             VALUES (?1,?2,?3,?4,?5,?6,?7,0)",
         )
         .bind(SqliteUuid(capability_id))
         .bind(SqliteUuid(input.credential_id))
         .bind(plan.operation)
-        .bind(sqlx::types::Json(&transports))
         .bind(plan.enabled)
         .bind(sqlx::types::Json(&models))
         .bind(plan.request_compression)
@@ -528,7 +516,6 @@ mod tests {
 
     use super::*;
     use crate::persistence::{
-        capability_cutover::io::sqlite_transfer,
         sqlite::{SqliteDatabase, SqliteUuid},
         upstream_topology::sqlite_load,
     };
@@ -585,20 +572,9 @@ mod tests {
             ).bind(SqliteUuid(*id)).bind(SqliteUuid(group_id)).bind(SqliteUuid(pool_id)).bind(&label).bind(format!("account-{index}"))
                 .execute(&mut *transaction).await.unwrap();
         }
-        sqlx::query(
-            "INSERT INTO _gateway_codex_operations(credential_id,attempt_id,kind,generation)
-             SELECT channel_id,?,'quota_reset',refresh_generation FROM codex_oauth_credentials WHERE channel_id=?",
-        ).bind(SqliteUuid(Uuid::new_v4())).bind(SqliteUuid(credentials[1]))
-            .execute(&mut *transaction).await.unwrap();
-        sqlx::raw_sql(include_str!(
-            "../../../migrations/sqlite/0005_upstream_capabilities.sql"
-        ))
-        .execute(&mut *transaction)
-        .await
-        .unwrap();
-        sqlite_transfer(&mut transaction, chrono::Utc::now())
-            .await
-            .unwrap();
+        transaction.commit().await.unwrap();
+        database.install_schema().await.unwrap();
+        let mut transaction = database.begin_write().await.unwrap();
         let before = sqlite_load(&mut transaction).await.unwrap();
         let original_access = before
             .logical_channels
@@ -609,12 +585,11 @@ mod tests {
         sqlx::query("UPDATE upstream_channels SET access_id=?,binding_revision=?,updated_at=ag_now() WHERE id=?")
             .bind(SqliteUuid(original_access)).bind(SqliteUuid(Uuid::new_v4())).bind(SqliteUuid(credentials[1]))
             .execute(&mut *transaction).await.unwrap();
-        sqlx::raw_sql(include_str!(
-            "../capability_cutover/sqlite-codex-guards.sql"
-        ))
-        .execute(&mut *transaction)
-        .await
-        .unwrap();
+        sqlx::query(
+            "INSERT INTO _gateway_codex_operations(credential_id,attempt_id,kind,generation)
+             SELECT channel_id,?,'quota_reset',refresh_generation FROM codex_oauth_credentials WHERE channel_id=?",
+        ).bind(SqliteUuid(Uuid::new_v4())).bind(SqliteUuid(credentials[1]))
+            .execute(&mut *transaction).await.unwrap();
         sqlite_reconfigure(
             &mut transaction,
             credentials[0],
@@ -750,7 +725,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            4
+            5
         );
         drop(repository);
         database.close().await;

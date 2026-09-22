@@ -85,7 +85,7 @@ POST /v1/images/generations
 - 先应用 `images_generation.client_body` 顶层字段白名单；policy 未删除字段且未启用模型别名或
   请求 JSON 变换时保留原始请求字节；
 - 使用 `open_ai_images` API Key 权限、模型规则、Channel Group 和 Channel；
-- 普通 `openai_compatible` Connector 沿用原路径
+- 普通 `general` Connector 沿用原路径
   `/v1/images/generations`、查询字符串和 Header/鉴权顺序；
 - 上下游分别协商 HTTP content coding：网关向上游声明 gzip、deflate、Brotli 与 Zstandard，
   流式解码后采集 usage，再按下游 `Accept-Encoding` 流式重编码；完整 base64 响应仍不缓冲；
@@ -218,7 +218,7 @@ POST /v1/images/edits
   moderation 值返回错误；
 - `stream=true`、非 identity `Content-Encoding`、无效 multipart 和非 multipart
   Content-Type 均 fail closed；
-- 普通 `openai_compatible` Connector 在无需模型别名且入口策略未删除字段时原样回放捕获的
+- 普通 `general` Connector 在无需模型别名且入口策略未删除字段时原样回放捕获的
   multipart；需要别名或删除字段时使用同一 boundary 流式等价重建；
 - multipart edit 不应用格式级请求 JSON Transform；若选中渠道配置了该类规则，返回
   `400 image_edit_json_transform_unsupported`。Header 与响应 Header 变换仍照常执行；

@@ -350,7 +350,7 @@ def seed(console, password, upstream):
         "allowed_base_urls": [upstream], "enabled": True,
     })
     access, _ = api("/routing/accesses", "POST", {
-        "name": "system-e2e", "connector_kind": "openai_compatible",
+        "name": "system-e2e", "connector_kind": "general",
         "base_url": upstream, "enabled": True,
     })
     channel, _ = api("/routing/logical-channels", "POST", {
@@ -362,14 +362,15 @@ def seed(console, password, upstream):
         "name": "system-e2e-disabled-reference", "enabled": False,
         "credential_id": credential["id"],
     })
+    capability_settings = {
+        "operation": "responses",
+        "enabled": True, "available_models": ["e2e-before", "e2e-wire"],
+        "request_compression": "default", "auto_disable_allowed": False,
+        "test_model": None, "test_pricing_model_id": None,
+    }
     capability, _ = api("/routing/capabilities", "POST", {
         "channel_id": channel["id"],
-        "settings": {
-            "operation": "responses", "transports": ["http_json", "http_sse"],
-            "enabled": True, "available_models": ["e2e-before", "e2e-wire"],
-            "request_compression": "default", "auto_disable_allowed": False,
-            "test_model": None, "test_pricing_model_id": None,
-        },
+        "settings": capability_settings,
     })
     model, _ = api("/models", "POST", {
         "source_model_id": "e2e-client", "display_name": "System E2E model", "enabled": True,
@@ -378,6 +379,17 @@ def seed(console, password, upstream):
         "price_effective_at": "2026-01-01T00:00:00Z",
     })
     parent, _ = api("/routing/profiles", "POST", {"model_id": model["id"]})
+    ws_capability, _ = api("/routing/capabilities", "POST", {
+        "channel_id": channel["id"],
+        "settings": {**capability_settings, "operation": "responses-ws"},
+    })
+    api("/routing/operation-rules", "POST", {
+        "model_routing_profile_id": parent["id"], "operation": "responses-ws", "enabled": True,
+        "routing_tiers": [{
+            "priority": 0, "selection_strategy": "weighted_round_robin",
+            "candidates": [{"capability_id": ws_capability["id"], "upstream_model": "e2e-wire", "weight": 1}],
+        }],
+    })
     protocol, _ = api("/routing/operation-rules", "POST", {
         "model_routing_profile_id": parent["id"], "operation": "responses", "enabled": True,
         "routing_tiers": [{
@@ -393,6 +405,7 @@ def seed(console, password, upstream):
     return {
         "console": console, "password": password, "token": token, "user_id": user,
         "api_key": key["secret"], "api_key_id": key["id"], "channel_id": capability["id"],
+        "websocket_channel_id": ws_capability["id"],
         "logical_channel_id": channel["id"], "access_id": access["id"],
         "channel_group_id": group["id"], "protocol_path": path,
         "upstream_credential_id": credential["id"], "upstream_secret": upstream_secret,
@@ -427,13 +440,6 @@ def set_upstream(data, url, websocket=False):
         "response_header_timeout_ms": access["response_header_timeout_ms"],
         "stream_idle_timeout_ms": access["stream_idle_timeout_ms"],
     }, headers["ETag"])
-    path = f"/routing/capabilities/{data['channel_id']}"
-    capability, headers = api(path)
-    capability["settings"]["transports"] = ["http_json", "http_sse"] + (["websocket"] if websocket else [])
-    api(path, "PUT", {key: capability[key] for key in (
-        "channel_id", "settings", "status_statistics_enabled", "billing_multiplier",
-        "config_template_id", "override_document",
-    )}, headers["ETag"])
 
 
 def run_codex(resources, binary, data, marker, websocket=False):
@@ -534,7 +540,9 @@ def verify_settlement(data, expected_count, zero_count=0, protocols=None):
     for log in settled:
         check(log["outcome"] == "succeeded" and log["response_status_code"] == 200, "request failed")
         check(log["client_model"] == "e2e-client" and log["upstream_model"] == "e2e-wire", "log model mismatch")
-        check(log["channel_id"] == data["channel_id"], "log channel mismatch")
+        websocket = log["request_protocol"] == "websocket"
+        check(log["channel_id"] == data["websocket_channel_id" if websocket else "channel_id"], "log channel mismatch")
+        check(log["api_operation"] == ("responses-ws" if websocket else "responses"), "log operation mismatch")
         zero = log["input_tokens"] == 0 and log["output_tokens"] == 0
         check(zero or (log["input_tokens"] == 5 and log["output_tokens"] == 2), "usage mismatch")
         check(Decimal(log["cost_amount"]) == Decimal("0" if zero else "0.000009"), "cost mismatch")

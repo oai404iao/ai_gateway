@@ -1,5 +1,5 @@
 use super::*;
-use crate::domain::{ApiOperation, CapabilitySettings, CapabilityTransport, RequestCompression};
+use crate::domain::{ApiOperation, CapabilitySettings, RequestCompression};
 use crate::persistence::upstream_topology::{
     ApiKeyPolicyCapabilityGrantRecord, ChannelCapabilityRecord, LogicalChannelRecord,
     RoutingGroupRecord,
@@ -47,7 +47,6 @@ fn fixture() -> (UpstreamTopologyRecords, SelfApiKeyPolicy) {
         channel_id: CHANNEL,
         settings: CapabilitySettings {
             operation,
-            transports: vec![CapabilityTransport::HttpJson],
             enabled: true,
             available_models: vec!["wire-model".into()],
             request_compression: RequestCompression::Default,

@@ -287,7 +287,7 @@ describe("StatisticsPage", () => {
             id: credentialId,
             name: "Codex Plus",
             api_format: "open_ai_responses",
-            connector_kind: "codex_oauth",
+            connector_kind: "codex",
             provider_managed: true,
           },
           {
@@ -295,7 +295,7 @@ describe("StatisticsPage", () => {
             id: "00000000-0000-0000-0000-00000000d002",
             name: "Codex Plus",
             api_format: "open_ai_images",
-            connector_kind: "codex_oauth",
+            connector_kind: "codex",
             provider_managed: true,
           },
         ]),

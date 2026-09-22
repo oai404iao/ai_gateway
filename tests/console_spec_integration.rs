@@ -451,15 +451,10 @@ async fn create_test_pricing_model(app: &App) -> Uuid {
 }
 
 fn capability_input(channel: Uuid, operation: &str) -> serde_json::Value {
-    let transports = match operation {
-        "images_edit" => vec!["multipart"],
-        "images_generation" | "standalone_web_search" => vec!["http_json"],
-        _ => vec!["http_json", "http_sse"],
-    };
     serde_json::json!({
         "channel_id": channel,
         "settings": {
-            "operation": operation, "transports": transports, "enabled": true,
+            "operation": operation, "enabled": true,
             "available_models": ["wire-v1"], "request_compression": "default",
             "auto_disable_allowed": false, "test_model": null, "test_pricing_model_id": null
         },
@@ -489,7 +484,7 @@ async fn seed_test_topology(app: &App, operation: &str) -> TestTopology {
         app,
         "/console/v1/routing/accesses",
         serde_json::json!({
-            "name": "Spec access", "connector_kind": "openai_compatible",
+            "name": "Spec access", "connector_kind": "general",
             "base_url": "https://upstream.example.test", "enabled": true
         }),
     )
@@ -1426,7 +1421,7 @@ async fn upstream_access_contract_is_versioned_and_does_not_create_authority() {
     let app = app(database.pool.clone()).await;
     let path = "/console/v1/routing/accesses";
     let input = serde_json::json!({
-        "name": "Spec access", "connector_kind": "openai_compatible",
+        "name": "Spec access", "connector_kind": "general",
         "base_url": "https://spec-access.test/private-path", "enabled": false,
         "proxy_id": null, "connect_timeout_ms": null,
         "response_header_timeout_ms": 30000, "stream_idle_timeout_ms": null,
@@ -1473,7 +1468,7 @@ async fn upstream_access_contract_is_versioned_and_does_not_create_authority() {
     let after = body_json(detail).await;
     assert_ne!(before["revision"], after["revision"]);
     let mut invalid = input.clone();
-    invalid["connector_kind"] = serde_json::json!("codex_oauth");
+    invalid["connector_kind"] = serde_json::json!("codex");
     assert_eq!(
         request(&app, "PUT", &detail_path, invalid, &[("if-match", &etag)])
             .await
@@ -1605,7 +1600,7 @@ async fn canonical_topology_contract_has_versioned_immutable_capability_identity
             "/console/v1/routing/accesses",
             serde_json::json!({
                 "name": "Canonical access", "enabled": true,
-                "connector_kind": "openai_compatible", "base_url": "https://canonical.test"
+                "connector_kind": "general", "base_url": "https://canonical.test"
             }),
         ),
     ] {
@@ -1630,7 +1625,7 @@ async fn canonical_topology_contract_has_versioned_immutable_capability_identity
     let mut input = serde_json::json!({
         "channel_id": channel,
         "settings": {
-            "operation": "images_generation", "transports": ["http_json"],
+            "operation": "images_generation",
             "enabled": false, "available_models": ["image-wire"],
             "request_compression": "default", "test_model": null,
             "test_pricing_model_id": null, "auto_disable_allowed": false
@@ -1667,7 +1662,6 @@ async fn canonical_topology_contract_has_versioned_immutable_capability_identity
     let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
     let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
     input["settings"]["operation"] = serde_json::json!("images_edit");
-    input["settings"]["transports"] = serde_json::json!(["multipart"]);
     assert_eq!(
         request(&app, "PUT", &path, input, &[("if-match", &etag)])
             .await
@@ -2167,7 +2161,7 @@ async fn sharing_contract_is_versioned_scoped_and_never_exposes_provider_identit
         body_json(implicit_group_key).await,
         serde_json::json!({"error": "api_key_target_not_allowed"})
     );
-    let ordinary = seed_test_topology(&app, "chat_completions").await;
+    let ordinary = seed_test_topology(&app, "chat_completion").await;
     let ordinary_group = ordinary.group;
     let ordinary_channel = ordinary.channel;
     let policy_path = format!("/console/v1/api-key-policies/{policy_id}");
@@ -4480,7 +4474,7 @@ async fn model_delete_hides_routing_clears_probes_and_preserves_history() {
     assert_eq!(model.status(), StatusCode::CREATED);
     let model_id = Uuid::parse_str(body_json(model).await["id"].as_str().unwrap()).unwrap();
 
-    let topology = seed_test_topology(&app, "chat_completions").await;
+    let topology = seed_test_topology(&app, "chat_completion").await;
     let group_id = topology.group;
     let channel_id = topology.capability;
     let group_name: String = sqlx::query_scalar("SELECT name FROM routing_groups WHERE id=$1")
@@ -4491,7 +4485,7 @@ async fn model_delete_hides_routing_clears_probes_and_preserves_history() {
     let cap_path = format!("/console/v1/routing/capabilities/{channel_id}");
     let cap = request(&app, "GET", &cap_path, serde_json::json!({}), &[]).await;
     let cap_etag = cap.headers()[header::ETAG].to_str().unwrap().to_owned();
-    let mut cap_input = capability_input(topology.channel, "chat_completions");
+    let mut cap_input = capability_input(topology.channel, "chat_completion");
     cap_input["settings"]["available_models"] = serde_json::json!(["model-delete-wire"]);
     cap_input["settings"]["test_model"] = serde_json::json!("model-delete-wire");
     cap_input["settings"]["test_pricing_model_id"] = serde_json::json!(model_id);
@@ -4517,7 +4511,7 @@ async fn model_delete_hides_routing_clears_probes_and_preserves_history() {
         &app,
         "/console/v1/routing/operation-rules",
         serde_json::json!({
-            "model_routing_profile_id": profile_id, "operation": "chat_completions",
+            "model_routing_profile_id": profile_id, "operation": "chat_completion",
             "enabled": true, "routing_tiers": [{
                 "priority": 0, "selection_strategy": "weighted_random",
                 "candidates": [{"capability_id": channel_id,
@@ -4894,7 +4888,14 @@ async fn etag_if_match_optimistic_concurrency_matches_spec() {
 async fn request_compression_is_restricted_to_responses_capabilities() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
-    for operation in ["chat_completions", "images_generation", "responses"] {
+    for operation in [
+        "chat_completion",
+        "images_generation",
+        "images_edit",
+        "web_search",
+        "responses",
+        "responses-ws",
+    ] {
         let topology = seed_test_topology(&app, operation).await;
         let path = format!("/console/v1/routing/capabilities/{}", topology.capability);
         let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
@@ -5042,7 +5043,7 @@ async fn codex_oauth_flow_contract_uses_pkce_and_actor_scoped_completion() {
         "/console/v1/routing/groups",
         serde_json::json!({
             "name": "legacy-format-group", "api_format": "open_ai_images",
-            "connector_kind": "codex_oauth", "enabled": false
+            "connector_kind": "codex", "enabled": false
         }),
         &[],
     )
@@ -5848,12 +5849,12 @@ async fn model_rule_hierarchy_separates_pricing_from_candidate_models() {
     assert_eq!(model.status(), StatusCode::CREATED);
     let model_id = body_json(model).await["id"].as_str().unwrap().to_owned();
 
-    let topology = seed_test_topology(&app, "chat_completions").await;
+    let topology = seed_test_topology(&app, "chat_completion").await;
     let channel_id = topology.capability;
     let cap_path = format!("/console/v1/routing/capabilities/{channel_id}");
     let cap = request(&app, "GET", &cap_path, serde_json::json!({}), &[]).await;
     let cap_etag = cap.headers()[header::ETAG].to_str().unwrap().to_owned();
-    let mut cap_input = capability_input(topology.channel, "chat_completions");
+    let mut cap_input = capability_input(topology.channel, "chat_completion");
     cap_input["settings"]["available_models"] =
         serde_json::json!(["spec-wire-model", "spec-wire-fallback"]);
     assert_eq!(
@@ -5911,7 +5912,7 @@ async fn model_rule_hierarchy_separates_pricing_from_candidate_models() {
         &app,
         "POST",
         "/console/v1/routing/operation-rules",
-        serde_json::json!({"model_routing_profile_id": parent_id, "operation": "chat_completions", "enabled": false, "routing_tiers": []}),
+        serde_json::json!({"model_routing_profile_id": parent_id, "operation": "chat_completion", "enabled": false, "routing_tiers": []}),
         &[],
     )
     .await;
@@ -5922,7 +5923,7 @@ async fn model_rule_hierarchy_separates_pricing_from_candidate_models() {
             &app,
             "POST",
             "/console/v1/routing/operation-rules",
-            serde_json::json!({"model_routing_profile_id": parent_id, "operation": "chat_completions", "enabled": false, "routing_tiers": []}),
+            serde_json::json!({"model_routing_profile_id": parent_id, "operation": "chat_completion", "enabled": false, "routing_tiers": []}),
             &[],
         )
         .await
@@ -5961,13 +5962,13 @@ async fn model_rule_hierarchy_separates_pricing_from_candidate_models() {
         .to_owned();
     let detail = body_json(detail).await;
     assert_eq!(detail["model_routing_profile_id"], parent_id);
-    assert_eq!(detail["operation"], "chat_completions");
+    assert_eq!(detail["operation"], "chat_completion");
     assert_eq!(detail["enabled"], false);
     assert_eq!(detail["routing_tiers"], serde_json::json!([]));
 
     let route = |upstream_model: &str| {
         serde_json::json!({
-            "model_routing_profile_id": parent_id, "operation": "chat_completions",
+            "model_routing_profile_id": parent_id, "operation": "chat_completion",
             "routing_tiers": [
                 {
                     "priority": 0,
@@ -6041,7 +6042,7 @@ async fn model_rule_hierarchy_separates_pricing_from_candidate_models() {
         "PUT",
         &protocol_path,
         serde_json::json!({
-            "model_routing_profile_id": parent_id, "operation": "chat_completions",
+            "model_routing_profile_id": parent_id, "operation": "chat_completion",
             "routing_tiers": [{
                 "priority": 0,
                 "selection_strategy": "weighted_random",
@@ -6126,9 +6127,9 @@ async fn model_rule_hierarchy_separates_pricing_from_candidate_models() {
 async fn capability_deletion_preserves_fixed_grants_and_requires_route_withdrawal() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
-    let topology = seed_test_topology(&app, "chat_completions").await;
+    let topology = seed_test_topology(&app, "chat_completion").await;
     let (profile, rule) =
-        create_test_operation_rule(&app, topology.capability, "chat_completions").await;
+        create_test_operation_rule(&app, topology.capability, "chat_completion").await;
     let key = create_resource(&app, "/console/v1/api-keys", serde_json::json!({
         "user_id": app.user_id, "name": "deletion-key", "allowed_api_formats": ["open_ai_chat_completions"],
         "permissions": ["proxy"], "allowed_group_ids": [topology.group], "allowed_channel_ids": []
@@ -6171,7 +6172,7 @@ async fn capability_deletion_preserves_fixed_grants_and_requires_route_withdrawa
             "PUT",
             &rule_path,
             serde_json::json!({
-                "model_routing_profile_id": profile, "operation": "chat_completions",
+                "model_routing_profile_id": profile, "operation": "chat_completion",
                 "enabled": false, "routing_tiers": []
             }),
             &[("if-match", &rule_etag)]
@@ -6263,7 +6264,7 @@ async fn capability_deletion_preserves_fixed_grants_and_requires_route_withdrawa
 async fn group_deletion_requires_explicit_child_retirement_and_preserves_history() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
-    let topology = seed_test_topology(&app, "chat_completions").await;
+    let topology = seed_test_topology(&app, "chat_completion").await;
     let group_path = format!("/console/v1/routing/groups/{}", topology.group);
     let channel_path = format!("/console/v1/routing/logical-channels/{}", topology.channel);
     let capability_path = format!("/console/v1/routing/capabilities/{}", topology.capability);
@@ -6507,7 +6508,7 @@ async fn model_advanced_billing_is_returned_and_validated() {
 async fn api_key_create_returns_retrievable_prefixed_secret() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
-    let topology = seed_test_topology(&app, "chat_completions").await;
+    let topology = seed_test_topology(&app, "chat_completion").await;
     let group_id = topology.group.to_string();
     let create = request(
         &app,
@@ -6552,7 +6553,7 @@ async fn api_key_create_returns_retrievable_prefixed_secret() {
 async fn channel_and_template_details_return_stored_editable_values() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
-    let topology = seed_test_topology(&app, "chat_completions").await;
+    let topology = seed_test_topology(&app, "chat_completion").await;
     let mut invalid_create = capability_input(topology.channel, "responses");
     invalid_create["weight"] = serde_json::json!(1);
 
@@ -6612,7 +6613,7 @@ async fn channel_and_template_details_return_stored_editable_values() {
     let path = format!("/console/v1/routing/capabilities/{channel_id}");
     let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
     let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
-    let mut input = capability_input(topology.channel, "chat_completions");
+    let mut input = capability_input(topology.channel, "chat_completion");
     input["billing_multiplier"] = serde_json::json!("1.5");
     input["config_template_id"] = serde_json::json!(template_id);
     input["override_document"] = override_document.clone();
@@ -6716,22 +6717,26 @@ async fn responses_websocket_and_search_are_independent_capabilities() {
     let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
     let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
     let detail = body_json(detail).await;
-    assert_eq!(
-        detail["settings"]["transports"],
-        serde_json::json!(["http_json", "http_sse"])
-    );
+    assert!(detail["settings"].get("transports").is_none());
     let mut input = capability_input(topology.channel, "responses");
     input["settings"]["transports"] = serde_json::json!(["http_json", "http_sse", "websocket"]);
     assert_eq!(
         request(&app, "PUT", &path, input, &[("if-match", &etag)])
             .await
             .status(),
-        StatusCode::OK
+        StatusCode::UNPROCESSABLE_ENTITY
     );
+    let websocket = create_resource(
+        &app,
+        "/console/v1/routing/capabilities",
+        capability_input(topology.channel, "responses-ws"),
+    )
+    .await;
+    assert_ne!(websocket, topology.capability);
     let search = create_resource(
         &app,
         "/console/v1/routing/capabilities",
-        capability_input(topology.channel, "standalone_web_search"),
+        capability_input(topology.channel, "web_search"),
     )
     .await;
     assert_ne!(search, topology.capability);
@@ -6746,18 +6751,18 @@ async fn responses_websocket_and_search_are_independent_capabilities() {
         .await,
     )
     .await;
-    assert_eq!(capabilities.as_array().unwrap().len(), 2);
+    assert_eq!(capabilities.as_array().unwrap().len(), 3);
     assert!(
         capabilities
             .as_array()
             .unwrap()
             .iter()
             .any(|item| item["id"] == search.to_string()
-                && item["settings"]["operation"] == "standalone_web_search"
-                && item["settings"]["transports"] == serde_json::json!(["http_json"]))
+                && item["settings"]["operation"] == "web_search"
+                && item["settings"].get("transports").is_none())
     );
     for fault in ["websocket", "legacy_search_flag"] {
-        let mut input = capability_input(topology.channel, "chat_completions");
+        let mut input = capability_input(topology.channel, "chat_completion");
         if fault == "websocket" {
             input["settings"]["transports"] = serde_json::json!(["websocket"]);
         } else {
@@ -6885,8 +6890,8 @@ async fn channel_model_discovery_uses_draft_network_and_auth_settings() {
 async fn channel_batch_updates_are_atomic_versioned_and_published_once() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
-    let first = seed_test_topology(&app, "chat_completions").await;
-    let second = seed_test_topology(&app, "chat_completions").await;
+    let first = seed_test_topology(&app, "chat_completion").await;
+    let second = seed_test_topology(&app, "chat_completion").await;
     let channel_ids = vec![first.capability.to_string(), second.capability.to_string()];
 
     let before = body_json(
@@ -7075,7 +7080,7 @@ async fn channel_batch_updates_are_atomic_versioned_and_published_once() {
 async fn administrator_can_manually_recover_an_auto_disabled_channel() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
-    let topology = seed_test_topology(&app, "chat_completions").await;
+    let topology = seed_test_topology(&app, "chat_completion").await;
     let channel_id = topology.capability;
 
     sqlx::query(
@@ -7152,7 +7157,7 @@ async fn administrator_can_manually_recover_an_auto_disabled_channel() {
 async fn api_key_policy_only_stores_selectable_targets() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
-    let topology = seed_test_topology(&app, "chat_completions").await;
+    let topology = seed_test_topology(&app, "chat_completion").await;
     let channel_id = topology.channel.to_string();
     let created = request(
         &app,
@@ -7205,7 +7210,7 @@ async fn api_key_policy_only_stores_selectable_targets() {
 async fn self_api_key_create_reports_policy_preconditions() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
-    let topology = seed_test_topology(&app, "chat_completions").await;
+    let topology = seed_test_topology(&app, "chat_completion").await;
     let group_id = topology.group.to_string();
     let channel_id = topology.channel.to_string();
     let key_input = |name: &str| {
@@ -7284,7 +7289,7 @@ async fn self_api_key_create_reports_policy_preconditions() {
     assert_eq!(options["channels"][0]["id"], channel_id);
     assert_eq!(options["channels"][0]["channel_group_enabled"], true);
 
-    let other_group_id = seed_test_topology(&app, "chat_completions")
+    let other_group_id = seed_test_topology(&app, "chat_completion")
         .await
         .group
         .to_string();
@@ -7514,7 +7519,7 @@ async fn request_log_filters_match_the_console_contract() {
     assert_eq!(body.as_array().unwrap().len(), 1);
     assert_eq!(body[0]["id"], matching_log_id.to_string());
     assert_eq!(body[0]["user_name"], format!("spec-{}", app.user_id));
-    assert_eq!(body[0]["api_operation"], "chat_completions");
+    assert_eq!(body[0]["api_operation"], "chat_completion");
     assert_eq!(body[0]["request_protocol"], "non_stream");
     assert_eq!(body[0]["reasoning_effort"], "high");
     assert_eq!(body[0]["fast_mode"], true);
@@ -7541,7 +7546,7 @@ async fn request_log_filters_match_the_console_contract() {
     let detail = body_json(detail).await;
     assert_eq!(detail["id"], matching_log_id.to_string());
     assert_eq!(detail["user_name"], format!("spec-{}", app.user_id));
-    assert_eq!(detail["api_operation"], "chat_completions");
+    assert_eq!(detail["api_operation"], "chat_completion");
     assert_eq!(detail["request_protocol"], "non_stream");
     assert_eq!(detail["reasoning_effort"], "high");
     assert_eq!(detail["fast_mode"], true);
@@ -7581,7 +7586,7 @@ async fn request_log_filters_match_the_console_contract() {
     let standalone_search_log_id = Uuid::new_v4();
     for (id, operation) in [
         (Uuid::new_v4(), "responses"),
-        (standalone_search_log_id, "standalone_web_search"),
+        (standalone_search_log_id, "web_search"),
     ] {
         sqlx::query(
             "INSERT INTO request_logs \
@@ -7600,7 +7605,7 @@ async fn request_log_filters_match_the_console_contract() {
     let operation_filtered = request(
         &app,
         "GET",
-        "/console/v1/request-logs?api_operation=standalone_web_search",
+        "/console/v1/request-logs?api_operation=web_search",
         serde_json::json!({}),
         &[],
     )
@@ -7681,7 +7686,7 @@ async fn request_log_filters_match_the_console_contract() {
 async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
-    let topology = seed_test_topology(&app, "chat_completions").await;
+    let topology = seed_test_topology(&app, "chat_completion").await;
     let group_id = topology.group;
     let channel_id = topology.capability;
     let api_key_id = Uuid::new_v4();
@@ -7704,7 +7709,7 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     let path = format!("/console/v1/routing/capabilities/{channel_id}");
     let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
     let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
-    let mut input = capability_input(topology.channel, "chat_completions");
+    let mut input = capability_input(topology.channel, "chat_completion");
     input["settings"]["available_models"] = serde_json::json!(["statistics-model"]);
     input["status_statistics_enabled"] = serde_json::json!(true);
     assert_eq!(

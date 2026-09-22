@@ -36,7 +36,7 @@ async fn repository() -> (
     SqliteControlPlaneRepository,
 ) {
     let (directory, database) = database().await;
-    assert_eq!(database.install_schema().await.unwrap(), 5);
+    assert_eq!(database.install_schema().await.unwrap(), 6);
     let database = Arc::new(database);
     let repository = SqliteControlPlaneRepository::new(Arc::clone(&database));
     (directory, database, repository)
@@ -121,19 +121,19 @@ async fn seed_routing(database: &SqliteDatabase) {
              INSERT INTO model_routing_profiles (id,model_id) VALUES ('{PROFILE}','{MODEL}');
              INSERT INTO routing_groups (id,name,enabled) VALUES ('{GROUP}','Ordinary Group',1);
              INSERT INTO upstream_accesses (id,name,connector_kind,base_url,enabled)
-             VALUES ('{ACCESS}','Ordinary Access','openai_compatible','https://upstream.example.test',1);
+             VALUES ('{ACCESS}','Ordinary Access','general','https://upstream.example.test',1);
              INSERT INTO upstream_channels (id,group_id,access_id,name,enabled)
              VALUES ('{CHANNEL}','{GROUP}','{ACCESS}','Ordinary Channel',1);
              INSERT INTO channel_capabilities
-             (id,channel_id,operation,transports,available_models,enabled)
-             VALUES ('{CAPABILITY}','{CHANNEL}','chat_completions','[\"http_json\",\"http_sse\"]','[\"gpt-test\"]',1);
+             (id,channel_id,operation,available_models,enabled)
+             VALUES ('{CAPABILITY}','{CHANNEL}','chat_completion','[\"gpt-test\"]',1);
              INSERT INTO model_operation_rules (id,model_routing_profile_id,operation,enabled)
-             VALUES ('{RULE}','{PROFILE}','chat_completions',1);
+             VALUES ('{RULE}','{PROFILE}','chat_completion',1);
              INSERT INTO model_capability_tiers (id,rule_id,operation,priority,strategy)
-             VALUES ('{TIER}','{RULE}','chat_completions',0,'weighted_random');
+             VALUES ('{TIER}','{RULE}','chat_completion',0,'weighted_random');
              INSERT INTO model_capability_candidates
              (tier_id,operation,capability_id,upstream_model,weight)
-             VALUES ('{TIER}','chat_completions','{CAPABILITY}','gpt-test',1);"
+             VALUES ('{TIER}','chat_completion','{CAPABILITY}','gpt-test',1);"
         ),
     )
     .await;
@@ -502,7 +502,7 @@ async fn topology_deletion_requires_explicit_child_withdrawal_and_preserves_gran
 async fn rule_updated_at(database: &SqliteDatabase) -> DateTime<Utc> {
     let mut reader = database.acquire_read().await.unwrap();
     let text: String = sqlx::query_scalar(
-        "SELECT updated_at FROM model_operation_rules WHERE operation='chat_completions'",
+        "SELECT updated_at FROM model_operation_rules WHERE operation='chat_completion'",
     )
     .fetch_one(&mut *reader)
     .await
@@ -779,15 +779,17 @@ async fn self_service_and_admin_writes_enforce_versions_and_policies() {
     // A target outside the policy is rejected without writing anything.
     execute(
         &database,
-        &format!("INSERT INTO routing_groups (id,name,enabled)
+        &format!(
+            "INSERT INTO routing_groups (id,name,enabled)
          VALUES ('40300000-0000-0000-0000-0000000004a1','Outside Group',
                  1);
          INSERT INTO upstream_channels(id,group_id,access_id,name,enabled)
          VALUES ('40300000-0000-0000-0000-0000000004a2','40300000-0000-0000-0000-0000000004a1',
                  '{ACCESS}','Outside channel',1);
-         INSERT INTO channel_capabilities(id,channel_id,operation,transports,available_models,enabled)
+         INSERT INTO channel_capabilities(id,channel_id,operation,available_models,enabled)
          VALUES ('40300000-0000-0000-0000-0000000004a3','40300000-0000-0000-0000-0000000004a2',
-                 'chat_completions','[\"http_json\"]','[\"gpt-test\"]',1);"),
+                 'chat_completion','[\"gpt-test\"]',1);"
+        ),
     )
     .await;
     compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap();
@@ -1202,7 +1204,7 @@ async fn channel_routing_rules_are_replaced_whole_with_version_checks() {
     // Replacing the tiers with a ready single-candidate graph commits in one step.
     let input: ai_gateway::persistence::OperationRuleInput = serde_json::from_value(json!({
         "model_routing_profile_id": PROFILE,
-        "operation": "chat_completions",
+        "operation": "chat_completion",
         "enabled": true,
         "routing_tiers": [{
             "priority": 0,
@@ -1245,7 +1247,7 @@ async fn channel_routing_rules_are_replaced_whole_with_version_checks() {
                 id: RULE,
                 input: serde_json::from_value(json!({
                     "model_routing_profile_id": PROFILE,
-                    "operation": "chat_completions",
+                    "operation": "chat_completion",
                     "enabled": false,
                     "routing_tiers": []
                 }))
@@ -1266,7 +1268,7 @@ async fn channel_routing_rules_are_replaced_whole_with_version_checks() {
                 id: RULE,
                 input: serde_json::from_value(json!({
                     "model_routing_profile_id": PROFILE,
-                    "operation": "chat_completions",
+                    "operation": "chat_completion",
                     "enabled": true,
                     "routing_tiers": [{
                         "priority": 0,
@@ -1511,8 +1513,8 @@ async fn sharing_projections_follow_the_credential_not_the_group_identity() {
 
     let canonical_capabilities = credential_capabilities(&database, credential).await;
     let alias_capabilities = credential_capabilities(&database, identity_alias).await;
-    assert_eq!(canonical_capabilities.len(), 4);
-    assert_eq!(alias_capabilities.len(), 4);
+    assert_eq!(canonical_capabilities.len(), 5);
+    assert_eq!(alias_capabilities.len(), 5);
     assert_eq!(
         sorted(record.channel_ids.clone()),
         sorted(canonical_capabilities.clone()),

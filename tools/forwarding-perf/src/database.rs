@@ -308,11 +308,11 @@ async fn seed(
         .bind(mock_base_url)
         .execute(&mut *transaction)
         .await?;
-        sqlx::query("INSERT INTO upstream_accesses(id,name,connector_kind,base_url,enabled) VALUES($1,$2,'openai_compatible',$3,true)")
+        sqlx::query("INSERT INTO upstream_accesses(id,name,connector_kind,base_url,enabled) VALUES($1,$2,'general',$3,true)")
             .bind(channel_id).bind(name).bind(mock_base_url).execute(&mut *transaction).await?;
         sqlx::query("INSERT INTO upstream_channels(id,group_id,access_id,credential_id,name,enabled) VALUES($1,$2,$1,$1,$3,true)")
             .bind(channel_id).bind(group_id).bind(name).execute(&mut *transaction).await?;
-        sqlx::query("INSERT INTO channel_capabilities(id,channel_id,operation,transports,enabled,available_models,auto_disable_allowed) VALUES($1,$1,$2,ARRAY['http_json','http_sse'],true,$3,false)")
+        sqlx::query("INSERT INTO channel_capabilities(id,channel_id,operation,enabled,available_models,auto_disable_allowed) VALUES($1,$1,$2,true,$3,false)")
             .bind(channel_id).bind(operation(api_kind)).bind(models).execute(&mut *transaction).await?;
         sqlx::query("INSERT INTO channel_identity_registry(id,label,created_at,canonical_channel_id,capability_id) VALUES($1,$2,now(),$1,$1)")
             .bind(channel_id).bind(name).execute(&mut *transaction).await?;
@@ -388,7 +388,7 @@ async fn seed(
 
 fn operation(kind: ApiKind) -> &'static str {
     match kind {
-        ApiKind::ChatCompletions => "chat_completions",
+        ApiKind::ChatCompletions => "chat_completion",
         ApiKind::Responses => "responses",
     }
 }

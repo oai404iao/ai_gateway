@@ -179,7 +179,7 @@ async fn complete_baseline_and_guards_rollback_as_one_pending_batch() {
     assert!(!table_exists(&db, "users").await);
     assert!(!table_exists(&db, "request_metering_facts").await);
     assert!(!table_exists(&db, "_gateway_routing_assertions").await);
-    assert_eq!(db.install_schema().await.unwrap(), 5);
+    assert_eq!(db.install_schema().await.unwrap(), 6);
     db.close().await;
 }
 
@@ -300,7 +300,7 @@ async fn normalized_log_replay_preserves_on_conflict_semantics() {
             sqlx::query("INSERT INTO request_logs(
                 id,started_at,completed_at,user_id,api_key_id,api_format,api_operation,client_model,outcome)
                 VALUES (?,ag_now(),ag_now(),?,?,?,?,?,'rejected') ON CONFLICT(id) DO NOTHING")
-                .bind(&id).bind(USER).bind(KEY).bind(format.as_str()).bind(operation.as_str())
+                .bind(&id).bind(USER).bind(KEY).bind(format.as_str()).bind(ai_gateway::persistence::capability_cutover::legacy_settings::operation_name(operation))
                 .bind("model").execute(&mut *tx).await.unwrap();
             tx.commit().await.unwrap();
         }

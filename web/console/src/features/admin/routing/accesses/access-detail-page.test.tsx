@@ -28,7 +28,7 @@ describe("upstream accesses", () => {
     await user.type(screen.getByLabelText("Base URL"), "https://api.example.test");
     await user.click(screen.getByRole("button", { name: "Save access" }));
     await waitFor(() => expect(submitted).toEqual({
-      name: "Independent access", connector_kind: "openai_compatible",
+      name: "Independent access", connector_kind: "general",
       base_url: "https://api.example.test", proxy_id: null,
       connect_timeout_ms: null, response_header_timeout_ms: null,
       stream_idle_timeout_ms: null, enabled: false,
@@ -49,7 +49,7 @@ describe("upstream accesses", () => {
     expect(screen.getByLabelText("Connector")).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "Save access" }));
     await waitFor(() => expect(submitted?.response_header_timeout_ms).toBe(30000));
-    expect(submitted?.connector_kind).toBe("openai_compatible");
+    expect(submitted?.connector_kind).toBe("general");
     expect(submitted?.proxy_id).toBeNull();
     expect(ifMatch).toBe(`"${UPSTREAM_ACCESS.updated_at}"`);
   });

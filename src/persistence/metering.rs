@@ -160,7 +160,12 @@ async fn write_facts(
     .execute(&mut **transaction)
     .await?;
     let matches: Vec<bool> = sqlx::query_scalar(
-        "SELECT (to_jsonb(stored)-'amount_state') = (to_jsonb(incoming)-'amount_state')
+        "SELECT (to_jsonb(stored)-'amount_state'-'api_operation') = (to_jsonb(incoming)-'amount_state'-'api_operation')
+             AND (CASE stored.api_operation
+                 WHEN 'chat_completions' THEN 'chat_completion'
+                 WHEN 'standalone_web_search' THEN 'web_search'
+                 WHEN 'responses' THEN CASE WHEN stored.request_protocol='websocket' THEN 'responses-ws' ELSE 'responses' END
+                 ELSE stored.api_operation END) = incoming.api_operation
          FROM jsonb_array_elements($1) WITH ORDINALITY AS input(value,ordinal)
          CROSS JOIN LATERAL jsonb_populate_record(NULL::request_metering_facts,input.value) AS incoming
          JOIN request_metering_facts AS stored ON stored.id=incoming.id

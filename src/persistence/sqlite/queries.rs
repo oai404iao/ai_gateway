@@ -166,7 +166,9 @@ impl SqliteRequestLogQueries {
         }
         if let Some(api_operation) = filter.api_operation {
             query
-                .push(" AND log.api_operation = ")
+                .push(" AND ")
+                .push(super::super::postgres_control_plane::LOG_OPERATION_SQL)
+                .push(" = ")
                 .push_bind(api_operation);
         }
         if let Some(outcome) = filter.outcome {
@@ -223,7 +225,7 @@ impl SqliteRequestLogQueries {
         let tracked = sqlx::query_as::<_, TrackedChannelGroupRow>(
             "SELECT channel_group.id AS id, \
                     CASE capability.operation \
-                        WHEN 'chat_completions' THEN 'open_ai_chat_completions' \
+                        WHEN 'chat_completion' THEN 'open_ai_chat_completions' \
                         WHEN 'images_generation' THEN 'open_ai_images' \
                         WHEN 'images_edit' THEN 'open_ai_images' \
                         ELSE 'open_ai_responses' END AS api_format, \
@@ -403,9 +405,10 @@ fn validate_request_log_filter(filter: &RequestLogFilter) -> Result<(), Reposito
         || filter.api_operation.as_deref().is_some_and(|value| {
             !matches!(
                 value,
-                "chat_completions"
+                "chat_completion"
                     | "responses"
-                    | "standalone_web_search"
+                    | "responses-ws"
+                    | "web_search"
                     | "images_generation"
                     | "images_edit"
             )
@@ -489,7 +492,11 @@ impl ConsoleRequestLogRow {
             api_key_id: self.api_key_id.0,
             request_source: self.request_source,
             api_format: self.api_format,
-            api_operation: self.api_operation,
+            api_operation: crate::domain::ApiOperation::normalize_stored_name(
+                &self.api_operation,
+                &self.request_protocol,
+            )
+            .into(),
             request_protocol: self.request_protocol,
             client_model: self.client_model,
             reasoning_effort: self.reasoning_effort,

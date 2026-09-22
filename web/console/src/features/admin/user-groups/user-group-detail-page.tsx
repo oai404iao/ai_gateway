@@ -173,7 +173,7 @@ export function UserGroupDetailPage() {
       state.visible_codex_quota_group_ids.includes(candidate.id) ||
       channels.data?.some((channel) => channel.group_id === candidate.id &&
         accesses.data?.some((access) => access.id === channel.access_id &&
-          access.connector_kind === "codex_oauth")),
+          access.connector_kind === "codex")),
   );
   const toggleCodexGroup = (groupId: string) => {
     const selected = state.visible_codex_quota_group_ids.includes(groupId);

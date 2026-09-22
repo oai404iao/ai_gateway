@@ -1128,7 +1128,10 @@ impl FactRow {
             && self.api_key_id.0 == event.api_key_id
             && self.request_source == event.request_source.as_str()
             && self.api_format == event.api_format.as_str()
-            && self.api_operation == event.api_operation.as_str()
+            && crate::domain::ApiOperation::normalize_stored_name(
+                &self.api_operation,
+                &self.request_protocol,
+            ) == event.api_operation.as_str()
             && self.request_protocol == event.request_protocol.as_str()
             && self.client_model == event.client_model
             && self.upstream_model == event.upstream_model
@@ -1549,7 +1552,10 @@ impl RequestLogRow {
             && self.api_key_id.0 == event.api_key_id
             && self.request_source == event.request_source.as_str()
             && self.api_format == event.api_format.as_str()
-            && self.api_operation == event.api_operation.as_str()
+            && crate::domain::ApiOperation::normalize_stored_name(
+                &self.api_operation,
+                &self.request_protocol,
+            ) == event.api_operation.as_str()
             && self.request_protocol == event.request_protocol.as_str()
             && self.client_model == event.client_model
             && self.upstream_model == event.upstream_model
@@ -1623,7 +1629,7 @@ mod tests {
             let database = SqliteDatabase::open(&directory.path().join("gateway.sqlite"))
                 .await
                 .unwrap();
-            assert_eq!(database.install_schema().await.unwrap(), 5);
+            assert_eq!(database.install_schema().await.unwrap(), 6);
             let database = Arc::new(database);
             let logs = SqliteRequestLogRepository::new(Arc::clone(&database));
             Self {

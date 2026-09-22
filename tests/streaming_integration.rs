@@ -127,7 +127,7 @@ fn proxy_service_with_network_policy(
             id: group_id,
             name: "chat".into(),
             api_format: "open_ai_chat_completions".into(),
-            connector_kind: "openai_compatible".into(),
+            connector_kind: "general".into(),
             request_compression: "default".into(),
             sharing_only: false,
             enabled: true,

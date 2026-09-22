@@ -1,4 +1,6 @@
 //! Atomic topology transfer and identity retargeting, called only by startup migration.
+//! Runtime compilation is deferred until the following six-operation migration;
+//! its loader cannot read this frozen intermediate schema.
 
 use sqlx::{Postgres, Transaction};
 
@@ -18,7 +20,6 @@ pub async fn postgres(
     sqlx::raw_sql(include_str!("retire-postgres.sql"))
         .execute(&mut **transaction)
         .await?;
-    super::super::upstream_topology::pg_load_control_plane(transaction).await?;
     Ok(())
 }
 
@@ -43,6 +44,5 @@ pub async fn sqlite(
     sqlx::raw_sql(include_str!("retire-sqlite.sql"))
         .execute(&mut **transaction)
         .await?;
-    super::super::upstream_topology::sqlite_load_control_plane(transaction).await?;
     Ok(())
 }

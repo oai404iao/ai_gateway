@@ -10,7 +10,7 @@ use sqlx::{FromRow, Row, Sqlite, SqliteConnection, Transaction};
 use std::collections::{BTreeSet, HashSet};
 use uuid::Uuid;
 
-const CODEX_CONNECTOR_KIND: &str = "codex_oauth";
+const CODEX_CONNECTOR_KIND: &str = "codex";
 const QUOTA_WINDOW_IDENTITY_TOLERANCE: Duration = Duration::seconds(90);
 const MANUAL_RESET_MATCH_WINDOW: Duration = Duration::minutes(15);
 
@@ -1065,7 +1065,7 @@ async fn validate_codex_group_and_proxy_connection(
     }
     sqlx::query(
         "INSERT INTO connector_pools(id,connector_kind,routing_group_id)
-         SELECT ?,'codex_oauth',id FROM routing_groups WHERE id=? AND deleted_at IS NULL
+         SELECT ?,'codex',id FROM routing_groups WHERE id=? AND deleted_at IS NULL
          ON CONFLICT (routing_group_id) DO NOTHING",
     )
     .bind(SqliteUuid(Uuid::new_v4()))
@@ -1347,7 +1347,7 @@ async fn codex_credential_audit(
              'base_url','[REDACTED]',
              'capabilities',json((
                  SELECT json_group_array(json_object('id',cap.id,'operation',cap.operation,
-                     'available_models',json(cap.available_models),'transports',json(cap.transports),
+                     'available_models',json(cap.available_models),
                      'enabled',json(CASE cap.enabled WHEN 1 THEN 'true' ELSE 'false' END)))
                  FROM (SELECT * FROM channel_capabilities WHERE channel_id=ch.id AND deleted_at IS NULL ORDER BY operation) cap
              )),

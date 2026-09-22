@@ -91,16 +91,11 @@ impl Backend {
         )
     }
     async fn seed(&self) {
-        let (formats, permissions, transports) = match self {
-            Self::Pg(_) => (
-                "'{open_ai_chat_completions}'",
-                "'{proxy,models.read}'",
-                "'{http_json}'",
-            ),
+        let (formats, permissions) = match self {
+            Self::Pg(_) => ("'{open_ai_chat_completions}'", "'{proxy,models.read}'"),
             Self::Sq(..) => (
                 "'[\"open_ai_chat_completions\"]'",
                 "'[\"proxy\",\"models.read\"]'",
-                "'[\"http_json\"]'",
             ),
         };
         self.exec(&format!(
@@ -114,11 +109,11 @@ impl Backend {
              VALUES ('{MODEL}','model','Model',true,'USD',1000000,'1','0','0','2',now());
              INSERT INTO routing_groups(id,name,enabled) VALUES ('{GROUP}','Group',true);
              INSERT INTO upstream_accesses(id,name,connector_kind,base_url,enabled)
-             VALUES ('{ACCESS}','Access','openai_compatible','https://example.test',true);
+             VALUES ('{ACCESS}','Access','general','https://example.test',true);
              INSERT INTO upstream_channels(id,group_id,access_id,name,enabled)
              VALUES ('{LOGICAL_CHANNEL}','{GROUP}','{ACCESS}','Channel',true);
-             INSERT INTO channel_capabilities(id,channel_id,operation,transports,enabled,status_statistics_enabled)
-             VALUES ('{CHANNEL}','{LOGICAL_CHANNEL}','chat_completions',{transports},true,true);
+             INSERT INTO channel_capabilities(id,channel_id,operation,enabled,status_statistics_enabled)
+             VALUES ('{CHANNEL}','{LOGICAL_CHANNEL}','chat_completion',true,true);
              INSERT INTO group_identity_registry(id,label,created_at,canonical_group_id)
              VALUES ('{GROUP}','Group',now(),'{GROUP}');
              INSERT INTO channel_identity_registry(id,label,created_at,canonical_channel_id,capability_id)
@@ -610,7 +605,7 @@ async fn query_contract(db: &Backend, now: DateTime<Utc>) -> Value {
             ..Default::default()
         },
         RequestLogFilter {
-            api_operation: Some("chat_completions".into()),
+            api_operation: Some("chat_completion".into()),
             ..Default::default()
         },
         RequestLogFilter {

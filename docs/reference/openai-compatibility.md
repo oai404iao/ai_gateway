@@ -66,7 +66,7 @@ assistants、fine-tuning 等其他 OpenAI 路径。
   block 和 boundary padding 分别最多 `8 KiB`、`16 KiB` 与 `1 KiB`。
 - multipart edit 不应用请求 JSON Transform。模型别名需要变更时，网关流式等价重建 multipart；
   否则原始字节保持不变。
-- 普通 `openai_compatible` Connector 会把查询字符串和原 API 路径拼接到渠道 `base_url`；
+- 普通 `general` Connector 会把查询字符串和原 API 路径拼接到渠道 `base_url`；
   provider Connector 可以按操作改写目标路径。
 - 客户端 `Authorization`、`Host`、`Content-Length`、`Accept-Encoding`、代理鉴权和
   hop-by-hop headers 不会直接转发；上游鉴权最后注入，HTTP content coding 由网关独立协商。

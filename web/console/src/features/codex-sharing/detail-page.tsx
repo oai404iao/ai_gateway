@@ -68,7 +68,7 @@ export function SharingDetailPage() {
   const errors = form.formState.errors;
   const credentials = (channels.data ?? []).flatMap(channel =>
     channel.credential_id && accesses.data?.some(access =>
-      access.id === channel.access_id && access.connector_kind === "codex_oauth")
+      access.id === channel.access_id && access.connector_kind === "codex")
       ? [{ ...channel, id: channel.credential_id }] : []);
   const members = users.data ?? [];
   const formerMembers = values.seats.filter((userId): userId is string =>

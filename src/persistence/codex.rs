@@ -9,7 +9,7 @@ use uuid::Uuid;
 use super::PostgresControlPlaneRepository;
 use crate::persistence::{MutationResult, RepositoryError};
 
-const CODEX_CONNECTOR_KIND: &str = "codex_oauth";
+const CODEX_CONNECTOR_KIND: &str = "codex";
 const QUOTA_WINDOW_IDENTITY_TOLERANCE: Duration = Duration::seconds(90);
 const MANUAL_RESET_MATCH_WINDOW: Duration = Duration::minutes(15);
 
@@ -2061,7 +2061,7 @@ async fn validate_codex_group_and_proxy_connection(
     }
     sqlx::query(
         "INSERT INTO connector_pools(id,connector_kind,routing_group_id)
-         SELECT $1,'codex_oauth',id FROM routing_groups WHERE id=$2 AND deleted_at IS NULL
+         SELECT $1,'codex',id FROM routing_groups WHERE id=$2 AND deleted_at IS NULL
          ON CONFLICT (routing_group_id) DO NOTHING",
     )
     .bind(Uuid::new_v4())
@@ -2106,7 +2106,7 @@ async fn codex_credential_audit(
              'capabilities',( \
                  SELECT COALESCE(json_agg( \
                      json_build_object('id',cap.id,'operation',cap.operation, \
-                         'available_models',cap.available_models,'transports',cap.transports, \
+                         'available_models',cap.available_models, \
                          'enabled',cap.enabled) ORDER BY cap.operation \
                  ),'[]'::json) FROM channel_capabilities cap \
                  WHERE cap.channel_id=ch.id AND cap.deleted_at IS NULL \

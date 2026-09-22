@@ -205,7 +205,11 @@ pub(super) async fn run(
         migration.version == 5
             && migration.description == "canonical upstream operation capabilities"
     });
-    if capability_cutover {
+    let operation_split = migrations.iter().any(|migration| {
+        migration.version == 6
+            && migration.description == "six operation routing and connector names"
+    });
+    if capability_cutover || operation_split {
         sqlx::query("PRAGMA foreign_keys=OFF")
             .execute(&mut *connection)
             .await?;
@@ -259,6 +263,12 @@ pub(super) async fn run(
         if capability_cutover && migration.version == 5 {
             crate::persistence::capability_cutover::activation::sqlite(&mut transaction).await?;
         }
+        if operation_split && migration.version == 6 {
+            crate::persistence::capability_cutover::operation_split::storage::sqlite_apply(
+                &mut transaction,
+            )
+            .await?;
+        }
         if rollback_observed.load(Ordering::Acquire) {
             return Err(SqliteMigrationError::InvalidManifest);
         }
@@ -277,7 +287,7 @@ pub(super) async fn run(
     if check_identity(&mut transaction).await? != Some(database_id) {
         return Err(SqliteOpenError::ForeignDatabase.into());
     }
-    if capability_cutover
+    if (capability_cutover || operation_split)
         && sqlx::query("PRAGMA foreign_key_check")
             .fetch_optional(&mut *transaction)
             .await?

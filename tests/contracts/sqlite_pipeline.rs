@@ -60,7 +60,7 @@ struct Pipeline {
 impl Pipeline {
     async fn new() -> Self {
         let (directory, database) = database().await;
-        assert_eq!(database.install_schema().await.unwrap(), 5);
+        assert_eq!(database.install_schema().await.unwrap(), 6);
         let database = Arc::new(database);
         let logs = SqliteRequestLogRepository::new(Arc::clone(&database));
         Self {
@@ -143,13 +143,13 @@ impl Pipeline {
                  cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at)
              VALUES ('{MODEL}','pipeline-model','Pipeline',1000000,'1','0','0','2','2026-01-01T00:00:00.000000Z');
              INSERT INTO routing_groups(id,name) VALUES ('{GROUP}','Pipeline group');
-             INSERT INTO upstream_accesses(id,name,connector_kind,base_url) VALUES ('{ACCESS}','Pipeline access','openai_compatible','https://upstream.invalid');
+             INSERT INTO upstream_accesses(id,name,connector_kind,base_url) VALUES ('{ACCESS}','Pipeline access','general','https://upstream.invalid');
              INSERT INTO upstream_channels(id,group_id,access_id,name) VALUES ('{CHANNEL}','{GROUP}','{ACCESS}','Pipeline channel');
-             INSERT INTO channel_capabilities(id,channel_id,operation,transports,enabled,available_models)
-             VALUES ('{CAPABILITY}','{CHANNEL}','chat_completions','[\"http_json\"]',1,'[\"pipeline-model\"]');
+             INSERT INTO channel_capabilities(id,channel_id,operation,enabled,available_models)
+             VALUES ('{CAPABILITY}','{CHANNEL}','chat_completion',1,'[\"pipeline-model\"]');
              INSERT INTO model_routing_profiles(id,model_id) VALUES ('{PROFILE}','{MODEL}');
              INSERT INTO model_operation_rules(id,model_routing_profile_id,operation,enabled)
-             VALUES ('{RULE}','{PROFILE}','chat_completions',0);
+             VALUES ('{RULE}','{PROFILE}','chat_completion',0);
              INSERT INTO group_identity_registry(id,label,canonical_group_id) VALUES ('{GROUP}','Pipeline group','{GROUP}');
              INSERT INTO channel_identity_registry(id,label,canonical_channel_id,capability_id) VALUES ('{CAPABILITY}','Pipeline channel','{CHANNEL}','{CAPABILITY}');
              INSERT INTO model_rule_identity_registry(id,label,created_at,canonical_rule_id) VALUES ('{RULE}','pipeline-model',ag_now(),'{RULE}');"

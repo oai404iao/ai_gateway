@@ -471,7 +471,6 @@ mod tests {
             channel_id: Uuid::from_u128(channel_id),
             settings: crate::domain::CapabilitySettings {
                 operation: crate::domain::ApiOperation::Responses,
-                transports: vec![crate::domain::CapabilityTransport::HttpSse],
                 enabled: true,
                 available_models: vec!["wire".into()],
                 request_compression: crate::domain::RequestCompression::Default,

@@ -56,7 +56,7 @@ struct Queries {
 impl Queries {
     async fn new() -> Self {
         let (directory, database) = database().await;
-        assert_eq!(database.install_schema().await.unwrap(), 5);
+        assert_eq!(database.install_schema().await.unwrap(), 6);
         let database = Arc::new(database);
         let request_logs =
             ai_gateway::persistence::sqlite::SqliteRequestLogQueries::new(Arc::clone(&database));
@@ -117,16 +117,16 @@ async fn seed(queries: &Queries) -> Uuid {
              INSERT INTO routing_groups(id,name)
              VALUES ('{GROUP}','Query group'),('{OTHER_GROUP}','Other group');
              INSERT INTO upstream_accesses(id,name,connector_kind,base_url)
-             VALUES ('{ACCESS}','Query access','openai_compatible','https://upstream.invalid');
+             VALUES ('{ACCESS}','Query access','general','https://upstream.invalid');
              INSERT INTO upstream_channels(id,group_id,access_id,name)
              VALUES ('{LOGICAL_CHANNEL}','{GROUP}','{ACCESS}','Query channel'),
                     ('{OTHER_LOGICAL_CHANNEL}','{OTHER_GROUP}','{ACCESS}','Other channel');
-             INSERT INTO channel_capabilities(id,channel_id,operation,transports,enabled,available_models,status_statistics_enabled)
-             VALUES ('{CHANNEL}','{LOGICAL_CHANNEL}','chat_completions','[\"http_json\"]',1,'[\"query-model\",\"idle-model\"]',1),
-                    ('{OTHER_CHANNEL}','{OTHER_LOGICAL_CHANNEL}','responses','[\"http_json\"]',1,'[]',0);
+             INSERT INTO channel_capabilities(id,channel_id,operation,enabled,available_models,status_statistics_enabled)
+             VALUES ('{CHANNEL}','{LOGICAL_CHANNEL}','chat_completion',1,'[\"query-model\",\"idle-model\"]',1),
+                    ('{OTHER_CHANNEL}','{OTHER_LOGICAL_CHANNEL}','responses',1,'[]',0);
              INSERT INTO model_routing_profiles(id,model_id) VALUES ('{PROFILE}','{MODEL}');
              INSERT INTO model_operation_rules(id,model_routing_profile_id,operation,enabled)
-             VALUES ('{RULE}','{PROFILE}','chat_completions',0);
+             VALUES ('{RULE}','{PROFILE}','chat_completion',0);
              INSERT INTO group_identity_registry(id,label,canonical_group_id)
              SELECT id,name,id FROM routing_groups;
              INSERT INTO channel_identity_registry(id,label,canonical_channel_id,capability_id)
@@ -232,7 +232,7 @@ impl Fact<'_> {
 async fn insert_fact(queries: &Queries, fact: &Fact<'_>) {
     let api_format = fact.api_format;
     let operation = match api_format {
-        "open_ai_chat_completions" => "chat_completions",
+        "open_ai_chat_completions" => "chat_completion",
         "open_ai_responses" => "responses",
         _ => "images_generation",
     };
@@ -299,7 +299,7 @@ async fn insert_fact(queries: &Queries, fact: &Fact<'_>) {
 async fn insert_log(queries: &Queries, fact: &Fact<'_>) {
     let api_format = fact.api_format;
     let operation = match api_format {
-        "open_ai_chat_completions" => "chat_completions",
+        "open_ai_chat_completions" => "chat_completion",
         "open_ai_responses" => "responses",
         _ => "images_generation",
     };
@@ -471,7 +471,7 @@ async fn request_log_views_apply_owner_scope_redaction_and_receipt_billing() {
             user_id: Some(USER),
             model: Some("query-model".into()),
             api_format: Some("open_ai_chat_completions".into()),
-            api_operation: Some("chat_completions".into()),
+            api_operation: Some("chat_completion".into()),
             outcome: Some("succeeded".into()),
             started_after: Some(timestamp("2026-09-18T12:00:00.000000Z")),
             started_before: Some(timestamp("2026-09-18T12:00:00.000000Z")),

@@ -87,6 +87,7 @@ pub struct RoutingRuntime {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum ChannelCapability {
     Any,
+    UnsupportedProtocol,
     ResponsesWebSocket,
     StandaloneWebSearch,
     Transport(crate::domain::CapabilityTransport),
@@ -97,6 +98,7 @@ impl ChannelCapability {
     fn permits(self, channel: &CompiledChannel) -> bool {
         match self {
             Self::Any => true,
+            Self::UnsupportedProtocol => false,
             Self::ResponsesWebSocket => {
                 channel.supports_websocket()
                     && channel.permits_transport(crate::domain::CapabilityTransport::Websocket)
@@ -116,10 +118,11 @@ impl ChannelCapability {
 
     fn for_operation(operation: ApiOperation, protocol: crate::domain::RequestProtocol) -> Self {
         use crate::domain::{CapabilityTransport as T, RequestProtocol as P};
-        if protocol == P::WebSocket {
-            return Self::ResponsesWebSocket;
+        if (protocol == P::WebSocket) != (operation == ApiOperation::ResponsesWebSocket) {
+            return Self::UnsupportedProtocol;
         }
         match operation {
+            ApiOperation::ResponsesWebSocket => Self::ResponsesWebSocket,
             ApiOperation::StandaloneWebSearch => Self::StandaloneWebSearch,
             ApiOperation::ImagesGeneration => Self::Transport(T::HttpJson),
             ApiOperation::ImagesEdit => Self::Transport(T::Multipart),
@@ -733,10 +736,13 @@ impl RoutingRuntime {
         affinity: Option<SessionAffinityMatch>,
         excluded_candidate_slots: &[usize],
     ) -> Option<SelectedRoute> {
+        if format != ApiFormat::OpenAiResponses {
+            return None;
+        }
         self.select_preferred_channel_with_capability(
             snapshot,
             key,
-            ApiOperation::legacy_default(format),
+            ApiOperation::ResponsesWebSocket,
             model,
             preferred_channel_id,
             None,
@@ -759,10 +765,13 @@ impl RoutingRuntime {
         affinity: Option<SessionAffinityMatch>,
         excluded_candidate_slots: &[usize],
     ) -> Option<SelectedRoute> {
+        if format != ApiFormat::OpenAiResponses {
+            return None;
+        }
         self.select_preferred_channel_with_capability(
             snapshot,
             key,
-            ApiOperation::legacy_default(format),
+            ApiOperation::ResponsesWebSocket,
             model,
             preferred_channel_id,
             Some(preferred_upstream_model),
@@ -939,10 +948,13 @@ impl RoutingRuntime {
         affinity: Option<SessionAffinityMatch>,
         excluded_candidate_slots: &[usize],
     ) -> SelectionResult {
+        if format != ApiFormat::OpenAiResponses {
+            return SelectionResult::UnknownOrInaccessibleModel;
+        }
         self.select_with_affinity_excluding_capability(
             snapshot,
             key,
-            ApiOperation::legacy_default(format),
+            ApiOperation::ResponsesWebSocket,
             model,
             affinity,
             excluded_candidate_slots,
@@ -961,7 +973,7 @@ impl RoutingRuntime {
     ) -> bool {
         let now = self.inner.clock.now();
         snapshot.model_rules().any(|rule| {
-            rule.api_operation() == ApiOperation::Responses
+            rule.api_operation() == ApiOperation::ResponsesWebSocket
                 && key.permits_route(rule.route_slot())
                 && rule.tiers().iter().any(|tier| {
                     tier.candidates().iter().any(|candidate| {
@@ -1812,7 +1824,7 @@ mod tests {
                     id: *id,
                     name: id.to_string(),
                     api_format: format.as_str().into(),
-                    connector_kind: "openai_compatible".into(),
+                    connector_kind: "general".into(),
                     request_compression: "default".into(),
                     sharing_only: false,
                     enabled: true,
@@ -1888,28 +1900,27 @@ mod tests {
     }
 
     #[test]
-    fn explicit_response_transports_gate_each_dispatch_protocol() {
-        use crate::domain::{CapabilityTransport as T, ConnectorKind, RequestProtocol as P};
-        for (connector, transport, expected) in [
+    fn response_operations_gate_each_dispatch_protocol() {
+        use crate::domain::{ConnectorKind, RequestProtocol as P};
+        for (connector, operation, expected) in [
             (
                 ConnectorKind::OpenAiCompatible,
-                T::HttpJson,
-                [true, false, false],
+                ApiOperation::Responses,
+                [true, true, false],
             ),
             (
                 ConnectorKind::OpenAiCompatible,
-                T::HttpSse,
-                [false, true, false],
-            ),
-            (
-                ConnectorKind::OpenAiCompatible,
-                T::Websocket,
+                ApiOperation::ResponsesWebSocket,
                 [false, false, true],
             ),
-            (ConnectorKind::CodexOauth, T::HttpSse, [true, true, false]),
             (
                 ConnectorKind::CodexOauth,
-                T::Websocket,
+                ApiOperation::Responses,
+                [true, true, false],
+            ),
+            (
+                ConnectorKind::CodexOauth,
+                ApiOperation::ResponsesWebSocket,
                 [false, false, true],
             ),
         ] {
@@ -1920,13 +1931,14 @@ mod tests {
                 ApiFormat::OpenAiResponses,
             );
             let channel = &mut records.channels[0];
-            channel.api_operation = Some(ApiOperation::Responses);
+            channel.api_operation = Some(operation);
             channel.logical_channel_id = Uuid::from_u128(200);
             channel.access_id = Uuid::from_u128(201);
             channel.connector_kind = connector.as_str().into();
             channel.request_compression = "default".into();
-            channel.transports = vec![transport];
-            channel.supports_websocket = transport == T::Websocket;
+            channel.transports = operation.transports().to_vec();
+            channel.supports_websocket = operation == ApiOperation::ResponsesWebSocket;
+            records.model_rules[0].api_operation = operation;
             let config = compile_control_plane(records).unwrap();
             let channel = config.channels().next().unwrap();
             for (protocol, allowed) in [P::NonStream, P::Sse, P::WebSocket]
@@ -1934,10 +1946,9 @@ mod tests {
                 .zip(expected)
             {
                 assert_eq!(
-                    super::ChannelCapability::for_operation(ApiOperation::Responses, protocol)
-                        .permits(channel),
+                    super::ChannelCapability::for_operation(operation, protocol).permits(channel),
                     allowed,
-                    "{connector:?} {transport:?} {protocol:?}"
+                    "{connector:?} {operation:?} {protocol:?}"
                 );
             }
         }
@@ -2140,13 +2151,20 @@ mod tests {
 
     #[test]
     fn websocket_preflight_does_not_advance_weights_or_claim_recovery_probes() {
-        let (snapshot, secret) = snapshot_with_format(
+        let (mut records, secret) = records_with_format(
             &[(0, "weighted_round_robin")],
             &[1],
             None,
-            SystemRuntimeSettings::default(),
             ApiFormat::OpenAiResponses,
         );
+        records.model_rules[0].api_operation = ApiOperation::ResponsesWebSocket;
+        let channel = &mut records.channels[0];
+        channel.api_operation = Some(ApiOperation::ResponsesWebSocket);
+        channel.connector_kind = "general".into();
+        channel.request_compression = "default".into();
+        channel.transports = ApiOperation::ResponsesWebSocket.transports().to_vec();
+        channel.supports_websocket = true;
+        let snapshot = compile_control_plane(records).unwrap();
         let clock = Arc::new(TestClock(AtomicU64::new(0)));
         let runtime = RoutingRuntime::with_seams(
             PassiveHealthPolicy {
@@ -2231,7 +2249,7 @@ mod tests {
                 id: group_id,
                 name: "group".into(),
                 api_format: "open_ai_chat_completions".into(),
-                connector_kind: "openai_compatible".into(),
+                connector_kind: "general".into(),
                 request_compression: "default".into(),
                 sharing_only: false,
                 enabled: true,

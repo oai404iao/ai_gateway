@@ -1,4 +1,4 @@
-//! Connector-constrained upstream operations, independent of client routing rules.
+//! Connector-constrained operations; transports are derived, never configured.
 
 use std::collections::HashSet;
 
@@ -20,7 +20,6 @@ pub enum CapabilityTransport {
 #[serde(deny_unknown_fields)]
 pub struct CapabilitySettings {
     pub operation: ApiOperation,
-    pub transports: Vec<CapabilityTransport>,
     pub enabled: bool,
     pub available_models: Vec<String>,
     pub request_compression: RequestCompression,
@@ -33,8 +32,6 @@ pub struct CapabilitySettings {
 pub enum CapabilityError {
     #[error("operation is not implemented by this connector")]
     Operation,
-    #[error("unsupported or duplicate operation transport")]
-    Transport,
     #[error("compression requires HTTP Responses")]
     Compression,
     #[error("invalid capability model catalogue")]
@@ -46,39 +43,10 @@ pub enum CapabilityError {
 impl CapabilitySettings {
     pub fn validate(&self, connector: ConnectorKind) -> Result<(), CapabilityError> {
         use ApiOperation as O;
-        use CapabilityTransport as T;
-
-        if matches!(
-            (connector, self.operation),
-            (ConnectorKind::CodexOauth, O::ChatCompletions)
-        ) {
+        if connector == ConnectorKind::CodexOauth && self.operation == O::ChatCompletions {
             return Err(CapabilityError::Operation);
         }
-        let supported: &[T] = match (connector, self.operation) {
-            (_, O::ChatCompletions) => &[T::HttpJson, T::HttpSse],
-            (ConnectorKind::OpenAiCompatible, O::Responses) => {
-                &[T::HttpJson, T::HttpSse, T::Websocket]
-            }
-            (ConnectorKind::CodexOauth, O::Responses) => &[T::HttpSse, T::Websocket],
-            (_, O::StandaloneWebSearch | O::ImagesGeneration) => &[T::HttpJson],
-            (_, O::ImagesEdit) => &[T::Multipart],
-        };
-        let mut transports = HashSet::new();
-        if self.transports.is_empty()
-            || self
-                .transports
-                .iter()
-                .any(|transport| !supported.contains(transport) || !transports.insert(*transport))
-        {
-            return Err(CapabilityError::Transport);
-        }
-        if self.request_compression.is_encoded()
-            && (self.operation != O::Responses
-                || !self
-                    .transports
-                    .iter()
-                    .any(|t| matches!(t, T::HttpJson | T::HttpSse)))
-        {
+        if self.request_compression.is_encoded() && self.operation != O::Responses {
             return Err(CapabilityError::Compression);
         }
         let mut models = HashSet::new();
@@ -93,7 +61,6 @@ impl CapabilitySettings {
             || self.test_model.as_ref().is_some_and(|model| {
                 connector != ConnectorKind::OpenAiCompatible
                     || !matches!(self.operation, O::ChatCompletions | O::Responses)
-                    || !self.transports.contains(&T::HttpJson)
                     || !self.available_models.contains(model)
             })
         {
@@ -103,166 +70,14 @@ impl CapabilitySettings {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn settings(
-        operation: ApiOperation,
-        transports: Vec<CapabilityTransport>,
-    ) -> CapabilitySettings {
-        CapabilitySettings {
-            operation,
-            transports,
-            enabled: false,
-            available_models: vec![],
-            request_compression: RequestCompression::Default,
-            test_model: None,
-            test_pricing_model_id: None,
-            auto_disable_allowed: false,
-        }
-    }
-
-    #[test]
-    fn connectors_reject_unimplemented_operations_and_transport_combinations() {
-        use ApiOperation as O;
+impl ApiOperation {
+    pub const fn transports(self) -> &'static [CapabilityTransport] {
         use CapabilityTransport as T;
-        for operation in [
-            O::ChatCompletions,
-            O::Responses,
-            O::StandaloneWebSearch,
-            O::ImagesGeneration,
-            O::ImagesEdit,
-        ] {
-            for connector in [ConnectorKind::OpenAiCompatible, ConnectorKind::CodexOauth] {
-                for transport in [T::HttpJson, T::HttpSse, T::Websocket, T::Multipart] {
-                    let expected = match (connector, operation, transport) {
-                        (ConnectorKind::CodexOauth, O::ChatCompletions, _) => false,
-                        (_, O::ChatCompletions, T::HttpJson | T::HttpSse)
-                        | (ConnectorKind::OpenAiCompatible, O::Responses, T::HttpJson)
-                        | (_, O::Responses, T::HttpSse | T::Websocket)
-                        | (_, O::StandaloneWebSearch | O::ImagesGeneration, T::HttpJson)
-                        | (_, O::ImagesEdit, T::Multipart) => true,
-                        _ => false,
-                    };
-                    assert_eq!(
-                        settings(operation, vec![transport])
-                            .validate(connector)
-                            .is_ok(),
-                        expected,
-                        "{connector:?} {operation:?} {transport:?}"
-                    );
-                }
-            }
+        match self {
+            Self::ChatCompletions | Self::Responses => &[T::HttpJson, T::HttpSse],
+            Self::ResponsesWebSocket => &[T::Websocket],
+            Self::StandaloneWebSearch | Self::ImagesGeneration => &[T::HttpJson],
+            Self::ImagesEdit => &[T::Multipart],
         }
-    }
-
-    #[test]
-    fn compression_and_probe_settings_are_operation_scoped() {
-        let mut value = settings(
-            ApiOperation::Responses,
-            vec![CapabilityTransport::Websocket],
-        );
-        value.request_compression = RequestCompression::Zstd;
-        assert_eq!(
-            value.validate(ConnectorKind::CodexOauth),
-            Err(CapabilityError::Compression)
-        );
-        value.transports.push(CapabilityTransport::HttpSse);
-        assert!(value.validate(ConnectorKind::CodexOauth).is_ok());
-        value.test_model = Some("wire".into());
-        assert_eq!(
-            value.validate(ConnectorKind::CodexOauth),
-            Err(CapabilityError::Probe)
-        );
-        value.available_models.push("wire".into());
-        value.test_pricing_model_id = Some(Uuid::new_v4());
-        assert_eq!(
-            value.validate(ConnectorKind::CodexOauth),
-            Err(CapabilityError::Probe)
-        );
-        value.transports.push(CapabilityTransport::HttpJson);
-        assert!(value.validate(ConnectorKind::OpenAiCompatible).is_ok());
-    }
-
-    #[test]
-    fn empty_duplicate_and_cross_operation_transports_are_rejected() {
-        for transports in [
-            vec![],
-            vec![CapabilityTransport::HttpJson, CapabilityTransport::HttpJson],
-            vec![CapabilityTransport::Multipart],
-        ] {
-            assert_eq!(
-                settings(ApiOperation::Responses, transports)
-                    .validate(ConnectorKind::OpenAiCompatible),
-                Err(CapabilityError::Transport)
-            );
-        }
-    }
-
-    #[test]
-    fn search_retains_its_wire_catalogue_but_has_no_compression_or_probes() {
-        let mut value = settings(
-            ApiOperation::StandaloneWebSearch,
-            vec![CapabilityTransport::HttpJson],
-        );
-        assert!(value.validate(ConnectorKind::CodexOauth).is_ok());
-        value.available_models.push("wire".into());
-        assert!(value.validate(ConnectorKind::CodexOauth).is_ok());
-        assert!(value.validate(ConnectorKind::OpenAiCompatible).is_ok());
-        value.request_compression = RequestCompression::Zstd;
-        assert_eq!(
-            value.validate(ConnectorKind::CodexOauth),
-            Err(CapabilityError::Compression)
-        );
-        value.request_compression = RequestCompression::Default;
-        value.test_model = Some("wire".into());
-        value.test_pricing_model_id = Some(Uuid::new_v4());
-        assert_eq!(
-            value.validate(ConnectorKind::CodexOauth),
-            Err(CapabilityError::Probe)
-        );
-    }
-
-    #[test]
-    fn image_probes_are_not_advertised_before_they_are_implemented() {
-        for (operation, transport) in [
-            (
-                ApiOperation::ImagesGeneration,
-                CapabilityTransport::HttpJson,
-            ),
-            (ApiOperation::ImagesEdit, CapabilityTransport::Multipart),
-        ] {
-            let mut value = settings(operation, vec![transport]);
-            value.available_models.push("image".into());
-            value.test_model = Some("image".into());
-            value.test_pricing_model_id = Some(Uuid::new_v4());
-            for connector in [ConnectorKind::OpenAiCompatible, ConnectorKind::CodexOauth] {
-                assert_eq!(value.validate(connector), Err(CapabilityError::Probe));
-            }
-        }
-    }
-
-    #[test]
-    fn catalogues_and_probe_pairs_are_validated_even_when_disabled() {
-        let mut value = settings(ApiOperation::Responses, vec![CapabilityTransport::HttpJson]);
-        for models in [vec!["".into()], vec!["m".into(), "m".into()]] {
-            value.available_models = models;
-            assert_eq!(
-                value.validate(ConnectorKind::OpenAiCompatible),
-                Err(CapabilityError::Models)
-            );
-        }
-        value.available_models = vec!["m".into()];
-        value.test_pricing_model_id = Some(Uuid::new_v4());
-        assert_eq!(
-            value.validate(ConnectorKind::OpenAiCompatible),
-            Err(CapabilityError::Probe)
-        );
-        value.test_model = Some("not-in-catalogue".into());
-        assert_eq!(
-            value.validate(ConnectorKind::OpenAiCompatible),
-            Err(CapabilityError::Probe)
-        );
     }
 }

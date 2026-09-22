@@ -980,7 +980,7 @@ export interface paths {
             cookie?: never;
         };
         get: operations["getChannelCapability"];
-        /** @description Replaces transports, catalog, transforms and compression. The owning channel and operation are immutable. Existing Codex capabilities can be configured independently. Changes invalidate the capability revision without rewriting routes or grants. */
+        /** @description Replaces catalog, transforms and compression. Transports are fixed by the operation. The owning channel and operation are immutable. Existing Codex capabilities can be configured independently. Changes invalidate the capability revision without rewriting routes or grants. */
         put: operations["updateChannelCapability"];
         post?: never;
         /** @description Soft-deletes an ordinary capability. Dependent routing candidates must be withdrawn first. Codex capabilities are deleted through their credential lifecycle. */
@@ -1626,11 +1626,11 @@ export interface components {
         /** @enum {string} */
         ApiFormat: "open_ai_chat_completions" | "open_ai_responses" | "open_ai_images";
         /** @enum {string} */
-        ApiOperation: "chat_completions" | "responses" | "standalone_web_search" | "images_generation" | "images_edit";
+        ApiOperation: "chat_completion" | "responses" | "responses-ws" | "web_search" | "images_edit" | "images_generation";
         /** @enum {string} */
         SelectionStrategy: "weighted_random" | "weighted_round_robin";
         /** @enum {string} */
-        ConnectorKind: "openai_compatible" | "codex_oauth";
+        ConnectorKind: "general" | "codex";
         /**
          * @description Upstream request-body compression for Responses HTTP requests. `default` sends identity JSON; `zstd` uses Zstandard level 3.
          * @enum {string}
@@ -2456,12 +2456,8 @@ export interface components {
             name: string;
             enabled: boolean;
         };
-        /** @enum {string} */
-        CapabilityTransport: "http_json" | "http_sse" | "websocket" | "multipart";
         CapabilitySettings: {
             operation: components["schemas"]["ApiOperation"];
-            /** @description Only connector-implemented operation/transport combinations are accepted. */
-            transports: components["schemas"]["CapabilityTransport"][];
             enabled: boolean;
             available_models: string[];
             request_compression: components["schemas"]["RequestCompression"];

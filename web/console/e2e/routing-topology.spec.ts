@@ -30,7 +30,7 @@ test.describe("canonical routing topology", () => {
 
     await page.getByText("Upstream A", { exact: true }).click();
     await expect(page.getByRole("heading", { name: "Channel capabilities" })).toBeVisible();
-    await expect(page.getByText("HTTP JSON")).toBeVisible();
+    await expect(page.getByRole("columnheader", { name: "Transports" })).toHaveCount(0);
 
     await page.getByRole("link", { name: "Model configuration" }).click();
     await page.getByRole("button", { name: new RegExp(E2E_MODEL.display_name) }).click();

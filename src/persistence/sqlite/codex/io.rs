@@ -299,7 +299,7 @@ impl SqliteControlPlaneRepository {
         let mut reader = self.database.acquire_read().await.map_err(open_failure)?;
         let mut tx = reader.begin().await?;
         let rows=sqlx::query_as::<_,CodexCredentialRecordRow>(sqlx::AssertSqlSafe(credential_select(
-            "WHERE c.connector_pool_id=(SELECT id FROM connector_pools WHERE routing_group_id=? AND connector_kind='codex_oauth')
+            "WHERE c.connector_pool_id=(SELECT id FROM connector_pools WHERE routing_group_id=? AND connector_kind='codex')
              AND c.deleted_at IS NULL ORDER BY c.label,c.channel_id")))
             .bind(SqliteUuid(group)).fetch_all(&mut *tx).await?;
         let mut result = Vec::with_capacity(rows.len());

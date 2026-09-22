@@ -98,7 +98,7 @@ describe("ModelsPage", () => {
     renderAppAt(`/admin/models?model=${MODEL.id}&rule=new`);
     await user.click(await screen.findByRole("combobox", { name: "Operation" }));
     expect(screen.queryByRole("option", { name: "Responses" })).not.toBeInTheDocument();
-    expect(screen.getAllByRole("option")).toHaveLength(4);
+    expect(screen.getAllByRole("option")).toHaveLength(5);
   });
 
   it("keeps a dirty operation selected when a concurrent creation conflicts", async () => {

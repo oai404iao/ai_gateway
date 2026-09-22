@@ -328,7 +328,7 @@ export function CostStatisticsPanel({
     .filter(
       (channel) =>
         channel.credential_id && accesses.data?.some((access) =>
-          access.id === channel.access_id && access.connector_kind === "codex_oauth"),
+          access.id === channel.access_id && access.connector_kind === "codex"),
     )
     .map((channel) => ({
       id: channel.credential_id!,

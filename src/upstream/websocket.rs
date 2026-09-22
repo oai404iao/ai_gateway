@@ -160,7 +160,7 @@ mod credential_tests {
         .with_channel_identity(ChannelIdentity {
             logical_channel_id: Uuid::from_u128(1),
             access_id: Uuid::from_u128(2),
-            api_operation: ApiOperation::Responses,
+            api_operation: ApiOperation::ResponsesWebSocket,
             credential_id: Some(credential),
             credential_revision: Some(revision),
             binding_revision: Uuid::nil(),

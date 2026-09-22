@@ -1,4 +1,4 @@
-//! Channel-capability writes own the operation, transport set, catalogue,
+//! Channel-capability writes own the operation, catalogue,
 //! transforms, compression, and probe configuration of one logical channel.
 //!
 //! A capability save or delete never creates grants or routing candidates and
@@ -13,22 +13,9 @@ use uuid::Uuid;
 
 use super::{ChannelCapabilityInput, ChannelCapabilityRecord, UpstreamTopologyRecords};
 use crate::{
-    domain::{CapabilityTransport, ConnectorKind},
+    domain::ConnectorKind,
     persistence::{MutationResult, RepositoryError},
 };
-
-fn transport_name(transport: CapabilityTransport) -> &'static str {
-    match transport {
-        CapabilityTransport::HttpJson => "http_json",
-        CapabilityTransport::HttpSse => "http_sse",
-        CapabilityTransport::Websocket => "websocket",
-        CapabilityTransport::Multipart => "multipart",
-    }
-}
-
-fn transport_names(transports: &[CapabilityTransport]) -> Vec<&'static str> {
-    transports.iter().copied().map(transport_name).collect()
-}
 
 fn validate_replacement(
     topology: &UpstreamTopologyRecords,
@@ -256,19 +243,17 @@ pub async fn pg_save(
     validate_replacement(&before, id, input, expected)?;
     pg_validate_references(transaction, input).await?;
     let revision = Uuid::new_v4();
-    let transports = transport_names(&input.settings.transports);
     let settings = &input.settings;
     let changed = if let Some(expected) = expected {
         sqlx::query(
-            "UPDATE channel_capabilities SET operation=$2,transports=$3,enabled=$4,
-             available_models=$5,request_compression=$6,test_model=$7,test_pricing_model_id=$8,
-             auto_disable_allowed=$9,status_statistics_enabled=$10,config_template_id=$11,
-             override_document=$12,billing_multiplier=$13,revision=$14
-             WHERE id=$1 AND updated_at=$15 AND deleted_at IS NULL",
+            "UPDATE channel_capabilities SET operation=$2,enabled=$3,
+             available_models=$4,request_compression=$5,test_model=$6,test_pricing_model_id=$7,
+             auto_disable_allowed=$8,status_statistics_enabled=$9,config_template_id=$10,
+             override_document=$11,billing_multiplier=$12,revision=$13
+             WHERE id=$1 AND updated_at=$14 AND deleted_at IS NULL",
         )
         .bind(id)
         .bind(settings.operation.as_str())
-        .bind(&transports)
         .bind(settings.enabled)
         .bind(&settings.available_models)
         .bind(settings.request_compression.as_str())
@@ -287,15 +272,14 @@ pub async fn pg_save(
     } else {
         sqlx::query(
             "INSERT INTO channel_capabilities
-             (id,channel_id,operation,transports,enabled,available_models,request_compression,
+             (id,channel_id,operation,enabled,available_models,request_compression,
               test_model,test_pricing_model_id,auto_disable_allowed,status_statistics_enabled,
               config_template_id,override_document,billing_multiplier,revision)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)",
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)",
         )
         .bind(id)
         .bind(input.channel_id)
         .bind(settings.operation.as_str())
-        .bind(&transports)
         .bind(settings.enabled)
         .bind(&settings.available_models)
         .bind(settings.request_compression.as_str())
@@ -353,18 +337,16 @@ pub async fn sqlite_save(
     validate_replacement(&before, id, input, expected)?;
     sqlite_validate_references(transaction, input).await?;
     let revision = Uuid::new_v4();
-    let transports = transport_names(&input.settings.transports);
     let settings = &input.settings;
     let changed = if let Some(expected) = expected {
         sqlx::query(
-            "UPDATE channel_capabilities SET operation=?,transports=?,enabled=?,
+            "UPDATE channel_capabilities SET operation=?,enabled=?,
              available_models=?,request_compression=?,test_model=?,test_pricing_model_id=?,
              auto_disable_allowed=?,status_statistics_enabled=?,config_template_id=?,
              override_document=?,billing_multiplier=?,revision=?,updated_at=ag_now()
              WHERE id=? AND updated_at=? AND deleted_at IS NULL",
         )
         .bind(settings.operation.as_str())
-        .bind(sqlx::types::Json(&transports))
         .bind(settings.enabled)
         .bind(sqlx::types::Json(&settings.available_models))
         .bind(settings.request_compression.as_str())
@@ -384,15 +366,14 @@ pub async fn sqlite_save(
     } else {
         sqlx::query(
             "INSERT INTO channel_capabilities
-             (id,channel_id,operation,transports,enabled,available_models,request_compression,
+             (id,channel_id,operation,enabled,available_models,request_compression,
               test_model,test_pricing_model_id,auto_disable_allowed,status_statistics_enabled,
               config_template_id,override_document,billing_multiplier,revision)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(SqliteUuid(id))
         .bind(SqliteUuid(input.channel_id))
         .bind(settings.operation.as_str())
-        .bind(sqlx::types::Json(&transports))
         .bind(settings.enabled)
         .bind(sqlx::types::Json(&settings.available_models))
         .bind(settings.request_compression.as_str())
@@ -516,7 +497,6 @@ mod tests {
     fn settings() -> CapabilitySettings {
         CapabilitySettings {
             operation: ApiOperation::Responses,
-            transports: vec![CapabilityTransport::HttpSse],
             enabled: true,
             available_models: vec!["wire".into()],
             request_compression: RequestCompression::Default,
@@ -625,7 +605,7 @@ mod tests {
         ));
 
         let mut invalid = input(3);
-        invalid.settings.transports = vec![CapabilityTransport::Multipart];
+        invalid.settings.available_models = vec![String::new()];
         assert!(matches!(
             validate_replacement(&topology, id, &invalid, None),
             Err(RepositoryError::Validation)
@@ -701,7 +681,6 @@ mod tests {
         };
         let mut input = input(3);
         input.settings.operation = ApiOperation::ChatCompletions;
-        input.settings.transports = vec![CapabilityTransport::HttpJson];
         assert!(matches!(
             validate_replacement(&topology, Uuid::from_u128(4), &input, Some(at())),
             Err(RepositoryError::Validation)
@@ -713,11 +692,9 @@ mod tests {
         let mut topology = topology();
         let mut current = capability(4, 3, false);
         current.settings.operation = ApiOperation::ImagesGeneration;
-        current.settings.transports = vec![CapabilityTransport::HttpJson];
         topology.channel_capabilities.push(current);
         let mut replacement = input(3);
         replacement.settings.operation = ApiOperation::ImagesEdit;
-        replacement.settings.transports = vec![CapabilityTransport::Multipart];
         assert!(matches!(
             validate_replacement(&topology, Uuid::from_u128(4), &replacement, Some(at())),
             Err(RepositoryError::Validation)
@@ -730,7 +707,6 @@ mod tests {
         topology.upstream_accesses[0].connector_kind = ConnectorKind::CodexOauth;
         let mut current = capability(4, 3, false);
         current.settings.operation = ApiOperation::ImagesGeneration;
-        current.settings.transports = vec![CapabilityTransport::HttpJson];
         current.settings.enabled = false;
         let mut replacement = input(3);
         replacement.settings = current.settings.clone();

@@ -579,6 +579,11 @@ async fn gateway_harness_with_controls(
     let group_id = Uuid::from_u128(102);
     let channel_id = Uuid::from_u128(103);
     let proxy_id = outbound_proxy.as_ref().map(|proxy| proxy.id);
+    let operation = if controls.channel_supported {
+        ApiOperation::ResponsesWebSocket
+    } else {
+        ApiOperation::Responses
+    };
     let mut records = ControlPlaneRecords {
         api_keys: vec![ApiKeyRecord {
             id: api_key_id,
@@ -606,7 +611,7 @@ async fn gateway_harness_with_controls(
             id: group_id,
             name: "responses".into(),
             api_format: "open_ai_responses".into(),
-            connector_kind: "openai_compatible".into(),
+            connector_kind: "general".into(),
             request_compression: "default".into(),
             sharing_only: false,
             enabled: controls.group_enabled,
@@ -622,12 +627,12 @@ async fn gateway_harness_with_controls(
             api_format: "open_ai_responses".into(),
             logical_channel_id: Uuid::nil(),
             access_id: Uuid::nil(),
-            api_operation: None,
-            connector_kind: String::new(),
-            request_compression: String::new(),
+            api_operation: Some(operation),
+            connector_kind: "general".into(),
+            request_compression: "default".into(),
             access_revision: Uuid::nil(),
             capability_revision: Uuid::nil(),
-            transports: Vec::new(),
+            transports: operation.transports().to_vec(),
             name: "responses".into(),
             base_url: upstream.base_url(),
             enabled: controls.channel_enabled,
@@ -680,7 +685,7 @@ async fn gateway_harness_with_controls(
             id: Uuid::new_v4(),
             client_model: CLIENT_MODEL.into(),
             api_format: "open_ai_responses".into(),
-            api_operation: ApiOperation::Responses,
+            api_operation: operation,
             model_id: Uuid::new_v4(),
             model_enabled: true,
             model_currency: "USD".into(),
@@ -724,7 +729,7 @@ async fn gateway_harness_with_controls(
             id: Uuid::new_v4(),
             name: "other-responses".into(),
             api_format: "open_ai_responses".into(),
-            connector_kind: "openai_compatible".into(),
+            connector_kind: "general".into(),
             request_compression: "default".into(),
             sharing_only: false,
             enabled: true,
@@ -735,9 +740,12 @@ async fn gateway_harness_with_controls(
         channel.enabled = true;
         channel.auto_disabled = false;
         channel.supports_websocket = true;
+        channel.api_operation = Some(ApiOperation::ResponsesWebSocket);
+        channel.transports = ApiOperation::ResponsesWebSocket.transports().to_vec();
         let mut rule = records.model_rules[0].clone();
         rule.id = Uuid::new_v4();
         rule.client_model = "other-ws-model".into();
+        rule.api_operation = ApiOperation::ResponsesWebSocket;
         rule.routing_tiers[0].candidates[0].channel_id = channel.id;
         if controls.other_route_authorized {
             records.api_keys[0].allowed_group_ids.push(group.id);

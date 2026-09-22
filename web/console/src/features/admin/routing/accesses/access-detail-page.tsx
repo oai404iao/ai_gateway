@@ -19,7 +19,7 @@ const timeout = z.string().regex(/^(?:[1-9][0-9]*)?$/)
   .refine((value) => value === "" || Number(value) <= 2147483647);
 const schema = z.object({
   name: z.string().trim().min(1).max(100),
-  connector_kind: z.enum(["openai_compatible", "codex_oauth"]),
+  connector_kind: z.enum(["general", "codex"]),
   base_url: z.string().trim().url(),
   proxy_id: z.string(),
   connect_timeout_ms: timeout,
@@ -29,7 +29,7 @@ const schema = z.object({
 });
 type FormValues = z.infer<typeof schema>;
 const defaults: FormValues = {
-  name: "", connector_kind: "openai_compatible", base_url: "", proxy_id: "__none__",
+  name: "", connector_kind: "general", base_url: "", proxy_id: "__none__",
   connect_timeout_ms: "", response_header_timeout_ms: "", stream_idle_timeout_ms: "",
   enabled: false,
 };
@@ -112,8 +112,8 @@ export function AccessDetailPage() {
                 onValueChange={(value) => form.setValue("connector_kind", value as FormValues["connector_kind"], { shouldDirty: true })}>
                 <SelectTrigger id="access-connector"><SelectValue /></SelectTrigger>
                 <SelectContent><SelectGroup>
-                  <SelectItem value="openai_compatible">OpenAI compatible</SelectItem>
-                  <SelectItem value="codex_oauth">Codex OAuth</SelectItem>
+                  <SelectItem value="general">{t("General")}</SelectItem>
+                  <SelectItem value="codex">Codex</SelectItem>
                 </SelectGroup></SelectContent>
               </Select>
             </Field>

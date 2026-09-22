@@ -39,7 +39,6 @@ export type RoutingGroupInput = S["RoutingGroupInput"];
 export type LogicalChannelView = S["LogicalChannelView"];
 export type LogicalChannelInput = S["LogicalChannelInput"];
 export type CapabilitySettings = S["CapabilitySettings"];
-export type CapabilityTransport = S["CapabilityTransport"];
 export type ChannelCapabilityView = S["ChannelCapabilityView"];
 export type ChannelCapabilityInput = S["ChannelCapabilityInput"];
 export type OperationRuleView = S["OperationRuleView"];

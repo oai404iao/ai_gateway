@@ -44,7 +44,7 @@ import type {
 export const UPSTREAM_ACCESS: UpstreamAccessView = {
   id: "00000000-0000-0000-0000-000000001401",
   name: "Primary access",
-  connector_kind: "openai_compatible",
+  connector_kind: "general",
   base_url: "https://api.example.test",
   proxy_id: null,
   connect_timeout_ms: null,
@@ -379,7 +379,7 @@ export const REQUEST_LOG: RequestLogView = {
   api_key_id: OWN_API_KEY.id,
   request_source: "client",
   api_format: "open_ai_chat_completions",
-  api_operation: "chat_completions",
+  api_operation: "chat_completion",
   request_protocol: "sse",
   client_model: MODEL_RULE.client_model,
   reasoning_effort: "high",
@@ -933,7 +933,6 @@ export const CHANNEL_CAPABILITY: ChannelCapabilityView = {
   channel_id: LOGICAL_CHANNEL.id,
   settings: {
     operation: "responses",
-    transports: ["http_json", "http_sse"],
     enabled: true,
     available_models: ["gpt-5", "gpt-5-mini"],
     request_compression: "default",

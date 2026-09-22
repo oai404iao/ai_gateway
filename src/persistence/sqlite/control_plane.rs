@@ -4470,7 +4470,7 @@ async fn capability_audit(
 ) -> Result<Value, RepositoryError> {
     let row = sqlx::query_scalar::<_, String>(
         "SELECT json_object( \
-             'id',id,'channel_id',channel_id,'operation',operation,'transports',json(transports), \
+             'id',id,'channel_id',channel_id,'operation',operation, \
              'enabled',json(CASE enabled WHEN 1 THEN 'true' ELSE 'false' END), \
              'available_models',json(available_models),'request_compression',request_compression, \
              'test_model',test_model,'test_pricing_model_id',test_pricing_model_id, \

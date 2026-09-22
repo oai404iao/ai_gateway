@@ -329,7 +329,7 @@ fn operation_rule_id(legacy_id: Uuid, format: ApiFormat, operation: ApiOperation
     let mut hash = Sha256::new();
     hash.update(b"ai-gateway:operation-rule:v1:");
     hash.update(legacy_id.as_bytes());
-    hash.update(operation.as_str().as_bytes());
+    hash.update(legacy_settings::operation_name(operation).as_bytes());
     let mut bytes: [u8; 16] = hash.finalize()[..16].try_into().expect("SHA-256 length");
     bytes[6] = (bytes[6] & 0x0f) | 0x80;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
@@ -359,6 +359,8 @@ fn add_grants(
 pub mod activation;
 pub mod history;
 pub mod io;
+pub mod legacy_settings;
+pub mod operation_split;
 pub mod transfer;
 
 #[cfg(test)]

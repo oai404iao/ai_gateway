@@ -25,7 +25,7 @@ pub async fn pg_load_control_plane(
                 FROM api_keys k JOIN users u ON u.id=k.user_id AND u.deleted_at IS NULL
                 JOIN user_groups g ON g.id=u.user_group_id AND g.deleted_at IS NULL
                 WHERE NOT k.is_system AND k.deleted_at IS NULL ORDER BY k.id
-            ) record",
+            ) record", false,
         ).await?,
         models: super::pg_decode(
             connection,
@@ -34,20 +34,20 @@ pub async fn pg_load_control_plane(
                     input_unit_price::text,cached_input_unit_price::text,
                     cache_write_unit_price::text,output_unit_price::text,advanced_billing
                 FROM models WHERE deleted_at IS NULL ORDER BY id
-            ) record",
+            ) record", false,
         ).await?,
         proxies: super::pg_decode(
             connection,
             "SELECT row_to_json(record)::text FROM (
                 SELECT id,name,proxy_url,username,password,no_proxy_hosts,enabled
                 FROM proxies ORDER BY id
-            ) record",
+            ) record", false,
         ).await?,
         templates: super::pg_decode(
             connection,
             "SELECT row_to_json(record)::text FROM (
                 SELECT id,name,description,document,enabled FROM config_templates ORDER BY id
-            ) record",
+            ) record", false,
         ).await?,
     };
     let profiles = super::pg_decode(
@@ -56,7 +56,7 @@ pub async fn pg_load_control_plane(
             SELECT p.id,p.model_id,m.enabled AS model_enabled,m.deleted_at IS NOT NULL AS model_deleted
             FROM model_routing_profiles p JOIN models m ON m.id=p.model_id
             ORDER BY p.id
-        ) record",
+        ) record", false,
     )
     .await?;
     let credentials = crate::persistence::upstream_credentials::pg_records(connection).await?;
@@ -84,7 +84,7 @@ pub async fn sqlite_load_control_plane(
                 'quota_limit_amount',k.quota_limit_amount,'quota_used_amount',k.quota_used_amount)
              FROM api_keys k JOIN users u ON u.id=k.user_id AND u.deleted_at IS NULL
              JOIN user_groups g ON g.id=u.user_group_id AND g.deleted_at IS NULL
-             WHERE k.is_system=0 AND k.deleted_at IS NULL ORDER BY k.id",
+             WHERE k.is_system=0 AND k.deleted_at IS NULL ORDER BY k.id", false,
         ).await?,
         models: super::sqlite_decode(
             connection,
@@ -94,21 +94,21 @@ pub async fn sqlite_load_control_plane(
                 'input_unit_price',input_unit_price,'cached_input_unit_price',cached_input_unit_price,
                 'cache_write_unit_price',cache_write_unit_price,'output_unit_price',output_unit_price,
                 'advanced_billing',json(advanced_billing))
-             FROM models WHERE deleted_at IS NULL ORDER BY id",
+             FROM models WHERE deleted_at IS NULL ORDER BY id", false,
         ).await?,
         proxies: super::sqlite_decode(
             connection,
             "SELECT json_object(
                 'id',id,'name',name,'proxy_url',proxy_url,'username',username,'password',password,
                 'no_proxy_hosts',json(no_proxy_hosts),'enabled',json(CASE enabled WHEN 1 THEN 'true' ELSE 'false' END))
-             FROM proxies ORDER BY id",
+             FROM proxies ORDER BY id", false,
         ).await?,
         templates: super::sqlite_decode(
             connection,
             "SELECT json_object(
                 'id',id,'name',name,'description',description,'document',json(document),
                 'enabled',json(CASE enabled WHEN 1 THEN 'true' ELSE 'false' END))
-             FROM config_templates ORDER BY id",
+             FROM config_templates ORDER BY id", false,
         ).await?,
     };
     let profiles = super::sqlite_decode(
@@ -118,6 +118,7 @@ pub async fn sqlite_load_control_plane(
             'model_enabled',json(CASE m.enabled WHEN 1 THEN 'true' ELSE 'false' END))
          FROM model_routing_profiles p JOIN models m ON m.id=p.model_id
          ORDER BY p.id",
+        false,
     )
     .await?;
     let credentials = crate::persistence::sqlite::credential_records(connection).await?;

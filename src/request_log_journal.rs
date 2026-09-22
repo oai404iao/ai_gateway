@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::domain::{ApiFormat, ApiOperation, RequestLogEvent, RequestProtocol};
 
-pub(crate) const REQUEST_LOG_SCHEMA_VERSION: i16 = 6;
+pub(crate) const REQUEST_LOG_SCHEMA_VERSION: i16 = 7;
 
 #[derive(Clone, Debug)]
 pub(crate) struct EncodedRequestLog {
@@ -27,10 +27,7 @@ impl EncodedRequestLog {
         let event = match self.schema_version {
             2 => decode_v2(&self.payload)?,
             3 => decode_v3(&self.payload)?,
-            4 => serde_json::from_slice::<RequestLogEvent>(&self.payload)
-                .map_err(JournalCodecError::Deserialize)?,
-            5 => serde_json::from_slice::<RequestLogEvent>(&self.payload)
-                .map_err(JournalCodecError::Deserialize)?,
+            4..=6 => decode_legacy_operation(&self.payload)?,
             REQUEST_LOG_SCHEMA_VERSION => serde_json::from_slice::<RequestLogEvent>(&self.payload)
                 .map_err(JournalCodecError::Deserialize)?,
             version => return Err(JournalCodecError::UnsupportedVersion { version }),
@@ -40,6 +37,23 @@ impl EncodedRequestLog {
         }
         Ok(event)
     }
+}
+
+fn decode_legacy_operation(payload: &[u8]) -> Result<RequestLogEvent, JournalCodecError> {
+    let mut value: serde_json::Value =
+        serde_json::from_slice(payload).map_err(JournalCodecError::Deserialize)?;
+    if let (Some(name), Some(protocol)) = (
+        value
+            .get("api_operation")
+            .and_then(serde_json::Value::as_str),
+        value
+            .get("request_protocol")
+            .and_then(serde_json::Value::as_str),
+    ) {
+        let normalized = ApiOperation::normalize_stored_name(name, protocol).to_owned();
+        value["api_operation"] = normalized.into();
+    }
+    serde_json::from_value(value).map_err(JournalCodecError::Deserialize)
 }
 
 fn decode_v2(payload: &[u8]) -> Result<RequestLogEvent, JournalCodecError> {
@@ -88,7 +102,20 @@ fn insert_legacy_operation(
         serde_json::from_value::<ApiFormat>(api_format).map_err(JournalCodecError::Deserialize)?;
     object.insert(
         "api_operation".into(),
-        serde_json::Value::String(ApiOperation::legacy_default(api_format).as_str().into()),
+        serde_json::Value::String(
+            if api_format == ApiFormat::OpenAiResponses
+                && object
+                    .get("request_protocol")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("websocket")
+            {
+                ApiOperation::ResponsesWebSocket
+            } else {
+                ApiOperation::legacy_default(api_format)
+            }
+            .as_str()
+            .into(),
+        ),
     );
     Ok(())
 }
@@ -179,6 +206,42 @@ mod tests {
     }
 
     #[test]
+    fn legacy_responses_websocket_replays_as_a_separate_operation() {
+        for version in [3, 4, 5, 6] {
+            let id = Uuid::new_v4();
+            let mut payload: serde_json::Value = serde_json::from_slice(&usage_payload(
+                id,
+                Some("websocket"),
+                (version != 3).then_some("responses"),
+                true,
+            ))
+            .unwrap();
+            payload["api_format"] = serde_json::json!("open_ai_responses");
+            let event = EncodedRequestLog {
+                request_log_id: id,
+                schema_version: version,
+                payload: serde_json::to_vec(&payload).unwrap(),
+            }
+            .decode()
+            .unwrap();
+            assert_eq!(
+                event.api_operation,
+                crate::domain::ApiOperation::ResponsesWebSocket
+            );
+            let encoded = EncodedRequestLog::encode(&event).unwrap();
+            assert_eq!(encoded.decode().unwrap().api_operation, event.api_operation);
+            let canonical: serde_json::Value = serde_json::from_slice(&encoded.payload).unwrap();
+            assert_eq!(canonical["api_operation"], "responses-ws");
+        }
+        for old in ["chat_completions", "standalone_web_search"] {
+            assert!(
+                serde_json::from_value::<crate::domain::ApiOperation>(serde_json::json!(old))
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn rejects_prior_schema_versions() {
         let error = EncodedRequestLog {
             request_log_id: Uuid::new_v4(),
@@ -261,7 +324,13 @@ mod tests {
         ))
         .unwrap();
         payload["request_source"] = serde_json::json!("mcp");
-        for schema_version in [2, 3, 4, 5, super::REQUEST_LOG_SCHEMA_VERSION] {
+        for schema_version in [2, 3, 4, 5, 6, super::REQUEST_LOG_SCHEMA_VERSION] {
+            payload["api_operation"] = if schema_version == super::REQUEST_LOG_SCHEMA_VERSION {
+                "chat_completion"
+            } else {
+                "chat_completions"
+            }
+            .into();
             let event = EncodedRequestLog {
                 request_log_id: id,
                 schema_version,
@@ -334,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn current_writer_round_trips_peak_pricing_as_v6() {
+    fn current_writer_round_trips_peak_pricing_as_v7() {
         let id = Uuid::new_v4();
         let mut event = EncodedRequestLog {
             request_log_id: id,
@@ -346,7 +415,7 @@ mod tests {
         event.billing.as_mut().unwrap().peak_pricing = true;
         let encoded = EncodedRequestLog::encode(&event).unwrap();
 
-        assert_eq!(encoded.schema_version, 6);
+        assert_eq!(encoded.schema_version, 7);
         assert!(encoded.decode().unwrap().billing.unwrap().peak_pricing);
     }
 }

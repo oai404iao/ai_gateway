@@ -17,6 +17,7 @@ use serde_json::Value;
 use sqlx::PgConnection;
 use uuid::Uuid;
 
+use super::legacy_settings::{connector_name, operation_name};
 use super::transfer::{
     CapabilityCutoverInput, CapabilityCutoverTransfer, CapabilityCutoverTransferError,
 };
@@ -123,7 +124,9 @@ fn decode_rows<T: for<'de> Deserialize<'de>>(
     rows: Vec<String>,
 ) -> Result<Vec<T>, CapabilityCutoverIoError> {
     rows.into_iter()
-        .map(|row| serde_json::from_str(&row).map_err(|_| CapabilityCutoverIoError::InvalidRow))
+        .map(|row| {
+            super::legacy_settings::decode(&row).map_err(|_| CapabilityCutoverIoError::InvalidRow)
+        })
         .collect()
 }
 
@@ -274,7 +277,7 @@ async fn pg_insert(
         sqlx::query(PG_INSERT_ACCESSES)
             .bind(record.id)
             .bind(&record.name)
-            .bind(record.connector_kind.as_str())
+            .bind(connector_name(record.connector_kind))
             .bind(&record.base_url)
             .bind(record.proxy_id)
             .bind(record.connect_timeout_ms)
@@ -313,7 +316,7 @@ async fn pg_insert(
         sqlx::query(PG_INSERT_CAPABILITIES)
             .bind(record.id)
             .bind(record.channel_id)
-            .bind(record.settings.operation.as_str())
+            .bind(operation_name(record.settings.operation))
             .bind(&transports)
             .bind(record.settings.enabled)
             .bind(&record.settings.available_models)
@@ -339,7 +342,7 @@ async fn pg_insert(
         sqlx::query(PG_INSERT_OPERATION_RULES)
             .bind(record.id)
             .bind(record.model_routing_profile_id)
-            .bind(record.operation.as_str())
+            .bind(operation_name(record.operation))
             .bind(record.enabled)
             .bind(record.created_at)
             .bind(record.updated_at)
@@ -350,7 +353,7 @@ async fn pg_insert(
         sqlx::query(PG_INSERT_TIERS)
             .bind(record.id)
             .bind(record.rule_id)
-            .bind(record.operation.as_str())
+            .bind(operation_name(record.operation))
             .bind(record.priority)
             .bind(&record.strategy)
             .execute(&mut *connection)
@@ -359,7 +362,7 @@ async fn pg_insert(
     for record in &output.topology.operation_candidates {
         sqlx::query(PG_INSERT_CANDIDATES)
             .bind(record.tier_id)
-            .bind(record.operation.as_str())
+            .bind(operation_name(record.operation))
             .bind(record.capability_id)
             .bind(&record.upstream_model)
             .bind(record.weight)
@@ -804,7 +807,7 @@ async fn sqlite_insert(
         sqlx::query(SQLITE_INSERT_ACCESSES)
             .bind(SqliteUuid(record.id))
             .bind(&record.name)
-            .bind(record.connector_kind.as_str())
+            .bind(connector_name(record.connector_kind))
             .bind(&record.base_url)
             .bind(record.proxy_id.map(SqliteUuid))
             .bind(record.connect_timeout_ms)
@@ -843,7 +846,7 @@ async fn sqlite_insert(
         sqlx::query(SQLITE_INSERT_CAPABILITIES)
             .bind(SqliteUuid(record.id))
             .bind(SqliteUuid(record.channel_id))
-            .bind(record.settings.operation.as_str())
+            .bind(operation_name(record.settings.operation))
             .bind(json_array(&transports)?)
             .bind(record.settings.enabled)
             .bind(json_array(&record.settings.available_models)?)
@@ -869,7 +872,7 @@ async fn sqlite_insert(
         sqlx::query(SQLITE_INSERT_OPERATION_RULES)
             .bind(SqliteUuid(record.id))
             .bind(SqliteUuid(record.model_routing_profile_id))
-            .bind(record.operation.as_str())
+            .bind(operation_name(record.operation))
             .bind(record.enabled)
             .bind(SqliteTimestamp(record.created_at))
             .bind(SqliteTimestamp(record.updated_at))
@@ -880,7 +883,7 @@ async fn sqlite_insert(
         sqlx::query(SQLITE_INSERT_TIERS)
             .bind(SqliteUuid(record.id))
             .bind(SqliteUuid(record.rule_id))
-            .bind(record.operation.as_str())
+            .bind(operation_name(record.operation))
             .bind(record.priority)
             .bind(&record.strategy)
             .execute(&mut *connection)
@@ -889,7 +892,7 @@ async fn sqlite_insert(
     for record in &output.topology.operation_candidates {
         sqlx::query(SQLITE_INSERT_CANDIDATES)
             .bind(SqliteUuid(record.tier_id))
-            .bind(record.operation.as_str())
+            .bind(operation_name(record.operation))
             .bind(SqliteUuid(record.capability_id))
             .bind(&record.upstream_model)
             .bind(record.weight)

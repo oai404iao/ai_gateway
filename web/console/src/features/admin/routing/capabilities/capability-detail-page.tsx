@@ -12,15 +12,12 @@ import { ChannelModelPickerDialog } from "@/features/admin/routing/channels/chan
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
   Field,
   FieldDescription,
   FieldError,
   FieldGroup,
   FieldLabel,
-  FieldLegend,
-  FieldSet,
 } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -48,15 +45,12 @@ import {
 import { useI18n } from "@/app/i18n";
 import {
   API_OPERATIONS,
-  CAPABILITY_TRANSPORTS,
   REQUEST_COMPRESSIONS,
   apiOperationLabel,
-  capabilityTransportLabel,
 } from "@/lib/permissions";
 import type {
   ApiOperation,
   CapabilitySettings,
-  CapabilityTransport,
   ChannelCapabilityInput,
   RequestCompression,
 } from "@/api/types";
@@ -76,15 +70,13 @@ function isJson(value: string): boolean {
 const schema = z.object({
   channel_id: z.string().regex(UUID, "invalid"),
   operation: z.enum([
-    "chat_completions",
+    "chat_completion",
     "responses",
-    "standalone_web_search",
+    "responses-ws",
+    "web_search",
     "images_generation",
     "images_edit",
   ]),
-  transports: z
-    .array(z.enum(["http_json", "http_sse", "websocket", "multipart"]))
-    .min(1),
   enabled: z.boolean(),
   available_models: z.array(z.string()),
   request_compression: z.enum(["default", "zstd"]),
@@ -105,7 +97,6 @@ type FormValues = z.infer<typeof schema>;
 const defaults: FormValues = {
   channel_id: "",
   operation: "responses",
-  transports: ["http_json"],
   enabled: true,
   available_models: [],
   request_compression: "default",
@@ -158,7 +149,7 @@ export function CapabilityDetailPage() {
     }
     try {
       await discover.mutateAsync({
-        api_format: values.operation === "chat_completions" ? "open_ai_chat_completions"
+        api_format: values.operation === "chat_completion" ? "open_ai_chat_completions"
           : values.operation.startsWith("images_") ? "open_ai_images" : "open_ai_responses",
         base_url: selectedAccess.base_url,
         credential_id: selectedChannel.credential_id,
@@ -181,7 +172,6 @@ export function CapabilityDetailPage() {
       form.reset({
         channel_id: capability.channel_id,
         operation: settings.operation,
-        transports: settings.transports,
         enabled: settings.enabled,
         available_models: settings.available_models,
         request_compression: settings.request_compression,
@@ -199,7 +189,6 @@ export function CapabilityDetailPage() {
   const submit = form.handleSubmit(async (values) => {
     const settings: CapabilitySettings = {
       operation: values.operation,
-      transports: values.transports,
       enabled: values.enabled,
       available_models: values.available_models.map((model) => model.trim()).filter(Boolean),
       request_compression: values.request_compression,
@@ -259,20 +248,12 @@ export function CapabilityDetailPage() {
     }
   };
 
-  const transports = form.watch("transports");
-  const toggleTransport = (transport: CapabilityTransport, checked: boolean) => {
-    const next = checked
-      ? [...transports, transport]
-      : transports.filter((value) => value !== transport);
-    form.setValue("transports", next, { shouldDirty: true });
-  };
-
   return (
     <>
       <AdminDetailShell
         title={isNew ? t("New capability") : t("Channel capability")}
         description={t(
-          "Only connector-implemented operation/transport combinations are accepted. Saving never grants API key access.",
+          "Transports are fixed by the operation. Saving never grants API key access.",
         )}
         backPath={`/admin/routing/channels?channel=${form.watch("channel_id")}`}
         isLoading={!isNew && query.isLoading}
@@ -354,31 +335,6 @@ export function CapabilityDetailPage() {
                       </SelectContent>
                     </Select>
                   </Field>
-                  <FieldSet data-invalid={Boolean(form.formState.errors.transports)}>
-                    <FieldLegend>{t("Transports")}</FieldLegend>
-                    <FieldDescription>
-                      {t("Only combinations implemented by the channel connector are accepted.")}
-                    </FieldDescription>
-                    <div className="flex flex-wrap gap-4">
-                      {CAPABILITY_TRANSPORTS.map((transport) => (
-                        <label
-                          key={transport}
-                          className="flex items-center gap-2 text-sm"
-                          htmlFor={`capability-transport-${transport}`}
-                        >
-                          <Checkbox
-                            id={`capability-transport-${transport}`}
-                            checked={transports.includes(transport)}
-                            onCheckedChange={(checked) =>
-                              toggleTransport(transport, checked === true)
-                            }
-                          />
-                          {capabilityTransportLabel(transport)}
-                        </label>
-                      ))}
-                    </div>
-                    <FieldError errors={[form.formState.errors.transports]} />
-                  </FieldSet>
                   <StringListField
                     id="capability-models"
                     label={t("Available models")}
@@ -388,7 +344,7 @@ export function CapabilityDetailPage() {
                       form.setValue("available_models", value, { shouldDirty: true })
                     }
                   />
-                  {selectedAccess?.connector_kind === "openai_compatible" && (
+                  {selectedAccess?.connector_kind === "general" && (
                     <Button type="button" variant="outline" disabled={discover.isPending}
                       onClick={() => void discoverModels()}>
                       {t("Fetch models")}

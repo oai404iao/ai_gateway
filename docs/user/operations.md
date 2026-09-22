@@ -227,8 +227,8 @@ JSON/data URL 形式的公开客户端 edit 请求。
 ### 模型规则路由层级
 
 `models.source_model_id` 是客户端模型身份，最多绑定一个 routing profile。每个 profile
-按操作分别配置 `chat_completions`、`responses`、`standalone_web_search`、
-`images_generation`、`images_edit` 规则；不会跨格式转换、降级或借用另一操作的授权。
+按操作分别配置 `chat_completion`、`responses`、`responses-ws`、`web_search`、
+`images_edit`、`images_generation` 规则；不会跨格式转换、降级或借用另一操作的授权。
 停用规则可以是空草稿，启用规则必须包含非空 tier。
 
 每个 tier 保存 `capability_id + upstream_model + weight` 显式候选。较低 priority
@@ -238,8 +238,12 @@ JSON/data URL 形式的公开客户端 edit 请求。
 后续移除目录模型、禁用组/接入/凭证/渠道/能力会影响可用性，但不会替换候选。
 
 管理组不再拥有格式或连接器；接入拥有 Base URL、连接器、代理和超时；逻辑渠道绑定管理组、
-接入与 nullable 凭证；能力拥有操作、传输、模型目录、健康、探测、压缩、变换、倍率和统计开关。
+接入与 nullable 凭证；能力拥有操作、模型目录、健康、探测、压缩、变换、倍率和统计开关。
 能力的所属渠道与操作创建后不可修改。
+接入连接器枚举为 `general`（通用）或 `codex`，与凭证类型 `codex_oauth` 不同。
+传输由操作固定：Chat Completions/Responses HTTP 支持 JSON 与 SSE，`responses-ws`
+只使用 WebSocket，搜索与图片生成使用非流式 JSON，图片编辑使用 multipart。
+Console 中从“模型配置”选择客户端模型，再在右侧按操作添加路由规则。
 
 Key/Policy 仍选择组或逻辑渠道，不提供能力选择器。新增选择在保存时展开为固定能力授权，
 保留的选择不重新展开；以后增加能力或组成员不会自动扩权。删除后重新选择是显式授权变更。
@@ -412,12 +416,12 @@ WebSocket Upgrade 在 HTTP 握手阶段验证 Gateway API Key 和 Responses `pro
 1. 管理员在 `/console/v1/system/settings` 中设置 `websocket.enabled = true`；
 2. 用户在个人设置页 `/account/settings` 中开启 WebSocket，对应
    `GET/PUT /console/v1/me/settings` 的 `websocket_enabled`；
-3. 管理员在 Responses 能力的 `transports` 中加入 `websocket`；Codex OAuth
-   Responses 能力在创建时默认包含该传输，之后可在能力页收窄。
+3. 管理员配置独立的 `responses-ws` 能力和同操作路由，并显式授权给 API Key；
+   HTTP `responses` 能力、路由和授权不能替代 WS 配置。
 
-升级保留既有传输授权，不自动扩大普通能力的传输范围。新建普通能力需显式选择 WebSocket。
-Codex OAuth Responses 能力默认声明 WebSocket，但 Images 能力永不声明；
-系统与用户开关仍默认关闭。
+升级仅拆出旧配置已有的 WS 能力及候选，固定授权按原范围迁移，不自动授予 WS。
+新建 Codex 凭证提供独立 Responses HTTP 与 WS 能力，但仍需配置路由及授权；
+系统与用户开关仍默认关闭。没有可配置的 `transports` 字段。
 Chat Completions 渠道不能声明 WebSocket 支持。系统、用户未开启，或没有可用且声明支持的
 Responses WS 路由时，HTTP Upgrade 统一返回 `426 websocket_unavailable`，提示客户端改用
 `POST /v1/responses`，且不向客户端暴露系统开关、渠道或 Connector 凭证的内部状态：

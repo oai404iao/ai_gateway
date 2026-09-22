@@ -2180,7 +2180,7 @@ fn validate_group(record: &ChannelGroupRecord) -> Result<(), ConfigError> {
             "channel group has incomplete protocol metadata".into(),
         ));
     }
-    if record.sharing_only && record.connector_kind != "codex_oauth" {
+    if record.sharing_only && record.connector_kind != "codex" {
         return Err(ConfigError::Compile(
             "sharing-only groups require Codex OAuth".into(),
         ));
@@ -2288,7 +2288,6 @@ fn validate_channel(
     if record.api_operation.is_some() {
         crate::domain::CapabilitySettings {
             operation,
-            transports: record.transports.clone(),
             enabled: record.enabled,
             available_models: record.available_models.clone(),
             request_compression: parse_request_compression(&record.request_compression)?,
@@ -2298,10 +2297,8 @@ fn validate_channel(
         }
         .validate(connector_kind)
         .map_err(|error| ConfigError::Compile(error.to_string()))?;
-        if record.supports_websocket
-            != record
-                .transports
-                .contains(&crate::domain::CapabilityTransport::Websocket)
+        if record.transports != operation.transports()
+            || record.supports_websocket != (operation == ApiOperation::ResponsesWebSocket)
             || record.supports_standalone_web_search
                 != (operation == ApiOperation::StandaloneWebSearch)
         {
@@ -2313,6 +2310,9 @@ fn validate_channel(
     let codex_protocol_valid = match operation {
         ApiOperation::ChatCompletions => false,
         ApiOperation::Responses => record.api_operation.is_some() || record.supports_websocket,
+        ApiOperation::ResponsesWebSocket => {
+            record.supports_websocket && !record.supports_standalone_web_search
+        }
         ApiOperation::StandaloneWebSearch => !record.supports_websocket,
         ApiOperation::ImagesGeneration | ApiOperation::ImagesEdit => {
             !record.supports_websocket && !record.supports_standalone_web_search
@@ -2870,7 +2870,7 @@ mod tests {
             id,
             name: id.to_string(),
             api_format: "open_ai_chat_completions".into(),
-            connector_kind: "openai_compatible".into(),
+            connector_kind: "general".into(),
             request_compression: "default".into(),
             sharing_only: false,
             enabled: true,

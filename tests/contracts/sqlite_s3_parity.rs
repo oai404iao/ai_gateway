@@ -71,7 +71,7 @@ impl Backend {
                 .install_schema()
                 .await
                 .expect("infrastructure: SQLite schema must install"),
-            5
+            6
         );
         Self::Sqlite {
             directory,
@@ -433,7 +433,7 @@ async fn world(repositories: &Repositories) -> World {
             input: serde_json::from_value(json!({
                 "channel_id": channel,
                 "settings": {
-                    "operation": "chat_completions", "transports": ["http_json","http_sse"],
+                    "operation": "chat_completion",
                     "enabled": true, "available_models": ["parity-model"],
                     "request_compression": "default", "test_model": null,
                     "test_pricing_model_id": null, "auto_disable_allowed": false
@@ -5194,7 +5194,7 @@ async fn missing_and_soft_deleted_resource_contract(repositories: Repositories) 
             input: serde_json::from_value(json!({
                 "channel_id": probe_channel.id,
                 "settings": {
-                    "operation": "chat_completions", "transports": ["http_json"], "enabled": true,
+                    "operation": "chat_completion", "enabled": true,
                     "available_models": ["probe-priced"], "request_compression": "default",
                     "test_model": "probe-priced", "test_pricing_model_id": priced, "auto_disable_allowed": false
                 },
@@ -5315,7 +5315,7 @@ async fn capability_validation_contract(repositories: Repositories) {
     let response_input = json!({
         "channel_id": channel.id,
         "settings": {
-            "operation": "responses", "transports": ["http_json","websocket"], "enabled": true,
+            "operation": "responses", "enabled": true,
             "available_models": ["probe"], "request_compression": "zstd",
             "test_model": null, "test_pricing_model_id": null, "auto_disable_allowed": false
         },
@@ -5340,12 +5340,12 @@ async fn capability_validation_contract(repositories: Repositories) {
     .await
     .id;
     let mut chat = response_input;
-    chat["settings"]["operation"] = json!("chat_completions");
+    chat["settings"]["operation"] = json!("chat_completion");
     chat["settings"]["request_compression"] = json!("default");
-    for fault in ["websocket", "probe_catalogue", "negative_multiplier"] {
+    for fault in ["compression", "probe_catalogue", "negative_multiplier"] {
         let mut invalid = chat.clone();
-        if fault != "websocket" {
-            invalid["settings"]["transports"] = json!(["http_json"]);
+        if fault == "compression" {
+            invalid["settings"]["request_compression"] = json!("zstd");
         }
         if fault == "probe_catalogue" {
             invalid["settings"]["test_model"] = json!("probe-priced");

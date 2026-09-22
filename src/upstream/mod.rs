@@ -802,7 +802,7 @@ mod tests {
                     id: group_id,
                     name: "group".into(),
                     api_format: api_format.into(),
-                    connector_kind: "openai_compatible".into(),
+                    connector_kind: "general".into(),
                     request_compression: "default".into(),
                     sharing_only: false,
                     enabled: true,

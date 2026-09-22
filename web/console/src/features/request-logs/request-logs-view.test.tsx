@@ -366,7 +366,7 @@ describe("RequestLogsView", () => {
       ...REQUEST_LOG,
       id: "11111111-2222-4333-8444-666666666666",
       api_format: "open_ai_responses",
-      api_operation: "standalone_web_search",
+      api_operation: "web_search",
       request_protocol: "non_stream",
       client_model: "search-model",
       streamed: false,

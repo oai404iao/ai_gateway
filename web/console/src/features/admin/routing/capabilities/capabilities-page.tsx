@@ -4,7 +4,7 @@ import { AdminListPage } from "@/features/admin/components/admin-list-page";
 import { useChannelCapabilities, useLogicalChannels } from "@/features/admin/api";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { useI18n } from "@/app/i18n";
-import { apiOperationLabel, capabilityTransportLabel } from "@/lib/permissions";
+import { apiOperationLabel } from "@/lib/permissions";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { CapabilityBatchDialog } from "./capability-batch-dialog";
@@ -27,7 +27,7 @@ export function CapabilitiesPage({ channelId }: { channelId?: string } = {}) {
     <AdminListPage
       title={t("Channel capabilities")}
       description={channelId ? channelNames.get(channelId) ?? channelId : t(
-        "One operation, transport set, and model catalogue per logical channel.",
+        "One operation and model catalogue per logical channel.",
       )}
       query={{
         data: visibleCapabilities,
@@ -78,12 +78,6 @@ export function CapabilitiesPage({ channelId }: { channelId?: string } = {}) {
           key: "operation",
           header: t("Operation"),
           render: (capability) => apiOperationLabel(capability.settings.operation),
-        },
-        {
-          key: "transports",
-          header: t("Transports"),
-          render: (capability) =>
-            capability.settings.transports.map(capabilityTransportLabel).join(", "),
         },
         {
           key: "models",

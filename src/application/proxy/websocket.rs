@@ -408,11 +408,32 @@ impl ResponsesWebSocketSession {
         } = match route {
             SelectionResult::Selected(route) => route,
             SelectionResult::UnknownOrInaccessibleModel => {
+                if let Some(rule) = snapshot
+                    .operation_rule(ApiOperation::Responses, &parsed.model)
+                    .filter(|rule| api_key.permits_route(rule.route_slot()))
+                {
+                    let error = ProxyError::websocket_unavailable();
+                    self.proxy.record_no_healthy_channel(
+                        &api_key,
+                        RequestLogSource::Client,
+                        OPENAI_RESPONSES_FORMAT,
+                        ApiOperation::ResponsesWebSocket,
+                        &parsed.model,
+                        &parsed.log_metadata,
+                        RequestProtocol::WebSocket,
+                        &rule,
+                        started_wall_at,
+                        started_at,
+                        &error,
+                    );
+                    send_proxy_error(client, error).await;
+                    return SessionAction::Close;
+                }
                 self.proxy.record_rejected(
                     &api_key,
                     RequestLogSource::Client,
                     OPENAI_RESPONSES_FORMAT,
-                    ApiOperation::Responses,
+                    ApiOperation::ResponsesWebSocket,
                     &parsed.model,
                     &parsed.log_metadata,
                     RequestProtocol::WebSocket,
@@ -448,7 +469,7 @@ impl ResponsesWebSocketSession {
                     &api_key,
                     RequestLogSource::Client,
                     OPENAI_RESPONSES_FORMAT,
-                    ApiOperation::Responses,
+                    ApiOperation::ResponsesWebSocket,
                     &parsed.model,
                     &parsed.log_metadata,
                     RequestProtocol::WebSocket,
@@ -480,7 +501,7 @@ impl ResponsesWebSocketSession {
             &parsed.log_metadata,
             RequestProtocol::WebSocket,
             OPENAI_RESPONSES_FORMAT,
-            ApiOperation::Responses,
+            ApiOperation::ResponsesWebSocket,
             &rule,
             &channel,
             &upstream_model,
@@ -536,7 +557,7 @@ impl ResponsesWebSocketSession {
                     .is_some_and(crate::routing::SessionAffinitySelection::cache_hit);
             let connector = match self.proxy.connectors.prepare(
                 &current_channel,
-                ApiOperation::Responses,
+                ApiOperation::ResponsesWebSocket,
                 connector_affinity_hit,
                 &self.request_headers,
                 Some(connector_seed),

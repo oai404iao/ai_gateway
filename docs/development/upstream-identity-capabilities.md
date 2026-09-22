@@ -4,6 +4,8 @@
 > 在同一 PR 交付；启动迁移、固定能力授权、Codex 生命周期与 Console 已接通，
 > 旧管理 CRUD、DTO 和配置表已退役。以下阶段章节保留设计演进，当前行为以联合切换章节为准。
 > 升级要求停机和完整备份；协议转换不在本次范围。
+>
+> 六操作细化已接入运行时、Console 及双后端有序迁移，当前契约见本文末尾。
 
 ## 范围与决策
 
@@ -359,3 +361,54 @@ E2E 和已授权真实上游 smoke 全部通过。纯规划或空库测试通过
 迁移需要维护窗口，停止旧二进制写入，先执行现有双后端备份流程；SQLite 必须使用
 成对数据库/spool 备份。回滚采用完整备份与匹配二进制，不把新数据库直接交给旧版本。
 发布前分别演练升级与恢复，不能只用空数据库测试代替存量迁移验证。
+
+## 后续：六操作细化
+
+> 状态：当前。六操作运行时、Console 契约、工作区和双后端迁移已实现。
+
+已确认目标：
+
+- 操作值为 `chat_completion`、`responses`、`responses-ws`、`web_search`、
+  `images_edit`、`images_generation`。
+- 删除可配置的 `transports`；HTTP 操作根据请求使用 JSON/SSE。
+  管理员已明确同意旧 HTTP JSON-only/SSE-only 能力统一支持两者；
+  这不授权自动开启旧配置没有的 WebSocket 能力。
+- 连接器值改为 `general`、`codex`；这是连接器改名，不更改凭证子类型
+  `codex_oauth`、OAuth 材料或拼车身份。
+
+`src/persistence/capability_cutover/operation_split.rs` 生成确定性映射，由 PostgreSQL 0066
+及 SQLite 0006 在启动迁移事务中应用：
+
+1. HTTP-only 或 WS-only 能力保留原 UUID；两者都有时原 UUID 留给 HTTP，WS 获得独立 UUID。
+2. 路由按实际候选能力拆分，复制模型别名、权重、优先级和策略；某操作没有候选的层不迁移。
+   只投影一次的规则/层保留原 UUID，双投影时原 UUID 留给 HTTP。停用空草稿不自动新增 WS。
+3. Key/Policy 只复制已有固定能力授权。直接能力来源跟随新能力 ID；
+   组/逻辑渠道来源不变，包括渠道移组后已不生效的旧组来源，不按当前组织关系重新授权。
+4. 规划包含停用行及墓碑；应用时按 `source_id` 原样复制开关、健康、变换、金额倍率和时间戳。
+   WS 投影必须清空 HTTP 压缩与探测配置；原有注册表历史不得重写。
+5. 拒绝重复身份、非法操作/传输组合、跨操作候选、无目标授权及派生 UUID 碰撞。
+
+实现边界：
+
+- PostgreSQL 在原迁移事务中应用规划并恢复生命周期触发器；墓碑保留的已删除价格模型
+  引用不作为新赋值验证。SQLite 使用独占 writer 在 BEGIN 前关闭 FK，事务内重建表，
+  恢复索引、触发器及视图并检查外键；失败整体回滚。没有修改已发布迁移或新增提交屏障。
+- 历史 0065/SQLite 0005 使用冻结 DTO；完整运行时验证延迟到 0066/0006 完成。
+- HTTP 与 WS 独立选路、授权、健康及日志操作；内部传输掩码由操作派生，不是持久配置。
+  探测只支持通用连接器的 Chat Completions/Responses HTTP；WS 不继承压缩与探测。
+- 新 spool 使用 schema 7；旧 schema 2–6 解码归一化旧操作名，按请求协议识别 WS。
+  历史日志、计量事实和结算收据不改写；查询和重复重放兼容旧名称。搜索的金额分类同时识别
+  新旧名称，保持既有金额状态及幂等结算。
+- Console 使用“上游接入 / 上游凭证 / 渠道配置 / 模型配置”工作区；渠道按组组织，
+  模型右侧按操作编辑路由，价格同步保留。OpenAPI 与生成类型同步，不接受旧连接器值、
+  旧操作名或已删除的 `transports` 写入字段。
+- 双后端存量迁移覆盖 HTTP-only、WS-only、混合能力、路由层及固定授权，验证元数据保持、
+  无 WS 自动扩权、历史不变和回滚；真实 PostgreSQL/SQLite 浏览器/Codex/Pi 系统套件及
+  已授权真实上游 smoke（含六操作）通过。性能压测未运行。
+
+本次本地验收：默认与 SQLite 全 workspace 测试及 Clippy、60 项 Console API 契约、
+199 项组件测试（`--maxWorkers=2`）、35 项 Playwright、typecheck/lint/build、嵌入式 UI
+测试和 8 项真实上游 smoke 通过。默认前端并发与 Rust 同跑曾超时，限制 worker 后全量通过；
+未放宽测试断言或超时。双后端系统报告分别位于机器本地
+`target/system-e2e/106dd674e2c9864c/report.json`（SQLite）及
+`target/system-e2e/29ba8e072e78dba1/report.json`（PostgreSQL）。

@@ -30,7 +30,7 @@ function handlers() {
     http.get("/console/v1/codex-sharing-groups/:id/usage", () =>
       HttpResponse.json({ seats: [{ seat_number: 1, user_id: SHARING_GROUP.seats[0], usage: SHARING_USAGE }] })),
     http.get("/console/v1/routing/accesses", () => HttpResponse.json([{
-      ...UPSTREAM_ACCESS, connector_kind: "codex_oauth",
+      ...UPSTREAM_ACCESS, connector_kind: "codex",
     }])),
     http.get("/console/v1/routing/logical-channels", () => HttpResponse.json([{
       ...CHANNEL, credential_id: CHANNEL.id,

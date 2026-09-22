@@ -27,7 +27,7 @@ use super::{
     ChannelCapabilityRecord, GrantOriginKind, LogicalChannelRecord, RoutingGroupRecord,
     UpstreamAccessRecord, UpstreamTopologyRecords,
 };
-use crate::domain::{ApiOperation, CapabilityTransport, ConnectorKind, CredentialTarget};
+use crate::domain::{ApiOperation, ConnectorKind, CredentialTarget};
 
 /// Minimal identity of one priced model's routing profile. The adapter needs
 /// only the profile id, the owned model id, and the model enablement flag; the
@@ -488,13 +488,11 @@ fn build_channels(live: &[LiveCapability<'_>]) -> Vec<ChannelRecord> {
                 request_compression: settings.request_compression.as_str().to_owned(),
                 access_revision: capability.access.revision,
                 capability_revision: capability.capability.revision,
-                transports: settings.transports.clone(),
+                transports: settings.operation.transports().to_vec(),
                 name: capability.logical.name.clone(),
                 base_url: capability.access.base_url.clone(),
                 enabled: capability.enabled && settings.enabled,
-                supports_websocket: settings
-                    .transports
-                    .contains(&CapabilityTransport::Websocket),
+                supports_websocket: settings.operation == ApiOperation::ResponsesWebSocket,
                 supports_standalone_web_search: settings.operation
                     == ApiOperation::StandaloneWebSearch,
                 auto_disabled: capability.capability.auto_disabled,
@@ -721,6 +719,7 @@ fn validate_policy_grants(
 
 #[cfg(test)]
 mod tests {
+    use crate::domain::CapabilityTransport;
     use chrono::{DateTime, Utc};
     use rust_decimal::Decimal;
     use serde_json::json;
@@ -790,8 +789,13 @@ mod tests {
         transports: Vec<CapabilityTransport>,
     ) -> crate::domain::CapabilitySettings {
         crate::domain::CapabilitySettings {
-            operation,
-            transports,
+            operation: if operation == ApiOperation::Responses
+                && transports == [CapabilityTransport::Websocket]
+            {
+                ApiOperation::ResponsesWebSocket
+            } else {
+                operation
+            },
             enabled: true,
             available_models: vec!["wire-model".into()],
             request_compression: crate::domain::RequestCompression::Default,
@@ -966,11 +970,11 @@ mod tests {
         assert_eq!(responses.logical_channel_id, Uuid::from_u128(3));
         assert_eq!(responses.access_id, Uuid::from_u128(2));
         assert_eq!(responses.api_operation, Some(ApiOperation::Responses));
-        assert_eq!(responses.connector_kind, "openai_compatible");
+        assert_eq!(responses.connector_kind, "general");
         assert_eq!(responses.request_compression, "default");
         assert_eq!(responses.access_revision, Uuid::from_u128(502));
         assert_eq!(responses.capability_revision, Uuid::from_u128(1000));
-        assert!(responses.supports_websocket);
+        assert!(!responses.supports_websocket);
         assert!(!responses.supports_standalone_web_search);
         assert_eq!(responses.channel_group_id, Uuid::from_u128(1));
 
@@ -1306,8 +1310,9 @@ mod tests {
     fn disabled_and_unrouted_capabilities_are_still_validated() {
         let mut invalid = settings(
             ApiOperation::ChatCompletions,
-            vec![CapabilityTransport::Websocket],
+            vec![CapabilityTransport::HttpJson],
         );
+        invalid.request_compression = crate::domain::RequestCompression::Zstd;
         invalid.enabled = false;
         let records = topology(vec![capability(100, 3, invalid)]);
         assert_eq!(
