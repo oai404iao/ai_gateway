@@ -21,19 +21,19 @@ describe("configuration navigation", () => {
   it("moves between the focused model configuration lists", async () => {
     seedAuthenticatedSession();
     const user = userEvent.setup();
-    renderAppAt("/admin/models");
+    renderAppAt("/admin/model-setup");
 
     const navigation = await screen.findByRole("navigation", {
       name: "Model routing configuration",
     });
     await user.click(
-      screen.getByRole("button", { name: "Operation rules" }),
+      screen.getByRole("button", { name: "Model configuration" }),
     );
 
-    expect(window.location.pathname).toBe("/admin/routing/operation-rules");
-    expect(navigation).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/admin/models");
     expect(
-      await screen.findByRole("heading", { name: "Operation rules" }),
+      await screen.findByRole("heading", { name: "Model configuration" }),
     ).toBeInTheDocument();
+    expect(navigation).not.toBeInTheDocument();
   });
 });

@@ -14,20 +14,20 @@ const destinations: Array<{
 }> = [
   {
     lens: "routes",
-    path: "/admin/routing/operation-rules",
-    label: "Operation rules",
+    path: "/admin/models",
+    label: "Model configuration",
     icon: Route,
   },
   {
     lens: "supply",
-    path: "/admin/routing/logical-channels",
-    label: "Logical channels",
+    path: "/admin/routing/channels",
+    label: "Channel configuration",
     icon: Boxes,
   },
   {
     lens: "models",
-    path: "/admin/models",
-    label: "Pricing models",
+    path: "/admin/models?view=prices",
+    label: "Price sync",
     icon: Calculator,
   },
 ];

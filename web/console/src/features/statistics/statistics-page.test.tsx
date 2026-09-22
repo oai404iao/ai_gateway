@@ -68,7 +68,7 @@ describe("StatisticsPage", () => {
     expect(
       screen.getByLabelText("8 requests on Jul 25, 2026"),
     ).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Price sync" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Model configuration" })).toHaveAttribute("href", "/admin/models");
     expect(screen.getByRole("link", { name: "System load" })).toHaveAttribute(
       "href",
       "/admin/system-load",
@@ -176,7 +176,7 @@ describe("StatisticsPage", () => {
       "href",
       "/leaderboard",
     );
-    expect(screen.queryByRole("link", { name: "Price sync" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Model configuration" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "System load" })).not.toBeInTheDocument();
     expect(
       screen.queryByRole("link", { name: "Cost statistics" }),

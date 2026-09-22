@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router";
+import { useNavigate, useParams, useSearchParams } from "react-router";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -122,6 +122,7 @@ export function CapabilityDetailPage() {
   const { id = "" } = useParams();
   const isNew = id === "new";
   const navigate = useNavigate();
+  const [params] = useSearchParams();
   const { t } = useI18n();
   const query = useChannelCapability(id);
   const channels = useLogicalChannels();
@@ -135,7 +136,10 @@ export function CapabilityDetailPage() {
   const recover = useRecoverCapability(id);
   const [confirmingRecovery, setConfirmingRecovery] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
-  const form = useForm<FormValues>({ resolver: zodResolver(schema), defaultValues: defaults });
+  const form = useForm<FormValues>({
+    resolver: zodResolver(schema),
+    defaultValues: { ...defaults, channel_id: params.get("channel") ?? defaults.channel_id },
+  });
   const capability = query.data?.data;
   const selectedChannel = channels.data?.find((channel) => channel.id === form.watch("channel_id"));
   const selectedAccess = accesses.data?.find((access) => access.id === selectedChannel?.access_id);
@@ -234,7 +238,7 @@ export function CapabilityDetailPage() {
     try {
       await remove.mutateAsync({ ifMatch: query.etag });
       toast.success(t("Capability deleted"));
-      navigate("/admin/routing/capabilities");
+      navigate(`/admin/routing/channels?channel=${form.getValues("channel_id")}`);
     } catch (error) {
       toast.error(t(controlPlaneMutationErrorMessage(error, "Could not delete capability.")));
     }
@@ -270,7 +274,7 @@ export function CapabilityDetailPage() {
         description={t(
           "Only connector-implemented operation/transport combinations are accepted. Saving never grants API key access.",
         )}
-        backPath="/admin/routing/capabilities"
+        backPath={`/admin/routing/channels?channel=${form.watch("channel_id")}`}
         isLoading={!isNew && query.isLoading}
         error={query.error}
         hasData={isNew || Boolean(capability)}

@@ -77,7 +77,7 @@ export function GroupDetailPage() {
     try {
       await remove.mutateAsync({ ifMatch: query.etag });
       toast.success(t("Group deleted"));
-      navigate("/admin/routing/groups");
+      navigate("/admin/routing/channels?view=groups");
     } catch (error) {
       toast.error(t(controlPlaneMutationErrorMessage(error, "Could not delete routing group.")));
     }
@@ -90,7 +90,7 @@ export function GroupDetailPage() {
         description={t(
           "Groups organize logical channels. Deleting a group requires every member channel to be removed first.",
         )}
-        backPath="/admin/routing/groups"
+        backPath="/admin/routing/channels?view=groups"
         isLoading={!isNew && query.isLoading}
         error={query.error}
         hasData={isNew || Boolean(group)}

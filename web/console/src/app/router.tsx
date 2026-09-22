@@ -179,6 +179,11 @@ const LogicalChannelsPage = lazy(() =>
     default: m.LogicalChannelsPage,
   })),
 );
+const ChannelConfigurationPage = lazy(() =>
+  import("@/features/admin/routing/channel-configuration-page").then((m) => ({
+    default: m.ChannelConfigurationPage,
+  })),
+);
 const LogicalChannelDetailPage = lazy(() =>
   import("@/features/admin/routing/logical-channels/logical-channel-detail-page").then((m) => ({
     default: m.LogicalChannelDetailPage,
@@ -337,6 +342,7 @@ function appRouteElements() {
                 element={<ApiKeyPolicyDetailPage />}
               />
               <Route path="/admin/model-setup" element={<ModelSetupPage />} />
+              <Route path="/admin/routing/channels" element={<ChannelConfigurationPage />} />
               <Route path="/admin/models" element={<ModelsPage />} />
               <Route path="/admin/models/:id" element={<ModelDetailPage />} />
               <Route path="/admin/models/:id/pricing" element={<ModelPricingPage />} />

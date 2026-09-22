@@ -9,14 +9,15 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { CapabilityBatchDialog } from "./capability-batch-dialog";
 
-export function CapabilitiesPage() {
+export function CapabilitiesPage({ channelId }: { channelId?: string } = {}) {
   const navigate = useNavigate();
   const query = useChannelCapabilities();
   const channels = useLogicalChannels();
   const { t } = useI18n();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [editing, setEditing] = useState(false);
-  const selectedCapabilities = (query.data ?? []).filter((capability) => selected.has(capability.id));
+  const visibleCapabilities = query.data?.filter((capability) => !channelId || capability.channel_id === channelId);
+  const selectedCapabilities = (visibleCapabilities ?? []).filter((capability) => selected.has(capability.id));
   const channelNames = useMemo(
     () => new Map((channels.data ?? []).map((channel) => [channel.id, channel.name])),
     [channels.data],
@@ -25,14 +26,18 @@ export function CapabilitiesPage() {
     <>
     <AdminListPage
       title={t("Channel capabilities")}
-      description={t(
+      description={channelId ? channelNames.get(channelId) ?? channelId : t(
         "One operation, transport set, and model catalogue per logical channel.",
       )}
-      query={query}
+      query={{
+        data: visibleCapabilities,
+        isLoading: query.isLoading || channels.isLoading,
+        error: query.error ?? channels.error,
+      }}
       rowKey={(capability) => capability.id}
       detailPath={(capability) => `/admin/routing/capabilities/${capability.id}`}
       createLabel={t("New capability")}
-      onCreate={() => navigate("/admin/routing/capabilities/new")}
+      onCreate={() => navigate(`/admin/routing/capabilities/new${channelId ? `?channel=${channelId}` : ""}`)}
       headerActions={<Button variant="outline" disabled={selectedCapabilities.length === 0 || selectedCapabilities.length > 100} onClick={() => setEditing(true)}>{t("Batch edit capabilities")} ({selectedCapabilities.length}/100)</Button>}
       columns={[
         {

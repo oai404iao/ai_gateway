@@ -69,23 +69,19 @@ pnpm e2e:install            # install Playwright Chromium + OS deps (first run)
 
 ## Model configuration
 
-The sidebar's **Model configuration** entry opens the priced-model rule list.
-Fixed navigation connects the dedicated pricing-model, Channel, and model-rule
-lists; `/admin/model-setup` is a lightweight three-step entry point rather than
-a duplicate editor.
+The sidebar groups configuration into **Upstream accesses**, **Upstream
+credentials**, **Channel configuration**, and **Model configuration**.
+Channel configuration combines group management, logical channels grouped by
+their group, and capabilities scoped to the selected channel.
 
-Each priced client model has at most one top-level model rule. Its detail page
-lists format-specific protocol children whose formats are immutable, and each
-protocol editor owns priority tiers and independently weighted
-`(channel, upstream model)` candidates. A Channel can appear with multiple
-models or in multiple tiers. Each tier uses a compact row list with one **Add
-record** button. Each row has searchable Channel and upstream-model selectors,
-an editable weight (default `1`), and a remove action. Changing Channel retains
-the model only when it is available and does not duplicate another row.
-Channel Groups appear as option context, not bulk-add controls; saved routes
-contain only explicit candidates. Editors retain
-single-resource ETag mutations and protect unsaved drafts. Regression coverage
-lives beside the focused pages and in `e2e/model-routing.spec.ts`.
+`/admin/models` lists client models on the left and embeds the existing
+operation-route editor on the right. Select a model, add an unused operation,
+then configure explicit `(capability, upstream model)` candidates and priority
+tiers. The first operation save creates a missing model routing profile before
+saving the rule; these are separate commands, and retries reuse the profile.
+Existing rules retain ETag updates and draft navigation protection. Price sync
+is a separate tab; model metadata, copying, and pricing retain dedicated editors.
+Regression coverage lives beside these pages and in `e2e/routing-topology.spec.ts`.
 
 ## API contract
 

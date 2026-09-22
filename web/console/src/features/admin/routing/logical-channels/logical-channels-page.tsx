@@ -9,8 +9,9 @@ import {
 } from "@/features/admin/api";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { useI18n } from "@/app/i18n";
+import { Button } from "@/components/ui/button";
 
-export function LogicalChannelsPage() {
+export function LogicalChannelsPage({ configureCapabilities = false }: { configureCapabilities?: boolean } = {}) {
   const navigate = useNavigate();
   const query = useLogicalChannels();
   const groups = useRoutingGroups();
@@ -35,9 +36,16 @@ export function LogicalChannelsPage() {
       description={t(
         "Each channel binds one group, one upstream access, and at most one credential.",
       )}
-      query={query}
+      query={{
+        data: query.data,
+        isLoading: query.isLoading || groups.isLoading || accesses.isLoading || credentials.isLoading,
+        error: query.error ?? groups.error ?? accesses.error ?? credentials.error,
+      }}
       rowKey={(channel) => channel.id}
-      detailPath={(channel) => `/admin/routing/logical-channels/${channel.id}`}
+      groupBy={(channel) => groupNames.get(channel.group_id) ?? channel.group_id}
+      detailPath={(channel) => configureCapabilities
+        ? `/admin/routing/channels?channel=${channel.id}`
+        : `/admin/routing/logical-channels/${channel.id}`}
       createLabel={t("New channel")}
       onCreate={() => navigate("/admin/routing/logical-channels/new")}
       columns={[
@@ -65,6 +73,17 @@ export function LogicalChannelsPage() {
           header: t("Enabled"),
           render: (channel) => <StatusBadge value={channel.enabled} />,
         },
+        ...(configureCapabilities ? [{
+          key: "actions",
+          header: t("Actions"),
+          render: (channel: NonNullable<typeof query.data>[number]) => (
+            <Button variant="outline" size="sm"
+              onClick={(event) => {
+                event.stopPropagation();
+                navigate(`/admin/routing/logical-channels/${channel.id}`);
+              }}>{t("Edit channel")}</Button>
+          ),
+        }] : []),
       ]}
     />
   );

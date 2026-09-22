@@ -32,6 +32,7 @@ interface AdminDetailShellProps {
   onBack?: () => void;
   saving?: boolean;
   actionBar?: React.ReactNode;
+  embedded?: boolean;
 }
 
 export function AdminDetailShell({
@@ -51,9 +52,20 @@ export function AdminDetailShell({
   onBack,
   saving,
   actionBar,
+  embedded = false,
 }: AdminDetailShellProps) {
   const navigate = useNavigate();
   const { t } = useI18n();
+  if (embedded) {
+    return (
+      <>
+        {navigationGuard}
+        <AsyncResource isLoading={isLoading} error={error}>
+          {hasData ? editCard : null}
+        </AsyncResource>
+      </>
+    );
+  }
   return (
     <div className="flex flex-col gap-6">
       {navigationGuard}

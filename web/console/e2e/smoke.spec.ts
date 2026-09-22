@@ -48,9 +48,10 @@ test.describe("Console SPA smoke", () => {
     await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
     await page.getByRole("button", { name: /sign in/i }).click();
     await page.goto("/admin/models");
+    await page.getByRole("button", { name: new RegExp(E2E_MODEL.display_name) }).click();
 
     const pricingAction = page.getByRole("button", {
-      name: `Configure pricing for ${E2E_MODEL.display_name}`,
+      name: "Configure pricing",
     });
     await expect(pricingAction).toBeVisible();
     await pricingAction.click();
@@ -297,7 +298,7 @@ test.describe("Console SPA smoke", () => {
       '"2026-01-02T00:00:00Z"',
     );
     expect(request.postData()).toBeNull();
-    await expect(page).toHaveURL(/\/admin\/routing\/logical-channels$/);
+    await expect(page).toHaveURL(/\/admin\/routing\/channels$/);
     await expect(page.getByText("Channel deleted")).toBeVisible();
   });
 
@@ -541,7 +542,7 @@ test.describe("Console SPA smoke", () => {
       window.dispatchEvent(new PopStateEvent("popstate"));
     }, "/admin/routing/channels");
 
-    await expect(page).toHaveURL(/\/admin\/routing\/logical-channels$/);
+    await expect(page).toHaveURL(/\/admin\/routing\/channels$/);
     await expect(page.getByRole("heading", { name: "Logical channels" })).toBeVisible();
     await expect(page.getByText("Personal Plus", { exact: true })).toHaveCount(1);
     await page.goto(`/admin/routing/groups/${E2E_ROUTING_GROUP_ID}`);

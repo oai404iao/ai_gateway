@@ -22,6 +22,7 @@ import {
   useCreateOperationRule,
   useLogicalChannels,
   useOperationRule,
+  useOperationRules,
   useUpdateOperationRule,
   useRoutingProfiles,
   useCreateRoutingProfile,
@@ -31,6 +32,7 @@ import { useI18n } from "@/app/i18n";
 import { API_OPERATIONS, apiOperationLabel } from "@/lib/permissions";
 import type { ApiOperation, OperationRuleInput, OperationTierInput } from "@/api/types";
 import { OperationRuleTierEditor } from "./operation-rule-tier-editor";
+import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -108,8 +110,19 @@ const empty: FormState = {
   routing_tiers: [],
 };
 
-export function OperationRuleDetailPage() {
-  const { id = "" } = useParams();
+export function OperationRuleDetailPage({
+  ruleId,
+  modelId,
+  onCreated,
+  embedded = false,
+}: {
+  ruleId?: string;
+  modelId?: string;
+  onCreated?: (id: string) => void;
+  embedded?: boolean;
+} = {}) {
+  const { id: pathId = "" } = useParams();
+  const id = ruleId ?? pathId;
   const isNew = id === "new";
   const navigate = useNavigate();
   const { t } = useI18n();
@@ -118,8 +131,10 @@ export function OperationRuleDetailPage() {
   const channels = useLogicalChannels();
   const profiles = useRoutingProfiles();
   const models = useModels();
+  const rules = useOperationRules();
   const createProfile = useCreateRoutingProfile();
   const [newProfileModel, setNewProfileModel] = useState("");
+  const [createdProfileId, setCreatedProfileId] = useState("");
   const create = useCreateOperationRule();
   const update = useUpdateOperationRule(id);
   const [state, setState] = useState<FormState>(empty);
@@ -127,6 +142,7 @@ export function OperationRuleDetailPage() {
   const [submitting, setSubmitting] = useState(false);
   const rule = query.data?.data;
   const busy = submitting || create.isPending || update.isPending || createProfile.isPending;
+  const draft = useConfigurationDraft(busy);
 
   const addProfile = async () => {
     try {
@@ -150,6 +166,29 @@ export function OperationRuleDetailPage() {
     });
   }, [rule]);
 
+  const modelProfile = profiles.data?.find((profile) => profile.model_id === modelId);
+  const modelProfileId = modelProfile?.id ?? createdProfileId;
+  const availableOperations = API_OPERATIONS.filter((operation) =>
+    !modelId || !(rules.data ?? []).some((existing) =>
+      existing.model_routing_profile_id === modelProfileId &&
+      existing.operation === operation,
+    ),
+  );
+  useEffect(() => {
+    if (!isNew || !modelId) return;
+    const operations = API_OPERATIONS.filter((operation) =>
+      !(rules.data ?? []).some((existing) =>
+        existing.model_routing_profile_id === modelProfileId && existing.operation === operation,
+      ),
+    );
+    setState((current) => ({
+      ...current,
+      model_routing_profile_id: modelProfileId,
+      operation: draft.dirty || operations.includes(current.operation)
+        ? current.operation : operations[0] ?? current.operation,
+    }));
+  }, [isNew, modelId, modelProfileId, rules.data, draft.dirty]);
+
   const channelNames = useMemo(
     () => new Map((channels.data ?? []).map((channel) => [channel.id, channel.name])),
     [channels.data],
@@ -160,6 +199,7 @@ export function OperationRuleDetailPage() {
   );
 
   const patch = (partial: Partial<FormState>) => {
+    draft.markDirty();
     setState((current) => ({ ...current, ...partial }));
   };
   const fieldError = (path: string | Array<string | number>) => {
@@ -171,7 +211,20 @@ export function OperationRuleDetailPage() {
   };
 
   const submit = async () => {
-    const parsed = schema.safeParse(state);
+    if (isNew && modelId && !availableOperations.includes(state.operation)) {
+      setValidation(new z.ZodError([{
+        code: "custom",
+        path: ["operation"],
+        message: "This operation is already configured. Choose another operation.",
+      }]));
+      return;
+    }
+    const parsed = schema.safeParse({
+      ...state,
+      model_routing_profile_id: modelId && !modelProfileId
+        ? modelId
+        : state.model_routing_profile_id,
+    });
     if (!parsed.success) {
       setValidation(parsed.error);
       return;
@@ -179,19 +232,31 @@ export function OperationRuleDetailPage() {
     setValidation(null);
     setSubmitting(true);
     try {
-      const input = parsed.data satisfies OperationRuleInput;
+      const input: OperationRuleInput = parsed.data;
+      if (isNew && modelId && !modelProfileId) {
+        const profile = await createProfile.mutateAsync({ model_id: modelId });
+        setCreatedProfileId(profile.id);
+        input.model_routing_profile_id = profile.id;
+        setState((current) => ({ ...current, model_routing_profile_id: profile.id }));
+        await profiles.refetch();
+      }
       if (isNew) {
         const result = await create.mutateAsync(input);
+        await rules.refetch();
         toast.success(t("Operation rule created"));
-        navigate(`/admin/routing/operation-rules/${result.id}`, { replace: true });
+        draft.markSaved();
+        if (onCreated) onCreated(result.id);
+        else navigate(`/admin/routing/operation-rules/${result.id}`, { replace: true });
       } else {
         await update.mutateAsync({ input, ifMatch: query.etag });
+        draft.markSaved();
         toast.success(t("Operation rule saved"));
       }
     } catch (error) {
       if (error instanceof ApiError && error.isConflict) {
         toast.error(t("This rule was changed elsewhere. Reloading."));
-        await query.refetch();
+        if (isNew) await Promise.all([profiles.refetch(), rules.refetch()]);
+        else await query.refetch();
       } else {
         toast.error(t(controlPlaneMutationErrorMessage(error, "Could not save operation rule.")));
       }
@@ -204,13 +269,15 @@ export function OperationRuleDetailPage() {
 
   return (
     <AdminDetailShell
+      embedded={embedded}
+      navigationGuard={draft.navigationGuard}
       title={isNew ? t("New operation rule") : t("Operation rule")}
       description={t(
         "Candidates reference an explicit capability and upstream model. Tiers, priorities, and weights are never inferred from legacy channels.",
       )}
       backPath="/admin/routing/operation-rules"
-      isLoading={(!isNew && query.isLoading) || capabilities.isLoading || channels.isLoading || profiles.isLoading || models.isLoading}
-      error={query.error ?? capabilities.error ?? channels.error ?? profiles.error ?? models.error}
+      isLoading={(!isNew && query.isLoading) || capabilities.isLoading || channels.isLoading || profiles.isLoading || models.isLoading || rules.isLoading}
+      error={query.error ?? capabilities.error ?? channels.error ?? profiles.error ?? models.error ?? rules.error}
       hasData={isNew || Boolean(rule)}
       saving={busy}
       detailCard={
@@ -233,7 +300,7 @@ export function OperationRuleDetailPage() {
           </CardHeader>
           <CardContent>
             <FieldGroup>
-              <Field data-invalid={Boolean(fieldError("model_routing_profile_id"))}>
+              {!modelId && <Field data-invalid={Boolean(fieldError("model_routing_profile_id"))}>
                 <FieldLabel htmlFor="operation-rule-profile">
                   {t("Model routing profile")}
                 </FieldLabel>
@@ -264,8 +331,8 @@ export function OperationRuleDetailPage() {
                 {fieldError("model_routing_profile_id") ? (
                   <FieldError>{fieldError("model_routing_profile_id")}</FieldError>
                 ) : null}
-              </Field>
-              {isNew ? (
+              </Field>}
+              {isNew && !modelId ? (
                 <Field>
                   <FieldLabel htmlFor="profile-model">{t("Create profile for pricing model")}</FieldLabel>
                   <Select value={newProfileModel} onValueChange={(value) => setNewProfileModel(value ?? "")}
@@ -292,21 +359,22 @@ export function OperationRuleDetailPage() {
                   </Button>
                 </Field>
               ) : null}
-              <Field>
+              <Field data-invalid={Boolean(fieldError("operation"))}>
                 <FieldLabel htmlFor="operation-rule-operation">{t("Operation")}</FieldLabel>
                 <Select
                   value={state.operation}
+                  items={API_OPERATIONS.map((operation) => ({ value: operation, label: apiOperationLabel(operation) }))}
                   disabled={!isNew}
                   onValueChange={(value) =>
                     patch({ operation: value as ApiOperation, routing_tiers: [] })
                   }
                 >
-                  <SelectTrigger id="operation-rule-operation">
+                  <SelectTrigger id="operation-rule-operation" aria-invalid={Boolean(fieldError("operation"))}>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectGroup>
-                      {API_OPERATIONS.map((operation) => (
+                      {(isNew ? availableOperations : API_OPERATIONS).map((operation) => (
                         <SelectItem key={operation} value={operation}>
                           {apiOperationLabel(operation)}
                         </SelectItem>
@@ -314,6 +382,7 @@ export function OperationRuleDetailPage() {
                     </SelectGroup>
                   </SelectContent>
                 </Select>
+                {fieldError("operation") && <FieldError>{fieldError("operation")}</FieldError>}
               </Field>
               <OperationRuleTierEditor
                 value={routingTiers}

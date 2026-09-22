@@ -217,12 +217,17 @@ export function ConsoleLayout() {
                   ) : (
                     <SidebarMenuItem key={item.path}>
                       <SidebarMenuButton
-                        isActive={item.label === "Model configuration" && (
-                          pathname.startsWith("/admin/routing/") ||
-                          pathname.startsWith("/admin/models") ||
-                          pathname.startsWith("/admin/model-setup") ||
-                          pathname.startsWith("/admin/providers/codex-oauth")
-                        )}
+                        isActive={
+                          pathname.startsWith(item.path) ||
+                          (item.path === "/admin/models" && [
+                            "/admin/model-setup", "/admin/catalog", "/admin/routing/operation-rules",
+                          ].some((path) => pathname.startsWith(path))) ||
+                          (item.path === "/admin/routing/channels" && [
+                            "/admin/routing/groups", "/admin/routing/logical-channels", "/admin/routing/capabilities",
+                          ].some((path) => pathname.startsWith(path))) ||
+                          (item.path === "/admin/routing/upstream-credentials" &&
+                            pathname.startsWith("/admin/providers/codex-oauth"))
+                        }
                         render={<NavLink to={item.path} end={item.end} />}
                       >
                         <item.icon />

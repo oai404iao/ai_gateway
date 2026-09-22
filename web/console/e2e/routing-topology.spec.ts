@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { mockConsoleApi } from "./mock-api";
+import { E2E_MODEL, mockConsoleApi } from "./mock-api";
 
 async function prepare(page: Page) {
   await mockConsoleApi(page);
@@ -17,24 +17,33 @@ test.describe("canonical routing topology", () => {
   test("the routing navigation exposes the canonical editors", async ({ page }) => {
     await prepare(page);
 
-    await page.getByRole("link", { name: "Routing groups" }).click();
-    await expect(page).toHaveURL(/\/admin\/routing\/groups$/);
+    await page.getByRole("link", { name: "Channel configuration" }).click();
+    await expect(page).toHaveURL(/\/admin\/routing\/channels$/);
+    await page.getByRole("tab", { name: "Group configuration" }).click();
     await expect(
       page.getByRole("heading", { name: "Routing groups" }),
     ).toBeVisible();
-    await expect(page.getByText("Standard group")).toBeVisible();
+    await expect(page.getByText("Standard group", { exact: true })).toBeVisible();
 
-    await page.getByRole("link", { name: "Logical channels" }).click();
-    await expect(page).toHaveURL(/\/admin\/routing\/logical-channels$/);
+    await page.getByRole("tab", { name: "Logical channels" }).click();
     await expect(page.getByText("Upstream A", { exact: true })).toBeVisible();
 
-    await page.getByRole("link", { name: "Channel capabilities" }).click();
-    await expect(page).toHaveURL(/\/admin\/routing\/capabilities$/);
+    await page.getByText("Upstream A", { exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Channel capabilities" })).toBeVisible();
     await expect(page.getByText("HTTP JSON")).toBeVisible();
 
-    await page.getByRole("link", { name: "Operation rules" }).click();
-    await expect(page).toHaveURL(/\/admin\/routing\/operation-rules$/);
-    await expect(page.getByText("Chat Completions", { exact: true })).toBeVisible();
+    await page.getByRole("link", { name: "Model configuration" }).click();
+    await page.getByRole("button", { name: new RegExp(E2E_MODEL.display_name) }).click();
+    await page.getByRole("button", { name: /Chat Completions/ }).click();
+    await expect(page.getByRole("button", { name: "Save operation rule" })).toBeVisible();
+    await expect(page).toHaveURL(/\/admin\/models\?/);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.getByRole("heading", { name: "Model configuration" })).toBeVisible();
+    await expect.poll(() => page.evaluate(() =>
+      document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+    )).toBe(true);
+    await page.getByRole("tab", { name: "Price sync" }).click();
+    await expect(page).toHaveURL(/view=prices/);
   });
 
   test("an administrator edits a channel binding with its ETag", async ({ page }) => {

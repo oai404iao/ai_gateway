@@ -110,7 +110,7 @@ export function LogicalChannelDetailPage() {
     try {
       await remove.mutateAsync({ ifMatch: query.etag });
       toast.success(t("Channel deleted"));
-      navigate("/admin/routing/logical-channels");
+      navigate("/admin/routing/channels");
     } catch (error) {
       toast.error(t(controlPlaneMutationErrorMessage(error, "Could not delete logical channel.")));
     }
@@ -123,7 +123,7 @@ export function LogicalChannelDetailPage() {
         description={t(
           "A channel binds authentication to one access. Shared accesses and credentials are never deleted with it.",
         )}
-        backPath="/admin/routing/logical-channels"
+        backPath={`/admin/routing/channels${channel ? `?channel=${channel.id}` : ""}`}
         isLoading={!isNew && query.isLoading}
         error={query.error}
         hasData={isNew || Boolean(channel)}

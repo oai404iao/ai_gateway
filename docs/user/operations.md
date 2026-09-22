@@ -644,8 +644,12 @@ workspace/member 身份、Token、代理、运行状态、错误或 reset-credit
 - 系统转发设置：`GET` / `PUT /console/v1/system/settings`（管理员；`PUT` 使用 `If-Match`，保存后立即发布快照）
 - 手动重载：`POST /console/v1/system/reload`
 
-管理员 Console 的 `/admin/model-setup` 提供计价模型、上游身份和操作规则入口。
-`/admin/routing/operation-rules` 按计价模型选择或创建 profile，再编辑独立操作规则。
+管理员 Console 的“模型与路由”分为上游接入、上游凭证、渠道配置和模型配置四个入口。
+`/admin/routing/channels` 提供组配置、按组列出的逻辑渠道及选中渠道的能力配置。
+`/admin/models` 左侧选择客户端计价模型，右侧新增操作或直接编辑已有操作路由；首次保存操作
+时会先为该模型创建缺失的 routing profile，再保存操作规则。两次写入不是跨资源原子事务，
+规则保存失败时已创建的 profile 保留供重试复用。价格同步位于该页面的独立页签。
+原有资源详情 URL 仍可直接访问，更新继续携带详情 `ETag`。
 旧渠道组、渠道和模型协议管理页面已移除，旧浏览器地址仅跳转到新列表；旧 HTTP CRUD 返回
 JSON 404，不提供旧字段兼容写入。模型发现服务仍使用
 `POST /console/v1/routing/channels/models/discover`，能力编辑页从所选接入、凭证及当前变换构造
