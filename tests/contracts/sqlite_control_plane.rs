@@ -1,28 +1,11 @@
-//! SQLite ordinary control-plane repository contracts.
-//!
-//! These run against a real installed business schema and exercise the neutral
-//! repository surface the Console API and workers depend on: coherent runtime
-//! snapshots, list/detail/audit reads, deletion-impact tokens, self-service
-//! options, prepared mutations with ETag conflicts, and rollback behavior when
-//! snapshot compilation or audit writing fails before commit.
-//!
-//! Host wiring (the parent-owned `tests/sqlite_foundation.rs`):
-//!
-//! ```ignore
-//! use chrono::{DateTime, Utc};
-//! use ai_gateway::persistence::{DEFAULT_ADMIN_GROUP_ID, DEFAULT_USER_GROUP_ID};
-//! #[path = "contracts/sqlite_control_plane.rs"]
-//! mod sqlite_control_plane;
-//! ```
-//!
-//! The module reuses the host's `database()` helper and the `sqlite-backend`
-//! feature gate declared there.
+//! SQLite canonical control-plane contracts: coherent snapshots, fixed grants,
+//! child-first deletion, versioned mutations, health, audits, and rollback.
 
 use super::*;
 use ai_gateway::{
     persistence::{
-        ChannelGroupInput, ControlPlaneMutation, ProxyCreateInput, RepositoryError,
-        SelfApiKeyCreate, SelfApiKeyUpdate, SystemSettingsInput, UserSettingsInput,
+        ControlPlaneMutation, ProxyCreateInput, RepositoryError, SelfApiKeyCreate,
+        SelfApiKeyUpdate, SystemSettingsInput, UserSettingsInput,
         sqlite::{SqliteControlPlaneRepository, SqliteUuid},
     },
     runtime_config::compile_runtime_config,
@@ -40,6 +23,9 @@ const PROFILE: Uuid = Uuid::from_u128(0x422);
 const RULE: Uuid = Uuid::from_u128(0x423);
 const GROUP: Uuid = Uuid::from_u128(0x431);
 const CHANNEL: Uuid = Uuid::from_u128(0x432);
+const CAPABILITY: Uuid = Uuid::from_u128(0x433);
+const ACCESS: Uuid = Uuid::from_u128(0x434);
+const TIER: Uuid = Uuid::from_u128(0x424);
 const TEMPLATE: Uuid = Uuid::from_u128(0x441);
 const PROXY: Uuid = Uuid::from_u128(0x451);
 const PASSWORD_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA";
@@ -50,7 +36,7 @@ async fn repository() -> (
     SqliteControlPlaneRepository,
 ) {
     let (directory, database) = database().await;
-    assert_eq!(database.install_schema().await.unwrap(), 4);
+    assert_eq!(database.install_schema().await.unwrap(), 5);
     let database = Arc::new(database);
     let repository = SqliteControlPlaneRepository::new(Arc::clone(&database));
     (directory, database, repository)
@@ -120,8 +106,7 @@ async fn seed_admin_and_user(database: &SqliteDatabase) {
     .await;
 }
 
-/// Seeds a priced model with one enabled protocol rule and a ready candidate,
-/// plus an ordinary channel group and channel the candidate points at.
+/// Seeds one ready operation route without granting any API key authority.
 async fn seed_routing(database: &SqliteDatabase) {
     execute(
         database,
@@ -134,19 +119,21 @@ async fn seed_routing(database: &SqliteDatabase) {
               '1','0.5','0','2','2026-01-01T00:00:00.000000Z',
               '{{\"long_context_tiers\": [], \"request_multipliers\": []}}','{{}}');
              INSERT INTO model_routing_profiles (id,model_id) VALUES ('{PROFILE}','{MODEL}');
-             INSERT INTO channel_groups (id,name,api_format,connector_kind,enabled)
-             VALUES ('{GROUP}','Ordinary Group','open_ai_chat_completions','openai_compatible',1);
-             INSERT INTO channels
-             (id,channel_group_id,api_format,name,base_url,enabled,upstream_auth_kind,available_models)
-             VALUES ('{CHANNEL}','{GROUP}','open_ai_chat_completions','Ordinary Channel',
-                     'https://upstream.example.test',1,'none','[\"gpt-test\"]');
-             INSERT INTO model_rules (id,model_routing_profile_id,api_format,enabled)
-             VALUES ('{RULE}','{PROFILE}','open_ai_chat_completions',1);
-             INSERT INTO model_rule_routing_tiers (model_rule_id,api_format,priority,selection_strategy)
-             VALUES ('{RULE}','open_ai_chat_completions',0,'weighted_random');
-             INSERT INTO model_rule_routing_candidates
-             (model_rule_id,api_format,priority,channel_id,upstream_model,weight)
-             VALUES ('{RULE}','open_ai_chat_completions',0,'{CHANNEL}','gpt-test',1);"
+             INSERT INTO routing_groups (id,name,enabled) VALUES ('{GROUP}','Ordinary Group',1);
+             INSERT INTO upstream_accesses (id,name,connector_kind,base_url,enabled)
+             VALUES ('{ACCESS}','Ordinary Access','openai_compatible','https://upstream.example.test',1);
+             INSERT INTO upstream_channels (id,group_id,access_id,name,enabled)
+             VALUES ('{CHANNEL}','{GROUP}','{ACCESS}','Ordinary Channel',1);
+             INSERT INTO channel_capabilities
+             (id,channel_id,operation,transports,available_models,enabled)
+             VALUES ('{CAPABILITY}','{CHANNEL}','chat_completions','[\"http_json\",\"http_sse\"]','[\"gpt-test\"]',1);
+             INSERT INTO model_operation_rules (id,model_routing_profile_id,operation,enabled)
+             VALUES ('{RULE}','{PROFILE}','chat_completions',1);
+             INSERT INTO model_capability_tiers (id,rule_id,operation,priority,strategy)
+             VALUES ('{TIER}','{RULE}','chat_completions',0,'weighted_random');
+             INSERT INTO model_capability_candidates
+             (tier_id,operation,capability_id,upstream_model,weight)
+             VALUES ('{TIER}','chat_completions','{CAPABILITY}','gpt-test',1);"
         ),
     )
     .await;
@@ -244,7 +231,7 @@ async fn runtime_snapshot_is_coherent_and_includes_codex_sharing_state() {
     let rule = &control_plane.model_rules[0];
     assert_eq!(rule.client_model, "gpt-test");
     assert_eq!(rule.routing_tiers.len(), 1);
-    assert_eq!(rule.routing_tiers[0].candidates[0].channel_id, CHANNEL);
+    assert_eq!(rule.routing_tiers[0].candidates[0].channel_id, CAPABILITY);
     assert!(control_plane.api_keys.is_empty());
     assert_eq!(
         control_plane.templates[0].document["api_format"],
@@ -300,25 +287,21 @@ async fn console_reads_expose_lists_details_audit_and_self_service_options() {
     assert_eq!(lists.users[1].balance_amount.to_string(), "0");
     assert_eq!(lists.api_keys.len(), 1);
     assert_eq!(lists.api_keys[0].secret, "sk-test-secret");
-    assert_eq!(lists.channels.len(), 1);
-    assert!(!lists.channels[0].provider_managed);
-    assert_eq!(lists.model_rules.len(), 1);
+    let topology = repository.topology().await.unwrap();
+    assert_eq!(topology.logical_channels.len(), 1);
     assert_eq!(
-        lists.model_rules[0].protocol_rules[0].routing_status,
-        ai_gateway::persistence::ModelRuleRoutingStatus::Ready
+        topology.upstream_accesses[0].connector_kind,
+        ai_gateway::domain::ConnectorKind::OpenAiCompatible
     );
-    assert_eq!(
-        lists.model_rules[0].protocol_rules[0].active_candidate_count,
-        1
-    );
-    assert_eq!(
-        lists.model_rules[0].protocol_rules[0].target_candidate_count,
-        1
-    );
-    assert_eq!(
-        lists.model_rules[0].protocol_rules[0].routing_tiers.len(),
-        1
-    );
+    assert_eq!(repository.routing_profiles().await.unwrap().len(), 1);
+    assert_eq!(topology.operation_rules.len(), 1);
+    assert!(topology.operation_rules[0].enabled);
+    assert_eq!(topology.operation_tiers.len(), 1);
+    assert_eq!(topology.operation_candidates.len(), 1);
+    assert_eq!(topology.operation_candidates[0].capability_id, CAPABILITY);
+    assert!(topology.channel_capabilities[0].settings.enabled);
+    assert!(topology.logical_channels[0].enabled);
+    assert!(topology.routing_groups[0].enabled);
     assert_eq!(lists.proxies.len(), 1);
     // Proxy listing and audit strip the credential component.
     assert_eq!(lists.proxies[0].proxy_url, "http://proxy.example.test:8080");
@@ -335,20 +318,22 @@ async fn console_reads_expose_lists_details_audit_and_self_service_options() {
         .unwrap();
     assert_eq!(group.member_count, 1);
 
-    let detail = repository
-        .control_plane_channel_detail(CHANNEL)
-        .await
-        .unwrap()
+    let detail = topology
+        .logical_channels
+        .iter()
+        .find(|channel| channel.id == CHANNEL)
         .unwrap();
     assert_eq!(detail.name, "Ordinary Channel");
-    assert_eq!(detail.api_format, "open_ai_chat_completions");
+    assert_eq!(
+        topology.channel_capabilities[0].settings.operation,
+        ai_gateway::domain::ApiOperation::ChatCompletions
+    );
     assert!(detail.credential_id.is_none());
     assert!(
-        repository
-            .control_plane_channel_detail(Uuid::nil())
-            .await
-            .unwrap()
-            .is_none()
+        !topology
+            .logical_channels
+            .iter()
+            .any(|channel| channel.id == Uuid::nil())
     );
     let template = repository
         .control_plane_config_template_detail(TEMPLATE)
@@ -404,7 +389,7 @@ async fn console_reads_expose_lists_details_audit_and_self_service_options() {
 }
 
 #[tokio::test]
-async fn deletion_impact_tokens_are_stable_and_reject_tampering() {
+async fn topology_deletion_requires_explicit_child_withdrawal_and_preserves_grants() {
     let (_directory, database, repository) = repository().await;
     seed_admin_and_user(&database).await;
     seed_routing(&database).await;
@@ -416,140 +401,108 @@ async fn deletion_impact_tokens_are_stable_and_reject_tampering() {
              (id,user_id,name,secret_value,status,allowed_api_formats,permissions,
               allowed_group_ids,allowed_channel_ids)
              VALUES ('{KEY}','{USER}','Bound key','sk-bound','active',
-                     '[\"open_ai_chat_completions\"]','[\"proxy\"]','[\"{GROUP}\"]','[]');"
+                     '[\"open_ai_chat_completions\"]','[\"proxy\"]','[\"{GROUP}\"]','[]');
+             INSERT INTO api_key_capability_grants(api_key_id,capability_id,origin_kind,origin_id)
+             VALUES ('{KEY}','{CAPABILITY}','group','{GROUP}');"
         ),
     )
     .await;
 
-    let impact = repository
-        .channel_group_deletion_impact(GROUP)
+    let before = repository.topology().await.unwrap();
+    for mutation in [
+        ControlPlaneMutation::DeleteRoutingGroup {
+            id: GROUP,
+            expected: before.routing_groups[0].updated_at,
+        },
+        ControlPlaneMutation::DeleteLogicalChannel {
+            id: CHANNEL,
+            expected: before.logical_channels[0].updated_at,
+        },
+        ControlPlaneMutation::DeleteChannelCapability {
+            id: CAPABILITY,
+            expected: before.channel_capabilities[0].updated_at,
+        },
+    ] {
+        assert!(repository.prepare_mutation(ADMIN, mutation).await.is_err());
+    }
+    assert!(control_plane_audits(&repository).await.is_empty());
+    let mut withdrawal = repository
+        .prepare_mutation(
+            ADMIN,
+            ControlPlaneMutation::SaveOperationRule {
+                id: RULE,
+                expected_updated_at: Some(before.operation_rules[0].updated_at),
+                input: ai_gateway::persistence::OperationRuleInput {
+                    model_routing_profile_id: PROFILE,
+                    operation: ai_gateway::domain::ApiOperation::ChatCompletions,
+                    enabled: false,
+                    routing_tiers: vec![],
+                },
+            },
+        )
         .await
         .unwrap();
-    assert_eq!(impact.resource_type, "channel_group");
-    assert_eq!(impact.channels.len(), 1);
-    assert_eq!(impact.channels[0].id, CHANNEL);
-    assert_eq!(impact.api_keys.len(), 1);
-    assert_eq!(impact.model_protocol_rules.len(), 1);
-    assert!(impact.model_protocol_rules[0].will_disable);
-    assert_eq!(
-        impact.model_protocol_rules[0].removed_channel_group_ids,
-        vec![GROUP]
-    );
-    let repeated = repository
-        .channel_group_deletion_impact(GROUP)
-        .await
-        .unwrap();
-    assert_eq!(impact.confirmation_token, repeated.confirmation_token);
-    assert!(impact.confirmation_token.starts_with("v1."));
-
+    compile_runtime_config(withdrawal.runtime_records().await.unwrap()).unwrap();
+    withdrawal.commit().await.unwrap();
     assert!(matches!(
         repository
-            .channel_group_deletion_impact(Uuid::nil())
+            .prepare_mutation(
+                ADMIN,
+                ControlPlaneMutation::DeleteChannelCapability {
+                    id: CAPABILITY,
+                    expected: before.channel_capabilities[0].updated_at
+                        - chrono::Duration::seconds(1),
+                }
+            )
             .await
             .err(),
-        Some(RepositoryError::NotFound)
+        Some(RepositoryError::Conflict)
     ));
-
-    // A channel-level plan narrows the same impact to one channel.
-    let channel_impact = repository.channel_deletion_impact(CHANNEL).await.unwrap();
-    assert_eq!(channel_impact.resource_type, "channel");
-    assert_eq!(channel_impact.channels.len(), 1);
-    assert_eq!(channel_impact.channels[0].id, CHANNEL);
-    assert!(
-        channel_impact.api_keys.is_empty(),
-        "the key is bound to the group, not the individual channel"
-    );
-    assert_eq!(channel_impact.model_protocol_rules.len(), 1);
+    for mutation in [
+        ControlPlaneMutation::DeleteChannelCapability {
+            id: CAPABILITY,
+            expected: before.channel_capabilities[0].updated_at,
+        },
+        ControlPlaneMutation::DeleteLogicalChannel {
+            id: CHANNEL,
+            expected: before.logical_channels[0].updated_at,
+        },
+        ControlPlaneMutation::DeleteRoutingGroup {
+            id: GROUP,
+            expected: before.routing_groups[0].updated_at,
+        },
+    ] {
+        let mut change = repository.prepare_mutation(ADMIN, mutation).await.unwrap();
+        compile_runtime_config(change.runtime_records().await.unwrap()).unwrap();
+        change.commit().await.unwrap();
+    }
+    let after = repository.topology().await.unwrap();
+    assert!(after.routing_groups[0].deleted_at.is_some());
+    assert!(after.logical_channels[0].deleted_at.is_some());
+    assert!(after.channel_capabilities[0].deleted_at.is_some());
     assert_eq!(
-        channel_impact.model_protocol_rules[0].removed_channel_ids,
-        vec![CHANNEL]
+        serde_json::to_value(&after.api_key_grants).unwrap(),
+        serde_json::to_value(&before.api_key_grants).unwrap()
     );
-    assert!(
-        channel_impact.model_protocol_rules[0]
-            .removed_channel_group_ids
-            .is_empty(),
-        "a single-channel deletion does not remove the group itself"
-    );
-
-    // The confirmation token is verified while the change is prepared; a
-    // mismatched token never yields a prepared change.
-    let tampered = repository
-        .prepare_mutation(
-            ADMIN,
-            ControlPlaneMutation::DeleteGroup {
-                id: GROUP,
-                deleted_by: ADMIN,
-                expected_updated_at: group_updated_at(&database).await,
-                confirmation_token: "v1.bogus".into(),
-            },
-        )
-        .await;
-    assert!(matches!(
-        tampered.err(),
-        Some(RepositoryError::DeletionImpactChanged)
-    ));
-    assert_eq!(
-        scalar::<i64>(
-            &database,
-            "SELECT count(*) FROM channel_groups WHERE id IS NOT NULL"
-        )
-        .await,
-        1
-    );
-
-    let mut change = repository
-        .prepare_mutation(
-            ADMIN,
-            ControlPlaneMutation::DeleteGroup {
-                id: GROUP,
-                deleted_by: ADMIN,
-                expected_updated_at: group_updated_at(&database).await,
-                confirmation_token: impact.confirmation_token.clone(),
-            },
-        )
-        .await
-        .unwrap();
-    let records = change.runtime_records().await.unwrap();
-    assert!(
-        records.control_plane.groups.is_empty(),
-        "the prepared snapshot reflects the pending tombstone"
-    );
-    compile_runtime_config(records).unwrap();
-    let (mutations, correlation_id) = change.commit().await.unwrap();
-    assert_eq!(mutations.len(), 1);
-    assert!(mutations[0].correlation_id.is_some());
-    assert_ne!(correlation_id, Uuid::nil());
-    assert!(
-        mutations[0]
-            .reason
-            .as_deref()
-            .unwrap()
-            .contains("channels deleted")
-    );
-
-    let after = repository.load().await.unwrap();
-    assert!(after.groups.is_empty());
-    assert!(after.channels.is_empty());
-    assert!(after.model_rules[0].routing_tiers.is_empty());
-    assert!(!after.model_rules[0].enabled);
+    assert!(after.operation_candidates.is_empty());
+    assert!(!after.operation_rules[0].enabled);
+    assert!(repository.load().await.unwrap().channels.is_empty());
     let key = repository.own_api_key(USER, KEY).await.unwrap().unwrap();
-    assert!(
-        key.allowed_group_ids.is_empty(),
-        "bound self-service keys are unbound at deletion"
-    );
+    assert_eq!(key.allowed_group_ids, vec![GROUP]);
     let audits = control_plane_audits(&repository).await;
-    assert_eq!(audits[0].object_type, "channel_group");
-    assert_eq!(audits[0].action, "delete");
     assert_eq!(
-        audits[0].correlation_id.as_deref(),
-        Some(correlation_id.to_string().as_str())
+        audits
+            .iter()
+            .filter(|audit| audit.action == "delete")
+            .count(),
+        3
     );
 }
 
 async fn rule_updated_at(database: &SqliteDatabase) -> DateTime<Utc> {
     let mut reader = database.acquire_read().await.unwrap();
     let text: String = sqlx::query_scalar(
-        "SELECT updated_at FROM model_rules WHERE api_format='open_ai_chat_completions'",
+        "SELECT updated_at FROM model_operation_rules WHERE operation='chat_completions'",
     )
     .fetch_one(&mut *reader)
     .await
@@ -561,7 +514,7 @@ async fn rule_updated_at(database: &SqliteDatabase) -> DateTime<Utc> {
 
 async fn group_updated_at(database: &SqliteDatabase) -> DateTime<Utc> {
     let mut reader = database.acquire_read().await.unwrap();
-    let text: String = sqlx::query_scalar("SELECT updated_at FROM channel_groups WHERE id=?")
+    let text: String = sqlx::query_scalar("SELECT updated_at FROM routing_groups WHERE id=?")
         .bind(SqliteUuid(GROUP))
         .fetch_one(&mut *reader)
         .await
@@ -673,39 +626,30 @@ fn proxy(name: &str) -> ProxyCreateInput {
 }
 
 #[tokio::test]
-async fn snapshot_compilation_failure_rolls_back_the_pending_change() {
+async fn pending_group_change_can_roll_back_without_publishing_or_auditing() {
     let (_directory, database, repository) = repository().await;
     seed_admin_and_user(&database).await;
     seed_routing(&database).await;
     repository.ensure_system_settings(settings()).await.unwrap();
 
-    // Removing the only channel of an enabled rule leaves the pending snapshot
-    // uncompilable, so the caller must roll back instead of committing.
     let mut change = repository
         .prepare_mutation(
             ADMIN,
-            ControlPlaneMutation::UpdateGroup {
+            ControlPlaneMutation::SaveRoutingGroup {
                 id: GROUP,
-                input: ChannelGroupInput {
+                input: ai_gateway::persistence::RoutingGroupInput {
                     name: "Ordinary Group".into(),
-                    api_format: "open_ai_chat_completions".into(),
-                    connector_kind: "openai_compatible".into(),
-                    request_compression: None,
-                    sharing_only: None,
+                    sharing_only: false,
                     enabled: false,
-                    status_statistics_enabled: None,
                 },
-                expected_updated_at: group_updated_at(&database).await,
+                expected: Some(group_updated_at(&database).await),
             },
         )
         .await
         .unwrap();
     let records = change.runtime_records().await.unwrap();
     assert!(!records.control_plane.groups[0].enabled);
-    assert!(
-        compile_runtime_config(records).is_ok(),
-        "the malformed snapshot is detected by the caller's compiler, not by the repository"
-    );
+    compile_runtime_config(records).unwrap();
     change.rollback().await.unwrap();
     let unchanged = repository.load().await.unwrap();
     assert!(unchanged.groups[0].enabled);
@@ -777,9 +721,12 @@ async fn self_service_and_admin_writes_enforce_versions_and_policies() {
         "INSERT INTO api_key_policies (id,name,allowed_group_ids,allowed_channel_ids,enabled)
          VALUES ('40200000-0000-0000-0000-000000000471','Default policy',
                  (
-                   SELECT json_group_array(id) FROM channel_groups WHERE deleted_at IS NULL
+                   SELECT json_group_array(id) FROM routing_groups WHERE deleted_at IS NULL
                  ),
-                 '[]',1)",
+                 '[]',1);
+         INSERT INTO api_key_policy_capability_grants(policy_id,capability_id,origin_kind,origin_id)
+         SELECT '40200000-0000-0000-0000-000000000471',cap.id,'group',channel.group_id
+         FROM channel_capabilities cap JOIN upstream_channels channel ON channel.id=cap.channel_id",
     )
     .await;
     execute(
@@ -795,7 +742,7 @@ async fn self_service_and_admin_writes_enforce_versions_and_policies() {
     let options = repository.own_api_key_options(USER).await.unwrap();
     assert!(options.policy_enabled);
     assert_eq!(options.groups.len(), 1);
-    assert_eq!(options.groups[0].api_format, "open_ai_chat_completions");
+    assert_eq!(options.groups[0].api_formats, ["open_ai_chat_completions"]);
     assert_eq!(options.channels.len(), 1);
 
     let mut change = repository
@@ -832,18 +779,29 @@ async fn self_service_and_admin_writes_enforce_versions_and_policies() {
     // A target outside the policy is rejected without writing anything.
     execute(
         &database,
-        "INSERT INTO channel_groups (id,name,api_format,connector_kind,enabled)
+        &format!("INSERT INTO routing_groups (id,name,enabled)
          VALUES ('40300000-0000-0000-0000-0000000004a1','Outside Group',
-                 'open_ai_chat_completions','openai_compatible',1)",
+                 1);
+         INSERT INTO upstream_channels(id,group_id,access_id,name,enabled)
+         VALUES ('40300000-0000-0000-0000-0000000004a2','40300000-0000-0000-0000-0000000004a1',
+                 '{ACCESS}','Outside channel',1);
+         INSERT INTO channel_capabilities(id,channel_id,operation,transports,available_models,enabled)
+         VALUES ('40300000-0000-0000-0000-0000000004a3','40300000-0000-0000-0000-0000000004a2',
+                 'chat_completions','[\"http_json\"]','[\"gpt-test\"]',1);"),
     )
     .await;
+    compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap();
+    let grants_before =
+        serde_json::to_value(repository.topology().await.unwrap().api_key_grants).unwrap();
     assert!(matches!(
         repository
             .prepare_own_api_key_create(
                 USER,
                 SelfApiKeyCreate {
                     name: "Outside".into(),
-                    allowed_group_ids: vec![Uuid::from_u128(0x4a1)],
+                    allowed_group_ids: vec![
+                        Uuid::parse_str("40300000-0000-0000-0000-0000000004a1").unwrap()
+                    ],
                     allowed_channel_ids: Vec::new(),
                     expires_at: None,
                     requests_per_minute: None,
@@ -855,6 +813,11 @@ async fn self_service_and_admin_writes_enforce_versions_and_policies() {
             .err(),
         Some(RepositoryError::ApiKeyTargetNotAllowed)
     ));
+    assert_eq!(repository.own_api_keys(USER).await.unwrap().len(), 1);
+    assert_eq!(
+        serde_json::to_value(repository.topology().await.unwrap().api_key_grants).unwrap(),
+        grants_before
+    );
 
     // A stale ETag conflicts; the fresh one updates.
     let updated_at = created.updated_at;
@@ -1040,38 +1003,6 @@ async fn user_settings_and_batches_apply_exactly_once() {
         repository.prepare_users_batch(ADMIN, stale).await.err(),
         Some(RepositoryError::Conflict)
     ));
-
-    let channel_before = repository
-        .control_plane_lists()
-        .await
-        .unwrap()
-        .channels
-        .into_iter()
-        .find(|channel| channel.id == CHANNEL);
-    if let Some(channel) = channel_before {
-        let input: ai_gateway::persistence::ChannelBatchUpdateInput =
-            serde_json::from_value(json!({
-                "items": [{"id": channel.id, "updated_at": channel.updated_at}],
-                "changes": {"enabled": false, "auto_disable_allowed": true}
-            }))
-            .unwrap();
-        let change = repository
-            .prepare_channels_batch(ADMIN, input)
-            .await
-            .unwrap();
-        let (mutations, _) = change.commit().await.unwrap();
-        assert_eq!(mutations[0].action, "batch_update");
-        let after = repository
-            .control_plane_lists()
-            .await
-            .unwrap()
-            .channels
-            .into_iter()
-            .find(|channel| channel.id == CHANNEL)
-            .unwrap();
-        assert!(!after.enabled);
-        assert!(after.auto_disable_allowed);
-    }
 }
 
 #[tokio::test]
@@ -1127,7 +1058,7 @@ async fn channel_auto_disable_and_recovery_follow_persisted_settings() {
     seed_routing(&database).await;
     execute(
         &database,
-        "UPDATE channels SET auto_disable_allowed=1,updated_at=ag_now() WHERE id IS NOT NULL",
+        "UPDATE channel_capabilities SET auto_disable_allowed=1,updated_at=ag_now() WHERE id IS NOT NULL",
     )
     .await;
     repository.ensure_system_settings(settings()).await.unwrap();
@@ -1136,7 +1067,7 @@ async fn channel_auto_disable_and_recovery_follow_persisted_settings() {
     let trigger = ai_gateway::domain::AutomaticDisableTrigger::HttpStatus(503);
     assert!(
         repository
-            .prepare_channel_disable(CHANNEL, &trigger)
+            .prepare_channel_disable(CAPABILITY, &trigger)
             .await
             .unwrap()
             .is_none()
@@ -1169,7 +1100,7 @@ async fn channel_auto_disable_and_recovery_follow_persisted_settings() {
     change.commit().await.unwrap();
 
     let mut change = repository
-        .prepare_channel_disable(CHANNEL, &trigger)
+        .prepare_channel_disable(CAPABILITY, &trigger)
         .await
         .unwrap()
         .unwrap();
@@ -1184,7 +1115,7 @@ async fn channel_auto_disable_and_recovery_follow_persisted_settings() {
     );
     let (mutations, _) = change.commit().await.unwrap();
     assert_eq!(mutations[0].action, "auto_disable");
-    assert_eq!(mutations[0].object_type, "channel");
+    assert_eq!(mutations[0].object_type, "channel_capability");
     assert!(mutations[0].reason.as_deref().unwrap().contains("503"));
     let audits = control_plane_audits(&repository).await;
     assert_eq!(audits[0].actor_type, "system");
@@ -1193,31 +1124,31 @@ async fn channel_auto_disable_and_recovery_follow_persisted_settings() {
     // A repeated trigger is idempotent because the channel is already disabled.
     assert!(
         repository
-            .prepare_channel_disable(CHANNEL, &trigger)
+            .prepare_channel_disable(CAPABILITY, &trigger)
             .await
             .unwrap()
             .is_none()
     );
 
     let change = repository
-        .prepare_channel_recovery(CHANNEL)
+        .prepare_channel_recovery(CAPABILITY)
         .await
         .unwrap()
         .unwrap();
     let (mutations, _) = change.commit().await.unwrap();
     assert_eq!(mutations[0].action, "auto_recover");
     let channel = repository
-        .control_plane_lists()
+        .topology()
         .await
         .unwrap()
-        .channels
+        .channel_capabilities
         .into_iter()
-        .find(|channel| channel.id == CHANNEL)
+        .find(|capability| capability.id == CAPABILITY)
         .unwrap();
     assert!(!channel.auto_disabled);
     assert!(
         repository
-            .prepare_channel_recovery(CHANNEL)
+            .prepare_channel_recovery(CAPABILITY)
             .await
             .unwrap()
             .is_none()
@@ -1225,121 +1156,40 @@ async fn channel_auto_disable_and_recovery_follow_persisted_settings() {
 }
 
 #[tokio::test]
-async fn provider_managed_codex_resources_are_isolated_from_ordinary_management() {
+async fn empty_routing_groups_do_not_create_connector_pools_or_capabilities() {
     let (_directory, database, repository) = repository().await;
     seed_admin_and_user(&database).await;
     repository.ensure_system_settings(settings()).await.unwrap();
-    // A Codex pool is created through the ordinary group mutation, which binds
-    // an explicit connector pool for the Responses projection.
-    execute(
-        &database,
-        "INSERT INTO connector_pools (id,connector_kind)
-         VALUES ('40300000-0000-0000-0000-000000000481','codex_oauth')",
-    )
-    .await;
-
+    let id = Uuid::new_v4();
     let mut change = repository
         .prepare_mutation(
             ADMIN,
-            ControlPlaneMutation::CreateGroup(ChannelGroupInput {
-                name: "Codex pool".into(),
-                api_format: "open_ai_responses".into(),
-                connector_kind: "codex_oauth".into(),
-                request_compression: None,
-                sharing_only: None,
-                enabled: true,
-                status_statistics_enabled: None,
-            }),
+            ControlPlaneMutation::SaveRoutingGroup {
+                id,
+                expected: None,
+                input: ai_gateway::persistence::RoutingGroupInput {
+                    name: "Empty group".into(),
+                    sharing_only: false,
+                    enabled: true,
+                },
+            },
         )
         .await
         .unwrap();
     let records = change.runtime_records().await.unwrap();
-    let group = &records.control_plane.groups[0];
-    assert_eq!(group.connector_kind, "codex_oauth");
     compile_runtime_config(records).unwrap();
     let (mutations, _) = change.commit().await.unwrap();
-    let responses_group = mutations[0].id;
-    let pool_id = scalar::<String>(
-        &database,
-        "SELECT connector_pool_id FROM channel_groups \
-         WHERE connector_kind='codex_oauth' AND api_format='open_ai_responses'",
-    )
-    .await;
-    assert!(
-        control_plane_audits(&repository).await[0]
-            .after_redacted
-            .as_ref()
-            .unwrap()["connector_pool_groups"]
-            .is_array(),
-        "Codex group audits include the sibling projections"
-    );
+    assert_eq!(mutations[0].id, id);
     assert_eq!(
-        scalar::<String>(
-            &database,
-            "SELECT connector_pool_id FROM channel_groups WHERE id='{}'"
-                .replace("{}", &responses_group.to_string())
-                .as_str()
-        )
-        .await,
-        pool_id
+        scalar::<i64>(&database, "SELECT count(*) FROM connector_pools").await,
+        0
     );
-
-    // An administrator cannot attach an ordinary channel to a Codex group.
-    assert!(matches!(
-        repository
-            .prepare_mutation(
-                ADMIN,
-                ControlPlaneMutation::CreateChannel(ai_gateway::persistence::ChannelCreateInput {
-                    channel_group_id: responses_group,
-                    api_format: "open_ai_responses".into(),
-                    name: "Ordinary in Codex".into(),
-                    base_url: "https://upstream.example.test".into(),
-                    enabled: true,
-                    supports_websocket: false,
-                    supports_standalone_web_search: false,
-                    auto_disable_allowed: false,
-                    billing_multiplier: Decimal::ONE,
-                    proxy_id: None,
-                    config_template_id: None,
-                    override_document: json!({}),
-                    connect_timeout_ms: None,
-                    response_header_timeout_ms: None,
-                    stream_idle_timeout_ms: None,
-                    credential_id: None,
-                    available_models: vec!["gpt-5".into()],
-                    test_model: None,
-                    test_pricing_model_id: None,
-                },),
-            )
-            .await
-            .err(),
-        Some(RepositoryError::Validation)
-    ));
-
-    // Images projections are hidden from ordinary listing and detail reads,
-    // matching the schema's derived Images group and channel.
-    let lists = repository.control_plane_lists().await.unwrap();
-    assert_eq!(lists.channel_groups.len(), 2);
-    assert!(lists.channels.is_empty());
-    let images_group = lists
-        .channel_groups
-        .iter()
-        .find(|group| group.id != responses_group)
-        .unwrap();
-    assert_eq!(images_group.api_format, "open_ai_images");
-    assert!(
-        !repository
-            .channel_group_deletion_impact(responses_group)
-            .await
-            .is_ok()
-    );
-    assert!(matches!(
-        repository
-            .channel_group_deletion_impact(responses_group)
-            .await
-            .err(),
-        Some(RepositoryError::ProviderManagedResource)
-    ));
+    let topology = repository.topology().await.unwrap();
+    assert_eq!(topology.routing_groups.len(), 1);
+    assert!(topology.logical_channels.is_empty());
+    assert!(topology.channel_capabilities.is_empty());
+    assert!(topology.api_key_grants.is_empty());
+    assert!(topology.policy_grants.is_empty());
 }
 
 #[tokio::test]
@@ -1350,14 +1200,15 @@ async fn channel_routing_rules_are_replaced_whole_with_version_checks() {
     repository.ensure_system_settings(settings()).await.unwrap();
 
     // Replacing the tiers with a ready single-candidate graph commits in one step.
-    let input: ai_gateway::persistence::ModelProtocolRuleInput = serde_json::from_value(json!({
-        "description": "primary route",
+    let input: ai_gateway::persistence::OperationRuleInput = serde_json::from_value(json!({
+        "model_routing_profile_id": PROFILE,
+        "operation": "chat_completions",
         "enabled": true,
         "routing_tiers": [{
             "priority": 0,
             "selection_strategy": "weighted_round_robin",
             "candidates": [
-                {"channel_id": CHANNEL, "upstream_model": "gpt-test", "weight": 2}
+                {"capability_id": CAPABILITY, "upstream_model": "gpt-test", "weight": 2}
             ]
         }]
     }))
@@ -1365,11 +1216,10 @@ async fn channel_routing_rules_are_replaced_whole_with_version_checks() {
     let mut change = repository
         .prepare_mutation(
             ADMIN,
-            ControlPlaneMutation::UpdateProtocolRule {
-                model_rule_id: PROFILE,
+            ControlPlaneMutation::SaveOperationRule {
                 id: RULE,
                 input,
-                expected_updated_at: rule_updated_at(&database).await,
+                expected_updated_at: Some(rule_updated_at(&database).await),
             },
         )
         .await
@@ -1381,23 +1231,28 @@ async fn channel_routing_rules_are_replaced_whole_with_version_checks() {
     compile_runtime_config(records).unwrap();
     let (mutations, _) = change.commit().await.unwrap();
     assert_eq!(mutations[0].action, "update");
-    assert!(mutations[0].after_redacted["routing_tiers"].is_array());
+    assert!(mutations[0].after_redacted["tiers"].is_array());
+    assert_eq!(
+        mutations[0].after_redacted["candidates"][0]["capability_id"],
+        CAPABILITY.to_string()
+    );
 
     // A stale version is rejected before any tier is touched.
     let stale = repository
         .prepare_mutation(
             ADMIN,
-            ControlPlaneMutation::UpdateProtocolRule {
-                model_rule_id: PROFILE,
+            ControlPlaneMutation::SaveOperationRule {
                 id: RULE,
                 input: serde_json::from_value(json!({
-                    "description": null,
+                    "model_routing_profile_id": PROFILE,
+                    "operation": "chat_completions",
                     "enabled": false,
                     "routing_tiers": []
                 }))
                 .unwrap(),
-                expected_updated_at: rule_updated_at(&database).await
-                    - chrono::Duration::seconds(1),
+                expected_updated_at: Some(
+                    rule_updated_at(&database).await - chrono::Duration::seconds(1),
+                ),
             },
         )
         .await;
@@ -1407,22 +1262,22 @@ async fn channel_routing_rules_are_replaced_whole_with_version_checks() {
     let missing = repository
         .prepare_mutation(
             ADMIN,
-            ControlPlaneMutation::UpdateProtocolRule {
-                model_rule_id: PROFILE,
+            ControlPlaneMutation::SaveOperationRule {
                 id: RULE,
                 input: serde_json::from_value(json!({
-                    "description": null,
+                    "model_routing_profile_id": PROFILE,
+                    "operation": "chat_completions",
                     "enabled": true,
                     "routing_tiers": [{
                         "priority": 0,
                         "selection_strategy": "weighted_random",
                         "candidates": [
-                            {"channel_id": CHANNEL, "upstream_model": "unknown-model", "weight": 1}
+                            {"capability_id": CAPABILITY, "upstream_model": "unknown-model", "weight": 1}
                         ]
                     }]
                 }))
                 .unwrap(),
-                expected_updated_at: rule_updated_at(&database).await,
+                expected_updated_at: Some(rule_updated_at(&database).await),
             },
         )
         .await;
@@ -1445,15 +1300,15 @@ async fn invalid_management_inputs_fail_before_writing() {
         repository
             .prepare_mutation(
                 ADMIN,
-                ControlPlaneMutation::CreateGroup(ChannelGroupInput {
-                    name: "Bad format".into(),
-                    api_format: "not-a-format".into(),
-                    connector_kind: "openai_compatible".into(),
-                    request_compression: None,
-                    sharing_only: None,
-                    enabled: true,
-                    status_statistics_enabled: None,
-                }),
+                ControlPlaneMutation::SaveRoutingGroup {
+                    id: GROUP,
+                    expected: None,
+                    input: ai_gateway::persistence::RoutingGroupInput {
+                        name: " ".into(),
+                        sharing_only: false,
+                        enabled: true,
+                    },
+                },
             )
             .await
             .err(),
@@ -1474,8 +1329,16 @@ async fn invalid_management_inputs_fail_before_writing() {
             )
             .await
             .err(),
-        Some(RepositoryError::Validation)
+        Some(RepositoryError::ApiKeyTargetNotAllowed)
     ));
+    assert!(
+        repository
+            .control_plane_lists()
+            .await
+            .unwrap()
+            .api_key_policies
+            .is_empty()
+    );
     assert!(repository.load().await.unwrap().groups.is_empty());
     assert!(control_plane_audits(&repository).await.is_empty());
 
@@ -1483,51 +1346,77 @@ async fn invalid_management_inputs_fail_before_writing() {
     assert!(
         execute_expect_error(
             &database,
-            "INSERT INTO channel_groups (id,name,api_format)
-             VALUES ('40300000-0000-0000-0000-000000000499','Bad','not-a-format')",
+            "INSERT INTO routing_groups (id,name)
+             VALUES ('40300000-0000-0000-0000-000000000499','')",
         )
         .await
-        .is_some()
+        .is_some_and(|error| error.contains("routing_groups_name_check"))
     );
 }
 
-/// Seeds one Codex connector pool and its Responses credential channel. The schema trigger
-/// derives the paired Images group and channel plus both `codex_oauth_credential_channels`
-/// projections.
 async fn seed_codex_credential(
-    database: &SqliteDatabase,
-    pool: Uuid,
+    repository: &SqliteControlPlaneRepository,
     responses_group: Uuid,
-    credential: Uuid,
     label: &str,
     account_id: &str,
     provider_user_id: &str,
-) {
-    execute(
-        database,
-        &format!(
-            "INSERT INTO connector_pools (id,connector_kind) VALUES ('{pool}','codex_oauth');
-             INSERT INTO channel_groups
-             (id,name,api_format,connector_kind,connector_pool_id,sharing_only)
-             VALUES ('{responses_group}','{label} car','open_ai_responses','codex_oauth','{pool}',0);
-             INSERT INTO channels
-             (id,channel_group_id,api_format,name,base_url,upstream_auth_kind,supports_websocket)
-             VALUES ('{credential}','{responses_group}','open_ai_responses','{label}',
-                     'https://codex.invalid','none',1);
-             INSERT INTO codex_oauth_credentials
-             (channel_id,channel_group_id,connector_pool_id,label,account_id,user_id,id_token,
-              access_token,refresh_token,last_refreshed_at)
-             VALUES ('{credential}','{responses_group}','{pool}','{label}','{account_id}',
-                     '{provider_user_id}','id','access','refresh',ag_now());",
-        ),
-    )
-    .await;
+) -> Uuid {
+    repository
+        .prepare_mutation(
+            ADMIN,
+            ControlPlaneMutation::SaveRoutingGroup {
+                id: responses_group,
+                expected: None,
+                input: ai_gateway::persistence::RoutingGroupInput {
+                    name: format!("{label} car"),
+                    sharing_only: false,
+                    enabled: true,
+                },
+            },
+        )
+        .await
+        .unwrap()
+        .commit()
+        .await
+        .unwrap();
+    repository
+        .prepare_codex_credential_create(
+            ADMIN,
+            ai_gateway::persistence::CodexCredentialCreate {
+                channel_group_id: responses_group,
+                label: label.into(),
+                enabled: true,
+                proxy_id: None,
+                quota_threshold_percent: 95,
+                base_url: "https://codex.invalid".into(),
+                email: None,
+                account_id: Some(account_id.into()),
+                user_id: Some(provider_user_id.into()),
+                plan_type: None,
+                is_fedramp: false,
+                id_token: "id".into(),
+                access_token: "access".into(),
+                refresh_token: "refresh".into(),
+                access_token_expires_at: None,
+                available_models: vec!["gpt-test".into()],
+                quota: None,
+            },
+            None,
+        )
+        .await
+        .unwrap()
+        .commit()
+        .await
+        .unwrap()
+        .0[0]
+        .id
 }
 
-async fn projected_channels(database: &SqliteDatabase, credential: Uuid) -> Vec<Uuid> {
+async fn credential_capabilities(database: &SqliteDatabase, credential: Uuid) -> Vec<Uuid> {
     let mut reader = database.acquire_read().await.unwrap();
     sqlx::query_scalar::<_, SqliteUuid>(
-        "SELECT channel_id FROM codex_oauth_credential_channels WHERE credential_id=?",
+        "SELECT cap.id FROM channel_capabilities cap JOIN upstream_channels channel ON channel.id=cap.channel_id
+         WHERE channel.credential_id=? AND cap.deleted_at IS NULL AND channel.deleted_at IS NULL",
     )
     .bind(SqliteUuid(credential))
     .fetch_all(&mut *reader)
@@ -1536,24 +1425,6 @@ async fn projected_channels(database: &SqliteDatabase, credential: Uuid) -> Vec<
     .into_iter()
     .map(|value| value.0)
     .collect()
-}
-
-async fn projected_format_channel(
-    database: &SqliteDatabase,
-    credential: Uuid,
-    api_format: &str,
-) -> Uuid {
-    let mut reader = database.acquire_read().await.unwrap();
-    sqlx::query_scalar::<_, SqliteUuid>(
-        "SELECT channel_id FROM codex_oauth_credential_channels \
-         WHERE credential_id=? AND api_format=?",
-    )
-    .bind(SqliteUuid(credential))
-    .bind(api_format)
-    .fetch_one(&mut *reader)
-    .await
-    .unwrap()
-    .0
 }
 
 fn sorted(mut values: Vec<Uuid>) -> Vec<Uuid> {
@@ -1572,32 +1443,24 @@ async fn sharing_projections_follow_the_credential_not_the_group_identity() {
     seed_admin_and_user(&database).await;
     repository.ensure_system_settings(settings()).await.unwrap();
 
-    let pool = Uuid::from_u128(0x4b1);
     let responses_group = Uuid::from_u128(0x4b2);
     let sharing_group = Uuid::from_u128(0x4b3);
-    let credential = Uuid::from_u128(0x4b4);
-    let identity_alias = Uuid::from_u128(0x4b5);
     let primary_window = Uuid::from_u128(0x4b6);
     let secondary_window = Uuid::from_u128(0x4b7);
-    let alias_pool = Uuid::from_u128(0x4c1);
     let alias_group = Uuid::from_u128(0x4c2);
     let outsider = Uuid::from_u128(0x4c3);
 
-    seed_codex_credential(
-        &database,
-        pool,
+    let credential = seed_codex_credential(
+        &repository,
         responses_group,
-        credential,
         "Canonical",
         "shared-account",
         "shared-user",
     )
     .await;
-    seed_codex_credential(
-        &database,
-        alias_pool,
+    let identity_alias = seed_codex_credential(
+        &repository,
         alias_group,
-        identity_alias,
         "Alias",
         "shared-account",
         "shared-user",
@@ -1646,25 +1509,24 @@ async fn sharing_projections_follow_the_credential_not_the_group_identity() {
     assert_eq!(record.group.id, sharing_group);
     assert_eq!(record.group.policy.credential_id, credential);
 
-    let credential_images = projected_format_channel(&database, credential, "open_ai_images").await;
-    let alias_images = projected_format_channel(&database, identity_alias, "open_ai_images").await;
+    let canonical_capabilities = credential_capabilities(&database, credential).await;
+    let alias_capabilities = credential_capabilities(&database, identity_alias).await;
+    assert_eq!(canonical_capabilities.len(), 4);
+    assert_eq!(alias_capabilities.len(), 4);
     assert_eq!(
         sorted(record.channel_ids.clone()),
-        sorted(projected_channels(&database, credential).await),
+        sorted(canonical_capabilities.clone()),
         "channel projections are keyed by credential, not by the sharing group id"
     );
     assert_eq!(
-        sorted(record.channel_ids.clone()),
-        sorted(vec![credential, credential_images])
-    );
-    assert_eq!(
         sorted(record.protected_channel_ids.clone()),
-        sorted(vec![
-            credential,
-            credential_images,
-            identity_alias,
-            alias_images
-        ]),
+        sorted(
+            canonical_capabilities
+                .iter()
+                .chain(&alias_capabilities)
+                .copied()
+                .collect()
+        ),
         "protected identities cover both the canonical credential and the provider alias"
     );
     assert!(
@@ -1698,24 +1560,24 @@ async fn sharing_projections_follow_the_credential_not_the_group_identity() {
         Some(sharing_group)
     );
     assert!(sharing.for_user(outsider).is_none());
-    for channel in [credential, credential_images] {
+    for channel in &canonical_capabilities {
         assert_eq!(
-            sharing.for_channel(channel).map(|group| group.id),
+            sharing.for_channel(*channel).map(|group| group.id),
             Some(sharing_group)
         );
+        assert!(sharing.permits(ADMIN, *channel));
     }
-    assert!(sharing.permits(ADMIN, credential));
-    assert!(sharing.permits(ADMIN, credential_images));
-    for channel in [credential, credential_images, identity_alias, alias_images] {
+    for channel in canonical_capabilities.iter().chain(&alias_capabilities) {
         assert!(
-            !sharing.permits(outsider, channel),
+            !sharing.permits(outsider, *channel),
             "an unseated user is denied {channel}"
         );
     }
-    assert!(sharing.is_protected(identity_alias));
-    assert!(sharing.is_protected(alias_images));
-    assert!(
-        !sharing.permits(ADMIN, identity_alias),
-        "an identity alias is protected but not canonical"
-    );
+    for channel in alias_capabilities {
+        assert!(sharing.is_protected(channel));
+        assert!(
+            !sharing.permits(ADMIN, channel),
+            "an identity alias is protected but not canonical"
+        );
+    }
 }

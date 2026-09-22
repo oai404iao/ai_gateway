@@ -9,11 +9,11 @@ use uuid::Uuid;
 use crate::{
     domain::AutomaticDisableTrigger,
     persistence::{
-        ApiHostsView, ChannelBatchUpdateInput, ChannelDeletionImpact, CodexCredentialBatchInput,
-        CodexCredentialCreate, CodexCredentialUpdateInput, ConsoleApiKey, ConsoleAuditLog,
-        ControlPlaneChannelDetail, ControlPlaneConfigTemplateDetail, ControlPlaneLists,
-        ControlPlaneMutation, ControlPlaneRepository, MutationResult, PreparedControlPlaneChange,
-        RepositoryError, SelfApiKeyCreate, SelfApiKeyOptions, SelfApiKeyUpdate, SyncedModelInput,
+        ApiHostsView, ChannelBatchUpdateInput, CodexCredentialBatchInput, CodexCredentialCreate,
+        CodexCredentialUpdateInput, ConsoleApiKey, ConsoleAuditLog,
+        ControlPlaneConfigTemplateDetail, ControlPlaneLists, ControlPlaneMutation,
+        ControlPlaneRepository, MutationResult, PreparedControlPlaneChange, RepositoryError,
+        SelfApiKeyCreate, SelfApiKeyOptions, SelfApiKeyUpdate, SyncedModelInput,
         SystemSettingsView, UserBatchUpdateInput, UserSettingsInput, UserSettingsView,
     },
     routing::{
@@ -42,6 +42,15 @@ struct UpstreamClientCleanup {
 }
 
 impl ControlPlaneCoordinator {
+    pub async fn routing_profiles(
+        &self,
+    ) -> Result<
+        Vec<crate::persistence::upstream_topology::profiles::RoutingProfileView>,
+        ControlPlaneError,
+    > {
+        Ok(self.repository.routing_profiles().await?)
+    }
+
     pub async fn topology(
         &self,
     ) -> Result<crate::persistence::UpstreamTopologyRecords, ControlPlaneError> {
@@ -148,27 +157,6 @@ impl ControlPlaneCoordinator {
         Ok(self.repository.control_plane_lists().await?)
     }
 
-    pub async fn channel_detail(
-        &self,
-        id: Uuid,
-    ) -> Result<Option<ControlPlaneChannelDetail>, ControlPlaneError> {
-        Ok(self.repository.control_plane_channel_detail(id).await?)
-    }
-
-    pub async fn channel_group_deletion_impact(
-        &self,
-        id: Uuid,
-    ) -> Result<ChannelDeletionImpact, ControlPlaneError> {
-        Ok(self.repository.channel_group_deletion_impact(id).await?)
-    }
-
-    pub async fn channel_deletion_impact(
-        &self,
-        id: Uuid,
-    ) -> Result<ChannelDeletionImpact, ControlPlaneError> {
-        Ok(self.repository.channel_deletion_impact(id).await?)
-    }
-
     pub async fn config_template_detail(
         &self,
         id: Uuid,
@@ -259,8 +247,8 @@ impl ControlPlaneCoordinator {
         let (mutations, correlation_id) = self.commit_change(change).await?;
         tracing::info!(
             %correlation_id,
-            channel_count = mutations.len(),
-            "channel batch update committed"
+            capability_count = mutations.len(),
+            "capability batch update committed"
         );
         Ok(ChannelBatchUpdateResult {
             updated_ids: mutations.into_iter().map(|mutation| mutation.id).collect(),

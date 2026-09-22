@@ -93,8 +93,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import {
-  useChannelGroup,
-  useControlPlaneLists,
+  useRoutingGroup,
+  useProxies,
 } from "@/features/admin/api";
 import { formatDateTime } from "@/lib/dates";
 import { formatEstimatedQuotaTotal, formatUsd } from "@/lib/formatters";
@@ -399,8 +399,8 @@ export default function CodexOauthPage() {
   const { t } = useI18n();
   const { id: groupId = "" } = useParams();
   const navigate = useNavigate();
-  const group = useChannelGroup(groupId);
-  const lists = useControlPlaneLists();
+  const group = useRoutingGroup(groupId);
+  const proxiesQuery = useProxies();
   const credentials = useCodexCredentials(groupId);
   const startOauth = useStartCodexOauth(groupId);
   const completeOauth = useCompleteCodexOauth(groupId);
@@ -436,11 +436,11 @@ export default function CodexOauthPage() {
 
   const proxies = useMemo(
     () =>
-      (lists.data?.proxies ?? []).map((proxy) => ({
+      (proxiesQuery.data ?? []).map((proxy) => ({
         id: proxy.id,
         name: proxy.name,
       })),
-    [lists.data?.proxies],
+    [proxiesQuery.data],
   );
   const selectedCredentials = useMemo(
     () =>
@@ -668,12 +668,8 @@ export default function CodexOauthPage() {
     }
   };
 
-  const groupError =
-    group.data && group.data.data.connector_kind !== "codex_oauth"
-      ? new Error(t("This channel group is not a Codex OAuth connector."))
-      : null;
   const managementEnabled =
-    group.data?.data.connector_kind === "codex_oauth" && !group.error;
+    Boolean(group.data && !group.data.data.deleted_at && !group.error);
 
   return (
     <div className="flex flex-col gap-6">
@@ -687,14 +683,14 @@ export default function CodexOauthPage() {
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => navigate("/admin/routing/channels")}
+              onClick={() => navigate(`/admin/routing/groups/${groupId}`)}
             >
               <ArrowLeft data-icon="inline-start" />
-              {t("Back to channels")}
+              {t("Back to groups")}
             </Button>
             <Button
               variant="outline"
-              disabled={!managementEnabled || exportCredentials.isPending}
+              disabled={!managementEnabled || !credentials.data?.length || exportCredentials.isPending}
               onClick={() => setExportIds([])}
             >
               <Download data-icon="inline-start" />
@@ -728,7 +724,6 @@ export default function CodexOauthPage() {
       />
 
       {group.error ? <ErrorAlert error={group.error} /> : null}
-      {groupError ? <ErrorAlert error={groupError} /> : null}
 
       <div className="grid gap-4 sm:grid-cols-3">
         <Card>

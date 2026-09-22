@@ -158,12 +158,23 @@ PG 的 COPY/锁/升级测试和 SQLite 的 busy/WAL/文件锁/迁移测试分别
 
 ## 当前验证入口
 
+当前结构对照使用 `tests/fixtures/canonical-schema-inventory.json`；历史迁移 1–4
+测试继续使用 `sqlite-schema-inventory.json`，不能覆盖历史夹具。修改当前结构后，用隔离
+PostgreSQL 管理连接设置 `TEST_DATABASE_ADMIN_URL`，显式重新生成并审阅差异：
+
+```bash
+cargo test --locked --features sqlite-backend --test control_plane_integration \
+  regenerate_canonical_schema_inventory -- --ignored
+```
+
+生成器只操作随机测试数据库，不迁移正常服务数据库。
+
 ```bash
 cargo test --locked --features sqlite-backend --test sqlite_foundation
 cargo test --locked --features sqlite-backend --test control_plane_integration sqlite_parity
 cargo test --locked --features sqlite-backend --test control_plane_integration sqlite_s3_parity
 cargo test --locked --features sqlite-backend --test control_plane_integration sqlite_s4_parity
-cargo test --locked --features sqlite-backend --test control_plane_integration sqlite_s5_parity
+cargo test --locked --features sqlite-backend --test codex_capability_integration
 cargo test --locked --features sqlite-backend --lib application::codex::sqlite_tests
 cargo clippy --locked --workspace --all-targets --features sqlite-backend
 ```

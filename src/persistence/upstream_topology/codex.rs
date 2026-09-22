@@ -160,18 +160,13 @@ struct CodexCapabilityPlan {
 /// Responses and standalone search keep their previous default-on switches;
 /// the Images capabilities start disabled. Capability switches never encode the
 /// credential lifecycle, which lives on `upstream_credentials`.
-fn codex_capability_plan(group_request_compression: &str) -> Vec<CodexCapabilityPlan> {
-    let responses_compression = if group_request_compression == "zstd" {
-        "zstd"
-    } else {
-        "default"
-    };
+fn codex_capability_plan() -> Vec<CodexCapabilityPlan> {
     vec![
         CodexCapabilityPlan {
             operation: "responses",
             transports: vec!["http_sse", "websocket"],
             enabled: true,
-            request_compression: responses_compression,
+            request_compression: "default",
         },
         CodexCapabilityPlan {
             operation: "standalone_web_search",
@@ -198,28 +193,15 @@ pub(crate) async fn pg_create(
     transaction: &mut Transaction<'_, Postgres>,
     input: CodexCanonicalCreate<'_>,
 ) -> Result<(), RepositoryError> {
-    let (group_name, sharing_only, request_compression, status_statistics_enabled): (
-        String,
-        bool,
-        String,
-        bool,
-    ) = sqlx::query_as(
-        "SELECT name,sharing_only,request_compression,status_statistics_enabled \
-         FROM channel_groups WHERE id=$1",
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM routing_groups WHERE id=$1 AND deleted_at IS NULL)",
     )
     .bind(input.group_id)
-    .fetch_optional(&mut **transaction)
-    .await?
-    .ok_or(RepositoryError::Validation)?;
-    sqlx::query(
-        "INSERT INTO routing_groups (id,name,enabled,sharing_only) \
-         VALUES ($1,$2,true,$3) ON CONFLICT (id) DO NOTHING",
-    )
-    .bind(input.group_id)
-    .bind(&group_name)
-    .bind(sharing_only)
-    .execute(&mut **transaction)
+    .fetch_one(&mut **transaction)
     .await?;
+    if !exists {
+        return Err(RepositoryError::Validation);
+    }
     sqlx::query(
         "INSERT INTO group_identity_registry (id,label,created_at,canonical_group_id) \
          SELECT g.id,g.name,g.created_at,g.id FROM routing_groups g WHERE g.id=$1 \
@@ -258,7 +240,7 @@ pub(crate) async fn pg_create(
     .execute(&mut **transaction)
     .await?;
     let models = input.available_models.to_vec();
-    for plan in codex_capability_plan(&request_compression) {
+    for plan in codex_capability_plan() {
         let capability_id = Uuid::new_v4();
         let transports = plan
             .transports
@@ -278,7 +260,7 @@ pub(crate) async fn pg_create(
         .bind(plan.enabled)
         .bind(&models)
         .bind(plan.request_compression)
-        .bind(status_statistics_enabled)
+        .bind(false)
         .execute(&mut **transaction)
         .await?;
         sqlx::query(
@@ -310,27 +292,15 @@ pub(crate) async fn sqlite_create(
     input: CodexCanonicalCreate<'_>,
 ) -> Result<(), RepositoryError> {
     use crate::persistence::sqlite::SqliteUuid;
-    let (group_name, sharing_only, request_compression, status_statistics_enabled): (
-        String,
-        bool,
-        String,
-        bool,
-    ) = sqlx::query_as(
-        "SELECT name,sharing_only,request_compression,status_statistics_enabled \
-         FROM channel_groups WHERE id=?1",
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM routing_groups WHERE id=?1 AND deleted_at IS NULL)",
     )
     .bind(SqliteUuid(input.group_id))
-    .fetch_optional(&mut **transaction)
-    .await?
-    .ok_or(RepositoryError::Validation)?;
-    sqlx::query(
-        "INSERT OR IGNORE INTO routing_groups (id,name,enabled,sharing_only) VALUES (?1,?2,1,?3)",
-    )
-    .bind(SqliteUuid(input.group_id))
-    .bind(&group_name)
-    .bind(sharing_only)
-    .execute(&mut **transaction)
+    .fetch_one(&mut **transaction)
     .await?;
+    if !exists {
+        return Err(RepositoryError::Validation);
+    }
     sqlx::query(
         "INSERT OR IGNORE INTO group_identity_registry (id,label,created_at,canonical_group_id) \
          SELECT g.id,g.name,g.created_at,g.id FROM routing_groups g WHERE g.id=?1",
@@ -368,7 +338,7 @@ pub(crate) async fn sqlite_create(
     .execute(&mut **transaction)
     .await?;
     let models = input.available_models.to_vec();
-    for plan in codex_capability_plan(&request_compression) {
+    for plan in codex_capability_plan() {
         let capability_id = Uuid::new_v4();
         let transports = plan
             .transports
@@ -388,7 +358,7 @@ pub(crate) async fn sqlite_create(
         .bind(plan.enabled)
         .bind(sqlx::types::Json(&models))
         .bind(plan.request_compression)
-        .bind(status_statistics_enabled)
+        .bind(false)
         .execute(&mut **transaction)
         .await?;
         sqlx::query(
@@ -488,7 +458,7 @@ pub(crate) async fn pg_delete(
     .execute(&mut **transaction)
     .await?;
     sqlx::query(
-        "UPDATE upstream_accesses SET enabled=false,deleted_at=now(),revision=gen_random_uuid() \
+        "UPDATE upstream_accesses SET enabled=false,proxy_id=NULL,deleted_at=now(),revision=gen_random_uuid() \
          WHERE id=(SELECT access_id FROM upstream_channels WHERE id=$1) AND deleted_at IS NULL \
            AND NOT EXISTS(SELECT 1 FROM upstream_channels c \
                           WHERE c.access_id=upstream_accesses.id AND c.id<>$1 \
@@ -530,7 +500,7 @@ pub(crate) async fn sqlite_delete(
     .execute(&mut **transaction)
     .await?;
     sqlx::query(
-        "UPDATE upstream_accesses SET enabled=0,deleted_at=ag_now(),updated_at=ag_now(), \
+        "UPDATE upstream_accesses SET enabled=0,proxy_id=NULL,deleted_at=ag_now(),updated_at=ag_now(), \
          revision=ag_md5_uuid(hex(randomblob(32))) \
          WHERE id=(SELECT access_id FROM upstream_channels WHERE id=?1) AND deleted_at IS NULL \
            AND NOT EXISTS(SELECT 1 FROM upstream_channels c \
@@ -572,7 +542,10 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        database.install_schema().await.unwrap();
+        database
+            .migrate(&crate::persistence::sqlite::schema::MIGRATIONS[..4])
+            .await
+            .unwrap();
         let mut transaction = database.begin_write().await.unwrap();
         let group_id = Uuid::new_v4();
         let pool_id = Uuid::new_v4();
@@ -617,10 +590,12 @@ mod tests {
              SELECT channel_id,?,'quota_reset',refresh_generation FROM codex_oauth_credentials WHERE channel_id=?",
         ).bind(SqliteUuid(Uuid::new_v4())).bind(SqliteUuid(credentials[1]))
             .execute(&mut *transaction).await.unwrap();
-        sqlx::raw_sql(include_str!("../capability_cutover/sqlite-schema.sql"))
-            .execute(&mut *transaction)
-            .await
-            .unwrap();
+        sqlx::raw_sql(include_str!(
+            "../../../migrations/sqlite/0005_upstream_capabilities.sql"
+        ))
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
         sqlite_transfer(&mut transaction, chrono::Utc::now())
             .await
             .unwrap();

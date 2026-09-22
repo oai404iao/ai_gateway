@@ -14,8 +14,8 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import {
-  useChannels,
-  useModelRules,
+  useLogicalChannels,
+  useOperationRules,
   useModels,
 } from "@/features/admin/api";
 import { ConfigurationNav } from "./configuration-navigation";
@@ -23,18 +23,15 @@ import { ConfigurationNav } from "./configuration-navigation";
 export function ModelSetupPage() {
   const navigate = useNavigate();
   const { t } = useI18n();
-  const rules = useModelRules();
+  const rules = useOperationRules();
   const models = useModels();
-  const channels = useChannels();
+  const channels = useLogicalChannels();
   const loading =
     rules.isLoading ||
     models.isLoading ||
     channels.isLoading;
   const error = rules.error ?? models.error ?? channels.error;
-  const protocolCount = (rules.data ?? []).reduce(
-    (count, rule) => count + rule.protocol_rules.length,
-    0,
-  );
+  const protocolCount = rules.data?.length ?? 0;
 
   return (
     <div className="space-y-6">
@@ -67,7 +64,7 @@ export function ModelSetupPage() {
             countLabel={t("channels")}
             action={t("Manage channels")}
             icon={Boxes}
-            onClick={() => navigate("/admin/routing/channels")}
+            onClick={() => navigate("/admin/routing/logical-channels")}
           />
           <SetupCard
             title={t("3. Model rules")}
@@ -75,10 +72,10 @@ export function ModelSetupPage() {
               "Attach protocols to priced models, then configure priority tiers and explicit channel/model candidates.",
             )}
             count={protocolCount}
-            countLabel={t("protocol rules")}
+            countLabel={t("Operation rules")}
             action={t("Manage routing")}
             icon={Route}
-            onClick={() => navigate("/admin/routing/model-rules")}
+            onClick={() => navigate("/admin/routing/operation-rules")}
           />
         </div>
       </AsyncResource>

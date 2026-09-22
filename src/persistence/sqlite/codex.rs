@@ -1052,7 +1052,6 @@ async fn validate_codex_group_and_proxy_connection(
     channel_group_id: Uuid,
     proxy_id: Option<Uuid>,
 ) -> Result<CodexPoolContext, RepositoryError> {
-    let context = codex_pool_context_connection(&mut *connection, channel_group_id).await?;
     if let Some(proxy_id) = proxy_id {
         let valid_proxy = sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS(SELECT 1 FROM proxies WHERE id=?1 AND enabled)",
@@ -1064,7 +1063,16 @@ async fn validate_codex_group_and_proxy_connection(
             return Err(RepositoryError::Validation);
         }
     }
-    Ok(context)
+    sqlx::query(
+        "INSERT INTO connector_pools(id,connector_kind,routing_group_id)
+         SELECT ?,'codex_oauth',id FROM routing_groups WHERE id=? AND deleted_at IS NULL
+         ON CONFLICT (routing_group_id) DO NOTHING",
+    )
+    .bind(SqliteUuid(Uuid::new_v4()))
+    .bind(SqliteUuid(channel_group_id))
+    .execute(&mut *connection)
+    .await?;
+    codex_pool_context_connection(connection, channel_group_id).await
 }
 
 async fn codex_pool_context_connection(
@@ -1072,16 +1080,9 @@ async fn codex_pool_context_connection(
     channel_group_id: Uuid,
 ) -> Result<CodexPoolContext, RepositoryError> {
     sqlx::query_as::<_, CodexPoolContext>(
-        "SELECT selected.connector_pool_id, \
-                responses.id AS responses_channel_group_id \
-         FROM channel_groups AS selected \
-         JOIN channel_groups AS responses \
-           ON responses.connector_pool_id=selected.connector_pool_id \
-          AND responses.api_format='open_ai_responses' \
-         JOIN channel_groups AS images \
-           ON images.connector_pool_id=selected.connector_pool_id \
-          AND images.api_format='open_ai_images' \
-         WHERE selected.id=?1 AND selected.connector_kind=?2",
+        "SELECT pool.id AS connector_pool_id,selected.id AS responses_channel_group_id
+         FROM routing_groups selected JOIN connector_pools pool ON pool.routing_group_id=selected.id
+         WHERE selected.id=?1 AND selected.deleted_at IS NULL AND pool.connector_kind=?2",
     )
     .bind(SqliteUuid(channel_group_id))
     .bind(CODEX_CONNECTOR_KIND)

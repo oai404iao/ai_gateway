@@ -6,13 +6,12 @@ import { AppRouter } from "@/app/router";
 import { seedAuthenticatedSession } from "@/test/msw";
 import {
   API_KEY_POLICY,
-  CHANNEL,
-  CHANNEL_GROUP,
+  LOGICAL_CHANNEL,
+  ROUTING_GROUP,
   CONFIG_TEMPLATE,
   CONTROL_PLANE_USER,
   MODEL,
-  MODEL_PROTOCOL_RULE,
-  MODEL_RULE,
+  OPERATION_RULE,
   PROXY,
   REGISTRATION_INVITATION_CODE,
   USER_GROUP,
@@ -40,8 +39,8 @@ const createRoutes = [
   ["/admin/registration-invitation-codes/new", /create registration code/i],
   ["/admin/api-key-policies/new", /create policy/i],
   ["/admin/models/new", /create pricing model/i],
-  ["/admin/routing/channel-groups/new", /create group/i],
-  ["/admin/routing/channels/new", /create channel/i],
+  ["/admin/routing/groups/new", /save group/i],
+  ["/admin/routing/logical-channels/new", /save channel/i],
   ["/admin/network/proxies/new", /create proxy/i],
   ["/admin/transforms/templates/new", /create template/i],
 ] as const;
@@ -56,11 +55,11 @@ const editRoutes = [
   [`/admin/api-key-policies/${API_KEY_POLICY.id}`, /save policy/i],
   [`/admin/models/${MODEL.id}`, /save pricing model/i],
   [`/admin/models/${MODEL.id}/pricing`, /save model pricing/i],
-  [`/admin/routing/channel-groups/${CHANNEL_GROUP.id}`, /save group/i],
-  [`/admin/routing/channels/${CHANNEL.id}`, /save channel/i],
+  [`/admin/routing/groups/${ROUTING_GROUP.id}`, /save group/i],
+  [`/admin/routing/logical-channels/${LOGICAL_CHANNEL.id}`, /save channel/i],
   [
-    `/admin/routing/model-rules/${MODEL_RULE.id}/protocols/${MODEL_PROTOCOL_RULE.id}`,
-    /save protocol/i,
+    `/admin/routing/operation-rules/${OPERATION_RULE.id}`,
+    /save operation rule/i,
   ],
   [`/admin/network/proxies/${PROXY.id}`, /save proxy/i],
   [`/admin/transforms/templates/${CONFIG_TEMPLATE.id}`, /save template/i],
@@ -81,22 +80,22 @@ describe("Admin detail routes", () => {
     expect(await screen.findByRole("button", { name: buttonName })).toBeInTheDocument();
   });
 
-  it("opens a priced model rule at its protocol list", async () => {
+  it.each([
+    ["/admin/routing/channel-groups/new", "/admin/routing/groups", "Routing groups"],
+    ["/admin/routing/channels/old-id", "/admin/routing/logical-channels", "Logical channels"],
+    ["/admin/routing/model-rules/old-id/protocols/old-child", "/admin/routing/operation-rules", "Operation rules"],
+  ])("redirects retired route %s to canonical management", async (path, target, heading) => {
     seedAuthenticatedSession();
-    renderAppAt(`/admin/routing/model-rules/${MODEL_RULE.id}`);
-
-    expect(
-      await screen.findByRole("link", { name: /open chat completions/i }),
-    ).toBeInTheDocument();
+    renderAppAt(path);
+    expect(await screen.findByRole("heading", { name: heading })).toBeInTheDocument();
+    expect(window.location.pathname).toBe(target);
   });
 
-  it("localizes channel editing while retaining API format product names", async () => {
+  it("localizes logical channel editing", async () => {
     window.localStorage.setItem(STORAGE_KEY, "zh-CN");
     seedAuthenticatedSession();
-    renderAppAt("/admin/routing/channels/new");
+    renderAppAt("/admin/routing/logical-channels/new");
 
-    expect(await screen.findByRole("button", { name: "创建渠道" })).toBeInTheDocument();
-    expect(screen.getByText("API 格式")).toBeInTheDocument();
-    expect(screen.getByDisplayValue("Chat Completions")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "保存渠道" })).toBeInTheDocument();
   });
 });

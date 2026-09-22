@@ -156,38 +156,6 @@ const ModelPricingPage = lazy(() =>
 const CatalogPage = lazy(() =>
   import("@/features/admin/catalog/catalog-page").then((m) => ({ default: m.CatalogPage })),
 );
-const ChannelGroupDetailPage = lazy(() =>
-  import("@/features/admin/routing/channel-groups/channel-group-detail-page").then((m) => ({
-    default: m.ChannelGroupDetailPage,
-  })),
-);
-const ChannelsPage = lazy(() =>
-  import("@/features/admin/routing/channels/channels-page").then((m) => ({
-    default: m.ChannelsPage,
-  })),
-);
-const ChannelDetailPage = lazy(() =>
-  import("@/features/admin/routing/channels/channel-detail-page").then((m) => ({
-    default: m.ChannelDetailPage,
-  })),
-);
-const ModelRulesPage = lazy(() =>
-  import("@/features/admin/routing/model-rules/model-rules-page").then((m) => ({
-    default: m.ModelRulesPage,
-  })),
-);
-const ModelRuleDetailPage = lazy(() =>
-  import("@/features/admin/routing/model-rules/model-rule-detail-page").then((m) => ({
-    default: m.ModelRuleDetailPage,
-  })),
-);
-const ModelProtocolRuleDetailPage = lazy(() =>
-  import(
-    "@/features/admin/routing/model-rules/model-protocol-rule-detail-page"
-  ).then((m) => ({
-    default: m.ModelProtocolRuleDetailPage,
-  })),
-);
 const CodexOauthPage = lazy(
   () => import("@/features/admin/providers/codex-oauth/codex-oauth-page"),
 );
@@ -374,11 +342,13 @@ function appRouteElements() {
               <Route path="/admin/models/:id/pricing" element={<ModelPricingPage />} />
               <Route path="/admin/catalog" element={<CatalogPage />} />
               <Route
-                path="/admin/routing/channel-groups/:id"
-                element={<ChannelGroupDetailPage />}
+                path="/admin/routing/channel-groups/*"
+                element={<Navigate to="/admin/routing/groups" replace />}
               />
-              <Route path="/admin/routing/channels" element={<ChannelsPage />} />
-              <Route path="/admin/routing/channels/:id" element={<ChannelDetailPage />} />
+              <Route
+                path="/admin/routing/channels/*"
+                element={<Navigate to="/admin/routing/logical-channels" replace />}
+              />
               <Route path="/admin/routing/upstream-credentials" element={<CredentialsPage />} />
               <Route path="/admin/routing/accesses" element={<AccessesPage />} />
               <Route path="/admin/routing/groups" element={<GroupsPage />} />
@@ -406,14 +376,9 @@ function appRouteElements() {
               />
               <Route path="/admin/routing/accesses/:id" element={<AccessDetailPage />} />
               <Route path="/admin/routing/upstream-credentials/:id" element={<CredentialDetailPage />} />
-              <Route path="/admin/routing/model-rules" element={<ModelRulesPage />} />
               <Route
-                path="/admin/routing/model-rules/:id"
-                element={<ModelRuleDetailPage />}
-              />
-              <Route
-                path="/admin/routing/model-rules/:id/protocols/:protocolId"
-                element={<ModelProtocolRuleDetailPage />}
+                path="/admin/routing/model-rules/*"
+                element={<Navigate to="/admin/routing/operation-rules" replace />}
               />
               <Route
                 path="/admin/providers/codex-oauth/:id"

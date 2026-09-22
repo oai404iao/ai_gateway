@@ -36,7 +36,7 @@ struct AuditEntry {
 
 async fn auth() -> (tempfile::TempDir, Arc<SqliteDatabase>, SqliteAuthRepository) {
     let (directory, database) = database().await;
-    assert_eq!(database.install_schema().await.unwrap(), 4);
+    assert_eq!(database.install_schema().await.unwrap(), 5);
     let database = Arc::new(database);
     let repository = SqliteAuthRepository::new(Arc::clone(&database));
     (directory, database, repository)

@@ -45,6 +45,8 @@ pub struct SqliteMigration<'a> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum SqliteMigrationError {
+    #[error(transparent)]
+    CapabilityCutover(#[from] crate::persistence::capability_cutover::io::CapabilityCutoverIoError),
     #[error(
         "channel {channel_id} has invalid legacy authentication or credential scope; repair or delete it before upgrading"
     )]
@@ -199,6 +201,15 @@ pub(super) async fn run(
     let mut connection = pool.acquire().await?;
     // A cancelled migration must not return a connection carrying this commit hook to the pool.
     connection.close_on_drop();
+    let capability_cutover = migrations.iter().any(|migration| {
+        migration.version == 5
+            && migration.description == "canonical upstream operation capabilities"
+    });
+    if capability_cutover {
+        sqlx::query("PRAGMA foreign_keys=OFF")
+            .execute(&mut *connection)
+            .await?;
+    }
     let allow_commit = Arc::new(AtomicBool::new(false));
     let commit_gate = Arc::clone(&allow_commit);
     connection
@@ -245,6 +256,9 @@ pub(super) async fn run(
             sqlx::AssertSqlSafe(migration.sql.to_owned()),
         )
         .await?;
+        if capability_cutover && migration.version == 5 {
+            crate::persistence::capability_cutover::activation::sqlite(&mut transaction).await?;
+        }
         if rollback_observed.load(Ordering::Acquire) {
             return Err(SqliteMigrationError::InvalidManifest);
         }
@@ -262,6 +276,14 @@ pub(super) async fn run(
     }
     if check_identity(&mut transaction).await? != Some(database_id) {
         return Err(SqliteOpenError::ForeignDatabase.into());
+    }
+    if capability_cutover
+        && sqlx::query("PRAGMA foreign_key_check")
+            .fetch_optional(&mut *transaction)
+            .await?
+            .is_some()
+    {
+        return Err(SqliteMigrationError::HistoryMismatch);
     }
     allow_commit.store(true, Ordering::Release);
     transaction.commit().await?;

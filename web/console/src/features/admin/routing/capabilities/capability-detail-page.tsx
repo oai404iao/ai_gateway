@@ -8,7 +8,9 @@ import { AdminDetailShell } from "@/features/admin/components/admin-detail-shell
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { DecimalField } from "@/components/shared/decimal-field";
 import { StringListField } from "@/components/shared/string-list-field";
+import { ChannelModelPickerDialog } from "@/features/admin/routing/channels/channel-model-picker-dialog";
 import { Button } from "@/components/ui/button";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -37,8 +39,11 @@ import {
   useConfigTemplates,
   useCreateChannelCapability,
   useDeleteChannelCapability,
+  useDiscoverChannelModels,
   useLogicalChannels,
+  useRecoverCapability,
   useUpdateChannelCapability,
+  useUpstreamAccesses,
 } from "@/features/admin/api";
 import { useI18n } from "@/app/i18n";
 import {
@@ -120,18 +125,51 @@ export function CapabilityDetailPage() {
   const { t } = useI18n();
   const query = useChannelCapability(id);
   const channels = useLogicalChannels();
+  const accesses = useUpstreamAccesses();
+  const discover = useDiscoverChannelModels();
+  const [pickingModels, setPickingModels] = useState(false);
   const templates = useConfigTemplates();
   const create = useCreateChannelCapability();
   const update = useUpdateChannelCapability(id);
   const remove = useDeleteChannelCapability(id);
+  const recover = useRecoverCapability(id);
+  const [confirmingRecovery, setConfirmingRecovery] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const form = useForm<FormValues>({ resolver: zodResolver(schema), defaultValues: defaults });
   const capability = query.data?.data;
-  const busy = create.isPending || update.isPending || remove.isPending;
+  const selectedChannel = channels.data?.find((channel) => channel.id === form.watch("channel_id"));
+  const selectedAccess = accesses.data?.find((access) => access.id === selectedChannel?.access_id);
+  const busy = create.isPending || update.isPending || remove.isPending || recover.isPending;
   const channelNames = useMemo(
     () => new Map((channels.data ?? []).map((channel) => [channel.id, channel.name])),
     [channels.data],
   );
+
+  const discoverModels = async () => {
+    if (!selectedChannel || !selectedAccess) return;
+    const values = form.getValues();
+    if (!isJson(values.override_document)) {
+      form.setError("override_document", { message: "invalid JSON" });
+      return;
+    }
+    try {
+      await discover.mutateAsync({
+        api_format: values.operation === "chat_completions" ? "open_ai_chat_completions"
+          : values.operation.startsWith("images_") ? "open_ai_images" : "open_ai_responses",
+        base_url: selectedAccess.base_url,
+        credential_id: selectedChannel.credential_id,
+        proxy_id: selectedAccess.proxy_id,
+        connect_timeout_ms: selectedAccess.connect_timeout_ms,
+        response_header_timeout_ms: selectedAccess.response_header_timeout_ms,
+        stream_idle_timeout_ms: selectedAccess.stream_idle_timeout_ms,
+        config_template_id: values.config_template_id || null,
+        override_document: JSON.parse(values.override_document),
+      });
+      setPickingModels(true);
+    } catch (error) {
+      toast.error(t(controlPlaneMutationErrorMessage(error)));
+    }
+  };
 
   useEffect(() => {
     if (capability) {
@@ -202,6 +240,21 @@ export function CapabilityDetailPage() {
     }
   };
 
+  const confirmRecovery = async () => {
+    try {
+      await recover.mutateAsync({ ifMatch: query.etag });
+      setConfirmingRecovery(false);
+      toast.success(t("Capability recovered"));
+    } catch (error) {
+      if (error instanceof ApiError && error.isConflict) {
+        toast.error(t("This capability was changed elsewhere. Reloading."));
+        await query.refetch();
+      } else {
+        toast.error(t(controlPlaneMutationErrorMessage(error, "Could not recover capability.")));
+      }
+    }
+  };
+
   const transports = form.watch("transports");
   const toggleTransport = (transport: CapabilityTransport, checked: boolean) => {
     const next = checked
@@ -231,6 +284,17 @@ export function CapabilityDetailPage() {
               </CardDescription>
             </CardHeader>
             <CardContent>
+              {capability?.auto_disabled && (
+                <Alert className="mb-4">
+                  <AlertTitle>{t("Automatically disabled")}</AlertTitle>
+                  <AlertDescription>
+                    <p>{capability.auto_disable_reason}</p>
+                    <Button variant="outline" disabled={busy} onClick={() => setConfirmingRecovery(true)}>
+                      {t("Recover capability")}
+                    </Button>
+                  </AlertDescription>
+                </Alert>
+              )}
               <form onSubmit={submit} className="flex flex-col gap-5">
                 <FieldGroup>
                   <Field data-disabled={!isNew} data-invalid={Boolean(form.formState.errors.channel_id)}>
@@ -319,6 +383,18 @@ export function CapabilityDetailPage() {
                     onChange={(value) =>
                       form.setValue("available_models", value, { shouldDirty: true })
                     }
+                  />
+                  {selectedAccess?.connector_kind === "openai_compatible" && (
+                    <Button type="button" variant="outline" disabled={discover.isPending}
+                      onClick={() => void discoverModels()}>
+                      {t("Fetch models")}
+                    </Button>
+                  )}
+                  <ChannelModelPickerDialog
+                    open={pickingModels} onOpenChange={setPickingModels}
+                    models={discover.data?.models ?? []}
+                    currentModels={form.watch("available_models")}
+                    onApply={(models) => form.setValue("available_models", models, { shouldDirty: true })}
                   />
                   <Field>
                     <FieldLabel htmlFor="capability-compression">
@@ -494,6 +570,15 @@ export function CapabilityDetailPage() {
         destructive
         confirmDisabled={busy}
         onConfirm={confirmDelete}
+      />
+      <ConfirmDialog
+        open={confirmingRecovery}
+        onOpenChange={setConfirmingRecovery}
+        title={t("Recover capability")}
+        description={t("Clear automatic-disable state without changing the explicit enabled setting or API key grants.")}
+        confirmLabel={t("Recover")}
+        onConfirm={confirmRecovery}
+        confirmDisabled={recover.isPending}
       />
     </>
   );

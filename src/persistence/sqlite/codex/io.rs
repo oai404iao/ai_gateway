@@ -138,9 +138,8 @@ async fn history(
     })
 }
 
-const VISIBLE:&str="JOIN channel_groups visible_group ON visible_group.connector_pool_id=c.connector_pool_id
-    AND visible_group.connector_kind='codex_oauth' AND visible_group.api_format='open_ai_responses'
-    JOIN user_group_codex_quota_visibility visibility ON visibility.channel_group_id=visible_group.id
+const VISIBLE:&str="JOIN connector_pools visible_group ON visible_group.id=c.connector_pool_id
+    JOIN user_group_codex_quota_visibility visibility ON visibility.channel_group_id=visible_group.routing_group_id
     JOIN users console_user ON console_user.user_group_id=visibility.user_group_id
     WHERE console_user.id=?1 AND console_user.status='active' AND console_user.deleted_at IS NULL
     AND c.deleted_at IS NULL";
@@ -213,10 +212,11 @@ impl SqliteControlPlaneRepository {
         let mut reader = self.database.acquire_read().await.map_err(open_failure)?;
         let mut tx = reader.begin().await?;
         let pool = codex_pool_context_connection(&mut tx, group).await?;
-        let name: String = sqlx::query_scalar("SELECT name FROM channel_groups WHERE id=?")
-            .bind(SqliteUuid(group))
-            .fetch_one(&mut *tx)
-            .await?;
+        let name: String =
+            sqlx::query_scalar("SELECT name FROM routing_groups WHERE id=? AND deleted_at IS NULL")
+                .bind(SqliteUuid(group))
+                .fetch_one(&mut *tx)
+                .await?;
         let rows=sqlx::query_as::<_,CodexCredentialRecordRow>(sqlx::AssertSqlSafe(credential_select(
             "WHERE c.connector_pool_id=?1 AND c.deleted_at IS NULL
              AND (?2 OR c.channel_id IN (SELECT value FROM json_each(?3))) ORDER BY c.label,c.channel_id")))
@@ -299,7 +299,7 @@ impl SqliteControlPlaneRepository {
         let mut reader = self.database.acquire_read().await.map_err(open_failure)?;
         let mut tx = reader.begin().await?;
         let rows=sqlx::query_as::<_,CodexCredentialRecordRow>(sqlx::AssertSqlSafe(credential_select(
-            "WHERE c.connector_pool_id=(SELECT connector_pool_id FROM channel_groups WHERE id=? AND connector_kind='codex_oauth')
+            "WHERE c.connector_pool_id=(SELECT id FROM connector_pools WHERE routing_group_id=? AND connector_kind='codex_oauth')
              AND c.deleted_at IS NULL ORDER BY c.label,c.channel_id")))
             .bind(SqliteUuid(group)).fetch_all(&mut *tx).await?;
         let mut result = Vec::with_capacity(rows.len());

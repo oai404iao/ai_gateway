@@ -12,6 +12,12 @@ pub async fn postgres(
     sqlx::raw_sql(include_str!("codex-retirement-postgres.sql"))
         .execute(&mut **transaction)
         .await?;
+    sqlx::raw_sql(include_str!("lifecycle-postgres.sql"))
+        .execute(&mut **transaction)
+        .await?;
+    sqlx::raw_sql(include_str!("retire-postgres.sql"))
+        .execute(&mut **transaction)
+        .await?;
     super::super::upstream_topology::pg_load_control_plane(transaction).await?;
     Ok(())
 }
@@ -28,7 +34,13 @@ pub async fn sqlite(
         .await?;
     history::sqlite_retarget_codex_identity(transaction).await?;
     history::sqlite_retarget_history(transaction).await?;
+    sqlx::raw_sql(include_str!("lifecycle-sqlite.sql"))
+        .execute(&mut **transaction)
+        .await?;
     sqlx::raw_sql(include_str!("sqlite-codex-guards.sql"))
+        .execute(&mut **transaction)
+        .await?;
+    sqlx::raw_sql(include_str!("retire-sqlite.sql"))
         .execute(&mut **transaction)
         .await?;
     super::super::upstream_topology::sqlite_load_control_plane(transaction).await?;

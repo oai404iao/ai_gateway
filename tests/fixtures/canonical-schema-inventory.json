@@ -1,0 +1,1610 @@
+{
+  "api_key_capability_grants": {
+    "checks": [
+      "api_key_capability_grants_capability_origin_check",
+      "api_key_capability_grants_origin_kind_check"
+    ],
+    "columns": [
+      "api_key_id",
+      "capability_id",
+      "origin_kind",
+      "origin_id",
+      "created_at"
+    ],
+    "constraints": [
+      "api_key_capability_grants_api_key_id_fkey",
+      "api_key_capability_grants_capability_id_fkey",
+      "api_key_capability_grants_pkey"
+    ],
+    "types": {
+      "api_key_id": "uuid",
+      "capability_id": "uuid",
+      "created_at": "timestamptz",
+      "origin_id": "uuid",
+      "origin_kind": "text"
+    }
+  },
+  "api_key_policies": {
+    "checks": [
+      "api_key_policies_allowed_channel_ids_no_nulls",
+      "api_key_policies_allowed_group_ids_no_nulls"
+    ],
+    "columns": [
+      "id",
+      "name",
+      "allowed_group_ids",
+      "enabled",
+      "created_at",
+      "updated_at",
+      "allowed_channel_ids"
+    ],
+    "constraints": [
+      "api_key_policies_name_key",
+      "api_key_policies_pkey"
+    ],
+    "types": {
+      "allowed_channel_ids": "uuid[]",
+      "allowed_group_ids": "uuid[]",
+      "created_at": "timestamptz",
+      "enabled": "bool",
+      "id": "uuid",
+      "name": "varchar",
+      "updated_at": "timestamptz"
+    }
+  },
+  "api_key_policy_capability_grants": {
+    "checks": [
+      "api_key_policy_capability_grants_capability_origin_check",
+      "api_key_policy_capability_grants_origin_kind_check"
+    ],
+    "columns": [
+      "policy_id",
+      "capability_id",
+      "origin_kind",
+      "origin_id",
+      "created_at"
+    ],
+    "constraints": [
+      "api_key_policy_capability_grants_capability_id_fkey",
+      "api_key_policy_capability_grants_pkey",
+      "api_key_policy_capability_grants_policy_id_fkey"
+    ],
+    "types": {
+      "capability_id": "uuid",
+      "created_at": "timestamptz",
+      "origin_id": "uuid",
+      "origin_kind": "text",
+      "policy_id": "uuid"
+    }
+  },
+  "api_keys": {
+    "checks": [
+      "api_keys_allowed_api_formats_check",
+      "api_keys_allowed_api_formats_check1",
+      "api_keys_allowed_channel_ids_no_nulls",
+      "api_keys_allowed_group_ids_no_nulls",
+      "api_keys_check",
+      "api_keys_deleted_actor_check",
+      "api_keys_deleted_state_check",
+      "api_keys_max_concurrent_requests_check",
+      "api_keys_permissions_check",
+      "api_keys_permissions_check1",
+      "api_keys_permissions_nonempty",
+      "api_keys_quota_limit_amount_check",
+      "api_keys_quota_used_amount_check",
+      "api_keys_requests_per_minute_check",
+      "api_keys_status_check"
+    ],
+    "columns": [
+      "id",
+      "user_id",
+      "name",
+      "secret_value",
+      "status",
+      "expires_at",
+      "allowed_api_formats",
+      "permissions",
+      "allowed_group_ids",
+      "requests_per_minute",
+      "max_concurrent_requests",
+      "quota_limit_amount",
+      "quota_used_amount",
+      "last_used_at",
+      "created_at",
+      "updated_at",
+      "allowed_channel_ids",
+      "is_system",
+      "deleted_at",
+      "deleted_by"
+    ],
+    "constraints": [
+      "api_keys_deleted_by_fkey",
+      "api_keys_pkey",
+      "api_keys_secret_value_key",
+      "api_keys_user_id_fkey"
+    ],
+    "types": {
+      "allowed_api_formats": "api_format[]",
+      "allowed_channel_ids": "uuid[]",
+      "allowed_group_ids": "uuid[]",
+      "created_at": "timestamptz",
+      "deleted_at": "timestamptz",
+      "deleted_by": "uuid",
+      "expires_at": "timestamptz",
+      "id": "uuid",
+      "is_system": "bool",
+      "last_used_at": "timestamptz",
+      "max_concurrent_requests": "int4",
+      "name": "varchar",
+      "permissions": "text[]",
+      "quota_limit_amount": "numeric",
+      "quota_used_amount": "numeric",
+      "requests_per_minute": "int4",
+      "secret_value": "text",
+      "status": "text",
+      "updated_at": "timestamptz",
+      "user_id": "uuid"
+    }
+  },
+  "audit_logs": {
+    "checks": [
+      "audit_logs_actor_role_check",
+      "audit_logs_actor_type_check",
+      "audit_logs_after_redacted_check",
+      "audit_logs_before_redacted_check"
+    ],
+    "columns": [
+      "id",
+      "occurred_at",
+      "actor_user_id",
+      "actor_type",
+      "action",
+      "object_type",
+      "object_id",
+      "before_redacted",
+      "after_redacted",
+      "correlation_id",
+      "reason",
+      "source_ip_prefix",
+      "actor_role"
+    ],
+    "constraints": [
+      "audit_logs_actor_user_id_fkey",
+      "audit_logs_pkey"
+    ],
+    "types": {
+      "action": "varchar",
+      "actor_role": "text",
+      "actor_type": "text",
+      "actor_user_id": "uuid",
+      "after_redacted": "jsonb",
+      "before_redacted": "jsonb",
+      "correlation_id": "varchar",
+      "id": "uuid",
+      "object_id": "uuid",
+      "object_type": "text",
+      "occurred_at": "timestamptz",
+      "reason": "varchar",
+      "source_ip_prefix": "cidr"
+    }
+  },
+  "channel_capabilities": {
+    "checks": [
+      "channel_capabilities_auto_disable_check",
+      "channel_capabilities_available_models_check",
+      "channel_capabilities_billing_multiplier_check",
+      "channel_capabilities_deleted_state_check",
+      "channel_capabilities_operation_check",
+      "channel_capabilities_override_document_check",
+      "channel_capabilities_probe_check",
+      "channel_capabilities_request_compression_check",
+      "channel_capabilities_request_compression_operation_check",
+      "channel_capabilities_test_model_catalogue_check",
+      "channel_capabilities_test_model_pair_check",
+      "channel_capabilities_transports_check"
+    ],
+    "columns": [
+      "id",
+      "channel_id",
+      "operation",
+      "transports",
+      "enabled",
+      "available_models",
+      "request_compression",
+      "test_model",
+      "test_pricing_model_id",
+      "auto_disabled",
+      "auto_disable_reason",
+      "auto_disable_at",
+      "auto_disable_allowed",
+      "status_statistics_enabled",
+      "config_template_id",
+      "override_document",
+      "billing_multiplier",
+      "revision",
+      "created_at",
+      "updated_at",
+      "deleted_at"
+    ],
+    "constraints": [
+      "channel_capabilities_channel_id_fkey",
+      "channel_capabilities_channel_operation_key",
+      "channel_capabilities_config_template_id_fkey",
+      "channel_capabilities_id_operation_key",
+      "channel_capabilities_pkey",
+      "channel_capabilities_test_pricing_model_id_fkey"
+    ],
+    "types": {
+      "auto_disable_allowed": "bool",
+      "auto_disable_at": "timestamptz",
+      "auto_disable_reason": "varchar",
+      "auto_disabled": "bool",
+      "available_models": "text[]",
+      "billing_multiplier": "numeric",
+      "channel_id": "uuid",
+      "config_template_id": "uuid",
+      "created_at": "timestamptz",
+      "deleted_at": "timestamptz",
+      "enabled": "bool",
+      "id": "uuid",
+      "operation": "text",
+      "override_document": "jsonb",
+      "request_compression": "text",
+      "revision": "uuid",
+      "status_statistics_enabled": "bool",
+      "test_model": "varchar",
+      "test_pricing_model_id": "uuid",
+      "transports": "text[]",
+      "updated_at": "timestamptz"
+    }
+  },
+  "channel_identity_registry": {
+    "checks": [
+      "channel_identity_registry_label_check"
+    ],
+    "columns": [
+      "id",
+      "label",
+      "created_at",
+      "canonical_channel_id",
+      "codex_credential_id",
+      "capability_id"
+    ],
+    "constraints": [
+      "channel_identity_registry_canonical_channel_id_fkey",
+      "channel_identity_registry_capability_id_fkey",
+      "channel_identity_registry_codex_credential_id_fkey",
+      "channel_identity_registry_pkey"
+    ],
+    "types": {
+      "canonical_channel_id": "uuid",
+      "capability_id": "uuid",
+      "codex_credential_id": "uuid",
+      "created_at": "timestamptz",
+      "id": "uuid",
+      "label": "varchar"
+    }
+  },
+  "codex_oauth_credentials": {
+    "checks": [
+      "codex_oauth_credentials_access_token_check",
+      "codex_oauth_credentials_account_id_check",
+      "codex_oauth_credentials_account_or_user_check",
+      "codex_oauth_credentials_check",
+      "codex_oauth_credentials_id_token_check",
+      "codex_oauth_credentials_label_check",
+      "codex_oauth_credentials_primary_used_percent_check",
+      "codex_oauth_credentials_primary_window_seconds_check",
+      "codex_oauth_credentials_quota_threshold_percent_check",
+      "codex_oauth_credentials_refresh_generation_check",
+      "codex_oauth_credentials_refresh_token_check",
+      "codex_oauth_credentials_reset_credits_check",
+      "codex_oauth_credentials_runtime_status_check",
+      "codex_oauth_credentials_secondary_used_percent_check",
+      "codex_oauth_credentials_secondary_window_seconds_check",
+      "codex_oauth_credentials_user_id_check"
+    ],
+    "columns": [
+      "channel_id",
+      "channel_group_id",
+      "label",
+      "email",
+      "account_id",
+      "plan_type",
+      "is_fedramp",
+      "id_token",
+      "access_token",
+      "refresh_token",
+      "access_token_expires_at",
+      "last_refreshed_at",
+      "refresh_generation",
+      "reauth_required",
+      "enabled",
+      "quota_threshold_percent",
+      "runtime_status",
+      "quota_allowed",
+      "quota_limit_reached",
+      "primary_used_percent",
+      "primary_window_seconds",
+      "primary_reset_at",
+      "secondary_used_percent",
+      "secondary_window_seconds",
+      "secondary_reset_at",
+      "quota_checked_at",
+      "last_error_code",
+      "last_error_summary",
+      "created_at",
+      "updated_at",
+      "user_id",
+      "deleted_at",
+      "connector_pool_id",
+      "quota_reset_credits_available"
+    ],
+    "constraints": [
+      "codex_oauth_credentials_channel_group_id_fkey",
+      "codex_oauth_credentials_channel_id_fkey",
+      "codex_oauth_credentials_connector_pool_id_fkey",
+      "codex_oauth_credentials_pkey"
+    ],
+    "types": {
+      "access_token": "text",
+      "access_token_expires_at": "timestamptz",
+      "account_id": "varchar",
+      "channel_group_id": "uuid",
+      "channel_id": "uuid",
+      "connector_pool_id": "uuid",
+      "created_at": "timestamptz",
+      "deleted_at": "timestamptz",
+      "email": "varchar",
+      "enabled": "bool",
+      "id_token": "text",
+      "is_fedramp": "bool",
+      "label": "varchar",
+      "last_error_code": "varchar",
+      "last_error_summary": "varchar",
+      "last_refreshed_at": "timestamptz",
+      "plan_type": "varchar",
+      "primary_reset_at": "timestamptz",
+      "primary_used_percent": "int4",
+      "primary_window_seconds": "int4",
+      "quota_allowed": "bool",
+      "quota_checked_at": "timestamptz",
+      "quota_limit_reached": "bool",
+      "quota_reset_credits_available": "int8",
+      "quota_threshold_percent": "int2",
+      "reauth_required": "bool",
+      "refresh_generation": "int8",
+      "refresh_token": "text",
+      "runtime_status": "text",
+      "secondary_reset_at": "timestamptz",
+      "secondary_used_percent": "int4",
+      "secondary_window_seconds": "int4",
+      "updated_at": "timestamptz",
+      "user_id": "varchar"
+    }
+  },
+  "codex_oauth_flows": {
+    "checks": [
+      "codex_oauth_flows_code_verifier_check",
+      "codex_oauth_flows_label_check",
+      "codex_oauth_flows_quota_threshold_percent_check",
+      "codex_oauth_flows_redirect_uri_check",
+      "codex_oauth_flows_state_hash_check"
+    ],
+    "columns": [
+      "id",
+      "actor_user_id",
+      "channel_group_id",
+      "label",
+      "proxy_id",
+      "quota_threshold_percent",
+      "redirect_uri",
+      "state_hash",
+      "code_verifier",
+      "expires_at",
+      "completed_at",
+      "created_at"
+    ],
+    "constraints": [
+      "codex_oauth_flows_actor_user_id_fkey",
+      "codex_oauth_flows_channel_group_id_fkey",
+      "codex_oauth_flows_pkey",
+      "codex_oauth_flows_proxy_id_fkey"
+    ],
+    "types": {
+      "actor_user_id": "uuid",
+      "channel_group_id": "uuid",
+      "code_verifier": "text",
+      "completed_at": "timestamptz",
+      "created_at": "timestamptz",
+      "expires_at": "timestamptz",
+      "id": "uuid",
+      "label": "varchar",
+      "proxy_id": "uuid",
+      "quota_threshold_percent": "int2",
+      "redirect_uri": "text",
+      "state_hash": "bytea"
+    }
+  },
+  "codex_quota_reset_events": {
+    "checks": [
+      "codex_quota_reset_events_outcome_check",
+      "codex_quota_reset_events_windows_reset_check"
+    ],
+    "columns": [
+      "id",
+      "credential_id",
+      "actor_user_id",
+      "requested_at",
+      "outcome",
+      "windows_reset",
+      "primary_applied_at",
+      "secondary_applied_at",
+      "correlation_id",
+      "created_at"
+    ],
+    "constraints": [
+      "codex_quota_reset_events_actor_user_id_fkey",
+      "codex_quota_reset_events_credential_id_fkey",
+      "codex_quota_reset_events_pkey"
+    ],
+    "types": {
+      "actor_user_id": "uuid",
+      "correlation_id": "uuid",
+      "created_at": "timestamptz",
+      "credential_id": "uuid",
+      "id": "uuid",
+      "outcome": "text",
+      "primary_applied_at": "timestamptz",
+      "requested_at": "timestamptz",
+      "secondary_applied_at": "timestamptz",
+      "windows_reset": "int4"
+    }
+  },
+  "codex_quota_window_periods": {
+    "checks": [
+      "codex_quota_window_periods_check",
+      "codex_quota_window_periods_check1",
+      "codex_quota_window_periods_check2",
+      "codex_quota_window_periods_check3",
+      "codex_quota_window_periods_initial_used_percent_check",
+      "codex_quota_window_periods_last_used_percent_check",
+      "codex_quota_window_periods_reset_reason_check",
+      "codex_quota_window_periods_window_kind_check",
+      "codex_quota_window_periods_window_seconds_check"
+    ],
+    "columns": [
+      "id",
+      "credential_id",
+      "window_kind",
+      "window_seconds",
+      "started_at",
+      "scheduled_reset_at",
+      "ended_at",
+      "reset_reason",
+      "initial_used_percent",
+      "last_used_percent",
+      "first_observed_at",
+      "last_observed_at",
+      "created_at",
+      "updated_at"
+    ],
+    "constraints": [
+      "codex_quota_window_periods_credential_id_fkey",
+      "codex_quota_window_periods_pkey"
+    ],
+    "types": {
+      "created_at": "timestamptz",
+      "credential_id": "uuid",
+      "ended_at": "timestamptz",
+      "first_observed_at": "timestamptz",
+      "id": "uuid",
+      "initial_used_percent": "int4",
+      "last_observed_at": "timestamptz",
+      "last_used_percent": "int4",
+      "reset_reason": "text",
+      "scheduled_reset_at": "timestamptz",
+      "started_at": "timestamptz",
+      "updated_at": "timestamptz",
+      "window_kind": "text",
+      "window_seconds": "int4"
+    }
+  },
+  "codex_sharing_groups": {
+    "checks": [
+      "codex_sharing_groups_group_max_concurrent_requests_check",
+      "codex_sharing_groups_group_requests_per_minute_check",
+      "codex_sharing_groups_name_check",
+      "codex_sharing_groups_primary_limit_amount_check",
+      "codex_sharing_groups_provider_user_id_check",
+      "codex_sharing_groups_request_reservation_amount_check",
+      "codex_sharing_groups_seats_check",
+      "codex_sharing_groups_secondary_limit_amount_check",
+      "codex_sharing_groups_user_max_concurrent_requests_check",
+      "codex_sharing_groups_user_requests_per_minute_check"
+    ],
+    "columns": [
+      "id",
+      "credential_id",
+      "provider_account_id",
+      "provider_user_id",
+      "name",
+      "enabled",
+      "seats",
+      "primary_limit_amount",
+      "secondary_limit_amount",
+      "request_reservation_amount",
+      "user_requests_per_minute",
+      "group_requests_per_minute",
+      "user_max_concurrent_requests",
+      "group_max_concurrent_requests",
+      "created_at",
+      "updated_at"
+    ],
+    "constraints": [
+      "codex_sharing_groups_credential_id_fkey",
+      "codex_sharing_groups_credential_id_key",
+      "codex_sharing_groups_pkey",
+      "codex_sharing_groups_provider_account_id_provider_user_id_key"
+    ],
+    "types": {
+      "created_at": "timestamptz",
+      "credential_id": "uuid",
+      "enabled": "bool",
+      "group_max_concurrent_requests": "int4",
+      "group_requests_per_minute": "int4",
+      "id": "uuid",
+      "name": "text",
+      "primary_limit_amount": "numeric",
+      "provider_account_id": "text",
+      "provider_user_id": "text",
+      "request_reservation_amount": "numeric",
+      "seats": "jsonb",
+      "secondary_limit_amount": "numeric",
+      "updated_at": "timestamptz",
+      "user_max_concurrent_requests": "int4",
+      "user_requests_per_minute": "int4"
+    }
+  },
+  "codex_sharing_ledger": {
+    "checks": [
+      "codex_sharing_ledger_singleton_check"
+    ],
+    "columns": [
+      "singleton",
+      "ledger_id"
+    ],
+    "constraints": [
+      "codex_sharing_ledger_ledger_id_key",
+      "codex_sharing_ledger_pkey"
+    ],
+    "types": {
+      "ledger_id": "uuid",
+      "singleton": "bool"
+    }
+  },
+  "config_templates": {
+    "checks": [
+      "config_templates_document_check"
+    ],
+    "columns": [
+      "id",
+      "name",
+      "description",
+      "document",
+      "enabled",
+      "created_at",
+      "updated_at"
+    ],
+    "constraints": [
+      "config_templates_name_key",
+      "config_templates_pkey"
+    ],
+    "types": {
+      "created_at": "timestamptz",
+      "description": "text",
+      "document": "jsonb",
+      "enabled": "bool",
+      "id": "uuid",
+      "name": "varchar",
+      "updated_at": "timestamptz"
+    }
+  },
+  "connector_pools": {
+    "checks": [
+      "connector_pools_connector_kind_check"
+    ],
+    "columns": [
+      "id",
+      "connector_kind",
+      "created_at",
+      "routing_group_id"
+    ],
+    "constraints": [
+      "connector_pools_pkey",
+      "connector_pools_routing_group_id_fkey"
+    ],
+    "types": {
+      "connector_kind": "text",
+      "created_at": "timestamptz",
+      "id": "uuid",
+      "routing_group_id": "uuid"
+    }
+  },
+  "group_identity_registry": {
+    "checks": [
+      "group_identity_registry_label_check"
+    ],
+    "columns": [
+      "id",
+      "label",
+      "created_at",
+      "canonical_group_id"
+    ],
+    "constraints": [
+      "group_identity_registry_canonical_group_id_fkey",
+      "group_identity_registry_pkey"
+    ],
+    "types": {
+      "canonical_group_id": "uuid",
+      "created_at": "timestamptz",
+      "id": "uuid",
+      "label": "varchar"
+    }
+  },
+  "model_capability_candidates": {
+    "checks": [
+      "model_capability_candidates_upstream_model_check",
+      "model_capability_candidates_weight_check"
+    ],
+    "columns": [
+      "tier_id",
+      "operation",
+      "capability_id",
+      "upstream_model",
+      "weight"
+    ],
+    "constraints": [
+      "model_capability_candidates_capability_fk",
+      "model_capability_candidates_pkey",
+      "model_capability_candidates_tier_fk"
+    ],
+    "types": {
+      "capability_id": "uuid",
+      "operation": "text",
+      "tier_id": "uuid",
+      "upstream_model": "varchar",
+      "weight": "int4"
+    }
+  },
+  "model_capability_tiers": {
+    "checks": [
+      "model_capability_tiers_priority_check",
+      "model_capability_tiers_strategy_check"
+    ],
+    "columns": [
+      "id",
+      "rule_id",
+      "operation",
+      "priority",
+      "strategy"
+    ],
+    "constraints": [
+      "model_capability_tiers_id_operation_key",
+      "model_capability_tiers_pkey",
+      "model_capability_tiers_rule_fk",
+      "model_capability_tiers_rule_priority_key"
+    ],
+    "types": {
+      "id": "uuid",
+      "operation": "text",
+      "priority": "int4",
+      "rule_id": "uuid",
+      "strategy": "text"
+    }
+  },
+  "model_operation_rules": {
+    "checks": [
+      "model_operation_rules_operation_check"
+    ],
+    "columns": [
+      "id",
+      "model_routing_profile_id",
+      "operation",
+      "enabled",
+      "created_at",
+      "updated_at"
+    ],
+    "constraints": [
+      "model_operation_rules_id_operation_key",
+      "model_operation_rules_model_routing_profile_id_fkey",
+      "model_operation_rules_pkey",
+      "model_operation_rules_profile_operation_key"
+    ],
+    "types": {
+      "created_at": "timestamptz",
+      "enabled": "bool",
+      "id": "uuid",
+      "model_routing_profile_id": "uuid",
+      "operation": "text",
+      "updated_at": "timestamptz"
+    }
+  },
+  "model_routing_profiles": {
+    "checks": [],
+    "columns": [
+      "id",
+      "model_id",
+      "created_at",
+      "updated_at"
+    ],
+    "constraints": [
+      "model_routing_profiles_model_id_fkey",
+      "model_routing_profiles_model_id_key",
+      "model_routing_profiles_pkey"
+    ],
+    "types": {
+      "created_at": "timestamptz",
+      "id": "uuid",
+      "model_id": "uuid",
+      "updated_at": "timestamptz"
+    }
+  },
+  "model_rule_identity_registry": {
+    "checks": [
+      "model_rule_identity_registry_label_check"
+    ],
+    "columns": [
+      "id",
+      "label",
+      "created_at",
+      "canonical_rule_id"
+    ],
+    "constraints": [
+      "model_rule_identity_registry_canonical_rule_id_fkey",
+      "model_rule_identity_registry_pkey"
+    ],
+    "types": {
+      "canonical_rule_id": "uuid",
+      "created_at": "timestamptz",
+      "id": "uuid",
+      "label": "text"
+    }
+  },
+  "models": {
+    "checks": [
+      "models_advanced_billing_object",
+      "models_cache_write_unit_price_check",
+      "models_cached_input_unit_price_check",
+      "models_currency_usd_only",
+      "models_deleted_actor_check",
+      "models_deleted_state_check",
+      "models_input_unit_price_check",
+      "models_output_unit_price_check",
+      "models_price_unit_tokens_check",
+      "models_source_payload_check"
+    ],
+    "columns": [
+      "id",
+      "source_model_id",
+      "display_name",
+      "provider_name",
+      "enabled",
+      "currency",
+      "price_unit_tokens",
+      "input_unit_price",
+      "cached_input_unit_price",
+      "cache_write_unit_price",
+      "output_unit_price",
+      "price_effective_at",
+      "source_payload",
+      "last_synced_at",
+      "created_at",
+      "updated_at",
+      "advanced_billing",
+      "deleted_at",
+      "deleted_by"
+    ],
+    "constraints": [
+      "models_deleted_by_fkey",
+      "models_pkey"
+    ],
+    "types": {
+      "advanced_billing": "jsonb",
+      "cache_write_unit_price": "numeric",
+      "cached_input_unit_price": "numeric",
+      "created_at": "timestamptz",
+      "currency": "bpchar",
+      "deleted_at": "timestamptz",
+      "deleted_by": "uuid",
+      "display_name": "varchar",
+      "enabled": "bool",
+      "id": "uuid",
+      "input_unit_price": "numeric",
+      "last_synced_at": "timestamptz",
+      "output_unit_price": "numeric",
+      "price_effective_at": "timestamptz",
+      "price_unit_tokens": "int8",
+      "provider_name": "varchar",
+      "source_model_id": "varchar",
+      "source_payload": "jsonb",
+      "updated_at": "timestamptz"
+    }
+  },
+  "proxies": {
+    "checks": [
+      "proxies_proxy_url_check"
+    ],
+    "columns": [
+      "id",
+      "name",
+      "proxy_url",
+      "username",
+      "password",
+      "no_proxy_hosts",
+      "enabled",
+      "created_at",
+      "updated_at"
+    ],
+    "constraints": [
+      "proxies_name_key",
+      "proxies_pkey"
+    ],
+    "types": {
+      "created_at": "timestamptz",
+      "enabled": "bool",
+      "id": "uuid",
+      "name": "varchar",
+      "no_proxy_hosts": "text[]",
+      "password": "text",
+      "proxy_url": "text",
+      "updated_at": "timestamptz",
+      "username": "text"
+    }
+  },
+  "registration_invitation_codes": {
+    "checks": [
+      "registration_invitation_codes_check",
+      "registration_invitation_codes_initial_balance_amount_check",
+      "registration_invitation_codes_max_uses_check",
+      "registration_invitation_codes_used_count_check"
+    ],
+    "columns": [
+      "id",
+      "name",
+      "code_hash",
+      "max_uses",
+      "used_count",
+      "expires_at",
+      "enabled",
+      "user_group_id",
+      "initial_balance_amount",
+      "created_by",
+      "last_used_at",
+      "created_at",
+      "updated_at"
+    ],
+    "constraints": [
+      "registration_invitation_codes_code_hash_key",
+      "registration_invitation_codes_created_by_fkey",
+      "registration_invitation_codes_name_key",
+      "registration_invitation_codes_pkey",
+      "registration_invitation_codes_user_group_id_fkey"
+    ],
+    "types": {
+      "code_hash": "bytea",
+      "created_at": "timestamptz",
+      "created_by": "uuid",
+      "enabled": "bool",
+      "expires_at": "timestamptz",
+      "id": "uuid",
+      "initial_balance_amount": "numeric",
+      "last_used_at": "timestamptz",
+      "max_uses": "int8",
+      "name": "varchar",
+      "updated_at": "timestamptz",
+      "used_count": "int8",
+      "user_group_id": "uuid"
+    }
+  },
+  "request_log_ingest": {
+    "checks": [
+      "request_log_ingest_attempt_count_check",
+      "request_log_ingest_schema_version_check"
+    ],
+    "columns": [
+      "sequence",
+      "request_log_id",
+      "schema_version",
+      "payload",
+      "staged_at",
+      "attempt_count",
+      "next_attempt_at",
+      "last_error_code",
+      "metered_at",
+      "metering_attempt_count",
+      "metering_next_attempt_at",
+      "metering_last_error_code"
+    ],
+    "constraints": [
+      "request_log_ingest_pkey"
+    ],
+    "types": {
+      "attempt_count": "int4",
+      "last_error_code": "varchar",
+      "metered_at": "timestamptz",
+      "metering_attempt_count": "int4",
+      "metering_last_error_code": "text",
+      "metering_next_attempt_at": "timestamptz",
+      "next_attempt_at": "timestamptz",
+      "payload": "bytea",
+      "request_log_id": "uuid",
+      "schema_version": "int2",
+      "sequence": "int8",
+      "staged_at": "timestamptz"
+    }
+  },
+  "request_logs": {
+    "checks": [
+      "request_logs_api_operation_format_check",
+      "request_logs_attempts_check",
+      "request_logs_cache_write_tokens_check",
+      "request_logs_cache_write_unit_price_check",
+      "request_logs_cached_input_tokens_check",
+      "request_logs_cached_input_unit_price_check",
+      "request_logs_check",
+      "request_logs_check1",
+      "request_logs_check2",
+      "request_logs_check3",
+      "request_logs_cost_amount_check",
+      "request_logs_currency_usd_only",
+      "request_logs_failed_cancelled_zero_cost_check",
+      "request_logs_input_tokens_check",
+      "request_logs_input_unit_price_check",
+      "request_logs_outcome_check",
+      "request_logs_output_tokens_check",
+      "request_logs_output_tokens_per_second_check",
+      "request_logs_output_unit_price_check",
+      "request_logs_price_unit_tokens_check",
+      "request_logs_reasoning_tokens_check",
+      "request_logs_reasoning_tokens_within_output",
+      "request_logs_request_protocol_check",
+      "request_logs_request_source_check",
+      "request_logs_response_status_code_check",
+      "request_logs_total_duration_ms_check",
+      "request_logs_ttft_ms_check"
+    ],
+    "columns": [
+      "id",
+      "started_at",
+      "completed_at",
+      "user_id",
+      "api_key_id",
+      "api_format",
+      "client_model",
+      "upstream_model",
+      "model_rule_id",
+      "channel_group_id",
+      "channel_id",
+      "outcome",
+      "response_status_code",
+      "streamed",
+      "ttft_ms",
+      "total_duration_ms",
+      "output_tokens_per_second",
+      "input_tokens",
+      "cached_input_tokens",
+      "cache_write_tokens",
+      "output_tokens",
+      "model_id",
+      "currency",
+      "price_unit_tokens",
+      "price_effective_at",
+      "input_unit_price",
+      "cached_input_unit_price",
+      "cache_write_unit_price",
+      "output_unit_price",
+      "cost_amount",
+      "attempts",
+      "error_code",
+      "error_summary",
+      "request_source",
+      "request_protocol",
+      "reasoning_tokens",
+      "reasoning_effort",
+      "fast_mode",
+      "api_operation",
+      "peak_pricing"
+    ],
+    "constraints": [
+      "request_logs_api_key_id_fkey",
+      "request_logs_channel_group_id_fkey",
+      "request_logs_channel_id_fkey",
+      "request_logs_model_id_fkey",
+      "request_logs_model_rule_id_fkey",
+      "request_logs_pkey",
+      "request_logs_user_id_fkey"
+    ],
+    "types": {
+      "api_format": "api_format",
+      "api_key_id": "uuid",
+      "api_operation": "text",
+      "attempts": "jsonb",
+      "cache_write_tokens": "int8",
+      "cache_write_unit_price": "numeric",
+      "cached_input_tokens": "int8",
+      "cached_input_unit_price": "numeric",
+      "channel_group_id": "uuid",
+      "channel_id": "uuid",
+      "client_model": "varchar",
+      "completed_at": "timestamptz",
+      "cost_amount": "numeric",
+      "currency": "bpchar",
+      "error_code": "varchar",
+      "error_summary": "varchar",
+      "fast_mode": "bool",
+      "id": "uuid",
+      "input_tokens": "int8",
+      "input_unit_price": "numeric",
+      "model_id": "uuid",
+      "model_rule_id": "uuid",
+      "outcome": "text",
+      "output_tokens": "int8",
+      "output_tokens_per_second": "numeric",
+      "output_unit_price": "numeric",
+      "peak_pricing": "bool",
+      "price_effective_at": "timestamptz",
+      "price_unit_tokens": "int8",
+      "reasoning_effort": "varchar",
+      "reasoning_tokens": "int8",
+      "request_protocol": "text",
+      "request_source": "text",
+      "response_status_code": "int2",
+      "started_at": "timestamptz",
+      "streamed": "bool",
+      "total_duration_ms": "int4",
+      "ttft_ms": "int4",
+      "upstream_model": "varchar",
+      "user_id": "uuid"
+    }
+  },
+  "request_metering_facts": {
+    "checks": [
+      "request_metering_facts_cache_write_unit_price_check",
+      "request_metering_facts_cached_input_unit_price_check",
+      "request_metering_facts_check",
+      "request_metering_facts_check1",
+      "request_metering_facts_check2",
+      "request_metering_facts_check3",
+      "request_metering_facts_check4",
+      "request_metering_facts_check5",
+      "request_metering_facts_check6",
+      "request_metering_facts_cost_amount_check",
+      "request_metering_facts_currency_check",
+      "request_metering_facts_input_tokens_check",
+      "request_metering_facts_input_unit_price_check",
+      "request_metering_facts_outcome_check",
+      "request_metering_facts_output_tokens_check",
+      "request_metering_facts_output_unit_price_check",
+      "request_metering_facts_price_unit_tokens_check",
+      "request_metering_facts_request_protocol_check",
+      "request_metering_facts_request_source_check",
+      "request_metering_operation_format_check",
+      "request_metering_prices_check",
+      "request_metering_zero_policy_check"
+    ],
+    "columns": [
+      "id",
+      "started_at",
+      "completed_at",
+      "user_id",
+      "api_key_id",
+      "request_source",
+      "api_format",
+      "api_operation",
+      "request_protocol",
+      "client_model",
+      "upstream_model",
+      "model_rule_id",
+      "channel_group_id",
+      "channel_id",
+      "model_id",
+      "outcome",
+      "input_tokens",
+      "cached_input_tokens",
+      "cache_write_tokens",
+      "output_tokens",
+      "reasoning_tokens",
+      "currency",
+      "price_unit_tokens",
+      "price_effective_at",
+      "input_unit_price",
+      "cached_input_unit_price",
+      "cache_write_unit_price",
+      "output_unit_price",
+      "cost_amount",
+      "peak_pricing",
+      "amount_state"
+    ],
+    "constraints": [
+      "request_metering_facts_api_key_id_fkey",
+      "request_metering_facts_channel_group_id_fkey",
+      "request_metering_facts_channel_id_fkey",
+      "request_metering_facts_model_id_fkey",
+      "request_metering_facts_model_rule_id_fkey",
+      "request_metering_facts_pkey",
+      "request_metering_facts_user_id_fkey"
+    ],
+    "types": {
+      "amount_state": "text",
+      "api_format": "api_format",
+      "api_key_id": "uuid",
+      "api_operation": "text",
+      "cache_write_tokens": "int8",
+      "cache_write_unit_price": "numeric",
+      "cached_input_tokens": "int8",
+      "cached_input_unit_price": "numeric",
+      "channel_group_id": "uuid",
+      "channel_id": "uuid",
+      "client_model": "varchar",
+      "completed_at": "timestamptz",
+      "cost_amount": "numeric",
+      "currency": "bpchar",
+      "id": "uuid",
+      "input_tokens": "int8",
+      "input_unit_price": "numeric",
+      "model_id": "uuid",
+      "model_rule_id": "uuid",
+      "outcome": "text",
+      "output_tokens": "int8",
+      "output_unit_price": "numeric",
+      "peak_pricing": "bool",
+      "price_effective_at": "timestamptz",
+      "price_unit_tokens": "int8",
+      "reasoning_tokens": "int8",
+      "request_protocol": "text",
+      "request_source": "text",
+      "started_at": "timestamptz",
+      "upstream_model": "varchar",
+      "user_id": "uuid"
+    }
+  },
+  "request_settlement_pending": {
+    "checks": [],
+    "columns": [
+      "request_id",
+      "completed_at"
+    ],
+    "constraints": [
+      "request_settlement_pending_pkey",
+      "request_settlement_pending_request_id_fkey"
+    ],
+    "types": {
+      "completed_at": "timestamptz",
+      "request_id": "uuid"
+    }
+  },
+  "request_settlements": {
+    "checks": [
+      "request_settlements_cost_amount_check",
+      "request_settlements_policy_version_check"
+    ],
+    "columns": [
+      "request_id",
+      "cost_amount",
+      "currency",
+      "settled_at",
+      "policy_version"
+    ],
+    "constraints": [
+      "request_settlements_pkey",
+      "request_settlements_request_id_fkey"
+    ],
+    "types": {
+      "cost_amount": "numeric",
+      "currency": "bpchar",
+      "policy_version": "int2",
+      "request_id": "uuid",
+      "settled_at": "timestamptz"
+    }
+  },
+  "routing_groups": {
+    "checks": [
+      "routing_groups_deleted_state_check",
+      "routing_groups_name_check"
+    ],
+    "columns": [
+      "id",
+      "name",
+      "enabled",
+      "sharing_only",
+      "created_at",
+      "updated_at",
+      "deleted_at"
+    ],
+    "constraints": [
+      "routing_groups_pkey"
+    ],
+    "types": {
+      "created_at": "timestamptz",
+      "deleted_at": "timestamptz",
+      "enabled": "bool",
+      "id": "uuid",
+      "name": "varchar",
+      "sharing_only": "bool",
+      "updated_at": "timestamptz"
+    }
+  },
+  "spend_leaderboard_entries": {
+    "checks": [
+      "spend_leaderboard_entries_check",
+      "spend_leaderboard_entries_cost_amount_check",
+      "spend_leaderboard_entries_rank_check",
+      "spend_leaderboard_entries_request_count_check",
+      "spend_leaderboard_entries_total_tokens_check"
+    ],
+    "columns": [
+      "period",
+      "period_start",
+      "user_id",
+      "rank",
+      "request_count",
+      "priced_request_count",
+      "total_tokens",
+      "cost_amount"
+    ],
+    "constraints": [
+      "spend_leaderboard_entries_period_period_start_fkey",
+      "spend_leaderboard_entries_pkey",
+      "spend_leaderboard_entries_user_id_fkey"
+    ],
+    "types": {
+      "cost_amount": "numeric",
+      "period": "text",
+      "period_start": "date",
+      "priced_request_count": "int8",
+      "rank": "int8",
+      "request_count": "int8",
+      "total_tokens": "int8",
+      "user_id": "uuid"
+    }
+  },
+  "spend_leaderboard_periods": {
+    "checks": [
+      "spend_leaderboard_periods_check",
+      "spend_leaderboard_periods_period_check",
+      "spend_leaderboard_periods_total_cost_amount_check"
+    ],
+    "columns": [
+      "period",
+      "period_start",
+      "period_end",
+      "refreshed_at",
+      "total_cost_amount"
+    ],
+    "constraints": [
+      "spend_leaderboard_periods_pkey"
+    ],
+    "types": {
+      "period": "text",
+      "period_end": "date",
+      "period_start": "date",
+      "refreshed_at": "timestamptz",
+      "total_cost_amount": "numeric"
+    }
+  },
+  "system_settings": {
+    "checks": [
+      "system_settings_value_check"
+    ],
+    "columns": [
+      "setting_key",
+      "value",
+      "updated_at"
+    ],
+    "constraints": [
+      "system_settings_pkey"
+    ],
+    "types": {
+      "setting_key": "varchar",
+      "updated_at": "timestamptz",
+      "value": "jsonb"
+    }
+  },
+  "upstream_accesses": {
+    "checks": [
+      "upstream_accesses_base_url_check",
+      "upstream_accesses_connect_timeout_check",
+      "upstream_accesses_connector_kind_check",
+      "upstream_accesses_deleted_state_check",
+      "upstream_accesses_name_check",
+      "upstream_accesses_response_header_timeout_check",
+      "upstream_accesses_stream_idle_timeout_check"
+    ],
+    "columns": [
+      "id",
+      "name",
+      "connector_kind",
+      "base_url",
+      "proxy_id",
+      "connect_timeout_ms",
+      "response_header_timeout_ms",
+      "stream_idle_timeout_ms",
+      "enabled",
+      "revision",
+      "created_at",
+      "updated_at",
+      "deleted_at"
+    ],
+    "constraints": [
+      "upstream_accesses_pkey",
+      "upstream_accesses_proxy_id_fkey"
+    ],
+    "types": {
+      "base_url": "text",
+      "connect_timeout_ms": "int4",
+      "connector_kind": "text",
+      "created_at": "timestamptz",
+      "deleted_at": "timestamptz",
+      "enabled": "bool",
+      "id": "uuid",
+      "name": "varchar",
+      "proxy_id": "uuid",
+      "response_header_timeout_ms": "int4",
+      "revision": "uuid",
+      "stream_idle_timeout_ms": "int4",
+      "updated_at": "timestamptz"
+    }
+  },
+  "upstream_channels": {
+    "checks": [
+      "upstream_channels_deleted_state_check",
+      "upstream_channels_name_check"
+    ],
+    "columns": [
+      "id",
+      "group_id",
+      "access_id",
+      "credential_id",
+      "name",
+      "enabled",
+      "binding_revision",
+      "created_at",
+      "updated_at",
+      "deleted_at"
+    ],
+    "constraints": [
+      "upstream_channels_access_id_fkey",
+      "upstream_channels_credential_id_fkey",
+      "upstream_channels_group_id_fkey",
+      "upstream_channels_pkey"
+    ],
+    "types": {
+      "access_id": "uuid",
+      "binding_revision": "uuid",
+      "created_at": "timestamptz",
+      "credential_id": "uuid",
+      "deleted_at": "timestamptz",
+      "enabled": "bool",
+      "group_id": "uuid",
+      "id": "uuid",
+      "name": "varchar",
+      "updated_at": "timestamptz"
+    }
+  },
+  "upstream_credentials": {
+    "checks": [
+      "upstream_credentials_auth_check",
+      "upstream_credentials_kind_check",
+      "upstream_credentials_name_check",
+      "upstream_credentials_scope_check"
+    ],
+    "columns": [
+      "id",
+      "name",
+      "kind",
+      "header_name",
+      "secret",
+      "allowed_base_urls",
+      "enabled",
+      "revision",
+      "created_at",
+      "updated_at",
+      "deleted_at"
+    ],
+    "constraints": [
+      "upstream_credentials_pkey"
+    ],
+    "types": {
+      "allowed_base_urls": "jsonb",
+      "created_at": "timestamptz",
+      "deleted_at": "timestamptz",
+      "enabled": "bool",
+      "header_name": "text",
+      "id": "uuid",
+      "kind": "text",
+      "name": "text",
+      "revision": "uuid",
+      "secret": "text",
+      "updated_at": "timestamptz"
+    }
+  },
+  "user_group_codex_quota_visibility": {
+    "checks": [],
+    "columns": [
+      "user_group_id",
+      "channel_group_id",
+      "created_at"
+    ],
+    "constraints": [
+      "user_group_codex_quota_visibility_channel_group_id_fkey",
+      "user_group_codex_quota_visibility_pkey",
+      "user_group_codex_quota_visibility_user_group_id_fkey"
+    ],
+    "types": {
+      "channel_group_id": "uuid",
+      "created_at": "timestamptz",
+      "user_group_id": "uuid"
+    }
+  },
+  "user_groups": {
+    "checks": [
+      "user_groups_deleted_actor_check",
+      "user_groups_system_role_check"
+    ],
+    "columns": [
+      "id",
+      "name",
+      "description",
+      "default_api_key_policy_id",
+      "system_role",
+      "created_at",
+      "updated_at",
+      "filter_fast_mode",
+      "deleted_at",
+      "deleted_by"
+    ],
+    "constraints": [
+      "user_groups_default_api_key_policy_id_fkey",
+      "user_groups_deleted_by_fkey",
+      "user_groups_pkey",
+      "user_groups_system_role_key"
+    ],
+    "types": {
+      "created_at": "timestamptz",
+      "default_api_key_policy_id": "uuid",
+      "deleted_at": "timestamptz",
+      "deleted_by": "uuid",
+      "description": "varchar",
+      "filter_fast_mode": "bool",
+      "id": "uuid",
+      "name": "varchar",
+      "system_role": "text",
+      "updated_at": "timestamptz"
+    }
+  },
+  "user_invitations": {
+    "checks": [
+      "user_invitations_check"
+    ],
+    "columns": [
+      "id",
+      "user_id",
+      "invited_by",
+      "token_hash",
+      "expires_at",
+      "accepted_at",
+      "created_at",
+      "revoked_at"
+    ],
+    "constraints": [
+      "user_invitations_invited_by_fkey",
+      "user_invitations_pkey",
+      "user_invitations_user_id_fkey"
+    ],
+    "types": {
+      "accepted_at": "timestamptz",
+      "created_at": "timestamptz",
+      "expires_at": "timestamptz",
+      "id": "uuid",
+      "invited_by": "uuid",
+      "revoked_at": "timestamptz",
+      "token_hash": "bytea",
+      "user_id": "uuid"
+    }
+  },
+  "user_sessions": {
+    "checks": [
+      "user_sessions_check",
+      "user_sessions_purpose_check"
+    ],
+    "columns": [
+      "id",
+      "user_id",
+      "refresh_token_hash",
+      "expires_at",
+      "revoked_at",
+      "rotated_at",
+      "created_at",
+      "last_seen_at",
+      "user_agent",
+      "purpose"
+    ],
+    "constraints": [
+      "user_sessions_pkey",
+      "user_sessions_user_id_fkey"
+    ],
+    "types": {
+      "created_at": "timestamptz",
+      "expires_at": "timestamptz",
+      "id": "uuid",
+      "last_seen_at": "timestamptz",
+      "purpose": "text",
+      "refresh_token_hash": "bytea",
+      "revoked_at": "timestamptz",
+      "rotated_at": "timestamptz",
+      "user_agent": "varchar",
+      "user_id": "uuid"
+    }
+  },
+  "users": {
+    "checks": [
+      "users_auth_version_check",
+      "users_deleted_actor_check",
+      "users_role_check",
+      "users_status_check",
+      "users_temporary_password_state_check"
+    ],
+    "columns": [
+      "id",
+      "display_name",
+      "status",
+      "balance_amount",
+      "created_at",
+      "updated_at",
+      "email",
+      "role",
+      "password_hash",
+      "auth_version",
+      "password_changed_at",
+      "default_api_key_policy_id",
+      "is_system",
+      "user_group_id",
+      "deleted_at",
+      "deleted_by",
+      "websocket_enabled",
+      "password_change_required",
+      "temporary_password_issued_at",
+      "temporary_password_expires_at"
+    ],
+    "constraints": [
+      "users_default_api_key_policy_id_fkey",
+      "users_deleted_by_fkey",
+      "users_name_key",
+      "users_pkey",
+      "users_user_group_id_fkey"
+    ],
+    "types": {
+      "auth_version": "int8",
+      "balance_amount": "numeric",
+      "created_at": "timestamptz",
+      "default_api_key_policy_id": "uuid",
+      "deleted_at": "timestamptz",
+      "deleted_by": "uuid",
+      "display_name": "varchar",
+      "email": "varchar",
+      "id": "uuid",
+      "is_system": "bool",
+      "password_change_required": "bool",
+      "password_changed_at": "timestamptz",
+      "password_hash": "text",
+      "role": "text",
+      "status": "text",
+      "temporary_password_expires_at": "timestamptz",
+      "temporary_password_issued_at": "timestamptz",
+      "updated_at": "timestamptz",
+      "user_group_id": "uuid",
+      "websocket_enabled": "bool"
+    }
+  }
+}

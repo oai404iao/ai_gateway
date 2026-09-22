@@ -538,7 +538,7 @@ paths:
       operationId: listOwnCodexQuotas
       description: |
         Returns current quota-window snapshots for Codex credentials in the
-        canonical Responses channel groups granted to the authenticated
+        canonical routing groups granted to the authenticated
         user's user group. Credential labels and account identity are never
         returned; `name` is the credential UUID string. Window costs aggregate
         all priced requests routed through the credential's Responses and
@@ -1457,140 +1457,6 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
-  /routing/channel-groups:
-    get:
-      tags: [ChannelGroups]
-      operationId: listChannelGroups
-      security: [{ bearerAuth: [] }]
-      responses:
-        "200":
-          description: Channel groups.
-          content:
-            application/json:
-              schema:
-                type: array
-                items: { $ref: "#/components/schemas/ChannelGroupView" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-    post:
-      tags: [ChannelGroups]
-      operationId: createChannelGroup
-      security: [{ bearerAuth: [] }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/ChannelGroupInput" }
-      responses:
-        "201":
-          description: Created.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/MutationResponse" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "422": { $ref: "#/components/responses/Unprocessable" }
-
-  /routing/channel-groups/{id}:
-    get:
-      tags: [ChannelGroups]
-      operationId: getChannelGroup
-      security: [{ bearerAuth: [] }]
-      parameters:
-        - $ref: "#/components/parameters/PathId"
-      responses:
-        "200":
-          description: Group detail.
-          headers:
-            ETag: { $ref: "#/components/headers/ETag" }
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/ChannelGroupView" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
-    put:
-      tags: [ChannelGroups]
-      operationId: updateChannelGroup
-      security: [{ bearerAuth: [] }]
-      parameters:
-        - $ref: "#/components/parameters/PathId"
-        - $ref: "#/components/parameters/IfMatch"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/ChannelGroupInput" }
-      responses:
-        "200":
-          description: Updated.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/MutationResponse" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "409": { $ref: "#/components/responses/Conflict" }
-        "422": { $ref: "#/components/responses/Unprocessable" }
-    delete:
-      tags: [ChannelGroups]
-      operationId: deleteChannelGroup
-      description: |
-        Irreversibly tombstones one ordinary OpenAI-compatible group and all
-        of its channels. Routing candidates, API Keys, API Key Policies, and
-        quota-visibility assignments are normalized or unbound atomically.
-        Provider-managed groups must use their connector lifecycle.
-      security: [{ bearerAuth: [] }]
-      parameters:
-        - $ref: "#/components/parameters/PathId"
-        - $ref: "#/components/parameters/IfMatch"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/DeletionConfirmationInput" }
-      responses:
-        "200":
-          description: Channel group and its ordinary channels deleted.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/MutationResponse" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "409":
-          description: Resource version or confirmed deletion impact changed, or the group is provider-managed.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/ErrorBody" }
-        "422": { $ref: "#/components/responses/Unprocessable" }
-
-  /routing/channel-groups/{id}/deletion-impact:
-    get:
-      tags: [ChannelGroups]
-      operationId: previewChannelGroupDeletion
-      description: |
-        Returns the authoritative current dependency impact and a confirmation
-        token. DELETE recomputes the impact transactionally and rejects a stale
-        token so the administrator must review changed consequences.
-      security: [{ bearerAuth: [] }]
-      parameters:
-        - $ref: "#/components/parameters/PathId"
-      responses:
-        "200":
-          description: Current deletion impact.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/ChannelDeletionImpact" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "409":
-          description: Provider-managed groups must use their connector lifecycle.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/ErrorBody" }
-
   /routing/accesses:
     get:
       tags: [Channels]
@@ -1905,6 +1771,50 @@ paths:
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/Unprocessable" }
 
+  /routing/capabilities/batch:
+    post:
+      tags: [RoutingTopology]
+      operationId: updateCapabilitiesBatch
+      description: Administrator-only atomic capability settings update. Each item carries its own version. A missing, stale or invalid item rejects the entire batch. Does not change logical channels, grants or automatic-disable state.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CapabilityBatchUpdateInput" }
+      responses:
+        "200":
+          description: Capabilities updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CapabilityBatchUpdateResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /routing/capabilities/{id}/recover:
+    post:
+      tags: [RoutingTopology]
+      operationId: recoverCapability
+      description: Administrator-only manual recovery of an automatically disabled capability. Clears automatic-disable state without changing its explicit enabled setting, logical channel or grants.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "200":
+          description: Capability recovered.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
   /routing/capabilities/{id}:
     get:
       tags: [RoutingTopology]
@@ -1966,6 +1876,63 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /routing/profiles:
+    get:
+      tags: [RoutingTopology]
+      operationId: listRoutingProfiles
+      description: Administrator-only priced-model bindings, independent of legacy protocol configuration.
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Routing profiles for non-deleted pricing models.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/RoutingProfileView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [RoutingTopology]
+      operationId: createRoutingProfile
+      description: Explicitly binds an enabled pricing model to its sole routing profile. Creates no operation rule, candidate, or authorization.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ModelRuleCreateInput" }
+      responses:
+        "201":
+          description: Profile created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /routing/profiles/{id}:
+    get:
+      tags: [RoutingTopology]
+      operationId: getRoutingProfile
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Immutable priced-model binding.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RoutingProfileView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /routing/operation-rules:
     get:
@@ -2143,40 +2110,6 @@ paths:
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/Unprocessable" }
 
-  /routing/channels:
-    get:
-      tags: [Channels]
-      operationId: listChannels
-      security: [{ bearerAuth: [] }]
-      responses:
-        "200":
-          description: Channels.
-          content:
-            application/json:
-              schema:
-                type: array
-                items: { $ref: "#/components/schemas/ChannelView" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-    post:
-      tags: [Channels]
-      operationId: createChannel
-      security: [{ bearerAuth: [] }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/ChannelCreateInput" }
-      responses:
-        "201":
-          description: Created.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/MutationResponse" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "422": { $ref: "#/components/responses/Unprocessable" }
-
   /routing/channels/models/discover:
     post:
       tags: [Channels]
@@ -2202,289 +2135,6 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/Unprocessable" }
         "502": { $ref: "#/components/responses/BadGateway" }
-
-  /routing/channels/batch:
-    post:
-      tags: [Channels]
-      operationId: updateChannelsBatch
-      description: >
-        Atomically applies common routing and billing changes to up to 100
-        channels. Each item carries the `updated_at` version returned by the
-        channel list; any stale item rejects the entire batch.
-      security: [{ bearerAuth: [] }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/ChannelBatchUpdateInput" }
-      responses:
-        "200":
-          description: Updated.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/ChannelBatchUpdateResponse" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "409": { $ref: "#/components/responses/Conflict" }
-        "422": { $ref: "#/components/responses/Unprocessable" }
-
-  /routing/channels/{id}:
-    get:
-      tags: [Channels]
-      operationId: getChannel
-      security: [{ bearerAuth: [] }]
-      parameters:
-        - $ref: "#/components/parameters/PathId"
-      responses:
-        "200":
-          description: Channel detail.
-          headers:
-            ETag: { $ref: "#/components/headers/ETag" }
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/ChannelDetailView" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
-    put:
-      tags: [Channels]
-      operationId: updateChannel
-      security: [{ bearerAuth: [] }]
-      parameters:
-        - $ref: "#/components/parameters/PathId"
-        - $ref: "#/components/parameters/IfMatch"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/ChannelInput" }
-      responses:
-        "200":
-          description: Updated.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/MutationResponse" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "409": { $ref: "#/components/responses/Conflict" }
-        "422": { $ref: "#/components/responses/Unprocessable" }
-    delete:
-      tags: [Channels]
-      operationId: deleteChannel
-      description: |
-        Irreversibly tombstones one ordinary OpenAI-compatible channel,
-        erases its upstream URL, network settings, and transforms, unbinds its credential
-        without deleting the shared identity or secret, and atomically
-        normalizes routing candidates plus API Key and Policy assignments.
-        Provider-managed channels must use their connector lifecycle.
-      security: [{ bearerAuth: [] }]
-      parameters:
-        - $ref: "#/components/parameters/PathId"
-        - $ref: "#/components/parameters/IfMatch"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/DeletionConfirmationInput" }
-      responses:
-        "200":
-          description: Channel deleted.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/MutationResponse" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "409":
-          description: Resource version or confirmed deletion impact changed, or the channel is provider-managed.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/ErrorBody" }
-        "422": { $ref: "#/components/responses/Unprocessable" }
-
-  /routing/channels/{id}/deletion-impact:
-    get:
-      tags: [Channels]
-      operationId: previewChannelDeletion
-      description: |
-        Returns the authoritative current dependency impact and a confirmation
-        token. DELETE recomputes the impact transactionally and rejects a stale
-        token so the administrator must review changed consequences.
-      security: [{ bearerAuth: [] }]
-      parameters:
-        - $ref: "#/components/parameters/PathId"
-      responses:
-        "200":
-          description: Current deletion impact.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/ChannelDeletionImpact" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "409":
-          description: Provider-managed channels must use their connector lifecycle.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/ErrorBody" }
-
-  /routing/channels/{id}/recover:
-    post:
-      tags: [Channels]
-      operationId: recoverChannel
-      description: |
-        Administrator-only. Clears a temporary automatic disable without
-        changing the channel's explicit enabled flag. The list response's
-        `updated_at` value provides optimistic concurrency.
-      security: [{ bearerAuth: [] }]
-      parameters:
-        - $ref: "#/components/parameters/PathId"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/ChannelRecoverInput" }
-      responses:
-        "200":
-          description: Recovered.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/MutationResponse" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "409": { $ref: "#/components/responses/Conflict" }
-        "422": { $ref: "#/components/responses/Unprocessable" }
-
-  /routing/model-rules:
-    get:
-      tags: [ModelRules]
-      operationId: listModelRules
-      security: [{ bearerAuth: [] }]
-      responses:
-        "200":
-          description: Model rules.
-          content:
-            application/json:
-              schema:
-                type: array
-                items: { $ref: "#/components/schemas/ModelRuleView" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-    post:
-      tags: [ModelRules]
-      operationId: createModelRule
-      security: [{ bearerAuth: [] }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/ModelRuleCreateInput" }
-      responses:
-        "201":
-          description: Created.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/MutationResponse" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "409": { $ref: "#/components/responses/Conflict" }
-        "422": { $ref: "#/components/responses/Unprocessable" }
-
-  /routing/model-rules/{id}:
-    get:
-      tags: [ModelRules]
-      operationId: getModelRule
-      security: [{ bearerAuth: [] }]
-      parameters:
-        - $ref: "#/components/parameters/PathId"
-      responses:
-        "200":
-          description: Rule detail.
-          headers:
-            ETag: { $ref: "#/components/headers/ETag" }
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/ModelRuleView" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
-
-  /routing/model-rules/{id}/protocols:
-    post:
-      tags: [ModelRules]
-      operationId: createModelProtocolRule
-      security: [{ bearerAuth: [] }]
-      parameters:
-        - $ref: "#/components/parameters/PathId"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/ModelProtocolRuleCreateInput" }
-      responses:
-        "201":
-          description: Draft protocol rule created.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/MutationResponse" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "409": { $ref: "#/components/responses/Conflict" }
-        "422": { $ref: "#/components/responses/Unprocessable" }
-
-  /routing/model-rules/{id}/protocols/{protocol_id}:
-    get:
-      tags: [ModelRules]
-      operationId: getModelProtocolRule
-      security: [{ bearerAuth: [] }]
-      parameters:
-        - $ref: "#/components/parameters/PathId"
-        - name: protocol_id
-          in: path
-          required: true
-          schema: { type: string, format: uuid }
-      responses:
-        "200":
-          description: Protocol rule detail.
-          headers:
-            ETag: { $ref: "#/components/headers/ETag" }
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/ModelProtocolRuleView" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
-    put:
-      tags: [ModelRules]
-      operationId: updateModelProtocolRule
-      security: [{ bearerAuth: [] }]
-      parameters:
-        - $ref: "#/components/parameters/PathId"
-        - name: protocol_id
-          in: path
-          required: true
-          schema: { type: string, format: uuid }
-        - $ref: "#/components/parameters/IfMatch"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/ModelProtocolRuleInput" }
-      responses:
-        "200":
-          description: Updated.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/MutationResponse" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "409": { $ref: "#/components/responses/Conflict" }
-        "422": { $ref: "#/components/responses/Unprocessable" }
 
   /providers/codex-oauth/channel-groups/{id}/credentials:
     get:
@@ -3502,17 +3152,6 @@ components:
     SelectionStrategy:
       type: string
       enum: [weighted_random, weighted_round_robin]
-    ModelRuleRoutingStatus:
-      type: string
-      enum: [draft, model_disabled, ready, temporarily_unavailable, disconnected, disabled]
-      description: >
-        `model_disabled` takes precedence and means the priced client model is
-        disabled; `draft` has no routing tiers and cannot be enabled; `ready`
-        has at least one active model-capable candidate;
-        `temporarily_unavailable` has a model-capable candidate but none is
-        currently active; `disconnected` has no candidate channel advertising
-        its configured upstream model; `disabled` means the protocol rule is
-        disabled.
     ConnectorKind:
       type: string
       enum: [openai_compatible, codex_oauth]
@@ -4394,6 +4033,7 @@ components:
 
     ApiKeyPolicyView:
       type: object
+      description: Group and logical-channel selectors with a fixed capability grant set. Retained selectors never expand during edits; new capabilities require explicit reauthorization.
       required:
         [id, name, allowed_group_ids, allowed_channel_ids, enabled, created_at, updated_at]
       properties:
@@ -4448,7 +4088,7 @@ components:
         channel_ids:
           type: array
           minItems: 1
-          description: Canonical Responses/Images projections authorized together by selecting this credential.
+          description: Canonical logical channels owned by this credential. Selecting one fixes its current billable capability set; standalone search is excluded.
           items: { type: string, format: uuid }
         api_formats:
           type: array
@@ -4457,18 +4097,20 @@ components:
 
     SelfApiKeyGroupOption:
       type: object
-      required: [id, name, api_format, enabled]
+      required: [id, name, api_formats, enabled]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
-        api_format: { $ref: "#/components/schemas/ApiFormat" }
+        api_formats:
+          type: array
+          items: { $ref: "#/components/schemas/ApiFormat" }
         enabled: { type: boolean }
 
     SelfApiKeyChannelOption:
       type: object
       required:
         [id, channel_group_id, channel_group_name, channel_group_enabled,
-         api_format, name, enabled, auto_disabled]
+         api_formats, name, enabled, auto_disabled]
       properties:
         id: { type: string, format: uuid }
         channel_group_id: { type: string, format: uuid }
@@ -4476,7 +4118,9 @@ components:
         channel_group_enabled:
           type: boolean
           description: Whether the parent channel group is enabled.
-        api_format: { $ref: "#/components/schemas/ApiFormat" }
+        api_formats:
+          type: array
+          items: { $ref: "#/components/schemas/ApiFormat" }
         name: { type: string }
         enabled: { type: boolean }
         auto_disabled: { type: boolean }
@@ -4541,7 +4185,7 @@ components:
         visible_codex_quota_group_ids:
           type: array
           description: |
-            Canonical Codex OAuth Responses channel groups whose credential
+            Canonical routing groups with Codex pools whose credential
             quota windows are visible to members through the read-only
             `/me/codex-quotas` endpoints.
           items: { type: string, format: uuid }
@@ -4588,95 +4232,6 @@ components:
         last_synced_at: { $ref: "#/components/schemas/DateTimeNullable" }
         created_at: { $ref: "#/components/schemas/DateTime" }
         updated_at: { $ref: "#/components/schemas/DateTime" }
-
-    ChannelGroupView:
-      type: object
-      required: [id, name, api_format, connector_kind, connector_pool_id, request_compression, sharing_only, enabled, status_statistics_enabled, updated_at]
-      properties:
-        id: { type: string, format: uuid }
-        name: { type: string }
-        api_format: { $ref: "#/components/schemas/ApiFormat" }
-        connector_kind: { $ref: "#/components/schemas/ConnectorKind" }
-        connector_pool_id:
-          type: string
-          format: uuid
-          nullable: true
-          description: Shared by the format-specific channel groups derived from one provider connector pool; null for ordinary OpenAI-compatible groups.
-        request_compression: { $ref: "#/components/schemas/RequestCompression" }
-        sharing_only:
-          type: boolean
-          description: Codex-only access mode, synchronized across the pool's Responses and Images groups. Unbound credentials and recognizable aliases cannot be used normally. Existing sharing bindings remain protected even when false.
-        enabled: { type: boolean }
-        status_statistics_enabled:
-          type: boolean
-          description: Includes this channel group in the authenticated channel-group status report.
-        updated_at: { $ref: "#/components/schemas/DateTime" }
-
-    ChannelView:
-      type: object
-      required:
-        [id, channel_group_id, api_format, connector_kind, provider_managed, name, base_url, enabled, supports_websocket,
-         supports_standalone_web_search,
-         auto_disabled, auto_disabled_reason, auto_disable_allowed,
-         billing_multiplier, proxy_id,
-         config_template_id, connect_timeout_ms, response_header_timeout_ms,
-         stream_idle_timeout_ms, credential_id, available_models, test_model,
-         test_pricing_model_id, created_at, updated_at]
-      properties:
-        id: { type: string, format: uuid }
-        channel_group_id: { type: string, format: uuid }
-        api_format: { $ref: "#/components/schemas/ApiFormat" }
-        connector_kind: { $ref: "#/components/schemas/ConnectorKind" }
-        provider_managed:
-          type: boolean
-          description: Whether this channel is created and edited through a connector-specific management API.
-        name: { type: string }
-        base_url: { type: string }
-        enabled: { type: boolean }
-        supports_websocket:
-          type: boolean
-          description: Whether this OpenAI Responses channel accepts WebSocket upgrades.
-        supports_standalone_web_search:
-          type: boolean
-          description: Whether this OpenAI Responses channel accepts the standalone alpha/search operation.
-        auto_disabled: { type: boolean }
-        auto_disabled_reason: { type: string, nullable: true }
-        auto_disable_allowed:
-          type: boolean
-          description: Allows system automatic-disable rules to temporarily remove this channel from routing.
-        billing_multiplier:
-          allOf: [{ $ref: "#/components/schemas/Decimal" }]
-          description: Multiplies the applicable pricing-model rates before request settlement.
-        proxy_id: { type: string, format: uuid, nullable: true }
-        config_template_id: { type: string, format: uuid, nullable: true }
-        connect_timeout_ms: { type: integer, nullable: true }
-        response_header_timeout_ms: { type: integer, nullable: true }
-        stream_idle_timeout_ms: { type: integer, nullable: true }
-        credential_id: { type: string, format: uuid, nullable: true }
-        available_models:
-          type: array
-          items: { type: string }
-        test_model:
-          type: string
-          nullable: true
-          description: Available upstream wire model used by periodic scheduled tests; unsupported for Images and provider-managed channels.
-        test_pricing_model_id:
-          type: string
-          format: uuid
-          nullable: true
-          description: Priced client model used to settle a scheduled test. Required exactly when test_model is set and resolved only by this ID, never inferred from the wire-model string.
-        created_at: { $ref: "#/components/schemas/DateTime" }
-        updated_at: { $ref: "#/components/schemas/DateTime" }
-
-    ChannelDetailView:
-      allOf:
-        - $ref: "#/components/schemas/ChannelView"
-        - type: object
-          required: [override_document]
-          properties:
-            override_document:
-              allOf: [{ $ref: "#/components/schemas/JsonValue" }]
-              description: Stored channel transform overrides returned for administrator editing.
 
     UpstreamAccessView:
       type: object
@@ -4865,6 +4420,18 @@ components:
           type: array
           items: { $ref: "#/components/schemas/OperationTierInput" }
 
+    RoutingProfileView:
+      type: object
+      required: [id, model_id, client_model, model_display_name, model_enabled, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        model_id: { type: string, format: uuid }
+        client_model: { type: string }
+        model_display_name: { type: string }
+        model_enabled: { type: boolean }
+        created_at: { $ref: "#/components/schemas/DateTime" }
+        updated_at: { $ref: "#/components/schemas/DateTime" }
+
     OperationRuleView:
       allOf:
         - $ref: "#/components/schemas/OperationRuleInput"
@@ -4926,81 +4493,6 @@ components:
           properties:
             secret: { type: string, minLength: 1 }
 
-    ChannelDeletionImpact:
-      type: object
-      required:
-        [resource_type, resource_id, confirmation_token, channels,
-         model_protocol_rules, api_keys, api_key_policies,
-         quota_visibility_user_groups]
-      properties:
-        resource_type:
-          type: string
-          enum: [channel, channel_group]
-        resource_id: { type: string, format: uuid }
-        confirmation_token:
-          type: string
-          description: Opaque fingerprint of the current dependencies and normalization outcome; valid only while the impact is unchanged.
-        channels:
-          type: array
-          description: Ordinary channels that will become non-secret tombstones.
-          items: { $ref: "#/components/schemas/DeletionImpactChannel" }
-        model_protocol_rules:
-          type: array
-          description: Protocol routing rules whose candidates, tiers, enabled state, or effective availability will change.
-          items:
-            { $ref: "#/components/schemas/DeletionImpactModelProtocolRule" }
-        api_keys:
-          type: array
-          description: Non-deleted API Keys from which the deleted targets will be removed.
-          items: { $ref: "#/components/schemas/DeletionImpactNamedResource" }
-        api_key_policies:
-          type: array
-          description: API Key Policies from which the deleted targets will be removed.
-          items: { $ref: "#/components/schemas/DeletionImpactNamedResource" }
-        quota_visibility_user_groups:
-          type: array
-          description: User groups whose matching Codex quota-visibility assignment will be removed.
-          items: { $ref: "#/components/schemas/DeletionImpactNamedResource" }
-
-    DeletionImpactChannel:
-      type: object
-      required: [id, channel_group_id, name]
-      properties:
-        id: { type: string, format: uuid }
-        channel_group_id: { type: string, format: uuid }
-        name: { type: string }
-
-    DeletionImpactNamedResource:
-      type: object
-      required: [id, name]
-      properties:
-        id: { type: string, format: uuid }
-        name: { type: string }
-
-    DeletionImpactModelProtocolRule:
-      type: object
-      required:
-        [id, model_rule_id, client_model, api_format,
-         removed_channel_group_ids, removed_channel_ids,
-         removed_tier_priorities, will_disable]
-      properties:
-        id: { type: string, format: uuid }
-        model_rule_id: { type: string, format: uuid }
-        client_model: { type: string }
-        api_format: { $ref: "#/components/schemas/ApiFormat" }
-        removed_channel_group_ids:
-          type: array
-          items: { type: string, format: uuid }
-        removed_channel_ids:
-          type: array
-          items: { type: string, format: uuid }
-        removed_tier_priorities:
-          type: array
-          items: { type: integer, minimum: 0 }
-        will_disable:
-          type: boolean
-          description: True when normalization removes the final tier from an enabled protocol rule.
-
     CodexCredentialStatus:
       type: string
       enum: [active, draining, unavailable, disabled]
@@ -5022,7 +4514,7 @@ components:
         channel_group_id:
           type: string
           format: uuid
-          description: Stable primary Responses group retained for credential-management compatibility.
+          description: Canonical routing group owning the credential's Codex pool.
         label: { type: string }
         email: { type: string, nullable: true }
         account_id:
@@ -5149,7 +4641,7 @@ components:
         channel_group_id:
           type: string
           format: uuid
-          description: Canonical Codex OAuth Responses channel group granting visibility.
+          description: Canonical routing group granting Codex quota visibility.
         plan_type:
           type: string
           nullable: true
@@ -5406,91 +4898,6 @@ components:
           items: { type: string, format: uuid }
         correlation_id: { type: string, format: uuid }
 
-    ModelRuleRouteCandidate:
-      type: object
-      additionalProperties: false
-      description: |
-        One independently weighted route candidate. The same channel may
-        appear with multiple advertised upstream models in one tier, while an
-        exact channel/model pair may appear only once in that tier.
-      required: [channel_id, upstream_model, weight]
-      properties:
-        channel_id: { type: string, format: uuid }
-        upstream_model:
-          type: string
-          minLength: 1
-          maxLength: 300
-          description: Must appear in the selected channel's available_models when the rule is saved.
-        weight: { type: integer, minimum: 1, maximum: 2147483647 }
-
-    ModelRuleRoutingTier:
-      type: object
-      additionalProperties: false
-      description: |
-        One protocol-rule routing tier. Lower priority wins. Selection strategy
-        and weights apply to eligible channel/model candidates in this tier.
-        Channel groups are only a Console bulk-selection convenience and are
-        not retained in the route.
-      required: [priority, selection_strategy, candidates]
-      properties:
-        priority: { type: integer, minimum: 0, maximum: 2147483647 }
-        selection_strategy: { $ref: "#/components/schemas/SelectionStrategy" }
-        candidates:
-          type: array
-          minItems: 1
-          items: { $ref: "#/components/schemas/ModelRuleRouteCandidate" }
-
-    ModelRuleView:
-      type: object
-      description: One priced client-model routing profile and its format-specific protocol rules.
-      required:
-        [id, model_id, client_model, model_display_name, model_provider_name,
-         model_enabled, protocol_rules, created_at, updated_at]
-      properties:
-        id: { type: string, format: uuid }
-        model_id: { type: string, format: uuid }
-        client_model: { type: string }
-        model_display_name: { type: string }
-        model_provider_name: { type: string, nullable: true }
-        model_enabled: { type: boolean }
-        protocol_rules:
-          type: array
-          items: { $ref: "#/components/schemas/ModelProtocolRuleView" }
-        created_at: { $ref: "#/components/schemas/DateTime" }
-        updated_at: { $ref: "#/components/schemas/DateTime" }
-
-    ModelProtocolRuleView:
-      type: object
-      description: One protocol rule under a priced client model; its API format is immutable.
-      required:
-        [id, model_rule_id, api_format, description, routing_tiers, enabled,
-         routing_status, target_candidate_count, model_capable_candidate_count,
-         active_candidate_count, updated_at]
-      properties:
-        id: { type: string, format: uuid }
-        model_rule_id: { type: string, format: uuid }
-        api_format: { $ref: "#/components/schemas/ApiFormat" }
-        description: { type: string, nullable: true }
-        routing_tiers:
-          type: array
-          description: Ordered routing tiers; lower numeric priority wins.
-          items: { $ref: "#/components/schemas/ModelRuleRoutingTier" }
-        enabled: { type: boolean }
-        routing_status: { $ref: "#/components/schemas/ModelRuleRoutingStatus" }
-        target_candidate_count:
-          type: integer
-          minimum: 0
-          description: Configured channel/model candidate entries retained across all tiers.
-        model_capable_candidate_count:
-          type: integer
-          minimum: 0
-          description: Candidates whose channel currently advertises the assigned upstream model.
-        active_candidate_count:
-          type: integer
-          minimum: 0
-          description: Channel/model candidates currently eligible for routing.
-        updated_at: { $ref: "#/components/schemas/DateTime" }
-
     ProxyView:
       type: object
       required: [id, name, proxy_url, no_proxy_hosts, enabled, credential_configured, created_at, updated_at]
@@ -5746,6 +5153,9 @@ components:
           nullable: true
 
     ChannelGroupStatusGroup:
+      description: >
+        One API-format projection of a canonical routing group. Use (id, api_format)
+        as the row identity. Only independently opted-in capabilities contribute.
       type: object
       required: [id, api_format, name, enabled, models]
       properties:
@@ -6521,146 +5931,6 @@ components:
           allOf: [{ $ref: "#/components/schemas/Decimal" }]
           description: Non-negative multiplier applied uniformly to input, cached-input, cache-write, and output unit prices in this window.
 
-    DeletionConfirmationInput:
-      type: object
-      additionalProperties: false
-      required: [confirmation_token]
-      properties:
-        confirmation_token:
-          type: string
-          minLength: 1
-          description: Token returned by the corresponding deletion-impact endpoint after administrator review.
-
-    ChannelGroupInput:
-      type: object
-      required: [name, api_format, connector_kind, enabled]
-      properties:
-        name: { type: string }
-        api_format:
-          allOf: [{ $ref: "#/components/schemas/ApiFormat" }]
-          description: >
-            New codex_oauth pools start with open_ai_responses; the server also
-            creates a disabled open_ai_images group in the same credential pool.
-        connector_kind: { $ref: "#/components/schemas/ConnectorKind" }
-        sharing_only:
-          type: boolean
-          description: >
-            True is valid only for codex_oauth. Restricts the entire logical pool
-            to eligible sharing seats and synchronizes the paired group's mode,
-            without enabling Images or granting API Key access. Omission defaults
-            to false on create and preserves the current mode on update. Disabling
-            this mode never removes existing credential-level sharing protection.
-        request_compression:
-          allOf: [{ $ref: "#/components/schemas/RequestCompression" }]
-          description: >
-            Valid only for open_ai_responses groups. Omission defaults to
-            `default` on create and preserves the current value on update.
-        enabled: { type: boolean }
-        status_statistics_enabled:
-          type: boolean
-          description: Includes this channel group in the authenticated channel-group status report. Omission defaults to false on create and preserves the current value on update.
-
-    ChannelCreateInput:
-      type: object
-      additionalProperties: false
-      required:
-        [channel_group_id, api_format, name, base_url, enabled, credential_id]
-      properties:
-        channel_group_id: { type: string, format: uuid }
-        api_format: { $ref: "#/components/schemas/ApiFormat" }
-        name: { type: string }
-        base_url:
-          type: string
-          format: uri
-          description: HTTP(S) URL without embedded credentials, query, or fragment.
-        enabled: { type: boolean }
-        supports_websocket:
-          type: boolean
-          default: false
-          description: Valid only for open_ai_responses channels.
-        supports_standalone_web_search:
-          type: boolean
-          default: false
-          description: Valid only for open_ai_responses channels. Channels with request JSON transforms cannot enable it.
-        auto_disable_allowed:
-          type: boolean
-          default: false
-          description: Allows configured automatic-disable rules to temporarily remove this channel from routing.
-        billing_multiplier:
-          allOf: [{ $ref: "#/components/schemas/Decimal" }]
-          default: "1"
-          description: Non-negative multiplier applied to the applicable pricing-model rates for settlement.
-        proxy_id: { type: string, format: uuid, nullable: true }
-        config_template_id: { type: string, format: uuid, nullable: true }
-        override_document: { $ref: "#/components/schemas/JsonValue" }
-        connect_timeout_ms: { type: integer, minimum: 1, nullable: true }
-        response_header_timeout_ms: { type: integer, minimum: 1, nullable: true }
-        stream_idle_timeout_ms: { type: integer, minimum: 1, nullable: true }
-        credential_id: { type: string, format: uuid, nullable: true }
-        available_models:
-          type: array
-          items: { type: string }
-        test_model:
-          type: string
-          nullable: true
-          description: Must be one of available_models when set; unsupported for Images and provider-managed channels.
-        test_pricing_model_id:
-          type: string
-          format: uuid
-          nullable: true
-          description: Required exactly when test_model is set and resolved only by this ID; unsupported for Images and provider-managed channels.
-
-    ChannelInput:
-      type: object
-      additionalProperties: false
-      required:
-        [channel_group_id, api_format, name, base_url, enabled, credential_id]
-      properties:
-        channel_group_id: { type: string, format: uuid }
-        api_format: { $ref: "#/components/schemas/ApiFormat" }
-        name: { type: string }
-        base_url:
-          type: string
-          format: uri
-          description: HTTP(S) URL without embedded credentials, query, or fragment.
-        enabled: { type: boolean }
-        supports_websocket:
-          type: boolean
-          default: false
-          description: Valid only for open_ai_responses channels.
-        supports_standalone_web_search:
-          type: boolean
-          default: false
-          description: Valid only for open_ai_responses channels. Channels with request JSON transforms cannot enable it.
-        auto_disable_allowed:
-          type: boolean
-          default: false
-          description: Allows configured automatic-disable rules to temporarily remove this channel from routing.
-        billing_multiplier:
-          allOf: [{ $ref: "#/components/schemas/Decimal" }]
-          description: Omit to preserve the stored non-negative billing multiplier.
-        proxy_id: { type: string, format: uuid, nullable: true }
-        config_template_id: { type: string, format: uuid, nullable: true }
-        override_document:
-          allOf: [{ $ref: "#/components/schemas/JsonValue" }]
-          description: Omit to preserve the stored document; send `{}` to clear it.
-        connect_timeout_ms: { type: integer, minimum: 1, nullable: true }
-        response_header_timeout_ms: { type: integer, minimum: 1, nullable: true }
-        stream_idle_timeout_ms: { type: integer, minimum: 1, nullable: true }
-        credential_id: { type: string, format: uuid, nullable: true }
-        available_models:
-          type: array
-          items: { type: string }
-        test_model:
-          type: string
-          nullable: true
-          description: Must be one of available_models when set; unsupported for Images and provider-managed channels.
-        test_pricing_model_id:
-          type: string
-          format: uuid
-          nullable: true
-          description: Required exactly when test_model is set and resolved only by this ID; unsupported for Images and provider-managed channels.
-
     ChannelModelDiscoveryInput:
       type: object
       additionalProperties: false
@@ -6689,16 +5959,16 @@ components:
           type: array
           items: { type: string }
 
-    ChannelBatchUpdateTarget:
+    CapabilityBatchUpdateTarget:
       type: object
       required: [id, updated_at]
       properties:
         id: { type: string, format: uuid }
         updated_at:
           allOf: [{ $ref: "#/components/schemas/DateTime" }]
-          description: Version copied from the channel list response.
+          description: Version copied from the capability list response.
 
-    ChannelBatchChanges:
+    CapabilityBatchChanges:
       type: object
       description: At least one property must be supplied.
       properties:
@@ -6708,7 +5978,7 @@ components:
           allOf: [{ $ref: "#/components/schemas/Decimal" }]
           description: Non-negative multiplier applied to the applicable pricing-model rates for settlement.
 
-    ChannelBatchUpdateInput:
+    CapabilityBatchUpdateInput:
       type: object
       required: [items, changes]
       properties:
@@ -6716,10 +5986,10 @@ components:
           type: array
           minItems: 1
           maxItems: 100
-          items: { $ref: "#/components/schemas/ChannelBatchUpdateTarget" }
-        changes: { $ref: "#/components/schemas/ChannelBatchChanges" }
+          items: { $ref: "#/components/schemas/CapabilityBatchUpdateTarget" }
+        changes: { $ref: "#/components/schemas/CapabilityBatchChanges" }
 
-    ChannelBatchUpdateResponse:
+    CapabilityBatchUpdateResponse:
       type: object
       required: [updated_ids, correlation_id]
       properties:
@@ -6728,14 +5998,6 @@ components:
           items: { type: string, format: uuid }
         correlation_id: { type: string, format: uuid }
 
-    ChannelRecoverInput:
-      type: object
-      required: [updated_at]
-      properties:
-        updated_at:
-          allOf: [{ $ref: "#/components/schemas/DateTime" }]
-          description: Version copied from the channel list response.
-
     ModelRuleCreateInput:
       type: object
       additionalProperties: false
@@ -6743,28 +6005,6 @@ components:
       required: [model_id]
       properties:
         model_id: { type: string, format: uuid }
-
-    ModelProtocolRuleCreateInput:
-      type: object
-      additionalProperties: false
-      description: Creates a disabled empty protocol draft; the format is immutable.
-      required: [api_format]
-      properties:
-        api_format: { $ref: "#/components/schemas/ApiFormat" }
-
-    ModelProtocolRuleInput:
-      type: object
-      additionalProperties: false
-      required: [description, routing_tiers, enabled]
-      properties:
-        description: { type: string, nullable: true }
-        routing_tiers:
-          type: array
-          description: Ordered routing tiers; lower numeric priority wins.
-          items: { $ref: "#/components/schemas/ModelRuleRoutingTier" }
-        enabled:
-          type: boolean
-          description: Must be false when routing_tiers is empty.
 
     ProxyCreateInput:
       type: object

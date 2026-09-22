@@ -2,7 +2,7 @@
 //! capability-cutover topology, with transaction-scoped loaders for both
 //! backends.
 //!
-//! This is a read model over the not-yet-registered `capability_cutover` DDL.
+//! Startup migrations populate this model before retiring legacy configuration.
 //! Authentication material stays in its own credential tables: nothing here
 //! carries OAuth tokens, refresh state, or static secrets.
 
@@ -20,10 +20,12 @@ use super::RepositoryError;
 use crate::domain::{ApiOperation, CapabilitySettings, ConnectorKind};
 
 pub mod accesses;
+pub(crate) mod authorization;
 pub mod capabilities;
 pub mod channels;
 pub(crate) mod codex;
 pub mod groups;
+pub mod profiles;
 pub mod rules;
 mod runtime;
 mod snapshot;

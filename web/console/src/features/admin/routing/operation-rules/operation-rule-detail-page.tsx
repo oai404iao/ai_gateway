@@ -6,7 +6,6 @@ import { AdminDetailShell } from "@/features/admin/components/admin-detail-shell
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
-import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -24,6 +23,9 @@ import {
   useLogicalChannels,
   useOperationRule,
   useUpdateOperationRule,
+  useRoutingProfiles,
+  useCreateRoutingProfile,
+  useModels,
 } from "@/features/admin/api";
 import { useI18n } from "@/app/i18n";
 import { API_OPERATIONS, apiOperationLabel } from "@/lib/permissions";
@@ -114,13 +116,29 @@ export function OperationRuleDetailPage() {
   const query = useOperationRule(id);
   const capabilities = useChannelCapabilities();
   const channels = useLogicalChannels();
+  const profiles = useRoutingProfiles();
+  const models = useModels();
+  const createProfile = useCreateRoutingProfile();
+  const [newProfileModel, setNewProfileModel] = useState("");
   const create = useCreateOperationRule();
   const update = useUpdateOperationRule(id);
   const [state, setState] = useState<FormState>(empty);
   const [validation, setValidation] = useState<z.ZodError | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const rule = query.data?.data;
-  const busy = submitting || create.isPending || update.isPending;
+  const busy = submitting || create.isPending || update.isPending || createProfile.isPending;
+
+  const addProfile = async () => {
+    try {
+      const result = await createProfile.mutateAsync({ model_id: newProfileModel });
+      await profiles.refetch();
+      setState((current) => ({ ...current, model_routing_profile_id: result.id }));
+      setNewProfileModel("");
+      toast.success(t("Routing profile created"));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t("Save failed"));
+    }
+  };
 
   useEffect(() => {
     if (!rule) return;
@@ -191,8 +209,8 @@ export function OperationRuleDetailPage() {
         "Candidates reference an explicit capability and upstream model. Tiers, priorities, and weights are never inferred from legacy channels.",
       )}
       backPath="/admin/routing/operation-rules"
-      isLoading={!isNew && (query.isLoading || capabilities.isLoading || channels.isLoading)}
-      error={query.error ?? capabilities.error ?? channels.error}
+      isLoading={(!isNew && query.isLoading) || capabilities.isLoading || channels.isLoading || profiles.isLoading || models.isLoading}
+      error={query.error ?? capabilities.error ?? channels.error ?? profiles.error ?? models.error}
       hasData={isNew || Boolean(rule)}
       saving={busy}
       detailCard={
@@ -219,15 +237,27 @@ export function OperationRuleDetailPage() {
                 <FieldLabel htmlFor="operation-rule-profile">
                   {t("Model routing profile")}
                 </FieldLabel>
-                <Input
-                  id="operation-rule-profile"
+                <Select
                   value={state.model_routing_profile_id}
+                  items={(profiles.data ?? []).map((profile) => ({
+                    value: profile.id, label: `${profile.model_display_name} (${profile.client_model})`,
+                  }))}
                   disabled={!isNew}
-                  aria-invalid={Boolean(fieldError("model_routing_profile_id"))}
-                  onChange={(event) =>
-                    patch({ model_routing_profile_id: event.target.value })
-                  }
-                />
+                  onValueChange={(value) => patch({ model_routing_profile_id: value ?? "" })}
+                >
+                  <SelectTrigger id="operation-rule-profile" aria-invalid={Boolean(fieldError("model_routing_profile_id"))}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      {(profiles.data ?? []).map((profile) => (
+                        <SelectItem key={profile.id} value={profile.id}>
+                          {profile.model_display_name} ({profile.client_model})
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
                 <FieldDescription>
                   {t("One routing profile exists per priced client model.")}
                 </FieldDescription>
@@ -235,6 +265,33 @@ export function OperationRuleDetailPage() {
                   <FieldError>{fieldError("model_routing_profile_id")}</FieldError>
                 ) : null}
               </Field>
+              {isNew ? (
+                <Field>
+                  <FieldLabel htmlFor="profile-model">{t("Create profile for pricing model")}</FieldLabel>
+                  <Select value={newProfileModel} onValueChange={(value) => setNewProfileModel(value ?? "")}
+                    items={(models.data ?? []).map((model) => ({
+                      value: model.id, label: `${model.display_name} (${model.source_model_id})`,
+                    }))}>
+                    <SelectTrigger id="profile-model"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        {(models.data ?? []).filter((model) => model.enabled &&
+                          !profiles.data?.some((profile) => profile.model_id === model.id))
+                          .map((model) => (
+                            <SelectItem key={model.id} value={model.id}>
+                              {model.display_name} ({model.source_model_id})
+                            </SelectItem>
+                          ))}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                  <FieldDescription>{t("Creating a profile binds model identity without creating routes or authorization.")}</FieldDescription>
+                  <Button type="button" variant="outline" disabled={!newProfileModel || busy}
+                    onClick={() => void addProfile()}>
+                    {t("Create routing profile")}
+                  </Button>
+                </Field>
+              ) : null}
               <Field>
                 <FieldLabel htmlFor="operation-rule-operation">{t("Operation")}</FieldLabel>
                 <Select

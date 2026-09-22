@@ -6,7 +6,7 @@ import { BrowserRouter } from "react-router";
 import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
 import type {
-  ChannelGroupView,
+  RoutingGroupView,
   CodexCredentialBatchInput,
   CodexCredentialExportInput,
   CodexCredentialUpdateInput,
@@ -14,20 +14,17 @@ import type {
   CodexOauthCompleteInput,
   CodexOauthStartInput,
 } from "@/api/types";
-import { CHANNEL_GROUP } from "@/test/fixtures";
+import { ROUTING_GROUP } from "@/test/fixtures";
 import { seedAuthenticatedSession, server } from "@/test/msw";
 
 const GROUP_ID = "00000000-0000-0000-0000-00000000c001";
 const CREDENTIAL_ID = "00000000-0000-0000-0000-00000000c002";
 const FLOW_ID = "00000000-0000-0000-0000-00000000c003";
 
-const CODEX_GROUP: ChannelGroupView = {
-  ...CHANNEL_GROUP,
+const CODEX_GROUP: RoutingGroupView = {
+  ...ROUTING_GROUP,
   id: GROUP_ID,
   name: "Codex subscriptions",
-  api_format: "open_ai_responses",
-  connector_kind: "codex_oauth",
-  connector_pool_id: GROUP_ID,
 };
 
 const CREDENTIAL: CodexCredentialView = {
@@ -77,7 +74,7 @@ function renderPage() {
 
 function baseHandlers(credentials: CodexCredentialView[]) {
   return [
-    http.get("/console/v1/routing/channel-groups/:id", () =>
+    http.get("/console/v1/routing/groups/:id", () =>
       HttpResponse.json(CODEX_GROUP, {
         headers: { ETag: `"${CODEX_GROUP.updated_at}"` },
       }),
@@ -94,18 +91,18 @@ afterEach(() => {
 });
 
 describe("CodexOauthPage", () => {
-  it("returns to the channels page", async () => {
+  it("returns to the canonical routing group", async () => {
     seedAuthenticatedSession();
     server.use(...baseHandlers([]));
     const user = userEvent.setup();
     renderPage();
 
     await user.click(
-      await screen.findByRole("button", { name: "Back to channels" }),
+      await screen.findByRole("button", { name: "Back to groups" }),
     );
 
     await waitFor(() => {
-      expect(window.location.pathname).toBe("/admin/routing/channels");
+      expect(window.location.pathname).toBe(`/admin/routing/groups/${GROUP_ID}`);
     });
   });
 

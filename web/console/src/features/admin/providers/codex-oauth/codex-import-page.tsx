@@ -70,7 +70,7 @@ import {
   TabsTrigger,
 } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { useChannelGroup, useProxies } from "@/features/admin/api";
+import { useRoutingGroup, useProxies } from "@/features/admin/api";
 import {
   type CodexCredentialImportDraft,
   type CodexImportDocument,
@@ -87,7 +87,7 @@ const MAX_FILES = 20;
 export default function CodexImportPage() {
   const { t } = useI18n();
   const { id: groupId = "" } = useParams();
-  const group = useChannelGroup(groupId);
+  const group = useRoutingGroup(groupId);
   const proxiesQuery = useProxies();
   const importCredential = useImportCodexCredential(groupId);
   const [jsonText, setJsonText] = useState("");
@@ -343,11 +343,6 @@ export default function CodexImportPage() {
     setEditingId(null);
   };
 
-  const groupError =
-    group.data && group.data.data.connector_kind !== "codex_oauth"
-      ? new Error(t("This channel group is not a Codex OAuth connector."))
-      : null;
-
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
@@ -385,7 +380,6 @@ export default function CodexImportPage() {
       />
 
       {group.error ? <ErrorAlert error={group.error} /> : null}
-      {groupError ? <ErrorAlert error={groupError} /> : null}
       {proxiesQuery.error ? <ErrorAlert error={proxiesQuery.error} /> : null}
 
       <Alert>
@@ -778,7 +772,7 @@ export default function CodexImportPage() {
                 </p>
                 <Button
                   onClick={() => void runImport()}
-                  disabled={importing || ready.length === 0 || Boolean(groupError)}
+                  disabled={importing || ready.length === 0 || !group.data || Boolean(group.error) || Boolean(group.data?.data.deleted_at)}
                 >
                   {importing ? <Spinner data-icon="inline-start" /> : null}
                   <Upload data-icon="inline-start" />

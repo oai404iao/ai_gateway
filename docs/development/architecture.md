@@ -65,27 +65,26 @@ Browser or Console client
    契约时删除。当前只校验顶层字段，允许字段内部的嵌套结构仍由上游解释。随后按 API Key
    快照中的用户组策略执行可选 Fast 过滤：启用时删除顶层 `service_tier`，因此后续日志元数据、
    请求倍率、Session affinity、Transform 和 Connector 都只观察过滤后的请求。
-6. 从分 API 格式索引按 `(api_format, client_model)` 取得预编译协议路由。`client_model`
+6. 按公共操作与 `client_model` 取得预编译路由。`client_model`
    来自唯一绑定到顶层 routing profile 的计价 `models.source_model_id`；一个 profile 可包含
-   多个格式唯一的协议规则。协议规则拥有按非负 `priority` 排序的 routing tier；数值越小越先
+   多个操作唯一的规则。规则拥有按非负 `priority` 排序的 routing tier；数值越小越先
    尝试，每个 tier 独立选择 `weighted_random` 或 `weighted_round_robin`。停用的协议可以作为
    无 tier 的 `draft` 保存，启用协议必须至少有一个非空 tier。
-   每个 tier 直接保存显式 `(channel_id, upstream_model, weight)` 候选；同一渠道可在同层使用
-   不同模型，也可跨层重复，只有同一层内完全相同的渠道/模型组合不能重复。Console 逐行编辑
-   渠道、模型和权重，Channel Group 仅提供渠道选项上下文；以后加入或移出该组的渠道
-   不会隐式改写既有规则。Console 只能从每条渠道声明的 `available_models` 中选择模型，服务端
+   每个 tier 保存显式 `(capability_id, upstream_model, weight)` 候选；同一能力可在同层使用
+   不同模型，也可跨层重复，只有同层完全相同的能力/模型组合不能重复。Console 逐行编辑
+   能力、模型和权重，管理组仅提供选项上下文；以后加入或移出该组的渠道
+   不会隐式改写既有规则。Console 只能从能力声明的 `available_models` 中选择模型，服务端
    在协议更新时再次验证。协议规则另存目标渠道位图和模型兼容位图；后续渠道能力变化可使已发布
    规则进入断开状态。
 7. `accessible_routes` 通常按模型兼容渠道完成 O(1) 授权判断；只有规则全局没有任何模型兼容
    渠道时，才退回目标渠道位图，使原本已授权的断开规则仍可识别。随后使用渠道授权位图过滤
    实际模型兼容候选，并依次应用 operation capability、Session 粘性、规则中最低可用
    `priority` tier 和被动健康过滤。权重只比较该 tier 内仍然合格的渠道/模型候选，不跨 tier 比较；
-   API Key 的 group/channel 授权仍与此前相同，Console 的路由候选编辑不会扩大 Key 的授权
-   范围。HTTP 授权范围内没有可选候选时返回 `503 no_healthy_channel`；
+   API Key 的 group/logical-channel 选择保存为固定能力授权；新增成员或能力不扩大已有授权，
+   Console 路由编辑也不授予权限。HTTP 授权范围内没有可选候选时返回 `503 no_healthy_channel`；
    Responses WS 使用下文的 `426 websocket_unavailable` 回退提示。
    `/v1/models` 额外要求 API Key 范围与模型兼容位图相交，所以不公布断开规则。
-   Standalone web search 只允许
-   `supports_standalone_web_search = true` 的 Responses 渠道。
+   Standalone web search 使用独立 Search 能力与操作规则，不借用 Responses 规则。
    候选选定后，同步持久化客户端逻辑请求的日志 intent 并预留终态 slot；
    不可写或容量不足返回 `503 request_log_unavailable`，不进入 Connector 准备或上游 dispatch。
    重试复用同一预占；WS 每次 create 单独准入。见[日志耐久化](request-log-durability.md)。

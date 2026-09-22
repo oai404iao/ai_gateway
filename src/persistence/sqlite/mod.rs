@@ -12,7 +12,7 @@ mod migrations;
 mod ownership;
 mod pipeline;
 mod queries;
-mod schema;
+pub(crate) mod schema;
 mod sharing;
 mod types;
 mod upstream_credentials;

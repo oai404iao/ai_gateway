@@ -9,6 +9,9 @@ import { seedAuthenticatedSession, seedUserSession, server } from "@/test/msw";
 import {
   CHANNEL,
   CHANNEL_GROUP,
+  ROUTING_GROUP,
+  LOGICAL_CHANNEL,
+  CHANNEL_CAPABILITY,
   COST_STATISTICS_REPORT,
   MODEL,
 } from "@/test/fixtures";
@@ -241,12 +244,12 @@ describe("StatisticsPage", () => {
     await user.click(channelSelect);
     await user.click(
       await screen.findByRole("option", {
-        name: `${CHANNEL_GROUP.name} · ${CHANNEL.name}`,
+        name: `${ROUTING_GROUP.name} · ${LOGICAL_CHANNEL.name} · ${CHANNEL_CAPABILITY.settings.operation}`,
       }),
     );
     await user.click(screen.getByRole("button", { name: "Apply" }));
     await waitFor(() => {
-      expect(queries.at(-1)?.get("channel_id")).toBe(CHANNEL.id);
+      expect(queries.at(-1)?.get("channel_id")).toBe(CHANNEL_CAPABILITY.id);
     });
 
     const todayStart = new Date(queries.at(-1)?.get("started_after") ?? "");

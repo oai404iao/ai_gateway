@@ -84,15 +84,15 @@ async fn setup(backend: &Backend) -> Context {
     let (group, _) = repo
         .prepare_mutation(
             admin,
-            ControlPlaneMutation::CreateGroup(ChannelGroupInput {
-                name: "Codex".into(),
-                api_format: "open_ai_responses".into(),
-                connector_kind: "codex_oauth".into(),
-                request_compression: None,
-                sharing_only: None,
-                enabled: true,
-                status_statistics_enabled: None,
-            }),
+            ControlPlaneMutation::SaveRoutingGroup {
+                id: Uuid::new_v4(),
+                expected: None,
+                input: ai_gateway::persistence::RoutingGroupInput {
+                    name: "Codex".into(),
+                    sharing_only: false,
+                    enabled: true,
+                },
+            },
         )
         .await
         .unwrap()
@@ -201,7 +201,7 @@ async fn crud(c: Context) {
     assert!(identity.credential.provider_managed);
     assert_eq!(identity.credential.kind, "codex_oauth");
     assert!(identity.secret.is_none());
-    assert_eq!(identity.credential.channel_ids.len(), 2);
+    assert_eq!(identity.credential.channel_ids, vec![c.id]);
     assert!(
         c.repo
             .prepare_mutation(
@@ -214,30 +214,39 @@ async fn crud(c: Context) {
             .await
             .is_err()
     );
-    assert_eq!(r.projection_channel_ids.len(), 2);
+    assert!(r.projection_channel_ids.is_empty());
     assert_eq!(r.refresh_generation, 0);
     assert_eq!(r.user_id.as_deref(), Some("member-one"));
     let records = c.repo.load_runtime().await.unwrap();
-    for channel in records
+    let topology = c.repo.topology().await.unwrap();
+    let expected_ids = topology
+        .channel_capabilities
+        .iter()
+        .filter(|capability| capability.channel_id == c.id && capability.deleted_at.is_none())
+        .map(|capability| capability.id)
+        .collect::<Vec<_>>();
+    assert_eq!(expected_ids.len(), 4);
+    let runtime_channels = records
         .control_plane
         .channels
         .iter()
-        .filter(|channel| r.projection_channel_ids.contains(&channel.id))
-    {
+        .filter(|channel| expected_ids.contains(&channel.id))
+        .collect::<Vec<_>>();
+    assert_eq!(runtime_channels.len(), expected_ids.len());
+    for channel in runtime_channels {
         assert_eq!(channel.credential.unwrap().id, c.id);
     }
-    let images = records
-        .control_plane
-        .groups
+    let images = topology
+        .channel_capabilities
         .iter()
-        .find(|g| g.api_format == "open_ai_images")
+        .find(|capability| capability.settings.operation == ApiOperation::ImagesGeneration)
         .unwrap();
-    assert!(!images.enabled);
-    assert_eq!(c.repo.codex_credentials(images.id).await.unwrap().len(), 1);
+    assert!(!images.settings.enabled);
+    assert_eq!(c.repo.codex_credentials(c.group).await.unwrap().len(), 1);
     let export = c
         .repo
         .export_codex_credentials(
-            images.id,
+            c.group,
             CodexCredentialExportInput {
                 credential_ids: vec![c.id],
                 include_proxies: true,
@@ -372,12 +381,12 @@ async fn crud(c: Context) {
             .is_none()
     );
     assert!(c.repo.load_codex_credentials().await.unwrap().is_empty());
-    let listed = c.repo.control_plane_lists().await.unwrap();
+    let listed = c.repo.topology().await.unwrap();
     assert!(
         listed
-            .channels
+            .logical_channels
             .iter()
-            .all(|ch| !r.projection_channel_ids.contains(&ch.id))
+            .all(|channel| channel.id != c.id || channel.deleted_at.is_some())
     );
 }
 
@@ -683,8 +692,21 @@ async fn sharing(c: Context) {
             .is_err()
     );
     let snapshot = c.repo.load_runtime().await.unwrap();
-    assert_eq!(snapshot.sharing[0].channel_ids.len(), 2);
-    assert_eq!(snapshot.sharing[0].protected_channel_ids.len(), 2);
+    let topology = c.repo.topology().await.unwrap();
+    let mut capabilities = topology
+        .channel_capabilities
+        .iter()
+        .filter(|capability| capability.channel_id == c.id)
+        .map(|capability| capability.id)
+        .collect::<Vec<_>>();
+    capabilities.sort_unstable();
+    assert_eq!(capabilities.len(), 4);
+    let mut channels = snapshot.sharing[0].channel_ids.clone();
+    channels.sort_unstable();
+    assert_eq!(channels, capabilities);
+    let mut protected = snapshot.sharing[0].protected_channel_ids.clone();
+    protected.sort_unstable();
+    assert_eq!(protected, capabilities);
     owner.close().await.unwrap();
 }
 
@@ -848,6 +870,62 @@ async fn identity_and_proxy_export(backend: &Backend, c: Context) {
     let audit = serde_json::to_string(&c.repo.audit_logs(100).await.unwrap()).unwrap();
     assert!(!audit.contains("First-refresh-token"));
     assert!(!audit.contains("fixture-password"));
+    let proxy_view = c
+        .repo
+        .control_plane_lists()
+        .await
+        .unwrap()
+        .proxies
+        .into_iter()
+        .find(|item| item.id == proxy)
+        .unwrap();
+    assert!(matches!(
+        c.repo
+            .prepare_mutation(
+                c.admin,
+                ai_gateway::persistence::ControlPlaneMutation::DeleteProxy {
+                    id: proxy,
+                    expected_updated_at: proxy_view.updated_at,
+                }
+            )
+            .await,
+        Err(ai_gateway::persistence::RepositoryError::ProxyInUse)
+    ));
+    let topology = c.repo.topology().await.unwrap();
+    let access_id = topology
+        .logical_channels
+        .iter()
+        .find(|channel| channel.id == c.id)
+        .unwrap()
+        .access_id;
+    c.repo
+        .prepare_codex_credential_delete(c.admin, c.id, after.updated_at)
+        .await
+        .unwrap()
+        .commit()
+        .await
+        .unwrap();
+    let topology = c.repo.topology().await.unwrap();
+    let access = topology
+        .upstream_accesses
+        .iter()
+        .find(|access| access.id == access_id)
+        .unwrap();
+    assert!(access.deleted_at.is_some());
+    assert_eq!(access.proxy_id, None);
+    c.repo
+        .prepare_mutation(
+            c.admin,
+            ai_gateway::persistence::ControlPlaneMutation::DeleteProxy {
+                id: proxy,
+                expected_updated_at: proxy_view.updated_at,
+            },
+        )
+        .await
+        .unwrap()
+        .commit()
+        .await
+        .unwrap();
 }
 
 async fn recovery_and_costs(backend: &Backend, c: Context) {
@@ -922,28 +1000,22 @@ async fn recovery_and_costs(backend: &Backend, c: Context) {
         .sync(vec![group.clone()], record.windows.clone())
         .await
         .unwrap();
-    let seed = Seed {
-        user: c.admin,
-        key,
-        model,
-        profile: Uuid::nil(),
-        rule: Uuid::nil(),
-        group: c.group,
-        other_group: Uuid::nil(),
-        channel: c.id,
-        proxy: Uuid::nil(),
-        template: Uuid::nil(),
-        secret: String::new(),
-        email: String::new(),
-        password: String::new(),
-        client_model: "s5-model".into(),
-    };
+    let topology = c.repo.topology().await.unwrap();
+    assert_eq!(record.channel_ids.len(), 4);
+    let metered_capabilities = topology
+        .channel_capabilities
+        .iter()
+        .filter(|capability| {
+            record.channel_ids.contains(&capability.id)
+                && capability.settings.operation != ApiOperation::StandaloneWebSearch
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(metered_capabilities.len(), 3);
+    let expected_amount = Decimal::new(6, 8);
     let mut events = Vec::new();
     let mut leases = Vec::new();
-    for (index, channel) in record.channel_ids.iter().enumerate() {
-        let mut event = request_log_event(&seed, RequestLogOutcome::Succeeded);
-        event.model_rule_id = None;
-        event.channel_id = Some(*channel);
+    for (index, capability) in metered_capabilities.iter().enumerate() {
+        let mut event = request_log_event(c.admin, key, model, c.group, capability.id);
         event.channel_group_id = Some(
             backend
                 .repo()
@@ -953,20 +1025,12 @@ async fn recovery_and_costs(backend: &Backend, c: Context) {
                 .control_plane
                 .channels
                 .iter()
-                .find(|c| c.id == *channel)
+                .find(|c| c.id == capability.id)
                 .unwrap()
                 .channel_group_id,
         );
-        event.api_format = if *channel == c.id {
-            ApiFormat::OpenAiResponses
-        } else {
-            ApiFormat::OpenAiImages
-        };
-        event.api_operation = if *channel == c.id {
-            ApiOperation::Responses
-        } else {
-            ApiOperation::ImagesGeneration
-        };
+        event.api_operation = capability.settings.operation;
+        event.api_format = event.api_operation.api_format();
         event.request_protocol = RequestProtocol::NonStream;
         event.streamed = false;
         event.billing.as_mut().unwrap().cost_amount = Some(Decimal::new((index + 1) as i64, 8));
@@ -997,7 +1061,7 @@ async fn recovery_and_costs(backend: &Backend, c: Context) {
         .sharing_completed_costs(&runtime.pending().await)
         .await
         .unwrap();
-    assert_eq!(costs.len(), 2);
+    assert_eq!(costs.len(), 3);
     for (id, cost) in &costs {
         runtime.finish(*id, Some(*cost));
         runtime.finish(*id, Some(*cost));
@@ -1010,11 +1074,11 @@ async fn recovery_and_costs(backend: &Backend, c: Context) {
         usage
             .windows
             .iter()
-            .all(|w| w.used_amount == Decimal::new(3, 8))
+            .all(|w| w.used_amount == expected_amount)
     );
     let view = c.repo.codex_credential_view(c.id).await.unwrap().unwrap();
-    assert_eq!(view.primary_window_cost_amount, Some(Decimal::new(3, 8)));
-    assert_eq!(view.secondary_window_cost_amount, Some(Decimal::new(3, 8)));
+    assert_eq!(view.primary_window_cost_amount, Some(expected_amount));
+    assert_eq!(view.secondary_window_cost_amount, Some(expected_amount));
     let history = c
         .repo
         .self_codex_quota_window_history(c.admin, c.id, 10)
@@ -1024,7 +1088,7 @@ async fn recovery_and_costs(backend: &Backend, c: Context) {
         history
             .periods
             .iter()
-            .all(|p| p.cost_amount == Decimal::new(3, 8))
+            .all(|p| p.cost_amount == expected_amount)
     );
     drop(runtime);
     owner.close().await.unwrap();
@@ -1039,7 +1103,7 @@ async fn recovery_and_costs(backend: &Backend, c: Context) {
             .await
             .windows
             .iter()
-            .all(|w| w.used_amount == Decimal::new(3, 8))
+            .all(|w| w.used_amount == expected_amount)
     );
     drop(runtime);
 }

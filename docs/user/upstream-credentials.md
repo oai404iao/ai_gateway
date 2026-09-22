@@ -6,11 +6,11 @@
 
 客户端 API Key 用来访问网关；上游凭证用来访问服务商，两者独立。
 一个普通渠道通过 `credential_id` 引用一个凭证，也可明确使用 `null` 表示无认证。
-同一个凭证可以供多个渠道、不同接口格式的渠道复用，但必须允许各渠道的完整 Base URL。
-本阶段仍是一个渠道一种接口格式，不支持跨协议转换。
+同一个凭证可以供多个逻辑渠道复用，但必须允许其所选接入的完整 Base URL。
+一个逻辑渠道可以有多个独立操作能力，不支持跨协议转换。
 
-Console 管理员在“上游凭证”中创建 Bearer 或自定义 Header 凭证，然后到渠道页面选择它。
-复制渠道会保留同一个凭证引用，不复制密钥，也不创建新身份。
+Console 管理员创建 Bearer 或自定义 Header 凭证、接入和管理组，再到逻辑渠道页面绑定。
+能力页面单独配置操作、传输、模型目录和变换，不复制密钥或隐式创建授权。
 要让渠道使用独立的密钥生命周期，应创建另一个凭证并重新绑定。
 
 ## 目标范围
@@ -23,7 +23,7 @@ Console 管理员在“上游凭证”中创建 Bearer 或自定义 Header 凭�
 - 不允许 URL 用户信息、query、fragment、空白、控制字符或反斜杠。
 - 这不是域名、子域或路径前缀白名单。
 
-修改渠道 Base URL 前，先显式把新目标加入凭证范围。
+修改接入 Base URL 前，先显式把新目标加入全部引用凭证的范围。
 任何尚未删除的渠道仍引用旧目标时，不能从范围中移除旧目标；停用渠道或停用渠道组不等于解绑。
 模型发现同样校验凭证类型、启用状态和目标范围，不能绕过范围临时注入密钥。
 
@@ -48,17 +48,20 @@ Console 管理员在“上游凭证”中创建 Bearer 或自定义 Header 凭�
 审计不记录密钥内容。创建时必须提供 `secret`；更新省略它表示保留，`null` 或空白值会被拒绝。
 认证类型不可原地修改。
 
-渠道创建、更新和模型发现必须显式提供 nullable `credential_id`。
+逻辑渠道集合为 `/console/v1/routing/logical-channels`，接入集合为
+`/console/v1/routing/accesses`，能力集合为 `/console/v1/routing/capabilities`。
+逻辑渠道创建、更新和模型发现必须显式提供 nullable `credential_id`。
 旧的 `upstream_auth_kind`、`upstream_auth_header_name`、`upstream_api_key` 写入字段不再接受，
 外部 Console 管理脚本必须升级；渠道详情也不再返回密钥。
 精确请求/响应形状以 [Console OpenAPI](../openapi/console-v1.yaml) 为准。
 
 ## Codex
 
-统一凭证列表展示 Codex 的稳定逻辑身份及其两个投影引用，但不返回 OAuth Token。
+统一凭证列表展示 Codex 的稳定逻辑身份及逻辑渠道引用，但不返回 OAuth Token。
 请通过 Codex 页面导入、更新、刷新或删除，普通凭证接口不能改绑或删除这些身份。
-现有 UUID、Responses/Images 渠道、凭证池、额度窗口、拼车绑定与账本引用保持不变。
-新增身份记录不授予 Images、搜索或其他新权限。
+凭证 UUID、额度窗口、拼车绑定与账本引用保持不变。旧 Responses/Images 投影转存为一个
+逻辑渠道及四个操作能力，旧投影 ID 保留在历史身份注册表中。
+新增能力不授予 Images、搜索或其他新权限；已有 Key/Policy 保存固定能力范围。
 
 ## 升级
 

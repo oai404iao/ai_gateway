@@ -89,7 +89,10 @@ async fn history_rebuild_preserves_rows_guards_and_rolls_back_as_one_transaction
     let database = SqliteDatabase::open(&directory.path().join("history.sqlite"))
         .await
         .unwrap();
-    database.install_schema().await.unwrap();
+    database
+        .migrate(&super::schema::MIGRATIONS[..4])
+        .await
+        .unwrap();
     let mut transaction = database.begin_write().await.unwrap();
     seed(&mut transaction).await;
     assert!(sqlite_retarget_history(&mut transaction).await.is_err());
@@ -108,10 +111,12 @@ async fn history_rebuild_preserves_rows_guards_and_rolls_back_as_one_transaction
     super::functions::set_transaction_time(&mut transaction)
         .await
         .unwrap();
-    sqlx::raw_sql(include_str!("../capability_cutover/sqlite-schema.sql"))
-        .execute(&mut *transaction)
-        .await
-        .unwrap();
+    sqlx::raw_sql(include_str!(
+        "../../../migrations/sqlite/0005_upstream_capabilities.sql"
+    ))
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
     assert!(sqlite_retarget_history(&mut transaction).await.is_err());
     transaction.rollback().await.unwrap();
     assert_eq!(schema(&mut connection).await, original_schema);
@@ -121,10 +126,12 @@ async fn history_rebuild_preserves_rows_guards_and_rolls_back_as_one_transaction
         super::functions::set_transaction_time(&mut transaction)
             .await
             .unwrap();
-        sqlx::raw_sql(include_str!("../capability_cutover/sqlite-schema.sql"))
-            .execute(&mut *transaction)
-            .await
-            .unwrap();
+        sqlx::raw_sql(include_str!(
+            "../../../migrations/sqlite/0005_upstream_capabilities.sql"
+        ))
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
         sqlite_transfer(&mut transaction, chrono::Utc::now())
             .await
             .unwrap();
@@ -197,6 +204,7 @@ async fn history_rebuild_preserves_rows_guards_and_rolls_back_as_one_transaction
     );
     connection.close().await.unwrap();
     drop(pools);
+    let database = std::sync::Arc::new(database);
     let mut transaction = database.begin_write().await.unwrap();
     assert!(
         sqlx::query_scalar::<_, bool>("PRAGMA foreign_keys")
@@ -204,6 +212,80 @@ async fn history_rebuild_preserves_rows_guards_and_rolls_back_as_one_transaction
             .await
             .unwrap()
     );
-    transaction.rollback().await.unwrap();
+    sqlx::query("UPDATE channels SET name='Legacy name must not be read',updated_at=ag_now()")
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE channel_groups SET name='Legacy group must not be read',updated_at=ag_now()",
+    )
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE channel_capabilities SET status_statistics_enabled=1,updated_at=ag_now()")
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO channel_capabilities(id,channel_id,operation,transports,available_models,status_statistics_enabled)
+         SELECT ag_md5_uuid(id||'idle-image'),id,'images_generation','[\"http_json\"]','[\"idle-image\"]',1
+         FROM upstream_channels",
+    )
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+    transaction.commit().await.unwrap();
+    let logs = super::queries::SqliteRequestLogQueries::new(database.clone());
+    let log_id = uuid::Uuid::parse_str("80000000-0000-0000-0000-000000000001").unwrap();
+    let log = logs.get(log_id).await.unwrap().unwrap();
+    assert_eq!(log.channel_name.as_deref(), Some("History"));
+    assert_eq!(log.channel_group_name.as_deref(), Some("History"));
+    assert!(
+        logs.get_for_user(uuid::Uuid::new_v4(), log_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let metering = super::queries::SqliteMeteringQueries::new(database.clone());
+    let now = chrono::Utc::now();
+    let report = metering
+        .cost_statistics(crate::persistence::CostStatisticsFilter {
+            started_at: now - chrono::Duration::days(1),
+            ended_at: now + chrono::Duration::seconds(1),
+            granularity: crate::persistence::StatisticsGranularity::Day,
+            user_id: None,
+            api_key_id: None,
+            channel_id: None,
+            codex_credential_id: None,
+            include_channel_details: true,
+        })
+        .await
+        .unwrap();
+    assert_eq!(report.channels.len(), 1);
+    assert_eq!(report.channels[0].name, "History");
+    assert_eq!(report.channels[0].channel_group_name, "History");
+    let status = logs
+        .channel_group_status(crate::persistence::ChannelGroupStatusWindow::Last24Hours)
+        .await
+        .unwrap();
+    assert_eq!(status.groups.len(), 2);
+    assert_eq!(status.groups[0].id, status.groups[1].id);
+    assert_eq!(
+        status
+            .models
+            .iter()
+            .map(|row| row.request_count)
+            .sum::<i64>(),
+        1
+    );
+    let images = status
+        .groups
+        .iter()
+        .find(|group| group.api_format == "open_ai_images")
+        .unwrap();
+    assert_eq!(images.models[0].model, "idle-image");
+    assert_eq!(images.models[0].request_count, 0);
+    drop(logs);
+    drop(metering);
     database.close().await;
 }

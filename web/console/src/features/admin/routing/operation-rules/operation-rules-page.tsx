@@ -1,6 +1,6 @@
 import { useNavigate } from "react-router";
 import { AdminListPage } from "@/features/admin/components/admin-list-page";
-import { useOperationRules } from "@/features/admin/api";
+import { useOperationRules, useRoutingProfiles } from "@/features/admin/api";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { useI18n } from "@/app/i18n";
 import { apiOperationLabel } from "@/lib/permissions";
@@ -8,6 +8,7 @@ import { apiOperationLabel } from "@/lib/permissions";
 export function OperationRulesPage() {
   const navigate = useNavigate();
   const query = useOperationRules();
+  const profiles = useRoutingProfiles();
   const { t } = useI18n();
   return (
     <AdminListPage
@@ -24,7 +25,9 @@ export function OperationRulesPage() {
         {
           key: "profile",
           header: t("Routing profile"),
-          render: (rule) => rule.model_routing_profile_id,
+          render: (rule) =>
+            profiles.data?.find((profile) => profile.id === rule.model_routing_profile_id)
+              ?.model_display_name ?? rule.model_routing_profile_id,
         },
         {
           key: "operation",

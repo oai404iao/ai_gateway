@@ -196,14 +196,7 @@ async fn codex_operation_guards_preserve_locking_failure_commits_and_generation_
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
     let group = Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO channel_groups (id,name,api_format,connector_kind,enabled)
-         VALUES ($1,'guard-contract','open_ai_responses','codex_oauth',true)",
-    )
-    .bind(group)
-    .execute(&database.pool)
-    .await
-    .unwrap();
+    super::insert_routing_group_fixture(&database.pool, group, "guard-contract").await;
     let repository = ControlPlaneRepository::new(database.pool.clone());
     let runtime = Arc::new(RuntimeConfig::new(
         compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap(),

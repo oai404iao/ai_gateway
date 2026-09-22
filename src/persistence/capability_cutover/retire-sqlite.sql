@@ -1,0 +1,12 @@
+DROP TRIGGER channels_proxy_id_fkey_parent_update;
+DROP TRIGGER channels_proxy_id_fkey_parent_delete;
+DROP TRIGGER channels_config_template_id_fkey_parent_update;
+DROP TRIGGER channels_config_template_id_fkey_parent_delete;
+DROP TABLE codex_oauth_credential_channels;
+DROP TABLE model_rule_routing_candidates;
+DROP TABLE model_rule_routing_tiers;
+DROP TABLE model_rules;
+DROP TABLE channels;
+DROP TABLE channel_groups;
+DROP TABLE _gateway_routing_assertions;
+DROP VIEW _gateway_routing_shape;

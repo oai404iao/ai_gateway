@@ -34,14 +34,15 @@ import {
 } from "@/components/ui/input-group";
 import { StatusBadge } from "@/components/shared/status-badge";
 import type { ApiFormat } from "@/api/types";
-import { API_FORMATS, apiFormatLabel } from "@/lib/permissions";
+import { apiFormatLabel } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/app/i18n";
 
 export interface RoutingTargetGroup {
   id: string;
   name: string;
-  api_format: ApiFormat;
+  api_format?: ApiFormat;
+  api_formats?: ApiFormat[];
   enabled: boolean;
   model_capable?: boolean;
 }
@@ -52,7 +53,8 @@ export interface RoutingTargetChannel {
   channel_group_name?: string;
   channel_group_enabled: boolean;
   name: string;
-  api_format: ApiFormat;
+  api_format?: ApiFormat;
+  api_formats?: ApiFormat[];
   enabled: boolean;
   auto_disabled: boolean;
   model_capable?: boolean;
@@ -76,6 +78,22 @@ const FORMAT_ORDER: Record<ApiFormat, number> = {
   open_ai_responses: 1,
   open_ai_images: 2,
 };
+
+function formatLabel(target: { api_format?: ApiFormat; api_formats?: ApiFormat[] }): string {
+  return [...(target.api_formats ?? (target.api_format ? [target.api_format] : []))]
+    .sort((a, b) => FORMAT_ORDER[a] - FORMAT_ORDER[b])
+    .map(apiFormatLabel)
+    .join(" / ");
+}
+
+function categories<T extends { api_format?: ApiFormat; api_formats?: ApiFormat[] }>(targets: T[]) {
+  const grouped = new Map<string, T[]>();
+  for (const target of targets) {
+    const label = formatLabel(target);
+    grouped.set(label, [...(grouped.get(label) ?? []), target]);
+  }
+  return [...grouped].map(([label, items]) => ({ label, items }));
+}
 
 function compareNames(left: string, right: string): number {
   return left.localeCompare(right, undefined, { sensitivity: "base" });
@@ -122,7 +140,7 @@ export function RoutingTargetFields({
     () =>
       [...groups].sort(
         (left, right) =>
-          FORMAT_ORDER[left.api_format] - FORMAT_ORDER[right.api_format] ||
+          compareNames(formatLabel(left), formatLabel(right)) ||
           compareNames(left.name, right.name) ||
           compareNames(left.id, right.id),
       ),
@@ -134,7 +152,7 @@ export function RoutingTargetFields({
         const leftGroup = groupById.get(left.channel_group_id);
         const rightGroup = groupById.get(right.channel_group_id);
         return (
-          FORMAT_ORDER[left.api_format] - FORMAT_ORDER[right.api_format] ||
+          compareNames(formatLabel(left), formatLabel(right)) ||
           compareNames(
             left.channel_group_name ?? leftGroup?.name ?? left.channel_group_id,
             right.channel_group_name ?? rightGroup?.name ?? right.channel_group_id,
@@ -151,7 +169,7 @@ export function RoutingTargetFields({
       (showDisabled || group.enabled || selectedGroupSet.has(group.id)) &&
       (!normalizedSearch ||
         matchesSearch(
-          [group.name, apiFormatLabel(group.api_format)],
+          [group.name, formatLabel(group)],
           normalizedSearch,
         )),
   );
@@ -165,20 +183,14 @@ export function RoutingTargetFields({
             channel.name,
             channel.channel_group_name,
             group?.name,
-            apiFormatLabel(channel.api_format),
+            formatLabel(channel),
           ],
           normalizedSearch,
         ))
     );
   });
-  const groupCategories = API_FORMATS.map((apiFormat) => ({
-    apiFormat,
-    items: visibleGroups.filter((group) => group.api_format === apiFormat),
-  })).filter((category) => category.items.length > 0);
-  const channelCategories = API_FORMATS.map((apiFormat) => ({
-    apiFormat,
-    items: visibleChannels.filter((channel) => channel.api_format === apiFormat),
-  })).filter((category) => category.items.length > 0);
+  const groupCategories = categories(visibleGroups);
+  const channelCategories = categories(visibleChannels);
   const disabledTargetCount =
     groups.filter((group) => !group.enabled).length +
     channels.filter((channel) => !channelAvailable(channel)).length;
@@ -276,15 +288,15 @@ export function RoutingTargetFields({
           {t("Channel groups ({count})", { count: visibleGroups.length })}
         </FieldLegend>
         <FieldDescription>
-          {t("Selecting a group applies to every channel in that group.")}
+          {t("Authorization uses a fixed capability set. Later additions are not granted automatically.")}
         </FieldDescription>
         {groupCategories.length > 0 ? (
           <FieldGroup className="gap-5">
             {groupCategories.map((category) => (
-              <FieldSet key={category.apiFormat}>
+              <FieldSet key={category.label}>
                 <FieldLegend variant="label">
                   <span className="flex items-center gap-2">
-                    <span>{apiFormatLabel(category.apiFormat)}</span>
+                    <span>{category.label}</span>
                     <Badge variant="outline">{category.items.length}</Badge>
                   </span>
                 </FieldLegend>
@@ -305,7 +317,7 @@ export function RoutingTargetFields({
                           id={inputId}
                           checked={checked}
                           disabled={disabled}
-                          aria-label={`${group.name} (${apiFormatLabel(group.api_format)})`}
+                          aria-label={`${group.name} (${formatLabel(group)})`}
                           aria-invalid={Boolean(error)}
                           onCheckedChange={(nextChecked) =>
                             toggleGroup(group.id, Boolean(nextChecked))
@@ -364,10 +376,10 @@ export function RoutingTargetFields({
               {channelCategories.length > 0 ? (
                 <FieldGroup className="gap-5">
                   {channelCategories.map((category) => (
-                    <FieldSet key={category.apiFormat}>
+                    <FieldSet key={category.label}>
                       <FieldLegend variant="label">
                         <span className="flex items-center gap-2">
-                          <span>{apiFormatLabel(category.apiFormat)}</span>
+                          <span>{category.label}</span>
                           <Badge variant="outline">{category.items.length}</Badge>
                         </span>
                       </FieldLegend>

@@ -42,7 +42,9 @@ import { AdminDetailShell } from "@/features/admin/components/admin-detail-shell
 import {
   useApiKeyPolicies,
   useCreateUserGroup,
-  useChannelGroups,
+  useRoutingGroups,
+  useLogicalChannels,
+  useUpstreamAccesses,
   useDeleteUserGroup,
   useUpdateUserGroup,
   useUserGroup,
@@ -74,7 +76,9 @@ export function UserGroupDetailPage() {
   const navigate = useNavigate();
   const detail = useUserGroup(id);
   const policies = useApiKeyPolicies();
-  const channelGroups = useChannelGroups();
+  const channelGroups = useRoutingGroups();
+  const channels = useLogicalChannels();
+  const accesses = useUpstreamAccesses();
   const create = useCreateUserGroup();
   const update = useUpdateUserGroup(id);
   const remove = useDeleteUserGroup(id);
@@ -166,8 +170,10 @@ export function UserGroupDetailPage() {
   const pending = create.isPending || update.isPending || remove.isPending;
   const codexGroups = (channelGroups.data ?? []).filter(
     (candidate) =>
-      candidate.connector_kind === "codex_oauth" &&
-      candidate.api_format === "open_ai_responses",
+      state.visible_codex_quota_group_ids.includes(candidate.id) ||
+      channels.data?.some((channel) => channel.group_id === candidate.id &&
+        accesses.data?.some((access) => access.id === channel.access_id &&
+          access.connector_kind === "codex_oauth")),
   );
   const toggleCodexGroup = (groupId: string) => {
     const selected = state.visible_codex_quota_group_ids.includes(groupId);
@@ -186,9 +192,10 @@ export function UserGroupDetailPage() {
         backPath="/admin/user-groups"
         backLabel={t("Back to user groups")}
         isLoading={
-          detail.isLoading || policies.isLoading || channelGroups.isLoading
+          detail.isLoading || policies.isLoading || channelGroups.isLoading ||
+          channels.isLoading || accesses.isLoading
         }
-        error={detail.error ?? policies.error ?? channelGroups.error}
+        error={detail.error ?? policies.error ?? channelGroups.error ?? channels.error ?? accesses.error}
         hasData={isNew || Boolean(group)}
         detailCard={
           !isNew && group ? (

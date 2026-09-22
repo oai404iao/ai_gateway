@@ -8,7 +8,7 @@ import {
   E2E_CODEX_GROUP_ID,
   E2E_MODEL,
   E2E_STANDARD_CHANNEL_ID,
-  E2E_STANDARD_GROUP_ID,
+  E2E_ROUTING_GROUP_ID,
   mockConsoleApi,
 } from "./mock-api";
 
@@ -32,9 +32,9 @@ test.describe("Console SPA smoke", () => {
     await expect(page.getByText("2. Channels")).toBeVisible();
     await expect(page.getByText("3. Model rules")).toBeVisible();
     await page.getByRole("button", { name: "Manage routing" }).click();
-    await expect(page).toHaveURL(/\/admin\/routing\/model-rules$/);
+    await expect(page).toHaveURL(/\/admin\/routing\/operation-rules$/);
     await expect(
-      page.getByRole("heading", { name: "Model Rules" }),
+      page.getByRole("heading", { name: "Operation rules" }),
     ).toBeVisible();
   });
 
@@ -268,7 +268,7 @@ test.describe("Console SPA smoke", () => {
     await expect(page.getByText("API key deleted")).toBeVisible();
   });
 
-  test("an administrator reviews server impact before deleting a channel", async ({
+  test("an administrator explicitly deletes a logical channel without cascading authority", async ({
     page,
   }) => {
     await mockConsoleApi(page);
@@ -276,32 +276,28 @@ test.describe("Console SPA smoke", () => {
     await page.getByLabel(/email/i).fill("admin@example.com");
     await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
     await page.getByRole("button", { name: /sign in/i }).click();
-    await page.goto(`/admin/routing/channels/${E2E_STANDARD_CHANNEL_ID}`);
+    await page.goto(`/admin/routing/logical-channels/${E2E_STANDARD_CHANNEL_ID}`);
 
     await expect(
       page.getByRole("button", { name: "Delete channel" }),
     ).toBeVisible();
     await page.getByRole("button", { name: "Delete channel" }).click();
-    const dialog = page.getByRole("alertdialog", { name: "Delete channel?" });
-    await expect(dialog.getByText("Channels to delete (1)")).toBeVisible();
-    await expect(dialog.getByText("e2e key")).toBeVisible();
-    await expect(dialog.getByText("default")).toBeVisible();
+    const dialog = page.getByRole("alertdialog", { name: "Delete this logical channel?" });
+    await expect(dialog).toContainText("Shared accesses and credentials are kept.");
 
     const deleteRequest = page.waitForRequest(
       (request) =>
         request.url().endsWith(
-          `/console/v1/routing/channels/${E2E_STANDARD_CHANNEL_ID}`,
+          `/console/v1/routing/logical-channels/${E2E_STANDARD_CHANNEL_ID}`,
         ) && request.method() === "DELETE",
     );
-    await dialog.getByRole("button", { name: "Delete channel" }).click();
+    await dialog.getByRole("button", { name: "Confirm" }).click();
     const request = await deleteRequest;
     expect(request.headers()["if-match"]).toBe(
-      '"2026-07-29T12:00:00.000Z"',
+      '"2026-01-02T00:00:00Z"',
     );
-    expect(request.postDataJSON()).toEqual({
-      confirmation_token: "v1.e2e-channel-deletion",
-    });
-    await expect(page).toHaveURL(/\/admin\/routing\/channels$/);
+    expect(request.postData()).toBeNull();
+    await expect(page).toHaveURL(/\/admin\/routing\/logical-channels$/);
     await expect(page.getByText("Channel deleted")).toBeVisible();
   });
 
@@ -531,7 +527,7 @@ test.describe("Console SPA smoke", () => {
     await expect(page.getByRole("dialog")).toBeHidden();
   });
 
-  test("administrators can browse large channel inventories with paired Codex pools", async ({
+  test("administrators browse logical identities and edit canonical groups", async ({
     page,
   }) => {
     await mockConsoleApi(page);
@@ -545,77 +541,30 @@ test.describe("Console SPA smoke", () => {
       window.dispatchEvent(new PopStateEvent("popstate"));
     }, "/admin/routing/channels");
 
-    await expect(page.getByRole("heading", { name: "Channels" })).toBeVisible();
-    const codexPool = page.getByRole("region", {
-      name: "Codex subscriptions",
-    });
-    await expect(codexPool).toBeVisible();
-    await expect(codexPool.getByText("Responses", { exact: true })).toBeVisible();
-    await expect(codexPool.getByText("Images", { exact: true })).toBeVisible();
-    await expect(
-      codexPool.getByRole("button", { name: "Manage shared credentials" }),
-    ).toBeVisible();
-    await expect(
-      page.getByRole("region", { name: "Codex subscriptions Images" }),
-    ).toHaveCount(0);
-
-    const firstStandardGroup = page.getByRole("region", {
-      name: "standard-group-1",
-    });
+    await expect(page).toHaveURL(/\/admin\/routing\/logical-channels$/);
+    await expect(page.getByRole("heading", { name: "Logical channels" })).toBeVisible();
+    await expect(page.getByText("Personal Plus", { exact: true })).toHaveCount(1);
+    await page.goto(`/admin/routing/groups/${E2E_ROUTING_GROUP_ID}`);
+    await expect(page.getByLabel("Name", { exact: true })).toHaveValue("Standard group");
     const disableRequest = page.waitForRequest(
       (request) =>
         request.url().endsWith(
-          `/console/v1/routing/channel-groups/${E2E_STANDARD_GROUP_ID}`,
+          `/console/v1/routing/groups/${E2E_ROUTING_GROUP_ID}`,
         ) && request.method() === "PUT",
     );
-    await firstStandardGroup
-      .getByRole("button", { name: "Disable group" })
-      .click();
-    const disableDialog = page.getByRole("alertdialog");
-    await expect(disableDialog).toContainText(
-      "all 1 channels in this group",
-    );
-    await disableDialog
-      .getByRole("button", { name: "Disable group" })
-      .click();
+    await page.getByRole("switch", { name: "Enabled", exact: true }).click();
+    await page.getByRole("button", { name: "Save group" }).click();
     const disable = await disableRequest;
     expect(disable.headers()["if-match"]).toBe(
-      '"2026-07-29T12:00:00.000Z"',
+      '"2026-01-02T00:00:00Z"',
     );
     expect(disable.postDataJSON()).toEqual({
-      name: "standard-group-1",
-      api_format: "open_ai_chat_completions",
-      connector_kind: "openai_compatible",
-      request_compression: "default",
+      name: "Standard group",
+      sharing_only: false,
       enabled: false,
     });
-
-    const search = page.getByRole("searchbox", {
-      name: "Search groups or channels",
-    });
-    await search.fill("needle");
-    const targetGroup = page.getByRole("region", { name: "target-group" });
-    await expect(targetGroup).toBeVisible();
-    await expect(targetGroup.getByText("needle-upstream")).toBeVisible();
-    await expect(
-      page.getByRole("region", { name: "standard-group-1" }),
-    ).toHaveCount(0);
-
-    await page.getByRole("button", { name: "Clear search" }).click();
-    await page
-      .getByRole("group", { name: "Channel group type" })
-      .getByRole("button", { name: "Codex OAuth" })
-      .click();
-    await expect(
-      page.getByRole("heading", { name: "Standard channel groups" }),
-    ).toHaveCount(0);
-    await expect(codexPool).toBeVisible();
-
     await page.setViewportSize({ width: 390, height: 844 });
-    await expect(search).toBeVisible();
-    await expect(
-      codexPool.getByRole("button", { name: "Manage shared credentials" }),
-    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Save group" })).toBeVisible();
     expect(
       await page.evaluate(
         () =>
@@ -637,7 +586,8 @@ test.describe("Console SPA smoke", () => {
     await page.evaluate((path) => {
       window.history.pushState({}, "", path);
       window.dispatchEvent(new PopStateEvent("popstate"));
-    }, `/admin/providers/codex-oauth/${E2E_CODEX_GROUP_ID}`);
+    }, `/admin/routing/groups/${E2E_CODEX_GROUP_ID}`);
+    await page.getByRole("button", { name: "Codex credentials" }).click();
     await expect(page).toHaveURL(
       new RegExp(`/admin/providers/codex-oauth/${E2E_CODEX_GROUP_ID}$`),
     );
@@ -646,7 +596,7 @@ test.describe("Console SPA smoke", () => {
       page.getByRole("heading", { name: "Codex subscriptions" }),
     ).toBeVisible();
     await expect(
-      page.getByRole("button", { name: "Back to channels" }),
+      page.getByRole("button", { name: "Back to groups" }),
     ).toBeVisible();
     await expect(page.getByText("Personal Plus")).toBeVisible();
     await expect(page.getByText("96% used")).toBeVisible();

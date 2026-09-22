@@ -8,6 +8,37 @@ use serde_json::{Value, json};
 use sqlx::Row;
 
 #[tokio::test]
+#[ignore = "explicit fixture regeneration against a fresh isolated PostgreSQL schema"]
+async fn regenerate_canonical_schema_inventory() {
+    let postgres = super::TestDatabase::new().await;
+    let rows: Vec<(String, Value)> = sqlx::query_as(
+        "SELECT tablename::text,jsonb_build_object(
+            'columns',(SELECT jsonb_agg(a.attname ORDER BY a.attnum)
+                FROM pg_attribute a WHERE a.attrelid=tablename::regclass AND a.attnum>0 AND NOT a.attisdropped),
+            'types',(SELECT jsonb_object_agg(a.attname,
+                CASE WHEN t.typcategory='A' THEN e.typname::text || '[]' ELSE t.typname::text END)
+                FROM pg_attribute a JOIN pg_type t ON t.oid=a.atttypid
+                LEFT JOIN pg_type e ON e.oid=t.typelem
+                WHERE a.attrelid=tablename::regclass AND a.attnum>0 AND NOT a.attisdropped),
+            'checks',coalesce((SELECT jsonb_agg(conname ORDER BY conname) FROM pg_constraint
+                WHERE conrelid=tablename::regclass AND contype='c'),'[]'::jsonb),
+            'constraints',coalesce((SELECT jsonb_agg(conname ORDER BY conname) FROM pg_constraint
+                WHERE conrelid=tablename::regclass AND contype IN ('p','u','f')),'[]'::jsonb))
+         FROM pg_tables WHERE schemaname='public' AND tablename<>'_sqlx_migrations' ORDER BY tablename",
+    ).fetch_all(&postgres.pool).await.unwrap();
+    let inventory = rows.into_iter().collect::<BTreeMap<_, _>>();
+    std::fs::write(
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/canonical-schema-inventory.json"
+        ),
+        format!("{}\n", serde_json::to_string_pretty(&inventory).unwrap()),
+    )
+    .unwrap();
+    postgres.cleanup().await;
+}
+
+#[tokio::test]
 async fn sqlite_schema_matches_current_postgres_columns_types_constraints_foreign_keys_and_seeds() {
     let postgres = super::TestDatabase::new().await;
     let directory = tempfile::Builder::new()
@@ -30,7 +61,7 @@ async fn sqlite_schema_matches_current_postgres_columns_types_constraints_foreig
 async fn compare(postgres: &super::TestDatabase, sqlite: &SqliteDatabase) {
     sqlite.install_schema().await.unwrap();
     let inventory: Value =
-        serde_json::from_str(include_str!("../fixtures/sqlite-schema-inventory.json")).unwrap();
+        serde_json::from_str(include_str!("../fixtures/canonical-schema-inventory.json")).unwrap();
     let tables: Vec<String> = sqlx::query_scalar(
         "SELECT tablename::text FROM pg_tables WHERE schemaname='public' AND tablename<>'_sqlx_migrations' ORDER BY tablename",
     ).fetch_all(&postgres.pool).await.unwrap();

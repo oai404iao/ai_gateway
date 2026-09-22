@@ -3,16 +3,94 @@
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 
-use sqlx::Connection;
-
 use crate::domain::{ApiOperation, ConnectorKind};
 use crate::persistence::sqlite::SqliteDatabase;
 use crate::persistence::{
-    ChannelGroupInput, CodexCredentialBatchInput, CodexCredentialBatchOperation,
-    CodexCredentialBatchTarget, CodexCredentialCreate, ControlPlaneMutation,
-    ControlPlaneRepository, RepositoryError, sqlite_load,
+    CodexCredentialBatchInput, CodexCredentialBatchOperation, CodexCredentialBatchTarget,
+    CodexCredentialCreate, ControlPlaneMutation, ControlPlaneRepository, RepositoryError,
+    RoutingGroupInput, sqlite_load,
 };
 use uuid::Uuid;
+
+#[tokio::test]
+async fn canonical_activation_preserves_uncertain_codex_operations() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let database = SqliteDatabase::open(&directory.path().join("pending.sqlite"))
+        .await
+        .unwrap();
+    database
+        .migrate(&super::schema::MIGRATIONS[..4])
+        .await
+        .unwrap();
+    let group = Uuid::new_v4();
+    let pool = Uuid::new_v4();
+    let credentials = [Uuid::new_v4(), Uuid::new_v4()];
+    let attempts = [Uuid::new_v4(), Uuid::new_v4()];
+    let mut transaction = database.begin_write().await.unwrap();
+    sqlx::query("INSERT INTO connector_pools(id,connector_kind) VALUES (?,'codex_oauth')")
+        .bind(pool.to_string())
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO channel_groups(id,name,api_format,connector_kind,connector_pool_id)
+                 VALUES (?,'Pending group','open_ai_responses','codex_oauth',?)",
+    )
+    .bind(group.to_string())
+    .bind(pool.to_string())
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+    for (index, kind) in ["refresh", "quota_reset"].into_iter().enumerate() {
+        let id = credentials[index];
+        sqlx::query(
+            "INSERT INTO channels(id,channel_group_id,api_format,name,base_url,upstream_auth_kind)
+                     VALUES (?,?,'open_ai_responses',?,'https://codex.test','none')",
+        )
+        .bind(id.to_string())
+        .bind(group.to_string())
+        .bind(format!("Pending {index}"))
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO codex_oauth_credentials
+                     (channel_id,channel_group_id,connector_pool_id,label,account_id,id_token,access_token,refresh_token,last_refreshed_at)
+                     VALUES (?,?,?,?,?,'test-id','test-access','test-refresh',ag_now())")
+            .bind(id.to_string()).bind(group.to_string()).bind(pool.to_string())
+            .bind(format!("Pending {index}")).bind(format!("account-{index}"))
+            .execute(&mut *transaction).await.unwrap();
+        sqlx::query("INSERT INTO _gateway_codex_operations(credential_id,attempt_id,kind,generation)
+                     SELECT channel_id,?,?,refresh_generation FROM codex_oauth_credentials WHERE channel_id=?")
+            .bind(attempts[index].to_string()).bind(kind).bind(id.to_string())
+            .execute(&mut *transaction).await.unwrap();
+    }
+    let before: Vec<(String, String, String, i64)> = sqlx::query_as(
+        "SELECT credential_id,attempt_id,kind,generation FROM _gateway_codex_operations ORDER BY credential_id"
+    ).fetch_all(&mut *transaction).await.unwrap();
+    transaction.commit().await.unwrap();
+    database.install_schema().await.unwrap();
+    let mut transaction = database.begin_write().await.unwrap();
+    let after: Vec<(String, String, String, i64)> = sqlx::query_as(
+        "SELECT credential_id,attempt_id,kind,generation FROM _gateway_codex_operations ORDER BY credential_id"
+    ).fetch_all(&mut *transaction).await.unwrap();
+    assert_eq!(before, after);
+    for id in credentials {
+        assert!(sqlx::query("UPDATE codex_oauth_credentials SET label='blocked',updated_at=ag_now() WHERE channel_id=?")
+            .bind(id.to_string()).execute(&mut *transaction).await.is_err());
+        assert!(
+            sqlx::query(
+                "UPDATE upstream_channels SET name='blocked',updated_at=ag_now() WHERE id=?"
+            )
+            .bind(id.to_string())
+            .execute(&mut *transaction)
+            .await
+            .is_err()
+        );
+    }
+    transaction.commit().await.unwrap();
+    database.close().await;
+}
 
 #[tokio::test]
 async fn canonical_create_lifecycle_and_delete_round_trip() {
@@ -26,24 +104,7 @@ async fn canonical_create_lifecycle_and_delete_round_trip() {
     database.install_schema().await.unwrap();
     let admin = Uuid::new_v4();
 
-    let pools = database.pools().unwrap();
-    let mut connection = pools.writer.acquire().await.unwrap();
-    connection.close_on_drop();
-    sqlx::query("PRAGMA foreign_keys=OFF")
-        .execute(&mut *connection)
-        .await
-        .unwrap();
-    let mut transaction = connection.begin_with("BEGIN IMMEDIATE").await.unwrap();
-    super::functions::set_transaction_time(&mut transaction)
-        .await
-        .unwrap();
-    sqlx::raw_sql(include_str!("../capability_cutover/sqlite-schema.sql"))
-        .execute(&mut *transaction)
-        .await
-        .unwrap();
-    crate::persistence::capability_cutover::activation::sqlite(&mut transaction)
-        .await
-        .unwrap();
+    let mut transaction = database.begin_write().await.unwrap();
     sqlx::query(
         "INSERT INTO users(id,email,display_name,role,status,password_hash)
          VALUES (?,'codex-lifecycle@test.invalid','Lifecycle','admin','active','test')",
@@ -53,22 +114,20 @@ async fn canonical_create_lifecycle_and_delete_round_trip() {
     .await
     .unwrap();
     transaction.commit().await.unwrap();
-    connection.close().await.unwrap();
-    drop(pools);
 
     let repository = ControlPlaneRepository::from_sqlite(Arc::clone(&database));
     let group = repository
         .prepare_mutation(
             admin,
-            ControlPlaneMutation::CreateGroup(ChannelGroupInput {
-                name: "Codex lifecycle".into(),
-                api_format: "open_ai_responses".into(),
-                connector_kind: "codex_oauth".into(),
-                request_compression: None,
-                sharing_only: None,
-                enabled: true,
-                status_statistics_enabled: None,
-            }),
+            ControlPlaneMutation::SaveRoutingGroup {
+                id: Uuid::new_v4(),
+                expected: None,
+                input: RoutingGroupInput {
+                    name: "Codex lifecycle".into(),
+                    sharing_only: false,
+                    enabled: true,
+                },
+            },
         )
         .await
         .unwrap()
@@ -155,11 +214,14 @@ async fn canonical_create_lifecycle_and_delete_round_trip() {
     assert!(topology.operation_candidates.is_empty());
     assert!(topology.api_key_grants.is_empty());
     assert!(topology.policy_grants.is_empty());
-    let legacy_rows: i64 = sqlx::query_scalar("SELECT count(*) FROM channels WHERE id=?")
-        .bind(credential.to_string())
-        .fetch_one(&mut *reader)
-        .await
-        .unwrap();
+    let legacy_rows: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name IN
+         ('channels','channel_groups','model_rules','model_rule_routing_tiers',
+          'model_rule_routing_candidates','codex_oauth_credential_channels')",
+    )
+    .fetch_one(&mut *reader)
+    .await
+    .unwrap();
     assert_eq!(legacy_rows, 0);
     let registry: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM channel_identity_registry WHERE codex_credential_id=?",

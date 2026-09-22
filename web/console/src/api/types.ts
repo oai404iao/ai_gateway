@@ -5,9 +5,6 @@
 // The generated file is the single source of truth for request/response
 // shapes; do not hand-edit it. Extend the OpenAPI spec and regenerate instead.
 //
-// The only hand-maintained type here is `ControlPlaneLists`, a client-side
-// aggregate assembled by `useControlPlaneLists`; it is not a server response.
-//
 // Naming: OpenAPI `components.schemas.*` names intentionally match the export
 // names below so existing `import type { ConsoleUser } from "@/api/types"`
 // callers keep working unchanged.
@@ -29,7 +26,6 @@ export type UserRole = S["UserRole"];
 export type ApiFormat = S["ApiFormat"];
 export type ApiOperation = S["ApiOperation"];
 export type SelectionStrategy = S["SelectionStrategy"];
-export type ModelRuleRoutingStatus = S["ModelRuleRoutingStatus"];
 export type ConnectorKind = S["ConnectorKind"];
 export type RequestCompression = S["RequestCompression"];
 export type UpstreamCredentialView = S["UpstreamCredentialView"];
@@ -47,6 +43,7 @@ export type CapabilityTransport = S["CapabilityTransport"];
 export type ChannelCapabilityView = S["ChannelCapabilityView"];
 export type ChannelCapabilityInput = S["ChannelCapabilityInput"];
 export type OperationRuleView = S["OperationRuleView"];
+export type RoutingProfileView = S["RoutingProfileView"];
 export type OperationRuleInput = S["OperationRuleInput"];
 export type OperationTierInput = S["OperationTierInput"];
 export type OperationCandidateInput = S["OperationCandidateInput"];
@@ -110,16 +107,8 @@ export type AdvancedBilling = S["AdvancedBilling"];
 export type LongContextTier = S["LongContextTier"];
 export type RequestBillingMultiplier = S["RequestBillingMultiplier"];
 export type TimeBillingMultiplier = S["TimeBillingMultiplier"];
-export type ChannelGroupView = S["ChannelGroupView"];
-export type ChannelView = S["ChannelView"];
-export type ChannelDetailView = S["ChannelDetailView"];
-export type ChannelDeletionImpact = S["ChannelDeletionImpact"];
-export type DeletionImpactChannel = S["DeletionImpactChannel"];
-export type DeletionImpactNamedResource = S["DeletionImpactNamedResource"];
-export type DeletionImpactModelProtocolRule =
-  S["DeletionImpactModelProtocolRule"];
 export type ChannelModelDiscoveryResponse = S["ChannelModelDiscoveryResponse"];
-export type ChannelBatchUpdateResponse = S["ChannelBatchUpdateResponse"];
+export type CapabilityBatchUpdateResponse = S["CapabilityBatchUpdateResponse"];
 export type CodexCredentialStatus = S["CodexCredentialStatus"];
 export type CodexCredentialView = S["CodexCredentialView"];
 export type CodexQuotaWindowKind = S["CodexQuotaWindowKind"];
@@ -136,8 +125,6 @@ export type CodexOauthStartResponse = S["CodexOauthStartResponse"];
 export type CodexCredentialExportBundle = S["CodexCredentialExportBundle"];
 export type CodexCredentialExportProxy = S["CodexCredentialExportProxy"];
 export type CodexCredentialExportItem = S["CodexCredentialExportItem"];
-export type ModelRuleView = S["ModelRuleView"];
-export type ModelProtocolRuleView = S["ModelProtocolRuleView"];
 export type ProxyView = S["ProxyView"];
 export type ProxyTestResponse = S["ProxyTestResponse"];
 export type ConfigTemplateView = S["ConfigTemplateView"];
@@ -193,15 +180,10 @@ export type ApiKeyPolicyInput = S["ApiKeyPolicyInput"];
 export type ApiKeyCreateInput = S["ApiKeyCreateInput"];
 export type ApiKeyUpdateInput = S["ApiKeyUpdateInput"];
 export type ModelInput = S["ModelInput"];
-export type ChannelGroupInput = S["ChannelGroupInput"];
-export type DeletionConfirmationInput = S["DeletionConfirmationInput"];
-export type ChannelCreateInput = S["ChannelCreateInput"];
-export type ChannelInput = S["ChannelInput"];
 export type ChannelModelDiscoveryInput = S["ChannelModelDiscoveryInput"];
-export type ChannelBatchUpdateTarget = S["ChannelBatchUpdateTarget"];
-export type ChannelBatchChanges = S["ChannelBatchChanges"];
-export type ChannelBatchUpdateInput = S["ChannelBatchUpdateInput"];
-export type ChannelRecoverInput = S["ChannelRecoverInput"];
+export type CapabilityBatchUpdateTarget = S["CapabilityBatchUpdateTarget"];
+export type CapabilityBatchChanges = S["CapabilityBatchChanges"];
+export type CapabilityBatchUpdateInput = S["CapabilityBatchUpdateInput"];
 export type CodexOauthStartInput = S["CodexOauthStartInput"];
 export type CodexOauthCompleteInput = S["CodexOauthCompleteInput"];
 export type CodexCredentialImportInput = S["CodexCredentialImportInput"];
@@ -212,8 +194,6 @@ export type CodexCredentialBatchOperation =
 export type CodexCredentialBatchTarget = S["CodexCredentialBatchTarget"];
 export type CodexCredentialBatchInput = S["CodexCredentialBatchInput"];
 export type ModelRuleCreateInput = S["ModelRuleCreateInput"];
-export type ModelProtocolRuleCreateInput = S["ModelProtocolRuleCreateInput"];
-export type ModelProtocolRuleInput = S["ModelProtocolRuleInput"];
 export type ProxyCreateInput = S["ProxyCreateInput"];
 export type ProxyInput = S["ProxyInput"];
 export type ProxyTestInput = S["ProxyTestInput"];
@@ -224,18 +204,3 @@ export type ModelImportRequest = S["ModelImportRequest"];
 export type ModelSyncPreviewRequest = S["ModelSyncPreviewRequest"];
 export type ListQuery = S["ListQuery"];
 export type SystemSettingsInput = S["SystemSettingsInput"];
-
-// Client-side aggregate (not a server response). Assembled by
-// `useControlPlaneLists` from the individual list endpoints above.
-export interface ControlPlaneLists {
-  users: ControlPlaneUser[];
-  user_groups: UserGroupView[];
-  models: ControlPlaneModel[];
-  api_keys: AdminApiKeyView[];
-  api_key_policies: ApiKeyPolicyView[];
-  channel_groups: ChannelGroupView[];
-  channels: ChannelView[];
-  model_rules: ModelRuleView[];
-  proxies: ProxyView[];
-  config_templates: ConfigTemplateView[];
-}

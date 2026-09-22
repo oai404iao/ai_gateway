@@ -1,6 +1,5 @@
--- Canonical joint capability-cutover schema (SQLite backend). Not yet a registered
--- migration; this file only creates the new source-of-truth tables. Legacy
--- configuration transfer, external-key migration, and cutover happen outside this DDL.
+-- Startup transfers and validates legacy configuration, retargets history, and
+-- retires legacy tables in the same transaction immediately after this DDL.
 
 CREATE TABLE routing_groups (
     id TEXT NOT NULL CONSTRAINT routing_groups_id_storage CHECK (id IS NULL OR (ag_uuid_valid(id) AND instr(id, char(0))=0)),
@@ -29,6 +28,11 @@ CREATE TRIGGER routing_groups_timestamp BEFORE UPDATE ON routing_groups
 WHEN NEW.updated_at IS NOT ag_now() BEGIN
     SELECT RAISE(ABORT, 'routing_groups_timestamp');
 END;
+
+ALTER TABLE connector_pools
+    ADD COLUMN routing_group_id TEXT CHECK (routing_group_id IS NULL OR ag_uuid_valid(routing_group_id))
+        REFERENCES routing_groups(id) ON DELETE RESTRICT;
+CREATE UNIQUE INDEX connector_pools_routing_group_idx ON connector_pools(routing_group_id);
 
 CREATE TABLE upstream_accesses (
     id TEXT NOT NULL CONSTRAINT upstream_accesses_id_storage CHECK (id IS NULL OR (ag_uuid_valid(id) AND instr(id, char(0))=0)),

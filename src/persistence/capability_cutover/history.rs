@@ -61,7 +61,16 @@ pub async fn sqlite_retarget_codex_identity(
     sqlite_rebuild(
         transaction,
         &["codex_oauth_credentials"],
-        &[("channels", "upstream_credentials")],
+        &[
+            ("channels", "upstream_credentials"),
+            ("channel_groups", "routing_groups"),
+        ],
+    )
+    .await?;
+    sqlite_rebuild(
+        transaction,
+        &["codex_oauth_flows", "user_group_codex_quota_visibility"],
+        &[("channel_groups", "routing_groups")],
     )
     .await
 }

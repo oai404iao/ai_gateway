@@ -64,6 +64,19 @@ export function apiFormatLabel(value: ApiFormat): string {
   }
 }
 
+export function operationApiFormat(value: ApiOperation): ApiFormat {
+  switch (value) {
+    case "chat_completions":
+      return "open_ai_chat_completions";
+    case "responses":
+    case "standalone_web_search":
+      return "open_ai_responses";
+    case "images_generation":
+    case "images_edit":
+      return "open_ai_images";
+  }
+}
+
 export function roleLabel(value: UserRole): string {
   return value === "admin" ? translate("Administrator") : translate("User");
 }

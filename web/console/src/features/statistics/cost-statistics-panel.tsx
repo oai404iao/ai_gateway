@@ -44,8 +44,10 @@ import { ResourceTable, type Column } from "@/components/shared/resource-table";
 import { StatusBadge } from "@/components/shared/status-badge";
 import {
   useAdminApiKeys,
-  useChannelGroups,
-  useChannels,
+  useRoutingGroups,
+  useLogicalChannels,
+  useChannelCapabilities,
+  useUpstreamAccesses,
   useUsers,
 } from "@/features/admin/api";
 import { useOwnApiKeys } from "@/features/api-keys/api";
@@ -284,8 +286,10 @@ export function CostStatisticsPanel({
   const isSystemView = scope === "system";
   const users = useUsers(isSystemView);
   const adminApiKeys = useAdminApiKeys(isSystemView);
-  const channels = useChannels(isSystemView);
-  const channelGroups = useChannelGroups(isSystemView);
+  const channels = useLogicalChannels(isSystemView);
+  const channelGroups = useRoutingGroups(isSystemView);
+  const capabilities = useChannelCapabilities(isSystemView);
+  const accesses = useUpstreamAccesses(isSystemView);
   const ownApiKeys = useOwnApiKeys(!isSystemView);
   const { t } = useI18n();
 
@@ -306,13 +310,15 @@ export function CostStatisticsPanel({
   const channelGroupNames = new Map(
     (channelGroups.data ?? []).map((group) => [group.id, group.name]),
   );
-  const channelOptions = (channels.data ?? [])
-    .map((channel) => ({
-      id: channel.id,
-      name: channel.name,
-      groupName:
-        channelGroupNames.get(channel.channel_group_id) ?? channel.channel_group_id,
-    }))
+  const channelOptions = (capabilities.data ?? [])
+    .flatMap((capability) => {
+      const channel = channels.data?.find((channel) => channel.id === capability.channel_id);
+      return channel ? [{
+        id: capability.id,
+        name: `${channel.name} · ${capability.settings.operation}`,
+        groupName: channelGroupNames.get(channel.group_id) ?? channel.group_id,
+      }] : [];
+    })
     .sort(
       (left, right) =>
         left.groupName.localeCompare(right.groupName) ||
@@ -321,13 +327,12 @@ export function CostStatisticsPanel({
   const codexCredentialOptions = (channels.data ?? [])
     .filter(
       (channel) =>
-        channel.provider_managed &&
-        channel.connector_kind === "codex_oauth" &&
-        channel.api_format === "open_ai_responses",
+        channel.credential_id && accesses.data?.some((access) =>
+          access.id === channel.access_id && access.connector_kind === "codex_oauth"),
     )
     .map((channel) => ({
-      id: channel.id,
-      name: `${channel.name} · ${channel.id.slice(0, 8)}`,
+      id: channel.credential_id!,
+      name: `${channel.name} · ${channel.credential_id!.slice(0, 8)}`,
     }))
     .sort((left, right) => left.name.localeCompare(right.name));
 

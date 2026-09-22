@@ -23,12 +23,10 @@
 配置专用 Codex 共享凭证时，参见[拼车使用说明](user/codex-sharing.md)和
 [金额账本实现](development/codex-sharing.md)。该功能仅支持单实例。
 
-上游实体重构计划见[身份、渠道能力与路由目标设计](development/upstream-identity-capabilities.md)；
-其中第一阶段独立凭证身份已实现并通过验收；能力与路由改为联合切换，
-新拓扑转存、历史引用迁移和快照编译已具备隔离测试覆盖，
-Codex 生命周期、新拓扑管理接口/界面和服务加载入口已接通，
-但启动迁移、授权写入与旧 Console 入口退役尚未闭环，任务分支不可发布。
-当前管理边界见[上游凭证管理](user/upstream-credentials.md)。
+上游实体联合切换见[身份、渠道能力与路由目标设计](development/upstream-identity-capabilities.md)。
+启动迁移、Codex 生命周期、固定能力授权和新拓扑 Console 已实现；旧 CRUD、DTO 与配置表已退役。
+PostgreSQL/SQLite 全量回归及真实系统验收已通过。升级要求停机和一致备份，不能滚动混跑旧版本；
+配置步骤见[运维接口](user/operations.md)和[上游凭证管理](user/upstream-credentials.md)。
 
 ## 来源优先级
 

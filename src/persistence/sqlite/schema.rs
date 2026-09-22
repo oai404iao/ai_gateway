@@ -2,7 +2,7 @@
 
 use super::SqliteMigration;
 
-pub(super) const MIGRATIONS: &[SqliteMigration<'static>] = &[
+pub(crate) const MIGRATIONS: &[SqliteMigration<'static>] = &[
     SqliteMigration {
         version: 1,
         description: "business schema after PostgreSQL 0063",
@@ -22,5 +22,10 @@ pub(super) const MIGRATIONS: &[SqliteMigration<'static>] = &[
         version: 4,
         description: "independent upstream credential identities",
         sql: include_str!("../../../migrations/sqlite/0004_upstream_credentials.sql"),
+    },
+    SqliteMigration {
+        version: 5,
+        description: "canonical upstream operation capabilities",
+        sql: include_str!("../../../migrations/sqlite/0005_upstream_capabilities.sql"),
     },
 ];

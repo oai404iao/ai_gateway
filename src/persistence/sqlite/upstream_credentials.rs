@@ -125,22 +125,6 @@ pub(super) async fn save(
     })
 }
 
-pub(super) async fn validate_binding(
-    connection: &mut SqliteConnection,
-    id: Option<Uuid>,
-    target: &str,
-) -> Result<(), RepositoryError> {
-    let Some(id) = id else {
-        return Ok(());
-    };
-    let record = records(connection)
-        .await?
-        .into_iter()
-        .find(|record| record.id == id)
-        .ok_or(RepositoryError::Validation)?;
-    crate::persistence::upstream_credentials::validate_static_binding(&record, target)
-}
-
 pub(super) async fn delete(
     transaction: &mut Transaction<'_, Sqlite>,
     id: Uuid,

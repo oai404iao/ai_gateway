@@ -14,18 +14,16 @@ use ai_gateway::{
     },
     persistence::{
         ApiKeyCreate, ApiKeyPolicyInput, ApiKeyUpdate, ChannelBatchChanges,
-        ChannelBatchUpdateInput, ChannelBatchUpdateTarget, ChannelCreateInput, ChannelInput,
+        ChannelBatchUpdateInput, ChannelBatchUpdateTarget, ChannelCapabilityRecord,
         ConfigTemplateCreateInput, ConfigTemplateInput, ConsoleAuditLog, ControlPlaneApiKey,
-        ControlPlaneApiKeyPolicy, ControlPlaneChannel, ControlPlaneChannelGroup,
-        ControlPlaneConfigTemplate, ControlPlaneModel, ControlPlaneModelRule, ControlPlaneProxy,
+        ControlPlaneApiKeyPolicy, ControlPlaneConfigTemplate, ControlPlaneModel, ControlPlaneProxy,
         ControlPlaneUser, ControlPlaneUserGroup, DEFAULT_ADMIN_GROUP_ID, DEFAULT_USER_GROUP_ID,
-        InviteUserInput, ModelInput, ModelProtocolRuleCreateInput, ModelProtocolRuleInput,
-        ModelRuleCreateInput, ModelRuleRouteCandidate, ModelRuleRoutingStatus,
-        ModelRuleRoutingTier, MutationResult, ProxyInput, RegistrationAttempt,
-        RegistrationInvitationCodeInput, RepositoryError, SelfApiKeyCreate, SelfApiKeyUpdate,
-        SessionRotation, SystemAutomaticDisableSettingsInput, UserBalanceBatchChange,
-        UserBatchChanges, UserBatchUpdateInput, UserBatchUpdateTarget, UserGroupInput, UserInput,
-        UserSettingsInput, UserUpdateInput, sqlite::SqliteDatabase,
+        InviteUserInput, LogicalChannelRecord, ModelInput, ModelRuleCreateInput, MutationResult,
+        ProxyInput, RegistrationAttempt, RegistrationInvitationCodeInput, RepositoryError,
+        RoutingGroupRecord, SelfApiKeyCreate, SelfApiKeyUpdate, SessionRotation,
+        SystemAutomaticDisableSettingsInput, UserBalanceBatchChange, UserBatchChanges,
+        UserBatchUpdateInput, UserBatchUpdateTarget, UserGroupInput, UserInput, UserSettingsInput,
+        UserUpdateInput, sqlite::SqliteDatabase,
     },
 };
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
@@ -73,7 +71,7 @@ impl Backend {
                 .install_schema()
                 .await
                 .expect("infrastructure: SQLite schema must install"),
-            4
+            5
         );
         Self::Sqlite {
             directory,
@@ -369,6 +367,8 @@ struct World {
     user: Uuid,
     group: Uuid,
     channel: Uuid,
+    access: Uuid,
+    capability: Uuid,
     policy: Uuid,
 }
 
@@ -379,14 +379,30 @@ async fn world(repositories: &Repositories) -> World {
     let group = commit_mutation(
         repositories,
         admin,
-        ControlPlaneMutation::CreateGroup(ChannelGroupInput {
-            name: "Parity Group".into(),
-            api_format: "open_ai_chat_completions".into(),
-            connector_kind: "openai_compatible".into(),
-            request_compression: None,
-            sharing_only: None,
+        ControlPlaneMutation::SaveRoutingGroup {
+            id: Uuid::new_v4(),
+            expected: None,
+            input: ai_gateway::persistence::RoutingGroupInput {
+                name: "Parity Group".into(),
+                sharing_only: false,
+                enabled: true,
+            },
+        },
+    )
+    .await
+    .id;
+    let access = commit_mutation(
+        repositories,
+        admin,
+        ControlPlaneMutation::CreateUpstreamAccess(ai_gateway::persistence::UpstreamAccessInput {
+            name: "Parity access".into(),
+            connector_kind: ai_gateway::domain::ConnectorKind::OpenAiCompatible,
+            base_url: "https://upstream.example.test".into(),
+            proxy_id: None,
             enabled: true,
-            status_statistics_enabled: None,
+            connect_timeout_ms: None,
+            response_header_timeout_ms: None,
+            stream_idle_timeout_ms: None,
         }),
     )
     .await
@@ -394,27 +410,39 @@ async fn world(repositories: &Repositories) -> World {
     let channel = commit_mutation(
         repositories,
         admin,
-        ControlPlaneMutation::CreateChannel(ChannelCreateInput {
-            channel_group_id: group,
-            api_format: "open_ai_chat_completions".into(),
-            name: "Parity Channel".into(),
-            base_url: "https://upstream.example.test".into(),
-            enabled: true,
-            supports_websocket: false,
-            supports_standalone_web_search: false,
-            auto_disable_allowed: false,
-            billing_multiplier: Decimal::ONE,
-            proxy_id: None,
-            config_template_id: None,
-            override_document: json!({}),
-            connect_timeout_ms: None,
-            response_header_timeout_ms: None,
-            stream_idle_timeout_ms: None,
-            credential_id: None,
-            available_models: vec!["parity-model".into()],
-            test_model: None,
-            test_pricing_model_id: None,
-        }),
+        ControlPlaneMutation::SaveLogicalChannel {
+            id: Uuid::new_v4(),
+            expected: None,
+            input: ai_gateway::persistence::LogicalChannelInput {
+                group_id: group,
+                access_id: access,
+                credential_id: None,
+                name: "Parity Channel".into(),
+                enabled: true,
+            },
+        },
+    )
+    .await
+    .id;
+    let capability = commit_mutation(
+        repositories,
+        admin,
+        ControlPlaneMutation::SaveChannelCapability {
+            id: Uuid::new_v4(),
+            expected: None,
+            input: serde_json::from_value(json!({
+                "channel_id": channel,
+                "settings": {
+                    "operation": "chat_completions", "transports": ["http_json","http_sse"],
+                    "enabled": true, "available_models": ["parity-model"],
+                    "request_compression": "default", "test_model": null,
+                    "test_pricing_model_id": null, "auto_disable_allowed": false
+                },
+                "status_statistics_enabled": false, "config_template_id": null,
+                "override_document": {}, "billing_multiplier": "1"
+            }))
+            .unwrap(),
+        },
     )
     .await
     .id;
@@ -450,6 +478,8 @@ async fn world(repositories: &Repositories) -> World {
         user,
         group,
         channel,
+        access,
+        capability,
         policy,
     }
 }
@@ -773,24 +803,27 @@ async fn control_plane_contract(repositories: Repositories) {
     assert_eq!(lists.users.len(), 2);
     assert!(lists.users.iter().any(|user| user.id == world.admin));
     assert!(lists.users.iter().any(|user| user.id == world.user));
-    assert_eq!(lists.channel_groups.len(), 1);
-    assert_eq!(lists.channels.len(), 1);
+    let topology = repository.topology().await.unwrap();
+    assert_eq!(topology.routing_groups.len(), 1);
+    assert_eq!(topology.logical_channels.len(), 1);
+    assert_eq!(topology.logical_channels[0].access_id, world.access);
     assert_eq!(lists.api_key_policies.len(), 1);
     assert!(lists.api_keys.is_empty());
 
-    let channel = repository
-        .control_plane_channel_detail(world.channel)
-        .await
-        .unwrap()
-        .unwrap();
+    let channel = listed_channel(&repositories, world.channel).await;
     assert_eq!(channel.name, "Parity Channel");
-    assert_eq!(channel.api_format, "open_ai_chat_completions");
-    assert!(
-        repository
-            .control_plane_channel_detail(Uuid::nil())
+    assert_eq!(
+        listed_capability(&repositories, world.capability)
             .await
-            .unwrap()
-            .is_none()
+            .settings
+            .operation,
+        ai_gateway::domain::ApiOperation::ChatCompletions
+    );
+    assert!(
+        !topology
+            .logical_channels
+            .iter()
+            .any(|channel| channel.id == Uuid::nil())
     );
     assert!(
         repository
@@ -935,8 +968,10 @@ async fn control_plane_contract(repositories: Repositories) {
 
     let audits = repository.audit_logs(100).await.unwrap();
     for (action, object_type) in [
-        ("create", "channel_group"),
-        ("create", "channel"),
+        ("create", "routing_group"),
+        ("create", "upstream_access"),
+        ("create", "logical_channel"),
+        ("create", "channel_capability"),
         ("create", "api_key_policy"),
         ("create", "user"),
         ("update", "system_settings"),
@@ -1018,18 +1053,53 @@ async fn self_service_contract(repositories: Repositories) {
     let outside = commit_mutation(
         &repositories,
         world.admin,
-        ControlPlaneMutation::CreateGroup(ChannelGroupInput {
-            name: "Outside Group".into(),
-            api_format: "open_ai_chat_completions".into(),
-            connector_kind: "openai_compatible".into(),
-            request_compression: None,
-            sharing_only: None,
-            enabled: true,
-            status_statistics_enabled: None,
-        }),
+        ControlPlaneMutation::SaveRoutingGroup {
+            id: Uuid::new_v4(),
+            expected: None,
+            input: ai_gateway::persistence::RoutingGroupInput {
+                name: "Outside Group".into(),
+                sharing_only: false,
+                enabled: true,
+            },
+        },
     )
     .await
     .id;
+    let outside_channel = commit_mutation(
+        &repositories,
+        world.admin,
+        ControlPlaneMutation::SaveLogicalChannel {
+            id: Uuid::new_v4(),
+            expected: None,
+            input: ai_gateway::persistence::LogicalChannelInput {
+                group_id: outside,
+                access_id: world.access,
+                credential_id: None,
+                name: "Outside channel".into(),
+                enabled: true,
+            },
+        },
+    )
+    .await
+    .id;
+    let capability = listed_capability(&repositories, world.capability).await;
+    commit_mutation(
+        &repositories,
+        world.admin,
+        ControlPlaneMutation::SaveChannelCapability {
+            id: Uuid::new_v4(),
+            expected: None,
+            input: ai_gateway::persistence::ChannelCapabilityInput {
+                channel_id: outside_channel,
+                settings: capability.settings,
+                status_statistics_enabled: false,
+                config_template_id: None,
+                override_document: json!({}),
+                billing_multiplier: Decimal::ONE,
+            },
+        },
+    )
+    .await;
     let rejected = repository
         .prepare_own_api_key_create(world.user, self_key("Outside key", outside))
         .await;
@@ -1393,30 +1463,6 @@ fn model_input(source_model_id: &str, display_name: &str) -> ModelInput {
     }
 }
 
-fn channel_input(group: Uuid, name: &str) -> ChannelInput {
-    ChannelInput {
-        channel_group_id: group,
-        api_format: "open_ai_chat_completions".into(),
-        name: name.into(),
-        base_url: "https://upstream.example.test".into(),
-        enabled: true,
-        supports_websocket: false,
-        supports_standalone_web_search: false,
-        auto_disable_allowed: false,
-        billing_multiplier: None,
-        proxy_id: None,
-        config_template_id: None,
-        override_document: None,
-        connect_timeout_ms: None,
-        response_header_timeout_ms: None,
-        stream_idle_timeout_ms: None,
-        credential_id: None,
-        available_models: vec!["parity-model".into()],
-        test_model: None,
-        test_pricing_model_id: None,
-    }
-}
-
 fn admin_api_key_create(user: Uuid, group: Uuid, name: &str) -> ApiKeyCreate {
     ApiKeyCreate {
         user_id: user,
@@ -1456,16 +1502,114 @@ async fn listed_model(repositories: &Repositories, id: Uuid) -> ControlPlaneMode
         .unwrap_or_else(|| panic!("model {id} must be listed"))
 }
 
-async fn listed_channel(repositories: &Repositories, id: Uuid) -> ControlPlaneChannel {
+async fn listed_channel(repositories: &Repositories, id: Uuid) -> LogicalChannelRecord {
     repositories
         .control_plane
-        .control_plane_lists()
+        .topology()
         .await
         .unwrap()
-        .channels
+        .logical_channels
         .into_iter()
-        .find(|channel| channel.id == id)
+        .find(|channel| channel.id == id && channel.deleted_at.is_none())
         .unwrap_or_else(|| panic!("channel {id} must be listed"))
+}
+
+fn logical_input(channel: &LogicalChannelRecord) -> ai_gateway::persistence::LogicalChannelInput {
+    ai_gateway::persistence::LogicalChannelInput {
+        group_id: channel.group_id,
+        access_id: channel.access_id,
+        credential_id: channel.credential_id,
+        name: channel.name.clone(),
+        enabled: channel.enabled,
+    }
+}
+
+fn capability_input(
+    capability: &ai_gateway::persistence::ChannelCapabilityRecord,
+) -> ai_gateway::persistence::ChannelCapabilityInput {
+    ai_gateway::persistence::ChannelCapabilityInput {
+        channel_id: capability.channel_id,
+        settings: capability.settings.clone(),
+        status_statistics_enabled: capability.status_statistics_enabled,
+        config_template_id: capability.config_template_id,
+        override_document: capability.override_document.clone(),
+        billing_multiplier: capability.billing_multiplier,
+    }
+}
+
+async fn listed_access(
+    repositories: &Repositories,
+    id: Uuid,
+) -> ai_gateway::persistence::UpstreamAccessRecord {
+    repositories
+        .control_plane
+        .topology()
+        .await
+        .unwrap()
+        .upstream_accesses
+        .into_iter()
+        .find(|access| access.id == id && access.deleted_at.is_none())
+        .unwrap()
+}
+
+fn access_input(
+    access: &ai_gateway::persistence::UpstreamAccessRecord,
+) -> ai_gateway::persistence::UpstreamAccessInput {
+    ai_gateway::persistence::UpstreamAccessInput {
+        name: access.name.clone(),
+        connector_kind: access.connector_kind,
+        base_url: access.base_url.clone(),
+        proxy_id: access.proxy_id,
+        connect_timeout_ms: access.connect_timeout_ms,
+        response_header_timeout_ms: access.response_header_timeout_ms,
+        stream_idle_timeout_ms: access.stream_idle_timeout_ms,
+        enabled: access.enabled,
+    }
+}
+
+async fn listed_capability(repositories: &Repositories, id: Uuid) -> ChannelCapabilityRecord {
+    repositories
+        .control_plane
+        .topology()
+        .await
+        .unwrap()
+        .channel_capabilities
+        .into_iter()
+        .find(|capability| capability.id == id && capability.deleted_at.is_none())
+        .unwrap_or_else(|| panic!("capability {id} must be listed"))
+}
+
+struct OperationGraph {
+    rule: ai_gateway::persistence::OperationRuleRecord,
+    tiers: Vec<ai_gateway::persistence::OperationTierRecord>,
+    candidates: Vec<ai_gateway::persistence::OperationCandidateRecord>,
+}
+
+async fn operation_graph(repositories: &Repositories, profile: Uuid) -> OperationGraph {
+    let topology = repositories.control_plane.topology().await.unwrap();
+    let rule = topology
+        .operation_rules
+        .into_iter()
+        .find(|rule| {
+            rule.model_routing_profile_id == profile
+                && rule.operation == ai_gateway::domain::ApiOperation::ChatCompletions
+        })
+        .unwrap();
+    let tiers = topology
+        .operation_tiers
+        .into_iter()
+        .filter(|tier| tier.rule_id == rule.id)
+        .collect::<Vec<_>>();
+    let candidates = topology
+        .operation_candidates
+        .into_iter()
+        .filter(|candidate| tiers.iter().any(|tier| tier.id == candidate.tier_id))
+        .collect();
+    OperationGraph {
+        rule,
+        tiers,
+        candidates,
+    }
 }
 
 async fn listed_key(repositories: &Repositories, id: Uuid) -> ControlPlaneApiKey {
@@ -1516,25 +1660,27 @@ async fn listed_template(repositories: &Repositories, id: Uuid) -> ControlPlaneC
         .unwrap_or_else(|| panic!("config template {id} must be listed"))
 }
 
-async fn listed_group(repositories: &Repositories, id: Uuid) -> ControlPlaneChannelGroup {
+async fn listed_group(repositories: &Repositories, id: Uuid) -> RoutingGroupRecord {
     repositories
         .control_plane
-        .control_plane_lists()
+        .topology()
         .await
         .unwrap()
-        .channel_groups
+        .routing_groups
         .into_iter()
-        .find(|group| group.id == id)
+        .find(|group| group.id == id && group.deleted_at.is_none())
         .unwrap_or_else(|| panic!("channel group {id} must be listed"))
 }
 
-async fn listed_model_rule(repositories: &Repositories, id: Uuid) -> ControlPlaneModelRule {
+async fn listed_model_rule(
+    repositories: &Repositories,
+    id: Uuid,
+) -> ai_gateway::persistence::upstream_topology::profiles::RoutingProfileView {
     repositories
         .control_plane
-        .control_plane_lists()
+        .routing_profiles()
         .await
         .unwrap()
-        .model_rules
         .into_iter()
         .find(|rule| rule.id == id)
         .unwrap_or_else(|| panic!("model rule {id} must be listed"))
@@ -1549,22 +1695,38 @@ async fn user_group_lifecycle_contract(repositories: Repositories) {
     let world = world(&repositories).await;
     let repository = &repositories.control_plane;
 
-    // Only a Codex Responses group is a valid quota-visibility target.
+    // Quota visibility names the canonical group owning a Codex connector pool.
     let codex_group = commit_mutation(
         &repositories,
         world.admin,
-        ControlPlaneMutation::CreateGroup(ChannelGroupInput {
-            name: "Parity Codex".into(),
-            api_format: "open_ai_responses".into(),
-            connector_kind: "codex_oauth".into(),
-            request_compression: None,
-            sharing_only: None,
-            enabled: true,
-            status_statistics_enabled: None,
-        }),
+        ControlPlaneMutation::SaveRoutingGroup {
+            id: Uuid::new_v4(),
+            expected: None,
+            input: ai_gateway::persistence::RoutingGroupInput {
+                name: "Parity Codex".into(),
+                sharing_only: false,
+                enabled: true,
+            },
+        },
     )
     .await
     .id;
+    repository
+        .prepare_codex_credential_create(
+            world.admin,
+            business_codex_credential(
+                codex_group,
+                "Parity credential",
+                "parity@example.test",
+                "parity-member",
+            ),
+            None,
+        )
+        .await
+        .unwrap()
+        .commit()
+        .await
+        .unwrap();
 
     let created = commit_mutation(
         &repositories,
@@ -2099,8 +2261,7 @@ async fn model_routing_lifecycle_contract(repositories: Repositories) {
         Some(RepositoryError::Validation)
     ));
 
-    // The routing profile is one per priced model and the protocol child is one
-    // per API format.
+    // Priced models own one profile, with at most one child per operation.
     let profile = commit_mutation(
         &repositories,
         world.admin,
@@ -2123,40 +2284,40 @@ async fn model_routing_lifecycle_contract(repositories: Repositories) {
     let protocol = commit_mutation(
         &repositories,
         world.admin,
-        ControlPlaneMutation::CreateProtocolRule {
-            model_rule_id: profile.id,
-            input: ModelProtocolRuleCreateInput {
-                api_format: "open_ai_chat_completions".into(),
+        ControlPlaneMutation::SaveOperationRule {
+            id: Uuid::new_v4(),
+            expected_updated_at: None,
+            input: ai_gateway::persistence::OperationRuleInput {
+                model_routing_profile_id: profile.id,
+                operation: ai_gateway::domain::ApiOperation::ChatCompletions,
+                enabled: false,
+                routing_tiers: vec![],
             },
         },
     )
     .await;
-    assert_eq!(protocol.object_type, "model_protocol_rule");
+    assert_eq!(protocol.object_type, "model_operation_rule");
     assert_eq!(protocol.action, "create");
     let rule = listed_model_rule(&repositories, profile.id).await;
     assert_eq!(rule.model_id, model);
     assert_eq!(rule.client_model, "parity-model");
     assert_eq!(rule.model_display_name, "Parity Model v2");
-    assert_eq!(rule.protocol_rules.len(), 1);
-    assert_eq!(
-        rule.protocol_rules[0].api_format,
-        "open_ai_chat_completions"
-    );
-    assert_eq!(rule.protocol_rules[0].description, None);
-    assert!(!rule.protocol_rules[0].enabled);
-    assert!(rule.protocol_rules[0].routing_tiers.is_empty());
-    assert_eq!(
-        rule.protocol_rules[0].routing_status,
-        ModelRuleRoutingStatus::Draft
-    );
+    let graph = operation_graph(&repositories, profile.id).await;
+    assert!(!graph.rule.enabled);
+    assert!(graph.tiers.is_empty());
+    assert!(graph.candidates.is_empty());
     assert!(matches!(
         repository
             .prepare_mutation(
                 world.admin,
-                ControlPlaneMutation::CreateProtocolRule {
-                    model_rule_id: profile.id,
-                    input: ModelProtocolRuleCreateInput {
-                        api_format: "open_ai_chat_completions".into(),
+                ControlPlaneMutation::SaveOperationRule {
+                    id: Uuid::new_v4(),
+                    expected_updated_at: None,
+                    input: ai_gateway::persistence::OperationRuleInput {
+                        model_routing_profile_id: profile.id,
+                        operation: ai_gateway::domain::ApiOperation::ChatCompletions,
+                        enabled: false,
+                        routing_tiers: vec![],
                     },
                 },
             )
@@ -2166,27 +2327,27 @@ async fn model_routing_lifecycle_contract(repositories: Repositories) {
     ));
 
     // A ready route commits whole, and every guard is checked first.
-    let update_rule = |expected_updated_at| ControlPlaneMutation::UpdateProtocolRule {
-        model_rule_id: profile.id,
+    let update_rule = |expected_updated_at| ControlPlaneMutation::SaveOperationRule {
         id: protocol.id,
-        input: ModelProtocolRuleInput {
-            description: Some("primary route".into()),
-            routing_tiers: vec![ModelRuleRoutingTier {
+        input: ai_gateway::persistence::OperationRuleInput {
+            model_routing_profile_id: profile.id,
+            operation: ai_gateway::domain::ApiOperation::ChatCompletions,
+            routing_tiers: vec![ai_gateway::persistence::OperationTierInput {
                 priority: 0,
                 selection_strategy: "weighted_round_robin".into(),
-                candidates: vec![ModelRuleRouteCandidate {
-                    channel_id: world.channel,
+                candidates: vec![ai_gateway::persistence::OperationCandidateInput {
+                    capability_id: world.capability,
                     upstream_model: "parity-model".into(),
                     weight: 3,
                 }],
             }],
             enabled: true,
         },
-        expected_updated_at,
+        expected_updated_at: Some(expected_updated_at),
     };
-    let protocol_updated_at = listed_model_rule(&repositories, profile.id)
+    let protocol_updated_at = operation_graph(&repositories, profile.id)
         .await
-        .protocol_rules[0]
+        .rule
         .updated_at;
     assert!(matches!(
         repository
@@ -2202,23 +2363,23 @@ async fn model_routing_lifecycle_contract(repositories: Repositories) {
         repository
             .prepare_mutation(
                 world.admin,
-                ControlPlaneMutation::UpdateProtocolRule {
-                    model_rule_id: profile.id,
+                ControlPlaneMutation::SaveOperationRule {
                     id: protocol.id,
-                    input: ModelProtocolRuleInput {
-                        description: None,
-                        routing_tiers: vec![ModelRuleRoutingTier {
+                    input: ai_gateway::persistence::OperationRuleInput {
+                        model_routing_profile_id: profile.id,
+                        operation: ai_gateway::domain::ApiOperation::ChatCompletions,
+                        routing_tiers: vec![ai_gateway::persistence::OperationTierInput {
                             priority: 0,
                             selection_strategy: "weighted_random".into(),
-                            candidates: vec![ModelRuleRouteCandidate {
-                                channel_id: world.channel,
+                            candidates: vec![ai_gateway::persistence::OperationCandidateInput {
+                                capability_id: world.capability,
                                 upstream_model: "unknown-model".into(),
                                 weight: 1,
                             }],
                         }],
                         enabled: true,
                     },
-                    expected_updated_at: expected_etag(protocol_updated_at),
+                    expected_updated_at: Some(expected_etag(protocol_updated_at)),
                 },
             )
             .await
@@ -2232,30 +2393,21 @@ async fn model_routing_lifecycle_contract(repositories: Repositories) {
     )
     .await;
     assert_eq!(updated.action, "update");
-    let rule = listed_model_rule(&repositories, profile.id).await;
-    let protocol_rule = &rule.protocol_rules[0];
-    assert_eq!(protocol_rule.description.as_deref(), Some("primary route"));
-    assert!(protocol_rule.enabled);
-    assert_eq!(protocol_rule.routing_status, ModelRuleRoutingStatus::Ready);
-    assert_eq!(protocol_rule.routing_tiers.len(), 1);
-    assert_eq!(protocol_rule.routing_tiers[0].priority, 0);
-    assert_eq!(
-        protocol_rule.routing_tiers[0].selection_strategy,
-        "weighted_round_robin"
+    let graph = operation_graph(&repositories, profile.id).await;
+    assert!(graph.rule.enabled);
+    assert_eq!(graph.tiers.len(), 1);
+    assert_eq!(graph.tiers[0].priority, 0);
+    assert_eq!(graph.tiers[0].strategy, "weighted_round_robin");
+    assert_eq!(graph.candidates.len(), 1);
+    assert_eq!(graph.candidates[0].capability_id, world.capability);
+    assert_eq!(graph.candidates[0].upstream_model, "parity-model");
+    assert_eq!(graph.candidates[0].weight, 3);
+    assert!(
+        listed_capability(&repositories, world.capability)
+            .await
+            .settings
+            .enabled
     );
-    assert_eq!(protocol_rule.routing_tiers[0].candidates.len(), 1);
-    assert_eq!(
-        protocol_rule.routing_tiers[0].candidates[0].channel_id,
-        world.channel
-    );
-    assert_eq!(
-        protocol_rule.routing_tiers[0].candidates[0].upstream_model,
-        "parity-model"
-    );
-    assert_eq!(protocol_rule.routing_tiers[0].candidates[0].weight, 3);
-    assert_eq!(protocol_rule.target_candidate_count, 1);
-    assert_eq!(protocol_rule.model_capable_candidate_count, 1);
-    assert_eq!(protocol_rule.active_candidate_count, 1);
     compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap();
 
     // A disabled model cannot carry a routing profile.
@@ -2298,7 +2450,7 @@ async fn model_routing_lifecycle_contract(repositories: Repositories) {
     assert_eq!(deleted.action, "delete");
     assert_eq!(
         deleted.reason.as_deref(),
-        Some("1 protocol rules disabled; 0 scheduled test references cleared")
+        Some("1 operation rules disabled; 0 scheduled test references cleared")
     );
     assert!(
         repository
@@ -2603,24 +2755,56 @@ async fn reusable_upstream_identity_contract(repositories: Repositories) {
     coordinator
         .mutate(
             world.admin,
-            ControlPlaneMutation::UpdateChannel {
+            ControlPlaneMutation::SaveLogicalChannel {
                 id: world.channel,
-                input: ChannelInput {
+                input: ai_gateway::persistence::LogicalChannelInput {
                     credential_id: Some(id),
-                    ..channel_input(world.group, "bound identity")
+                    name: "bound identity".into(),
+                    ..logical_input(&channel)
                 },
-                expected_updated_at: channel.updated_at,
+                expected: Some(channel.updated_at),
             },
         )
         .await
         .unwrap();
-    let second = coordinator.mutate(world.admin, ControlPlaneMutation::CreateChannel(
-        serde_json::from_value(json!({
-            "channel_group_id": world.group, "api_format": "open_ai_chat_completions",
-            "name": "second identity reference", "base_url": "https://upstream.example.test",
-            "credential_id": id, "enabled": false, "available_models": ["parity-model"],
-        })).unwrap(),
-    )).await.unwrap().id;
+    let second = coordinator
+        .mutate(
+            world.admin,
+            ControlPlaneMutation::SaveLogicalChannel {
+                id: Uuid::new_v4(),
+                expected: None,
+                input: ai_gateway::persistence::LogicalChannelInput {
+                    group_id: world.group,
+                    access_id: world.access,
+                    credential_id: Some(id),
+                    name: "second identity reference".into(),
+                    enabled: false,
+                },
+            },
+        )
+        .await
+        .unwrap()
+        .id;
+    let capability = listed_capability(&repositories, world.capability).await;
+    let second_capability = coordinator
+        .mutate(
+            world.admin,
+            ControlPlaneMutation::SaveChannelCapability {
+                id: Uuid::new_v4(),
+                expected: None,
+                input: ai_gateway::persistence::ChannelCapabilityInput {
+                    channel_id: second,
+                    settings: capability.settings,
+                    status_statistics_enabled: false,
+                    config_template_id: None,
+                    override_document: json!({}),
+                    billing_multiplier: Decimal::ONE,
+                },
+            },
+        )
+        .await
+        .unwrap()
+        .id;
     let bound = repository
         .upstream_credential_detail(id)
         .await
@@ -2633,7 +2817,7 @@ async fn reusable_upstream_identity_contract(repositories: Repositories) {
         .unwrap()
         .channels
         .into_iter()
-        .find(|channel| channel.id == world.channel)
+        .find(|channel| channel.id == world.capability)
         .unwrap()
         .credential
         .unwrap()
@@ -2652,17 +2836,24 @@ async fn reusable_upstream_identity_contract(repositories: Repositories) {
         .await
         .unwrap();
     assert!(
-        matches!(runtime.snapshot().channel(world.channel).unwrap().upstream_auth(),
+        matches!(runtime.snapshot().channel(world.capability).unwrap().upstream_auth(),
         UpstreamAuth::Bearer(secret) if secret.as_ref()=="identity-rotated-secret")
     );
-    for record in repository.load().await.unwrap().channels {
-        if [world.channel, second].contains(&record.id) {
-            assert_eq!(
-                record.upstream_api_key.as_deref(),
-                Some("identity-rotated-secret")
-            );
-            assert_ne!(record.credential.unwrap().revision, original_revision);
-        }
+    let bound_records = repository
+        .load()
+        .await
+        .unwrap()
+        .channels
+        .into_iter()
+        .filter(|record| [world.capability, second_capability].contains(&record.id))
+        .collect::<Vec<_>>();
+    assert_eq!(bound_records.len(), 2);
+    for record in bound_records {
+        assert_eq!(
+            record.upstream_api_key.as_deref(),
+            Some("identity-rotated-secret")
+        );
+        assert_ne!(record.credential.unwrap().revision, original_revision);
     }
     assert!(
         coordinator
@@ -2723,7 +2914,7 @@ async fn reusable_upstream_identity_contract(repositories: Repositories) {
         )
         .await
         .unwrap();
-    assert!(runtime.snapshot().channel(world.channel).is_none());
+    assert!(runtime.snapshot().channel(world.capability).is_none());
     assert!(
         coordinator
             .mutate(
@@ -2748,24 +2939,28 @@ async fn reusable_upstream_identity_contract(repositories: Repositories) {
         )
         .await
         .unwrap();
-    assert!(runtime.snapshot().channel(world.channel).is_some());
+    assert!(runtime.snapshot().channel(world.capability).is_some());
     let original_binding = repository
         .load()
         .await
         .unwrap()
         .channels
         .into_iter()
-        .find(|channel| channel.id == world.channel)
+        .find(|channel| channel.id == world.capability)
         .unwrap()
         .credential_binding_revision;
     let channel = listed_channel(&repositories, world.channel).await;
     coordinator
         .mutate(
             world.admin,
-            ControlPlaneMutation::UpdateChannel {
+            ControlPlaneMutation::SaveLogicalChannel {
                 id: world.channel,
-                input: channel_input(world.group, "unbound identity"),
-                expected_updated_at: channel.updated_at,
+                input: ai_gateway::persistence::LogicalChannelInput {
+                    name: "unbound identity".into(),
+                    credential_id: None,
+                    ..logical_input(&channel)
+                },
+                expected: Some(channel.updated_at),
             },
         )
         .await
@@ -2773,7 +2968,7 @@ async fn reusable_upstream_identity_contract(repositories: Repositories) {
     assert!(matches!(
         runtime
             .snapshot()
-            .channel(world.channel)
+            .channel(world.capability)
             .unwrap()
             .upstream_auth(),
         UpstreamAuth::None
@@ -2782,13 +2977,14 @@ async fn reusable_upstream_identity_contract(repositories: Repositories) {
     coordinator
         .mutate(
             world.admin,
-            ControlPlaneMutation::UpdateChannel {
+            ControlPlaneMutation::SaveLogicalChannel {
                 id: world.channel,
-                input: ChannelInput {
+                input: ai_gateway::persistence::LogicalChannelInput {
                     credential_id: Some(id),
-                    ..channel_input(world.group, "restored identity")
+                    name: "restored identity".into(),
+                    ..logical_input(&channel)
                 },
-                expected_updated_at: channel.updated_at,
+                expected: Some(channel.updated_at),
             },
         )
         .await
@@ -2799,7 +2995,7 @@ async fn reusable_upstream_identity_contract(repositories: Repositories) {
         .unwrap()
         .channels
         .into_iter()
-        .find(|channel| channel.id == world.channel)
+        .find(|channel| channel.id == world.capability)
         .unwrap()
         .credential_binding_revision;
     assert_ne!(original_binding, rebound);
@@ -2807,10 +3003,14 @@ async fn reusable_upstream_identity_contract(repositories: Repositories) {
     coordinator
         .mutate(
             world.admin,
-            ControlPlaneMutation::UpdateChannel {
+            ControlPlaneMutation::SaveLogicalChannel {
                 id: world.channel,
-                input: channel_input(world.group, "unbound again"),
-                expected_updated_at: channel.updated_at,
+                input: ai_gateway::persistence::LogicalChannelInput {
+                    name: "unbound again".into(),
+                    credential_id: None,
+                    ..logical_input(&channel)
+                },
+                expected: Some(channel.updated_at),
             },
         )
         .await
@@ -2838,13 +3038,15 @@ async fn reusable_upstream_identity_contract(repositories: Repositories) {
     coordinator
         .mutate(
             world.admin,
-            ControlPlaneMutation::UpdateChannel {
+            ControlPlaneMutation::SaveLogicalChannel {
                 id: second,
-                input: ChannelInput {
+                input: ai_gateway::persistence::LogicalChannelInput {
                     enabled: false,
-                    ..channel_input(world.group, "unbound second")
+                    credential_id: None,
+                    name: "unbound second".into(),
+                    ..logical_input(&channel)
                 },
-                expected_updated_at: channel.updated_at,
+                expected: Some(channel.updated_at),
             },
         )
         .await
@@ -2924,97 +3126,94 @@ async fn channel_lifecycle_contract(repositories: Repositories) {
     .await
     .id;
 
-    // A full update round-trips every editable field.
-    let listed = listed_channel(&repositories, world.channel).await;
-    let update = ControlPlaneMutation::UpdateChannel {
-        id: world.channel,
-        input: ChannelInput {
-            channel_group_id: world.group,
-            api_format: "open_ai_chat_completions".into(),
-            name: "Parity Channel v2".into(),
-            base_url: "https://upstream-v2.example.test".into(),
-            enabled: true,
-            supports_websocket: false,
-            supports_standalone_web_search: false,
-            auto_disable_allowed: true,
-            billing_multiplier: Some(decimal("1.5")),
-            proxy_id: Some(proxy),
-            config_template_id: Some(template),
-            override_document: Some(json!({
-                "version": 1,
-                "api_format": "open_ai_chat_completions",
-                "request_headers": {"set": {"x-channel": "on"}}
-            })),
-            connect_timeout_ms: Some(1_500),
-            response_header_timeout_ms: Some(45_000),
-            stream_idle_timeout_ms: Some(60_000),
-            credential_id: Some(credential),
-            available_models: vec!["parity-model".into(), "parity-model-v2".into()],
-            test_model: None,
-            test_pricing_model_id: None,
-        },
-        expected_updated_at: expected_etag(listed.updated_at) - ChronoDuration::seconds(1),
+    let access = listed_access(&repositories, world.access).await;
+    let input = ai_gateway::persistence::UpstreamAccessInput {
+        base_url: "https://upstream-v2.example.test".into(),
+        proxy_id: Some(proxy),
+        connect_timeout_ms: Some(1_500),
+        response_header_timeout_ms: Some(45_000),
+        stream_idle_timeout_ms: Some(60_000),
+        ..access_input(&access)
+    };
+    let update = ControlPlaneMutation::UpdateUpstreamAccess {
+        id: world.access,
+        input: input.clone(),
+        expected_updated_at: expected_etag(access.updated_at) - ChronoDuration::seconds(1),
     };
     assert!(matches!(
         repository.prepare_mutation(world.admin, update).await.err(),
         Some(RepositoryError::Conflict)
     ));
+    commit_mutation(
+        &repositories,
+        world.admin,
+        ControlPlaneMutation::UpdateUpstreamAccess {
+            id: world.access,
+            input,
+            expected_updated_at: expected_etag(access.updated_at),
+        },
+    )
+    .await;
+    let channel = listed_channel(&repositories, world.channel).await;
     let updated = commit_mutation(
         &repositories,
         world.admin,
-        ControlPlaneMutation::UpdateChannel {
+        ControlPlaneMutation::SaveLogicalChannel {
             id: world.channel,
-            input: ChannelInput {
-                channel_group_id: world.group,
-                api_format: "open_ai_chat_completions".into(),
+            expected: Some(channel.updated_at),
+            input: ai_gateway::persistence::LogicalChannelInput {
                 name: "Parity Channel v2".into(),
-                base_url: "https://upstream-v2.example.test".into(),
-                enabled: true,
-                supports_websocket: false,
-                supports_standalone_web_search: false,
-                auto_disable_allowed: true,
-                billing_multiplier: Some(decimal("1.5")),
-                proxy_id: Some(proxy),
-                config_template_id: Some(template),
-                override_document: Some(json!({
-                    "version": 1,
-                    "api_format": "open_ai_chat_completions",
-                    "request_headers": {"set": {"x-channel": "on"}}
-                })),
-                connect_timeout_ms: Some(1_500),
-                response_header_timeout_ms: Some(45_000),
-                stream_idle_timeout_ms: Some(60_000),
                 credential_id: Some(credential),
-                available_models: vec!["parity-model".into(), "parity-model-v2".into()],
-                test_model: None,
-                test_pricing_model_id: None,
+                ..logical_input(&channel)
             },
-            expected_updated_at: expected_etag(listed.updated_at),
+        },
+    )
+    .await;
+    let capability = listed_capability(&repositories, world.capability).await;
+    let mut settings = capability.settings.clone();
+    settings.auto_disable_allowed = true;
+    settings.available_models = vec!["parity-model".into(), "parity-model-v2".into()];
+    commit_mutation(
+        &repositories,
+        world.admin,
+        ControlPlaneMutation::SaveChannelCapability {
+            id: world.capability,
+            expected: Some(capability.updated_at),
+            input: ai_gateway::persistence::ChannelCapabilityInput {
+                channel_id: world.channel,
+                settings,
+                status_statistics_enabled: true,
+                billing_multiplier: decimal("1.5"),
+                config_template_id: Some(template),
+                override_document: json!({
+                        "version": 1,
+                        "api_format": "open_ai_chat_completions",
+                        "request_headers": {"set": {"x-channel": "on"}}
+                }),
+            },
         },
     )
     .await;
     assert_eq!(updated.action, "update");
     assert!(updated.after_redacted.get("upstream_api_key").is_none());
     assert_eq!(updated.after_redacted["credential_id"], json!(credential));
-    let detail = repository
-        .control_plane_channel_detail(world.channel)
-        .await
-        .unwrap()
-        .unwrap();
+    let detail = listed_channel(&repositories, world.channel).await;
+    let access = listed_access(&repositories, world.access).await;
+    let capability = listed_capability(&repositories, world.capability).await;
     assert_eq!(detail.name, "Parity Channel v2");
-    assert_eq!(detail.base_url, "https://upstream-v2.example.test");
+    assert_eq!(access.base_url, "https://upstream-v2.example.test");
     assert!(detail.enabled);
-    assert!(detail.auto_disable_allowed);
-    assert_eq!(detail.billing_multiplier, decimal("1.5"));
-    assert_eq!(detail.proxy_id, Some(proxy));
-    assert_eq!(detail.config_template_id, Some(template));
+    assert!(capability.settings.auto_disable_allowed);
+    assert_eq!(capability.billing_multiplier, decimal("1.5"));
+    assert_eq!(access.proxy_id, Some(proxy));
+    assert_eq!(capability.config_template_id, Some(template));
     assert_eq!(
-        detail.override_document["request_headers"]["set"]["x-channel"],
+        capability.override_document["request_headers"]["set"]["x-channel"],
         "on"
     );
-    assert_eq!(detail.connect_timeout_ms, Some(1_500));
-    assert_eq!(detail.response_header_timeout_ms, Some(45_000));
-    assert_eq!(detail.stream_idle_timeout_ms, Some(60_000));
+    assert_eq!(access.connect_timeout_ms, Some(1_500));
+    assert_eq!(access.response_header_timeout_ms, Some(45_000));
+    assert_eq!(access.stream_idle_timeout_ms, Some(60_000));
     assert_eq!(detail.credential_id, Some(credential));
     assert_eq!(
         repository
@@ -3026,55 +3225,52 @@ async fn channel_lifecycle_contract(repositories: Repositories) {
             .as_deref(),
         Some("upstream-secret")
     );
-    assert_eq!(detail.available_models, ["parity-model", "parity-model-v2"]);
+    assert_eq!(
+        capability.settings.available_models,
+        ["parity-model", "parity-model-v2"]
+    );
 
     // A channel edit preserves the referenced identity without writing its secret.
     let preserve = commit_mutation(
         &repositories,
         world.admin,
-        ControlPlaneMutation::UpdateChannel {
+        ControlPlaneMutation::SaveLogicalChannel {
             id: world.channel,
-            input: ChannelInput {
+            input: ai_gateway::persistence::LogicalChannelInput {
                 name: "Parity Channel v3".into(),
                 credential_id: Some(credential),
-                ..channel_input(world.group, "Parity Channel v2")
+                ..logical_input(&detail)
             },
-            expected_updated_at: expected_etag(detail.updated_at),
+            expected: Some(expected_etag(detail.updated_at)),
         },
     )
     .await;
     assert_eq!(preserve.action, "update");
-    let detail = repository
-        .control_plane_channel_detail(world.channel)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(detail.billing_multiplier, decimal("1.5"));
+    let detail = listed_channel(&repositories, world.channel).await;
     assert_eq!(detail.credential_id, Some(credential));
     assert_eq!(
-        detail.override_document["request_headers"]["set"]["x-channel"],
-        "on"
+        serde_json::to_value(listed_capability(&repositories, world.capability).await).unwrap(),
+        serde_json::to_value(&capability).unwrap()
     );
-    assert_eq!(detail.available_models, ["parity-model"]);
+    assert_eq!(
+        serde_json::to_value(listed_access(&repositories, world.access).await).unwrap(),
+        serde_json::to_value(&access).unwrap()
+    );
     let cleared = commit_mutation(
         &repositories,
         world.admin,
-        ControlPlaneMutation::UpdateChannel {
+        ControlPlaneMutation::SaveLogicalChannel {
             id: world.channel,
-            input: ChannelInput {
+            input: ai_gateway::persistence::LogicalChannelInput {
                 credential_id: None,
-                ..channel_input(world.group, "Parity Channel v3")
+                ..logical_input(&detail)
             },
-            expected_updated_at: expected_etag(detail.updated_at),
+            expected: Some(expected_etag(detail.updated_at)),
         },
     )
     .await;
     assert_eq!(cleared.action, "update");
-    let detail = repository
-        .control_plane_channel_detail(world.channel)
-        .await
-        .unwrap()
-        .unwrap();
+    let detail = listed_channel(&repositories, world.channel).await;
     assert_eq!(detail.credential_id, None);
     assert_eq!(
         repository
@@ -3088,10 +3284,10 @@ async fn channel_lifecycle_contract(repositories: Repositories) {
     );
 
     // A batch update maps each target version and is all-or-nothing.
-    let listed = listed_channel(&repositories, world.channel).await;
+    let listed = listed_capability(&repositories, world.capability).await;
     let batch = |expected_updated_at| ChannelBatchUpdateInput {
         items: vec![ChannelBatchUpdateTarget {
-            id: world.channel,
+            id: world.capability,
             updated_at: expected_updated_at,
         }],
         changes: ChannelBatchChanges {
@@ -3118,16 +3314,17 @@ async fn channel_lifecycle_contract(repositories: Repositories) {
         .await
         .unwrap();
     assert_eq!(mutations.pop().unwrap().action, "batch_update");
-    let listed = listed_channel(&repositories, world.channel).await;
-    assert!(!listed.enabled);
-    assert!(listed.auto_disable_allowed);
-    assert_eq!(listed.billing_multiplier, decimal("2"));
+    let listed = listed_capability(&repositories, world.capability).await;
+    assert!(!listed.settings.enabled);
+    let capability = listed_capability(&repositories, world.capability).await;
+    assert!(capability.settings.auto_disable_allowed);
+    assert_eq!(capability.billing_multiplier, decimal("2"));
     let (mut mutations, _) = repository
         .prepare_channels_batch(
             world.admin,
             ChannelBatchUpdateInput {
                 items: vec![ChannelBatchUpdateTarget {
-                    id: world.channel,
+                    id: world.capability,
                     updated_at: expected_etag(listed.updated_at),
                 }],
                 changes: ChannelBatchChanges {
@@ -3163,14 +3360,14 @@ async fn channel_lifecycle_contract(repositories: Repositories) {
     .await;
     assert!(
         repository
-            .prepare_channel_disable(world.channel, &AutomaticDisableTrigger::HttpStatus(503))
+            .prepare_channel_disable(world.capability, &AutomaticDisableTrigger::HttpStatus(503))
             .await
             .unwrap()
             .is_none(),
         "a non-matching trigger prepares nothing"
     );
     let mut change = repository
-        .prepare_channel_disable(world.channel, &AutomaticDisableTrigger::HttpStatus(429))
+        .prepare_channel_disable(world.capability, &AutomaticDisableTrigger::HttpStatus(429))
         .await
         .unwrap()
         .expect("a matching trigger prepares an automatic disable");
@@ -3186,18 +3383,18 @@ async fn channel_lifecycle_contract(repositories: Repositories) {
     let (mut mutations, correlation_id) = change.commit().await.unwrap();
     assert_eq!(mutations.pop().unwrap().action, "auto_disable");
     assert_ne!(correlation_id, Uuid::nil());
-    let listed = listed_channel(&repositories, world.channel).await;
+    let listed = listed_capability(&repositories, world.capability).await;
     assert!(listed.auto_disabled);
     assert!(
         listed
-            .auto_disabled_reason
+            .auto_disable_reason
             .as_deref()
             .unwrap()
             .contains("429")
     );
     assert!(
         repository
-            .prepare_channel_disable(world.channel, &AutomaticDisableTrigger::HttpStatus(429))
+            .prepare_channel_disable(world.capability, &AutomaticDisableTrigger::HttpStatus(429))
             .await
             .unwrap()
             .is_none(),
@@ -3208,84 +3405,66 @@ async fn channel_lifecycle_contract(repositories: Repositories) {
         &repositories,
         world.admin,
         ControlPlaneMutation::RecoverChannel {
-            id: world.channel,
+            id: world.capability,
             expected_updated_at: expected_etag(listed.updated_at),
         },
     )
     .await;
     assert_eq!(recovered.action, "manual_recover");
     assert!(recovered.reason.as_deref().unwrap().contains("manual"));
-    let listed = listed_channel(&repositories, world.channel).await;
+    let listed = listed_capability(&repositories, world.capability).await;
     assert!(!listed.auto_disabled);
-    assert_eq!(listed.auto_disabled_reason, None);
+    assert_eq!(listed.auto_disable_reason, None);
+    let listed = listed_channel(&repositories, world.channel).await;
 
-    // Deletion requires the exact confirmation token and hides the channel.
-    let impact = repository
-        .channel_deletion_impact(world.channel)
-        .await
-        .unwrap();
-    assert_eq!(impact.resource_type, "channel");
-    assert_eq!(impact.resource_id, world.channel);
-    assert_eq!(impact.channels.len(), 1);
-    assert_eq!(impact.channels[0].id, world.channel);
-    assert!(impact.model_protocol_rules.is_empty());
+    // Live capabilities must be retired before their logical channel.
     assert!(matches!(
         repository
             .prepare_mutation(
                 world.admin,
-                ControlPlaneMutation::DeleteChannel {
+                ControlPlaneMutation::DeleteLogicalChannel {
                     id: world.channel,
-                    deleted_by: world.admin,
-                    expected_updated_at: expected_etag(listed.updated_at),
-                    confirmation_token: "v1.bogus".into(),
+                    expected: expected_etag(listed.updated_at),
                 },
             )
             .await
             .err(),
-        Some(RepositoryError::DeletionImpactChanged)
+        Some(RepositoryError::RoutingDependencyInvalid)
     ));
     assert!(
-        repository
-            .control_plane_channel_detail(world.channel)
+        listed_channel(&repositories, world.channel)
             .await
-            .unwrap()
-            .is_some(),
-        "a rejected token leaves the channel intact"
+            .deleted_at
+            .is_none()
     );
+    let capability = listed_capability(&repositories, world.capability).await;
+    commit_mutation(
+        &repositories,
+        world.admin,
+        ControlPlaneMutation::DeleteChannelCapability {
+            id: world.capability,
+            expected: capability.updated_at,
+        },
+    )
+    .await;
     let deleted = commit_mutation(
         &repositories,
         world.admin,
-        ControlPlaneMutation::DeleteChannel {
+        ControlPlaneMutation::DeleteLogicalChannel {
             id: world.channel,
-            deleted_by: world.admin,
-            expected_updated_at: expected_etag(listed.updated_at),
-            confirmation_token: impact.confirmation_token.clone(),
+            expected: expected_etag(listed.updated_at),
         },
     )
     .await;
     assert_eq!(deleted.action, "delete");
     assert!(
-        deleted
-            .reason
-            .as_deref()
-            .unwrap()
-            .contains("1 channels deleted")
-    );
-    assert!(
         repository
-            .control_plane_channel_detail(world.channel)
+            .topology()
             .await
             .unwrap()
-            .is_none()
-    );
-    assert!(
-        repository
-            .control_plane_lists()
-            .await
-            .unwrap()
-            .channels
+            .logical_channels
             .iter()
-            .all(|channel| channel.id != world.channel)
+            .all(|channel| channel.id != world.channel || channel.deleted_at.is_some())
     );
 }
 
@@ -3388,7 +3567,7 @@ async fn template_proxy_and_group_deletion_contract(repositories: Repositories) 
         "off"
     );
 
-    // A channel reference blocks proxy deletion; detaching releases it.
+    // Shared accesses retain proxy ownership until explicitly detached.
     let proxy = commit_mutation(
         &repositories,
         world.admin,
@@ -3399,17 +3578,17 @@ async fn template_proxy_and_group_deletion_contract(repositories: Repositories) 
     let attached_proxy = listed_proxy(&repositories, proxy).await;
     assert_eq!(attached_proxy.name, "detach-me");
     assert!(!attached_proxy.credential_configured);
-    let attached_channel = listed_channel(&repositories, world.channel).await;
+    let access = listed_access(&repositories, world.access).await;
     commit_mutation(
         &repositories,
         world.admin,
-        ControlPlaneMutation::UpdateChannel {
-            id: world.channel,
-            input: ChannelInput {
+        ControlPlaneMutation::UpdateUpstreamAccess {
+            id: world.access,
+            input: ai_gateway::persistence::UpstreamAccessInput {
                 proxy_id: Some(proxy),
-                ..channel_input(world.group, "Parity Channel")
+                ..access_input(&access)
             },
-            expected_updated_at: expected_etag(attached_channel.updated_at),
+            expected_updated_at: expected_etag(access.updated_at),
         },
     )
     .await;
@@ -3427,17 +3606,17 @@ async fn template_proxy_and_group_deletion_contract(repositories: Repositories) 
             .err(),
         Some(RepositoryError::ProxyInUse)
     ));
-    let detached_channel = listed_channel(&repositories, world.channel).await;
+    let access = listed_access(&repositories, world.access).await;
     commit_mutation(
         &repositories,
         world.admin,
-        ControlPlaneMutation::UpdateChannel {
-            id: world.channel,
-            input: ChannelInput {
+        ControlPlaneMutation::UpdateUpstreamAccess {
+            id: world.access,
+            input: ai_gateway::persistence::UpstreamAccessInput {
                 proxy_id: None,
-                ..channel_input(world.group, "Parity Channel")
+                ..access_input(&access)
             },
-            expected_updated_at: expected_etag(detached_channel.updated_at),
+            expected_updated_at: expected_etag(access.updated_at),
         },
     )
     .await;
@@ -3462,8 +3641,7 @@ async fn template_proxy_and_group_deletion_contract(repositories: Repositories) 
     );
     assert!(repository.load().await.unwrap().proxies.is_empty());
 
-    // Group deletion prunes routing candidates, disables the affected rule,
-    // and unbinds every API key and policy bound to the group.
+    // Deletion cannot cascade across routes, capabilities, or fixed grants.
     let model = commit_mutation(
         &repositories,
         world.admin,
@@ -3481,39 +3659,23 @@ async fn template_proxy_and_group_deletion_contract(repositories: Repositories) 
     let protocol = commit_mutation(
         &repositories,
         world.admin,
-        ControlPlaneMutation::CreateProtocolRule {
-            model_rule_id: profile,
-            input: ModelProtocolRuleCreateInput {
-                api_format: "open_ai_chat_completions".into(),
-            },
-        },
-    )
-    .await
-    .id;
-    let protocol_updated_at = listed_model_rule(&repositories, profile)
-        .await
-        .protocol_rules[0]
-        .updated_at;
-    commit_mutation(
-        &repositories,
-        world.admin,
-        ControlPlaneMutation::UpdateProtocolRule {
-            model_rule_id: profile,
-            id: protocol,
-            input: ModelProtocolRuleInput {
-                description: Some("group deletion route".into()),
-                routing_tiers: vec![ModelRuleRoutingTier {
+        ControlPlaneMutation::SaveOperationRule {
+            id: Uuid::new_v4(),
+            expected_updated_at: None,
+            input: ai_gateway::persistence::OperationRuleInput {
+                model_routing_profile_id: profile,
+                operation: ai_gateway::domain::ApiOperation::ChatCompletions,
+                routing_tiers: vec![ai_gateway::persistence::OperationTierInput {
                     priority: 0,
                     selection_strategy: "weighted_random".into(),
-                    candidates: vec![ModelRuleRouteCandidate {
-                        channel_id: world.channel,
+                    candidates: vec![ai_gateway::persistence::OperationCandidateInput {
+                        capability_id: world.capability,
                         upstream_model: "parity-model".into(),
                         weight: 1,
                     }],
                 }],
                 enabled: true,
             },
-            expected_updated_at: expected_etag(protocol_updated_at),
         },
     )
     .await;
@@ -3529,97 +3691,143 @@ async fn template_proxy_and_group_deletion_contract(repositories: Repositories) 
     .await
     .id;
 
-    let impact = repository
-        .channel_group_deletion_impact(world.group)
-        .await
-        .unwrap();
-    assert_eq!(impact.resource_type, "channel_group");
-    assert_eq!(impact.resource_id, world.group);
-    assert_eq!(impact.channels.len(), 1);
-    assert_eq!(impact.model_protocol_rules.len(), 1);
-    assert!(impact.model_protocol_rules[0].will_disable);
-    assert_eq!(
-        impact.model_protocol_rules[0].removed_channel_group_ids,
-        vec![world.group]
-    );
-    assert_eq!(
-        impact.model_protocol_rules[0].removed_channel_ids,
-        vec![world.channel]
-    );
-    assert_eq!(
-        impact.model_protocol_rules[0].removed_tier_priorities,
-        vec![0]
-    );
-    assert_eq!(impact.api_keys.len(), 1);
-    assert_eq!(impact.api_keys[0].id, bound_key);
-    assert_eq!(impact.api_key_policies.len(), 1);
-    assert_eq!(impact.api_key_policies[0].id, world.policy);
-    assert!(
-        repository
-            .channel_group_deletion_impact(world.group)
-            .await
-            .unwrap()
-            .confirmation_token
-            == impact.confirmation_token,
-        "the confirmation token is stable for an unchanged plan"
-    );
-
     let group = listed_group(&repositories, world.group).await;
-    let deleted = commit_mutation(
+    let capability = listed_capability(&repositories, world.capability).await;
+    let channel = listed_channel(&repositories, world.channel).await;
+    let before = repository.topology().await.unwrap();
+    let observable = observable_state(&repositories).await;
+    assert!(matches!(
+        repository
+            .prepare_mutation(
+                world.admin,
+                ControlPlaneMutation::DeleteRoutingGroup {
+                    id: world.group,
+                    expected: group.updated_at,
+                }
+            )
+            .await
+            .err(),
+        Some(RepositoryError::Validation)
+    ));
+    for mutation in [
+        ControlPlaneMutation::DeleteLogicalChannel {
+            id: world.channel,
+            expected: channel.updated_at,
+        },
+        ControlPlaneMutation::DeleteChannelCapability {
+            id: world.capability,
+            expected: capability.updated_at,
+        },
+    ] {
+        assert!(matches!(
+            repository
+                .prepare_mutation(world.admin, mutation)
+                .await
+                .err(),
+            Some(RepositoryError::RoutingDependencyInvalid)
+        ));
+    }
+    assert_eq!(observable_state(&repositories).await, observable);
+    commit_mutation(
         &repositories,
         world.admin,
-        ControlPlaneMutation::DeleteGroup {
-            id: world.group,
-            deleted_by: world.admin,
-            expected_updated_at: expected_etag(group.updated_at),
-            confirmation_token: impact.confirmation_token.clone(),
+        ControlPlaneMutation::SaveOperationRule {
+            id: protocol.id,
+            expected_updated_at: Some(protocol.updated_at),
+            input: ai_gateway::persistence::OperationRuleInput {
+                model_routing_profile_id: profile,
+                operation: ai_gateway::domain::ApiOperation::ChatCompletions,
+                enabled: false,
+                routing_tiers: vec![],
+            },
         },
     )
     .await;
-    assert_eq!(deleted.object_type, "channel_group");
-    assert_eq!(deleted.action, "delete");
-    assert!(
-        deleted
-            .reason
-            .as_deref()
-            .unwrap()
-            .contains("1 channels deleted")
-    );
+    for mutation in [
+        ControlPlaneMutation::DeleteChannelCapability {
+            id: world.capability,
+            expected: capability.updated_at,
+        },
+        ControlPlaneMutation::DeleteLogicalChannel {
+            id: world.channel,
+            expected: channel.updated_at,
+        },
+        ControlPlaneMutation::DeleteRoutingGroup {
+            id: world.group,
+            expected: group.updated_at,
+        },
+    ] {
+        assert_eq!(
+            commit_mutation(&repositories, world.admin, mutation)
+                .await
+                .action,
+            "delete"
+        );
+    }
 
     let lists = repository.control_plane_lists().await.unwrap();
-    assert!(
-        lists
-            .channel_groups
-            .iter()
-            .all(|group| group.id != world.group)
-    );
-    assert!(lists.channels.is_empty());
-    assert!(repository.load().await.unwrap().groups.is_empty());
-    let rule = listed_model_rule(&repositories, profile).await;
-    assert!(!rule.protocol_rules[0].enabled);
-    assert!(rule.protocol_rules[0].routing_tiers.is_empty());
+    let topology = repository.topology().await.unwrap();
     assert_eq!(
-        rule.protocol_rules[0].routing_status,
-        ModelRuleRoutingStatus::Draft
+        serde_json::to_value(&topology.api_key_grants).unwrap(),
+        serde_json::to_value(&before.api_key_grants).unwrap()
     );
+    assert_eq!(
+        serde_json::to_value(&topology.policy_grants).unwrap(),
+        serde_json::to_value(&before.policy_grants).unwrap()
+    );
+    assert!(
+        topology
+            .upstream_accesses
+            .iter()
+            .any(|access| access.id == world.access && access.deleted_at.is_none())
+    );
+    assert!(
+        topology
+            .routing_groups
+            .iter()
+            .all(|group| group.id != world.group || group.deleted_at.is_some())
+    );
+    assert!(
+        topology
+            .logical_channels
+            .iter()
+            .all(|channel| channel.deleted_at.is_some())
+    );
+    assert!(repository.load().await.unwrap().groups.is_empty());
+    let graph = operation_graph(&repositories, profile).await;
+    assert!(!graph.rule.enabled);
+    assert!(graph.tiers.is_empty());
+    assert!(graph.candidates.is_empty());
     let key = lists
         .api_keys
         .iter()
         .find(|key| key.id == bound_key)
-        .expect("the bound key is still listed but unbound");
-    assert!(key.allowed_group_ids.is_empty());
+        .expect("the key retains its explicit authorization origin");
+    assert_eq!(key.allowed_group_ids, vec![world.group]);
     let policy = lists
         .api_key_policies
         .iter()
         .find(|policy| policy.id == world.policy)
-        .expect("the bound policy is still listed but unbound");
-    assert!(policy.allowed_group_ids.is_empty());
+        .expect("the policy retains its explicit authorization origin");
+    assert_eq!(policy.allowed_group_ids, vec![world.group]);
 }
 
 /// A comparable projection of everything an ordinary control-plane change can
 /// mutate: the Console lists, the singleton settings, and the audit row count.
 async fn observable_state(repositories: &Repositories) -> Value {
+    let topology = repositories.control_plane.topology().await.unwrap();
     json!({
+        "topology": {
+            "groups": topology.routing_groups,
+            "accesses": topology.upstream_accesses,
+            "channels": topology.logical_channels,
+            "capabilities": topology.channel_capabilities,
+            "rules": topology.operation_rules,
+            "tiers": topology.operation_tiers,
+            "candidates": topology.operation_candidates,
+            "key_grants": topology.api_key_grants,
+            "policy_grants": topology.policy_grants,
+        },
         "lists": serde_json::to_value(
             repositories
                 .control_plane
@@ -3683,10 +3891,14 @@ async fn authorization_and_etag_rollback_contract(repositories: Repositories) {
     let protocol = commit_mutation(
         &repositories,
         world.admin,
-        ControlPlaneMutation::CreateProtocolRule {
-            model_rule_id: profile,
-            input: ModelProtocolRuleCreateInput {
-                api_format: "open_ai_chat_completions".into(),
+        ControlPlaneMutation::SaveOperationRule {
+            id: Uuid::new_v4(),
+            expected_updated_at: None,
+            input: ai_gateway::persistence::OperationRuleInput {
+                model_routing_profile_id: profile,
+                operation: ai_gateway::domain::ApiOperation::ChatCompletions,
+                enabled: false,
+                routing_tiers: vec![],
             },
         },
     )
@@ -3729,21 +3941,10 @@ async fn authorization_and_etag_rollback_contract(repositories: Repositories) {
 
     let user_view = listed_user(&repositories, world.user).await;
     let group_view = listed_group(&repositories, world.group).await;
-    let group_confirmation = repository
-        .channel_group_deletion_impact(world.group)
-        .await
-        .unwrap()
-        .confirmation_token;
-    let channel_confirmation = repository
-        .channel_deletion_impact(world.channel)
-        .await
-        .unwrap()
-        .confirmation_token;
+    let channel_view = listed_channel(&repositories, world.channel).await;
+    let capability_view = listed_capability(&repositories, world.capability).await;
+    let access_view = listed_access(&repositories, world.access).await;
     let settings_view = repository.system_settings().await.unwrap();
-    // The versioned closures are `move`; bind their tokens separately so the
-    // later impact-change probe can still compare against the original.
-    let group_token = group_confirmation.clone();
-    let channel_token = channel_confirmation.clone();
     let stale = group_view.updated_at - ChronoDuration::seconds(1);
 
     // Creations carry no version guard but still require an administrator.
@@ -3776,43 +3977,54 @@ async fn authorization_and_etag_rollback_contract(repositories: Repositories) {
             }),
         ),
         (
-            "CreateGroup",
-            Box::new(|| {
-                ControlPlaneMutation::CreateGroup(ChannelGroupInput {
+            "CreateRoutingGroup",
+            Box::new(|| ControlPlaneMutation::SaveRoutingGroup {
+                id: Uuid::new_v4(),
+                expected: None,
+                input: ai_gateway::persistence::RoutingGroupInput {
                     name: "Rollback Group 2".into(),
-                    api_format: "open_ai_chat_completions".into(),
-                    connector_kind: "openai_compatible".into(),
-                    request_compression: None,
-                    sharing_only: None,
+                    sharing_only: false,
                     enabled: true,
-                    status_statistics_enabled: None,
-                })
+                },
             }),
         ),
         (
-            "CreateChannel",
-            Box::new(|| {
-                ControlPlaneMutation::CreateChannel(ChannelCreateInput {
-                    channel_group_id: world.group,
-                    api_format: "open_ai_chat_completions".into(),
+            "CreateLogicalChannel",
+            Box::new(|| ControlPlaneMutation::SaveLogicalChannel {
+                id: Uuid::new_v4(),
+                expected: None,
+                input: ai_gateway::persistence::LogicalChannelInput {
+                    group_id: world.group,
+                    access_id: world.access,
                     name: "Rollback Channel 2".into(),
-                    base_url: "https://rollback.example.test".into(),
                     enabled: true,
-                    supports_websocket: false,
-                    supports_standalone_web_search: false,
-                    auto_disable_allowed: false,
-                    billing_multiplier: Decimal::ONE,
-                    proxy_id: None,
-                    config_template_id: None,
-                    override_document: json!({}),
-                    connect_timeout_ms: None,
-                    response_header_timeout_ms: None,
-                    stream_idle_timeout_ms: None,
                     credential_id: None,
-                    available_models: vec!["parity-model".into()],
-                    test_model: None,
-                    test_pricing_model_id: None,
-                })
+                },
+            }),
+        ),
+        (
+            "CreateUpstreamAccess",
+            Box::new(|| ControlPlaneMutation::CreateUpstreamAccess(access_input(&access_view))),
+        ),
+        (
+            "CreateCapability",
+            Box::new(|| ControlPlaneMutation::SaveChannelCapability {
+                id: Uuid::new_v4(),
+                expected: None,
+                input: capability_input(&capability_view),
+            }),
+        ),
+        (
+            "CreateOperationRule",
+            Box::new(|| ControlPlaneMutation::SaveOperationRule {
+                id: Uuid::new_v4(),
+                expected_updated_at: None,
+                input: ai_gateway::persistence::OperationRuleInput {
+                    model_routing_profile_id: profile,
+                    operation: ai_gateway::domain::ApiOperation::ChatCompletions,
+                    enabled: false,
+                    routing_tiers: vec![],
+                },
             }),
         ),
         (
@@ -3958,73 +4170,88 @@ async fn authorization_and_etag_rollback_contract(repositories: Repositories) {
             }),
         ),
         (
-            "UpdateGroup",
-            Box::new(move |version| ControlPlaneMutation::UpdateGroup {
+            "UpdateRoutingGroup",
+            Box::new(move |version| ControlPlaneMutation::SaveRoutingGroup {
                 id: world.group,
-                input: ChannelGroupInput {
+                input: ai_gateway::persistence::RoutingGroupInput {
                     name: "Rollback Group Renamed".into(),
-                    api_format: "open_ai_chat_completions".into(),
-                    connector_kind: "openai_compatible".into(),
-                    request_compression: None,
-                    sharing_only: None,
+                    sharing_only: false,
                     enabled: true,
-                    status_statistics_enabled: None,
                 },
-                expected_updated_at: version,
+                expected: Some(version),
             }),
         ),
         (
-            "DeleteGroup",
-            Box::new(move |version| ControlPlaneMutation::DeleteGroup {
+            "DeleteRoutingGroup",
+            Box::new(move |version| ControlPlaneMutation::DeleteRoutingGroup {
                 id: world.group,
-                deleted_by: world.admin,
-                expected_updated_at: version,
-                confirmation_token: group_token.clone(),
+                expected: version,
             }),
         ),
         (
-            "UpdateChannel",
-            Box::new(move |version| ControlPlaneMutation::UpdateChannel {
+            "UpdateLogicalChannel",
+            Box::new(move |version| ControlPlaneMutation::SaveLogicalChannel {
                 id: world.channel,
-                input: channel_input(world.group, "Rollback Channel Renamed"),
-                expected_updated_at: version,
+                input: logical_input(&channel_view),
+                expected: Some(version),
             }),
         ),
         (
-            "DeleteChannel",
-            Box::new(move |version| ControlPlaneMutation::DeleteChannel {
+            "DeleteLogicalChannel",
+            Box::new(move |version| ControlPlaneMutation::DeleteLogicalChannel {
                 id: world.channel,
-                deleted_by: world.admin,
-                expected_updated_at: version,
-                confirmation_token: channel_token.clone(),
+                expected: version,
             }),
         ),
         (
             "RecoverChannel",
             Box::new(move |version| ControlPlaneMutation::RecoverChannel {
-                id: world.channel,
+                id: world.capability,
                 expected_updated_at: version,
             }),
         ),
         (
-            "UpdateProtocolRule",
-            Box::new(move |version| ControlPlaneMutation::UpdateProtocolRule {
-                model_rule_id: profile,
+            "UpdateOperationRule",
+            Box::new(move |version| ControlPlaneMutation::SaveOperationRule {
                 id: protocol,
-                input: ModelProtocolRuleInput {
-                    description: Some("rollback route".into()),
-                    routing_tiers: vec![ModelRuleRoutingTier {
+                input: ai_gateway::persistence::OperationRuleInput {
+                    model_routing_profile_id: profile,
+                    operation: ai_gateway::domain::ApiOperation::ChatCompletions,
+                    routing_tiers: vec![ai_gateway::persistence::OperationTierInput {
                         priority: 0,
                         selection_strategy: "weighted_random".into(),
-                        candidates: vec![ModelRuleRouteCandidate {
-                            channel_id: world.channel,
+                        candidates: vec![ai_gateway::persistence::OperationCandidateInput {
+                            capability_id: world.capability,
                             upstream_model: "parity-model".into(),
                             weight: 1,
                         }],
                     }],
                     enabled: true,
                 },
+                expected_updated_at: Some(version),
+            }),
+        ),
+        (
+            "UpdateUpstreamAccess",
+            Box::new(|version| ControlPlaneMutation::UpdateUpstreamAccess {
+                id: world.access,
+                input: access_input(&access_view),
                 expected_updated_at: version,
+            }),
+        ),
+        (
+            "UpdateCapability",
+            Box::new(|version| ControlPlaneMutation::SaveChannelCapability {
+                id: world.capability,
+                input: capability_input(&capability_view),
+                expected: Some(version),
+            }),
+        ),
+        (
+            "DeleteCapability",
+            Box::new(|version| ControlPlaneMutation::DeleteChannelCapability {
+                id: world.capability,
+                expected: version,
             }),
         ),
         (
@@ -4115,9 +4342,9 @@ async fn authorization_and_etag_rollback_contract(repositories: Repositories) {
                 world.user,
                 ChannelBatchUpdateInput {
                     items: vec![ChannelBatchUpdateTarget {
-                        id: world.channel,
+                        id: world.capability,
                         updated_at: expected_etag(
-                            listed_channel(&repositories, world.channel)
+                            listed_capability(&repositories, world.capability)
                                 .await
                                 .updated_at
                         ),
@@ -4160,7 +4387,7 @@ async fn authorization_and_etag_rollback_contract(repositories: Repositories) {
                 world.admin,
                 ChannelBatchUpdateInput {
                     items: vec![ChannelBatchUpdateTarget {
-                        id: world.channel,
+                        id: world.capability,
                         updated_at: stale,
                     }],
                     changes: ChannelBatchChanges {
@@ -4176,32 +4403,21 @@ async fn authorization_and_etag_rollback_contract(repositories: Repositories) {
     ));
     assert_eq!(observable_state(&repositories).await, before);
 
-    // The deletion confirmation binds the exact impact: a changed plan or a
-    // mismatched token is refused while the resources remain intact.
+    // Group deletion never cascades across newly added logical channels.
     let extra_channel = commit_mutation(
         &repositories,
         world.admin,
-        ControlPlaneMutation::CreateChannel(ChannelCreateInput {
-            channel_group_id: world.group,
-            api_format: "open_ai_chat_completions".into(),
-            name: "Rollback Extra Channel".into(),
-            base_url: "https://rollback-extra.example.test".into(),
-            enabled: true,
-            supports_websocket: false,
-            supports_standalone_web_search: false,
-            auto_disable_allowed: false,
-            billing_multiplier: Decimal::ONE,
-            proxy_id: None,
-            config_template_id: None,
-            override_document: json!({}),
-            connect_timeout_ms: None,
-            response_header_timeout_ms: None,
-            stream_idle_timeout_ms: None,
-            credential_id: None,
-            available_models: vec!["parity-model".into()],
-            test_model: None,
-            test_pricing_model_id: None,
-        }),
+        ControlPlaneMutation::SaveLogicalChannel {
+            id: Uuid::new_v4(),
+            expected: None,
+            input: ai_gateway::persistence::LogicalChannelInput {
+                group_id: world.group,
+                access_id: world.access,
+                name: "Rollback Extra Channel".into(),
+                enabled: true,
+                credential_id: None,
+            },
+        },
     )
     .await;
     let refreshed_group = listed_group(&repositories, world.group).await;
@@ -4209,23 +4425,20 @@ async fn authorization_and_etag_rollback_contract(repositories: Repositories) {
         repository
             .prepare_mutation(
                 world.admin,
-                ControlPlaneMutation::DeleteGroup {
+                ControlPlaneMutation::DeleteRoutingGroup {
                     id: world.group,
-                    deleted_by: world.admin,
-                    expected_updated_at: expected_etag(refreshed_group.updated_at),
-                    confirmation_token: group_confirmation.clone(),
+                    expected: expected_etag(refreshed_group.updated_at),
                 },
             )
             .await
             .err(),
-        Some(RepositoryError::DeletionImpactChanged)
+        Some(RepositoryError::Validation)
     ));
     assert!(
-        repository
-            .control_plane_channel_detail(extra_channel.id)
+        listed_channel(&repositories, extra_channel.id)
             .await
-            .unwrap()
-            .is_some(),
+            .deleted_at
+            .is_none(),
         "the refused deletion left the new channel intact"
     );
 
@@ -4318,23 +4531,20 @@ async fn control_plane_projection_contract(repositories: Repositories) {
     let world = world(&repositories).await;
     let repository = &repositories.control_plane;
 
-    // A. UpdateGroup preserves omitted fields.
+    // Group metadata does not rewrite capability configuration.
     let before = listed_group(&repositories, world.group).await;
+    let capability_before = listed_capability(&repositories, world.capability).await;
     let updated = commit_mutation(
         &repositories,
         world.admin,
-        ControlPlaneMutation::UpdateGroup {
+        ControlPlaneMutation::SaveRoutingGroup {
             id: world.group,
-            input: ChannelGroupInput {
+            input: ai_gateway::persistence::RoutingGroupInput {
                 name: "Group v2".into(),
-                api_format: "open_ai_chat_completions".into(),
-                connector_kind: "openai_compatible".into(),
-                request_compression: None,
-                sharing_only: None,
+                sharing_only: before.sharing_only,
                 enabled: false,
-                status_statistics_enabled: None,
             },
-            expected_updated_at: expected_etag(before.updated_at),
+            expected: Some(expected_etag(before.updated_at)),
         },
     )
     .await;
@@ -4342,31 +4552,23 @@ async fn control_plane_projection_contract(repositories: Repositories) {
     let after = listed_group(&repositories, world.group).await;
     assert_eq!(after.name, "Group v2");
     assert!(!after.enabled);
-    assert_eq!(after.request_compression, before.request_compression);
     assert_eq!(
-        after.status_statistics_enabled,
-        before.status_statistics_enabled
+        serde_json::to_value(listed_capability(&repositories, world.capability).await).unwrap(),
+        serde_json::to_value(capability_before).unwrap()
     );
-    assert_eq!(
-        updated.after_redacted["request_compression"],
-        json!("default")
-    );
+    assert!(updated.after_redacted.get("request_compression").is_none());
     // restore
     commit_mutation(
         &repositories,
         world.admin,
-        ControlPlaneMutation::UpdateGroup {
+        ControlPlaneMutation::SaveRoutingGroup {
             id: world.group,
-            input: ChannelGroupInput {
+            input: ai_gateway::persistence::RoutingGroupInput {
                 name: "Parity Group".into(),
-                api_format: "open_ai_chat_completions".into(),
-                connector_kind: "openai_compatible".into(),
-                request_compression: None,
-                sharing_only: None,
+                sharing_only: after.sharing_only,
                 enabled: true,
-                status_statistics_enabled: None,
             },
-            expected_updated_at: expected_etag(after.updated_at),
+            expected: Some(expected_etag(after.updated_at)),
         },
     )
     .await;
@@ -4444,8 +4646,11 @@ async fn control_plane_projection_contract(repositories: Repositories) {
     let mut sorted_ids = model_ids.clone();
     sorted_ids.sort_unstable();
     assert_eq!(model_ids, sorted_ids, "models are ordered by id");
-    let group_ids = lists
-        .channel_groups
+    let group_ids = repository
+        .topology()
+        .await
+        .unwrap()
+        .routing_groups
         .iter()
         .map(|group| group.id)
         .collect::<Vec<_>>();
@@ -4478,6 +4683,10 @@ async fn missing_and_soft_deleted_resource_contract(repositories: Repositories) 
 
     // 1. Missing resources must be NotFound (not Conflict) and never write.
     let missing = Uuid::from_u128(0x7e57);
+    let before = observable_state(&repositories).await;
+    let channel_view = listed_channel(&repositories, world.channel).await;
+    let capability_view = listed_capability(&repositories, world.capability).await;
+    let access_view = listed_access(&repositories, world.access).await;
     for (label, mutation) in [
         (
             "UpdateUser",
@@ -4577,45 +4786,37 @@ async fn missing_and_soft_deleted_resource_contract(repositories: Repositories) 
             },
         ),
         (
-            "UpdateGroup",
-            ControlPlaneMutation::UpdateGroup {
+            "UpdateRoutingGroup",
+            ControlPlaneMutation::SaveRoutingGroup {
                 id: missing,
-                input: ChannelGroupInput {
+                input: ai_gateway::persistence::RoutingGroupInput {
                     name: "x".into(),
-                    api_format: "open_ai_chat_completions".into(),
-                    connector_kind: "openai_compatible".into(),
-                    request_compression: None,
-                    sharing_only: None,
+                    sharing_only: false,
                     enabled: true,
-                    status_statistics_enabled: None,
                 },
-                expected_updated_at: Utc::now(),
+                expected: Some(Utc::now()),
             },
         ),
         (
-            "DeleteGroup",
-            ControlPlaneMutation::DeleteGroup {
+            "DeleteRoutingGroup",
+            ControlPlaneMutation::DeleteRoutingGroup {
                 id: missing,
-                deleted_by: world.admin,
-                expected_updated_at: Utc::now(),
-                confirmation_token: "v1.x".into(),
+                expected: Utc::now(),
             },
         ),
         (
-            "UpdateChannel",
-            ControlPlaneMutation::UpdateChannel {
+            "UpdateLogicalChannel",
+            ControlPlaneMutation::SaveLogicalChannel {
                 id: missing,
-                input: channel_input(world.group, "x"),
-                expected_updated_at: Utc::now(),
+                input: logical_input(&channel_view),
+                expected: Some(Utc::now()),
             },
         ),
         (
-            "DeleteChannel",
-            ControlPlaneMutation::DeleteChannel {
+            "DeleteLogicalChannel",
+            ControlPlaneMutation::DeleteLogicalChannel {
                 id: missing,
-                deleted_by: world.admin,
-                expected_updated_at: Utc::now(),
-                confirmation_token: "v1.x".into(),
+                expected: Utc::now(),
             },
         ),
         (
@@ -4626,16 +4827,16 @@ async fn missing_and_soft_deleted_resource_contract(repositories: Repositories) 
             },
         ),
         (
-            "UpdateProtocolRule",
-            ControlPlaneMutation::UpdateProtocolRule {
-                model_rule_id: missing,
+            "UpdateOperationRule",
+            ControlPlaneMutation::SaveOperationRule {
                 id: missing,
-                input: ModelProtocolRuleInput {
-                    description: None,
+                input: ai_gateway::persistence::OperationRuleInput {
+                    model_routing_profile_id: missing,
+                    operation: ai_gateway::domain::ApiOperation::ChatCompletions,
                     routing_tiers: Vec::new(),
                     enabled: false,
                 },
-                expected_updated_at: Utc::now(),
+                expected_updated_at: Some(Utc::now()),
             },
         ),
         (
@@ -4674,11 +4875,15 @@ async fn missing_and_soft_deleted_resource_contract(repositories: Repositories) 
             },
         ),
         (
-            "CreateProtocolRule",
-            ControlPlaneMutation::CreateProtocolRule {
-                model_rule_id: missing,
-                input: ModelProtocolRuleCreateInput {
-                    api_format: "open_ai_chat_completions".into(),
+            "CreateOperationRule",
+            ControlPlaneMutation::SaveOperationRule {
+                id: Uuid::new_v4(),
+                expected_updated_at: None,
+                input: ai_gateway::persistence::OperationRuleInput {
+                    model_routing_profile_id: missing,
+                    operation: ai_gateway::domain::ApiOperation::ChatCompletions,
+                    enabled: false,
+                    routing_tiers: vec![],
                 },
             },
         ),
@@ -4686,14 +4891,49 @@ async fn missing_and_soft_deleted_resource_contract(repositories: Repositories) 
             "CreateRule",
             ControlPlaneMutation::CreateRule(ModelRuleCreateInput { model_id: missing }),
         ),
+        (
+            "UpdateUpstreamAccess",
+            ControlPlaneMutation::UpdateUpstreamAccess {
+                id: missing,
+                input: access_input(&access_view),
+                expected_updated_at: Utc::now(),
+            },
+        ),
+        (
+            "UpdateCapability",
+            ControlPlaneMutation::SaveChannelCapability {
+                id: missing,
+                input: capability_input(&capability_view),
+                expected: Some(Utc::now()),
+            },
+        ),
+        (
+            "DeleteCapability",
+            ControlPlaneMutation::DeleteChannelCapability {
+                id: missing,
+                expected: Utc::now(),
+            },
+        ),
     ] {
         let error = repository
             .prepare_mutation(world.admin, mutation)
             .await
             .err();
-        assert!(
-            matches!(error, Some(RepositoryError::NotFound)),
-            "{label} on a missing row must be NotFound, got {error:?}"
+        if label == "CreateOperationRule" {
+            assert!(
+                matches!(error, Some(RepositoryError::Validation)),
+                "a missing profile is an invalid operation-rule reference, got {error:?}"
+            );
+        } else {
+            assert!(
+                matches!(error, Some(RepositoryError::NotFound)),
+                "{label} on a missing row must be NotFound, got {error:?}"
+            );
+        }
+        assert_eq!(
+            observable_state(&repositories).await,
+            before,
+            "{label} must not write"
         );
     }
 
@@ -4739,45 +4979,43 @@ async fn missing_and_soft_deleted_resource_contract(repositories: Repositories) 
     .await;
     assert_ne!(recreated.id, model);
 
-    // 3. Channel soft-delete then recover is NotFound; manual delete then
-    // delete again is NotFound.
+    // A tombstoned capability cannot be recovered, deleted, or re-created.
     let channel = commit_mutation(
         &repositories,
         world.admin,
-        ControlPlaneMutation::CreateChannel(ChannelCreateInput {
-            channel_group_id: world.group,
-            api_format: "open_ai_chat_completions".into(),
-            name: "Probe Channel".into(),
-            base_url: "https://probe.example.test".into(),
-            enabled: true,
-            supports_websocket: false,
-            supports_standalone_web_search: false,
-            auto_disable_allowed: false,
-            billing_multiplier: Decimal::ONE,
-            proxy_id: None,
-            config_template_id: None,
-            override_document: json!({}),
-            connect_timeout_ms: None,
-            response_header_timeout_ms: None,
-            stream_idle_timeout_ms: None,
-            credential_id: None,
-            available_models: vec!["parity-model".into()],
-            test_model: None,
-            test_pricing_model_id: None,
-        }),
+        ControlPlaneMutation::SaveLogicalChannel {
+            id: Uuid::new_v4(),
+            expected: None,
+            input: ai_gateway::persistence::LogicalChannelInput {
+                group_id: world.group,
+                access_id: world.access,
+                name: "Probe Channel".into(),
+                enabled: true,
+                credential_id: None,
+            },
+        },
     )
     .await
     .id;
-    let impact = repository.channel_deletion_impact(channel).await.unwrap();
-    let listed = listed_channel(&repositories, channel).await;
+    let capability = commit_mutation(
+        &repositories,
+        world.admin,
+        ControlPlaneMutation::SaveChannelCapability {
+            id: Uuid::new_v4(),
+            expected: None,
+            input: ai_gateway::persistence::ChannelCapabilityInput {
+                channel_id: channel,
+                ..capability_input(&capability_view)
+            },
+        },
+    )
+    .await;
     commit_mutation(
         &repositories,
         world.admin,
-        ControlPlaneMutation::DeleteChannel {
-            id: channel,
-            deleted_by: world.admin,
-            expected_updated_at: expected_etag(listed.updated_at),
-            confirmation_token: impact.confirmation_token,
+        ControlPlaneMutation::DeleteChannelCapability {
+            id: capability.id,
+            expected: capability.updated_at,
         },
     )
     .await;
@@ -4786,7 +5024,7 @@ async fn missing_and_soft_deleted_resource_contract(repositories: Repositories) 
             .prepare_mutation(
                 world.admin,
                 ControlPlaneMutation::RecoverChannel {
-                    id: channel,
+                    id: capability.id,
                     expected_updated_at: Utc::now(),
                 },
             )
@@ -4794,8 +5032,49 @@ async fn missing_and_soft_deleted_resource_contract(repositories: Repositories) 
             .err(),
         Some(RepositoryError::NotFound)
     ));
+    for mutation in [
+        ControlPlaneMutation::DeleteChannelCapability {
+            id: capability.id,
+            expected: capability.updated_at,
+        },
+        ControlPlaneMutation::SaveChannelCapability {
+            id: capability.id,
+            expected: Some(capability.updated_at),
+            input: ai_gateway::persistence::ChannelCapabilityInput {
+                channel_id: channel,
+                ..capability_input(&capability_view)
+            },
+        },
+    ] {
+        assert!(matches!(
+            repository
+                .prepare_mutation(world.admin, mutation)
+                .await
+                .err(),
+            Some(RepositoryError::NotFound)
+        ));
+    }
+    let listed = listed_channel(&repositories, channel).await;
+    commit_mutation(
+        &repositories,
+        world.admin,
+        ControlPlaneMutation::DeleteLogicalChannel {
+            id: channel,
+            expected: listed.updated_at,
+        },
+    )
+    .await;
     assert!(matches!(
-        repository.channel_deletion_impact(channel).await.err(),
+        repository
+            .prepare_mutation(
+                world.admin,
+                ControlPlaneMutation::DeleteLogicalChannel {
+                    id: channel,
+                    expected: listed.updated_at,
+                }
+            )
+            .await
+            .err(),
         Some(RepositoryError::NotFound)
     ));
 
@@ -4891,35 +5170,43 @@ async fn missing_and_soft_deleted_resource_contract(repositories: Repositories) 
     )
     .await
     .id;
-    let auto_channel = commit_mutation(
+    let probe_channel = commit_mutation(
         &repositories,
         world.admin,
-        ControlPlaneMutation::CreateChannel(ChannelCreateInput {
-            channel_group_id: world.group,
-            api_format: "open_ai_chat_completions".into(),
-            name: "Probe Auto Channel".into(),
-            base_url: "https://probe-auto.example.test".into(),
-            enabled: true,
-            supports_websocket: false,
-            supports_standalone_web_search: false,
-            auto_disable_allowed: false,
-            billing_multiplier: Decimal::ONE,
-            proxy_id: None,
-            config_template_id: None,
-            override_document: json!({}),
-            connect_timeout_ms: None,
-            response_header_timeout_ms: None,
-            stream_idle_timeout_ms: None,
-            credential_id: None,
-            available_models: vec!["probe-priced".into()],
-            test_model: Some("probe-priced".into()),
-            test_pricing_model_id: Some(priced),
-        }),
+        ControlPlaneMutation::SaveLogicalChannel {
+            id: Uuid::new_v4(),
+            expected: None,
+            input: ai_gateway::persistence::LogicalChannelInput {
+                group_id: world.group,
+                access_id: world.access,
+                credential_id: None,
+                name: "Probe Auto Channel".into(),
+                enabled: true,
+            },
+        },
     )
     .await;
-    let listed = listed_channel(&repositories, auto_channel.id).await;
-    assert_eq!(listed.test_model.as_deref(), Some("probe-priced"));
-    assert_eq!(listed.test_pricing_model_id, Some(priced));
+    let auto_capability = commit_mutation(
+        &repositories,
+        world.admin,
+        ControlPlaneMutation::SaveChannelCapability {
+            id: Uuid::new_v4(), expected: None,
+            input: serde_json::from_value(json!({
+                "channel_id": probe_channel.id,
+                "settings": {
+                    "operation": "chat_completions", "transports": ["http_json"], "enabled": true,
+                    "available_models": ["probe-priced"], "request_compression": "default",
+                    "test_model": "probe-priced", "test_pricing_model_id": priced, "auto_disable_allowed": false
+                },
+                "billing_multiplier": "1", "status_statistics_enabled": false,
+                "config_template_id": null, "override_document": {}
+            })).unwrap(),
+        },
+    )
+    .await;
+    let listed = listed_capability(&repositories, auto_capability.id).await;
+    assert_eq!(listed.settings.test_model.as_deref(), Some("probe-priced"));
+    assert_eq!(listed.settings.test_pricing_model_id, Some(priced));
     let priced_view = listed_model(&repositories, priced).await;
     let deleted = commit_mutation(
         &repositories,
@@ -4933,11 +5220,11 @@ async fn missing_and_soft_deleted_resource_contract(repositories: Repositories) 
     .await;
     assert_eq!(
         deleted.reason.as_deref(),
-        Some("0 protocol rules disabled; 1 scheduled test references cleared")
+        Some("0 operation rules disabled; 1 scheduled test references cleared")
     );
-    let listed = listed_channel(&repositories, auto_channel.id).await;
-    assert_eq!(listed.test_model, None);
-    assert_eq!(listed.test_pricing_model_id, None);
+    let listed = listed_capability(&repositories, auto_capability.id).await;
+    assert_eq!(listed.settings.test_model, None);
+    assert_eq!(listed.settings.test_pricing_model_id, None);
 
     // 6. Batch guard rails: empty, duplicate, stale are rejected identically.
     assert!(matches!(
@@ -4977,135 +5264,74 @@ async fn missing_and_soft_deleted_resource_contract(repositories: Repositories) 
 }
 
 #[tokio::test]
-async fn codex_projection_and_validation_contract_matches_across_backends() {
-    run_contract(codex_projection_and_validation_contract).await;
+async fn capability_validation_contract_matches_across_backends() {
+    run_contract(capability_validation_contract).await;
 }
 
-async fn codex_projection_and_validation_contract(repositories: Repositories) {
+async fn capability_validation_contract(repositories: Repositories) {
     let world = world(&repositories).await;
     let repository = &repositories.control_plane;
 
-    // Codex group creation exposes its sibling Images projection.
-    let codex = commit_mutation(
+    let before = repository.topology().await.unwrap();
+    let group = commit_mutation(
         &repositories,
         world.admin,
-        ControlPlaneMutation::CreateGroup(ChannelGroupInput {
-            name: "Probe Codex".into(),
-            api_format: "open_ai_responses".into(),
-            connector_kind: "codex_oauth".into(),
-            request_compression: None,
-            sharing_only: None,
-            enabled: true,
-            status_statistics_enabled: None,
-        }),
+        ControlPlaneMutation::SaveRoutingGroup {
+            id: Uuid::new_v4(),
+            expected: None,
+            input: ai_gateway::persistence::RoutingGroupInput {
+                name: "Probe group".into(),
+                sharing_only: false,
+                enabled: true,
+            },
+        },
     )
     .await;
-    let codex_view = listed_group(&repositories, codex.id).await;
-    assert_eq!(codex_view.api_format, "open_ai_responses");
-    assert_eq!(codex_view.connector_kind, "codex_oauth");
-    assert!(codex_view.connector_pool_id.is_some());
-    assert_eq!(codex_view.request_compression, "default");
-    assert!(!codex_view.sharing_only);
-    assert!(!codex_view.status_statistics_enabled);
-    assert!(
-        codex.after_redacted["connector_pool_groups"].is_array(),
-        "Codex group audits include the sibling projections"
-    );
-
-    // The derived Images group is hidden from detail reads and cannot be
-    // deleted through the ordinary path.
-    let groups = repository
-        .control_plane_lists()
-        .await
-        .unwrap()
-        .channel_groups;
-    let images = groups
-        .iter()
-        .find(|group| group.api_format == "open_ai_images")
-        .expect("the schema derives the Images projection");
-    assert!(matches!(
+    assert_eq!(
         repository
-            .channel_group_deletion_impact(images.id)
-            .await
-            .err(),
-        Some(RepositoryError::ProviderManagedResource)
-    ));
-
-    // A channel whose format disagrees with its group is refused by the
-    // composite foreign key on both backends and leaves no row behind.
-    let cross = repository
-        .prepare_mutation(
-            world.admin,
-            ControlPlaneMutation::CreateChannel(ChannelCreateInput {
-                channel_group_id: world.group,
-                api_format: "open_ai_responses".into(),
-                name: "Probe Cross".into(),
-                base_url: "https://probe.example.test".into(),
-                enabled: true,
-                supports_websocket: true,
-                supports_standalone_web_search: false,
-                auto_disable_allowed: false,
-                billing_multiplier: Decimal::ONE,
-                proxy_id: None,
-                config_template_id: None,
-                override_document: json!({}),
-                connect_timeout_ms: None,
-                response_header_timeout_ms: None,
-                stream_idle_timeout_ms: None,
-                credential_id: None,
-                available_models: vec!["probe".into()],
-                test_model: None,
-                test_pricing_model_id: None,
-            }),
-        )
-        .await;
-    assert!(
-        matches!(cross.err(), Some(RepositoryError::Storage(_))),
-        "the group/format composite key rejects the row identically"
-    );
-    assert!(
-        repository
-            .control_plane_lists()
+            .topology()
             .await
             .unwrap()
-            .channels
-            .iter()
-            .all(|channel| channel.name != "Probe Cross")
+            .channel_capabilities
+            .len(),
+        before.channel_capabilities.len()
     );
-
-    // WebSocket support requires Responses.
-    assert!(matches!(
-        repository
-            .prepare_mutation(
-                world.admin,
-                ControlPlaneMutation::CreateChannel(ChannelCreateInput {
-                    channel_group_id: world.group,
-                    api_format: "open_ai_chat_completions".into(),
-                    name: "Probe WS".into(),
-                    base_url: "https://probe.example.test".into(),
-                    enabled: true,
-                    supports_websocket: true,
-                    supports_standalone_web_search: false,
-                    auto_disable_allowed: false,
-                    billing_multiplier: Decimal::ONE,
-                    proxy_id: None,
-                    config_template_id: None,
-                    override_document: json!({}),
-                    connect_timeout_ms: None,
-                    response_header_timeout_ms: None,
-                    stream_idle_timeout_ms: None,
-                    credential_id: None,
-                    available_models: vec!["probe".into()],
-                    test_model: None,
-                    test_pricing_model_id: None,
-                }),
-            )
-            .await
-            .err(),
-        Some(RepositoryError::Validation)
-    ));
-
-    // A test model must be one of the channel's advertised models.
+    let channel = commit_mutation(
+        &repositories,
+        world.admin,
+        ControlPlaneMutation::SaveLogicalChannel {
+            id: Uuid::new_v4(),
+            expected: None,
+            input: ai_gateway::persistence::LogicalChannelInput {
+                group_id: group.id,
+                access_id: world.access,
+                credential_id: None,
+                name: "Probe channel".into(),
+                enabled: true,
+            },
+        },
+    )
+    .await;
+    let response_input = json!({
+        "channel_id": channel.id,
+        "settings": {
+            "operation": "responses", "transports": ["http_json","websocket"], "enabled": true,
+            "available_models": ["probe"], "request_compression": "zstd",
+            "test_model": null, "test_pricing_model_id": null, "auto_disable_allowed": false
+        },
+        "status_statistics_enabled": true, "config_template_id": null,
+        "override_document": {}, "billing_multiplier": "1"
+    });
+    let response = commit_mutation(
+        &repositories,
+        world.admin,
+        ControlPlaneMutation::SaveChannelCapability {
+            id: Uuid::new_v4(),
+            expected: None,
+            input: serde_json::from_value(response_input.clone()).unwrap(),
+        },
+    )
+    .await;
     let priced = commit_mutation(
         &repositories,
         world.admin,
@@ -5113,96 +5339,67 @@ async fn codex_projection_and_validation_contract(repositories: Repositories) {
     )
     .await
     .id;
-    assert!(matches!(
-        repository
-            .prepare_mutation(
-                world.admin,
-                ControlPlaneMutation::CreateChannel(ChannelCreateInput {
-                    channel_group_id: world.group,
-                    api_format: "open_ai_chat_completions".into(),
-                    name: "Probe Test Model".into(),
-                    base_url: "https://probe.example.test".into(),
-                    enabled: true,
-                    supports_websocket: false,
-                    supports_standalone_web_search: false,
-                    auto_disable_allowed: false,
-                    billing_multiplier: Decimal::ONE,
-                    proxy_id: None,
-                    config_template_id: None,
-                    override_document: json!({}),
-                    connect_timeout_ms: None,
-                    response_header_timeout_ms: None,
-                    stream_idle_timeout_ms: None,
-                    credential_id: None,
-                    available_models: vec!["other".into()],
-                    test_model: Some("probe-priced".into()),
-                    test_pricing_model_id: Some(priced),
-                }),
-            )
-            .await
-            .err(),
-        Some(RepositoryError::Validation)
-    ));
-
-    // A negative billing multiplier is rejected.
-    assert!(matches!(
-        repository
-            .prepare_mutation(
-                world.admin,
-                ControlPlaneMutation::CreateChannel(ChannelCreateInput {
-                    channel_group_id: world.group,
-                    api_format: "open_ai_chat_completions".into(),
-                    name: "Probe Negative".into(),
-                    base_url: "https://probe.example.test".into(),
-                    enabled: true,
-                    supports_websocket: false,
-                    supports_standalone_web_search: false,
-                    auto_disable_allowed: false,
-                    billing_multiplier: decimal("-1"),
-                    proxy_id: None,
-                    config_template_id: None,
-                    override_document: json!({}),
-                    connect_timeout_ms: None,
-                    response_header_timeout_ms: None,
-                    stream_idle_timeout_ms: None,
-                    credential_id: None,
-                    available_models: vec!["probe".into()],
-                    test_model: None,
-                    test_pricing_model_id: None,
-                }),
-            )
-            .await
-            .err(),
-        Some(RepositoryError::Validation)
-    ));
-
-    // The channel group's request compression is preserved across updates
-    // that omit it.
-    let before = listed_group(&repositories, world.group).await;
-    let after = commit_mutation(
+    let mut chat = response_input;
+    chat["settings"]["operation"] = json!("chat_completions");
+    chat["settings"]["request_compression"] = json!("default");
+    for fault in ["websocket", "probe_catalogue", "negative_multiplier"] {
+        let mut invalid = chat.clone();
+        if fault != "websocket" {
+            invalid["settings"]["transports"] = json!(["http_json"]);
+        }
+        if fault == "probe_catalogue" {
+            invalid["settings"]["test_model"] = json!("probe-priced");
+            invalid["settings"]["test_pricing_model_id"] = json!(priced);
+        }
+        if fault == "negative_multiplier" {
+            invalid["billing_multiplier"] = json!("-1");
+        }
+        assert!(
+            matches!(
+                repository
+                    .prepare_mutation(
+                        world.admin,
+                        ControlPlaneMutation::SaveChannelCapability {
+                            id: Uuid::new_v4(),
+                            expected: None,
+                            input: serde_json::from_value(invalid).unwrap(),
+                        }
+                    )
+                    .await
+                    .err(),
+                Some(RepositoryError::Validation)
+            ),
+            "{fault}"
+        );
+    }
+    commit_mutation(
         &repositories,
         world.admin,
-        ControlPlaneMutation::UpdateGroup {
-            id: world.group,
-            input: ChannelGroupInput {
-                name: "Probe Group".into(),
-                api_format: "open_ai_chat_completions".into(),
-                connector_kind: "openai_compatible".into(),
-                request_compression: None,
-                sharing_only: None,
-                enabled: true,
-                status_statistics_enabled: None,
+        ControlPlaneMutation::SaveRoutingGroup {
+            id: group.id,
+            expected: Some(group.updated_at),
+            input: ai_gateway::persistence::RoutingGroupInput {
+                name: "Renamed probe group".into(),
+                enabled: false,
+                sharing_only: false,
             },
-            expected_updated_at: expected_etag(before.updated_at),
         },
     )
     .await;
-    assert_eq!(after.action, "update");
+    let capability = listed_capability(&repositories, response.id).await;
     assert_eq!(
-        listed_group(&repositories, world.group)
-            .await
-            .request_compression,
-        before.request_compression
+        capability.settings.request_compression,
+        ai_gateway::domain::RequestCompression::Zstd
+    );
+    assert!(capability.status_statistics_enabled);
+    let after = repository.topology().await.unwrap();
+    assert_eq!(
+        after.channel_capabilities.len(),
+        before.channel_capabilities.len() + 1
+    );
+    assert_eq!(
+        serde_json::to_value(after.policy_grants).unwrap(),
+        serde_json::to_value(before.policy_grants).unwrap()
     );
 }
 

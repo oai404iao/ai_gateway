@@ -15,7 +15,7 @@ import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/c
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { useChannelGroups, useChannels, useUsers } from "@/features/admin/api";
+import { useUpstreamAccesses, useLogicalChannels, useUsers } from "@/features/admin/api";
 import { useSaveSharing, useSharingGroup, useSharingSeats } from "./api";
 import { SharingUsage } from "./usage";
 
@@ -56,8 +56,8 @@ export function SharingDetailPage() {
   const usage = useSharingSeats(id);
   const save = useSaveSharing(id);
   const users = useUsers();
-  const channelGroups = useChannelGroups();
-  const channels = useChannels();
+  const accesses = useUpstreamAccesses();
+  const channels = useLogicalChannels();
   const navigate = useNavigate();
   const { t } = useI18n();
   const form = useForm<FormValues>({ resolver: zodResolver(schema), defaultValues: defaults });
@@ -66,9 +66,10 @@ export function SharingDetailPage() {
   }, [detail.data, id, form]);
   const values = form.watch();
   const errors = form.formState.errors;
-  const credentials = (channels.data ?? []).filter(channel =>
-    channel.api_format === "open_ai_responses" && channelGroups.data?.some(group =>
-      group.id === channel.channel_group_id && group.connector_kind === "codex_oauth"));
+  const credentials = (channels.data ?? []).flatMap(channel =>
+    channel.credential_id && accesses.data?.some(access =>
+      access.id === channel.access_id && access.connector_kind === "codex_oauth")
+      ? [{ ...channel, id: channel.credential_id }] : []);
   const members = users.data ?? [];
   const formerMembers = values.seats.filter((userId): userId is string =>
     userId !== null && !users.data?.some(user => user.id === userId));
@@ -93,8 +94,8 @@ export function SharingDetailPage() {
   return <div className="flex flex-col gap-6">
     <PageHeader title={isNew ? "New sharing group" : detail.data?.data.name ?? "Codex sharing"}
       actions={<Button variant="outline" nativeButton={false} render={<Link to="/admin/codex-sharing" />}>{t("Back")}</Button>} />
-    <AsyncResource isLoading={detail.isLoading || users.isLoading || channels.isLoading || channelGroups.isLoading}
-      error={detail.error ?? users.error ?? channels.error ?? channelGroups.error}>
+    <AsyncResource isLoading={detail.isLoading || users.isLoading || channels.isLoading || accesses.isLoading}
+      error={detail.error ?? users.error ?? channels.error ?? accesses.error}>
       <Alert><AlertDescription>
         {t("Soft USD allowance, not official credits. Active requests can exceed their reservation. No automatic fallback, borrowing or rollover.")}
       </AlertDescription></Alert>

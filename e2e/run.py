@@ -341,23 +341,35 @@ def seed(console, password, upstream):
     user = login["user"]["id"]
     _, headers = api(f"/users/{user}")
     api(f"/users/{user}", "PATCH", {"balance_amount": "100"}, headers["ETag"])
-    group, _ = api("/routing/channel-groups", "POST", {
-        "name": "system-e2e", "api_format": "open_ai_responses", "enabled": True,
+    group, _ = api("/routing/groups", "POST", {
+        "name": "system-e2e", "enabled": True,
     })
     upstream_secret = secrets.token_urlsafe(24)
     credential, _ = api("/routing/upstream-credentials", "POST", {
         "name": "System E2E shared identity", "kind": "bearer", "secret": upstream_secret,
         "allowed_base_urls": [upstream], "enabled": True,
     })
-    channel, _ = api("/routing/channels", "POST", {
-        "channel_group_id": group["id"], "api_format": "open_ai_responses",
-        "name": "system-e2e", "base_url": upstream, "enabled": True,
-        "credential_id": credential["id"], "available_models": ["e2e-before", "e2e-wire"],
+    access, _ = api("/routing/accesses", "POST", {
+        "name": "system-e2e", "connector_kind": "openai_compatible",
+        "base_url": upstream, "enabled": True,
     })
-    api("/routing/channels", "POST", {
-        "channel_group_id": group["id"], "api_format": "open_ai_responses",
-        "name": "system-e2e-disabled-reference", "base_url": upstream, "enabled": False,
-        "credential_id": credential["id"], "available_models": ["e2e-wire"],
+    channel, _ = api("/routing/logical-channels", "POST", {
+        "group_id": group["id"], "access_id": access["id"],
+        "name": "system-e2e", "enabled": True, "credential_id": credential["id"],
+    })
+    api("/routing/logical-channels", "POST", {
+        "group_id": group["id"], "access_id": access["id"],
+        "name": "system-e2e-disabled-reference", "enabled": False,
+        "credential_id": credential["id"],
+    })
+    capability, _ = api("/routing/capabilities", "POST", {
+        "channel_id": channel["id"],
+        "settings": {
+            "operation": "responses", "transports": ["http_json", "http_sse"],
+            "enabled": True, "available_models": ["e2e-before", "e2e-wire"],
+            "request_compression": "default", "auto_disable_allowed": False,
+            "test_model": None, "test_pricing_model_id": None,
+        },
     })
     model, _ = api("/models", "POST", {
         "source_model_id": "e2e-client", "display_name": "System E2E model", "enabled": True,
@@ -365,26 +377,23 @@ def seed(console, password, upstream):
         "cached_input_unit_price": "0", "cache_write_unit_price": "0", "output_unit_price": "2",
         "price_effective_at": "2026-01-01T00:00:00Z",
     })
-    parent, _ = api("/routing/model-rules", "POST", {"model_id": model["id"]})
-    protocol, _ = api(f"/routing/model-rules/{parent['id']}/protocols", "POST", {
-        "api_format": "open_ai_responses",
-    })
-    path = f"/routing/model-rules/{parent['id']}/protocols/{protocol['id']}"
-    _, headers = api(path)
-    api(path, "PUT", {
-        "description": "Before browser edit", "enabled": True,
+    parent, _ = api("/routing/profiles", "POST", {"model_id": model["id"]})
+    protocol, _ = api("/routing/operation-rules", "POST", {
+        "model_routing_profile_id": parent["id"], "operation": "responses", "enabled": True,
         "routing_tiers": [{
             "priority": 0, "selection_strategy": "weighted_round_robin",
-            "candidates": [{"channel_id": channel["id"], "upstream_model": "e2e-before", "weight": 1}],
+            "candidates": [{"capability_id": capability["id"], "upstream_model": "e2e-before", "weight": 1}],
         }],
-    }, headers["ETag"])
+    })
+    path = f"/routing/operation-rules/{protocol['id']}"
     key, _ = api("/api-keys", "POST", {
         "user_id": user, "name": "system-e2e", "allowed_api_formats": ["open_ai_responses"],
         "permissions": ["proxy"], "allowed_group_ids": [group["id"]], "allowed_channel_ids": [],
     })
     return {
         "console": console, "password": password, "token": token, "user_id": user,
-        "api_key": key["secret"], "api_key_id": key["id"], "channel_id": channel["id"],
+        "api_key": key["secret"], "api_key_id": key["id"], "channel_id": capability["id"],
+        "logical_channel_id": channel["id"], "access_id": access["id"],
         "channel_group_id": group["id"], "protocol_path": path,
         "upstream_credential_id": credential["id"], "upstream_secret": upstream_secret,
         "upstream_rotated_secret": secrets.token_urlsafe(24),
@@ -409,14 +418,22 @@ def set_upstream(data, url, websocket=False):
         api("/system/settings", "PUT", settings, headers["ETag"])
         _, headers = api(f"/users/{data['user_id']}")
         api(f"/users/{data['user_id']}", "PATCH", {"websocket_enabled": True}, headers["ETag"])
-    path = f"/routing/channels/{data['channel_id']}"
-    _, headers = api(path)
+    path = f"/routing/accesses/{data['access_id']}"
+    access, headers = api(path)
     api(path, "PUT", {
-        "channel_group_id": data["channel_group_id"], "api_format": "open_ai_responses",
-        "name": "system-e2e", "base_url": url, "enabled": True,
-        "credential_id": data["upstream_credential_id"], "available_models": ["e2e-before", "e2e-wire"],
-        "supports_websocket": websocket,
+        "name": access["name"], "connector_kind": access["connector_kind"],
+        "base_url": url, "enabled": access["enabled"], "proxy_id": access["proxy_id"],
+        "connect_timeout_ms": access["connect_timeout_ms"],
+        "response_header_timeout_ms": access["response_header_timeout_ms"],
+        "stream_idle_timeout_ms": access["stream_idle_timeout_ms"],
     }, headers["ETag"])
+    path = f"/routing/capabilities/{data['channel_id']}"
+    capability, headers = api(path)
+    capability["settings"]["transports"] = ["http_json", "http_sse"] + (["websocket"] if websocket else [])
+    api(path, "PUT", {key: capability[key] for key in (
+        "channel_id", "settings", "status_statistics_enabled", "billing_multiplier",
+        "config_template_id", "override_document",
+    )}, headers["ETag"])
 
 
 def run_codex(resources, binary, data, marker, websocket=False):

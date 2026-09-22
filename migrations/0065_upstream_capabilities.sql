@@ -1,6 +1,5 @@
--- Canonical joint capability-cutover schema. Not yet a registered migration;
--- this file only creates the new source-of-truth tables. Legacy configuration
--- transfer, external-key migration, and cutover happen outside this DDL.
+-- Startup transfers and validates legacy configuration, retargets history, and
+-- retires legacy tables in the same transaction immediately after this DDL.
 
 CREATE TABLE routing_groups (
     id uuid PRIMARY KEY,
@@ -19,6 +18,10 @@ CREATE TABLE routing_groups (
 CREATE UNIQUE INDEX routing_groups_active_name_idx
     ON routing_groups (name)
     WHERE deleted_at IS NULL;
+
+ALTER TABLE connector_pools
+    ADD COLUMN routing_group_id uuid REFERENCES routing_groups(id) ON DELETE RESTRICT;
+CREATE UNIQUE INDEX connector_pools_routing_group_idx ON connector_pools(routing_group_id);
 
 CREATE INDEX routing_groups_deleted_at_idx
     ON routing_groups (deleted_at)

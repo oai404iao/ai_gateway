@@ -218,6 +218,31 @@ pub async fn pg_transfer(
 
     let output = super::transfer::transfer(&input, &rules, &profiles)?;
     pg_insert(&mut *connection, &output).await?;
+    sqlx::query(
+        "UPDATE connector_pools pool SET routing_group_id=registry.canonical_group_id
+         FROM channel_groups legacy JOIN group_identity_registry registry ON registry.id=legacy.id
+         WHERE legacy.connector_pool_id=pool.id AND legacy.api_format='open_ai_responses'",
+    )
+    .execute(&mut *connection)
+    .await?;
+    sqlx::raw_sql(
+        "UPDATE api_keys k SET
+         allowed_group_ids=ARRAY(SELECT DISTINCT COALESCE(r.canonical_group_id, target.id)
+           FROM unnest(k.allowed_group_ids) AS target(id)
+           LEFT JOIN group_identity_registry r ON r.id=target.id),
+         allowed_channel_ids=ARRAY(SELECT DISTINCT COALESCE(r.canonical_channel_id, target.id)
+           FROM unnest(k.allowed_channel_ids) AS target(id)
+           LEFT JOIN channel_identity_registry r ON r.id=target.id);
+         UPDATE api_key_policies p SET
+         allowed_group_ids=ARRAY(SELECT DISTINCT COALESCE(r.canonical_group_id, target.id)
+           FROM unnest(p.allowed_group_ids) AS target(id)
+           LEFT JOIN group_identity_registry r ON r.id=target.id),
+         allowed_channel_ids=ARRAY(SELECT DISTINCT COALESCE(r.canonical_channel_id, target.id)
+           FROM unnest(p.allowed_channel_ids) AS target(id)
+           LEFT JOIN channel_identity_registry r ON r.id=target.id);",
+    )
+    .execute(&mut *connection)
+    .await?;
     Ok(output)
 }
 
@@ -660,6 +685,30 @@ pub async fn sqlite_transfer(
 
     let output = super::transfer::transfer(&input, &rules, &profiles)?;
     sqlite_insert(&mut *connection, &output).await?;
+    sqlx::query(
+        "UPDATE connector_pools SET routing_group_id=(
+           SELECT registry.canonical_group_id FROM channel_groups legacy
+           JOIN group_identity_registry registry ON registry.id=legacy.id
+           WHERE legacy.connector_pool_id=connector_pools.id AND legacy.api_format='open_ai_responses')",
+    ).execute(&mut *connection).await?;
+    sqlx::raw_sql(
+        "UPDATE api_keys SET
+         updated_at=ag_now(),
+         allowed_group_ids=(SELECT json_group_array(DISTINCT COALESCE(r.canonical_group_id,target.value))
+           FROM json_each(api_keys.allowed_group_ids) target
+           LEFT JOIN group_identity_registry r ON r.id=target.value),
+         allowed_channel_ids=(SELECT json_group_array(DISTINCT COALESCE(r.canonical_channel_id,target.value))
+           FROM json_each(api_keys.allowed_channel_ids) target
+           LEFT JOIN channel_identity_registry r ON r.id=target.value);
+         UPDATE api_key_policies SET
+         updated_at=ag_now(),
+         allowed_group_ids=(SELECT json_group_array(DISTINCT COALESCE(r.canonical_group_id,target.value))
+           FROM json_each(api_key_policies.allowed_group_ids) target
+           LEFT JOIN group_identity_registry r ON r.id=target.value),
+         allowed_channel_ids=(SELECT json_group_array(DISTINCT COALESCE(r.canonical_channel_id,target.value))
+           FROM json_each(api_key_policies.allowed_channel_ids) target
+           LEFT JOIN channel_identity_registry r ON r.id=target.value);",
+    ).execute(&mut *connection).await?;
     Ok(output)
 }
 

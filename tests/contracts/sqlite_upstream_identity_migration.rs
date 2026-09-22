@@ -1,6 +1,7 @@
 //! Populated pre-identity databases upgrade atomically without merging secrets or Codex IDs.
 
 use super::database;
+use super::sqlite_schema::IDENTITY_MIGRATIONS;
 use ai_gateway::persistence::sqlite::{SqliteDatabase, SqliteMigration};
 
 async fn legacy_database() -> (tempfile::TempDir, SqliteDatabase) {
@@ -77,7 +78,7 @@ async fn populated_identity_upgrade_preserves_authentication_and_codex_projectio
     .await
     .unwrap();
     tx.commit().await.unwrap();
-    assert_eq!(database.install_schema().await.unwrap(), 1);
+    assert_eq!(database.migrate(IDENTITY_MIGRATIONS).await.unwrap(), 1);
     let mut connection = database.acquire_read().await.unwrap();
     let after: Vec<(String, String)> = sqlx::query_as(
         "SELECT api_format,channel_id FROM codex_oauth_credential_channels ORDER BY api_format",
@@ -135,7 +136,11 @@ async fn invalid_disabled_credential_draft_blocks_the_whole_sqlite_upgrade_witho
         VALUES(?,?,'open_ai_chat_completions','disabled draft','https://private.test?secret=test',0,'bearer','private-test-secret')")
         .bind(&id).bind(&id).execute(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
-    let error = database.install_schema().await.unwrap_err().to_string();
+    let error = database
+        .migrate(IDENTITY_MIGRATIONS)
+        .await
+        .unwrap_err()
+        .to_string();
     assert!(error.contains(&id));
     assert!(!error.contains("private"));
     let mut connection = database.acquire_read().await.unwrap();
@@ -173,6 +178,6 @@ async fn invalid_disabled_credential_draft_blocks_the_whole_sqlite_upgrade_witho
     .await
     .unwrap();
     tx.commit().await.unwrap();
-    assert_eq!(database.install_schema().await.unwrap(), 1);
+    assert_eq!(database.migrate(IDENTITY_MIGRATIONS).await.unwrap(), 1);
     database.close().await;
 }

@@ -3,7 +3,7 @@
 use super::metering::{MeteringWriteOutcome, PostgresMeteringRepository};
 use super::storage_error::StorageError;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fmt,
 };
 
@@ -12,7 +12,6 @@ use regex::Regex;
 use reqwest::header::{HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use sqlx::{FromRow, PgPool, Postgres, QueryBuilder, Transaction};
 use thiserror::Error;
 use uuid::Uuid;
@@ -23,7 +22,7 @@ use crate::{
         DEFAULT_CODEX_ORIGINATOR, DEFAULT_CODEX_USER_AGENT,
         DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS,
         DEFAULT_STANDALONE_WEB_SEARCH_RESPONSE_HEADER_TIMEOUT_SECONDS, MAX_REQUEST_RETRIES,
-        RequestCompression, RequestLogEvent,
+        RequestLogEvent,
     },
     request_log_journal::EncodedRequestLog,
 };
@@ -880,102 +879,6 @@ pub struct SyncedModelInput {
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ChannelGroupInput {
-    pub name: String,
-    pub api_format: String,
-    #[serde(default = "default_connector_kind")]
-    pub connector_kind: String,
-    /// Create defaults to `default`; omission during an update preserves the
-    /// current group-level request compression.
-    #[serde(default)]
-    pub request_compression: Option<String>,
-    #[serde(default)]
-    pub sharing_only: Option<bool>,
-    pub enabled: bool,
-    /// Create defaults to disabled; omission during an update preserves the
-    /// current group-level status-monitoring setting.
-    #[serde(default)]
-    pub status_statistics_enabled: Option<bool>,
-}
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ChannelCreateInput {
-    pub channel_group_id: Uuid,
-    pub api_format: String,
-    pub name: String,
-    pub base_url: String,
-    pub enabled: bool,
-    #[serde(default)]
-    pub supports_websocket: bool,
-    #[serde(default)]
-    pub supports_standalone_web_search: bool,
-    #[serde(default)]
-    pub auto_disable_allowed: bool,
-    #[serde(default = "default_billing_multiplier")]
-    pub billing_multiplier: rust_decimal::Decimal,
-    #[serde(default)]
-    pub proxy_id: Option<Uuid>,
-    #[serde(default)]
-    pub config_template_id: Option<Uuid>,
-    #[serde(default = "empty_object")]
-    pub override_document: Value,
-    #[serde(default)]
-    pub connect_timeout_ms: Option<i32>,
-    #[serde(default)]
-    pub response_header_timeout_ms: Option<i32>,
-    #[serde(default)]
-    pub stream_idle_timeout_ms: Option<i32>,
-    #[serde(deserialize_with = "required_credential_id")]
-    pub credential_id: Option<Uuid>,
-    #[serde(default)]
-    pub available_models: Vec<String>,
-    #[serde(default)]
-    pub test_model: Option<String>,
-    #[serde(default)]
-    pub test_pricing_model_id: Option<Uuid>,
-}
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ChannelInput {
-    pub channel_group_id: Uuid,
-    pub api_format: String,
-    pub name: String,
-    pub base_url: String,
-    pub enabled: bool,
-    #[serde(default)]
-    pub supports_websocket: bool,
-    #[serde(default)]
-    pub supports_standalone_web_search: bool,
-    #[serde(default)]
-    pub auto_disable_allowed: bool,
-    /// Omission preserves the current multiplier.
-    #[serde(default)]
-    pub billing_multiplier: Option<rust_decimal::Decimal>,
-    #[serde(default)]
-    pub proxy_id: Option<Uuid>,
-    #[serde(default)]
-    pub config_template_id: Option<Uuid>,
-    /// Omission preserves the current transform document; a present value
-    /// replaces it (including `{}` to clear it).
-    #[serde(default, deserialize_with = "deserialize_optional_document")]
-    pub override_document: Option<Value>,
-    #[serde(default)]
-    pub connect_timeout_ms: Option<i32>,
-    #[serde(default)]
-    pub response_header_timeout_ms: Option<i32>,
-    #[serde(default)]
-    pub stream_idle_timeout_ms: Option<i32>,
-    #[serde(deserialize_with = "required_credential_id")]
-    pub credential_id: Option<Uuid>,
-    #[serde(default)]
-    pub available_models: Vec<String>,
-    #[serde(default)]
-    pub test_model: Option<String>,
-    #[serde(default)]
-    pub test_pricing_model_id: Option<Uuid>,
-}
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ChannelBatchUpdateInput {
     pub items: Vec<ChannelBatchUpdateTarget>,
     pub changes: ChannelBatchChanges,
@@ -985,16 +888,6 @@ pub struct ChannelBatchUpdateInput {
 pub struct ChannelBatchUpdateTarget {
     pub id: Uuid,
     pub updated_at: DateTime<Utc>,
-}
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ChannelRecoverInput {
-    pub updated_at: DateTime<Utc>,
-}
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DeletionConfirmationInput {
-    pub confirmation_token: String,
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1017,19 +910,6 @@ impl ChannelBatchChanges {
 #[serde(deny_unknown_fields)]
 pub struct ModelRuleCreateInput {
     pub model_id: Uuid,
-}
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ModelProtocolRuleCreateInput {
-    pub api_format: String,
-}
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ModelProtocolRuleInput {
-    #[serde(deserialize_with = "deserialize_required_nullable_string")]
-    pub description: Option<String>,
-    pub routing_tiers: Vec<ModelRuleRoutingTier>,
-    pub enabled: bool,
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1082,23 +962,11 @@ pub struct ConfigTemplateInput {
 fn empty_object() -> Value {
     json!({})
 }
-fn default_billing_multiplier() -> rust_decimal::Decimal {
-    rust_decimal::Decimal::ONE
-}
-fn default_connector_kind() -> String {
-    "openai_compatible".into()
-}
 fn deserialize_optional_string<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     Option::<String>::deserialize(deserializer).map(Some)
-}
-fn deserialize_required_nullable_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Option::<String>::deserialize(deserializer)
 }
 fn deserialize_optional_uuid<'de, D>(deserializer: D) -> Result<Option<Option<Uuid>>, D::Error>
 where
@@ -1106,87 +974,11 @@ where
 {
     Option::<Uuid>::deserialize(deserializer).map(Some)
 }
-fn required_credential_id<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<Uuid>, D::Error> {
-    Option::<Uuid>::deserialize(deserializer)
-}
 fn deserialize_optional_document<'de, D>(deserializer: D) -> Result<Option<Value>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     Value::deserialize(deserializer).map(Some)
-}
-pub(crate) struct ChannelMutationInput {
-    pub(crate) channel_group_id: Uuid,
-    pub(crate) api_format: String,
-    pub(crate) name: String,
-    pub(crate) base_url: String,
-    pub(crate) enabled: bool,
-    pub(crate) supports_websocket: bool,
-    pub(crate) supports_standalone_web_search: bool,
-    pub(crate) auto_disable_allowed: bool,
-    pub(crate) billing_multiplier: Option<rust_decimal::Decimal>,
-    pub(crate) proxy_id: Option<Uuid>,
-    pub(crate) config_template_id: Option<Uuid>,
-    pub(crate) override_document: Option<Value>,
-    pub(crate) connect_timeout_ms: Option<i32>,
-    pub(crate) response_header_timeout_ms: Option<i32>,
-    pub(crate) stream_idle_timeout_ms: Option<i32>,
-    pub(crate) credential_id: Option<Uuid>,
-    pub(crate) available_models: Vec<String>,
-    pub(crate) test_model: Option<String>,
-    pub(crate) test_pricing_model_id: Option<Uuid>,
-}
-impl From<ChannelCreateInput> for ChannelMutationInput {
-    fn from(value: ChannelCreateInput) -> Self {
-        Self {
-            channel_group_id: value.channel_group_id,
-            api_format: value.api_format,
-            name: value.name,
-            base_url: value.base_url,
-            enabled: value.enabled,
-            supports_websocket: value.supports_websocket,
-            supports_standalone_web_search: value.supports_standalone_web_search,
-            auto_disable_allowed: value.auto_disable_allowed,
-            billing_multiplier: Some(value.billing_multiplier),
-            proxy_id: value.proxy_id,
-            config_template_id: value.config_template_id,
-            override_document: Some(value.override_document),
-            connect_timeout_ms: value.connect_timeout_ms,
-            response_header_timeout_ms: value.response_header_timeout_ms,
-            stream_idle_timeout_ms: value.stream_idle_timeout_ms,
-            credential_id: value.credential_id,
-            available_models: value.available_models,
-            test_model: value.test_model,
-            test_pricing_model_id: value.test_pricing_model_id,
-        }
-    }
-}
-impl From<ChannelInput> for ChannelMutationInput {
-    fn from(value: ChannelInput) -> Self {
-        Self {
-            channel_group_id: value.channel_group_id,
-            api_format: value.api_format,
-            name: value.name,
-            base_url: value.base_url,
-            enabled: value.enabled,
-            supports_websocket: value.supports_websocket,
-            supports_standalone_web_search: value.supports_standalone_web_search,
-            auto_disable_allowed: value.auto_disable_allowed,
-            billing_multiplier: value.billing_multiplier,
-            proxy_id: value.proxy_id,
-            config_template_id: value.config_template_id,
-            override_document: value.override_document,
-            connect_timeout_ms: value.connect_timeout_ms,
-            response_header_timeout_ms: value.response_header_timeout_ms,
-            stream_idle_timeout_ms: value.stream_idle_timeout_ms,
-            credential_id: value.credential_id,
-            available_models: value.available_models,
-            test_model: value.test_model,
-            test_pricing_model_id: value.test_pricing_model_id,
-        }
-    }
 }
 pub(crate) struct ConfigTemplateMutationInput {
     pub(crate) name: String,
@@ -1323,45 +1115,11 @@ pub enum ControlPlaneMutation {
         id: Uuid,
         reason: String,
     },
-    CreateGroup(ChannelGroupInput),
-    UpdateGroup {
-        id: Uuid,
-        input: ChannelGroupInput,
-        expected_updated_at: DateTime<Utc>,
-    },
-    DeleteGroup {
-        id: Uuid,
-        deleted_by: Uuid,
-        expected_updated_at: DateTime<Utc>,
-        confirmation_token: String,
-    },
-    CreateChannel(ChannelCreateInput),
-    UpdateChannel {
-        id: Uuid,
-        input: ChannelInput,
-        expected_updated_at: DateTime<Utc>,
-    },
-    DeleteChannel {
-        id: Uuid,
-        deleted_by: Uuid,
-        expected_updated_at: DateTime<Utc>,
-        confirmation_token: String,
-    },
     RecoverChannel {
         id: Uuid,
         expected_updated_at: DateTime<Utc>,
     },
     CreateRule(ModelRuleCreateInput),
-    CreateProtocolRule {
-        model_rule_id: Uuid,
-        input: ModelProtocolRuleCreateInput,
-    },
-    UpdateProtocolRule {
-        model_rule_id: Uuid,
-        id: Uuid,
-        input: ModelProtocolRuleInput,
-        expected_updated_at: DateTime<Utc>,
-    },
     CreateProxy(ProxyCreateInput),
     UpdateProxy {
         id: Uuid,
@@ -1403,9 +1161,6 @@ pub struct ControlPlaneLists {
     pub models: Vec<ControlPlaneModel>,
     pub api_keys: Vec<ControlPlaneApiKey>,
     pub api_key_policies: Vec<ControlPlaneApiKeyPolicy>,
-    pub channel_groups: Vec<ControlPlaneChannelGroup>,
-    pub channels: Vec<ControlPlaneChannel>,
-    pub model_rules: Vec<ControlPlaneModelRule>,
     pub proxies: Vec<ControlPlaneProxy>,
     pub config_templates: Vec<ControlPlaneConfigTemplate>,
 }
@@ -1512,7 +1267,7 @@ pub struct SelfApiKeySharingCredentialOption {
 pub struct SelfApiKeyGroupOption {
     pub id: Uuid,
     pub name: String,
-    pub api_format: String,
+    pub api_formats: Vec<String>,
     pub enabled: bool,
 }
 
@@ -1522,7 +1277,7 @@ pub struct SelfApiKeyChannelOption {
     pub channel_group_id: Uuid,
     pub channel_group_name: String,
     pub channel_group_enabled: bool,
-    pub api_format: String,
+    pub api_formats: Vec<String>,
     pub name: String,
     pub enabled: bool,
     pub auto_disabled: bool,
@@ -1948,434 +1703,7 @@ pub struct ControlPlaneApiKey {
     pub quota_used_amount: rust_decimal::Decimal,
     pub updated_at: DateTime<Utc>,
 }
-#[derive(Serialize, FromRow)]
-pub struct ControlPlaneChannelGroup {
-    pub id: Uuid,
-    pub name: String,
-    pub api_format: String,
-    pub connector_kind: String,
-    pub connector_pool_id: Option<Uuid>,
-    pub request_compression: String,
-    pub sharing_only: bool,
-    pub enabled: bool,
-    pub status_statistics_enabled: bool,
-    pub updated_at: DateTime<Utc>,
-}
-#[derive(Serialize)]
-pub struct ControlPlaneChannel {
-    pub id: Uuid,
-    pub channel_group_id: Uuid,
-    pub api_format: String,
-    pub connector_kind: String,
-    pub provider_managed: bool,
-    pub name: String,
-    pub base_url: String,
-    pub enabled: bool,
-    pub supports_websocket: bool,
-    pub supports_standalone_web_search: bool,
-    pub auto_disabled: bool,
-    pub auto_disabled_reason: Option<String>,
-    pub auto_disable_allowed: bool,
-    pub billing_multiplier: rust_decimal::Decimal,
-    pub proxy_id: Option<Uuid>,
-    pub config_template_id: Option<Uuid>,
-    pub connect_timeout_ms: Option<i32>,
-    pub response_header_timeout_ms: Option<i32>,
-    pub stream_idle_timeout_ms: Option<i32>,
-    pub credential_id: Option<Uuid>,
-    pub available_models: Vec<String>,
-    pub test_model: Option<String>,
-    pub test_pricing_model_id: Option<Uuid>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-#[derive(Serialize, FromRow)]
-pub struct ControlPlaneChannelDetail {
-    pub id: Uuid,
-    pub channel_group_id: Uuid,
-    pub api_format: String,
-    pub connector_kind: String,
-    pub provider_managed: bool,
-    pub name: String,
-    pub base_url: String,
-    pub enabled: bool,
-    pub supports_websocket: bool,
-    pub supports_standalone_web_search: bool,
-    pub auto_disabled: bool,
-    pub auto_disabled_reason: Option<String>,
-    pub auto_disable_allowed: bool,
-    pub billing_multiplier: rust_decimal::Decimal,
-    pub proxy_id: Option<Uuid>,
-    pub config_template_id: Option<Uuid>,
-    pub override_document: Value,
-    pub connect_timeout_ms: Option<i32>,
-    pub response_header_timeout_ms: Option<i32>,
-    pub stream_idle_timeout_ms: Option<i32>,
-    pub credential_id: Option<Uuid>,
-    pub available_models: Vec<String>,
-    pub test_model: Option<String>,
-    pub test_pricing_model_id: Option<Uuid>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-#[derive(Clone, Debug, Serialize)]
-pub struct ChannelDeletionImpact {
-    pub resource_type: String,
-    pub resource_id: Uuid,
-    pub confirmation_token: String,
-    pub channels: Vec<DeletionImpactChannel>,
-    pub model_protocol_rules: Vec<DeletionImpactModelProtocolRule>,
-    pub api_keys: Vec<DeletionImpactApiKey>,
-    pub api_key_policies: Vec<DeletionImpactApiKeyPolicy>,
-    pub quota_visibility_user_groups: Vec<DeletionImpactUserGroup>,
-}
-#[derive(Clone, Debug, Serialize)]
-pub struct DeletionImpactChannel {
-    pub id: Uuid,
-    pub channel_group_id: Uuid,
-    pub name: String,
-}
-#[derive(Clone, Debug, Serialize)]
-pub struct DeletionImpactModelProtocolRule {
-    pub id: Uuid,
-    pub model_rule_id: Uuid,
-    pub client_model: String,
-    pub api_format: String,
-    pub removed_channel_group_ids: Vec<Uuid>,
-    pub removed_channel_ids: Vec<Uuid>,
-    pub removed_tier_priorities: Vec<i32>,
-    pub will_disable: bool,
-}
-#[derive(Clone, Debug, Serialize)]
-pub struct DeletionImpactApiKey {
-    pub id: Uuid,
-    pub name: String,
-}
-#[derive(Clone, Debug, Serialize)]
-pub struct DeletionImpactApiKeyPolicy {
-    pub id: Uuid,
-    pub name: String,
-}
-#[derive(Clone, Debug, Serialize)]
-pub struct DeletionImpactUserGroup {
-    pub id: Uuid,
-    pub name: String,
-}
-#[derive(FromRow)]
-struct ControlPlaneChannelRow {
-    id: Uuid,
-    channel_group_id: Uuid,
-    api_format: String,
-    connector_kind: String,
-    provider_managed: bool,
-    name: String,
-    base_url: String,
-    enabled: bool,
-    supports_websocket: bool,
-    supports_standalone_web_search: bool,
-    auto_disabled: bool,
-    auto_disabled_reason: Option<String>,
-    auto_disable_allowed: bool,
-    billing_multiplier: rust_decimal::Decimal,
-    proxy_id: Option<Uuid>,
-    config_template_id: Option<Uuid>,
-    connect_timeout_ms: Option<i32>,
-    response_header_timeout_ms: Option<i32>,
-    stream_idle_timeout_ms: Option<i32>,
-    credential_id: Option<Uuid>,
-    available_models: Vec<String>,
-    test_model: Option<String>,
-    test_pricing_model_id: Option<Uuid>,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
-}
 
-#[derive(Clone, Debug, Serialize, FromRow)]
-pub(crate) struct DeletionImpactRootRow {
-    pub(crate) id: Uuid,
-    pub(crate) name: String,
-    pub(crate) updated_at: DateTime<Utc>,
-    pub(crate) connector_kind: String,
-    pub(crate) channel_group_id: Option<Uuid>,
-}
-
-#[derive(Clone, Debug, Serialize, FromRow)]
-pub(crate) struct DeletionImpactChannelRow {
-    pub(crate) id: Uuid,
-    pub(crate) channel_group_id: Uuid,
-    pub(crate) name: String,
-    pub(crate) available_models: Vec<String>,
-    pub(crate) updated_at: DateTime<Utc>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub(crate) struct DeletionImpactRuleState {
-    pub(crate) id: Uuid,
-    pub(crate) model_rule_id: Uuid,
-    pub(crate) client_model: String,
-    pub(crate) api_format: String,
-    pub(crate) enabled: bool,
-    pub(crate) updated_at: DateTime<Utc>,
-    pub(crate) routing_tiers: Vec<ModelRuleRoutingTier>,
-}
-
-#[derive(FromRow)]
-struct DeletionImpactRuleRow {
-    id: Uuid,
-    model_rule_id: Uuid,
-    client_model: String,
-    api_format: String,
-    enabled: bool,
-    updated_at: DateTime<Utc>,
-    routing_tiers: sqlx::types::Json<Vec<ModelRuleRoutingTier>>,
-}
-
-impl From<DeletionImpactRuleRow> for DeletionImpactRuleState {
-    fn from(value: DeletionImpactRuleRow) -> Self {
-        Self {
-            id: value.id,
-            model_rule_id: value.model_rule_id,
-            client_model: value.client_model,
-            api_format: value.api_format,
-            enabled: value.enabled,
-            updated_at: value.updated_at,
-            routing_tiers: value.routing_tiers.0,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, FromRow)]
-pub(crate) struct DeletionImpactApiKeyRow {
-    pub(crate) id: Uuid,
-    pub(crate) name: String,
-    pub(crate) allowed_group_ids: Vec<Uuid>,
-    pub(crate) allowed_channel_ids: Vec<Uuid>,
-    pub(crate) updated_at: DateTime<Utc>,
-}
-
-#[derive(Clone, Debug, Serialize, FromRow)]
-pub(crate) struct DeletionImpactApiKeyPolicyRow {
-    pub(crate) id: Uuid,
-    pub(crate) name: String,
-    pub(crate) allowed_group_ids: Vec<Uuid>,
-    pub(crate) allowed_channel_ids: Vec<Uuid>,
-    pub(crate) updated_at: DateTime<Utc>,
-}
-
-#[derive(Clone, Debug, Serialize, FromRow)]
-pub(crate) struct DeletionImpactVisibilityRow {
-    pub(crate) user_group_id: Uuid,
-    pub(crate) user_group_name: String,
-    pub(crate) channel_group_id: Uuid,
-}
-
-#[derive(Serialize)]
-pub(crate) struct DeletionImpactFingerprint<'a> {
-    pub(crate) version: u8,
-    pub(crate) resource_type: &'a str,
-    pub(crate) root: &'a DeletionImpactRootRow,
-    pub(crate) channels: &'a [DeletionImpactChannelRow],
-    pub(crate) model_protocol_rules: &'a [DeletionImpactRuleState],
-    pub(crate) api_keys: &'a [DeletionImpactApiKeyRow],
-    pub(crate) api_key_policies: &'a [DeletionImpactApiKeyPolicyRow],
-    pub(crate) quota_visibility: &'a [DeletionImpactVisibilityRow],
-}
-
-pub(crate) struct ChannelDeletionPlan {
-    pub(crate) impact: ChannelDeletionImpact,
-    pub(crate) root_updated_at: DateTime<Utc>,
-    pub(crate) deleted_group_ids: Vec<Uuid>,
-    pub(crate) deleted_channel_ids: Vec<Uuid>,
-    pub(crate) affected_rule_ids: Vec<Uuid>,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) enum ChannelDeletionTarget {
-    Group(Uuid),
-    Channel(Uuid),
-}
-
-impl From<ControlPlaneChannelRow> for ControlPlaneChannel {
-    fn from(value: ControlPlaneChannelRow) -> Self {
-        Self {
-            id: value.id,
-            channel_group_id: value.channel_group_id,
-            api_format: value.api_format,
-            connector_kind: value.connector_kind,
-            provider_managed: value.provider_managed,
-            name: value.name,
-            base_url: value.base_url,
-            enabled: value.enabled,
-            supports_websocket: value.supports_websocket,
-            supports_standalone_web_search: value.supports_standalone_web_search,
-            auto_disabled: value.auto_disabled,
-            auto_disabled_reason: value.auto_disabled_reason,
-            auto_disable_allowed: value.auto_disable_allowed,
-            billing_multiplier: value.billing_multiplier,
-            proxy_id: value.proxy_id,
-            config_template_id: value.config_template_id,
-            connect_timeout_ms: value.connect_timeout_ms,
-            response_header_timeout_ms: value.response_header_timeout_ms,
-            stream_idle_timeout_ms: value.stream_idle_timeout_ms,
-            credential_id: value.credential_id,
-            available_models: value.available_models,
-            test_model: value.test_model,
-            test_pricing_model_id: value.test_pricing_model_id,
-            created_at: value.created_at,
-            updated_at: value.updated_at,
-        }
-    }
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ModelRuleRoutingStatus {
-    Draft,
-    ModelDisabled,
-    Ready,
-    TemporarilyUnavailable,
-    Disconnected,
-    Disabled,
-}
-
-#[derive(Serialize)]
-pub struct ControlPlaneModelRule {
-    pub id: Uuid,
-    pub model_id: Uuid,
-    pub client_model: String,
-    pub model_display_name: String,
-    pub model_provider_name: Option<String>,
-    pub model_enabled: bool,
-    pub protocol_rules: Vec<ControlPlaneModelProtocolRule>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Serialize)]
-pub struct ControlPlaneModelProtocolRule {
-    pub id: Uuid,
-    pub model_rule_id: Uuid,
-    pub api_format: String,
-    pub description: Option<String>,
-    pub routing_tiers: Vec<ModelRuleRoutingTier>,
-    pub enabled: bool,
-    pub routing_status: ModelRuleRoutingStatus,
-    pub target_candidate_count: usize,
-    pub model_capable_candidate_count: usize,
-    pub active_candidate_count: usize,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(FromRow)]
-pub(crate) struct ControlPlaneModelRuleRow {
-    pub(crate) id: Uuid,
-    pub(crate) model_id: Uuid,
-    pub(crate) client_model: String,
-    pub(crate) model_display_name: String,
-    pub(crate) model_provider_name: Option<String>,
-    pub(crate) model_enabled: bool,
-    pub(crate) created_at: DateTime<Utc>,
-    pub(crate) updated_at: DateTime<Utc>,
-}
-
-#[derive(FromRow)]
-pub(crate) struct ControlPlaneModelProtocolRuleRow {
-    pub(crate) id: Uuid,
-    pub(crate) model_rule_id: Uuid,
-    pub(crate) api_format: String,
-    pub(crate) model_enabled: bool,
-    pub(crate) description: Option<String>,
-    pub(crate) routing_tiers: sqlx::types::Json<Vec<ModelRuleRoutingTier>>,
-    pub(crate) enabled: bool,
-    pub(crate) updated_at: DateTime<Utc>,
-}
-
-impl ControlPlaneModelProtocolRule {
-    fn from_row(
-        row: ControlPlaneModelProtocolRuleRow,
-        groups: &[ControlPlaneChannelGroup],
-        channels: &[ControlPlaneChannel],
-    ) -> Self {
-        let routing_tiers = row.routing_tiers.0;
-        let enabled_groups = groups
-            .iter()
-            .map(|group| (group.id, group.enabled))
-            .collect::<HashMap<_, _>>();
-        let channels_by_id = channels
-            .iter()
-            .map(|channel| (channel.id, channel))
-            .collect::<HashMap<_, _>>();
-        let mut target_candidate_count = 0;
-        let mut model_capable_candidate_count = 0;
-        let mut active_candidate_count = 0;
-        for candidate in routing_tiers.iter().flat_map(|tier| &tier.candidates) {
-            target_candidate_count += 1;
-            let Some(channel) = channels_by_id.get(&candidate.channel_id) else {
-                continue;
-            };
-            if channel.api_format != row.api_format
-                || !channel.available_models.contains(&candidate.upstream_model)
-            {
-                continue;
-            }
-            model_capable_candidate_count += 1;
-            if channel.enabled
-                && !channel.auto_disabled
-                && enabled_groups
-                    .get(&channel.channel_group_id)
-                    .copied()
-                    .unwrap_or(false)
-            {
-                active_candidate_count += 1;
-            }
-        }
-        let routing_status = if !row.model_enabled {
-            ModelRuleRoutingStatus::ModelDisabled
-        } else if routing_tiers.is_empty() {
-            ModelRuleRoutingStatus::Draft
-        } else if !row.enabled {
-            ModelRuleRoutingStatus::Disabled
-        } else if active_candidate_count > 0 {
-            ModelRuleRoutingStatus::Ready
-        } else if model_capable_candidate_count > 0 {
-            ModelRuleRoutingStatus::TemporarilyUnavailable
-        } else {
-            ModelRuleRoutingStatus::Disconnected
-        };
-        Self {
-            id: row.id,
-            model_rule_id: row.model_rule_id,
-            api_format: row.api_format,
-            description: row.description,
-            routing_tiers,
-            enabled: row.enabled,
-            routing_status,
-            target_candidate_count,
-            model_capable_candidate_count,
-            active_candidate_count,
-            updated_at: row.updated_at,
-        }
-    }
-}
-
-impl ControlPlaneModelRule {
-    fn from_row(
-        row: ControlPlaneModelRuleRow,
-        mut protocol_rules: Vec<ControlPlaneModelProtocolRule>,
-    ) -> Self {
-        protocol_rules.sort_unstable_by(|left, right| left.api_format.cmp(&right.api_format));
-        Self {
-            id: row.id,
-            model_id: row.model_id,
-            client_model: row.client_model,
-            model_display_name: row.model_display_name,
-            model_provider_name: row.model_provider_name,
-            model_enabled: row.model_enabled,
-            protocol_rules,
-            created_at: row.created_at,
-            updated_at: row.updated_at,
-        }
-    }
-}
 #[derive(Serialize, FromRow)]
 pub struct ControlPlaneProxy {
     pub id: Uuid,
@@ -2735,7 +2063,11 @@ impl PostgresRequestLogQueries {
         let (started_at, ended_at) = window.range(ended_at);
         let tracked_groups = sqlx::query_as::<_, TrackedChannelGroupRow>(
             "SELECT channel_group.id,
-                    channel_group.api_format::text AS api_format,
+                    CASE capability.operation
+                        WHEN 'chat_completions' THEN 'open_ai_chat_completions'
+                        WHEN 'images_generation' THEN 'open_ai_images'
+                        WHEN 'images_edit' THEN 'open_ai_images'
+                        ELSE 'open_ai_responses' END AS api_format,
                     channel_group.name,
                     channel_group.enabled,
                     COALESCE(
@@ -2743,25 +2075,28 @@ impl PostgresRequestLogQueries {
                             FILTER (WHERE available_model.model IS NOT NULL),
                         ARRAY[]::text[]
                     ) AS available_models
-             FROM channel_groups AS channel_group
-             LEFT JOIN channels AS channel
-               ON channel.channel_group_id = channel_group.id
+             FROM routing_groups AS channel_group
+             JOIN upstream_channels AS channel
+               ON channel.group_id = channel_group.id
               AND channel.deleted_at IS NULL
-             LEFT JOIN LATERAL unnest(channel.available_models)
+             JOIN channel_capabilities AS capability
+               ON capability.channel_id = channel.id
+              AND capability.deleted_at IS NULL
+              AND capability.status_statistics_enabled
+             LEFT JOIN LATERAL unnest(capability.available_models)
                AS available_model(model) ON true
-             WHERE channel_group.status_statistics_enabled
-               AND channel_group.deleted_at IS NULL
+             WHERE channel_group.deleted_at IS NULL
              GROUP BY channel_group.id,
-                      channel_group.api_format,
+                      2,
                       channel_group.name,
                       channel_group.enabled
-             ORDER BY channel_group.name, channel_group.id",
+             ORDER BY channel_group.name, channel_group.id, api_format",
         )
         .fetch_all(&self.pool)
         .await?;
 
         let mut overall_models = BTreeMap::<(String, String), ChannelGroupStatusModelMetric>::new();
-        let mut group_indexes = BTreeMap::<Uuid, usize>::new();
+        let mut group_indexes = BTreeMap::<(Uuid, String), usize>::new();
         let mut groups = Vec::<ChannelGroupStatusGroupBuilder>::with_capacity(tracked_groups.len());
         for group in tracked_groups {
             let mut models = BTreeMap::new();
@@ -2775,7 +2110,7 @@ impl PostgresRequestLogQueries {
                     .or_insert_with(|| empty_channel_group_status_group_model(&key.0, &key.1));
             }
             let index = groups.len();
-            group_indexes.insert(group.id, index);
+            group_indexes.insert((group.id, group.api_format.clone()), index);
             groups.push(ChannelGroupStatusGroupBuilder {
                 id: group.id,
                 api_format: group.api_format,
@@ -2802,10 +2137,14 @@ impl PostgresRequestLogQueries {
                           AND log.output_tokens_per_second IS NOT NULL
                     ) AS p50_tps
              FROM request_logs AS log
-             JOIN channel_groups AS channel_group
-               ON channel_group.id = log.channel_group_id
-             WHERE channel_group.status_statistics_enabled
-               AND channel_group.deleted_at IS NULL
+             JOIN group_identity_registry AS group_identity ON group_identity.id=log.channel_group_id
+             JOIN routing_groups AS channel_group ON channel_group.id=group_identity.canonical_group_id
+             JOIN channel_identity_registry AS identity ON identity.id=log.channel_id
+             JOIN upstream_channels AS channel ON channel.id=identity.canonical_channel_id
+             JOIN channel_capabilities AS capability ON capability.channel_id=channel.id
+               AND capability.operation=log.api_operation
+             WHERE capability.status_statistics_enabled AND capability.deleted_at IS NULL
+               AND channel.deleted_at IS NULL AND channel_group.deleted_at IS NULL
                AND log.started_at >= $1
                AND log.started_at < $2
              GROUP BY log.api_format, COALESCE(log.upstream_model, log.client_model)
@@ -2821,7 +2160,7 @@ impl PostgresRequestLogQueries {
         }
 
         let group_rows = sqlx::query_as::<_, StatusChannelGroupMetricRow>(
-            "SELECT log.channel_group_id,
+            "SELECT channel_group.id AS channel_group_id,
                     log.api_format::text AS api_format,
                     COALESCE(log.upstream_model, log.client_model) AS model,
                     count(*)::bigint AS request_count,
@@ -2838,15 +2177,19 @@ impl PostgresRequestLogQueries {
                           AND log.output_tokens_per_second IS NOT NULL
                     ) AS p50_tps
              FROM request_logs AS log
-             JOIN channel_groups AS channel_group
-               ON channel_group.id = log.channel_group_id
-             WHERE channel_group.status_statistics_enabled
-               AND channel_group.deleted_at IS NULL
+             JOIN group_identity_registry AS group_identity ON group_identity.id=log.channel_group_id
+             JOIN routing_groups AS channel_group ON channel_group.id=group_identity.canonical_group_id
+             JOIN channel_identity_registry AS identity ON identity.id=log.channel_id
+             JOIN upstream_channels AS channel ON channel.id=identity.canonical_channel_id
+             JOIN channel_capabilities AS capability ON capability.channel_id=channel.id
+               AND capability.operation=log.api_operation
+             WHERE capability.status_statistics_enabled AND capability.deleted_at IS NULL
+               AND channel.deleted_at IS NULL AND channel_group.deleted_at IS NULL
                AND log.started_at >= $1
                AND log.started_at < $2
-             GROUP BY log.channel_group_id, log.api_format,
+             GROUP BY channel_group.id, log.api_format,
                       COALESCE(log.upstream_model, log.client_model)
-             ORDER BY log.channel_group_id, log.api_format,
+             ORDER BY channel_group.id, log.api_format,
                       COALESCE(log.upstream_model, log.client_model)",
         )
         .bind(started_at)
@@ -2854,7 +2197,10 @@ impl PostgresRequestLogQueries {
         .fetch_all(&self.pool)
         .await?;
         for row in group_rows {
-            let Some(index) = group_indexes.get(&row.channel_group_id).copied() else {
+            let Some(index) = group_indexes
+                .get(&(row.channel_group_id, row.api_format.clone()))
+                .copied()
+            else {
                 continue;
             };
             let key = (row.api_format.clone(), row.model.clone());
@@ -2869,7 +2215,7 @@ impl PostgresRequestLogQueries {
         }
 
         let history_rows = sqlx::query_as::<_, StatusBucketMetricRow>(
-            "SELECT log.channel_group_id,
+            "SELECT channel_group.id AS channel_group_id,
                     log.api_format::text AS api_format,
                     COALESCE(log.upstream_model, log.client_model) AS model,
                     to_timestamp(
@@ -2890,16 +2236,20 @@ impl PostgresRequestLogQueries {
                           AND log.output_tokens_per_second IS NOT NULL
                     ) AS p50_tps
              FROM request_logs AS log
-             JOIN channel_groups AS channel_group
-               ON channel_group.id = log.channel_group_id
-             WHERE channel_group.status_statistics_enabled
-               AND channel_group.deleted_at IS NULL
+             JOIN group_identity_registry AS group_identity ON group_identity.id=log.channel_group_id
+             JOIN routing_groups AS channel_group ON channel_group.id=group_identity.canonical_group_id
+             JOIN channel_identity_registry AS identity ON identity.id=log.channel_id
+             JOIN upstream_channels AS channel ON channel.id=identity.canonical_channel_id
+             JOIN channel_capabilities AS capability ON capability.channel_id=channel.id
+               AND capability.operation=log.api_operation
+             WHERE capability.status_statistics_enabled AND capability.deleted_at IS NULL
+               AND channel.deleted_at IS NULL AND channel_group.deleted_at IS NULL
                AND log.started_at >= $1
                AND log.started_at < $2
-             GROUP BY log.channel_group_id, log.api_format,
+             GROUP BY channel_group.id, log.api_format,
                       COALESCE(log.upstream_model, log.client_model),
                       bucket_started_at
-             ORDER BY log.channel_group_id, log.api_format,
+             ORDER BY channel_group.id, log.api_format,
                       COALESCE(log.upstream_model, log.client_model),
                       bucket_started_at",
         )
@@ -2909,7 +2259,10 @@ impl PostgresRequestLogQueries {
         .fetch_all(&self.pool)
         .await?;
         for row in history_rows {
-            let Some(index) = group_indexes.get(&row.channel_group_id).copied() else {
+            let Some(index) = group_indexes
+                .get(&(row.channel_group_id, row.api_format.clone()))
+                .copied()
+            else {
                 continue;
             };
             let key = (row.api_format.clone(), row.model.clone());
@@ -2975,9 +2328,9 @@ impl PostgresMeteringQueries {
                AND (
                    $6::uuid IS NULL
                    OR channel_id IN (
-                       SELECT projection.channel_id
-                       FROM codex_oauth_credential_channels AS projection
-                       WHERE projection.credential_id = $6
+                       SELECT identity.id
+                       FROM channel_identity_registry AS identity
+                       WHERE identity.codex_credential_id = $6
                    )
                )",
         )
@@ -3009,9 +2362,9 @@ impl PostgresMeteringQueries {
                AND (
                    $6::uuid IS NULL
                    OR channel_id IN (
-                       SELECT projection.channel_id
-                       FROM codex_oauth_credential_channels AS projection
-                       WHERE projection.credential_id = $6
+                       SELECT identity.id
+                       FROM channel_identity_registry AS identity
+                       WHERE identity.codex_credential_id = $6
                    )
                )
              GROUP BY bucket_started_at,
@@ -3057,9 +2410,9 @@ impl PostgresMeteringQueries {
                AND (
                    $6::uuid IS NULL
                    OR channel_id IN (
-                       SELECT projection.channel_id
-                       FROM codex_oauth_credential_channels AS projection
-                       WHERE projection.credential_id = $6
+                       SELECT identity.id
+                       FROM channel_identity_registry AS identity
+                       WHERE identity.codex_credential_id = $6
                    )
                )
              GROUP BY COALESCE(upstream_model, client_model), api_format
@@ -3078,8 +2431,8 @@ impl PostgresMeteringQueries {
             sqlx::query_as::<_, CostChannelMetricRow>(
                 "SELECT log.channel_id AS id,
                         log.channel_group_id,
-                        channel_group.name AS channel_group_name,
-                        channel.name,
+                        channel_group.label AS channel_group_name,
+                        channel.label AS name,
                         log.api_format::text AS api_format,
                         count(*)::bigint AS request_count,
                         count(*) FILTER (WHERE log.outcome <> 'cancelled')::bigint
@@ -3098,8 +2451,8 @@ impl PostgresMeteringQueries {
                         COALESCE(sum(log.output_tokens), 0)::bigint AS output_tokens,
                         COALESCE(sum(log.cost_amount), 0) AS cost_amount
                  FROM request_metering_facts AS log
-                 JOIN channels AS channel ON channel.id = log.channel_id
-                 JOIN channel_groups AS channel_group
+                 JOIN channel_identity_registry AS channel ON channel.id = log.channel_id
+                 JOIN group_identity_registry AS channel_group
                    ON channel_group.id = log.channel_group_id
                  WHERE log.started_at >= $1
                    AND log.started_at < $2
@@ -3109,14 +2462,14 @@ impl PostgresMeteringQueries {
                    AND (
                        $6::uuid IS NULL
                        OR log.channel_id IN (
-                           SELECT projection.channel_id
-                           FROM codex_oauth_credential_channels AS projection
-                           WHERE projection.credential_id = $6
+                           SELECT identity.id
+                           FROM channel_identity_registry AS identity
+                           WHERE identity.codex_credential_id = $6
                        )
                    )
-                 GROUP BY log.channel_id, log.channel_group_id, channel_group.name,
-                          channel.name, log.api_format
-                 ORDER BY channel_group.name, channel.name, log.api_format",
+                 GROUP BY log.channel_id, log.channel_group_id, channel_group.label,
+                          channel.label, log.api_format
+                 ORDER BY channel_group.label, channel.label, log.api_format",
             )
             .bind(filter.started_at)
             .bind(filter.ended_at)
@@ -3953,7 +3306,7 @@ pub(super) fn redact_self_service_request_log(log: &mut ConsoleRequestLog) {
     log.channel_name = None;
 }
 
-const CONSOLE_REQUEST_LOG_COLUMNS: &str = "log.id,log.started_at,log.completed_at,log.user_id,request_user.display_name AS user_name,log.api_key_id,log.request_source,log.api_format::text AS api_format,log.api_operation,log.request_protocol,log.client_model,log.reasoning_effort,log.fast_mode,log.upstream_model,log.model_rule_id,log.channel_group_id,channel_group.name AS channel_group_name,log.channel_id,channel.name AS channel_name,log.outcome,log.response_status_code,log.streamed,log.ttft_ms,log.total_duration_ms,log.output_tokens_per_second,log.input_tokens,log.cached_input_tokens,log.cache_write_tokens,log.output_tokens,log.reasoning_tokens,log.cost_amount,log.peak_pricing,log.error_code,log.error_summary,receipt.settled_at AS billed_at";
+const CONSOLE_REQUEST_LOG_COLUMNS: &str = "log.id,log.started_at,log.completed_at,log.user_id,request_user.display_name AS user_name,log.api_key_id,log.request_source,log.api_format::text AS api_format,log.api_operation,log.request_protocol,log.client_model,log.reasoning_effort,log.fast_mode,log.upstream_model,log.model_rule_id,log.channel_group_id,channel_group.label AS channel_group_name,log.channel_id,channel.label AS channel_name,log.outcome,log.response_status_code,log.streamed,log.ttft_ms,log.total_duration_ms,log.output_tokens_per_second,log.input_tokens,log.cached_input_tokens,log.cache_write_tokens,log.output_tokens,log.reasoning_tokens,log.cost_amount,log.peak_pricing,log.error_code,log.error_summary,receipt.settled_at AS billed_at";
 
 async fn query_console_request_log(
     pool: &PgPool,
@@ -3965,8 +3318,8 @@ async fn query_console_request_log(
          FROM request_logs AS log
          LEFT JOIN request_settlements AS receipt ON receipt.request_id=log.id
          JOIN users AS request_user ON request_user.id = log.user_id
-         LEFT JOIN channel_groups AS channel_group ON channel_group.id = log.channel_group_id
-         LEFT JOIN channels AS channel ON channel.id = log.channel_id
+         LEFT JOIN group_identity_registry AS channel_group ON channel_group.id = log.channel_group_id
+         LEFT JOIN channel_identity_registry AS channel ON channel.id = log.channel_id
          WHERE log.id = "
     ));
     query.push_bind(id);
@@ -4016,8 +3369,8 @@ async fn query_console_request_logs(
          FROM request_logs AS log
          LEFT JOIN request_settlements AS receipt ON receipt.request_id=log.id
          JOIN users AS request_user ON request_user.id = log.user_id
-         LEFT JOIN channel_groups AS channel_group ON channel_group.id = log.channel_group_id
-         LEFT JOIN channels AS channel ON channel.id = log.channel_id
+         LEFT JOIN group_identity_registry AS channel_group ON channel_group.id = log.channel_group_id
+         LEFT JOIN channel_identity_registry AS channel ON channel.id = log.channel_id
          WHERE TRUE"
     ));
     if let Some(user_id) = owner_user_id {
@@ -4926,6 +4279,13 @@ impl PostgresControlPlaneRepository {
         Ok(topology)
     }
 
+    pub async fn routing_profiles(
+        &self,
+    ) -> Result<Vec<super::upstream_topology::profiles::RoutingProfileView>, RepositoryError> {
+        let mut connection = self.pool.acquire().await?;
+        super::upstream_topology::profiles::postgres(&mut connection).await
+    }
+
     pub async fn upstream_credentials(
         &self,
     ) -> Result<Vec<super::UpstreamCredentialView>, RepositoryError> {
@@ -5420,81 +4780,6 @@ impl PostgresControlPlaneRepository {
         let models = sqlx::query_as::<_, ControlPlaneModel>("SELECT id,source_model_id,display_name,provider_name,enabled,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,advanced_billing,last_synced_at,created_at,updated_at FROM models WHERE deleted_at IS NULL ORDER BY id").fetch_all(&self.pool).await?;
         let api_keys = sqlx::query_as::<_, ControlPlaneApiKey>("SELECT k.id, k.user_id, u.status AS user_status, k.name, k.secret_value AS secret, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount, k.updated_at FROM api_keys k JOIN users u ON u.id=k.user_id WHERE NOT k.is_system AND k.deleted_at IS NULL AND u.deleted_at IS NULL ORDER BY k.id").fetch_all(&self.pool).await?;
         let api_key_policies = sqlx::query_as::<_, ControlPlaneApiKeyPolicy>("SELECT id,name,allowed_group_ids,allowed_channel_ids,enabled,created_at,updated_at FROM api_key_policies ORDER BY id").fetch_all(&self.pool).await?;
-        let channel_groups = sqlx::query_as::<_, ControlPlaneChannelGroup>("SELECT id,name,api_format::text AS api_format,connector_kind,connector_pool_id,request_compression,sharing_only,enabled,status_statistics_enabled,updated_at FROM channel_groups WHERE deleted_at IS NULL ORDER BY id").fetch_all(&self.pool).await?;
-        let channels = sqlx::query_as::<_, ControlPlaneChannelRow>(
-            "SELECT c.id,c.channel_group_id,c.api_format::text AS api_format,g.connector_kind,
-             (g.connector_kind <> 'openai_compatible') AS provider_managed,c.name,c.base_url,
-             CASE WHEN g.connector_kind='codex_oauth' THEN (c.enabled AND COALESCE(co.enabled,false)) ELSE c.enabled END AS enabled,
-             c.supports_websocket,c.supports_standalone_web_search,c.auto_disabled,c.auto_disabled_reason,
-             c.auto_disable_allowed,c.billing_multiplier,c.proxy_id,c.config_template_id,c.connect_timeout_ms,
-             c.response_header_timeout_ms,c.stream_idle_timeout_ms,c.credential_id,c.available_models,
-             c.test_model,c.test_pricing_model_id,c.created_at,c.updated_at
-             FROM channels c JOIN channel_groups g ON g.id=c.channel_group_id AND g.deleted_at IS NULL
-             LEFT JOIN codex_oauth_credential_channels projection ON projection.channel_id=c.id
-             LEFT JOIN codex_oauth_credentials co ON co.channel_id=projection.credential_id
-             WHERE c.deleted_at IS NULL AND (g.connector_kind <> 'codex_oauth' OR (co.channel_id IS NOT NULL AND co.deleted_at IS NULL))
-             ORDER BY c.id").fetch_all(&self.pool).await?;
-        let channels = channels.into_iter().map(Into::into).collect::<Vec<_>>();
-        let model_rule_rows = sqlx::query_as::<_, ControlPlaneModelRuleRow>(
-            "SELECT profile.id,model.id AS model_id, \
-                    model.source_model_id AS client_model, \
-                    model.display_name AS model_display_name, \
-                    model.provider_name AS model_provider_name, \
-                    model.enabled AS model_enabled, \
-                    profile.created_at,profile.updated_at \
-             FROM model_routing_profiles AS profile \
-             JOIN models AS model ON model.id=profile.model_id AND model.deleted_at IS NULL \
-             ORDER BY model.source_model_id,profile.id",
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        let protocol_rule_rows = sqlx::query_as::<_, ControlPlaneModelProtocolRuleRow>(
-            "SELECT r.id,r.model_routing_profile_id AS model_rule_id, \
-                    r.api_format::text AS api_format,m.enabled AS model_enabled,r.description, \
-                    COALESCE(( \
-                        SELECT jsonb_agg(jsonb_build_object( \
-                            'priority',tier.priority, \
-                            'selection_strategy',tier.selection_strategy, \
-                            'candidates',COALESCE(( \
-                                SELECT jsonb_agg(jsonb_build_object( \
-                                    'channel_id',candidate.channel_id, \
-                                    'upstream_model',candidate.upstream_model, \
-                                    'weight',candidate.weight \
-                                ) ORDER BY candidate.channel_id,candidate.upstream_model) \
-                                FROM model_rule_routing_candidates AS candidate \
-                                WHERE candidate.model_rule_id=tier.model_rule_id \
-                                  AND candidate.priority=tier.priority \
-                            ),'[]'::jsonb) \
-                        ) ORDER BY tier.priority) \
-                        FROM model_rule_routing_tiers AS tier \
-                        WHERE tier.model_rule_id=r.id \
-                    ),'[]'::jsonb) AS routing_tiers, \
-                    r.enabled,r.updated_at \
-             FROM model_rules AS r \
-             JOIN model_routing_profiles AS profile ON profile.id=r.model_routing_profile_id \
-             JOIN models AS m ON m.id=profile.model_id AND m.deleted_at IS NULL \
-             ORDER BY r.id",
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        let mut protocols_by_rule = HashMap::<Uuid, Vec<ControlPlaneModelProtocolRule>>::new();
-        for row in protocol_rule_rows {
-            protocols_by_rule
-                .entry(row.model_rule_id)
-                .or_default()
-                .push(ControlPlaneModelProtocolRule::from_row(
-                    row,
-                    &channel_groups,
-                    &channels,
-                ));
-        }
-        let model_rules = model_rule_rows
-            .into_iter()
-            .map(|row| {
-                let protocols = protocols_by_rule.remove(&row.id).unwrap_or_default();
-                ControlPlaneModelRule::from_row(row, protocols)
-            })
-            .collect();
         let proxies = sqlx::query_as::<_, ControlPlaneProxy>("SELECT id,name,regexp_replace(regexp_replace(proxy_url, '^([^:/?#]+://)[^/?#]*@', E'\\\\1'), '[?#].*$', '') AS proxy_url,no_proxy_hosts,enabled,(username IS NOT NULL OR password IS NOT NULL) AS credential_configured,created_at,updated_at FROM proxies ORDER BY id").fetch_all(&self.pool).await?;
         let config_templates = sqlx::query_as::<_, ControlPlaneConfigTemplate>("SELECT id,name,description,document->>'api_format' AS api_format,enabled,created_at,updated_at FROM config_templates ORDER BY id").fetch_all(&self.pool).await?;
         Ok(ControlPlaneLists {
@@ -5503,9 +4788,6 @@ impl PostgresControlPlaneRepository {
             models,
             api_keys,
             api_key_policies,
-            channel_groups,
-            channels,
-            model_rules,
             proxies,
             config_templates,
         })
@@ -5523,59 +4805,6 @@ impl PostgresControlPlaneRepository {
         .fetch_optional(&self.pool)
         .await
         .map_err(RepositoryError::from)
-    }
-
-    pub async fn control_plane_channel_detail(
-        &self,
-        id: Uuid,
-    ) -> Result<Option<ControlPlaneChannelDetail>, RepositoryError> {
-        sqlx::query_as::<_, ControlPlaneChannelDetail>(
-            "SELECT c.id,c.channel_group_id,c.api_format::text AS api_format,g.connector_kind,
-             (g.connector_kind <> 'openai_compatible') AS provider_managed,c.name,c.base_url,
-             CASE WHEN g.connector_kind='codex_oauth' THEN (c.enabled AND COALESCE(co.enabled,false)) ELSE c.enabled END AS enabled,
-             c.supports_websocket,c.supports_standalone_web_search,c.auto_disabled,c.auto_disabled_reason,
-             c.auto_disable_allowed,c.billing_multiplier,c.proxy_id,c.config_template_id,c.override_document,
-             c.connect_timeout_ms,c.response_header_timeout_ms,c.stream_idle_timeout_ms,c.credential_id,
-             c.available_models,c.test_model,c.test_pricing_model_id,c.created_at,c.updated_at
-             FROM channels c JOIN channel_groups g ON g.id=c.channel_group_id AND g.deleted_at IS NULL
-             LEFT JOIN codex_oauth_credential_channels projection ON projection.channel_id=c.id
-             LEFT JOIN codex_oauth_credentials co ON co.channel_id=projection.credential_id
-             WHERE c.id=$1 AND c.deleted_at IS NULL AND (g.connector_kind <> 'codex_oauth' OR (co.channel_id IS NOT NULL AND co.deleted_at IS NULL))",
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(RepositoryError::from)
-    }
-
-    pub async fn channel_group_deletion_impact(
-        &self,
-        id: Uuid,
-    ) -> Result<ChannelDeletionImpact, RepositoryError> {
-        self.deletion_impact(ChannelDeletionTarget::Group(id)).await
-    }
-
-    pub async fn channel_deletion_impact(
-        &self,
-        id: Uuid,
-    ) -> Result<ChannelDeletionImpact, RepositoryError> {
-        self.deletion_impact(ChannelDeletionTarget::Channel(id))
-            .await
-    }
-
-    pub(crate) async fn deletion_impact(
-        &self,
-        target: ChannelDeletionTarget,
-    ) -> Result<ChannelDeletionImpact, RepositoryError> {
-        let mut transaction = self.pool.begin().await?;
-        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
-            .execute(&mut *transaction)
-            .await?;
-        let impact = load_channel_deletion_plan(&mut transaction, target)
-            .await?
-            .impact;
-        transaction.commit().await?;
-        Ok(impact)
     }
 
     pub async fn control_plane_config_template_detail(
@@ -5639,6 +4868,7 @@ impl PostgresControlPlaneRepository {
         &self,
         user_id: Uuid,
     ) -> Result<SelfApiKeyOptions, RepositoryError> {
+        let mut transaction = self.pool.begin().await?;
         let policy = sqlx::query_as::<_, SelfApiKeyPolicy>(
             "SELECT p.id,p.name,p.allowed_group_ids,p.allowed_channel_ids,p.enabled \
              FROM users AS u \
@@ -5648,16 +4878,11 @@ impl PostgresControlPlaneRepository {
              WHERE u.id=$1 AND u.status='active' AND u.deleted_at IS NULL",
         )
         .bind(user_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *transaction)
         .await?;
-        let sharing_credentials = sqlx::query_as::<_, SelfApiKeySharingCredentialOption>(
+        let mut sharing_credentials = sqlx::query_as::<_, SelfApiKeySharingCredentialOption>(
             "SELECT s.credential_id,s.id AS sharing_group_id,s.name,s.enabled, \
-                    ARRAY(SELECT p.channel_id FROM codex_oauth_credential_channels p \
-                          WHERE p.credential_id=s.credential_id ORDER BY p.api_format) \
-                    AS channel_ids, \
-                    ARRAY(SELECT p.api_format::text FROM codex_oauth_credential_channels p \
-                          WHERE p.credential_id=s.credential_id ORDER BY p.api_format) \
-                    AS api_formats \
+                    ARRAY[]::uuid[] AS channel_ids, ARRAY[]::text[] AS api_formats \
              FROM codex_sharing_groups s \
              JOIN users u ON u.id=$1 AND u.status='active' AND u.deleted_at IS NULL \
                               AND NOT u.is_system \
@@ -5665,64 +4890,20 @@ impl PostgresControlPlaneRepository {
              ORDER BY s.name,s.id",
         )
         .bind(user_id)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *transaction)
         .await?;
         if sharing_credentials.is_empty() {
             ensure_optional_policy_enabled(policy.as_ref())?;
         }
 
-        let (groups, channels) = if let Some(policy) = policy.as_ref().filter(|p| p.enabled) {
-            let groups = sqlx::query_as::<_, SelfApiKeyGroupOption>(
-                "SELECT g.id,g.name,g.api_format::text AS api_format,g.enabled \
-                 FROM channel_groups g \
-                 WHERE g.id = ANY($1) AND g.deleted_at IS NULL AND NOT g.sharing_only \
-                   AND EXISTS (SELECT 1 FROM channels candidate \
-                     WHERE candidate.channel_group_id=g.id \
-                       AND candidate.deleted_at IS NULL \
-                       AND NOT EXISTS (SELECT 1 \
-                         FROM codex_oauth_credential_channels option_projection \
-                         JOIN codex_oauth_credentials option_credential \
-                           ON option_credential.channel_id=option_projection.credential_id \
-                         JOIN codex_sharing_groups s \
-                           ON s.credential_id=option_credential.channel_id \
-                           OR (COALESCE(option_credential.account_id,'')=s.provider_account_id \
-                               AND option_credential.user_id=s.provider_user_id) \
-                         WHERE option_projection.channel_id=candidate.id \
-                           AND option_credential.deleted_at IS NULL)) \
-                 ORDER BY g.api_format,g.name,g.id",
-            )
-            .bind(&policy.allowed_group_ids)
-            .fetch_all(&self.pool)
-            .await?;
-            let channels = sqlx::query_as::<_, SelfApiKeyChannelOption>(
-                "SELECT c.id,c.channel_group_id,g.name AS channel_group_name, \
-                        g.enabled AS channel_group_enabled, \
-                        c.api_format::text AS api_format,c.name,c.enabled,c.auto_disabled \
-                 FROM channels AS c \
-                 JOIN channel_groups AS g \
-                   ON g.id=c.channel_group_id AND g.deleted_at IS NULL \
-                 WHERE c.deleted_at IS NULL AND NOT g.sharing_only \
-                   AND (c.channel_group_id = ANY($1) OR c.id = ANY($2)) \
-                   AND NOT EXISTS (SELECT 1 \
-                       FROM codex_oauth_credential_channels option_projection \
-                       JOIN codex_oauth_credentials option_credential \
-                         ON option_credential.channel_id=option_projection.credential_id \
-                       JOIN codex_sharing_groups s \
-                         ON s.credential_id=option_credential.channel_id \
-                         OR (COALESCE(option_credential.account_id,'')=s.provider_account_id \
-                             AND option_credential.user_id=s.provider_user_id) \
-                       WHERE option_projection.channel_id=c.id \
-                         AND option_credential.deleted_at IS NULL) \
-                 ORDER BY c.api_format,g.name,c.name,c.id",
-            )
-            .bind(&policy.allowed_group_ids)
-            .bind(&policy.allowed_channel_ids)
-            .fetch_all(&self.pool)
-            .await?;
-            (groups, channels)
-        } else {
-            (Vec::new(), Vec::new())
-        };
+        let topology = super::upstream_topology::pg_load(&mut transaction).await?;
+        let sharing = load_self_api_key_sharing_access(&mut transaction, user_id).await?;
+        let (groups, channels) =
+            super::upstream_topology::authorization::options(&topology, policy.as_ref(), &sharing);
+        super::upstream_topology::authorization::sharing_options(
+            &topology,
+            &mut sharing_credentials,
+        );
         Ok(SelfApiKeyOptions {
             policy_id: policy.as_ref().map(|p| p.id),
             policy_name: policy.as_ref().map(|p| p.name.clone()),
@@ -5774,7 +4955,7 @@ impl PostgresControlPlaneRepository {
         .bind(&input.name)
         .bind(&secret)
         .bind(input.expires_at)
-        .bind(&allowed_api_formats)
+        .bind(&allowed_api_formats.formats)
         .bind(permissions)
         .bind(&input.allowed_group_ids)
         .bind(&input.allowed_channel_ids)
@@ -5782,6 +4963,16 @@ impl PostgresControlPlaneRepository {
         .bind(input.max_concurrent_requests)
         .bind(input.quota_limit_amount)
         .fetch_one(&mut **transaction)
+        .await?;
+        super::upstream_topology::authorization::pg_write(
+            transaction,
+            id,
+            false,
+            &json!({}),
+            &input.allowed_group_ids,
+            &input.allowed_channel_ids,
+            Some(allowed_api_formats),
+        )
         .await?;
         Ok(MutationResult {
             id,
@@ -5861,7 +5052,7 @@ impl PostgresControlPlaneRepository {
         .bind(&input.status)
         .bind(input.expires_at)
         .bind(targets_changed)
-        .bind(allowed_api_formats.unwrap_or_default())
+        .bind(allowed_api_formats.as_ref().map(|plan| plan.formats.clone()).unwrap_or_default())
         .bind(&input.allowed_group_ids)
         .bind(&input.allowed_channel_ids)
         .bind(input.requests_per_minute)
@@ -5871,6 +5062,18 @@ impl PostgresControlPlaneRepository {
         .fetch_optional(&mut **transaction)
         .await?
         .ok_or(RepositoryError::Conflict)?;
+        if let Some(plan) = allowed_api_formats {
+            super::upstream_topology::authorization::pg_write(
+                transaction,
+                id,
+                false,
+                &before,
+                &input.allowed_group_ids,
+                &input.allowed_channel_ids,
+                Some(plan),
+            )
+            .await?;
+        }
         Ok(MutationResult {
             id,
             object_type: "api_key",
@@ -6090,10 +5293,7 @@ impl PostgresControlPlaneRepository {
 
         let mut results = Vec::with_capacity(input.items.len());
         for item in input.items {
-            if channel_is_provider_managed(transaction, item.id).await? {
-                return Err(RepositoryError::Validation);
-            }
-            let before = channel_audit(transaction, item.id).await?;
+            let before = capability_audit(transaction, item.id).await?;
             if !before["deleted_at"].is_null() {
                 return Err(RepositoryError::NotFound);
             }
@@ -6104,10 +5304,10 @@ impl PostgresControlPlaneRepository {
                 return Err(RepositoryError::Conflict);
             }
             let updated_at = sqlx::query_scalar(
-                "UPDATE channels SET \
+                "UPDATE channel_capabilities SET \
                  enabled=COALESCE($2,enabled), \
                  auto_disable_allowed=COALESCE($3,auto_disable_allowed), \
-                 billing_multiplier=COALESCE($4,billing_multiplier) \
+                 billing_multiplier=COALESCE($4,billing_multiplier),revision=gen_random_uuid() \
                  WHERE id=$1 AND updated_at=$5 AND deleted_at IS NULL \
                  RETURNING updated_at",
             )
@@ -6121,10 +5321,10 @@ impl PostgresControlPlaneRepository {
             .ok_or(RepositoryError::Conflict)?;
             results.push(MutationResult {
                 id: item.id,
-                object_type: "channel",
+                object_type: "channel_capability",
                 action: "batch_update",
                 before_redacted: before,
-                after_redacted: channel_audit(transaction, item.id).await?,
+                after_redacted: capability_audit(transaction, item.id).await?,
                 created_secret: None,
                 reason: None,
                 updated_at,
@@ -6268,16 +5468,20 @@ impl PostgresControlPlaneRepository {
                     input.max_concurrent_requests,
                     input.quota_limit_amount,
                 )?;
-                validate_policy_targets(
-                    transaction,
-                    &input.allowed_group_ids,
-                    &input.allowed_channel_ids,
-                )
-                .await?;
                 let id = Uuid::new_v4();
                 let secret = generate_api_key_secret();
                 let updated_at = sqlx::query_scalar("INSERT INTO api_keys (id, user_id, name, secret_value, status, expires_at, allowed_api_formats, permissions, allowed_group_ids, allowed_channel_ids, requests_per_minute, max_concurrent_requests, quota_limit_amount) VALUES ($1,$2,$3,$4,'active',$5,$6::api_format[],$7,$8,$9,$10,$11,$12) RETURNING updated_at")
                     .bind(id).bind(input.user_id).bind(&input.name).bind(&secret).bind(input.expires_at).bind(&input.allowed_api_formats).bind(&input.permissions).bind(&input.allowed_group_ids).bind(&input.allowed_channel_ids).bind(input.requests_per_minute).bind(input.max_concurrent_requests).bind(input.quota_limit_amount).fetch_one(&mut **transaction).await?;
+                super::upstream_topology::authorization::pg_write(
+                    transaction,
+                    id,
+                    false,
+                    &json!({}),
+                    &input.allowed_group_ids,
+                    &input.allowed_channel_ids,
+                    None,
+                )
+                .await?;
                 Ok(MutationResult {
                     id,
                     object_type: "api_key",
@@ -6316,18 +5520,22 @@ impl PostgresControlPlaneRepository {
                     input.max_concurrent_requests,
                     input.quota_limit_amount,
                 )?;
-                validate_policy_targets(
-                    transaction,
-                    &input.allowed_group_ids,
-                    &input.allowed_channel_ids,
-                )
-                .await?;
                 let before = key_audit(transaction, id).await?;
                 if !before["deleted_at"].is_null() {
                     return Err(RepositoryError::NotFound);
                 }
                 let updated_at = sqlx::query_scalar("UPDATE api_keys SET name=$2,status=$3,expires_at=$4,allowed_api_formats=$5::api_format[],permissions=$6,allowed_group_ids=$7,allowed_channel_ids=$8,requests_per_minute=$9,max_concurrent_requests=$10,quota_limit_amount=$11 WHERE id=$1 AND updated_at=$12 AND deleted_at IS NULL AND NOT (status='revoked' AND $3 <> 'revoked') RETURNING updated_at")
                     .bind(id).bind(&input.name).bind(&input.status).bind(input.expires_at).bind(&input.allowed_api_formats).bind(&input.permissions).bind(&input.allowed_group_ids).bind(&input.allowed_channel_ids).bind(input.requests_per_minute).bind(input.max_concurrent_requests).bind(input.quota_limit_amount).bind(expected_updated_at).fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?;
+                super::upstream_topology::authorization::pg_write(
+                    transaction,
+                    id,
+                    false,
+                    &before,
+                    &input.allowed_group_ids,
+                    &input.allowed_channel_ids,
+                    None,
+                )
+                .await?;
                 Ok(MutationResult {
                     id,
                     object_type: "api_key",
@@ -6384,79 +5592,12 @@ impl PostgresControlPlaneRepository {
                     correlation_id: None,
                 })
             }
-            ControlPlaneMutation::CreateGroup(input) => {
-                group_insert(transaction, Uuid::new_v4(), input, true, None).await
-            }
-            ControlPlaneMutation::UpdateGroup {
-                id,
-                input,
-                expected_updated_at,
-            } => group_insert(transaction, id, input, false, Some(expected_updated_at)).await,
-            ControlPlaneMutation::DeleteGroup {
-                id,
-                deleted_by,
-                expected_updated_at,
-                confirmation_token,
-            } => {
-                channel_resource_soft_delete(
-                    transaction,
-                    ChannelDeletionTarget::Group(id),
-                    deleted_by,
-                    expected_updated_at,
-                    &confirmation_token,
-                )
-                .await
-            }
-            ControlPlaneMutation::CreateChannel(input) => {
-                channel_insert(transaction, Uuid::new_v4(), input, true, None).await
-            }
-            ControlPlaneMutation::UpdateChannel {
-                id,
-                input,
-                expected_updated_at,
-            } => channel_insert(transaction, id, input, false, Some(expected_updated_at)).await,
-            ControlPlaneMutation::DeleteChannel {
-                id,
-                deleted_by,
-                expected_updated_at,
-                confirmation_token,
-            } => {
-                channel_resource_soft_delete(
-                    transaction,
-                    ChannelDeletionTarget::Channel(id),
-                    deleted_by,
-                    expected_updated_at,
-                    &confirmation_token,
-                )
-                .await
-            }
             ControlPlaneMutation::RecoverChannel {
                 id,
                 expected_updated_at,
             } => channel_recover(transaction, id, expected_updated_at).await,
             ControlPlaneMutation::CreateRule(input) => {
                 model_routing_profile_insert(transaction, Uuid::new_v4(), input).await
-            }
-            ControlPlaneMutation::CreateProtocolRule {
-                model_rule_id,
-                input,
-            } => {
-                model_protocol_rule_create(transaction, model_rule_id, Uuid::new_v4(), input).await
-            }
-            ControlPlaneMutation::UpdateProtocolRule {
-                model_rule_id,
-                id,
-                input,
-                expected_updated_at,
-            } => {
-                model_protocol_rule_update(
-                    transaction,
-                    model_rule_id,
-                    id,
-                    input,
-                    expected_updated_at,
-                )
-                .await
             }
             ControlPlaneMutation::CreateUpstreamCredential(input) => {
                 super::upstream_credentials::pg_save(transaction, Uuid::new_v4(), input, None).await
@@ -6604,8 +5745,6 @@ impl PostgresControlPlaneRepository {
 pub(crate) struct SelfApiKeyPolicy {
     pub(crate) id: Uuid,
     pub(crate) name: String,
-    pub(crate) allowed_group_ids: Vec<Uuid>,
-    pub(crate) allowed_channel_ids: Vec<Uuid>,
     pub(crate) enabled: bool,
 }
 
@@ -6613,22 +5752,6 @@ pub(crate) struct SelfApiKeyPolicy {
 pub(crate) struct SelfApiKeyCurrent {
     pub(crate) allowed_group_ids: Vec<Uuid>,
     pub(crate) allowed_channel_ids: Vec<Uuid>,
-}
-
-#[derive(FromRow)]
-pub(crate) struct ApiKeyTargetGroup {
-    pub(crate) id: Uuid,
-    pub(crate) api_format: String,
-    pub(crate) sharing_only: bool,
-    pub(crate) has_ordinary_channel: bool,
-}
-
-#[derive(FromRow)]
-pub(crate) struct ApiKeyTargetChannel {
-    pub(crate) id: Uuid,
-    pub(crate) channel_group_id: Uuid,
-    pub(crate) api_format: String,
-    pub(crate) sharing_only: bool,
 }
 
 #[derive(Default)]
@@ -6680,7 +5803,7 @@ async fn load_self_api_key_sharing_access(
     user_id: Uuid,
 ) -> Result<SelfApiKeySharingAccess, RepositoryError> {
     let rows = sqlx::query_as::<_, (Uuid, bool)>(
-        "SELECT projection.channel_id, \
+        "SELECT projection.id, \
                 bool_or(candidate.channel_id=s.credential_id \
                     AND s.seats @> jsonb_build_array($1::uuid)) AS owned \
          FROM codex_sharing_groups s \
@@ -6688,10 +5811,10 @@ async fn load_self_api_key_sharing_access(
            ON candidate.channel_id=s.credential_id \
            OR (COALESCE(candidate.account_id,'')=s.provider_account_id \
                AND candidate.user_id=s.provider_user_id) \
-         JOIN codex_oauth_credential_channels projection \
+         JOIN upstream_channels projection \
            ON projection.credential_id=candidate.channel_id \
-         WHERE candidate.deleted_at IS NULL \
-         GROUP BY projection.channel_id",
+         WHERE candidate.deleted_at IS NULL AND projection.deleted_at IS NULL \
+         GROUP BY projection.id",
     )
     .bind(user_id)
     .fetch_all(&mut **transaction)
@@ -6803,120 +5926,14 @@ async fn resolve_self_api_key_targets(
     selected_channel_ids: &[Uuid],
     policy: Option<&SelfApiKeyPolicy>,
     sharing: &SelfApiKeySharingAccess,
-) -> Result<Vec<String>, RepositoryError> {
-    let groups = sqlx::query_as::<_, ApiKeyTargetGroup>(
-        "SELECT g.id,g.api_format::text AS api_format,g.sharing_only, \
-                EXISTS (SELECT 1 FROM channels candidate \
-                  WHERE candidate.channel_group_id=g.id \
-                    AND candidate.deleted_at IS NULL \
-                    AND NOT EXISTS (SELECT 1 \
-                      FROM codex_oauth_credential_channels projection \
-                      JOIN codex_oauth_credentials credential \
-                        ON credential.channel_id=projection.credential_id \
-                      JOIN codex_sharing_groups s \
-                        ON s.credential_id=credential.channel_id \
-                        OR (COALESCE(credential.account_id,'')=s.provider_account_id \
-                            AND credential.user_id=s.provider_user_id) \
-                      WHERE projection.channel_id=candidate.id \
-                        AND credential.deleted_at IS NULL)) AS has_ordinary_channel \
-         FROM channel_groups g \
-         WHERE g.id = ANY($1) AND g.deleted_at IS NULL",
+) -> Result<super::upstream_topology::authorization::AuthorizationPlan, RepositoryError> {
+    let topology = super::upstream_topology::pg_load(transaction).await?;
+    super::upstream_topology::authorization::resolve(
+        &topology,
+        selected_group_ids,
+        selected_channel_ids,
+        Some((policy, sharing)),
     )
-    .bind(selected_group_ids)
-    .fetch_all(&mut **transaction)
-    .await?;
-    let channels = sqlx::query_as::<_, ApiKeyTargetChannel>(
-        "SELECT c.id,c.channel_group_id,c.api_format::text AS api_format,g.sharing_only \
-         FROM channels c \
-         JOIN channel_groups g ON g.id=c.channel_group_id AND g.deleted_at IS NULL \
-         WHERE c.id = ANY($1) AND c.deleted_at IS NULL",
-    )
-    .bind(selected_channel_ids)
-    .fetch_all(&mut **transaction)
-    .await?;
-    if groups.len() != selected_group_ids.len() || channels.len() != selected_channel_ids.len() {
-        return Err(RepositoryError::ApiKeyTargetNotAllowed);
-    }
-
-    if groups
-        .iter()
-        .any(|group| group.sharing_only || !group.has_ordinary_channel)
-        || channels.iter().any(|channel| {
-            sharing.protected_channels.contains(&channel.id)
-                && !sharing.owned_channels.contains(&channel.id)
-        })
-    {
-        return Err(RepositoryError::ApiKeyTargetNotAllowed);
-    }
-    let ordinary_groups = groups.iter().collect::<Vec<_>>();
-    let ordinary_channels = channels
-        .iter()
-        .filter(|channel| !sharing.owned_channels.contains(&channel.id))
-        .collect::<Vec<_>>();
-    if !ordinary_groups.is_empty() || !ordinary_channels.is_empty() {
-        ensure_optional_policy_enabled(policy)?;
-        let policy = policy.expect("enabled policy was required");
-        let allowed_groups = policy
-            .allowed_group_ids
-            .iter()
-            .copied()
-            .collect::<HashSet<_>>();
-        let allowed_channels = policy
-            .allowed_channel_ids
-            .iter()
-            .copied()
-            .collect::<HashSet<_>>();
-        if ordinary_groups
-            .iter()
-            .any(|group| !allowed_groups.contains(&group.id))
-            || ordinary_channels.iter().any(|channel| {
-                channel.sharing_only
-                    || (!allowed_groups.contains(&channel.channel_group_id)
-                        && !allowed_channels.contains(&channel.id))
-            })
-        {
-            return Err(RepositoryError::ApiKeyTargetNotAllowed);
-        }
-    }
-
-    let mut formats = BTreeSet::new();
-    formats.extend(groups.into_iter().map(|group| group.api_format));
-    formats.extend(channels.into_iter().map(|channel| channel.api_format));
-    if formats.is_empty() {
-        return Err(RepositoryError::Validation);
-    }
-    Ok(formats.into_iter().collect())
-}
-
-async fn validate_policy_targets(
-    transaction: &mut Transaction<'_, Postgres>,
-    allowed_group_ids: &[Uuid],
-    allowed_channel_ids: &[Uuid],
-) -> Result<(), RepositoryError> {
-    validate_target_lists(allowed_group_ids, allowed_channel_ids, false)?;
-    let group_count = sqlx::query_scalar::<_, i64>(
-        "SELECT count(*) FROM channel_groups \
-             WHERE id = ANY($1) AND deleted_at IS NULL",
-    )
-    .bind(allowed_group_ids)
-    .fetch_one(&mut **transaction)
-    .await?;
-    let channel_count = sqlx::query_scalar::<_, i64>(
-        "SELECT count(*) FROM channels AS channel \
-             JOIN channel_groups AS channel_group \
-               ON channel_group.id=channel.channel_group_id \
-              AND channel_group.deleted_at IS NULL \
-             WHERE channel.id = ANY($1) AND channel.deleted_at IS NULL",
-    )
-    .bind(allowed_channel_ids)
-    .fetch_one(&mut **transaction)
-    .await?;
-    if group_count != allowed_group_ids.len() as i64
-        || channel_count != allowed_channel_ids.len() as i64
-    {
-        return Err(RepositoryError::Validation);
-    }
-    Ok(())
 }
 
 async fn api_key_soft_delete(
@@ -7105,303 +6122,6 @@ async fn model_audit(
     value.ok_or(RepositoryError::NotFound)
 }
 
-async fn load_channel_deletion_plan(
-    transaction: &mut Transaction<'_, Postgres>,
-    target: ChannelDeletionTarget,
-) -> Result<ChannelDeletionPlan, RepositoryError> {
-    let (resource_type, root) = match target {
-        ChannelDeletionTarget::Group(id) => (
-            "channel_group",
-            sqlx::query_as::<_, DeletionImpactRootRow>(
-                "SELECT id,name,updated_at,connector_kind,NULL::uuid AS channel_group_id \
-                 FROM channel_groups \
-                 WHERE id=$1 AND deleted_at IS NULL",
-            )
-            .bind(id)
-            .fetch_optional(&mut **transaction)
-            .await?
-            .ok_or(RepositoryError::NotFound)?,
-        ),
-        ChannelDeletionTarget::Channel(id) => (
-            "channel",
-            sqlx::query_as::<_, DeletionImpactRootRow>(
-                "SELECT c.id,c.name,c.updated_at,g.connector_kind, \
-                        c.channel_group_id AS channel_group_id \
-                 FROM channels AS c \
-                 JOIN channel_groups AS g \
-                   ON g.id=c.channel_group_id AND g.deleted_at IS NULL \
-                 WHERE c.id=$1 AND c.deleted_at IS NULL",
-            )
-            .bind(id)
-            .fetch_optional(&mut **transaction)
-            .await?
-            .ok_or(RepositoryError::NotFound)?,
-        ),
-    };
-    if root.connector_kind != "openai_compatible" {
-        return Err(RepositoryError::ProviderManagedResource);
-    }
-
-    let deleted_group_ids = match target {
-        ChannelDeletionTarget::Group(_) => vec![root.id],
-        ChannelDeletionTarget::Channel(_) => Vec::new(),
-    };
-    let channels = match target {
-        ChannelDeletionTarget::Group(_) => {
-            sqlx::query_as::<_, DeletionImpactChannelRow>(
-                "SELECT id,channel_group_id,name,available_models,updated_at \
-                 FROM channels \
-                 WHERE channel_group_id=$1 AND deleted_at IS NULL \
-                 ORDER BY id",
-            )
-            .bind(root.id)
-            .fetch_all(&mut **transaction)
-            .await?
-        }
-        ChannelDeletionTarget::Channel(_) => {
-            sqlx::query_as::<_, DeletionImpactChannelRow>(
-                "SELECT id,channel_group_id,name,available_models,updated_at \
-                 FROM channels \
-                 WHERE id=$1 AND deleted_at IS NULL",
-            )
-            .bind(root.id)
-            .fetch_all(&mut **transaction)
-            .await?
-        }
-    };
-    let deleted_channel_ids = channels
-        .iter()
-        .map(|channel| channel.id)
-        .collect::<Vec<_>>();
-
-    let rule_rows = sqlx::query_as::<_, DeletionImpactRuleRow>(
-        "SELECT rule.id,rule.model_routing_profile_id AS model_rule_id, \
-                model.source_model_id AS client_model, \
-                rule.api_format::text AS api_format,rule.enabled,rule.updated_at, \
-                COALESCE(( \
-                    SELECT jsonb_agg(jsonb_build_object( \
-                        'priority',tier.priority, \
-                        'selection_strategy',tier.selection_strategy, \
-                        'candidates',COALESCE(( \
-                            SELECT jsonb_agg(jsonb_build_object( \
-                                'channel_id',candidate.channel_id, \
-                                'upstream_model',candidate.upstream_model, \
-                                'weight',candidate.weight \
-                            ) ORDER BY candidate.channel_id,candidate.upstream_model) \
-                            FROM model_rule_routing_candidates AS candidate \
-                            WHERE candidate.model_rule_id=tier.model_rule_id \
-                              AND candidate.priority=tier.priority \
-                        ),'[]'::jsonb) \
-                    ) ORDER BY tier.priority) \
-                    FROM model_rule_routing_tiers AS tier \
-                    WHERE tier.model_rule_id=rule.id \
-                ),'[]'::jsonb) AS routing_tiers \
-         FROM model_rules AS rule \
-         JOIN model_routing_profiles AS profile \
-           ON profile.id=rule.model_routing_profile_id \
-         JOIN models AS model ON model.id=profile.model_id \
-          AND model.deleted_at IS NULL \
-         WHERE EXISTS ( \
-             SELECT 1 FROM model_rule_routing_candidates AS candidate \
-             WHERE candidate.model_rule_id=rule.id \
-               AND candidate.channel_id=ANY($1)) \
-         ORDER BY rule.id",
-    )
-    .bind(&deleted_channel_ids)
-    .fetch_all(&mut **transaction)
-    .await?;
-    let deleted_groups = deleted_group_ids.iter().copied().collect::<HashSet<_>>();
-    let deleted_channels = deleted_channel_ids.iter().copied().collect::<HashSet<_>>();
-    let channel_rows = channels
-        .iter()
-        .map(|channel| (channel.id, channel))
-        .collect::<HashMap<_, _>>();
-    let mut affected_rules = Vec::new();
-    let mut rule_impacts = Vec::new();
-    for row in rule_rows {
-        let state = DeletionImpactRuleState::from(row);
-        if let Some(impact) =
-            deletion_impact_for_rule(&state, &deleted_groups, &deleted_channels, &channel_rows)
-        {
-            affected_rules.push(state);
-            rule_impacts.push(impact);
-        }
-    }
-
-    let api_keys = sqlx::query_as::<_, DeletionImpactApiKeyRow>(
-        "SELECT id,name,allowed_group_ids,allowed_channel_ids,updated_at \
-         FROM api_keys \
-         WHERE deleted_at IS NULL \
-           AND (allowed_group_ids && $1 OR allowed_channel_ids && $2) \
-         ORDER BY id",
-    )
-    .bind(&deleted_group_ids)
-    .bind(&deleted_channel_ids)
-    .fetch_all(&mut **transaction)
-    .await?;
-    let api_key_policies = sqlx::query_as::<_, DeletionImpactApiKeyPolicyRow>(
-        "SELECT id,name,allowed_group_ids,allowed_channel_ids,updated_at \
-         FROM api_key_policies \
-         WHERE allowed_group_ids && $1 OR allowed_channel_ids && $2 \
-         ORDER BY id",
-    )
-    .bind(&deleted_group_ids)
-    .bind(&deleted_channel_ids)
-    .fetch_all(&mut **transaction)
-    .await?;
-    let quota_visibility = sqlx::query_as::<_, DeletionImpactVisibilityRow>(
-        "SELECT visibility.user_group_id,group_record.name AS user_group_name, \
-                visibility.channel_group_id \
-         FROM user_group_codex_quota_visibility AS visibility \
-         JOIN user_groups AS group_record \
-           ON group_record.id=visibility.user_group_id \
-         WHERE visibility.channel_group_id=ANY($1) \
-         ORDER BY visibility.user_group_id,visibility.channel_group_id",
-    )
-    .bind(&deleted_group_ids)
-    .fetch_all(&mut **transaction)
-    .await?;
-
-    let fingerprint = DeletionImpactFingerprint {
-        version: 1,
-        resource_type,
-        root: &root,
-        channels: &channels,
-        model_protocol_rules: &affected_rules,
-        api_keys: &api_keys,
-        api_key_policies: &api_key_policies,
-        quota_visibility: &quota_visibility,
-    };
-    let serialized = serde_json::to_vec(&fingerprint).map_err(|_| RepositoryError::Validation)?;
-    let confirmation_token = format!("v1.{}", sha256_hex(Sha256::digest(serialized)));
-    let affected_rule_ids = rule_impacts.iter().map(|rule| rule.id).collect();
-    let impact = ChannelDeletionImpact {
-        resource_type: resource_type.into(),
-        resource_id: root.id,
-        confirmation_token,
-        channels: channels
-            .iter()
-            .map(|channel| DeletionImpactChannel {
-                id: channel.id,
-                channel_group_id: channel.channel_group_id,
-                name: channel.name.clone(),
-            })
-            .collect(),
-        model_protocol_rules: rule_impacts,
-        api_keys: api_keys
-            .iter()
-            .map(|key| DeletionImpactApiKey {
-                id: key.id,
-                name: key.name.clone(),
-            })
-            .collect(),
-        api_key_policies: api_key_policies
-            .iter()
-            .map(|policy| DeletionImpactApiKeyPolicy {
-                id: policy.id,
-                name: policy.name.clone(),
-            })
-            .collect(),
-        quota_visibility_user_groups: quota_visibility
-            .iter()
-            .map(|visibility| DeletionImpactUserGroup {
-                id: visibility.user_group_id,
-                name: visibility.user_group_name.clone(),
-            })
-            .collect(),
-    };
-    Ok(ChannelDeletionPlan {
-        impact,
-        root_updated_at: root.updated_at,
-        deleted_group_ids,
-        deleted_channel_ids,
-        affected_rule_ids,
-    })
-}
-
-pub(crate) fn deletion_impact_for_rule(
-    state: &DeletionImpactRuleState,
-    deleted_groups: &HashSet<Uuid>,
-    deleted_channels: &HashSet<Uuid>,
-    channel_rows: &HashMap<Uuid, &DeletionImpactChannelRow>,
-) -> Option<DeletionImpactModelProtocolRule> {
-    let mut affected = false;
-    let mut removed_group_ids = BTreeSet::new();
-    let mut removed_channel_ids = BTreeSet::new();
-    let mut removed_tier_priorities = Vec::new();
-    let mut remaining_tier_count = 0;
-
-    for tier in &state.routing_tiers {
-        let mut removed_from_tier = false;
-        let mut remaining_candidate_count = 0;
-        for candidate in &tier.candidates {
-            if deleted_channels.contains(&candidate.channel_id) {
-                affected = true;
-                removed_from_tier = true;
-                removed_channel_ids.insert(candidate.channel_id);
-                if let Some(channel) = channel_rows.get(&candidate.channel_id)
-                    && deleted_groups.contains(&channel.channel_group_id)
-                {
-                    removed_group_ids.insert(channel.channel_group_id);
-                }
-            } else {
-                remaining_candidate_count += 1;
-            }
-        }
-        if remaining_candidate_count == 0 {
-            if removed_from_tier {
-                removed_tier_priorities.push(tier.priority);
-            }
-        } else {
-            remaining_tier_count += 1;
-        }
-    }
-
-    affected.then(|| DeletionImpactModelProtocolRule {
-        id: state.id,
-        model_rule_id: state.model_rule_id,
-        client_model: state.client_model.clone(),
-        api_format: state.api_format.clone(),
-        removed_channel_group_ids: removed_group_ids.into_iter().collect(),
-        removed_channel_ids: removed_channel_ids.into_iter().collect(),
-        removed_tier_priorities,
-        will_disable: state.enabled && remaining_tier_count == 0,
-    })
-}
-
-pub(crate) fn sha256_hex(digest: impl AsRef<[u8]>) -> String {
-    digest
-        .as_ref()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
-}
-
-async fn group_audit(
-    transaction: &mut Transaction<'_, Postgres>,
-    id: Uuid,
-) -> Result<Value, RepositoryError> {
-    let value = sqlx::query_scalar::<_, Value>(
-        "SELECT to_jsonb(selected_group) || \
-                CASE WHEN selected_group.connector_pool_id IS NULL THEN '{}'::jsonb \
-                     ELSE jsonb_build_object( \
-                         'connector_pool_groups', \
-                         (SELECT jsonb_agg(to_jsonb(pool_group) ORDER BY pool_group.api_format) \
-                          FROM channel_groups AS pool_group \
-                          WHERE pool_group.connector_pool_id=selected_group.connector_pool_id) \
-                     ) \
-                END \
-         FROM channel_groups AS selected_group \
-         WHERE selected_group.id=$1 FOR UPDATE",
-    )
-    .bind(id)
-    .fetch_optional(&mut **transaction)
-    .await?;
-    let Some(value) = value else {
-        return Err(RepositoryError::NotFound);
-    };
-    Ok(value)
-}
 async fn capability_audit(
     transaction: &mut Transaction<'_, Postgres>,
     id: Uuid,
@@ -7425,32 +6145,6 @@ async fn capability_audit(
     .await?
     .ok_or(RepositoryError::NotFound)
 }
-async fn channel_audit(
-    transaction: &mut Transaction<'_, Postgres>,
-    id: Uuid,
-) -> Result<Value, RepositoryError> {
-    // Audit snapshots remain allowlisted even though authorized detail reads
-    // expose the stored credential and transform document for editing.
-    let value = sqlx::query_scalar::<_, Value>(
-        "SELECT json_build_object('id',id,'channel_group_id',channel_group_id,'api_format',api_format,
-         'name',name,'base_url',base_url,'enabled',enabled,'supports_websocket',supports_websocket,
-         'supports_standalone_web_search',supports_standalone_web_search,'auto_disabled',auto_disabled,
-         'auto_disabled_reason',auto_disabled_reason,'auto_disable_allowed',auto_disable_allowed,
-         'billing_multiplier',billing_multiplier,'proxy_id',proxy_id,'config_template_id',config_template_id,
-         'connect_timeout_ms',connect_timeout_ms,'response_header_timeout_ms',response_header_timeout_ms,
-         'stream_idle_timeout_ms',stream_idle_timeout_ms,'credential_id',credential_id,
-         'available_models',available_models,'test_model',test_model,'test_pricing_model_id',test_pricing_model_id,
-         'deleted_at',deleted_at,'deleted_by',deleted_by,'created_at',created_at,'updated_at',updated_at)
-         FROM channels WHERE id=$1 FOR UPDATE",
-    )
-    .bind(id)
-    .fetch_optional(&mut **transaction)
-    .await?;
-    let Some(value) = value else {
-        return Err(RepositoryError::NotFound);
-    };
-    Ok(value)
-}
 async fn model_routing_profile_audit(
     transaction: &mut Transaction<'_, Postgres>,
     id: Uuid,
@@ -7470,40 +6164,6 @@ async fn model_routing_profile_audit(
     .fetch_optional(&mut **transaction)
     .await?
     .ok_or(RepositoryError::NotFound)
-}
-async fn rule_audit(
-    transaction: &mut Transaction<'_, Postgres>,
-    id: Uuid,
-) -> Result<Value, RepositoryError> {
-    let value = sqlx::query_scalar::<_, Value>(
-        "SELECT to_jsonb(rule) || jsonb_build_object( \
-                    'routing_tiers',COALESCE(( \
-                        SELECT jsonb_agg(jsonb_build_object( \
-                            'priority',tier.priority, \
-                            'selection_strategy',tier.selection_strategy, \
-                            'candidates',COALESCE(( \
-                                SELECT jsonb_agg(jsonb_build_object( \
-                                    'channel_id',candidate.channel_id, \
-                                    'upstream_model',candidate.upstream_model, \
-                                    'weight',candidate.weight \
-                                ) ORDER BY candidate.channel_id,candidate.upstream_model) \
-                                FROM model_rule_routing_candidates AS candidate \
-                                WHERE candidate.model_rule_id=tier.model_rule_id \
-                                  AND candidate.priority=tier.priority \
-                            ),'[]'::jsonb) \
-                        ) ORDER BY tier.priority) \
-                        FROM model_rule_routing_tiers AS tier \
-                        WHERE tier.model_rule_id=rule.id \
-                    ),'[]'::jsonb)) \
-         FROM model_rules AS rule WHERE rule.id=$1 FOR UPDATE",
-    )
-    .bind(id)
-    .fetch_optional(&mut **transaction)
-    .await?;
-    let Some(value) = value else {
-        return Err(RepositoryError::NotFound);
-    };
-    Ok(value)
 }
 async fn proxy_audit(
     transaction: &mut Transaction<'_, Postgres>,
@@ -7558,12 +6218,7 @@ async fn api_key_policy_insert(
     if input.name.trim().is_empty() {
         return Err(RepositoryError::Validation);
     }
-    validate_policy_targets(
-        transaction,
-        &input.allowed_group_ids,
-        &input.allowed_channel_ids,
-    )
-    .await?;
+    validate_target_lists(&input.allowed_group_ids, &input.allowed_channel_ids, false)?;
     let before = if create {
         json!({})
     } else {
@@ -7598,92 +6253,22 @@ async fn api_key_policy_insert(
         .await?
         .ok_or(RepositoryError::Conflict)?
     };
+    super::upstream_topology::authorization::pg_write(
+        transaction,
+        id,
+        true,
+        &before,
+        &input.allowed_group_ids,
+        &input.allowed_channel_ids,
+        None,
+    )
+    .await?;
     Ok(MutationResult {
         id,
         object_type: "api_key_policy",
         action: if create { "create" } else { "update" },
         before_redacted: before,
         after_redacted: api_key_policy_audit(transaction, id).await?,
-        created_secret: None,
-        reason: None,
-        updated_at,
-        correlation_id: None,
-    })
-}
-
-async fn group_insert(
-    transaction: &mut Transaction<'_, Postgres>,
-    id: Uuid,
-    input: ChannelGroupInput,
-    create: bool,
-    expected_updated_at: Option<DateTime<Utc>>,
-) -> Result<MutationResult, RepositoryError> {
-    if input.name.trim().is_empty()
-        || ApiFormat::parse(&input.api_format).is_none()
-        || !matches!(
-            input.connector_kind.as_str(),
-            "openai_compatible" | "codex_oauth"
-        )
-        || input
-            .request_compression
-            .as_deref()
-            .is_some_and(|value| RequestCompression::parse(value).is_none())
-        || (create
-            && input.connector_kind == "codex_oauth"
-            && input.api_format != "open_ai_responses")
-    {
-        return Err(RepositoryError::Validation);
-    }
-    let before = if create {
-        json!({})
-    } else {
-        group_audit(transaction, id).await?
-    };
-    if !create && !before["deleted_at"].is_null() {
-        return Err(RepositoryError::NotFound);
-    }
-    let sharing_only = input
-        .sharing_only
-        .unwrap_or_else(|| before["sharing_only"].as_bool().unwrap_or(false));
-    if sharing_only && input.connector_kind != "codex_oauth" {
-        return Err(RepositoryError::Validation);
-    }
-    let request_compression = input.request_compression.as_deref().unwrap_or_else(|| {
-        if create {
-            "default"
-        } else {
-            before["request_compression"]
-                .as_str()
-                .expect("persisted channel group request compression is a string")
-        }
-    });
-    if RequestCompression::parse(request_compression)
-        .expect("validated channel group request compression")
-        .is_encoded()
-        && input.api_format != "open_ai_responses"
-    {
-        return Err(RepositoryError::Validation);
-    }
-    if !create && before["connector_kind"].as_str() != Some(input.connector_kind.as_str()) {
-        return Err(RepositoryError::Validation);
-    }
-    if !create
-        && input.connector_kind == "codex_oauth"
-        && before["api_format"].as_str() != Some(input.api_format.as_str())
-    {
-        return Err(RepositoryError::Validation);
-    }
-    let updated_at = if create {
-        sqlx::query_scalar("INSERT INTO channel_groups (id,name,api_format,connector_kind,request_compression,enabled,status_statistics_enabled,sharing_only) VALUES ($1,$2,$3::api_format,$4,$5,$6,$7,$8) RETURNING updated_at").bind(id).bind(&input.name).bind(&input.api_format).bind(&input.connector_kind).bind(request_compression).bind(input.enabled).bind(input.status_statistics_enabled.unwrap_or(false)).bind(sharing_only).fetch_one(&mut **transaction).await?
-    } else {
-        sqlx::query_scalar("UPDATE channel_groups SET name=$2,api_format=$3::api_format,connector_kind=$4,request_compression=COALESCE($5,request_compression),enabled=$6,status_statistics_enabled=COALESCE($7,status_statistics_enabled),sharing_only=$9 WHERE id=$1 AND updated_at=$8 AND deleted_at IS NULL RETURNING updated_at").bind(id).bind(&input.name).bind(&input.api_format).bind(&input.connector_kind).bind(&input.request_compression).bind(input.enabled).bind(input.status_statistics_enabled).bind(expected_updated_at.expect("PUT version")).bind(sharing_only).fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?
-    };
-    Ok(MutationResult {
-        id,
-        object_type: "channel_group",
-        action: if create { "create" } else { "update" },
-        before_redacted: before,
-        after_redacted: group_audit(transaction, id).await?,
         created_secret: None,
         reason: None,
         updated_at,
@@ -7776,11 +6361,8 @@ async fn replace_user_group_codex_quota_visibility(
     if !channel_group_ids.is_empty() {
         let valid_count = sqlx::query_scalar::<_, i64>(
             "SELECT count(*) \
-             FROM channel_groups \
-             WHERE id=ANY($1) \
-               AND deleted_at IS NULL \
-               AND connector_kind='codex_oauth' \
-               AND api_format='open_ai_responses'::api_format",
+             FROM routing_groups g JOIN connector_pools pool ON pool.routing_group_id=g.id \
+             WHERE g.id=ANY($1) AND g.deleted_at IS NULL",
         )
         .bind(channel_group_ids)
         .fetch_one(&mut **transaction)
@@ -8369,8 +6951,8 @@ async fn model_soft_delete(
         return Err(RepositoryError::Conflict);
     }
 
-    let disabled_protocol_rules = sqlx::query(
-        "UPDATE model_rules AS rule \
+    let disabled_operation_rules = sqlx::query(
+        "UPDATE model_operation_rules AS rule \
          SET enabled=false \
          FROM model_routing_profiles AS profile \
          WHERE profile.model_id=$1 \
@@ -8381,10 +6963,21 @@ async fn model_soft_delete(
     .execute(&mut **transaction)
     .await?
     .rows_affected();
+    // Deleted pricing models cannot be edited again; withdraw their candidates
+    // now so they cannot permanently pin otherwise removable capabilities.
+    sqlx::query(
+        "DELETE FROM model_capability_tiers WHERE rule_id IN ( \
+         SELECT rule.id FROM model_operation_rules rule \
+         JOIN model_routing_profiles profile ON profile.id=rule.model_routing_profile_id \
+         WHERE profile.model_id=$1)",
+    )
+    .bind(id)
+    .execute(&mut **transaction)
+    .await?;
     let cleared_scheduled_tests = sqlx::query(
-        "UPDATE channels \
-         SET test_model=NULL,test_pricing_model_id=NULL \
-         WHERE test_pricing_model_id=$1",
+        "UPDATE channel_capabilities \
+         SET test_model=NULL,test_pricing_model_id=NULL,revision=gen_random_uuid() \
+         WHERE test_pricing_model_id=$1 AND deleted_at IS NULL",
     )
     .bind(id)
     .execute(&mut **transaction)
@@ -8411,7 +7004,7 @@ async fn model_soft_delete(
         after_redacted: model_audit(transaction, id).await?,
         created_secret: None,
         reason: Some(format!(
-            "{disabled_protocol_rules} protocol rules disabled; \
+            "{disabled_operation_rules} operation rules disabled; \
              {cleared_scheduled_tests} scheduled test references cleared"
         )),
         updated_at,
@@ -8619,315 +7212,12 @@ mod synced_advanced_billing_tests {
     }
 }
 
-async fn channel_resource_soft_delete(
-    transaction: &mut Transaction<'_, Postgres>,
-    target: ChannelDeletionTarget,
-    deleted_by: Uuid,
-    expected_updated_at: DateTime<Utc>,
-    confirmation_token: &str,
-) -> Result<MutationResult, RepositoryError> {
-    if confirmation_token.is_empty() {
-        return Err(RepositoryError::Validation);
-    }
-    let (before, object_type) = match target {
-        ChannelDeletionTarget::Group(id) => (group_audit(transaction, id).await?, "channel_group"),
-        ChannelDeletionTarget::Channel(id) => (channel_audit(transaction, id).await?, "channel"),
-    };
-    if !before["deleted_at"].is_null() {
-        return Err(RepositoryError::NotFound);
-    }
-    let current_updated_at: DateTime<Utc> = serde_json::from_value(before["updated_at"].clone())
-        .map_err(|_| RepositoryError::Validation)?;
-    if current_updated_at != expected_updated_at {
-        return Err(RepositoryError::Conflict);
-    }
-
-    let plan = load_channel_deletion_plan(transaction, target).await?;
-    if plan.root_updated_at != expected_updated_at {
-        return Err(RepositoryError::Conflict);
-    }
-    if plan.impact.confirmation_token != confirmation_token {
-        return Err(RepositoryError::DeletionImpactChanged);
-    }
-
-    let unbound_keys = sqlx::query(
-        "UPDATE api_keys SET \
-             allowed_group_ids=ARRAY( \
-                 SELECT selected FROM unnest(allowed_group_ids) AS selected \
-                 WHERE NOT selected=ANY($1)), \
-             allowed_channel_ids=ARRAY( \
-                 SELECT selected FROM unnest(allowed_channel_ids) AS selected \
-                 WHERE NOT selected=ANY($2)) \
-         WHERE deleted_at IS NULL \
-           AND (allowed_group_ids && $1 OR allowed_channel_ids && $2)",
-    )
-    .bind(&plan.deleted_group_ids)
-    .bind(&plan.deleted_channel_ids)
-    .execute(&mut **transaction)
-    .await?;
-    let unbound_policies = sqlx::query(
-        "UPDATE api_key_policies SET \
-             allowed_group_ids=ARRAY( \
-                 SELECT selected FROM unnest(allowed_group_ids) AS selected \
-                 WHERE NOT selected=ANY($1)), \
-             allowed_channel_ids=ARRAY( \
-                 SELECT selected FROM unnest(allowed_channel_ids) AS selected \
-                 WHERE NOT selected=ANY($2)) \
-         WHERE allowed_group_ids && $1 OR allowed_channel_ids && $2",
-    )
-    .bind(&plan.deleted_group_ids)
-    .bind(&plan.deleted_channel_ids)
-    .execute(&mut **transaction)
-    .await?;
-    let visibility_user_group_ids = plan
-        .impact
-        .quota_visibility_user_groups
-        .iter()
-        .map(|group| group.id)
-        .collect::<Vec<_>>();
-    sqlx::query(
-        "UPDATE user_groups SET updated_at=now() \
-         WHERE id=ANY($1) AND deleted_at IS NULL",
-    )
-    .bind(&visibility_user_group_ids)
-    .execute(&mut **transaction)
-    .await?;
-    let removed_visibility = sqlx::query(
-        "DELETE FROM user_group_codex_quota_visibility \
-         WHERE channel_group_id=ANY($1)",
-    )
-    .bind(&plan.deleted_group_ids)
-    .execute(&mut **transaction)
-    .await?;
-
-    sqlx::query(
-        "DELETE FROM model_rule_routing_candidates \
-         WHERE model_rule_id=ANY($1) AND channel_id=ANY($2)",
-    )
-    .bind(&plan.affected_rule_ids)
-    .bind(&plan.deleted_channel_ids)
-    .execute(&mut **transaction)
-    .await?;
-    sqlx::query(
-        "DELETE FROM model_rule_routing_tiers AS tier \
-         WHERE tier.model_rule_id=ANY($1) \
-           AND NOT EXISTS ( \
-               SELECT 1 FROM model_rule_routing_candidates AS candidate \
-               WHERE candidate.model_rule_id=tier.model_rule_id \
-                 AND candidate.priority=tier.priority)",
-    )
-    .bind(&plan.affected_rule_ids)
-    .execute(&mut **transaction)
-    .await?;
-    sqlx::query(
-        "UPDATE model_rules AS rule \
-         SET enabled=CASE \
-             WHEN EXISTS ( \
-                 SELECT 1 FROM model_rule_routing_tiers AS tier \
-                 WHERE tier.model_rule_id=rule.id) \
-             THEN rule.enabled ELSE false END \
-         WHERE rule.id=ANY($1)",
-    )
-    .bind(&plan.affected_rule_ids)
-    .execute(&mut **transaction)
-    .await?;
-
-    let tombstoned_channels = sqlx::query(
-        "UPDATE channels SET \
-             enabled=false,auto_disabled=false,auto_disabled_reason=NULL, \
-             auto_disable_allowed=false,supports_websocket=false, \
-             supports_standalone_web_search=false, \
-             base_url='https://deleted.invalid',billing_multiplier=1,proxy_id=NULL, \
-             config_template_id=NULL,override_document='{}'::jsonb, \
-             connect_timeout_ms=NULL,response_header_timeout_ms=NULL, \
-             stream_idle_timeout_ms=NULL, \
-             upstream_auth_kind='none',upstream_auth_header_name=NULL, \
-             upstream_api_key=NULL,credential_id=NULL,available_models='{}'::text[], \
-             test_model=NULL,test_pricing_model_id=NULL, \
-             deleted_at=now(),deleted_by=$2 \
-         WHERE id=ANY($1) AND deleted_at IS NULL",
-    )
-    .bind(&plan.deleted_channel_ids)
-    .bind(deleted_by)
-    .execute(&mut **transaction)
-    .await?;
-    if tombstoned_channels.rows_affected() != plan.deleted_channel_ids.len() as u64 {
-        return Err(RepositoryError::Conflict);
-    }
-
-    let updated_at = match target {
-        ChannelDeletionTarget::Group(id) => sqlx::query_scalar(
-            "UPDATE channel_groups SET \
-                 enabled=false,status_statistics_enabled=false, \
-                 deleted_at=now(),deleted_by=$2 \
-             WHERE id=$1 AND updated_at=$3 AND deleted_at IS NULL \
-             RETURNING updated_at",
-        )
-        .bind(id)
-        .bind(deleted_by)
-        .bind(expected_updated_at)
-        .fetch_optional(&mut **transaction)
-        .await?
-        .ok_or(RepositoryError::Conflict)?,
-        ChannelDeletionTarget::Channel(id) => {
-            sqlx::query_scalar("SELECT updated_at FROM channels WHERE id=$1")
-                .bind(id)
-                .fetch_optional(&mut **transaction)
-                .await?
-                .ok_or(RepositoryError::Conflict)?
-        }
-    };
-    let after = match target {
-        ChannelDeletionTarget::Group(id) => group_audit(transaction, id).await?,
-        ChannelDeletionTarget::Channel(id) => channel_audit(transaction, id).await?,
-    };
-    Ok(MutationResult {
-        id: plan.impact.resource_id,
-        object_type,
-        action: "delete",
-        before_redacted: before,
-        after_redacted: after,
-        created_secret: None,
-        reason: Some(format!(
-            "{} channels deleted; {} protocol rules affected; {} API keys and {} policies unbound; {} quota visibility assignments removed",
-            plan.deleted_channel_ids.len(),
-            plan.affected_rule_ids.len(),
-            unbound_keys.rows_affected(),
-            unbound_policies.rows_affected(),
-            removed_visibility.rows_affected(),
-        )),
-        updated_at,
-        correlation_id: None,
-    })
-}
-
-async fn channel_insert(
-    transaction: &mut Transaction<'_, Postgres>,
-    id: Uuid,
-    input: impl Into<ChannelMutationInput>,
-    create: bool,
-    expected_updated_at: Option<DateTime<Utc>>,
-) -> Result<MutationResult, RepositoryError> {
-    let input = input.into();
-    if !create && channel_is_provider_managed(transaction, id).await? {
-        return Err(RepositoryError::Validation);
-    }
-    let connector_kind = sqlx::query_scalar::<_, String>(
-        "SELECT connector_kind FROM channel_groups \
-             WHERE id=$1 AND deleted_at IS NULL",
-    )
-    .bind(input.channel_group_id)
-    .fetch_optional(&mut **transaction)
-    .await?
-    .ok_or(RepositoryError::Validation)?;
-    if connector_kind != "openai_compatible" {
-        return Err(RepositoryError::Validation);
-    }
-    super::upstream_credentials::pg_validate_binding(
-        transaction,
-        input.credential_id,
-        &input.base_url,
-    )
-    .await?;
-    if input
-        .override_document
-        .as_ref()
-        .is_some_and(|document| document.as_object().is_none())
-    {
-        return Err(RepositoryError::Validation);
-    }
-    if ApiFormat::parse(&input.api_format).is_none() {
-        return Err(RepositoryError::Validation);
-    }
-    if input
-        .billing_multiplier
-        .is_some_and(|multiplier| multiplier.is_sign_negative())
-    {
-        return Err(RepositoryError::Validation);
-    }
-    if input.supports_websocket && input.api_format != "open_ai_responses" {
-        return Err(RepositoryError::Validation);
-    }
-    if input.supports_standalone_web_search && input.api_format != "open_ai_responses" {
-        return Err(RepositoryError::Validation);
-    }
-    if input.api_format == "open_ai_images"
-        && (input.test_model.is_some() || input.test_pricing_model_id.is_some())
-    {
-        return Err(RepositoryError::Validation);
-    }
-    if input.test_model.is_some() != input.test_pricing_model_id.is_some() {
-        return Err(RepositoryError::Validation);
-    }
-    if input.test_model.as_ref().is_some_and(|model| {
-        !input
-            .available_models
-            .iter()
-            .any(|available| available == model)
-    }) {
-        return Err(RepositoryError::Validation);
-    }
-    if let Some(test_pricing_model_id) = input.test_pricing_model_id {
-        let configured = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS( \
-                 SELECT 1 FROM models WHERE id=$1 AND deleted_at IS NULL)",
-        )
-        .bind(test_pricing_model_id)
-        .fetch_one(&mut **transaction)
-        .await?;
-        if !configured {
-            return Err(RepositoryError::Validation);
-        }
-    }
-    let override_document_present = input.override_document.is_some();
-    let override_document = input.override_document.unwrap_or_else(empty_object);
-    let before = if create {
-        json!({})
-    } else {
-        channel_audit(transaction, id).await?
-    };
-    if !create && !before["deleted_at"].is_null() {
-        return Err(RepositoryError::NotFound);
-    }
-    let updated_at = if create {
-        sqlx::query_scalar("INSERT INTO channels (id,channel_group_id,api_format,name,base_url,enabled,billing_multiplier,proxy_id,config_template_id,override_document,connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms,upstream_auth_kind,credential_id,available_models,test_model,test_pricing_model_id,auto_disable_allowed,supports_websocket,supports_standalone_web_search) VALUES ($1,$2,$3::api_format,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'none',$14,$15,$16,$17,$18,$19,$20) RETURNING updated_at").bind(id).bind(input.channel_group_id).bind(&input.api_format).bind(&input.name).bind(&input.base_url).bind(input.enabled).bind(input.billing_multiplier.unwrap_or_else(default_billing_multiplier)).bind(input.proxy_id).bind(input.config_template_id).bind(&override_document).bind(input.connect_timeout_ms).bind(input.response_header_timeout_ms).bind(input.stream_idle_timeout_ms).bind(input.credential_id).bind(&input.available_models).bind(&input.test_model).bind(input.test_pricing_model_id).bind(input.auto_disable_allowed).bind(input.supports_websocket).bind(input.supports_standalone_web_search).fetch_one(&mut **transaction).await?
-    } else {
-        sqlx::query_scalar("UPDATE channels SET channel_group_id=$2,api_format=$3::api_format,name=$4,base_url=$5,enabled=$6,billing_multiplier=COALESCE($7,billing_multiplier),proxy_id=$8,config_template_id=$9,override_document=CASE WHEN $10 THEN $11 ELSE override_document END,connect_timeout_ms=$12,response_header_timeout_ms=$13,stream_idle_timeout_ms=$14,credential_id=$15,available_models=$16,test_model=$17,test_pricing_model_id=$18,auto_disable_allowed=$19,supports_websocket=$20,supports_standalone_web_search=$21 WHERE id=$1 AND updated_at=$22 AND deleted_at IS NULL RETURNING updated_at").bind(id).bind(input.channel_group_id).bind(&input.api_format).bind(&input.name).bind(&input.base_url).bind(input.enabled).bind(input.billing_multiplier).bind(input.proxy_id).bind(input.config_template_id).bind(override_document_present).bind(&override_document).bind(input.connect_timeout_ms).bind(input.response_header_timeout_ms).bind(input.stream_idle_timeout_ms).bind(input.credential_id).bind(&input.available_models).bind(&input.test_model).bind(input.test_pricing_model_id).bind(input.auto_disable_allowed).bind(input.supports_websocket).bind(input.supports_standalone_web_search).bind(expected_updated_at.expect("PUT version")).fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?
-    };
-    Ok(MutationResult {
-        id,
-        object_type: "channel",
-        action: if create { "create" } else { "update" },
-        before_redacted: before,
-        after_redacted: channel_audit(transaction, id).await?,
-        created_secret: None,
-        reason: None,
-        updated_at,
-        correlation_id: None,
-    })
-}
-
-async fn channel_is_provider_managed(
-    transaction: &mut Transaction<'_, Postgres>,
-    channel_id: Uuid,
-) -> Result<bool, RepositoryError> {
-    sqlx::query_scalar::<_, bool>(
-        "SELECT g.connector_kind <> 'openai_compatible' \
-         FROM channels c JOIN channel_groups g ON g.id=c.channel_group_id \
-         WHERE c.id=$1 AND c.deleted_at IS NULL AND g.deleted_at IS NULL",
-    )
-    .bind(channel_id)
-    .fetch_optional(&mut **transaction)
-    .await?
-    .ok_or(RepositoryError::NotFound)
-}
-
 async fn channel_recover(
     transaction: &mut Transaction<'_, Postgres>,
     id: Uuid,
     expected_updated_at: DateTime<Utc>,
 ) -> Result<MutationResult, RepositoryError> {
-    let before = channel_audit(transaction, id).await?;
+    let before = capability_audit(transaction, id).await?;
     if !before["deleted_at"].is_null() {
         return Err(RepositoryError::NotFound);
     }
@@ -8939,8 +7229,8 @@ async fn channel_recover(
     }
     let reason = "manually recovered by administrator".to_owned();
     let updated_at = sqlx::query_scalar(
-        "UPDATE channels
-         SET auto_disabled=false, auto_disabled_reason=NULL
+        "UPDATE channel_capabilities
+         SET auto_disabled=false, auto_disable_reason=NULL,auto_disable_at=NULL,revision=gen_random_uuid()
          WHERE id=$1 AND updated_at=$2 AND auto_disabled AND deleted_at IS NULL
          RETURNING updated_at",
     )
@@ -8951,10 +7241,10 @@ async fn channel_recover(
     .ok_or(RepositoryError::Conflict)?;
     Ok(MutationResult {
         id,
-        object_type: "channel",
+        object_type: "channel_capability",
         action: "manual_recover",
         before_redacted: before,
-        after_redacted: channel_audit(transaction, id).await?,
+        after_redacted: capability_audit(transaction, id).await?,
         created_secret: None,
         reason: Some(reason),
         updated_at,
@@ -9010,227 +7300,6 @@ async fn model_routing_profile_insert(
     })
 }
 
-async fn model_protocol_rule_create(
-    transaction: &mut Transaction<'_, Postgres>,
-    model_rule_id: Uuid,
-    id: Uuid,
-    input: ModelProtocolRuleCreateInput,
-) -> Result<MutationResult, RepositoryError> {
-    if ApiFormat::parse(&input.api_format).is_none() {
-        return Err(RepositoryError::Validation);
-    }
-    let profile_exists = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS( \
-             SELECT 1 \
-             FROM model_routing_profiles AS profile \
-             JOIN models AS model ON model.id=profile.model_id \
-             WHERE profile.id=$1 AND model.deleted_at IS NULL \
-             FOR UPDATE OF profile,model)",
-    )
-    .bind(model_rule_id)
-    .fetch_one(&mut **transaction)
-    .await?;
-    if !profile_exists {
-        return Err(RepositoryError::NotFound);
-    }
-    let already_exists = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS( \
-             SELECT 1 FROM model_rules \
-             WHERE model_routing_profile_id=$1 AND api_format=$2::api_format)",
-    )
-    .bind(model_rule_id)
-    .bind(&input.api_format)
-    .fetch_one(&mut **transaction)
-    .await?;
-    if already_exists {
-        return Err(RepositoryError::Conflict);
-    }
-    let updated_at = sqlx::query_scalar(
-        "INSERT INTO model_rules \
-         (id,model_routing_profile_id,api_format,description,enabled) \
-         VALUES ($1,$2,$3::api_format,NULL,false) \
-         ON CONFLICT (model_routing_profile_id,api_format) DO NOTHING \
-         RETURNING updated_at",
-    )
-    .bind(id)
-    .bind(model_rule_id)
-    .bind(&input.api_format)
-    .fetch_optional(&mut **transaction)
-    .await?
-    .ok_or(RepositoryError::Conflict)?;
-    Ok(MutationResult {
-        id,
-        object_type: "model_protocol_rule",
-        action: "create",
-        before_redacted: json!({}),
-        after_redacted: rule_audit(transaction, id).await?,
-        created_secret: None,
-        reason: None,
-        updated_at,
-        correlation_id: None,
-    })
-}
-
-async fn model_protocol_rule_update(
-    transaction: &mut Transaction<'_, Postgres>,
-    model_rule_id: Uuid,
-    id: Uuid,
-    input: ModelProtocolRuleInput,
-    expected_updated_at: DateTime<Utc>,
-) -> Result<MutationResult, RepositoryError> {
-    if (input.enabled && input.routing_tiers.is_empty())
-        || !valid_model_rule_routing_tiers(&input.routing_tiers)
-    {
-        return Err(RepositoryError::Validation);
-    }
-    let current = sqlx::query_as::<_, (String, DateTime<Utc>)>(
-        "SELECT rule.api_format::text,rule.updated_at \
-         FROM model_rules AS rule \
-         JOIN model_routing_profiles AS profile \
-           ON profile.id=rule.model_routing_profile_id \
-         JOIN models AS model \
-           ON model.id=profile.model_id AND model.deleted_at IS NULL \
-         WHERE rule.id=$1 AND rule.model_routing_profile_id=$2 \
-         FOR UPDATE OF rule,profile,model",
-    )
-    .bind(id)
-    .bind(model_rule_id)
-    .fetch_optional(&mut **transaction)
-    .await?
-    .ok_or(RepositoryError::NotFound)?;
-    if current.1 != expected_updated_at {
-        return Err(RepositoryError::Conflict);
-    }
-    let api_format = current.0;
-    validate_model_rule_routing_references(transaction, &api_format, &input.routing_tiers).await?;
-    let before = rule_audit(transaction, id).await?;
-    sqlx::query("DELETE FROM model_rule_routing_tiers WHERE model_rule_id=$1")
-        .bind(id)
-        .execute(&mut **transaction)
-        .await?;
-    let updated_at = sqlx::query_scalar(
-        "UPDATE model_rules \
-         SET description=$3,enabled=$4 \
-         WHERE id=$1 AND model_routing_profile_id=$2 \
-         RETURNING updated_at",
-    )
-    .bind(id)
-    .bind(model_rule_id)
-    .bind(&input.description)
-    .bind(input.enabled)
-    .fetch_one(&mut **transaction)
-    .await?;
-    insert_model_rule_routing_tiers(transaction, id, &api_format, &input.routing_tiers).await?;
-    Ok(MutationResult {
-        id,
-        object_type: "model_protocol_rule",
-        action: "update",
-        before_redacted: before,
-        after_redacted: rule_audit(transaction, id).await?,
-        created_secret: None,
-        reason: None,
-        updated_at,
-        correlation_id: None,
-    })
-}
-
-fn valid_model_rule_routing_tiers(tiers: &[ModelRuleRoutingTier]) -> bool {
-    let mut priorities = HashSet::with_capacity(tiers.len());
-    for tier in tiers {
-        if tier.priority < 0
-            || !priorities.insert(tier.priority)
-            || !matches!(
-                tier.selection_strategy.as_str(),
-                "weighted_random" | "weighted_round_robin"
-            )
-            || tier.candidates.is_empty()
-        {
-            return false;
-        }
-        let mut candidates = HashSet::with_capacity(tier.candidates.len());
-        for candidate in &tier.candidates {
-            if candidate.weight <= 0
-                || candidate.upstream_model.trim().is_empty()
-                || candidate.upstream_model.chars().count() > 300
-                || !candidates.insert((candidate.channel_id, candidate.upstream_model.as_str()))
-            {
-                return false;
-            }
-        }
-    }
-    true
-}
-
-async fn validate_model_rule_routing_references(
-    transaction: &mut Transaction<'_, Postgres>,
-    api_format: &str,
-    tiers: &[ModelRuleRoutingTier],
-) -> Result<(), RepositoryError> {
-    let candidates = tiers
-        .iter()
-        .flat_map(|tier| &tier.candidates)
-        .map(|candidate| (candidate.channel_id, candidate.upstream_model.as_str()))
-        .collect::<Vec<_>>();
-    if candidates.is_empty() {
-        return Ok(());
-    }
-    let (channel_ids, upstream_models): (Vec<_>, Vec<_>) = candidates.into_iter().unzip();
-    let matching_candidate_count = sqlx::query_scalar::<_, i64>(
-        "SELECT count(*) \
-         FROM unnest($1::uuid[],$2::text[]) AS target(channel_id,upstream_model) \
-         JOIN channels AS channel \
-          ON channel.id=target.channel_id \
-          AND channel.api_format=$3::api_format \
-          AND channel.deleted_at IS NULL \
-          AND target.upstream_model=ANY(channel.available_models)",
-    )
-    .bind(&channel_ids)
-    .bind(&upstream_models)
-    .bind(api_format)
-    .fetch_one(&mut **transaction)
-    .await?;
-    if usize::try_from(matching_candidate_count).ok() != Some(channel_ids.len()) {
-        return Err(RepositoryError::RoutingDependencyInvalid);
-    }
-    Ok(())
-}
-
-async fn insert_model_rule_routing_tiers(
-    transaction: &mut Transaction<'_, Postgres>,
-    model_rule_id: Uuid,
-    api_format: &str,
-    tiers: &[ModelRuleRoutingTier],
-) -> Result<(), RepositoryError> {
-    for tier in tiers {
-        sqlx::query(
-            "INSERT INTO model_rule_routing_tiers \
-             (model_rule_id,api_format,priority,selection_strategy) \
-             VALUES ($1,$2::api_format,$3,$4)",
-        )
-        .bind(model_rule_id)
-        .bind(api_format)
-        .bind(tier.priority)
-        .bind(&tier.selection_strategy)
-        .execute(&mut **transaction)
-        .await?;
-        for candidate in &tier.candidates {
-            sqlx::query(
-                "INSERT INTO model_rule_routing_candidates \
-                 (model_rule_id,api_format,priority,channel_id,upstream_model,weight) \
-                 VALUES ($1,$2::api_format,$3,$4,$5,$6)",
-            )
-            .bind(model_rule_id)
-            .bind(api_format)
-            .bind(tier.priority)
-            .bind(candidate.channel_id)
-            .bind(&candidate.upstream_model)
-            .bind(candidate.weight)
-            .execute(&mut **transaction)
-            .await?;
-        }
-    }
-    Ok(())
-}
 async fn proxy_insert(
     transaction: &mut Transaction<'_, Postgres>,
     id: Uuid,
@@ -9305,7 +7374,7 @@ async fn proxy_delete(
         return Err(RepositoryError::Conflict);
     }
     let in_use = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM channels WHERE proxy_id=$1 AND deleted_at IS NULL) \
+        "SELECT EXISTS(SELECT 1 FROM upstream_accesses WHERE proxy_id=$1) \
              OR EXISTS(SELECT 1 FROM codex_oauth_flows WHERE proxy_id=$1)",
     )
     .bind(id)
@@ -9740,8 +7809,6 @@ pub enum RepositoryError {
     Validation,
     #[error("model-rule routing references are invalid")]
     RoutingDependencyInvalid,
-    #[error("the deletion impact changed after confirmation")]
-    DeletionImpactChanged,
     #[error("provider-managed channels use their connector lifecycle")]
     ProviderManagedResource,
     #[error("the built-in user group is protected")]

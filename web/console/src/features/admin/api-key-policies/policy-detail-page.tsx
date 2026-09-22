@@ -18,14 +18,16 @@ import { DetailField } from "@/components/shared/detail-field";
 import { StatusBadge } from "@/components/shared/status-badge";
 import {
   useApiKeyPolicy,
-  useChannelGroups,
-  useChannels,
+  useRoutingGroups,
+  useLogicalChannels,
+  useChannelCapabilities,
   useCreateApiKeyPolicy,
   useUpdateApiKeyPolicy,
 } from "@/features/admin/api";
 import { ApiError } from "@/api/errors";
 import type { ApiKeyPolicyInput } from "@/api/types";
 import { formatRelative } from "@/lib/dates";
+import { operationApiFormat } from "@/lib/permissions";
 import { useI18n } from "@/app/i18n";
 
 const schema = z
@@ -59,8 +61,9 @@ export function ApiKeyPolicyDetailPage() {
   const isNew = id === "new";
   const navigate = useNavigate();
   const { data, etag, isLoading, error } = useApiKeyPolicy(id);
-  const groups = useChannelGroups();
-  const channels = useChannels();
+  const groups = useRoutingGroups();
+  const channels = useLogicalChannels();
+  const capabilities = useChannelCapabilities();
   const create = useCreateApiKeyPolicy();
   const update = useUpdateApiKeyPolicy(id);
   const { t } = useI18n();
@@ -84,27 +87,34 @@ export function ApiKeyPolicyDetailPage() {
       (groups.data ?? []).map((group) => ({
         id: group.id,
         name: group.name,
-        api_format: group.api_format,
+        api_formats: [...new Set((capabilities.data ?? [])
+          .filter((capability) => channels.data?.some((channel) =>
+            channel.id === capability.channel_id && channel.group_id === group.id))
+          .map((capability) => operationApiFormat(capability.settings.operation)))],
         enabled: group.enabled,
       })),
-    [groups.data],
+    [groups.data, channels.data, capabilities.data],
   );
   const targetChannels = useMemo<RoutingTargetChannel[]>(() => {
     const groupById = new Map((groups.data ?? []).map((group) => [group.id, group]));
     return (channels.data ?? []).map((channel) => {
-      const group = groupById.get(channel.channel_group_id);
+      const group = groupById.get(channel.group_id);
+      const channelCapabilities = (capabilities.data ?? []).filter((capability) =>
+        capability.channel_id === channel.id);
       return {
         id: channel.id,
-        channel_group_id: channel.channel_group_id,
+        channel_group_id: channel.group_id,
         channel_group_name: group?.name,
         channel_group_enabled: group?.enabled ?? false,
         name: channel.name,
-        api_format: channel.api_format,
+        api_formats: [...new Set(channelCapabilities.map((capability) =>
+          operationApiFormat(capability.settings.operation)))],
         enabled: channel.enabled,
-        auto_disabled: channel.auto_disabled,
+        auto_disabled: channelCapabilities.length > 0 &&
+          channelCapabilities.every((capability) => capability.auto_disabled),
       };
     });
-  }, [channels.data, groups.data]);
+  }, [channels.data, groups.data, capabilities.data]);
 
   const patch = (partial: Partial<FormState>) => setState((prev) => ({ ...prev, ...partial }));
 
@@ -149,8 +159,8 @@ export function ApiKeyPolicyDetailPage() {
       description={t("Controls which channel groups and channels users may assign to API keys.")}
       backPath="/admin/api-key-policies"
       backLabel={t("Back to policies")}
-      isLoading={isLoading || groups.isLoading || channels.isLoading}
-      error={error ?? groups.error ?? channels.error}
+      isLoading={isLoading || groups.isLoading || channels.isLoading || capabilities.isLoading}
+      error={error ?? groups.error ?? channels.error ?? capabilities.error}
       hasData={isNew || Boolean(data)}
       detailCard={
         !isNew && data ? (

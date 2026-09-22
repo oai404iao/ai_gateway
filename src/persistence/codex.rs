@@ -10,7 +10,6 @@ use super::PostgresControlPlaneRepository;
 use crate::persistence::{MutationResult, RepositoryError};
 
 const CODEX_CONNECTOR_KIND: &str = "codex_oauth";
-const CODEX_RESPONSES_API_FORMAT: &str = "open_ai_responses";
 const QUOTA_WINDOW_IDENTITY_TOLERANCE: Duration = Duration::seconds(90);
 const MANUAL_RESET_MATCH_WINDOW: Duration = Duration::minutes(15);
 
@@ -464,8 +463,8 @@ impl PostgresControlPlaneRepository {
     ) -> Result<Vec<CodexCredentialView>, RepositoryError> {
         sqlx::query_as::<_, CodexCredentialView>(sqlx::AssertSqlSafe(credential_view_select(
             "WHERE credential.connector_pool_id=( \
-                 SELECT connector_pool_id FROM channel_groups \
-                 WHERE id=$1 AND connector_kind=$2 \
+                 SELECT id FROM connector_pools \
+                 WHERE routing_group_id=$1 AND connector_kind=$2 \
              ) \
              AND credential.deleted_at IS NULL \
              ORDER BY credential.label,credential.channel_id",
@@ -568,13 +567,9 @@ impl PostgresControlPlaneRepository {
              AND console_user.deleted_at IS NULL \
              AND credential.deleted_at IS NULL \
              ORDER BY visibility.channel_group_id,credential.channel_id",
-                2,
-                3,
             ),
         ))
         .bind(user_id)
-        .bind(CODEX_CONNECTOR_KIND)
-        .bind(CODEX_RESPONSES_API_FORMAT)
         .fetch_all(&self.pool)
         .await
         .map_err(RepositoryError::from)
@@ -596,14 +591,10 @@ impl PostgresControlPlaneRepository {
                  AND console_user.deleted_at IS NULL \
                  AND credential.channel_id=$2 \
                  AND credential.deleted_at IS NULL",
-                3,
-                4,
             ),
         ))
         .bind(user_id)
         .bind(channel_id)
-        .bind(CODEX_CONNECTOR_KIND)
-        .bind(CODEX_RESPONSES_API_FORMAT)
         .fetch_optional(&self.pool)
         .await?
         .ok_or(RepositoryError::NotFound)?;
@@ -621,12 +612,10 @@ impl PostgresControlPlaneRepository {
                  JOIN codex_oauth_credentials AS credential \
                    ON credential.channel_id=period.credential_id \
                   AND credential.deleted_at IS NULL \
-                 JOIN channel_groups AS visible_group \
-                   ON visible_group.connector_pool_id=credential.connector_pool_id \
-                  AND visible_group.connector_kind=$4 \
-                  AND visible_group.api_format=$5::api_format \
+                 JOIN connector_pools AS visible_pool \
+                   ON visible_pool.id=credential.connector_pool_id \
                  JOIN user_group_codex_quota_visibility AS visibility \
-                   ON visibility.channel_group_id=visible_group.id \
+                   ON visibility.channel_group_id=visible_pool.routing_group_id \
                  JOIN users AS console_user \
                    ON console_user.user_group_id=visibility.user_group_id \
                   AND console_user.status='active' \
@@ -662,8 +651,6 @@ impl PostgresControlPlaneRepository {
         .bind(user_id)
         .bind(channel_id)
         .bind(limit_per_window)
-        .bind(CODEX_CONNECTOR_KIND)
-        .bind(CODEX_RESPONSES_API_FORMAT)
         .fetch_all(&self.pool)
         .await?;
         Ok(SelfCodexQuotaWindowHistory {
@@ -762,11 +749,9 @@ impl PostgresControlPlaneRepository {
 
         let pool = codex_pool_context_pool(&self.pool, channel_group_id).await?;
         let channel_group_name = sqlx::query_scalar::<_, String>(
-            "SELECT name FROM channel_groups \
-             WHERE id=$1 AND connector_kind=$2",
+            "SELECT name FROM routing_groups WHERE id=$1 AND deleted_at IS NULL",
         )
         .bind(channel_group_id)
-        .bind(CODEX_CONNECTOR_KIND)
         .fetch_optional(&self.pool)
         .await?
         .ok_or(RepositoryError::NotFound)?;
@@ -854,10 +839,15 @@ impl PostgresControlPlaneRepository {
         expires_at: DateTime<Utc>,
     ) -> Result<CodexOauthFlowRecord, RepositoryError> {
         validate_credential_settings(&input.label, input.quota_threshold_percent)?;
-        let _ = validate_codex_group_and_proxy_pool(&self.pool, channel_group_id, input.proxy_id)
-            .await?;
+        let mut transaction = self.pool.begin().await?;
+        validate_codex_group_and_proxy_transaction(
+            &mut transaction,
+            channel_group_id,
+            input.proxy_id,
+        )
+        .await?;
         let id = Uuid::new_v4();
-        sqlx::query_as::<_, CodexOauthFlowRecord>(
+        let flow = sqlx::query_as::<_, CodexOauthFlowRecord>(
             "INSERT INTO codex_oauth_flows \
              (id,actor_user_id,channel_group_id,label,proxy_id,quota_threshold_percent, \
               redirect_uri,state_hash,code_verifier,expires_at) \
@@ -875,9 +865,10 @@ impl PostgresControlPlaneRepository {
         .bind(state_hash)
         .bind(code_verifier)
         .bind(expires_at)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(RepositoryError::from)
+        .fetch_one(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(flow)
     }
 
     pub async fn codex_oauth_flow(
@@ -1798,11 +1789,7 @@ fn credential_view_select(suffix: &str) -> String {
     )
 }
 
-fn self_credential_view_select(
-    suffix: &str,
-    connector_kind_parameter: u8,
-    api_format_parameter: u8,
-) -> String {
+fn self_credential_view_select(suffix: &str) -> String {
     format!(
         "SELECT credential.channel_id AS id, \
                 credential.channel_id::text AS name, \
@@ -1815,12 +1802,10 @@ fn self_credential_view_select(
          FROM users AS console_user \
          JOIN user_group_codex_quota_visibility AS visibility \
            ON visibility.user_group_id=console_user.user_group_id \
-         JOIN channel_groups AS visible_group \
-           ON visible_group.id=visibility.channel_group_id \
-          AND visible_group.connector_kind=${connector_kind_parameter} \
-          AND visible_group.api_format=${api_format_parameter}::api_format \
+         JOIN connector_pools AS visible_pool \
+           ON visible_pool.routing_group_id=visibility.channel_group_id \
          JOIN codex_oauth_credentials AS credential \
-           ON credential.connector_pool_id=visible_group.connector_pool_id \
+           ON credential.connector_pool_id=visible_pool.id \
          {CODEX_CURRENT_WINDOW_COSTS_LATERAL} \
          {suffix}"
     )
@@ -2042,15 +2027,6 @@ async fn delete_codex_credential(
     })
 }
 
-async fn validate_codex_group_and_proxy_pool(
-    pool: &PgPool,
-    channel_group_id: Uuid,
-    proxy_id: Option<Uuid>,
-) -> Result<CodexPoolContext, RepositoryError> {
-    let mut connection = pool.acquire().await?;
-    validate_codex_group_and_proxy_connection(&mut connection, channel_group_id, proxy_id).await
-}
-
 async fn codex_pool_context_pool(
     pool: &PgPool,
     channel_group_id: Uuid,
@@ -2072,7 +2048,6 @@ async fn validate_codex_group_and_proxy_connection(
     channel_group_id: Uuid,
     proxy_id: Option<Uuid>,
 ) -> Result<CodexPoolContext, RepositoryError> {
-    let context = codex_pool_context_connection(&mut *connection, channel_group_id).await?;
     if let Some(proxy_id) = proxy_id {
         let valid_proxy = sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS(SELECT 1 FROM proxies WHERE id=$1 AND enabled)",
@@ -2084,7 +2059,16 @@ async fn validate_codex_group_and_proxy_connection(
             return Err(RepositoryError::Validation);
         }
     }
-    Ok(context)
+    sqlx::query(
+        "INSERT INTO connector_pools(id,connector_kind,routing_group_id)
+         SELECT $1,'codex_oauth',id FROM routing_groups WHERE id=$2 AND deleted_at IS NULL
+         ON CONFLICT (routing_group_id) DO NOTHING",
+    )
+    .bind(Uuid::new_v4())
+    .bind(channel_group_id)
+    .execute(&mut *connection)
+    .await?;
+    codex_pool_context_connection(connection, channel_group_id).await
 }
 
 async fn codex_pool_context_connection(
@@ -2092,16 +2076,9 @@ async fn codex_pool_context_connection(
     channel_group_id: Uuid,
 ) -> Result<CodexPoolContext, RepositoryError> {
     sqlx::query_as::<_, CodexPoolContext>(
-        "SELECT selected.connector_pool_id, \
-                responses.id AS responses_channel_group_id \
-         FROM channel_groups AS selected \
-         JOIN channel_groups AS responses \
-           ON responses.connector_pool_id=selected.connector_pool_id \
-          AND responses.api_format='open_ai_responses'::api_format \
-         JOIN channel_groups AS images \
-           ON images.connector_pool_id=selected.connector_pool_id \
-          AND images.api_format='open_ai_images'::api_format \
-         WHERE selected.id=$1 AND selected.connector_kind=$2",
+        "SELECT pool.id AS connector_pool_id,selected.id AS responses_channel_group_id
+         FROM routing_groups selected JOIN connector_pools pool ON pool.routing_group_id=selected.id
+         WHERE selected.id=$1 AND selected.deleted_at IS NULL AND pool.connector_kind=$2",
     )
     .bind(channel_group_id)
     .bind(CODEX_CONNECTOR_KIND)

@@ -41,9 +41,10 @@ const GROUP: Uuid = Uuid::from_u128(0x931);
 const OTHER_GROUP: Uuid = Uuid::from_u128(0x932);
 const CHANNEL: Uuid = Uuid::from_u128(0x941);
 const OTHER_CHANNEL: Uuid = Uuid::from_u128(0x942);
-const CODEX_POOL: Uuid = Uuid::from_u128(0x951);
+const LOGICAL_CHANNEL: Uuid = Uuid::from_u128(0x943);
+const OTHER_LOGICAL_CHANNEL: Uuid = Uuid::from_u128(0x944);
+const ACCESS: Uuid = Uuid::from_u128(0x945);
 const CODEX_GROUP_RESPONSES: Uuid = Uuid::from_u128(0x952);
-const CODEX_CREDENTIAL: Uuid = Uuid::from_u128(0x953);
 
 struct Queries {
     _directory: tempfile::TempDir,
@@ -55,7 +56,7 @@ struct Queries {
 impl Queries {
     async fn new() -> Self {
         let (directory, database) = database().await;
-        assert_eq!(database.install_schema().await.unwrap(), 4);
+        assert_eq!(database.install_schema().await.unwrap(), 5);
         let database = Arc::new(database);
         let request_logs =
             ai_gateway::persistence::sqlite::SqliteRequestLogQueries::new(Arc::clone(&database));
@@ -100,7 +101,7 @@ fn timestamp(value: &str) -> DateTime<Utc> {
 
 /// Seeds two ordinary users, the priced model, two channel groups with one
 /// enabled status-statistics group, and one Codex credential pool.
-async fn seed(queries: &Queries) {
+async fn seed(queries: &Queries) -> Uuid {
     queries
         .execute(&format!(
             "INSERT INTO users(id,email,display_name,role,status,password_hash,password_changed_at,user_group_id)
@@ -113,29 +114,78 @@ async fn seed(queries: &Queries) {
              INSERT INTO models(id,source_model_id,display_name,price_unit_tokens,input_unit_price,
                  cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at)
              VALUES ('{MODEL}','query-model','Query model',1000000,'1','0','0','2','2026-01-01T00:00:00.000000Z');
-             INSERT INTO channel_groups(id,name,api_format,status_statistics_enabled)
-             VALUES ('{GROUP}','Query group','open_ai_chat_completions',1),
-                    ('{OTHER_GROUP}','Other group','open_ai_responses',0);
-             INSERT INTO channels(id,channel_group_id,api_format,name,base_url,upstream_auth_kind,available_models)
-             VALUES ('{CHANNEL}','{GROUP}','open_ai_chat_completions','Query channel','https://upstream.invalid','none',
-                     '[\"query-model\",\"idle-model\"]'),
-                    ('{OTHER_CHANNEL}','{OTHER_GROUP}','open_ai_responses','Other channel','https://upstream.invalid','none','[]');
+             INSERT INTO routing_groups(id,name)
+             VALUES ('{GROUP}','Query group'),('{OTHER_GROUP}','Other group');
+             INSERT INTO upstream_accesses(id,name,connector_kind,base_url)
+             VALUES ('{ACCESS}','Query access','openai_compatible','https://upstream.invalid');
+             INSERT INTO upstream_channels(id,group_id,access_id,name)
+             VALUES ('{LOGICAL_CHANNEL}','{GROUP}','{ACCESS}','Query channel'),
+                    ('{OTHER_LOGICAL_CHANNEL}','{OTHER_GROUP}','{ACCESS}','Other channel');
+             INSERT INTO channel_capabilities(id,channel_id,operation,transports,enabled,available_models,status_statistics_enabled)
+             VALUES ('{CHANNEL}','{LOGICAL_CHANNEL}','chat_completions','[\"http_json\"]',1,'[\"query-model\",\"idle-model\"]',1),
+                    ('{OTHER_CHANNEL}','{OTHER_LOGICAL_CHANNEL}','responses','[\"http_json\"]',1,'[]',0);
              INSERT INTO model_routing_profiles(id,model_id) VALUES ('{PROFILE}','{MODEL}');
-             INSERT INTO model_rules(id,model_routing_profile_id,api_format,enabled)
-             VALUES ('{RULE}','{PROFILE}','open_ai_chat_completions',0);
-             INSERT INTO connector_pools(id,connector_kind) VALUES ('{CODEX_POOL}','codex_oauth');
-             INSERT INTO channel_groups(id,name,api_format,connector_kind,connector_pool_id,sharing_only)
-             VALUES ('{CODEX_GROUP_RESPONSES}','Codex car','open_ai_responses','codex_oauth','{CODEX_POOL}',0);
-             INSERT INTO channels(id,channel_group_id,api_format,name,base_url,upstream_auth_kind,supports_websocket)
-             VALUES ('{CODEX_CREDENTIAL}','{CODEX_GROUP_RESPONSES}','open_ai_responses','Codex',
-                     'https://codex.invalid','none',1);
-             INSERT INTO codex_oauth_credentials
-             (channel_id,channel_group_id,connector_pool_id,label,account_id,user_id,id_token,
-              access_token,refresh_token,last_refreshed_at)
-             VALUES ('{CODEX_CREDENTIAL}','{CODEX_GROUP_RESPONSES}','{CODEX_POOL}','Codex','acct',
-                     'provider-user','id','access','refresh',ag_now());"
+             INSERT INTO model_operation_rules(id,model_routing_profile_id,operation,enabled)
+             VALUES ('{RULE}','{PROFILE}','chat_completions',0);
+             INSERT INTO group_identity_registry(id,label,canonical_group_id)
+             SELECT id,name,id FROM routing_groups;
+             INSERT INTO channel_identity_registry(id,label,canonical_channel_id,capability_id)
+             SELECT cap.id,c.name,c.id,cap.id FROM channel_capabilities cap JOIN upstream_channels c ON c.id=cap.channel_id;
+             INSERT INTO model_rule_identity_registry(id,label,created_at,canonical_rule_id) VALUES ('{RULE}','query-model',ag_now(),'{RULE}');"
         ))
         .await;
+    let repository = ai_gateway::persistence::sqlite::SqliteControlPlaneRepository::new(
+        Arc::clone(&queries.database),
+    );
+    repository
+        .prepare_mutation(
+            ADMIN,
+            ai_gateway::persistence::ControlPlaneMutation::SaveRoutingGroup {
+                id: CODEX_GROUP_RESPONSES,
+                expected: None,
+                input: ai_gateway::persistence::RoutingGroupInput {
+                    name: "Codex car".into(),
+                    enabled: true,
+                    sharing_only: false,
+                },
+            },
+        )
+        .await
+        .unwrap()
+        .commit()
+        .await
+        .unwrap();
+    repository
+        .prepare_codex_credential_create(
+            ADMIN,
+            ai_gateway::persistence::CodexCredentialCreate {
+                channel_group_id: CODEX_GROUP_RESPONSES,
+                label: "Codex".into(),
+                enabled: true,
+                proxy_id: None,
+                quota_threshold_percent: 95,
+                base_url: "https://codex.invalid".into(),
+                email: None,
+                account_id: Some("acct".into()),
+                user_id: Some("provider-user".into()),
+                plan_type: None,
+                is_fedramp: false,
+                id_token: "id".into(),
+                access_token: "access".into(),
+                refresh_token: "refresh".into(),
+                access_token_expires_at: None,
+                available_models: vec!["query-model".into()],
+                quota: None,
+            },
+            None,
+        )
+        .await
+        .unwrap()
+        .commit()
+        .await
+        .unwrap()
+        .0[0]
+        .id
 }
 
 struct Fact<'a> {
@@ -706,7 +756,7 @@ async fn personal_usage_reads_facts_with_client_only_utc_days() {
 #[tokio::test]
 async fn cost_statistics_aggregates_groups_filters_ranges_and_orders() {
     let queries = Queries::new().await;
-    seed(&queries).await;
+    let codex_credential = seed(&queries).await;
     let started_at = timestamp("2026-09-18T00:00:00.000000Z");
     let ended_at = timestamp("2026-09-20T00:00:00.000000Z");
     // Two users, two formats, exact amounts that expose float drift if any.
@@ -838,8 +888,7 @@ async fn cost_statistics_aggregates_groups_filters_ranges_and_orders() {
         Decimal::from_str_exact("0.6").unwrap()
     );
 
-    // User, key and channel filters are independent, and the Codex credential
-    // projection filter spans both managed channels.
+    // User, key and capability filters are independent of credential filtering.
     let by_user = queries
         .metering
         .cost_statistics(CostStatisticsFilter {
@@ -880,7 +929,7 @@ async fn cost_statistics_aggregates_groups_filters_ranges_and_orders() {
             user_id: None,
             api_key_id: None,
             channel_id: None,
-            codex_credential_id: Some(CODEX_CREDENTIAL),
+            codex_credential_id: Some(codex_credential),
             include_channel_details: true,
         })
         .await
@@ -917,7 +966,7 @@ async fn cost_statistics_aggregates_groups_filters_ranges_and_orders() {
             user_id: None,
             api_key_id: None,
             channel_id: Some(CHANNEL),
-            codex_credential_id: Some(CODEX_CREDENTIAL),
+            codex_credential_id: Some(codex_credential),
             include_channel_details: false,
         },
     ] {

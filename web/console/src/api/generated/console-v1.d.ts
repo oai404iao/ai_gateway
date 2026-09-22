@@ -350,7 +350,7 @@ export interface paths {
         };
         /**
          * @description Returns current quota-window snapshots for Codex credentials in the
-         *     canonical Responses channel groups granted to the authenticated
+         *     canonical routing groups granted to the authenticated
          *     user's user group. Credential labels and account identity are never
          *     returned; `name` is the credential UUID string. Window costs aggregate
          *     all priced requests routed through the credential's Responses and
@@ -814,65 +814,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/routing/channel-groups": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listChannelGroups"];
-        put?: never;
-        post: operations["createChannelGroup"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/routing/channel-groups/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getChannelGroup"];
-        put: operations["updateChannelGroup"];
-        post?: never;
-        /**
-         * @description Irreversibly tombstones one ordinary OpenAI-compatible group and all
-         *     of its channels. Routing candidates, API Keys, API Key Policies, and
-         *     quota-visibility assignments are normalized or unbound atomically.
-         *     Provider-managed groups must use their connector lifecycle.
-         */
-        delete: operations["deleteChannelGroup"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/routing/channel-groups/{id}/deletion-impact": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * @description Returns the authoritative current dependency impact and a confirmation
-         *     token. DELETE recomputes the impact transactionally and rejects a stale
-         *     token so the administrator must review changed consequences.
-         */
-        get: operations["previewChannelGroupDeletion"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/routing/accesses": {
         parameters: {
             query?: never;
@@ -997,6 +938,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/routing/capabilities/batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Administrator-only atomic capability settings update. Each item carries its own version. A missing, stale or invalid item rejects the entire batch. Does not change logical channels, grants or automatic-disable state. */
+        post: operations["updateCapabilitiesBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/routing/capabilities/{id}/recover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Administrator-only manual recovery of an automatically disabled capability. Clears automatic-disable state without changing its explicit enabled setting, logical channel or grants. */
+        post: operations["recoverCapability"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/routing/capabilities/{id}": {
         parameters: {
             query?: never;
@@ -1010,6 +985,40 @@ export interface paths {
         post?: never;
         /** @description Soft-deletes an ordinary capability. Dependent routing candidates must be withdrawn first. Codex capabilities are deleted through their credential lifecycle. */
         delete: operations["deleteChannelCapability"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/routing/profiles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Administrator-only priced-model bindings, independent of legacy protocol configuration. */
+        get: operations["listRoutingProfiles"];
+        put?: never;
+        /** @description Explicitly binds an enabled pricing model to its sole routing profile. Creates no operation rule, candidate, or authorization. */
+        post: operations["createRoutingProfile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/routing/profiles/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getRoutingProfile"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -1084,22 +1093,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/routing/channels": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listChannels"];
-        put?: never;
-        post: operations["createChannel"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/routing/channels/models/discover": {
         parameters: {
             query?: never;
@@ -1111,152 +1104,6 @@ export interface paths {
         put?: never;
         /** @description Fetches an OpenAI-compatible `GET /v1/models` response using the unsaved channel draft's base URL, proxy, timeout, request-header transforms, and upstream authentication. This operation does not persist any channel changes. */
         post: operations["discoverChannelModels"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/routing/channels/batch": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** @description Atomically applies common routing and billing changes to up to 100 channels. Each item carries the `updated_at` version returned by the channel list; any stale item rejects the entire batch. */
-        post: operations["updateChannelsBatch"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/routing/channels/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getChannel"];
-        put: operations["updateChannel"];
-        post?: never;
-        /**
-         * @description Irreversibly tombstones one ordinary OpenAI-compatible channel,
-         *     erases its upstream URL, network settings, and transforms, unbinds its credential
-         *     without deleting the shared identity or secret, and atomically
-         *     normalizes routing candidates plus API Key and Policy assignments.
-         *     Provider-managed channels must use their connector lifecycle.
-         */
-        delete: operations["deleteChannel"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/routing/channels/{id}/deletion-impact": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * @description Returns the authoritative current dependency impact and a confirmation
-         *     token. DELETE recomputes the impact transactionally and rejects a stale
-         *     token so the administrator must review changed consequences.
-         */
-        get: operations["previewChannelDeletion"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/routing/channels/{id}/recover": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * @description Administrator-only. Clears a temporary automatic disable without
-         *     changing the channel's explicit enabled flag. The list response's
-         *     `updated_at` value provides optimistic concurrency.
-         */
-        post: operations["recoverChannel"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/routing/model-rules": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listModelRules"];
-        put?: never;
-        post: operations["createModelRule"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/routing/model-rules/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getModelRule"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/routing/model-rules/{id}/protocols": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["createModelProtocolRule"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/routing/model-rules/{id}/protocols/{protocol_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getModelProtocolRule"];
-        put: operations["updateModelProtocolRule"];
-        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1782,11 +1629,6 @@ export interface components {
         ApiOperation: "chat_completions" | "responses" | "standalone_web_search" | "images_generation" | "images_edit";
         /** @enum {string} */
         SelectionStrategy: "weighted_random" | "weighted_round_robin";
-        /**
-         * @description `model_disabled` takes precedence and means the priced client model is disabled; `draft` has no routing tiers and cannot be enabled; `ready` has at least one active model-capable candidate; `temporarily_unavailable` has a model-capable candidate but none is currently active; `disconnected` has no candidate channel advertising its configured upstream model; `disabled` means the protocol rule is disabled.
-         * @enum {string}
-         */
-        ModelRuleRoutingStatus: "draft" | "model_disabled" | "ready" | "temporarily_unavailable" | "disconnected" | "disabled";
         /** @enum {string} */
         ConnectorKind: "openai_compatible" | "codex_oauth";
         /**
@@ -2388,6 +2230,7 @@ export interface components {
             user_id: string;
             user_status: string;
         };
+        /** @description Group and logical-channel selectors with a fixed capability grant set. Retained selectors never expand during edits; new capabilities require explicit reauthorization. */
         ApiKeyPolicyView: {
             /** Format: uuid */
             id: string;
@@ -2420,7 +2263,7 @@ export interface components {
             name: string;
             /** @description Whether the sharing group is enabled; disabled credentials may still be preselected on a Key. */
             enabled: boolean;
-            /** @description Canonical Responses/Images projections authorized together by selecting this credential. */
+            /** @description Canonical logical channels owned by this credential. Selecting one fixes its current billable capability set; standalone search is excluded. */
             channel_ids: string[];
             api_formats: components["schemas"]["ApiFormat"][];
         };
@@ -2428,7 +2271,7 @@ export interface components {
             /** Format: uuid */
             id: string;
             name: string;
-            api_format: components["schemas"]["ApiFormat"];
+            api_formats: components["schemas"]["ApiFormat"][];
             enabled: boolean;
         };
         SelfApiKeyChannelOption: {
@@ -2439,7 +2282,7 @@ export interface components {
             channel_group_name: string;
             /** @description Whether the parent channel group is enabled. */
             channel_group_enabled: boolean;
-            api_format: components["schemas"]["ApiFormat"];
+            api_formats: components["schemas"]["ApiFormat"][];
             name: string;
             enabled: boolean;
             auto_disabled: boolean;
@@ -2488,7 +2331,7 @@ export interface components {
             /** Format: uuid */
             default_api_key_policy_id: string | null;
             /**
-             * @description Canonical Codex OAuth Responses channel groups whose credential
+             * @description Canonical routing groups with Codex pools whose credential
              *     quota windows are visible to members through the read-only
              *     `/me/codex-quotas` endpoints.
              */
@@ -2527,71 +2370,6 @@ export interface components {
             last_synced_at: components["schemas"]["DateTimeNullable"];
             created_at: components["schemas"]["DateTime"];
             updated_at: components["schemas"]["DateTime"];
-        };
-        ChannelGroupView: {
-            /** Format: uuid */
-            id: string;
-            name: string;
-            api_format: components["schemas"]["ApiFormat"];
-            connector_kind: components["schemas"]["ConnectorKind"];
-            /**
-             * Format: uuid
-             * @description Shared by the format-specific channel groups derived from one provider connector pool; null for ordinary OpenAI-compatible groups.
-             */
-            connector_pool_id: string | null;
-            request_compression: components["schemas"]["RequestCompression"];
-            /** @description Codex-only access mode, synchronized across the pool's Responses and Images groups. Unbound credentials and recognizable aliases cannot be used normally. Existing sharing bindings remain protected even when false. */
-            sharing_only: boolean;
-            enabled: boolean;
-            /** @description Includes this channel group in the authenticated channel-group status report. */
-            status_statistics_enabled: boolean;
-            updated_at: components["schemas"]["DateTime"];
-        };
-        ChannelView: {
-            /** Format: uuid */
-            id: string;
-            /** Format: uuid */
-            channel_group_id: string;
-            api_format: components["schemas"]["ApiFormat"];
-            connector_kind: components["schemas"]["ConnectorKind"];
-            /** @description Whether this channel is created and edited through a connector-specific management API. */
-            provider_managed: boolean;
-            name: string;
-            base_url: string;
-            enabled: boolean;
-            /** @description Whether this OpenAI Responses channel accepts WebSocket upgrades. */
-            supports_websocket: boolean;
-            /** @description Whether this OpenAI Responses channel accepts the standalone alpha/search operation. */
-            supports_standalone_web_search: boolean;
-            auto_disabled: boolean;
-            auto_disabled_reason: string | null;
-            /** @description Allows system automatic-disable rules to temporarily remove this channel from routing. */
-            auto_disable_allowed: boolean;
-            /** @description Multiplies the applicable pricing-model rates before request settlement. */
-            billing_multiplier: components["schemas"]["Decimal"];
-            /** Format: uuid */
-            proxy_id: string | null;
-            /** Format: uuid */
-            config_template_id: string | null;
-            connect_timeout_ms: number | null;
-            response_header_timeout_ms: number | null;
-            stream_idle_timeout_ms: number | null;
-            /** Format: uuid */
-            credential_id: string | null;
-            available_models: string[];
-            /** @description Available upstream wire model used by periodic scheduled tests; unsupported for Images and provider-managed channels. */
-            test_model: string | null;
-            /**
-             * Format: uuid
-             * @description Priced client model used to settle a scheduled test. Required exactly when test_model is set and resolved only by this ID, never inferred from the wire-model string.
-             */
-            test_pricing_model_id: string | null;
-            created_at: components["schemas"]["DateTime"];
-            updated_at: components["schemas"]["DateTime"];
-        };
-        ChannelDetailView: components["schemas"]["ChannelView"] & {
-            /** @description Stored channel transform overrides returned for administrator editing. */
-            override_document: components["schemas"]["JsonValue"];
         };
         UpstreamAccessView: {
             /** Format: uuid */
@@ -2748,6 +2526,17 @@ export interface components {
             enabled: boolean;
             routing_tiers: components["schemas"]["OperationTierInput"][];
         };
+        RoutingProfileView: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            model_id: string;
+            client_model: string;
+            model_display_name: string;
+            model_enabled: boolean;
+            created_at: components["schemas"]["DateTime"];
+            updated_at: components["schemas"]["DateTime"];
+        };
         OperationRuleView: components["schemas"]["OperationRuleInput"] & {
             /** Format: uuid */
             id: string;
@@ -2785,49 +2574,6 @@ export interface components {
         UpstreamCredentialCreateInput: components["schemas"]["UpstreamCredentialInput"] & {
             secret: string;
         };
-        ChannelDeletionImpact: {
-            /** @enum {string} */
-            resource_type: "channel" | "channel_group";
-            /** Format: uuid */
-            resource_id: string;
-            /** @description Opaque fingerprint of the current dependencies and normalization outcome; valid only while the impact is unchanged. */
-            confirmation_token: string;
-            /** @description Ordinary channels that will become non-secret tombstones. */
-            channels: components["schemas"]["DeletionImpactChannel"][];
-            /** @description Protocol routing rules whose candidates, tiers, enabled state, or effective availability will change. */
-            model_protocol_rules: components["schemas"]["DeletionImpactModelProtocolRule"][];
-            /** @description Non-deleted API Keys from which the deleted targets will be removed. */
-            api_keys: components["schemas"]["DeletionImpactNamedResource"][];
-            /** @description API Key Policies from which the deleted targets will be removed. */
-            api_key_policies: components["schemas"]["DeletionImpactNamedResource"][];
-            /** @description User groups whose matching Codex quota-visibility assignment will be removed. */
-            quota_visibility_user_groups: components["schemas"]["DeletionImpactNamedResource"][];
-        };
-        DeletionImpactChannel: {
-            /** Format: uuid */
-            id: string;
-            /** Format: uuid */
-            channel_group_id: string;
-            name: string;
-        };
-        DeletionImpactNamedResource: {
-            /** Format: uuid */
-            id: string;
-            name: string;
-        };
-        DeletionImpactModelProtocolRule: {
-            /** Format: uuid */
-            id: string;
-            /** Format: uuid */
-            model_rule_id: string;
-            client_model: string;
-            api_format: components["schemas"]["ApiFormat"];
-            removed_channel_group_ids: string[];
-            removed_channel_ids: string[];
-            removed_tier_priorities: number[];
-            /** @description True when normalization removes the final tier from an enabled protocol rule. */
-            will_disable: boolean;
-        };
         /** @enum {string} */
         CodexCredentialStatus: "active" | "draining" | "unavailable" | "disabled";
         CodexCredentialView: {
@@ -2835,7 +2581,7 @@ export interface components {
             id: string;
             /**
              * Format: uuid
-             * @description Stable primary Responses group retained for credential-management compatibility.
+             * @description Canonical routing group owning the credential's Codex pool.
              */
             channel_group_id: string;
             label: string;
@@ -2938,7 +2684,7 @@ export interface components {
             name: string;
             /**
              * Format: uuid
-             * @description Canonical Codex OAuth Responses channel group granting visibility.
+             * @description Canonical routing group granting Codex quota visibility.
              */
             channel_group_id: string;
             /** @description Provider-reported subscription tier. */
@@ -3104,63 +2850,6 @@ export interface components {
             updated_ids: string[];
             /** Format: uuid */
             correlation_id: string;
-        };
-        /**
-         * @description One independently weighted route candidate. The same channel may
-         *     appear with multiple advertised upstream models in one tier, while an
-         *     exact channel/model pair may appear only once in that tier.
-         */
-        ModelRuleRouteCandidate: {
-            /** Format: uuid */
-            channel_id: string;
-            /** @description Must appear in the selected channel's available_models when the rule is saved. */
-            upstream_model: string;
-            weight: number;
-        };
-        /**
-         * @description One protocol-rule routing tier. Lower priority wins. Selection strategy
-         *     and weights apply to eligible channel/model candidates in this tier.
-         *     Channel groups are only a Console bulk-selection convenience and are
-         *     not retained in the route.
-         */
-        ModelRuleRoutingTier: {
-            priority: number;
-            selection_strategy: components["schemas"]["SelectionStrategy"];
-            candidates: components["schemas"]["ModelRuleRouteCandidate"][];
-        };
-        /** @description One priced client-model routing profile and its format-specific protocol rules. */
-        ModelRuleView: {
-            /** Format: uuid */
-            id: string;
-            /** Format: uuid */
-            model_id: string;
-            client_model: string;
-            model_display_name: string;
-            model_provider_name: string | null;
-            model_enabled: boolean;
-            protocol_rules: components["schemas"]["ModelProtocolRuleView"][];
-            created_at: components["schemas"]["DateTime"];
-            updated_at: components["schemas"]["DateTime"];
-        };
-        /** @description One protocol rule under a priced client model; its API format is immutable. */
-        ModelProtocolRuleView: {
-            /** Format: uuid */
-            id: string;
-            /** Format: uuid */
-            model_rule_id: string;
-            api_format: components["schemas"]["ApiFormat"];
-            description: string | null;
-            /** @description Ordered routing tiers; lower numeric priority wins. */
-            routing_tiers: components["schemas"]["ModelRuleRoutingTier"][];
-            enabled: boolean;
-            routing_status: components["schemas"]["ModelRuleRoutingStatus"];
-            /** @description Configured channel/model candidate entries retained across all tiers. */
-            target_candidate_count: number;
-            /** @description Candidates whose channel currently advertises the assigned upstream model. */
-            model_capable_candidate_count: number;
-            /** @description Channel/model candidates currently eligible for routing. */
-            active_candidate_count: number;
-            updated_at: components["schemas"]["DateTime"];
         };
         ProxyView: {
             /** Format: uuid */
@@ -3329,6 +3018,7 @@ export interface components {
             /** Format: double */
             p50_tps: number | null;
         };
+        /** @description One API-format projection of a canonical routing group. Use (id, api_format) as the row identity. Only independently opted-in capabilities contribute. */
         ChannelGroupStatusGroup: {
             /** Format: uuid */
             id: string;
@@ -3813,121 +3503,6 @@ export interface components {
             /** @description Non-negative multiplier applied uniformly to input, cached-input, cache-write, and output unit prices in this window. */
             multiplier: components["schemas"]["Decimal"];
         };
-        DeletionConfirmationInput: {
-            /** @description Token returned by the corresponding deletion-impact endpoint after administrator review. */
-            confirmation_token: string;
-        };
-        ChannelGroupInput: {
-            name: string;
-            /** @description New codex_oauth pools start with open_ai_responses; the server also creates a disabled open_ai_images group in the same credential pool. */
-            api_format: components["schemas"]["ApiFormat"];
-            connector_kind: components["schemas"]["ConnectorKind"];
-            /** @description True is valid only for codex_oauth. Restricts the entire logical pool to eligible sharing seats and synchronizes the paired group's mode, without enabling Images or granting API Key access. Omission defaults to false on create and preserves the current mode on update. Disabling this mode never removes existing credential-level sharing protection. */
-            sharing_only?: boolean;
-            /** @description Valid only for open_ai_responses groups. Omission defaults to `default` on create and preserves the current value on update. */
-            request_compression?: components["schemas"]["RequestCompression"];
-            enabled: boolean;
-            /** @description Includes this channel group in the authenticated channel-group status report. Omission defaults to false on create and preserves the current value on update. */
-            status_statistics_enabled?: boolean;
-        };
-        ChannelCreateInput: {
-            /** Format: uuid */
-            channel_group_id: string;
-            api_format: components["schemas"]["ApiFormat"];
-            name: string;
-            /**
-             * Format: uri
-             * @description HTTP(S) URL without embedded credentials, query, or fragment.
-             */
-            base_url: string;
-            enabled: boolean;
-            /**
-             * @description Valid only for open_ai_responses channels.
-             * @default false
-             */
-            supports_websocket: boolean;
-            /**
-             * @description Valid only for open_ai_responses channels. Channels with request JSON transforms cannot enable it.
-             * @default false
-             */
-            supports_standalone_web_search: boolean;
-            /**
-             * @description Allows configured automatic-disable rules to temporarily remove this channel from routing.
-             * @default false
-             */
-            auto_disable_allowed: boolean;
-            /**
-             * @description Non-negative multiplier applied to the applicable pricing-model rates for settlement.
-             * @default 1
-             */
-            billing_multiplier: components["schemas"]["Decimal"];
-            /** Format: uuid */
-            proxy_id?: string | null;
-            /** Format: uuid */
-            config_template_id?: string | null;
-            override_document?: components["schemas"]["JsonValue"];
-            connect_timeout_ms?: number | null;
-            response_header_timeout_ms?: number | null;
-            stream_idle_timeout_ms?: number | null;
-            /** Format: uuid */
-            credential_id: string | null;
-            available_models?: string[];
-            /** @description Must be one of available_models when set; unsupported for Images and provider-managed channels. */
-            test_model?: string | null;
-            /**
-             * Format: uuid
-             * @description Required exactly when test_model is set and resolved only by this ID; unsupported for Images and provider-managed channels.
-             */
-            test_pricing_model_id?: string | null;
-        };
-        ChannelInput: {
-            /** Format: uuid */
-            channel_group_id: string;
-            api_format: components["schemas"]["ApiFormat"];
-            name: string;
-            /**
-             * Format: uri
-             * @description HTTP(S) URL without embedded credentials, query, or fragment.
-             */
-            base_url: string;
-            enabled: boolean;
-            /**
-             * @description Valid only for open_ai_responses channels.
-             * @default false
-             */
-            supports_websocket: boolean;
-            /**
-             * @description Valid only for open_ai_responses channels. Channels with request JSON transforms cannot enable it.
-             * @default false
-             */
-            supports_standalone_web_search: boolean;
-            /**
-             * @description Allows configured automatic-disable rules to temporarily remove this channel from routing.
-             * @default false
-             */
-            auto_disable_allowed: boolean;
-            /** @description Omit to preserve the stored non-negative billing multiplier. */
-            billing_multiplier?: components["schemas"]["Decimal"];
-            /** Format: uuid */
-            proxy_id?: string | null;
-            /** Format: uuid */
-            config_template_id?: string | null;
-            /** @description Omit to preserve the stored document; send `{}` to clear it. */
-            override_document?: components["schemas"]["JsonValue"];
-            connect_timeout_ms?: number | null;
-            response_header_timeout_ms?: number | null;
-            stream_idle_timeout_ms?: number | null;
-            /** Format: uuid */
-            credential_id: string | null;
-            available_models?: string[];
-            /** @description Must be one of available_models when set; unsupported for Images and provider-managed channels. */
-            test_model?: string | null;
-            /**
-             * Format: uuid
-             * @description Required exactly when test_model is set and resolved only by this ID; unsupported for Images and provider-managed channels.
-             */
-            test_pricing_model_id?: string | null;
-        };
         ChannelModelDiscoveryInput: {
             api_format: components["schemas"]["ApiFormat"];
             /**
@@ -3950,47 +3525,32 @@ export interface components {
         ChannelModelDiscoveryResponse: {
             models: string[];
         };
-        ChannelBatchUpdateTarget: {
+        CapabilityBatchUpdateTarget: {
             /** Format: uuid */
             id: string;
-            /** @description Version copied from the channel list response. */
+            /** @description Version copied from the capability list response. */
             updated_at: components["schemas"]["DateTime"];
         };
         /** @description At least one property must be supplied. */
-        ChannelBatchChanges: {
+        CapabilityBatchChanges: {
             enabled?: boolean;
             auto_disable_allowed?: boolean;
             /** @description Non-negative multiplier applied to the applicable pricing-model rates for settlement. */
             billing_multiplier?: components["schemas"]["Decimal"];
         };
-        ChannelBatchUpdateInput: {
-            items: components["schemas"]["ChannelBatchUpdateTarget"][];
-            changes: components["schemas"]["ChannelBatchChanges"];
+        CapabilityBatchUpdateInput: {
+            items: components["schemas"]["CapabilityBatchUpdateTarget"][];
+            changes: components["schemas"]["CapabilityBatchChanges"];
         };
-        ChannelBatchUpdateResponse: {
+        CapabilityBatchUpdateResponse: {
             updated_ids: string[];
             /** Format: uuid */
             correlation_id: string;
-        };
-        ChannelRecoverInput: {
-            /** @description Version copied from the channel list response. */
-            updated_at: components["schemas"]["DateTime"];
         };
         /** @description Creates the sole routing profile for an existing priced model. */
         ModelRuleCreateInput: {
             /** Format: uuid */
             model_id: string;
-        };
-        /** @description Creates a disabled empty protocol draft; the format is immutable. */
-        ModelProtocolRuleCreateInput: {
-            api_format: components["schemas"]["ApiFormat"];
-        };
-        ModelProtocolRuleInput: {
-            description: string | null;
-            /** @description Ordered routing tiers; lower numeric priority wins. */
-            routing_tiers: components["schemas"]["ModelRuleRoutingTier"][];
-            /** @description Must be false when routing_tiers is empty. */
-            enabled: boolean;
         };
         ProxyCreateInput: {
             name: string;
@@ -6068,191 +5628,6 @@ export interface operations {
             404: components["responses"]["NotFound"];
         };
     };
-    listChannelGroups: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Channel groups. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ChannelGroupView"][];
-                };
-            };
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-        };
-    };
-    createChannelGroup: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ChannelGroupInput"];
-            };
-        };
-        responses: {
-            /** @description Created. */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MutationResponse"];
-                };
-            };
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            422: components["responses"]["Unprocessable"];
-        };
-    };
-    getChannelGroup: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["PathId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Group detail. */
-            200: {
-                headers: {
-                    ETag: components["headers"]["ETag"];
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ChannelGroupView"];
-                };
-            };
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["NotFound"];
-        };
-    };
-    updateChannelGroup: {
-        parameters: {
-            query?: never;
-            header: {
-                /** @description ETag from the preceding GET; stale values yield `409`. */
-                "If-Match": components["parameters"]["IfMatch"];
-            };
-            path: {
-                id: components["parameters"]["PathId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ChannelGroupInput"];
-            };
-        };
-        responses: {
-            /** @description Updated. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MutationResponse"];
-                };
-            };
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
-            422: components["responses"]["Unprocessable"];
-        };
-    };
-    deleteChannelGroup: {
-        parameters: {
-            query?: never;
-            header: {
-                /** @description ETag from the preceding GET; stale values yield `409`. */
-                "If-Match": components["parameters"]["IfMatch"];
-            };
-            path: {
-                id: components["parameters"]["PathId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DeletionConfirmationInput"];
-            };
-        };
-        responses: {
-            /** @description Channel group and its ordinary channels deleted. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MutationResponse"];
-                };
-            };
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["NotFound"];
-            /** @description Resource version or confirmed deletion impact changed, or the group is provider-managed. */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            422: components["responses"]["Unprocessable"];
-        };
-    };
-    previewChannelGroupDeletion: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["PathId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Current deletion impact. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ChannelDeletionImpact"];
-                };
-            };
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["NotFound"];
-            /** @description Provider-managed groups must use their connector lifecycle. */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-        };
-    };
     listUpstreamAccesses: {
         parameters: {
             query?: never;
@@ -6693,6 +6068,65 @@ export interface operations {
             422: components["responses"]["Unprocessable"];
         };
     };
+    updateCapabilitiesBatch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CapabilityBatchUpdateInput"];
+            };
+        };
+        responses: {
+            /** @description Capabilities updated. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CapabilityBatchUpdateResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    recoverCapability: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag from the preceding GET; stale values yield `409`. */
+                "If-Match": components["parameters"]["IfMatch"];
+            };
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Capability recovered. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
     getChannelCapability: {
         parameters: {
             query?: never;
@@ -6781,6 +6215,83 @@ export interface operations {
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             422: components["responses"]["Unprocessable"];
+        };
+    };
+    listRoutingProfiles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Routing profiles for non-deleted pricing models. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoutingProfileView"][];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    createRoutingProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelRuleCreateInput"];
+            };
+        };
+        responses: {
+            /** @description Profile created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    getRoutingProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Immutable priced-model binding. */
+            200: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoutingProfileView"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
         };
     };
     listOperationRules: {
@@ -7032,55 +6543,6 @@ export interface operations {
             422: components["responses"]["Unprocessable"];
         };
     };
-    listChannels: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Channels. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ChannelView"][];
-                };
-            };
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-        };
-    };
-    createChannel: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ChannelCreateInput"];
-            };
-        };
-        responses: {
-            /** @description Created. */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MutationResponse"];
-                };
-            };
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            422: components["responses"]["Unprocessable"];
-        };
-    };
     discoverChannelModels: {
         parameters: {
             query?: never;
@@ -7107,371 +6569,6 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             422: components["responses"]["Unprocessable"];
             502: components["responses"]["BadGateway"];
-        };
-    };
-    updateChannelsBatch: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ChannelBatchUpdateInput"];
-            };
-        };
-        responses: {
-            /** @description Updated. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ChannelBatchUpdateResponse"];
-                };
-            };
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
-            422: components["responses"]["Unprocessable"];
-        };
-    };
-    getChannel: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["PathId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Channel detail. */
-            200: {
-                headers: {
-                    ETag: components["headers"]["ETag"];
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ChannelDetailView"];
-                };
-            };
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["NotFound"];
-        };
-    };
-    updateChannel: {
-        parameters: {
-            query?: never;
-            header: {
-                /** @description ETag from the preceding GET; stale values yield `409`. */
-                "If-Match": components["parameters"]["IfMatch"];
-            };
-            path: {
-                id: components["parameters"]["PathId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ChannelInput"];
-            };
-        };
-        responses: {
-            /** @description Updated. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MutationResponse"];
-                };
-            };
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
-            422: components["responses"]["Unprocessable"];
-        };
-    };
-    deleteChannel: {
-        parameters: {
-            query?: never;
-            header: {
-                /** @description ETag from the preceding GET; stale values yield `409`. */
-                "If-Match": components["parameters"]["IfMatch"];
-            };
-            path: {
-                id: components["parameters"]["PathId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DeletionConfirmationInput"];
-            };
-        };
-        responses: {
-            /** @description Channel deleted. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MutationResponse"];
-                };
-            };
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["NotFound"];
-            /** @description Resource version or confirmed deletion impact changed, or the channel is provider-managed. */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            422: components["responses"]["Unprocessable"];
-        };
-    };
-    previewChannelDeletion: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["PathId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Current deletion impact. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ChannelDeletionImpact"];
-                };
-            };
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["NotFound"];
-            /** @description Provider-managed channels must use their connector lifecycle. */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-        };
-    };
-    recoverChannel: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["PathId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ChannelRecoverInput"];
-            };
-        };
-        responses: {
-            /** @description Recovered. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MutationResponse"];
-                };
-            };
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
-            422: components["responses"]["Unprocessable"];
-        };
-    };
-    listModelRules: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Model rules. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ModelRuleView"][];
-                };
-            };
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-        };
-    };
-    createModelRule: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ModelRuleCreateInput"];
-            };
-        };
-        responses: {
-            /** @description Created. */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MutationResponse"];
-                };
-            };
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            409: components["responses"]["Conflict"];
-            422: components["responses"]["Unprocessable"];
-        };
-    };
-    getModelRule: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["PathId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Rule detail. */
-            200: {
-                headers: {
-                    ETag: components["headers"]["ETag"];
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ModelRuleView"];
-                };
-            };
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["NotFound"];
-        };
-    };
-    createModelProtocolRule: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["PathId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ModelProtocolRuleCreateInput"];
-            };
-        };
-        responses: {
-            /** @description Draft protocol rule created. */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MutationResponse"];
-                };
-            };
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
-            422: components["responses"]["Unprocessable"];
-        };
-    };
-    getModelProtocolRule: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["PathId"];
-                protocol_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Protocol rule detail. */
-            200: {
-                headers: {
-                    ETag: components["headers"]["ETag"];
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ModelProtocolRuleView"];
-                };
-            };
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["NotFound"];
-        };
-    };
-    updateModelProtocolRule: {
-        parameters: {
-            query?: never;
-            header: {
-                /** @description ETag from the preceding GET; stale values yield `409`. */
-                "If-Match": components["parameters"]["IfMatch"];
-            };
-            path: {
-                id: components["parameters"]["PathId"];
-                protocol_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ModelProtocolRuleInput"];
-            };
-        };
-        responses: {
-            /** @description Updated. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MutationResponse"];
-                };
-            };
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
-            422: components["responses"]["Unprocessable"];
         };
     };
     listCodexOAuthCredentials: {

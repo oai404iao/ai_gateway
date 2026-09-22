@@ -95,6 +95,12 @@ export function GroupDetailPage() {
         error={query.error}
         hasData={isNew || Boolean(group)}
         saving={busy}
+        headerActions={!isNew && group ? (
+          <Button type="button" variant="outline"
+            onClick={() => navigate(`/admin/providers/codex-oauth/${group.id}`)}>
+            {t("Codex credentials")}
+          </Button>
+        ) : undefined}
         editCard={
           <Card>
             <CardHeader>

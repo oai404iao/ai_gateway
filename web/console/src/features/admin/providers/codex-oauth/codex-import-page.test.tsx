@@ -10,25 +10,22 @@ import { http, HttpResponse } from "msw";
 import { BrowserRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
-  ChannelGroupView,
+  RoutingGroupView,
   CodexCredentialImportInput,
   ProxyCreateInput,
   ProxyInput,
 } from "@/api/types";
 import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
-import { CHANNEL_GROUP, PROXY } from "@/test/fixtures";
+import { ROUTING_GROUP, PROXY } from "@/test/fixtures";
 import { seedAuthenticatedSession, server } from "@/test/msw";
 
 const GROUP_ID = "00000000-0000-0000-0000-00000000d001";
 const NEW_PROXY_ID = "00000000-0000-0000-0000-00000000d002";
-const CODEX_GROUP: ChannelGroupView = {
-  ...CHANNEL_GROUP,
+const CODEX_GROUP: RoutingGroupView = {
+  ...ROUTING_GROUP,
   id: GROUP_ID,
   name: "Portable Codex",
-  api_format: "open_ai_responses",
-  connector_kind: "codex_oauth",
-  connector_pool_id: GROUP_ID,
 };
 
 function renderPage() {
@@ -55,7 +52,7 @@ describe("CodexImportPage", () => {
     seedAuthenticatedSession();
     let submitted: CodexCredentialImportInput | undefined;
     server.use(
-      http.get("/console/v1/routing/channel-groups/:id", () =>
+      http.get("/console/v1/routing/groups/:id", () =>
         HttpResponse.json(CODEX_GROUP, {
           headers: { ETag: `"${CODEX_GROUP.updated_at}"` },
         }),
@@ -130,7 +127,7 @@ describe("CodexImportPage", () => {
     let proxyInput: ProxyCreateInput | undefined;
     let credentialInput: CodexCredentialImportInput | undefined;
     server.use(
-      http.get("/console/v1/routing/channel-groups/:id", () =>
+      http.get("/console/v1/routing/groups/:id", () =>
         HttpResponse.json(CODEX_GROUP, {
           headers: { ETag: `"${CODEX_GROUP.updated_at}"` },
         }),
@@ -253,7 +250,7 @@ describe("CodexImportPage", () => {
     let updateIfMatch = "";
     let deleteIfMatch = "";
     server.use(
-      http.get("/console/v1/routing/channel-groups/:id", () =>
+      http.get("/console/v1/routing/groups/:id", () =>
         HttpResponse.json(CODEX_GROUP, {
           headers: { ETag: `"${CODEX_GROUP.updated_at}"` },
         }),

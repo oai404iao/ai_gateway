@@ -8,17 +8,15 @@
 //! explicitly; the connection clock installed by `SqliteDatabase` supplies
 //! transaction time. Audit payloads are projected in Rust and mirror the fields
 //! PostgreSQL builds in SQL, including decimal amounts as JSON numbers. Codex
-//! credential create/update/delete, token refresh/reset, and their paired
-//! projections belong to a later slice and are not defined here; Codex sharing
-//! policies and the ordinary connector-pool group/credential-independent
-//! operations are.
+//! credential and token lifecycle operations live in the Codex repository;
+//! canonical topology writes are shared with PostgreSQL.
 //!
 //! Reads run inside a transaction so one snapshot spans every record query.
-//! Deletion-impact tokens, prepared-change ordering, and mutation results match
+//! Prepared-change ordering and mutation results match
 //! the PostgreSQL repository's neutral contracts.
 
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     sync::Arc,
 };
 
@@ -26,38 +24,25 @@ use chrono::{DateTime, Utc};
 use regex::Regex;
 use rust_decimal::{Decimal, RoundingStrategy};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
-use sqlx::{
-    Connection, FromRow, Sqlite, SqliteConnection, Transaction, pool::PoolConnection, types::Json,
-};
+use sqlx::{Connection, FromRow, Sqlite, SqliteConnection, Transaction, pool::PoolConnection};
 use uuid::Uuid;
 
 use crate::{
-    domain::{ApiFormat, AutomaticDisableTrigger, RequestCompression},
+    domain::AutomaticDisableTrigger,
     persistence::{
-        ApiKeyPolicyInput, ApiKeyTargetChannel, ApiKeyTargetGroup, ChannelBatchUpdateInput,
-        ChannelDeletionImpact, ChannelDeletionPlan, ChannelDeletionTarget, ChannelGroupInput,
-        ChannelMutationInput, ConfigTemplateMutationInput, ConsoleApiKey, ConsoleAuditLog,
-        ControlPlaneApiKey, ControlPlaneApiKeyPolicy, ControlPlaneChannel,
-        ControlPlaneChannelDetail, ControlPlaneChannelGroup, ControlPlaneConfigTemplate,
+        ApiKeyPolicyInput, ChannelBatchUpdateInput, ConfigTemplateMutationInput, ConsoleApiKey,
+        ConsoleAuditLog, ControlPlaneApiKey, ControlPlaneApiKeyPolicy, ControlPlaneConfigTemplate,
         ControlPlaneConfigTemplateDetail, ControlPlaneLists, ControlPlaneModel,
-        ControlPlaneModelProtocolRule, ControlPlaneModelProtocolRuleRow, ControlPlaneModelRule,
-        ControlPlaneModelRuleRow, ControlPlaneMutation, ControlPlaneProxy, ControlPlaneRecords,
-        ControlPlaneUser, ControlPlaneUserGroup, DEFAULT_ADMIN_GROUP_ID, DEFAULT_USER_GROUP_ID,
-        DeletionImpactApiKey, DeletionImpactApiKeyPolicy, DeletionImpactApiKeyPolicyRow,
-        DeletionImpactApiKeyRow, DeletionImpactChannel, DeletionImpactChannelRow,
-        DeletionImpactFingerprint, DeletionImpactRootRow, DeletionImpactRuleState,
-        DeletionImpactUserGroup, DeletionImpactVisibilityRow, FORWARDING_SETTINGS_KEY, ModelInput,
-        ModelProtocolRuleCreateInput, ModelProtocolRuleInput, ModelRuleCreateInput,
-        ModelRuleRoutingStatus, ModelRuleRoutingTier, MutationResult, ProxyCreateInput, ProxyInput,
-        ProxyRecord, RepositoryError, RuntimeConfigRecords, SYSTEM_PROBE_API_KEY_ID,
-        SYSTEM_PROBE_API_KEY_NAME, SYSTEM_PROBE_DISPLAY_NAME, SYSTEM_PROBE_USER_ID,
-        SelfApiKeyChannelOption, SelfApiKeyCreate, SelfApiKeyCurrent, SelfApiKeyGroupOption,
-        SelfApiKeyOptions, SelfApiKeyPolicy, SelfApiKeySharingAccess,
-        SelfApiKeySharingCredentialOption, SelfApiKeyUpdate, SystemProbeIdentity,
-        SystemSettingsInput, SystemSettingsRecord, SystemSettingsView, UserBatchUpdateInput,
-        UserGroupInput, UserInput, UserSettingsInput, UserSettingsView, UserUpdateInput,
-        deleted_api_key_secret, deletion_impact_for_rule, generate_api_key_secret, sha256_hex,
+        ControlPlaneMutation, ControlPlaneProxy, ControlPlaneRecords, ControlPlaneUser,
+        ControlPlaneUserGroup, DEFAULT_ADMIN_GROUP_ID, DEFAULT_USER_GROUP_ID,
+        FORWARDING_SETTINGS_KEY, ModelInput, ModelRuleCreateInput, MutationResult,
+        ProxyCreateInput, ProxyInput, ProxyRecord, RepositoryError, RuntimeConfigRecords,
+        SYSTEM_PROBE_API_KEY_ID, SYSTEM_PROBE_API_KEY_NAME, SYSTEM_PROBE_DISPLAY_NAME,
+        SYSTEM_PROBE_USER_ID, SelfApiKeyCreate, SelfApiKeyCurrent, SelfApiKeyOptions,
+        SelfApiKeyPolicy, SelfApiKeySharingAccess, SelfApiKeySharingCredentialOption,
+        SelfApiKeyUpdate, SystemProbeIdentity, SystemSettingsInput, SystemSettingsRecord,
+        SystemSettingsView, UserBatchUpdateInput, UserGroupInput, UserInput, UserSettingsInput,
+        UserSettingsView, UserUpdateInput, deleted_api_key_secret, generate_api_key_secret,
         system_settings_audit_value, system_settings_view, validate_system_settings_input,
     },
 };
@@ -76,6 +61,16 @@ pub struct SqliteControlPlaneRepository {
 }
 
 impl SqliteControlPlaneRepository {
+    pub async fn routing_profiles(
+        &self,
+    ) -> Result<
+        Vec<crate::persistence::upstream_topology::profiles::RoutingProfileView>,
+        RepositoryError,
+    > {
+        let mut connection = self.read().await?;
+        crate::persistence::upstream_topology::profiles::sqlite(&mut connection).await
+    }
+
     pub async fn topology(
         &self,
     ) -> Result<crate::persistence::UpstreamTopologyRecords, RepositoryError> {
@@ -306,118 +301,6 @@ impl SystemSettingsRow {
             updated_at: self.updated_at.0,
         })
     }
-}
-
-#[derive(FromRow)]
-struct RoutingTierRow {
-    model_rule_id: SqliteUuid,
-    priority: i32,
-    selection_strategy: String,
-}
-
-#[derive(FromRow)]
-struct RoutingCandidateRow {
-    model_rule_id: SqliteUuid,
-    priority: i32,
-    channel_id: SqliteUuid,
-    upstream_model: String,
-    weight: i32,
-}
-
-/// Loads every routing tier and candidate, grouped by rule. Both tables are
-/// keyed by `(model_rule_id, api_format, priority)` in the database; the format
-/// is already fixed by the rule row the tiers belong to.
-async fn load_routing_tiers(
-    connection: &mut SqliteConnection,
-) -> Result<HashMap<Uuid, Vec<ModelRuleRoutingTier>>, RepositoryError> {
-    let tiers = sqlx::query_as::<_, RoutingTierRow>(
-        "SELECT model_rule_id,priority,selection_strategy FROM model_rule_routing_tiers \
-         ORDER BY model_rule_id,priority",
-    )
-    .fetch_all(&mut *connection)
-    .await?;
-    let candidates = sqlx::query_as::<_, RoutingCandidateRow>(
-        "SELECT model_rule_id,priority,channel_id,upstream_model,weight \
-         FROM model_rule_routing_candidates \
-         ORDER BY model_rule_id,priority,channel_id,upstream_model",
-    )
-    .fetch_all(&mut *connection)
-    .await?;
-    let mut tiers_by_rule = HashMap::<Uuid, Vec<ModelRuleRoutingTier>>::new();
-    for tier in tiers {
-        tiers_by_rule
-            .entry(tier.model_rule_id.0)
-            .or_default()
-            .push(ModelRuleRoutingTier {
-                priority: tier.priority,
-                selection_strategy: tier.selection_strategy,
-                candidates: Vec::new(),
-            });
-    }
-    for candidate in candidates {
-        let Some(tiers) = tiers_by_rule.get_mut(&candidate.model_rule_id.0) else {
-            continue;
-        };
-        let Some(tier) = tiers
-            .iter_mut()
-            .find(|tier| tier.priority == candidate.priority)
-        else {
-            continue;
-        };
-        tier.candidates
-            .push(crate::persistence::ModelRuleRouteCandidate {
-                channel_id: candidate.channel_id.0,
-                upstream_model: candidate.upstream_model,
-                weight: candidate.weight,
-            });
-    }
-    Ok(tiers_by_rule)
-}
-
-/// Loads the ordered routing tiers of exactly one protocol rule; used by the
-/// transaction-scoped audit projection.
-async fn load_rule_routing_tiers(
-    connection: &mut SqliteConnection,
-    model_rule_id: Uuid,
-) -> Result<Vec<ModelRuleRoutingTier>, RepositoryError> {
-    let tiers = sqlx::query_as::<_, RoutingTierRow>(
-        "SELECT model_rule_id,priority,selection_strategy FROM model_rule_routing_tiers \
-         WHERE model_rule_id=? ORDER BY priority",
-    )
-    .bind(SqliteUuid(model_rule_id))
-    .fetch_all(&mut *connection)
-    .await?;
-    let candidates = sqlx::query_as::<_, RoutingCandidateRow>(
-        "SELECT model_rule_id,priority,channel_id,upstream_model,weight \
-         FROM model_rule_routing_candidates \
-         WHERE model_rule_id=? ORDER BY priority,channel_id,upstream_model",
-    )
-    .bind(SqliteUuid(model_rule_id))
-    .fetch_all(&mut *connection)
-    .await?;
-    let mut result = tiers
-        .into_iter()
-        .map(|tier| ModelRuleRoutingTier {
-            priority: tier.priority,
-            selection_strategy: tier.selection_strategy,
-            candidates: Vec::new(),
-        })
-        .collect::<Vec<_>>();
-    for candidate in candidates {
-        let Some(tier) = result
-            .iter_mut()
-            .find(|tier| tier.priority == candidate.priority)
-        else {
-            continue;
-        };
-        tier.candidates
-            .push(crate::persistence::ModelRuleRouteCandidate {
-                channel_id: candidate.channel_id.0,
-                upstream_model: candidate.upstream_model,
-                weight: candidate.weight,
-            });
-    }
-    Ok(result)
 }
 
 /// Channels protected because their credential belongs to a sharing-only
@@ -763,84 +646,6 @@ impl SqliteControlPlaneRepository {
         .into_iter()
         .map(ControlPlaneApiKeyPolicyRow::into_view)
         .collect::<Result<Vec<_>, _>>()?;
-        let channel_groups = sqlx::query_as::<_, ControlPlaneChannelGroupRow>(
-            "SELECT id,name,api_format,connector_kind,connector_pool_id,request_compression, \
-                    sharing_only,enabled,status_statistics_enabled,updated_at \
-             FROM channel_groups WHERE deleted_at IS NULL ORDER BY id",
-        )
-        .fetch_all(&mut *connection)
-        .await?
-        .into_iter()
-        .map(ControlPlaneChannelGroupRow::into_view)
-        .collect::<Vec<_>>();
-        let channels = sqlx::query_as::<_, ConsoleChannelRow>(
-            "SELECT c.id,c.channel_group_id,c.api_format,g.connector_kind, \
-                    (g.connector_kind <> 'openai_compatible') AS provider_managed, \
-                    c.name,c.base_url, \
-                    CASE WHEN g.connector_kind='codex_oauth' \
-                         THEN (c.enabled AND COALESCE(co.enabled,0)) ELSE c.enabled END AS enabled, \
-                    c.supports_websocket,c.supports_standalone_web_search,c.auto_disabled, \
-                    c.auto_disabled_reason,c.auto_disable_allowed,c.billing_multiplier,c.proxy_id, \
-                    c.config_template_id,c.connect_timeout_ms,c.response_header_timeout_ms, \
-                    c.stream_idle_timeout_ms,c.credential_id, \
-                    c.available_models,c.test_model,c.test_pricing_model_id,c.created_at,c.updated_at \
-             FROM channels AS c \
-             JOIN channel_groups AS g ON g.id=c.channel_group_id AND g.deleted_at IS NULL \
-             LEFT JOIN codex_oauth_credential_channels AS projection ON projection.channel_id=c.id \
-             LEFT JOIN codex_oauth_credentials AS co ON co.channel_id=projection.credential_id \
-             WHERE c.deleted_at IS NULL \
-               AND (g.connector_kind <> 'codex_oauth' \
-                    OR (co.channel_id IS NOT NULL AND co.deleted_at IS NULL)) \
-             ORDER BY c.id",
-        )
-        .fetch_all(&mut *connection)
-        .await?
-        .into_iter()
-        .map(ConsoleChannelRow::into_view)
-        .collect::<Result<Vec<_>, _>>()?;
-        // The neutral `ControlPlaneModelRule*Row` structs use plain `Uuid`/`DateTime`
-        // fields, so they are mapped from TEXT-backed row types rather than
-        // decoded directly.
-        let model_rule_rows = sqlx::query_as::<_, ModelRuleListViewRow>(
-            "SELECT profile.id,model.id AS model_id,model.source_model_id AS client_model, \
-                    model.display_name AS model_display_name, \
-                    model.provider_name AS model_provider_name,model.enabled AS model_enabled, \
-                    profile.created_at,profile.updated_at \
-             FROM model_routing_profiles AS profile \
-             JOIN models AS model ON model.id=profile.model_id AND model.deleted_at IS NULL \
-             ORDER BY model.source_model_id,profile.id",
-        )
-        .fetch_all(&mut *connection)
-        .await?;
-        let protocol_rule_rows = sqlx::query_as::<_, ConsoleProtocolRuleRow>(
-            "SELECT r.id,r.model_routing_profile_id AS model_rule_id,r.api_format, \
-                    m.enabled AS model_enabled,r.description,r.enabled,r.updated_at \
-             FROM model_rules AS r \
-             JOIN model_routing_profiles AS profile ON profile.id=r.model_routing_profile_id \
-             JOIN models AS m ON m.id=profile.model_id AND m.deleted_at IS NULL \
-             ORDER BY r.id",
-        )
-        .fetch_all(&mut *connection)
-        .await?;
-        let mut tiers_by_rule = load_routing_tiers(connection).await?;
-        let mut protocols_by_rule = HashMap::<Uuid, Vec<ControlPlaneModelProtocolRule>>::new();
-        for row in protocol_rule_rows {
-            // Routing tiers hang off the protocol rule id, while the grouped
-            // list is keyed by the routing profile the parent model rule uses.
-            let rule_id = row.id.0;
-            let routing_tiers = tiers_by_rule.remove(&rule_id).unwrap_or_default();
-            protocols_by_rule
-                .entry(row.model_rule_id.0)
-                .or_default()
-                .push(row.into_view(routing_tiers, &channel_groups, &channels));
-        }
-        let model_rules = model_rule_rows
-            .into_iter()
-            .map(|row| {
-                let protocols = protocols_by_rule.remove(&row.id.0).unwrap_or_default();
-                control_plane_model_rule(row.into_row(), protocols)
-            })
-            .collect();
         let proxies = sqlx::query_as::<_, ControlPlaneProxyRow>(
             "SELECT id,name,proxy_url,no_proxy_hosts,enabled, \
                     (username IS NOT NULL OR password IS NOT NULL) AS credential_configured, \
@@ -870,9 +675,6 @@ impl SqliteControlPlaneRepository {
             models,
             api_keys,
             api_key_policies,
-            channel_groups,
-            channels,
-            model_rules,
             proxies,
             config_templates,
         })
@@ -889,36 +691,6 @@ impl SqliteControlPlaneRepository {
         .fetch_optional(&mut *reader)
         .await?;
         row.map(ProxyRecordRow::into_record).transpose()
-    }
-
-    pub async fn control_plane_channel_detail(
-        &self,
-        id: Uuid,
-    ) -> Result<Option<ControlPlaneChannelDetail>, RepositoryError> {
-        let mut reader = self.read().await?;
-        let row = sqlx::query_as::<_, ControlPlaneChannelDetailRow>(
-            "SELECT c.id,c.channel_group_id,c.api_format,g.connector_kind, \
-                    (g.connector_kind <> 'openai_compatible') AS provider_managed, \
-                    c.name,c.base_url, \
-                    CASE WHEN g.connector_kind='codex_oauth' \
-                         THEN (c.enabled AND COALESCE(co.enabled,0)) ELSE c.enabled END AS enabled, \
-                    c.supports_websocket,c.supports_standalone_web_search,c.auto_disabled, \
-                    c.auto_disabled_reason,c.auto_disable_allowed,c.billing_multiplier,c.proxy_id, \
-                    c.config_template_id,c.override_document,c.connect_timeout_ms, \
-                    c.response_header_timeout_ms,c.stream_idle_timeout_ms,c.credential_id, \
-                    c.available_models,c.test_model,c.test_pricing_model_id,c.created_at,c.updated_at \
-             FROM channels AS c \
-             JOIN channel_groups AS g ON g.id=c.channel_group_id AND g.deleted_at IS NULL \
-             LEFT JOIN codex_oauth_credential_channels AS projection ON projection.channel_id=c.id \
-             LEFT JOIN codex_oauth_credentials AS co ON co.channel_id=projection.credential_id \
-             WHERE c.id=? AND c.deleted_at IS NULL \
-               AND (g.connector_kind <> 'codex_oauth' \
-                    OR (co.channel_id IS NOT NULL AND co.deleted_at IS NULL))",
-        )
-        .bind(SqliteUuid(id))
-        .fetch_optional(&mut *reader)
-        .await?;
-        row.map(ControlPlaneChannelDetailRow::into_view).transpose()
     }
 
     pub async fn control_plane_config_template_detail(
@@ -1196,254 +968,6 @@ impl ControlPlaneApiKeyPolicyRow {
 }
 
 #[derive(FromRow)]
-struct ControlPlaneChannelGroupRow {
-    id: SqliteUuid,
-    name: String,
-    api_format: String,
-    connector_kind: String,
-    connector_pool_id: Option<SqliteUuid>,
-    request_compression: String,
-    sharing_only: bool,
-    enabled: bool,
-    status_statistics_enabled: bool,
-    updated_at: SqliteTimestamp,
-}
-
-impl ControlPlaneChannelGroupRow {
-    fn into_view(self) -> ControlPlaneChannelGroup {
-        ControlPlaneChannelGroup {
-            id: self.id.0,
-            name: self.name,
-            api_format: self.api_format,
-            connector_kind: self.connector_kind,
-            connector_pool_id: self.connector_pool_id.map(|value| value.0),
-            request_compression: self.request_compression,
-            sharing_only: self.sharing_only,
-            enabled: self.enabled,
-            status_statistics_enabled: self.status_statistics_enabled,
-            updated_at: self.updated_at.0,
-        }
-    }
-}
-
-#[derive(FromRow)]
-struct ConsoleChannelRow {
-    id: SqliteUuid,
-    channel_group_id: SqliteUuid,
-    api_format: String,
-    connector_kind: String,
-    provider_managed: bool,
-    name: String,
-    base_url: String,
-    enabled: bool,
-    supports_websocket: bool,
-    supports_standalone_web_search: bool,
-    auto_disabled: bool,
-    auto_disabled_reason: Option<String>,
-    auto_disable_allowed: bool,
-    billing_multiplier: SqliteUnitPrice,
-    proxy_id: Option<SqliteUuid>,
-    config_template_id: Option<SqliteUuid>,
-    connect_timeout_ms: Option<i32>,
-    response_header_timeout_ms: Option<i32>,
-    stream_idle_timeout_ms: Option<i32>,
-    credential_id: Option<SqliteUuid>,
-    available_models: String,
-    test_model: Option<String>,
-    test_pricing_model_id: Option<SqliteUuid>,
-    created_at: SqliteTimestamp,
-    updated_at: SqliteTimestamp,
-}
-
-impl ConsoleChannelRow {
-    fn into_view(self) -> Result<ControlPlaneChannel, RepositoryError> {
-        Ok(ControlPlaneChannel {
-            id: self.id.0,
-            channel_group_id: self.channel_group_id.0,
-            api_format: self.api_format,
-            connector_kind: self.connector_kind,
-            provider_managed: self.provider_managed,
-            name: self.name,
-            base_url: self.base_url,
-            enabled: self.enabled,
-            supports_websocket: self.supports_websocket,
-            supports_standalone_web_search: self.supports_standalone_web_search,
-            auto_disabled: self.auto_disabled,
-            auto_disabled_reason: self.auto_disabled_reason,
-            auto_disable_allowed: self.auto_disable_allowed,
-            billing_multiplier: self.billing_multiplier.0,
-            proxy_id: self.proxy_id.map(|value| value.0),
-            config_template_id: self.config_template_id.map(|value| value.0),
-            connect_timeout_ms: self.connect_timeout_ms,
-            response_header_timeout_ms: self.response_header_timeout_ms,
-            stream_idle_timeout_ms: self.stream_idle_timeout_ms,
-            credential_id: self.credential_id.map(|id| id.0),
-            available_models: string_list(&self.available_models)?,
-            test_model: self.test_model,
-            test_pricing_model_id: self.test_pricing_model_id.map(|value| value.0),
-            created_at: self.created_at.0,
-            updated_at: self.updated_at.0,
-        })
-    }
-}
-
-#[derive(FromRow)]
-struct ControlPlaneChannelDetailRow {
-    id: SqliteUuid,
-    channel_group_id: SqliteUuid,
-    api_format: String,
-    connector_kind: String,
-    provider_managed: bool,
-    name: String,
-    base_url: String,
-    enabled: bool,
-    supports_websocket: bool,
-    supports_standalone_web_search: bool,
-    auto_disabled: bool,
-    auto_disabled_reason: Option<String>,
-    auto_disable_allowed: bool,
-    billing_multiplier: SqliteUnitPrice,
-    proxy_id: Option<SqliteUuid>,
-    config_template_id: Option<SqliteUuid>,
-    override_document: String,
-    connect_timeout_ms: Option<i32>,
-    response_header_timeout_ms: Option<i32>,
-    stream_idle_timeout_ms: Option<i32>,
-    credential_id: Option<SqliteUuid>,
-    available_models: String,
-    test_model: Option<String>,
-    test_pricing_model_id: Option<SqliteUuid>,
-    created_at: SqliteTimestamp,
-    updated_at: SqliteTimestamp,
-}
-
-impl ControlPlaneChannelDetailRow {
-    fn into_view(self) -> Result<ControlPlaneChannelDetail, RepositoryError> {
-        Ok(ControlPlaneChannelDetail {
-            id: self.id.0,
-            channel_group_id: self.channel_group_id.0,
-            api_format: self.api_format,
-            connector_kind: self.connector_kind,
-            provider_managed: self.provider_managed,
-            name: self.name,
-            base_url: self.base_url,
-            enabled: self.enabled,
-            supports_websocket: self.supports_websocket,
-            supports_standalone_web_search: self.supports_standalone_web_search,
-            auto_disabled: self.auto_disabled,
-            auto_disabled_reason: self.auto_disabled_reason,
-            auto_disable_allowed: self.auto_disable_allowed,
-            billing_multiplier: self.billing_multiplier.0,
-            proxy_id: self.proxy_id.map(|value| value.0),
-            config_template_id: self.config_template_id.map(|value| value.0),
-            override_document: json_column(&self.override_document)?,
-            connect_timeout_ms: self.connect_timeout_ms,
-            response_header_timeout_ms: self.response_header_timeout_ms,
-            stream_idle_timeout_ms: self.stream_idle_timeout_ms,
-            credential_id: self.credential_id.map(|id| id.0),
-            available_models: string_list(&self.available_models)?,
-            test_model: self.test_model,
-            test_pricing_model_id: self.test_pricing_model_id.map(|value| value.0),
-            created_at: self.created_at.0,
-            updated_at: self.updated_at.0,
-        })
-    }
-}
-
-#[derive(FromRow)]
-struct ConsoleProtocolRuleRow {
-    id: SqliteUuid,
-    model_rule_id: SqliteUuid,
-    api_format: String,
-    model_enabled: bool,
-    description: Option<String>,
-    enabled: bool,
-    updated_at: SqliteTimestamp,
-}
-
-impl ConsoleProtocolRuleRow {
-    fn into_view(
-        self,
-        routing_tiers: Vec<ModelRuleRoutingTier>,
-        groups: &[ControlPlaneChannelGroup],
-        channels: &[ControlPlaneChannel],
-    ) -> ControlPlaneModelProtocolRule {
-        let row = ControlPlaneModelProtocolRuleRow {
-            id: self.id.0,
-            model_rule_id: self.model_rule_id.0,
-            api_format: self.api_format,
-            model_enabled: self.model_enabled,
-            description: self.description,
-            routing_tiers: Json(routing_tiers),
-            enabled: self.enabled,
-            updated_at: self.updated_at.0,
-        };
-        let ControlPlaneModelProtocolRuleRow {
-            id,
-            model_rule_id,
-            api_format,
-            model_enabled,
-            description,
-            routing_tiers,
-            enabled,
-            updated_at,
-        } = row;
-        let routing_tiers = routing_tiers.0;
-        let mut target_candidate_count = 0;
-        let mut model_capable_candidate_count = 0;
-        let mut active_candidate_count = 0;
-        for candidate in routing_tiers.iter().flat_map(|tier| &tier.candidates) {
-            target_candidate_count += 1;
-            let Some(channel) = channels
-                .iter()
-                .find(|channel| channel.id == candidate.channel_id)
-            else {
-                continue;
-            };
-            if channel.api_format != api_format
-                || !channel.available_models.contains(&candidate.upstream_model)
-            {
-                continue;
-            }
-            model_capable_candidate_count += 1;
-            let group_enabled = groups
-                .iter()
-                .find(|group| group.id == channel.channel_group_id)
-                .is_some_and(|group| group.enabled);
-            if channel.enabled && !channel.auto_disabled && group_enabled {
-                active_candidate_count += 1;
-            }
-        }
-        let routing_status = if !model_enabled {
-            ModelRuleRoutingStatus::ModelDisabled
-        } else if routing_tiers.is_empty() {
-            ModelRuleRoutingStatus::Draft
-        } else if !enabled {
-            ModelRuleRoutingStatus::Disabled
-        } else if active_candidate_count > 0 {
-            ModelRuleRoutingStatus::Ready
-        } else if model_capable_candidate_count > 0 {
-            ModelRuleRoutingStatus::TemporarilyUnavailable
-        } else {
-            ModelRuleRoutingStatus::Disconnected
-        };
-        ControlPlaneModelProtocolRule {
-            id,
-            model_rule_id,
-            api_format,
-            description,
-            routing_tiers,
-            enabled,
-            routing_status,
-            target_candidate_count,
-            model_capable_candidate_count,
-            active_candidate_count,
-            updated_at,
-        }
-    }
-}
-
-#[derive(FromRow)]
 struct ControlPlaneProxyRow {
     id: SqliteUuid,
     name: String,
@@ -1598,382 +1122,8 @@ impl ConsoleApiKeyRow {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Channel deletion impact
-// ---------------------------------------------------------------------------
-
-impl SqliteControlPlaneRepository {
-    pub async fn channel_group_deletion_impact(
-        &self,
-        id: Uuid,
-    ) -> Result<ChannelDeletionImpact, RepositoryError> {
-        self.deletion_impact(ChannelDeletionTarget::Group(id)).await
-    }
-
-    pub async fn channel_deletion_impact(
-        &self,
-        id: Uuid,
-    ) -> Result<ChannelDeletionImpact, RepositoryError> {
-        self.deletion_impact(ChannelDeletionTarget::Channel(id))
-            .await
-    }
-
-    async fn deletion_impact(
-        &self,
-        target: ChannelDeletionTarget,
-    ) -> Result<ChannelDeletionImpact, RepositoryError> {
-        let mut connection = self.read().await?;
-        let mut transaction = connection.begin().await?;
-        let plan = load_channel_deletion_plan(&mut transaction, target).await?;
-        transaction.commit().await?;
-        Ok(plan.impact)
-    }
-}
-
-async fn load_channel_deletion_plan(
-    transaction: &mut Transaction<'_, Sqlite>,
-    target: ChannelDeletionTarget,
-) -> Result<ChannelDeletionPlan, RepositoryError> {
-    let connection = &mut **transaction;
-    let (resource_type, root) = match target {
-        ChannelDeletionTarget::Group(id) => (
-            "channel_group",
-            sqlx::query_as::<_, DeletionImpactRootRowRow>(
-                "SELECT id,name,updated_at,connector_kind,NULL AS channel_group_id \
-                 FROM channel_groups WHERE id=? AND deleted_at IS NULL",
-            )
-            .bind(SqliteUuid(id))
-            .fetch_optional(&mut *connection)
-            .await?
-            .ok_or(RepositoryError::NotFound)?
-            .into_row(),
-        ),
-        ChannelDeletionTarget::Channel(id) => (
-            "channel",
-            sqlx::query_as::<_, DeletionImpactRootRowRow>(
-                "SELECT c.id,c.name,c.updated_at,g.connector_kind,c.channel_group_id \
-                 FROM channels AS c \
-                 JOIN channel_groups AS g ON g.id=c.channel_group_id AND g.deleted_at IS NULL \
-                 WHERE c.id=? AND c.deleted_at IS NULL",
-            )
-            .bind(SqliteUuid(id))
-            .fetch_optional(&mut *connection)
-            .await?
-            .ok_or(RepositoryError::NotFound)?
-            .into_row(),
-        ),
-    };
-    if root.connector_kind != "openai_compatible" {
-        return Err(RepositoryError::ProviderManagedResource);
-    }
-
-    let deleted_group_ids = match target {
-        ChannelDeletionTarget::Group(_) => vec![root.id],
-        ChannelDeletionTarget::Channel(_) => Vec::new(),
-    };
-    let channels = match target {
-        ChannelDeletionTarget::Group(_) => {
-            sqlx::query_as::<_, DeletionImpactChannelRowRow>(
-                "SELECT id,channel_group_id,name,available_models,updated_at \
-                 FROM channels WHERE channel_group_id=? AND deleted_at IS NULL ORDER BY id",
-            )
-            .bind(SqliteUuid(root.id))
-            .fetch_all(&mut *connection)
-            .await?
-        }
-        ChannelDeletionTarget::Channel(_) => {
-            sqlx::query_as::<_, DeletionImpactChannelRowRow>(
-                "SELECT id,channel_group_id,name,available_models,updated_at \
-                 FROM channels WHERE id=? AND deleted_at IS NULL",
-            )
-            .bind(SqliteUuid(root.id))
-            .fetch_all(&mut *connection)
-            .await?
-        }
-    }
-    .into_iter()
-    .map(DeletionImpactChannelRowRow::into_row)
-    .collect::<Result<Vec<_>, _>>()?;
-    let deleted_channel_ids = channels
-        .iter()
-        .map(|channel| channel.id)
-        .collect::<Vec<_>>();
-
-    let deleted_channel_array = uuid_array_text(&deleted_channel_ids)?;
-    let rule_rows = sqlx::query_as::<_, DeletionImpactRuleRowRow>(
-        "SELECT rule.id,rule.model_routing_profile_id AS model_rule_id, \
-                model.source_model_id AS client_model,rule.api_format,rule.enabled,rule.updated_at \
-         FROM model_rules AS rule \
-         JOIN model_routing_profiles AS profile ON profile.id=rule.model_routing_profile_id \
-         JOIN models AS model ON model.id=profile.model_id AND model.deleted_at IS NULL \
-         WHERE EXISTS ( \
-             SELECT 1 \
-             FROM model_rule_routing_candidates AS candidate \
-             WHERE candidate.model_rule_id=rule.id \
-               AND EXISTS (SELECT 1 FROM json_each(?) AS deleted \
-                           WHERE deleted.value=candidate.channel_id)) \
-         ORDER BY rule.id",
-    )
-    .bind(&deleted_channel_array)
-    .fetch_all(&mut *connection)
-    .await?;
-    let deleted_groups = deleted_group_ids.iter().copied().collect::<HashSet<_>>();
-    let deleted_channels = deleted_channel_ids.iter().copied().collect::<HashSet<_>>();
-    let channel_rows = channels
-        .iter()
-        .map(|channel| (channel.id, channel))
-        .collect::<HashMap<_, _>>();
-    let mut affected_rules = Vec::new();
-    let mut rule_impacts = Vec::new();
-    for row in rule_rows {
-        let id = row.id.0;
-        let mut state = row.into_row()?;
-        state.routing_tiers = load_rule_routing_tiers(connection, id).await?;
-        if let Some(impact) =
-            deletion_impact_for_rule(&state, &deleted_groups, &deleted_channels, &channel_rows)
-        {
-            affected_rules.push(state);
-            rule_impacts.push(impact);
-        }
-    }
-
-    let deleted_group_array = uuid_array_text(&deleted_group_ids)?;
-    let api_keys = sqlx::query_as::<_, DeletionImpactApiKeyRowRow>(
-        "SELECT id,name,allowed_group_ids,allowed_channel_ids,updated_at \
-         FROM api_keys WHERE deleted_at IS NULL \
-           AND (EXISTS (SELECT 1 FROM json_each(?) AS target \
-                        JOIN json_each(api_keys.allowed_group_ids) AS allowed \
-                          ON allowed.value=target.value) \
-                OR EXISTS (SELECT 1 FROM json_each(?) AS target \
-                           JOIN json_each(api_keys.allowed_channel_ids) AS allowed \
-                             ON allowed.value=target.value)) \
-         ORDER BY id",
-    )
-    .bind(&deleted_group_array)
-    .bind(&deleted_channel_array)
-    .fetch_all(&mut *connection)
-    .await?
-    .into_iter()
-    .map(DeletionImpactApiKeyRowRow::into_row)
-    .collect::<Result<Vec<_>, _>>()?;
-    let api_key_policies = sqlx::query_as::<_, DeletionImpactApiKeyPolicyRowRow>(
-        "SELECT id,name,allowed_group_ids,allowed_channel_ids,updated_at \
-         FROM api_key_policies \
-         WHERE EXISTS (SELECT 1 FROM json_each(?) AS target \
-                       JOIN json_each(api_key_policies.allowed_group_ids) AS allowed \
-                         ON allowed.value=target.value) \
-            OR EXISTS (SELECT 1 FROM json_each(?) AS target \
-                       JOIN json_each(api_key_policies.allowed_channel_ids) AS allowed \
-                         ON allowed.value=target.value) \
-         ORDER BY id",
-    )
-    .bind(&deleted_group_array)
-    .bind(&deleted_channel_array)
-    .fetch_all(&mut *connection)
-    .await?
-    .into_iter()
-    .map(DeletionImpactApiKeyPolicyRowRow::into_row)
-    .collect::<Result<Vec<_>, _>>()?;
-    let quota_visibility = sqlx::query_as::<_, DeletionImpactVisibilityRowRow>(
-        "SELECT visibility.user_group_id,group_record.name AS user_group_name, \
-                visibility.channel_group_id \
-         FROM user_group_codex_quota_visibility AS visibility \
-         JOIN user_groups AS group_record ON group_record.id=visibility.user_group_id \
-         WHERE EXISTS (SELECT 1 FROM json_each(?) AS target \
-                       WHERE target.value=visibility.channel_group_id) \
-         ORDER BY visibility.user_group_id,visibility.channel_group_id",
-    )
-    .bind(&deleted_group_array)
-    .fetch_all(&mut *connection)
-    .await?
-    .into_iter()
-    .map(DeletionImpactVisibilityRowRow::into_row)
-    .collect::<Vec<_>>();
-
-    let fingerprint = DeletionImpactFingerprint {
-        version: 1,
-        resource_type,
-        root: &root,
-        channels: &channels,
-        model_protocol_rules: &affected_rules,
-        api_keys: &api_keys,
-        api_key_policies: &api_key_policies,
-        quota_visibility: &quota_visibility,
-    };
-    let serialized = serde_json::to_vec(&fingerprint).map_err(|_| RepositoryError::Validation)?;
-    let confirmation_token = format!("v1.{}", sha256_hex(Sha256::digest(serialized)));
-    let affected_rule_ids = rule_impacts.iter().map(|rule| rule.id).collect();
-    let impact = ChannelDeletionImpact {
-        resource_type: resource_type.into(),
-        resource_id: root.id,
-        confirmation_token,
-        channels: channels
-            .iter()
-            .map(|channel| DeletionImpactChannel {
-                id: channel.id,
-                channel_group_id: channel.channel_group_id,
-                name: channel.name.clone(),
-            })
-            .collect(),
-        model_protocol_rules: rule_impacts,
-        api_keys: api_keys
-            .iter()
-            .map(|key| DeletionImpactApiKey {
-                id: key.id,
-                name: key.name.clone(),
-            })
-            .collect(),
-        api_key_policies: api_key_policies
-            .iter()
-            .map(|policy| DeletionImpactApiKeyPolicy {
-                id: policy.id,
-                name: policy.name.clone(),
-            })
-            .collect(),
-        quota_visibility_user_groups: quota_visibility
-            .iter()
-            .map(|visibility| DeletionImpactUserGroup {
-                id: visibility.user_group_id,
-                name: visibility.user_group_name.clone(),
-            })
-            .collect(),
-    };
-    Ok(ChannelDeletionPlan {
-        impact,
-        root_updated_at: root.updated_at,
-        deleted_group_ids,
-        deleted_channel_ids,
-        affected_rule_ids,
-    })
-}
-
 fn uuid_array_text(values: &[Uuid]) -> Result<String, RepositoryError> {
     json_text(&values.iter().map(Uuid::to_string).collect::<Vec<_>>())
-}
-
-#[derive(FromRow)]
-struct DeletionImpactRootRowRow {
-    id: SqliteUuid,
-    name: String,
-    updated_at: SqliteTimestamp,
-    connector_kind: String,
-    channel_group_id: Option<SqliteUuid>,
-}
-
-impl DeletionImpactRootRowRow {
-    fn into_row(self) -> DeletionImpactRootRow {
-        DeletionImpactRootRow {
-            id: self.id.0,
-            name: self.name,
-            updated_at: self.updated_at.0,
-            connector_kind: self.connector_kind,
-            channel_group_id: self.channel_group_id.map(|value| value.0),
-        }
-    }
-}
-
-#[derive(FromRow)]
-struct DeletionImpactChannelRowRow {
-    id: SqliteUuid,
-    channel_group_id: SqliteUuid,
-    name: String,
-    available_models: String,
-    updated_at: SqliteTimestamp,
-}
-
-impl DeletionImpactChannelRowRow {
-    fn into_row(self) -> Result<DeletionImpactChannelRow, RepositoryError> {
-        Ok(DeletionImpactChannelRow {
-            id: self.id.0,
-            channel_group_id: self.channel_group_id.0,
-            name: self.name,
-            available_models: string_list(&self.available_models)?,
-            updated_at: self.updated_at.0,
-        })
-    }
-}
-
-#[derive(FromRow)]
-struct DeletionImpactRuleRowRow {
-    id: SqliteUuid,
-    model_rule_id: SqliteUuid,
-    client_model: String,
-    api_format: String,
-    enabled: bool,
-    updated_at: SqliteTimestamp,
-}
-
-impl DeletionImpactRuleRowRow {
-    fn into_row(self) -> Result<DeletionImpactRuleState, RepositoryError> {
-        Ok(DeletionImpactRuleState {
-            id: self.id.0,
-            model_rule_id: self.model_rule_id.0,
-            client_model: self.client_model,
-            api_format: self.api_format,
-            enabled: self.enabled,
-            updated_at: self.updated_at.0,
-            routing_tiers: Vec::new(),
-        })
-    }
-}
-
-#[derive(FromRow)]
-struct DeletionImpactApiKeyRowRow {
-    id: SqliteUuid,
-    name: String,
-    allowed_group_ids: String,
-    allowed_channel_ids: String,
-    updated_at: SqliteTimestamp,
-}
-
-impl DeletionImpactApiKeyRowRow {
-    fn into_row(self) -> Result<DeletionImpactApiKeyRow, RepositoryError> {
-        Ok(DeletionImpactApiKeyRow {
-            id: self.id.0,
-            name: self.name,
-            allowed_group_ids: uuid_list(&self.allowed_group_ids)?,
-            allowed_channel_ids: uuid_list(&self.allowed_channel_ids)?,
-            updated_at: self.updated_at.0,
-        })
-    }
-}
-
-#[derive(FromRow)]
-struct DeletionImpactApiKeyPolicyRowRow {
-    id: SqliteUuid,
-    name: String,
-    allowed_group_ids: String,
-    allowed_channel_ids: String,
-    updated_at: SqliteTimestamp,
-}
-
-impl DeletionImpactApiKeyPolicyRowRow {
-    fn into_row(self) -> Result<DeletionImpactApiKeyPolicyRow, RepositoryError> {
-        Ok(DeletionImpactApiKeyPolicyRow {
-            id: self.id.0,
-            name: self.name,
-            allowed_group_ids: uuid_list(&self.allowed_group_ids)?,
-            allowed_channel_ids: uuid_list(&self.allowed_channel_ids)?,
-            updated_at: self.updated_at.0,
-        })
-    }
-}
-
-#[derive(FromRow)]
-struct DeletionImpactVisibilityRowRow {
-    user_group_id: SqliteUuid,
-    user_group_name: String,
-    channel_group_id: SqliteUuid,
-}
-
-impl DeletionImpactVisibilityRowRow {
-    fn into_row(self) -> DeletionImpactVisibilityRow {
-        DeletionImpactVisibilityRow {
-            user_group_id: self.user_group_id.0,
-            user_group_name: self.user_group_name,
-            channel_group_id: self.channel_group_id.0,
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1999,16 +1149,9 @@ impl SqliteControlPlaneRepository {
         .await?
         .map(SelfApiKeyPolicyRow::into_policy)
         .transpose()?;
-        let sharing_credentials = sqlx::query_as::<_, SharingCredentialOptionRow>(
+        let mut sharing_credentials = sqlx::query_as::<_, SharingCredentialOptionRow>(
             "SELECT s.credential_id,s.id AS sharing_group_id,s.name,s.enabled, \
-                    COALESCE((SELECT json_group_array(p.channel_id) \
-                              FROM codex_oauth_credential_channels AS p \
-                              WHERE p.credential_id=s.credential_id \
-                              ORDER BY p.api_format),'[]') AS channel_ids, \
-                    COALESCE((SELECT json_group_array(p.api_format) \
-                              FROM codex_oauth_credential_channels AS p \
-                              WHERE p.credential_id=s.credential_id \
-                              ORDER BY p.api_format),'[]') AS api_formats \
+                    '[]' AS channel_ids, '[]' AS api_formats \
              FROM codex_sharing_groups AS s \
              JOIN users AS u ON u.id=? AND u.status='active' AND u.deleted_at IS NULL \
                               AND u.is_system=0 \
@@ -2027,71 +1170,18 @@ impl SqliteControlPlaneRepository {
             ensure_optional_policy_enabled(policy.as_ref())?;
         }
 
-        let (groups, channels) = if let Some(policy) = policy.as_ref().filter(|p| p.enabled) {
-            let allowed_groups = uuid_array_text(&policy.allowed_group_ids)?;
-            let groups = sqlx::query_as::<_, SelfApiKeyGroupOptionRow>(
-                "SELECT g.id,g.name,g.api_format,g.enabled \
-                 FROM channel_groups AS g \
-                 WHERE EXISTS (SELECT 1 FROM json_each(?) AS allowed \
-                               WHERE allowed.value=g.id) \
-                   AND g.deleted_at IS NULL AND g.sharing_only=0 \
-                   AND EXISTS (SELECT 1 FROM channels AS candidate \
-                     WHERE candidate.channel_group_id=g.id AND candidate.deleted_at IS NULL \
-                       AND NOT EXISTS ( \
-                         SELECT 1 \
-                         FROM codex_oauth_credential_channels AS option_projection \
-                         JOIN codex_oauth_credentials AS option_credential \
-                           ON option_credential.channel_id=option_projection.credential_id \
-                         JOIN codex_sharing_groups AS s \
-                           ON s.credential_id=option_credential.channel_id \
-                           OR (COALESCE(option_credential.account_id,'')=s.provider_account_id \
-                               AND option_credential.user_id=s.provider_user_id) \
-                         WHERE option_projection.channel_id=candidate.id \
-                           AND option_credential.deleted_at IS NULL)) \
-                 ORDER BY g.api_format,g.name,g.id",
-            )
-            .bind(&allowed_groups)
-            .fetch_all(&mut *reader)
-            .await?
-            .into_iter()
-            .map(SelfApiKeyGroupOptionRow::into_view)
-            .collect();
-            let allowed_channels = uuid_array_text(&policy.allowed_channel_ids)?;
-            let channels = sqlx::query_as::<_, SelfApiKeyChannelOptionRow>(
-                "SELECT c.id,c.channel_group_id,g.name AS channel_group_name, \
-                        g.enabled AS channel_group_enabled,c.api_format,c.name,c.enabled, \
-                        c.auto_disabled \
-                 FROM channels AS c \
-                 JOIN channel_groups AS g ON g.id=c.channel_group_id AND g.deleted_at IS NULL \
-                 WHERE c.deleted_at IS NULL AND g.sharing_only=0 \
-                   AND (EXISTS (SELECT 1 FROM json_each(?) AS allowed \
-                                WHERE allowed.value=c.channel_group_id) \
-                        OR EXISTS (SELECT 1 FROM json_each(?) AS allowed \
-                                   WHERE allowed.value=c.id)) \
-                   AND NOT EXISTS ( \
-                       SELECT 1 \
-                       FROM codex_oauth_credential_channels AS option_projection \
-                       JOIN codex_oauth_credentials AS option_credential \
-                         ON option_credential.channel_id=option_projection.credential_id \
-                       JOIN codex_sharing_groups AS s \
-                         ON s.credential_id=option_credential.channel_id \
-                         OR (COALESCE(option_credential.account_id,'')=s.provider_account_id \
-                             AND option_credential.user_id=s.provider_user_id) \
-                       WHERE option_projection.channel_id=c.id \
-                         AND option_credential.deleted_at IS NULL) \
-                 ORDER BY c.api_format,g.name,c.name,c.id",
-            )
-            .bind(&allowed_groups)
-            .bind(&allowed_channels)
-            .fetch_all(&mut *reader)
-            .await?
-            .into_iter()
-            .map(SelfApiKeyChannelOptionRow::into_view)
-            .collect();
-            (groups, channels)
-        } else {
-            (Vec::new(), Vec::new())
-        };
+        let mut transaction = reader.begin().await?;
+        let topology = crate::persistence::upstream_topology::sqlite_load(&mut transaction).await?;
+        let sharing = load_self_api_key_sharing_access(&mut transaction, user_id).await?;
+        let (groups, channels) = crate::persistence::upstream_topology::authorization::options(
+            &topology,
+            policy.as_ref(),
+            &sharing,
+        );
+        crate::persistence::upstream_topology::authorization::sharing_options(
+            &topology,
+            &mut sharing_credentials,
+        );
         Ok(SelfApiKeyOptions {
             policy_id: policy.as_ref().map(|p| p.id),
             policy_name: policy.as_ref().map(|p| p.name.clone()),
@@ -2107,8 +1197,6 @@ impl SqliteControlPlaneRepository {
 struct SelfApiKeyPolicyRow {
     id: SqliteUuid,
     name: String,
-    allowed_group_ids: String,
-    allowed_channel_ids: String,
     enabled: bool,
 }
 
@@ -2117,8 +1205,6 @@ impl SelfApiKeyPolicyRow {
         Ok(SelfApiKeyPolicy {
             id: self.id.0,
             name: self.name,
-            allowed_group_ids: uuid_list(&self.allowed_group_ids)?,
-            allowed_channel_ids: uuid_list(&self.allowed_channel_ids)?,
             enabled: self.enabled,
         })
     }
@@ -2144,52 +1230,6 @@ impl SharingCredentialOptionRow {
             channel_ids: uuid_list(&self.channel_ids)?,
             api_formats: string_list(&self.api_formats)?,
         })
-    }
-}
-
-#[derive(FromRow)]
-struct SelfApiKeyGroupOptionRow {
-    id: SqliteUuid,
-    name: String,
-    api_format: String,
-    enabled: bool,
-}
-
-impl SelfApiKeyGroupOptionRow {
-    fn into_view(self) -> SelfApiKeyGroupOption {
-        SelfApiKeyGroupOption {
-            id: self.id.0,
-            name: self.name,
-            api_format: self.api_format,
-            enabled: self.enabled,
-        }
-    }
-}
-
-#[derive(FromRow)]
-struct SelfApiKeyChannelOptionRow {
-    id: SqliteUuid,
-    channel_group_id: SqliteUuid,
-    channel_group_name: String,
-    channel_group_enabled: bool,
-    api_format: String,
-    name: String,
-    enabled: bool,
-    auto_disabled: bool,
-}
-
-impl SelfApiKeyChannelOptionRow {
-    fn into_view(self) -> SelfApiKeyChannelOption {
-        SelfApiKeyChannelOption {
-            id: self.id.0,
-            channel_group_id: self.channel_group_id.0,
-            channel_group_name: self.channel_group_name,
-            channel_group_enabled: self.channel_group_enabled,
-            api_format: self.api_format,
-            name: self.name,
-            enabled: self.enabled,
-            auto_disabled: self.auto_disabled,
-        }
     }
 }
 
@@ -2935,171 +1975,6 @@ struct ModelAuditRow {
     updated_at: SqliteTimestamp,
 }
 
-async fn group_audit(
-    transaction: &mut Transaction<'static, Sqlite>,
-    id: Uuid,
-) -> Result<Value, RepositoryError> {
-    let row = sqlx::query_as::<_, ChannelGroupAuditRow>(
-        "SELECT id,name,api_format,connector_kind,connector_pool_id,request_compression, \
-                sharing_only,enabled,status_statistics_enabled,deleted_at,deleted_by, \
-                created_at,updated_at \
-         FROM channel_groups WHERE id=?",
-    )
-    .bind(SqliteUuid(id))
-    .fetch_optional(&mut **transaction)
-    .await?
-    .ok_or(RepositoryError::NotFound)?;
-    let mut value = json!({
-        "id": row.id.0,
-        "name": row.name,
-        "api_format": row.api_format,
-        "connector_kind": row.connector_kind,
-        "connector_pool_id": row.connector_pool_id.map(|value| value.0),
-        "request_compression": row.request_compression,
-        "sharing_only": row.sharing_only,
-        "enabled": row.enabled,
-        "status_statistics_enabled": row.status_statistics_enabled,
-        "deleted_at": row.deleted_at.map(|value| value.0),
-        "deleted_by": row.deleted_by.map(|value| value.0),
-        "created_at": row.created_at.0,
-        "updated_at": row.updated_at.0,
-    });
-    // Codex pools expose every sibling projection so an audit of one group
-    // records the shared sharing-only state.
-    if let Some(pool_id) = row.connector_pool_id {
-        let siblings = sqlx::query_as::<_, ChannelGroupAuditRow>(
-            "SELECT id,name,api_format,connector_kind,connector_pool_id,request_compression, \
-                    sharing_only,enabled,status_statistics_enabled,deleted_at,deleted_by, \
-                    created_at,updated_at \
-             FROM channel_groups WHERE connector_pool_id=? ORDER BY api_format",
-        )
-        .bind(SqliteUuid(pool_id.0))
-        .fetch_all(&mut **transaction)
-        .await?;
-        let sibling_values = siblings
-            .into_iter()
-            .map(ChannelGroupAuditRow::into_value)
-            .collect::<Result<Vec<_>, _>>()?;
-        value["connector_pool_groups"] = Value::Array(sibling_values);
-    }
-    Ok(value)
-}
-
-#[derive(FromRow)]
-struct ChannelGroupAuditRow {
-    id: SqliteUuid,
-    name: String,
-    api_format: String,
-    connector_kind: String,
-    connector_pool_id: Option<SqliteUuid>,
-    request_compression: String,
-    sharing_only: bool,
-    enabled: bool,
-    status_statistics_enabled: bool,
-    deleted_at: Option<SqliteTimestamp>,
-    deleted_by: Option<SqliteUuid>,
-    created_at: SqliteTimestamp,
-    updated_at: SqliteTimestamp,
-}
-
-impl ChannelGroupAuditRow {
-    fn into_value(self) -> Result<Value, RepositoryError> {
-        Ok(json!({
-            "id": self.id.0,
-            "name": self.name,
-            "api_format": self.api_format,
-            "connector_kind": self.connector_kind,
-            "connector_pool_id": self.connector_pool_id.map(|value| value.0),
-            "request_compression": self.request_compression,
-            "sharing_only": self.sharing_only,
-            "enabled": self.enabled,
-            "status_statistics_enabled": self.status_statistics_enabled,
-            "deleted_at": self.deleted_at.map(|value| value.0),
-            "deleted_by": self.deleted_by.map(|value| value.0),
-            "created_at": self.created_at.0,
-            "updated_at": self.updated_at.0,
-        }))
-    }
-}
-
-async fn channel_audit(
-    transaction: &mut Transaction<'static, Sqlite>,
-    id: Uuid,
-) -> Result<Value, RepositoryError> {
-    // Audit snapshots stay allowlisted even though authorized detail reads
-    // expose the stored credential and transform document for editing.
-    let row = sqlx::query_as::<_, ChannelAuditRow>(
-        "SELECT id,channel_group_id,api_format,name,base_url,enabled,supports_websocket, \
-                supports_standalone_web_search,auto_disabled,auto_disabled_reason, \
-                auto_disable_allowed,billing_multiplier,proxy_id,config_template_id, \
-                connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms, \
-                credential_id, \
-                available_models,test_model,test_pricing_model_id,deleted_at,deleted_by, \
-                created_at,updated_at \
-         FROM channels WHERE id=?",
-    )
-    .bind(SqliteUuid(id))
-    .fetch_optional(&mut **transaction)
-    .await?
-    .ok_or(RepositoryError::NotFound)?;
-    Ok(json!({
-        "id": row.id.0,
-        "channel_group_id": row.channel_group_id.0,
-        "api_format": row.api_format,
-        "name": row.name,
-        "base_url": row.base_url,
-        "enabled": row.enabled,
-        "supports_websocket": row.supports_websocket,
-        "supports_standalone_web_search": row.supports_standalone_web_search,
-        "auto_disabled": row.auto_disabled,
-        "auto_disabled_reason": row.auto_disabled_reason,
-        "auto_disable_allowed": row.auto_disable_allowed,
-        "billing_multiplier": json_decimal(row.billing_multiplier.0),
-        "proxy_id": row.proxy_id.map(|value| value.0),
-        "config_template_id": row.config_template_id.map(|value| value.0),
-        "connect_timeout_ms": row.connect_timeout_ms,
-        "response_header_timeout_ms": row.response_header_timeout_ms,
-        "stream_idle_timeout_ms": row.stream_idle_timeout_ms,
-        "credential_id": row.credential_id.map(|id| id.0),
-        "available_models": string_list(&row.available_models)?,
-        "test_model": row.test_model,
-        "test_pricing_model_id": row.test_pricing_model_id.map(|value| value.0),
-        "deleted_at": row.deleted_at.map(|value| value.0),
-        "deleted_by": row.deleted_by.map(|value| value.0),
-        "created_at": row.created_at.0,
-        "updated_at": row.updated_at.0,
-    }))
-}
-
-#[derive(FromRow)]
-struct ChannelAuditRow {
-    id: SqliteUuid,
-    channel_group_id: SqliteUuid,
-    api_format: String,
-    name: String,
-    base_url: String,
-    enabled: bool,
-    supports_websocket: bool,
-    supports_standalone_web_search: bool,
-    auto_disabled: bool,
-    auto_disabled_reason: Option<String>,
-    auto_disable_allowed: bool,
-    billing_multiplier: SqliteUnitPrice,
-    proxy_id: Option<SqliteUuid>,
-    config_template_id: Option<SqliteUuid>,
-    connect_timeout_ms: Option<i32>,
-    response_header_timeout_ms: Option<i32>,
-    stream_idle_timeout_ms: Option<i32>,
-    credential_id: Option<SqliteUuid>,
-    available_models: String,
-    test_model: Option<String>,
-    test_pricing_model_id: Option<SqliteUuid>,
-    deleted_at: Option<SqliteTimestamp>,
-    deleted_by: Option<SqliteUuid>,
-    created_at: SqliteTimestamp,
-    updated_at: SqliteTimestamp,
-}
-
 async fn model_routing_profile_audit(
     transaction: &mut Transaction<'static, Sqlite>,
     id: Uuid,
@@ -3129,42 +2004,6 @@ struct RoutingProfileAuditRow {
     id: SqliteUuid,
     model_id: SqliteUuid,
     client_model: String,
-    created_at: SqliteTimestamp,
-    updated_at: SqliteTimestamp,
-}
-
-async fn rule_audit(
-    transaction: &mut Transaction<'static, Sqlite>,
-    id: Uuid,
-) -> Result<Value, RepositoryError> {
-    let row = sqlx::query_as::<_, RuleAuditRow>(
-        "SELECT id,model_routing_profile_id,api_format,enabled,description,created_at,updated_at \
-         FROM model_rules WHERE id=?",
-    )
-    .bind(SqliteUuid(id))
-    .fetch_optional(&mut **transaction)
-    .await?
-    .ok_or(RepositoryError::NotFound)?;
-    let routing_tiers = load_rule_routing_tiers(transaction, id).await?;
-    Ok(json!({
-        "id": row.id.0,
-        "model_routing_profile_id": row.model_routing_profile_id.0,
-        "api_format": row.api_format,
-        "enabled": row.enabled,
-        "description": row.description,
-        "created_at": row.created_at.0,
-        "updated_at": row.updated_at.0,
-        "routing_tiers": routing_tiers,
-    }))
-}
-
-#[derive(FromRow)]
-struct RuleAuditRow {
-    id: SqliteUuid,
-    model_routing_profile_id: SqliteUuid,
-    api_format: String,
-    enabled: bool,
-    description: Option<String>,
     created_at: SqliteTimestamp,
     updated_at: SqliteTimestamp,
 }
@@ -3306,11 +2145,11 @@ async fn load_optional_self_api_key_policy(
 }
 
 async fn load_self_api_key_sharing_access(
-    transaction: &mut Transaction<'static, Sqlite>,
+    transaction: &mut Transaction<'_, Sqlite>,
     user_id: Uuid,
 ) -> Result<SelfApiKeySharingAccess, RepositoryError> {
     let rows = sqlx::query_as::<_, SharingAccessRow>(
-        "SELECT projection.channel_id, \
+        "SELECT projection.id AS channel_id, \
                 max(candidate.channel_id=s.credential_id \
                     AND EXISTS (SELECT 1 FROM json_each(s.seats) AS seat \
                                 WHERE seat.value=CAST(? AS TEXT))) AS owned \
@@ -3319,10 +2158,10 @@ async fn load_self_api_key_sharing_access(
            ON candidate.channel_id=s.credential_id \
            OR (COALESCE(candidate.account_id,'')=s.provider_account_id \
                AND candidate.user_id=s.provider_user_id) \
-         JOIN codex_oauth_credential_channels AS projection \
+         JOIN upstream_channels AS projection \
            ON projection.credential_id=candidate.channel_id \
-         WHERE candidate.deleted_at IS NULL \
-         GROUP BY projection.channel_id",
+         WHERE candidate.deleted_at IS NULL AND projection.deleted_at IS NULL \
+         GROUP BY projection.id",
     )
     .bind(user_id.to_string())
     .fetch_all(&mut **transaction)
@@ -3349,139 +2188,15 @@ async fn resolve_self_api_key_targets(
     selected_channel_ids: &[Uuid],
     policy: Option<&SelfApiKeyPolicy>,
     sharing: &SelfApiKeySharingAccess,
-) -> Result<Vec<String>, RepositoryError> {
-    let selected_groups = uuid_array_text(selected_group_ids)?;
-    let groups = sqlx::query_as::<_, ApiKeyTargetGroupRow>(
-        "SELECT g.id,g.api_format,g.sharing_only, \
-                EXISTS (SELECT 1 FROM channels AS candidate \
-                  WHERE candidate.channel_group_id=g.id AND candidate.deleted_at IS NULL \
-                    AND NOT EXISTS ( \
-                      SELECT 1 \
-                      FROM codex_oauth_credential_channels AS projection \
-                      JOIN codex_oauth_credentials AS credential \
-                        ON credential.channel_id=projection.credential_id \
-                      JOIN codex_sharing_groups AS s \
-                        ON s.credential_id=credential.channel_id \
-                        OR (COALESCE(credential.account_id,'')=s.provider_account_id \
-                            AND credential.user_id=s.provider_user_id) \
-                      WHERE projection.channel_id=candidate.id \
-                        AND credential.deleted_at IS NULL)) AS has_ordinary_channel \
-         FROM channel_groups AS g \
-         WHERE EXISTS (SELECT 1 FROM json_each(?) AS selected \
-                       WHERE selected.value=g.id) \
-           AND g.deleted_at IS NULL",
+) -> Result<crate::persistence::upstream_topology::authorization::AuthorizationPlan, RepositoryError>
+{
+    let topology = crate::persistence::upstream_topology::sqlite_load(transaction).await?;
+    crate::persistence::upstream_topology::authorization::resolve(
+        &topology,
+        selected_group_ids,
+        selected_channel_ids,
+        Some((policy, sharing)),
     )
-    .bind(&selected_groups)
-    .fetch_all(&mut **transaction)
-    .await?
-    .into_iter()
-    .map(ApiKeyTargetGroupRow::into_target)
-    .collect::<Result<Vec<_>, _>>()?;
-    let selected_channels = uuid_array_text(selected_channel_ids)?;
-    let channels = sqlx::query_as::<_, ApiKeyTargetChannelRow>(
-        "SELECT c.id,c.channel_group_id,c.api_format,g.sharing_only \
-         FROM channels AS c \
-         JOIN channel_groups AS g ON g.id=c.channel_group_id AND g.deleted_at IS NULL \
-         WHERE EXISTS (SELECT 1 FROM json_each(?) AS selected \
-                       WHERE selected.value=c.id) \
-           AND c.deleted_at IS NULL",
-    )
-    .bind(&selected_channels)
-    .fetch_all(&mut **transaction)
-    .await?
-    .into_iter()
-    .map(ApiKeyTargetChannelRow::into_target)
-    .collect::<Vec<_>>();
-    if groups.len() != selected_group_ids.len() || channels.len() != selected_channel_ids.len() {
-        return Err(RepositoryError::ApiKeyTargetNotAllowed);
-    }
-
-    if groups
-        .iter()
-        .any(|group| group.sharing_only || !group.has_ordinary_channel)
-        || channels.iter().any(|channel| {
-            sharing.protected_channels.contains(&channel.id)
-                && !sharing.owned_channels.contains(&channel.id)
-        })
-    {
-        return Err(RepositoryError::ApiKeyTargetNotAllowed);
-    }
-    let ordinary_groups = groups.iter().collect::<Vec<_>>();
-    let ordinary_channels = channels
-        .iter()
-        .filter(|channel| !sharing.owned_channels.contains(&channel.id))
-        .collect::<Vec<_>>();
-    if !ordinary_groups.is_empty() || !ordinary_channels.is_empty() {
-        ensure_optional_policy_enabled(policy)?;
-        let policy = policy.expect("enabled policy was required");
-        let allowed_groups = policy
-            .allowed_group_ids
-            .iter()
-            .copied()
-            .collect::<HashSet<_>>();
-        let allowed_channels = policy
-            .allowed_channel_ids
-            .iter()
-            .copied()
-            .collect::<HashSet<_>>();
-        if ordinary_groups
-            .iter()
-            .any(|group| !allowed_groups.contains(&group.id))
-            || ordinary_channels.iter().any(|channel| {
-                channel.sharing_only
-                    || (!allowed_groups.contains(&channel.channel_group_id)
-                        && !allowed_channels.contains(&channel.id))
-            })
-        {
-            return Err(RepositoryError::ApiKeyTargetNotAllowed);
-        }
-    }
-
-    let mut formats = BTreeSet::new();
-    formats.extend(groups.into_iter().map(|group| group.api_format));
-    formats.extend(channels.into_iter().map(|channel| channel.api_format));
-    if formats.is_empty() {
-        return Err(RepositoryError::Validation);
-    }
-    Ok(formats.into_iter().collect())
-}
-
-#[derive(FromRow)]
-struct ApiKeyTargetGroupRow {
-    id: SqliteUuid,
-    api_format: String,
-    sharing_only: bool,
-    has_ordinary_channel: bool,
-}
-
-impl ApiKeyTargetGroupRow {
-    fn into_target(self) -> Result<ApiKeyTargetGroup, RepositoryError> {
-        Ok(ApiKeyTargetGroup {
-            id: self.id.0,
-            api_format: self.api_format,
-            sharing_only: self.sharing_only,
-            has_ordinary_channel: self.has_ordinary_channel,
-        })
-    }
-}
-
-#[derive(FromRow)]
-struct ApiKeyTargetChannelRow {
-    id: SqliteUuid,
-    channel_group_id: SqliteUuid,
-    api_format: String,
-    sharing_only: bool,
-}
-
-impl ApiKeyTargetChannelRow {
-    fn into_target(self) -> ApiKeyTargetChannel {
-        ApiKeyTargetChannel {
-            id: self.id.0,
-            channel_group_id: self.channel_group_id.0,
-            api_format: self.api_format,
-            sharing_only: self.sharing_only,
-        }
-    }
 }
 
 async fn create_own_api_key(
@@ -3522,7 +2237,7 @@ async fn create_own_api_key(
     .bind(&input.name)
     .bind(&secret)
     .bind(input.expires_at.map(SqliteTimestamp))
-    .bind(json_text(&allowed_api_formats)?)
+    .bind(json_text(&allowed_api_formats.formats)?)
     .bind(json_text(&["proxy", "models.read"])?)
     .bind(value_to_text(&json!(input.allowed_group_ids))?)
     .bind(value_to_text(&json!(input.allowed_channel_ids))?)
@@ -3530,6 +2245,16 @@ async fn create_own_api_key(
     .bind(input.max_concurrent_requests)
     .bind(input.quota_limit_amount.map(amount_24_8).transpose()?)
     .fetch_one(&mut **transaction)
+    .await?;
+    crate::persistence::upstream_topology::authorization::sqlite_write(
+        transaction,
+        id,
+        false,
+        &json!({}),
+        &input.allowed_group_ids,
+        &input.allowed_channel_ids,
+        Some(allowed_api_formats),
+    )
     .await?;
     Ok(MutationResult {
         id,
@@ -3606,7 +2331,12 @@ async fn update_own_api_key(
     .bind(&input.status)
     .bind(input.expires_at.map(SqliteTimestamp))
     .bind(targets_changed)
-    .bind(json_text(&allowed_api_formats.unwrap_or_default())?)
+    .bind(json_text(
+        &allowed_api_formats
+            .as_ref()
+            .map(|plan| plan.formats.clone())
+            .unwrap_or_default(),
+    )?)
     .bind(value_to_text(&json!(input.allowed_group_ids))?)
     .bind(value_to_text(&json!(input.allowed_channel_ids))?)
     .bind(input.requests_per_minute)
@@ -3618,6 +2348,18 @@ async fn update_own_api_key(
     .fetch_optional(&mut **transaction)
     .await?
     .ok_or(RepositoryError::Conflict)?;
+    if let Some(plan) = allowed_api_formats {
+        crate::persistence::upstream_topology::authorization::sqlite_write(
+            transaction,
+            id,
+            false,
+            &before,
+            &input.allowed_group_ids,
+            &input.allowed_channel_ids,
+            Some(plan),
+        )
+        .await?;
+    }
     Ok(MutationResult {
         id,
         object_type: "api_key",
@@ -3922,10 +2664,7 @@ async fn update_channels_batch(
 
     let mut results = Vec::with_capacity(input.items.len());
     for item in input.items {
-        if channel_is_provider_managed(transaction, item.id).await? {
-            return Err(RepositoryError::Validation);
-        }
-        let before = channel_audit(transaction, item.id).await?;
+        let before = capability_audit(transaction, item.id).await?;
         if !before["deleted_at"].is_null() {
             return Err(RepositoryError::NotFound);
         }
@@ -3936,11 +2675,11 @@ async fn update_channels_batch(
             return Err(RepositoryError::Conflict);
         }
         let updated_at = sqlx::query_scalar::<_, SqliteTimestamp>(
-            "UPDATE channels SET \
+            "UPDATE channel_capabilities SET \
                  enabled=COALESCE(?,enabled), \
                  auto_disable_allowed=COALESCE(?,auto_disable_allowed), \
                  billing_multiplier=COALESCE(?,billing_multiplier), \
-                 updated_at=ag_now() \
+                 revision=ag_md5_uuid(hex(randomblob(32))),updated_at=ag_now() \
              WHERE id=? AND updated_at=? AND deleted_at IS NULL \
              RETURNING updated_at",
         )
@@ -3960,10 +2699,10 @@ async fn update_channels_batch(
         .ok_or(RepositoryError::Conflict)?;
         results.push(MutationResult {
             id: item.id,
-            object_type: "channel",
+            object_type: "channel_capability",
             action: "batch_update",
             before_redacted: before,
-            after_redacted: channel_audit(transaction, item.id).await?,
+            after_redacted: capability_audit(transaction, item.id).await?,
             created_secret: None,
             reason: None,
             updated_at: updated_at.0,
@@ -4179,12 +2918,6 @@ async fn apply_control_plane_mutation(
                 input.max_concurrent_requests,
                 input.quota_limit_amount,
             )?;
-            validate_policy_targets(
-                transaction,
-                &input.allowed_group_ids,
-                &input.allowed_channel_ids,
-            )
-            .await?;
             let id = Uuid::new_v4();
             let secret = generate_api_key_secret();
             let updated_at = sqlx::query_scalar::<_, SqliteTimestamp>(
@@ -4207,6 +2940,16 @@ async fn apply_control_plane_mutation(
             .bind(input.max_concurrent_requests)
             .bind(input.quota_limit_amount.map(amount_24_8).transpose()?)
             .fetch_one(&mut **transaction)
+            .await?;
+            crate::persistence::upstream_topology::authorization::sqlite_write(
+                transaction,
+                id,
+                false,
+                &json!({}),
+                &input.allowed_group_ids,
+                &input.allowed_channel_ids,
+                None,
+            )
             .await?;
             Ok(MutationResult {
                 id,
@@ -4243,12 +2986,6 @@ async fn apply_control_plane_mutation(
                 input.max_concurrent_requests,
                 input.quota_limit_amount,
             )?;
-            validate_policy_targets(
-                transaction,
-                &input.allowed_group_ids,
-                &input.allowed_channel_ids,
-            )
-            .await?;
             let before = key_audit(transaction, id).await?;
             if !before["deleted_at"].is_null() {
                 return Err(RepositoryError::NotFound);
@@ -4278,6 +3015,16 @@ async fn apply_control_plane_mutation(
             .fetch_optional(&mut **transaction)
             .await?
             .ok_or(RepositoryError::Conflict)?;
+            crate::persistence::upstream_topology::authorization::sqlite_write(
+                transaction,
+                id,
+                false,
+                &before,
+                &input.allowed_group_ids,
+                &input.allowed_channel_ids,
+                None,
+            )
+            .await?;
             Ok(MutationResult {
                 id,
                 object_type: "api_key",
@@ -4334,71 +3081,12 @@ async fn apply_control_plane_mutation(
                 correlation_id: None,
             })
         }
-        ControlPlaneMutation::CreateGroup(input) => {
-            group_insert(transaction, Uuid::new_v4(), input, true, None).await
-        }
-        ControlPlaneMutation::UpdateGroup {
-            id,
-            input,
-            expected_updated_at,
-        } => group_insert(transaction, id, input, false, Some(expected_updated_at)).await,
-        ControlPlaneMutation::DeleteGroup {
-            id,
-            deleted_by,
-            expected_updated_at,
-            confirmation_token,
-        } => {
-            channel_resource_soft_delete(
-                transaction,
-                ChannelDeletionTarget::Group(id),
-                deleted_by,
-                expected_updated_at,
-                &confirmation_token,
-            )
-            .await
-        }
-        ControlPlaneMutation::CreateChannel(input) => {
-            channel_insert(transaction, Uuid::new_v4(), input, true, None).await
-        }
-        ControlPlaneMutation::UpdateChannel {
-            id,
-            input,
-            expected_updated_at,
-        } => channel_insert(transaction, id, input, false, Some(expected_updated_at)).await,
-        ControlPlaneMutation::DeleteChannel {
-            id,
-            deleted_by,
-            expected_updated_at,
-            confirmation_token,
-        } => {
-            channel_resource_soft_delete(
-                transaction,
-                ChannelDeletionTarget::Channel(id),
-                deleted_by,
-                expected_updated_at,
-                &confirmation_token,
-            )
-            .await
-        }
         ControlPlaneMutation::RecoverChannel {
             id,
             expected_updated_at,
         } => channel_recover(transaction, id, expected_updated_at).await,
         ControlPlaneMutation::CreateRule(input) => {
             model_routing_profile_insert(transaction, Uuid::new_v4(), input).await
-        }
-        ControlPlaneMutation::CreateProtocolRule {
-            model_rule_id,
-            input,
-        } => model_protocol_rule_create(transaction, model_rule_id, Uuid::new_v4(), input).await,
-        ControlPlaneMutation::UpdateProtocolRule {
-            model_rule_id,
-            id,
-            input,
-            expected_updated_at,
-        } => {
-            model_protocol_rule_update(transaction, model_rule_id, id, input, expected_updated_at)
-                .await
         }
         ControlPlaneMutation::CreateUpstreamCredential(input) => {
             super::upstream_credentials::save(transaction, Uuid::new_v4(), input, None).await
@@ -4458,57 +3146,6 @@ async fn ensure_api_key_owner_exists(
     } else {
         Err(RepositoryError::Validation)
     }
-}
-
-async fn validate_policy_targets(
-    transaction: &mut Transaction<'static, Sqlite>,
-    allowed_group_ids: &[Uuid],
-    allowed_channel_ids: &[Uuid],
-) -> Result<(), RepositoryError> {
-    validate_target_lists(allowed_group_ids, allowed_channel_ids, false)?;
-    let groups = uuid_array_text(allowed_group_ids)?;
-    let group_count = sqlx::query_scalar::<_, i64>(
-        "SELECT count(*) FROM channel_groups AS g \
-         WHERE EXISTS (SELECT 1 FROM json_each(?) AS selected \
-                       WHERE selected.value=g.id) \
-           AND g.deleted_at IS NULL",
-    )
-    .bind(&groups)
-    .fetch_one(&mut **transaction)
-    .await?;
-    let channels = uuid_array_text(allowed_channel_ids)?;
-    let channel_count = sqlx::query_scalar::<_, i64>(
-        "SELECT count(*) FROM channels AS channel \
-         JOIN channel_groups AS channel_group \
-           ON channel_group.id=channel.channel_group_id AND channel_group.deleted_at IS NULL \
-         WHERE EXISTS (SELECT 1 FROM json_each(?) AS selected \
-                       WHERE selected.value=channel.id) \
-           AND channel.deleted_at IS NULL",
-    )
-    .bind(&channels)
-    .fetch_one(&mut **transaction)
-    .await?;
-    if group_count != allowed_group_ids.len() as i64
-        || channel_count != allowed_channel_ids.len() as i64
-    {
-        return Err(RepositoryError::Validation);
-    }
-    Ok(())
-}
-
-async fn channel_is_provider_managed(
-    transaction: &mut Transaction<'static, Sqlite>,
-    channel_id: Uuid,
-) -> Result<bool, RepositoryError> {
-    sqlx::query_scalar::<_, bool>(
-        "SELECT g.connector_kind <> 'openai_compatible' \
-         FROM channels AS c JOIN channel_groups AS g ON g.id=c.channel_group_id \
-         WHERE c.id=? AND c.deleted_at IS NULL AND g.deleted_at IS NULL",
-    )
-    .bind(SqliteUuid(channel_id))
-    .fetch_optional(&mut **transaction)
-    .await?
-    .ok_or(RepositoryError::NotFound)
 }
 
 fn validate_user_status_transition(
@@ -4630,11 +3267,11 @@ async fn replace_user_group_codex_quota_visibility(
     if !channel_group_ids.is_empty() {
         let selected = uuid_array_text(channel_group_ids)?;
         let valid_count = sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) FROM channel_groups AS g \
+            "SELECT count(*) FROM routing_groups AS g \
              WHERE EXISTS (SELECT 1 FROM json_each(?) AS allowed \
                            WHERE allowed.value=g.id) \
-               AND g.deleted_at IS NULL AND g.connector_kind='codex_oauth' \
-               AND g.api_format='open_ai_responses'",
+               AND g.deleted_at IS NULL \
+               AND EXISTS (SELECT 1 FROM connector_pools pool WHERE pool.routing_group_id=g.id)",
         )
         .bind(&selected)
         .fetch_one(&mut **transaction)
@@ -5015,12 +3652,7 @@ async fn api_key_policy_insert(
     if input.name.trim().is_empty() {
         return Err(RepositoryError::Validation);
     }
-    validate_policy_targets(
-        transaction,
-        &input.allowed_group_ids,
-        &input.allowed_channel_ids,
-    )
-    .await?;
+    validate_target_lists(&input.allowed_group_ids, &input.allowed_channel_ids, false)?;
     let before = if create {
         json!({})
     } else {
@@ -5055,140 +3687,22 @@ async fn api_key_policy_insert(
         .await?
         .ok_or(RepositoryError::Conflict)?
     };
+    crate::persistence::upstream_topology::authorization::sqlite_write(
+        transaction,
+        id,
+        true,
+        &before,
+        &input.allowed_group_ids,
+        &input.allowed_channel_ids,
+        None,
+    )
+    .await?;
     Ok(MutationResult {
         id,
         object_type: "api_key_policy",
         action: if create { "create" } else { "update" },
         before_redacted: before,
         after_redacted: api_key_policy_audit(transaction, id).await?,
-        created_secret: None,
-        reason: None,
-        updated_at: updated_at.0,
-        correlation_id: None,
-    })
-}
-
-async fn group_insert(
-    transaction: &mut Transaction<'static, Sqlite>,
-    id: Uuid,
-    input: ChannelGroupInput,
-    create: bool,
-    expected_updated_at: Option<DateTime<Utc>>,
-) -> Result<MutationResult, RepositoryError> {
-    if input.name.trim().is_empty()
-        || ApiFormat::parse(&input.api_format).is_none()
-        || !matches!(
-            input.connector_kind.as_str(),
-            "openai_compatible" | "codex_oauth"
-        )
-        || input
-            .request_compression
-            .as_deref()
-            .is_some_and(|value| RequestCompression::parse(value).is_none())
-        || (create
-            && input.connector_kind == "codex_oauth"
-            && input.api_format != "open_ai_responses")
-    {
-        return Err(RepositoryError::Validation);
-    }
-    let before = if create {
-        json!({})
-    } else {
-        group_audit(transaction, id).await?
-    };
-    if !create && !before["deleted_at"].is_null() {
-        return Err(RepositoryError::NotFound);
-    }
-    let sharing_only = input
-        .sharing_only
-        .unwrap_or_else(|| before["sharing_only"].as_bool().unwrap_or(false));
-    if sharing_only && input.connector_kind != "codex_oauth" {
-        return Err(RepositoryError::Validation);
-    }
-    let request_compression = input.request_compression.as_deref().unwrap_or_else(|| {
-        if create {
-            "default"
-        } else {
-            before["request_compression"]
-                .as_str()
-                .expect("persisted channel group request compression is a string")
-        }
-    });
-    if RequestCompression::parse(request_compression)
-        .expect("validated channel group request compression")
-        .is_encoded()
-        && input.api_format != "open_ai_responses"
-    {
-        return Err(RepositoryError::Validation);
-    }
-    if !create && before["connector_kind"].as_str() != Some(input.connector_kind.as_str()) {
-        return Err(RepositoryError::Validation);
-    }
-    if !create
-        && input.connector_kind == "codex_oauth"
-        && before["api_format"].as_str() != Some(input.api_format.as_str())
-    {
-        return Err(RepositoryError::Validation);
-    }
-    // A new Codex Responses group must reference an existing connector pool in
-    // the same transaction; SQLite cannot assign one in a BEFORE trigger.
-    let connector_pool_id = if create && input.connector_kind == "codex_oauth" {
-        let pool_id = Uuid::new_v4();
-        sqlx::query("INSERT INTO connector_pools (id,connector_kind) VALUES (?,'codex_oauth')")
-            .bind(SqliteUuid(pool_id))
-            .execute(&mut **transaction)
-            .await?;
-        Some(pool_id)
-    } else {
-        before["connector_pool_id"]
-            .as_str()
-            .and_then(|value| Uuid::parse_str(value).ok())
-    };
-    let updated_at = if create {
-        sqlx::query_scalar::<_, SqliteTimestamp>(
-            "INSERT INTO channel_groups \
-             (id,name,api_format,connector_kind,connector_pool_id,request_compression,enabled, \
-              status_statistics_enabled,sharing_only) \
-             VALUES (?,?,?,?,?,?,?,?,?) RETURNING updated_at",
-        )
-        .bind(SqliteUuid(id))
-        .bind(&input.name)
-        .bind(&input.api_format)
-        .bind(&input.connector_kind)
-        .bind(connector_pool_id.map(SqliteUuid))
-        .bind(request_compression)
-        .bind(input.enabled)
-        .bind(input.status_statistics_enabled.unwrap_or(false))
-        .bind(sharing_only)
-        .fetch_one(&mut **transaction)
-        .await?
-    } else {
-        sqlx::query_scalar::<_, SqliteTimestamp>(
-            "UPDATE channel_groups SET name=?,api_format=?,connector_kind=?, \
-                    request_compression=COALESCE(?,request_compression),enabled=?, \
-                    status_statistics_enabled=COALESCE(?,status_statistics_enabled), \
-                    sharing_only=?,updated_at=ag_now() \
-             WHERE id=? AND updated_at=? AND deleted_at IS NULL RETURNING updated_at",
-        )
-        .bind(&input.name)
-        .bind(&input.api_format)
-        .bind(&input.connector_kind)
-        .bind(&input.request_compression)
-        .bind(input.enabled)
-        .bind(input.status_statistics_enabled)
-        .bind(sharing_only)
-        .bind(SqliteUuid(id))
-        .bind(SqliteTimestamp(expected_updated_at.expect("PUT version")))
-        .fetch_optional(&mut **transaction)
-        .await?
-        .ok_or(RepositoryError::Conflict)?
-    };
-    Ok(MutationResult {
-        id,
-        object_type: "channel_group",
-        action: if create { "create" } else { "update" },
-        before_redacted: before,
-        after_redacted: group_audit(transaction, id).await?,
         created_secret: None,
         reason: None,
         updated_at: updated_at.0,
@@ -5310,8 +3824,8 @@ async fn model_soft_delete(
     if current_updated_at != expected_updated_at {
         return Err(RepositoryError::Conflict);
     }
-    let disabled_protocol_rules = sqlx::query(
-        "UPDATE model_rules SET enabled=0,updated_at=ag_now() \
+    let disabled_operation_rules = sqlx::query(
+        "UPDATE model_operation_rules SET enabled=0,updated_at=ag_now() \
          WHERE enabled=1 AND model_routing_profile_id IN ( \
              SELECT id FROM model_routing_profiles WHERE model_id=?)",
     )
@@ -5319,9 +3833,19 @@ async fn model_soft_delete(
     .execute(&mut **transaction)
     .await?
     .rows_affected();
+    // Keep model tombstones from permanently pinning route dependencies.
+    sqlx::query(
+        "DELETE FROM model_capability_tiers WHERE rule_id IN ( \
+         SELECT rule.id FROM model_operation_rules rule \
+         JOIN model_routing_profiles profile ON profile.id=rule.model_routing_profile_id \
+         WHERE profile.model_id=?)",
+    )
+    .bind(SqliteUuid(id))
+    .execute(&mut **transaction)
+    .await?;
     let cleared_scheduled_tests = sqlx::query(
-        "UPDATE channels SET test_model=NULL,test_pricing_model_id=NULL,updated_at=ag_now() \
-         WHERE test_pricing_model_id=?",
+        "UPDATE channel_capabilities SET test_model=NULL,test_pricing_model_id=NULL,updated_at=ag_now(),revision=ag_md5_uuid(hex(randomblob(32))) \
+         WHERE test_pricing_model_id=? AND deleted_at IS NULL",
     )
     .bind(SqliteUuid(id))
     .execute(&mut **transaction)
@@ -5345,7 +3869,7 @@ async fn model_soft_delete(
         after_redacted: model_audit(transaction, id).await?,
         created_secret: None,
         reason: Some(format!(
-            "{disabled_protocol_rules} protocol rules disabled; \
+            "{disabled_operation_rules} operation rules disabled; \
              {cleared_scheduled_tests} scheduled test references cleared"
         )),
         updated_at: updated_at.0,
@@ -5504,181 +4028,12 @@ async fn apply_catalog_models(
     Ok(results)
 }
 
-async fn channel_insert(
-    transaction: &mut Transaction<'static, Sqlite>,
-    id: Uuid,
-    input: impl Into<ChannelMutationInput>,
-    create: bool,
-    expected_updated_at: Option<DateTime<Utc>>,
-) -> Result<MutationResult, RepositoryError> {
-    let input = input.into();
-    if !create && channel_is_provider_managed(transaction, id).await? {
-        return Err(RepositoryError::Validation);
-    }
-    let connector_kind = sqlx::query_scalar::<_, String>(
-        "SELECT connector_kind FROM channel_groups WHERE id=? AND deleted_at IS NULL",
-    )
-    .bind(SqliteUuid(input.channel_group_id))
-    .fetch_optional(&mut **transaction)
-    .await?
-    .ok_or(RepositoryError::Validation)?;
-    if connector_kind != "openai_compatible" {
-        return Err(RepositoryError::Validation);
-    }
-    super::upstream_credentials::validate_binding(
-        transaction,
-        input.credential_id,
-        &input.base_url,
-    )
-    .await?;
-    if input
-        .override_document
-        .as_ref()
-        .is_some_and(|document| document.as_object().is_none())
-    {
-        return Err(RepositoryError::Validation);
-    }
-    if ApiFormat::parse(&input.api_format).is_none() {
-        return Err(RepositoryError::Validation);
-    }
-    if input
-        .billing_multiplier
-        .is_some_and(|multiplier| multiplier.is_sign_negative())
-    {
-        return Err(RepositoryError::Validation);
-    }
-    if (input.supports_websocket || input.supports_standalone_web_search)
-        && input.api_format != "open_ai_responses"
-    {
-        return Err(RepositoryError::Validation);
-    }
-    if input.api_format == "open_ai_images"
-        && (input.test_model.is_some() || input.test_pricing_model_id.is_some())
-    {
-        return Err(RepositoryError::Validation);
-    }
-    if input.test_model.is_some() != input.test_pricing_model_id.is_some() {
-        return Err(RepositoryError::Validation);
-    }
-    if input.test_model.as_ref().is_some_and(|model| {
-        !input
-            .available_models
-            .iter()
-            .any(|available| available == model)
-    }) {
-        return Err(RepositoryError::Validation);
-    }
-    if let Some(test_pricing_model_id) = input.test_pricing_model_id {
-        let configured = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM models WHERE id=? AND deleted_at IS NULL)",
-        )
-        .bind(SqliteUuid(test_pricing_model_id))
-        .fetch_one(&mut **transaction)
-        .await?;
-        if !configured {
-            return Err(RepositoryError::Validation);
-        }
-    }
-    let override_document_present = input.override_document.is_some();
-    let override_document = input.override_document.unwrap_or_else(|| json!({}));
-    let before = if create {
-        json!({})
-    } else {
-        channel_audit(transaction, id).await?
-    };
-    if !create && !before["deleted_at"].is_null() {
-        return Err(RepositoryError::NotFound);
-    }
-    let updated_at = if create {
-        sqlx::query_scalar::<_, SqliteTimestamp>(
-            "INSERT INTO channels \
-             (id,channel_group_id,api_format,name,base_url,enabled,billing_multiplier,proxy_id, \
-              config_template_id,override_document,connect_timeout_ms,response_header_timeout_ms, \
-              stream_idle_timeout_ms,upstream_auth_kind,credential_id, \
-              available_models,test_model,test_pricing_model_id,auto_disable_allowed, \
-              supports_websocket,supports_standalone_web_search) \
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'none',?,?,?,?,?,?,?) RETURNING updated_at",
-        )
-        .bind(SqliteUuid(id))
-        .bind(SqliteUuid(input.channel_group_id))
-        .bind(&input.api_format)
-        .bind(&input.name)
-        .bind(&input.base_url)
-        .bind(input.enabled)
-        .bind(amount_24_12(
-            input.billing_multiplier.unwrap_or(Decimal::ONE),
-        )?)
-        .bind(input.proxy_id.map(SqliteUuid))
-        .bind(input.config_template_id.map(SqliteUuid))
-        .bind(value_to_text(&override_document)?)
-        .bind(input.connect_timeout_ms)
-        .bind(input.response_header_timeout_ms)
-        .bind(input.stream_idle_timeout_ms)
-        .bind(input.credential_id.map(SqliteUuid))
-        .bind(json_text(&input.available_models)?)
-        .bind(&input.test_model)
-        .bind(input.test_pricing_model_id.map(SqliteUuid))
-        .bind(input.auto_disable_allowed)
-        .bind(input.supports_websocket)
-        .bind(input.supports_standalone_web_search)
-        .fetch_one(&mut **transaction)
-        .await?
-    } else {
-        sqlx::query_scalar::<_, SqliteTimestamp>(
-            "UPDATE channels SET channel_group_id=?,api_format=?,name=?,base_url=?,enabled=?, \
-                    billing_multiplier=COALESCE(?,billing_multiplier),proxy_id=?,config_template_id=?, \
-                    override_document=CASE WHEN ? THEN ? ELSE override_document END, \
-                    connect_timeout_ms=?,response_header_timeout_ms=?,stream_idle_timeout_ms=?, \
-                    credential_id=?, \
-                    available_models=?,test_model=?,test_pricing_model_id=?,auto_disable_allowed=?, \
-                    supports_websocket=?,supports_standalone_web_search=?,updated_at=ag_now() \
-             WHERE id=? AND updated_at=? AND deleted_at IS NULL RETURNING updated_at",
-        )
-        .bind(SqliteUuid(input.channel_group_id))
-        .bind(&input.api_format)
-        .bind(&input.name)
-        .bind(&input.base_url)
-        .bind(input.enabled)
-        .bind(input.billing_multiplier.map(amount_24_12).transpose()?)
-        .bind(input.proxy_id.map(SqliteUuid))
-        .bind(input.config_template_id.map(SqliteUuid))
-        .bind(override_document_present)
-        .bind(value_to_text(&override_document)?)
-        .bind(input.connect_timeout_ms)
-        .bind(input.response_header_timeout_ms)
-        .bind(input.stream_idle_timeout_ms)
-        .bind(input.credential_id.map(SqliteUuid))
-        .bind(json_text(&input.available_models)?)
-        .bind(&input.test_model)
-        .bind(input.test_pricing_model_id.map(SqliteUuid))
-        .bind(input.auto_disable_allowed)
-        .bind(input.supports_websocket)
-        .bind(input.supports_standalone_web_search)
-        .bind(SqliteUuid(id))
-        .bind(SqliteTimestamp(expected_updated_at.expect("PUT version")))
-        .fetch_optional(&mut **transaction)
-        .await?
-        .ok_or(RepositoryError::Conflict)?
-    };
-    Ok(MutationResult {
-        id,
-        object_type: "channel",
-        action: if create { "create" } else { "update" },
-        before_redacted: before,
-        after_redacted: channel_audit(transaction, id).await?,
-        created_secret: None,
-        reason: None,
-        updated_at: updated_at.0,
-        correlation_id: None,
-    })
-}
-
 async fn channel_recover(
     transaction: &mut Transaction<'static, Sqlite>,
     id: Uuid,
     expected_updated_at: DateTime<Utc>,
 ) -> Result<MutationResult, RepositoryError> {
-    let before = channel_audit(transaction, id).await?;
+    let before = capability_audit(transaction, id).await?;
     if !before["deleted_at"].is_null() {
         return Err(RepositoryError::NotFound);
     }
@@ -5690,7 +4045,8 @@ async fn channel_recover(
     }
     let reason = "manually recovered by administrator".to_owned();
     let updated_at = sqlx::query_scalar::<_, SqliteTimestamp>(
-        "UPDATE channels SET auto_disabled=0,auto_disabled_reason=NULL,updated_at=ag_now() \
+        "UPDATE channel_capabilities SET auto_disabled=0,auto_disable_reason=NULL,auto_disable_at=NULL, \
+         revision=ag_md5_uuid(hex(randomblob(32))),updated_at=ag_now() \
          WHERE id=? AND updated_at=? AND auto_disabled=1 AND deleted_at IS NULL \
          RETURNING updated_at",
     )
@@ -5701,215 +4057,12 @@ async fn channel_recover(
     .ok_or(RepositoryError::Conflict)?;
     Ok(MutationResult {
         id,
-        object_type: "channel",
+        object_type: "channel_capability",
         action: "manual_recover",
         before_redacted: before,
-        after_redacted: channel_audit(transaction, id).await?,
+        after_redacted: capability_audit(transaction, id).await?,
         created_secret: None,
         reason: Some(reason),
-        updated_at: updated_at.0,
-        correlation_id: None,
-    })
-}
-
-async fn channel_resource_soft_delete(
-    transaction: &mut Transaction<'static, Sqlite>,
-    target: ChannelDeletionTarget,
-    deleted_by: Uuid,
-    expected_updated_at: DateTime<Utc>,
-    confirmation_token: &str,
-) -> Result<MutationResult, RepositoryError> {
-    if confirmation_token.is_empty() {
-        return Err(RepositoryError::Validation);
-    }
-    let (before, object_type) = match target {
-        ChannelDeletionTarget::Group(id) => (group_audit(transaction, id).await?, "channel_group"),
-        ChannelDeletionTarget::Channel(id) => (channel_audit(transaction, id).await?, "channel"),
-    };
-    if !before["deleted_at"].is_null() {
-        return Err(RepositoryError::NotFound);
-    }
-    let current_updated_at: DateTime<Utc> = serde_json::from_value(before["updated_at"].clone())
-        .map_err(|_| RepositoryError::Validation)?;
-    if current_updated_at != expected_updated_at {
-        return Err(RepositoryError::Conflict);
-    }
-    let plan = load_channel_deletion_plan(transaction, target).await?;
-    if plan.root_updated_at != expected_updated_at {
-        return Err(RepositoryError::Conflict);
-    }
-    if plan.impact.confirmation_token != confirmation_token {
-        return Err(RepositoryError::DeletionImpactChanged);
-    }
-
-    let deleted_groups = uuid_array_text(&plan.deleted_group_ids)?;
-    let deleted_channels = uuid_array_text(&plan.deleted_channel_ids)?;
-    let unbound_keys = sqlx::query(
-        "UPDATE api_keys SET \
-             allowed_group_ids=(SELECT COALESCE(json_group_array(value),'[]') \
-                 FROM json_each(api_keys.allowed_group_ids) AS allowed \
-                 WHERE NOT EXISTS (SELECT 1 FROM json_each(?) AS target \
-                                   WHERE target.value=allowed.value)), \
-             allowed_channel_ids=(SELECT COALESCE(json_group_array(value),'[]') \
-                 FROM json_each(api_keys.allowed_channel_ids) AS allowed \
-                 WHERE NOT EXISTS (SELECT 1 FROM json_each(?) AS target \
-                                   WHERE target.value=allowed.value)), \
-             updated_at=ag_now() \
-         WHERE deleted_at IS NULL \
-           AND (EXISTS (SELECT 1 FROM json_each(?) AS target \
-                        JOIN json_each(api_keys.allowed_group_ids) AS allowed \
-                          ON allowed.value=target.value) \
-                OR EXISTS (SELECT 1 FROM json_each(?) AS target \
-                           JOIN json_each(api_keys.allowed_channel_ids) AS allowed \
-                             ON allowed.value=target.value))",
-    )
-    .bind(&deleted_groups)
-    .bind(&deleted_channels)
-    .bind(&deleted_groups)
-    .bind(&deleted_channels)
-    .execute(&mut **transaction)
-    .await?;
-    let unbound_policies = sqlx::query(
-        "UPDATE api_key_policies SET \
-             allowed_group_ids=(SELECT COALESCE(json_group_array(value),'[]') \
-                 FROM json_each(api_key_policies.allowed_group_ids) AS allowed \
-                 WHERE NOT EXISTS (SELECT 1 FROM json_each(?) AS target \
-                                   WHERE target.value=allowed.value)), \
-             allowed_channel_ids=(SELECT COALESCE(json_group_array(value),'[]') \
-                 FROM json_each(api_key_policies.allowed_channel_ids) AS allowed \
-                 WHERE NOT EXISTS (SELECT 1 FROM json_each(?) AS target \
-                                   WHERE target.value=allowed.value)), \
-             updated_at=ag_now() \
-         WHERE EXISTS (SELECT 1 FROM json_each(?) AS target \
-                       JOIN json_each(api_key_policies.allowed_group_ids) AS allowed \
-                         ON allowed.value=target.value) \
-            OR EXISTS (SELECT 1 FROM json_each(?) AS target \
-                       JOIN json_each(api_key_policies.allowed_channel_ids) AS allowed \
-                         ON allowed.value=target.value)",
-    )
-    .bind(&deleted_groups)
-    .bind(&deleted_channels)
-    .bind(&deleted_groups)
-    .bind(&deleted_channels)
-    .execute(&mut **transaction)
-    .await?;
-    let visibility_user_group_ids = plan
-        .impact
-        .quota_visibility_user_groups
-        .iter()
-        .map(|group| group.id)
-        .collect::<Vec<_>>();
-    let visibility_user_groups = uuid_array_text(&visibility_user_group_ids)?;
-    sqlx::query(
-        "UPDATE user_groups SET updated_at=ag_now() \
-         WHERE deleted_at IS NULL \
-           AND EXISTS (SELECT 1 FROM json_each(?) AS target \
-                       WHERE target.value=user_groups.id)",
-    )
-    .bind(&visibility_user_groups)
-    .execute(&mut **transaction)
-    .await?;
-    let removed_visibility = sqlx::query(
-        "DELETE FROM user_group_codex_quota_visibility \
-         WHERE EXISTS (SELECT 1 FROM json_each(?) AS target \
-                       WHERE target.value=channel_group_id)",
-    )
-    .bind(&deleted_groups)
-    .execute(&mut **transaction)
-    .await?;
-    sqlx::query(
-        "DELETE FROM model_rule_routing_candidates \
-         WHERE EXISTS (SELECT 1 FROM json_each(?) AS target \
-                       WHERE target.value=model_rule_id) \
-           AND EXISTS (SELECT 1 FROM json_each(?) AS target \
-                       WHERE target.value=channel_id)",
-    )
-    .bind(&uuid_array_text(&plan.affected_rule_ids)?)
-    .bind(&deleted_channels)
-    .execute(&mut **transaction)
-    .await?;
-    sqlx::query(
-        "DELETE FROM model_rule_routing_tiers \
-         WHERE EXISTS (SELECT 1 FROM json_each(?) AS target \
-                       WHERE target.value=model_rule_id) \
-           AND NOT EXISTS (SELECT 1 FROM model_rule_routing_candidates AS candidate \
-                           WHERE candidate.model_rule_id=model_rule_routing_tiers.model_rule_id \
-                             AND candidate.priority=model_rule_routing_tiers.priority)",
-    )
-    .bind(&uuid_array_text(&plan.affected_rule_ids)?)
-    .execute(&mut **transaction)
-    .await?;
-    sqlx::query(
-        "UPDATE model_rules SET enabled=CASE WHEN EXISTS ( \
-                 SELECT 1 FROM model_rule_routing_tiers AS tier \
-                 WHERE tier.model_rule_id=model_rules.id) THEN enabled ELSE 0 END, \
-             updated_at=ag_now() \
-         WHERE EXISTS (SELECT 1 FROM json_each(?) AS target \
-                       WHERE target.value=model_rules.id)",
-    )
-    .bind(&uuid_array_text(&plan.affected_rule_ids)?)
-    .execute(&mut **transaction)
-    .await?;
-    let tombstoned_channels = sqlx::query(
-        "UPDATE channels SET \
-             enabled=0,auto_disabled=0,auto_disabled_reason=NULL,auto_disable_allowed=0, \
-             supports_websocket=0,supports_standalone_web_search=0, \
-             base_url='https://deleted.invalid',billing_multiplier=1,proxy_id=NULL, \
-             config_template_id=NULL,override_document='{}',connect_timeout_ms=NULL, \
-             response_header_timeout_ms=NULL,stream_idle_timeout_ms=NULL, \
-             upstream_auth_kind='none',upstream_auth_header_name=NULL,upstream_api_key=NULL,credential_id=NULL, \
-             available_models='[]',test_model=NULL,test_pricing_model_id=NULL, \
-             deleted_at=ag_now(),deleted_by=?,updated_at=ag_now() \
-         WHERE channels.deleted_at IS NULL \
-           AND EXISTS (SELECT 1 FROM json_each(?) AS target \
-                       WHERE target.value=channels.id)",
-    )
-    .bind(SqliteUuid(deleted_by))
-    .bind(&deleted_channels)
-    .execute(&mut **transaction)
-    .await?;
-    if tombstoned_channels.rows_affected() != plan.deleted_channel_ids.len() as u64 {
-        return Err(RepositoryError::Conflict);
-    }
-    let updated_at = match target {
-        ChannelDeletionTarget::Group(id) => sqlx::query_scalar::<_, SqliteTimestamp>(
-            "UPDATE channel_groups SET enabled=0,status_statistics_enabled=0, \
-                    deleted_at=ag_now(),deleted_by=?,updated_at=ag_now() \
-             WHERE id=? AND updated_at=? AND deleted_at IS NULL RETURNING updated_at",
-        )
-        .bind(SqliteUuid(deleted_by))
-        .bind(SqliteUuid(id))
-        .bind(SqliteTimestamp(expected_updated_at))
-        .fetch_optional(&mut **transaction)
-        .await?
-        .ok_or(RepositoryError::Conflict)?,
-        ChannelDeletionTarget::Channel(id) => {
-            sqlx::query_scalar::<_, SqliteTimestamp>("SELECT updated_at FROM channels WHERE id=?")
-                .bind(SqliteUuid(id))
-                .fetch_optional(&mut **transaction)
-                .await?
-                .ok_or(RepositoryError::Conflict)?
-        }
-    };
-    let after = match target {
-        ChannelDeletionTarget::Group(id) => group_audit(transaction, id).await?,
-        ChannelDeletionTarget::Channel(id) => channel_audit(transaction, id).await?,
-    };
-    Ok(MutationResult {
-        id: plan.impact.resource_id,
-        object_type,
-        action: "delete",
-        before_redacted: before,
-        after_redacted: after,
-        created_secret: None,
-        reason: Some(format!(
-            "{} channels deleted; {} protocol rules affected; {} API keys and {} policies unbound; {} quota visibility assignments removed",
-            plan.deleted_channel_ids.len(),
-            plan.affected_rule_ids.len(),
-            unbound_keys.rows_affected(),
-            unbound_policies.rows_affected(),
-            removed_visibility.rows_affected(),
-        )),
         updated_at: updated_at.0,
         correlation_id: None,
     })
@@ -5959,223 +4112,6 @@ async fn model_routing_profile_insert(
         updated_at: updated_at.0,
         correlation_id: None,
     })
-}
-
-async fn model_protocol_rule_create(
-    transaction: &mut Transaction<'static, Sqlite>,
-    model_rule_id: Uuid,
-    id: Uuid,
-    input: ModelProtocolRuleCreateInput,
-) -> Result<MutationResult, RepositoryError> {
-    if ApiFormat::parse(&input.api_format).is_none() {
-        return Err(RepositoryError::Validation);
-    }
-    let profile_exists = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS( \
-             SELECT 1 FROM model_routing_profiles AS profile \
-             JOIN models AS model ON model.id=profile.model_id \
-             WHERE profile.id=? AND model.deleted_at IS NULL)",
-    )
-    .bind(SqliteUuid(model_rule_id))
-    .fetch_one(&mut **transaction)
-    .await?;
-    if !profile_exists {
-        return Err(RepositoryError::NotFound);
-    }
-    let already_exists = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM model_rules \
-         WHERE model_routing_profile_id=? AND api_format=?)",
-    )
-    .bind(SqliteUuid(model_rule_id))
-    .bind(&input.api_format)
-    .fetch_one(&mut **transaction)
-    .await?;
-    if already_exists {
-        return Err(RepositoryError::Conflict);
-    }
-    let updated_at = sqlx::query_scalar::<_, SqliteTimestamp>(
-        "INSERT INTO model_rules \
-         (id,model_routing_profile_id,api_format,description,enabled) \
-         VALUES (?,?,?,NULL,0) \
-         ON CONFLICT (model_routing_profile_id,api_format) DO NOTHING RETURNING updated_at",
-    )
-    .bind(SqliteUuid(id))
-    .bind(SqliteUuid(model_rule_id))
-    .bind(&input.api_format)
-    .fetch_optional(&mut **transaction)
-    .await?
-    .ok_or(RepositoryError::Conflict)?;
-    Ok(MutationResult {
-        id,
-        object_type: "model_protocol_rule",
-        action: "create",
-        before_redacted: json!({}),
-        after_redacted: rule_audit(transaction, id).await?,
-        created_secret: None,
-        reason: None,
-        updated_at: updated_at.0,
-        correlation_id: None,
-    })
-}
-
-async fn model_protocol_rule_update(
-    transaction: &mut Transaction<'static, Sqlite>,
-    model_rule_id: Uuid,
-    id: Uuid,
-    input: ModelProtocolRuleInput,
-    expected_updated_at: DateTime<Utc>,
-) -> Result<MutationResult, RepositoryError> {
-    if (input.enabled && input.routing_tiers.is_empty())
-        || !valid_model_rule_routing_tiers(&input.routing_tiers)
-    {
-        return Err(RepositoryError::Validation);
-    }
-    let current = sqlx::query_as::<_, (String, SqliteTimestamp)>(
-        "SELECT rule.api_format,rule.updated_at \
-         FROM model_rules AS rule \
-         JOIN model_routing_profiles AS profile ON profile.id=rule.model_routing_profile_id \
-         JOIN models AS model ON model.id=profile.model_id AND model.deleted_at IS NULL \
-         WHERE rule.id=? AND rule.model_routing_profile_id=?",
-    )
-    .bind(SqliteUuid(id))
-    .bind(SqliteUuid(model_rule_id))
-    .fetch_optional(&mut **transaction)
-    .await?
-    .ok_or(RepositoryError::NotFound)?;
-    if current.1.0 != expected_updated_at {
-        return Err(RepositoryError::Conflict);
-    }
-    let api_format = current.0;
-    validate_model_rule_routing_references(transaction, &api_format, &input.routing_tiers).await?;
-    let before = rule_audit(transaction, id).await?;
-    sqlx::query("DELETE FROM model_rule_routing_tiers WHERE model_rule_id=?")
-        .bind(SqliteUuid(id))
-        .execute(&mut **transaction)
-        .await?;
-    let updated_at = sqlx::query_scalar::<_, SqliteTimestamp>(
-        "UPDATE model_rules SET description=?,enabled=?,updated_at=ag_now() \
-         WHERE id=? AND model_routing_profile_id=? RETURNING updated_at",
-    )
-    .bind(&input.description)
-    .bind(input.enabled)
-    .bind(SqliteUuid(id))
-    .bind(SqliteUuid(model_rule_id))
-    .fetch_one(&mut **transaction)
-    .await?;
-    insert_model_rule_routing_tiers(transaction, id, &api_format, &input.routing_tiers).await?;
-    Ok(MutationResult {
-        id,
-        object_type: "model_protocol_rule",
-        action: "update",
-        before_redacted: before,
-        after_redacted: rule_audit(transaction, id).await?,
-        created_secret: None,
-        reason: None,
-        updated_at: updated_at.0,
-        correlation_id: None,
-    })
-}
-
-fn valid_model_rule_routing_tiers(tiers: &[ModelRuleRoutingTier]) -> bool {
-    let mut priorities = HashSet::with_capacity(tiers.len());
-    for tier in tiers {
-        if tier.priority < 0
-            || !priorities.insert(tier.priority)
-            || !matches!(
-                tier.selection_strategy.as_str(),
-                "weighted_random" | "weighted_round_robin"
-            )
-            || tier.candidates.is_empty()
-        {
-            return false;
-        }
-        let mut candidates = HashSet::with_capacity(tier.candidates.len());
-        for candidate in &tier.candidates {
-            if candidate.weight <= 0
-                || candidate.upstream_model.trim().is_empty()
-                || candidate.upstream_model.chars().count() > 300
-                || !candidates.insert((candidate.channel_id, candidate.upstream_model.as_str()))
-            {
-                return false;
-            }
-        }
-    }
-    true
-}
-
-async fn validate_model_rule_routing_references(
-    transaction: &mut Transaction<'static, Sqlite>,
-    api_format: &str,
-    tiers: &[ModelRuleRoutingTier],
-) -> Result<(), RepositoryError> {
-    let candidates = tiers
-        .iter()
-        .flat_map(|tier| &tier.candidates)
-        .map(|candidate| (candidate.channel_id, candidate.upstream_model.as_str()))
-        .collect::<Vec<_>>();
-    if candidates.is_empty() {
-        return Ok(());
-    }
-    let mut matching = 0_i64;
-    for (channel_id, upstream_model) in &candidates {
-        let exists = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS( \
-                 SELECT 1 FROM channels AS channel \
-                 WHERE channel.id=? AND channel.api_format=? AND channel.deleted_at IS NULL \
-                   AND EXISTS (SELECT 1 FROM json_each(channel.available_models) AS available \
-                               WHERE available.value=?))",
-        )
-        .bind(SqliteUuid(*channel_id))
-        .bind(api_format)
-        .bind(upstream_model)
-        .fetch_one(&mut **transaction)
-        .await?;
-        if exists {
-            matching += 1;
-        }
-    }
-    if usize::try_from(matching).ok() != Some(candidates.len()) {
-        return Err(RepositoryError::RoutingDependencyInvalid);
-    }
-    Ok(())
-}
-
-async fn insert_model_rule_routing_tiers(
-    transaction: &mut Transaction<'static, Sqlite>,
-    model_rule_id: Uuid,
-    api_format: &str,
-    tiers: &[ModelRuleRoutingTier],
-) -> Result<(), RepositoryError> {
-    // The rule's shape assertion is a DEFERRABLE INITIALLY DEFERRED foreign
-    // key, so a legal delete-and-reinsert of tiers is checked only at commit.
-    for tier in tiers {
-        sqlx::query(
-            "INSERT INTO model_rule_routing_tiers \
-             (model_rule_id,api_format,priority,selection_strategy) VALUES (?,?,?,?)",
-        )
-        .bind(SqliteUuid(model_rule_id))
-        .bind(api_format)
-        .bind(tier.priority)
-        .bind(&tier.selection_strategy)
-        .execute(&mut **transaction)
-        .await?;
-        for candidate in &tier.candidates {
-            sqlx::query(
-                "INSERT INTO model_rule_routing_candidates \
-                 (model_rule_id,api_format,priority,channel_id,upstream_model,weight) \
-                 VALUES (?,?,?,?,?,?)",
-            )
-            .bind(SqliteUuid(model_rule_id))
-            .bind(api_format)
-            .bind(tier.priority)
-            .bind(SqliteUuid(candidate.channel_id))
-            .bind(&candidate.upstream_model)
-            .bind(candidate.weight)
-            .execute(&mut **transaction)
-            .await?;
-        }
-    }
-    Ok(())
 }
 
 async fn proxy_insert(
@@ -6263,7 +4199,7 @@ async fn proxy_delete(
         return Err(RepositoryError::Conflict);
     }
     let in_use = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM channels WHERE proxy_id=? AND deleted_at IS NULL) \
+        "SELECT EXISTS(SELECT 1 FROM upstream_accesses WHERE proxy_id=?) \
              OR EXISTS(SELECT 1 FROM codex_oauth_flows WHERE proxy_id=?)",
     )
     .bind(SqliteUuid(id))
@@ -6736,56 +4672,6 @@ impl SqliteControlPlaneRepository {
         }
         transaction.commit().await?;
         Ok(())
-    }
-}
-
-/// TEXT-backed row for `ControlPlaneModelRuleRow`, whose neutral struct uses
-/// plain `Uuid`/`DateTime` fields and cannot be decoded from a SQLite row.
-#[derive(FromRow)]
-struct ModelRuleListViewRow {
-    id: SqliteUuid,
-    model_id: SqliteUuid,
-    client_model: String,
-    model_display_name: String,
-    model_provider_name: Option<String>,
-    model_enabled: bool,
-    created_at: SqliteTimestamp,
-    updated_at: SqliteTimestamp,
-}
-
-impl ModelRuleListViewRow {
-    fn into_row(self) -> ControlPlaneModelRuleRow {
-        ControlPlaneModelRuleRow {
-            id: self.id.0,
-            model_id: self.model_id.0,
-            client_model: self.client_model,
-            model_display_name: self.model_display_name,
-            model_provider_name: self.model_provider_name,
-            model_enabled: self.model_enabled,
-            created_at: self.created_at.0,
-            updated_at: self.updated_at.0,
-        }
-    }
-}
-
-/// Builds the serializable model-rule view from a TEXT-backed row. The parent
-/// constructor is private to `persistence`, so the projection is repeated here
-/// with identical sorting semantics.
-fn control_plane_model_rule(
-    row: ControlPlaneModelRuleRow,
-    mut protocol_rules: Vec<ControlPlaneModelProtocolRule>,
-) -> ControlPlaneModelRule {
-    protocol_rules.sort_unstable_by(|left, right| left.api_format.cmp(&right.api_format));
-    ControlPlaneModelRule {
-        id: row.id,
-        model_id: row.model_id,
-        client_model: row.client_model,
-        model_display_name: row.model_display_name,
-        model_provider_name: row.model_provider_name,
-        model_enabled: row.model_enabled,
-        protocol_rules,
-        created_at: row.created_at,
-        updated_at: row.updated_at,
     }
 }
 

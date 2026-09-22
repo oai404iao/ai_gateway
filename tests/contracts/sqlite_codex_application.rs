@@ -3,7 +3,7 @@
 use super::*;
 use crate::{
     persistence::{
-        AuthRepository, ChannelGroupInput, ControlPlaneMutation, SystemPassiveHealthSettingsInput,
+        AuthRepository, ControlPlaneMutation, RoutingGroupInput, SystemPassiveHealthSettingsInput,
         SystemSettingsInput, SystemUpstreamSettingsInput, sqlite::SqliteDatabase,
     },
     routing::{PassiveHealthPolicy, RoutingRuntime},
@@ -58,15 +58,15 @@ async fn local_validation_precedes_intent_and_cancelled_http_remains_fenced() {
     let group = repo
         .prepare_mutation(
             admin,
-            ControlPlaneMutation::CreateGroup(ChannelGroupInput {
-                name: "Codex".into(),
-                api_format: "open_ai_responses".into(),
-                connector_kind: "codex_oauth".into(),
-                request_compression: None,
-                sharing_only: None,
-                enabled: true,
-                status_statistics_enabled: None,
-            }),
+            ControlPlaneMutation::SaveRoutingGroup {
+                id: Uuid::new_v4(),
+                expected: None,
+                input: RoutingGroupInput {
+                    name: "Codex".into(),
+                    sharing_only: false,
+                    enabled: true,
+                },
+            },
         )
         .await
         .unwrap()

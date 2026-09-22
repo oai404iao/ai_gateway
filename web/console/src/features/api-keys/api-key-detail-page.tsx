@@ -187,7 +187,7 @@ export function ApiKeyDetailPage() {
       .map((groupId) => ({
         id: groupId,
         name: groupId,
-        api_format: key?.allowed_api_formats[0] ?? "open_ai_chat_completions",
+        api_formats: key?.allowed_api_formats ?? [],
         enabled: false,
       }));
     return [...available, ...missing];
@@ -208,7 +208,7 @@ export function ApiKeyDetailPage() {
         channel_group_name: t("No longer allowed"),
         channel_group_enabled: false,
         name: channelId,
-        api_format: key?.allowed_api_formats[0] ?? "open_ai_chat_completions",
+        api_formats: key?.allowed_api_formats ?? [],
         enabled: false,
         auto_disabled: false,
       }));

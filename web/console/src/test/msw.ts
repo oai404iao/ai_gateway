@@ -10,9 +10,6 @@ import {
   ACTIVE_SESSION,
   API_KEY_OPTIONS,
   API_KEY_POLICY,
-  CHANNEL,
-  CHANNEL_DELETION_IMPACT,
-  CHANNEL_DETAIL,
   UPSTREAM_CREDENTIAL,
   UPSTREAM_CREDENTIAL_DETAIL,
   UPSTREAM_ACCESS,
@@ -20,7 +17,7 @@ import {
   LOGICAL_CHANNEL,
   CHANNEL_CAPABILITY,
   OPERATION_RULE,
-  CHANNEL_GROUP,
+  ROUTING_PROFILE,
   CHANNEL_GROUP_STATUS_REPORT,
   CONFIG_TEMPLATE,
   CONFIG_TEMPLATE_DETAIL,
@@ -29,8 +26,6 @@ import {
   DEFAULT_USER_GROUP,
   EXPIRED_SESSION,
   MODEL,
-  MODEL_PROTOCOL_RULE,
-  MODEL_RULE,
   NEW_API_KEY_SECRET,
   OWN_CODEX_QUOTA,
   OWN_CODEX_QUOTA_HISTORY,
@@ -197,32 +192,6 @@ export const handlers = [
       headers: { ETag: `"${MODEL.updated_at}"` },
     }),
   ),
-  http.get("/console/v1/routing/channel-groups", () => HttpResponse.json([CHANNEL_GROUP])),
-  http.get("/console/v1/routing/channel-groups/:id", () =>
-    HttpResponse.json(CHANNEL_GROUP, {
-      headers: { ETag: `"${CHANNEL_GROUP.updated_at}"` },
-    }),
-  ),
-  http.get("/console/v1/routing/channel-groups/:id/deletion-impact", () =>
-    HttpResponse.json({
-      ...CHANNEL_DELETION_IMPACT,
-      resource_type: "channel_group",
-      resource_id: CHANNEL_GROUP.id,
-      model_protocol_rules: CHANNEL_DELETION_IMPACT.model_protocol_rules.map(
-        (rule) => ({
-          ...rule,
-          removed_channel_group_ids: [CHANNEL_GROUP.id],
-        }),
-      ),
-    }),
-  ),
-  http.delete("/console/v1/routing/channel-groups/:id", () =>
-    HttpResponse.json({
-      id: CHANNEL_GROUP.id,
-      correlation_id: "99999999-0000-0000-0000-000000000010",
-    }),
-  ),
-  http.get("/console/v1/routing/channels", () => HttpResponse.json([CHANNEL])),
   http.get("/console/v1/routing/accesses", () => HttpResponse.json([UPSTREAM_ACCESS])),
   http.get("/console/v1/routing/accesses/:id", () => HttpResponse.json(
     UPSTREAM_ACCESS, { headers: { ETag: `"${UPSTREAM_ACCESS.updated_at}"` } },
@@ -230,47 +199,8 @@ export const handlers = [
   http.get("/console/v1/routing/upstream-credentials", () => HttpResponse.json([UPSTREAM_CREDENTIAL])),
   http.get("/console/v1/routing/upstream-credentials/:id", () =>
     HttpResponse.json(UPSTREAM_CREDENTIAL_DETAIL, { headers: { ETag: `"${UPSTREAM_CREDENTIAL.updated_at}"` } })),
-  http.get("/console/v1/routing/channels/:id", () =>
-    HttpResponse.json(CHANNEL_DETAIL, {
-      headers: { ETag: `"${CHANNEL.updated_at}"` },
-    }),
-  ),
-  http.get("/console/v1/routing/channels/:id/deletion-impact", () =>
-    HttpResponse.json(CHANNEL_DELETION_IMPACT),
-  ),
-  http.delete("/console/v1/routing/channels/:id", () =>
-    HttpResponse.json({
-      id: CHANNEL.id,
-      correlation_id: "99999999-0000-0000-0000-000000000011",
-    }),
-  ),
   http.post("/console/v1/routing/channels/models/discover", () =>
-    HttpResponse.json({ models: CHANNEL.available_models }),
-  ),
-  http.post("/console/v1/routing/channels/batch", () =>
-    HttpResponse.json({
-      updated_ids: [CHANNEL.id],
-      correlation_id: "99999999-0000-0000-0000-000000000000",
-    }),
-  ),
-  http.post("/console/v1/routing/channels/:id/recover", () =>
-    HttpResponse.json({
-      id: CHANNEL.id,
-      correlation_id: "99999999-0000-0000-0000-000000000001",
-    }),
-  ),
-  http.get("/console/v1/routing/model-rules", () => HttpResponse.json([MODEL_RULE])),
-  http.get("/console/v1/routing/model-rules/:id", () =>
-    HttpResponse.json(MODEL_RULE, {
-      headers: { ETag: `"${MODEL_RULE.updated_at}"` },
-    }),
-  ),
-  http.get(
-    "/console/v1/routing/model-rules/:id/protocols/:protocolId",
-    () =>
-      HttpResponse.json(MODEL_PROTOCOL_RULE, {
-        headers: { ETag: `"${MODEL_PROTOCOL_RULE.updated_at}"` },
-      }),
+    HttpResponse.json({ models: CHANNEL_CAPABILITY.settings.available_models }),
   ),
   http.get("/console/v1/network/proxies", () => HttpResponse.json([PROXY])),
   http.get("/console/v1/network/proxies/:id", () =>
@@ -347,6 +277,7 @@ export const handlers = [
       headers: { ETag: `"${CHANNEL_CAPABILITY.updated_at}"` },
     }),
   ),
+  http.get("/console/v1/routing/profiles", () => HttpResponse.json([ROUTING_PROFILE])),
   http.get("/console/v1/routing/operation-rules", () =>
     HttpResponse.json([OPERATION_RULE]),
   ),

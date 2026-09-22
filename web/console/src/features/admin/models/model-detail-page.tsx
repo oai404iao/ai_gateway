@@ -38,7 +38,7 @@ import {
   useCreateModel,
   useDeleteModel,
   useModel,
-  useModelRules,
+  useRoutingProfiles,
   useUpdateModel,
 } from "@/features/admin/api";
 import { ApiError } from "@/api/errors";
@@ -116,7 +116,7 @@ export function ModelDetailPage() {
   const returnsToSetup = returnTo.startsWith("/admin/model-setup");
   const { data, etag, isLoading, error, refetch } = useModel(id);
   const copySource = useModel(copyFrom ?? "");
-  const modelRules = useModelRules();
+  const modelRules = useRoutingProfiles();
   const create = useCreateModel();
   const update = useUpdateModel(id);
   const remove = useDeleteModel(id);

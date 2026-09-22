@@ -31,7 +31,7 @@ describe("ModelSetupPage", () => {
     expect(
       screen.getByText("3. Model rules"),
     ).toBeInTheDocument();
-    expect(screen.getByText("1 protocol rules")).toBeInTheDocument();
+    expect(screen.getByText("1 Operation rules")).toBeInTheDocument();
   });
 
   it("links directly to the focused hierarchical routing list", async () => {
@@ -43,8 +43,8 @@ describe("ModelSetupPage", () => {
       await screen.findByRole("button", { name: "Manage routing" }),
     );
     expect(
-      await screen.findByRole("heading", { name: "Model Rules" }),
+      await screen.findByRole("heading", { name: "Operation rules" }),
     ).toBeInTheDocument();
-    expect(window.location.pathname).toBe("/admin/routing/model-rules");
+    expect(window.location.pathname).toBe("/admin/routing/operation-rules");
   });
 });

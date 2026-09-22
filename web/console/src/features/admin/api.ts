@@ -2,28 +2,17 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiGetDetail, apiPost, apiPut, apiSend } from "@/api/client";
 import type {
   AdminApiKeyView,
-  ChannelBatchUpdateInput,
-  ChannelBatchUpdateResponse,
-  ChannelRecoverInput,
-  ChannelCreateInput,
-  ChannelDeletionImpact,
   ApiKeyCreateInput,
   ApiKeyPolicyInput,
   ApiKeyPolicyView,
   ApiKeyUpdateInput,
   AuditLogView,
-  ChannelGroupInput,
-  ChannelGroupView,
-  ChannelDetailView,
-  ChannelInput,
   ChannelModelDiscoveryInput,
   ChannelModelDiscoveryResponse,
-  ChannelView,
   ConfigTemplateCreateInput,
   ConfigTemplateDetailView,
   ConfigTemplateInput,
   ConfigTemplateView,
-  ControlPlaneLists,
   ControlPlaneModel,
   ControlPlaneUser,
   InviteUserInput,
@@ -31,11 +20,7 @@ import type {
   ModelImportRequest,
   ModelImportResponse,
   ModelInput,
-  ModelProtocolRuleCreateInput,
-  ModelProtocolRuleInput,
-  ModelProtocolRuleView,
   ModelRuleCreateInput,
-  ModelRuleView,
   ModelSyncPreview,
   ModelSyncPreviewRequest,
   MutationResponse,
@@ -70,6 +55,7 @@ import type {
   ChannelCapabilityView,
   ChannelCapabilityInput,
   OperationRuleView,
+  RoutingProfileView,
   OperationRuleInput,
   UpstreamCredentialDetail,
   UpstreamCredentialInput,
@@ -223,6 +209,27 @@ export function useDeleteLogicalChannel(id: string) {
 const CAPABILITIES_KEY = ["console", "channel-capabilities"] as const;
 const capabilityDetailKey = (id: string) => [...CAPABILITIES_KEY, id] as const;
 const CAPABILITIES_PATH = "/routing/capabilities";
+export function useBatchUpdateCapabilities() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: import("@/api/types").CapabilityBatchUpdateInput) =>
+      apiPost<import("@/api/types").CapabilityBatchUpdateResponse>(`${CAPABILITIES_PATH}/batch`, input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: CAPABILITIES_KEY });
+      void queryClient.invalidateQueries({ queryKey: OPERATION_RULES_KEY });
+    },
+  });
+}
+export function useRecoverCapability(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ifMatch }: { ifMatch: string }) =>
+      apiSend<MutationResponse>(`${CAPABILITIES_PATH}/${id}/recover`, "POST", undefined, { ifMatch }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: CAPABILITIES_KEY });
+    },
+  });
+}
 export const useChannelCapabilities = makeList<ChannelCapabilityView>(
   CAPABILITIES_PATH,
   CAPABILITIES_KEY,
@@ -261,6 +268,11 @@ export function useDeleteChannelCapability(id: string) {
 }
 
 const OPERATION_RULES_KEY = ["console", "operation-rules"] as const;
+const ROUTING_PROFILES_KEY = ["console", "routing-profiles"] as const;
+export const useRoutingProfiles = makeList<RoutingProfileView>("/routing/profiles", ROUTING_PROFILES_KEY);
+export const useCreateRoutingProfile = makeCreate<ModelRuleCreateInput, MutationResponse>(
+  "/routing/profiles", ROUTING_PROFILES_KEY,
+);
 const operationRuleDetailKey = (id: string) => [...OPERATION_RULES_KEY, id] as const;
 const OPERATION_RULES_PATH = "/routing/operation-rules";
 export const useOperationRules = makeList<OperationRuleView>(
@@ -467,10 +479,6 @@ export const useUpdateApiKeyPolicy = makeUpdate<ApiKeyPolicyInput>(
 // ---- Models ----
 const MODELS_KEY = ["console", "models"] as const;
 const modelDetailKey = (id: string) => ["console", "models", id] as const;
-const RULES_KEY = ["console", "model-rules"] as const;
-const ruleDetailKey = (id: string) => ["console", "model-rules", id] as const;
-const protocolRuleDetailKey = (modelRuleId: string, protocolId: string) =>
-  ["console", "model-rules", modelRuleId, "protocols", protocolId] as const;
 export const useModels = makeList<ControlPlaneModel>("/models", MODELS_KEY);
 export const useModel = makeDetail<ControlPlaneModel>("/models", modelDetailKey);
 export const useCreateModel = makeCreate<ModelInput, MutationResponse>("/models", MODELS_KEY);
@@ -482,7 +490,8 @@ export function useUpdateModel(id: string) {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: MODELS_KEY });
       void queryClient.invalidateQueries({ queryKey: modelDetailKey(id) });
-      void queryClient.invalidateQueries({ queryKey: RULES_KEY });
+      void queryClient.invalidateQueries({ queryKey: ROUTING_PROFILES_KEY });
+      void queryClient.invalidateQueries({ queryKey: OPERATION_RULES_KEY });
     },
   });
 }
@@ -495,8 +504,9 @@ export function useDeleteModel(id: string) {
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: MODELS_KEY });
-      void queryClient.invalidateQueries({ queryKey: RULES_KEY });
-      void queryClient.invalidateQueries({ queryKey: CHANNELS_KEY });
+      void queryClient.invalidateQueries({ queryKey: ROUTING_PROFILES_KEY });
+      void queryClient.invalidateQueries({ queryKey: OPERATION_RULES_KEY });
+      void queryClient.invalidateQueries({ queryKey: CAPABILITIES_KEY });
       void queryClient.invalidateQueries({
         queryKey: ["console", "control-plane-lists"],
       });
@@ -543,283 +553,12 @@ export function useDeleteAdminApiKey(id: string) {
   });
 }
 
-// ---- Channel Groups ----
-const GROUPS_KEY = ["console", "channel-groups"] as const;
-const groupDetailKey = (id: string) => ["console", "channel-groups", id] as const;
-export const useChannelGroups = makeList<ChannelGroupView>(
-  "/routing/channel-groups",
-  GROUPS_KEY,
-);
-export const useChannelGroup = makeDetail<ChannelGroupView>("/routing/channel-groups", groupDetailKey);
-export const useCreateChannelGroup = makeCreate<ChannelGroupInput, MutationResponse>(
-  "/routing/channel-groups",
-  GROUPS_KEY,
-);
-export function useUpdateChannelGroup(id: string) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ input, ifMatch }: { input: ChannelGroupInput; ifMatch: string }) =>
-      apiPut<MutationResponse>(`/routing/channel-groups/${id}`, input, ifMatch),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: GROUPS_KEY });
-      void queryClient.invalidateQueries({ queryKey: groupDetailKey(id) });
-      void queryClient.invalidateQueries({ queryKey: RULES_KEY });
-    },
-  });
-}
-export function usePreviewChannelGroupDeletion(id: string) {
-  return useMutation({
-    mutationFn: () =>
-      apiGet<ChannelDeletionImpact>(
-        `/routing/channel-groups/${id}/deletion-impact`,
-      ),
-  });
-}
-export function useDeleteChannelGroup(id: string) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({
-      ifMatch,
-      confirmationToken,
-    }: {
-      ifMatch: string;
-      confirmationToken: string;
-    }) =>
-      apiSend<MutationResponse>(
-        `/routing/channel-groups/${id}`,
-        "DELETE",
-        { confirmation_token: confirmationToken },
-        { ifMatch },
-      ),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: GROUPS_KEY });
-      void queryClient.invalidateQueries({ queryKey: CHANNELS_KEY });
-      void queryClient.invalidateQueries({ queryKey: RULES_KEY });
-      void queryClient.invalidateQueries({ queryKey: ADMIN_KEYS_KEY });
-      void queryClient.invalidateQueries({ queryKey: POLICIES_KEY });
-      void queryClient.invalidateQueries({ queryKey: USER_GROUPS_KEY });
-      void queryClient.invalidateQueries({
-        queryKey: ["console", "me", "api-keys"],
-      });
-      void queryClient.invalidateQueries({
-        queryKey: ["console", "me", "api-key-options"],
-      });
-      void queryClient.invalidateQueries({
-        queryKey: ["console", "me", "codex-quotas"],
-      });
-      void queryClient.invalidateQueries({
-        queryKey: ["console", "statistics", "channel-group-status"],
-      });
-      void queryClient.invalidateQueries({
-        queryKey: ["console", "control-plane-lists"],
-      });
-      queryClient.removeQueries({ queryKey: groupDetailKey(id) });
-    },
-  });
-}
-export function useSetChannelGroupEnabled() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({
-      group,
-      enabled,
-    }: {
-      group: ChannelGroupView;
-      enabled: boolean;
-    }) =>
-      apiPut<MutationResponse>(
-        `/routing/channel-groups/${group.id}`,
-        {
-          name: group.name,
-          api_format: group.api_format,
-          connector_kind: group.connector_kind,
-          request_compression: group.request_compression,
-          enabled,
-        } satisfies ChannelGroupInput,
-        `"${group.updated_at}"`,
-      ),
-    onSettled: (_data, _error, variables) => {
-      void queryClient.invalidateQueries({ queryKey: GROUPS_KEY });
-      void queryClient.invalidateQueries({
-        queryKey: groupDetailKey(variables.group.id),
-      });
-      void queryClient.invalidateQueries({ queryKey: CHANNELS_KEY });
-      void queryClient.invalidateQueries({ queryKey: RULES_KEY });
-      void queryClient.invalidateQueries({
-        queryKey: ["console", "me", "api-key-options"],
-      });
-      void queryClient.invalidateQueries({
-        queryKey: ["console", "control-plane-lists"],
-      });
-    },
-  });
-}
-
-// ---- Channels ----
-const CHANNELS_KEY = ["console", "channels"] as const;
-const channelDetailKey = (id: string) => ["console", "channels", id] as const;
-export const useChannels = makeList<ChannelView>("/routing/channels", CHANNELS_KEY);
-export const useChannel = makeDetail<ChannelDetailView>("/routing/channels", channelDetailKey);
-export function useCreateChannel() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (input: ChannelCreateInput) =>
-      apiPost<MutationResponse>("/routing/channels", input),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: CHANNELS_KEY });
-      void queryClient.invalidateQueries({ queryKey: RULES_KEY });
-    },
-  });
-}
-export function useUpdateChannel(id: string) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ input, ifMatch }: { input: ChannelInput; ifMatch: string }) =>
-      apiPut<MutationResponse>(`/routing/channels/${id}`, input, ifMatch),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: CHANNELS_KEY });
-      void queryClient.invalidateQueries({ queryKey: channelDetailKey(id) });
-      void queryClient.invalidateQueries({ queryKey: RULES_KEY });
-    },
-  });
-}
-export function usePreviewChannelDeletion(id: string) {
-  return useMutation({
-    mutationFn: () =>
-      apiGet<ChannelDeletionImpact>(`/routing/channels/${id}/deletion-impact`),
-  });
-}
-export function useDeleteChannel(id: string) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({
-      ifMatch,
-      confirmationToken,
-    }: {
-      ifMatch: string;
-      confirmationToken: string;
-    }) =>
-      apiSend<MutationResponse>(
-        `/routing/channels/${id}`,
-        "DELETE",
-        { confirmation_token: confirmationToken },
-        { ifMatch },
-      ),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: CHANNELS_KEY });
-      void queryClient.invalidateQueries({ queryKey: GROUPS_KEY });
-      void queryClient.invalidateQueries({ queryKey: RULES_KEY });
-      void queryClient.invalidateQueries({ queryKey: ADMIN_KEYS_KEY });
-      void queryClient.invalidateQueries({ queryKey: POLICIES_KEY });
-      void queryClient.invalidateQueries({
-        queryKey: ["console", "me", "api-keys"],
-      });
-      void queryClient.invalidateQueries({
-        queryKey: ["console", "me", "api-key-options"],
-      });
-      void queryClient.invalidateQueries({
-        queryKey: ["console", "control-plane-lists"],
-      });
-      queryClient.removeQueries({ queryKey: channelDetailKey(id) });
-    },
-  });
-}
 export function useDiscoverChannelModels() {
   return useMutation({
     mutationFn: (input: ChannelModelDiscoveryInput) =>
       apiPost<ChannelModelDiscoveryResponse>("/routing/channels/models/discover", input),
   });
 }
-export function useBatchUpdateChannels() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (input: ChannelBatchUpdateInput) =>
-      apiPost<ChannelBatchUpdateResponse>("/routing/channels/batch", input),
-    onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: CHANNELS_KEY });
-      void queryClient.invalidateQueries({ queryKey: RULES_KEY });
-    },
-  });
-}
-export function useRecoverChannel() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, input }: { id: string; input: ChannelRecoverInput }) =>
-      apiPost<MutationResponse>(`/routing/channels/${id}/recover`, input),
-    onSettled: (_data, _error, variables) => {
-      void queryClient.invalidateQueries({ queryKey: CHANNELS_KEY });
-      void queryClient.invalidateQueries({ queryKey: channelDetailKey(variables.id) });
-      void queryClient.invalidateQueries({ queryKey: RULES_KEY });
-    },
-  });
-}
-
-// ---- Model Rules ----
-export const useModelRules = makeList<ModelRuleView>("/routing/model-rules", RULES_KEY);
-export const useModelRule = makeDetail<ModelRuleView>("/routing/model-rules", ruleDetailKey);
-export const useCreateModelRule = makeCreate<ModelRuleCreateInput, MutationResponse>(
-  "/routing/model-rules",
-  RULES_KEY,
-);
-export function useCreateModelProtocolRule(modelRuleId: string) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (input: ModelProtocolRuleCreateInput) =>
-      apiPost<MutationResponse>(
-        `/routing/model-rules/${modelRuleId}/protocols`,
-        input,
-      ),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: RULES_KEY });
-      void queryClient.invalidateQueries({ queryKey: ruleDetailKey(modelRuleId) });
-    },
-  });
-}
-export function useModelProtocolRule(modelRuleId: string, protocolId: string) {
-  const query = useQuery({
-    queryKey: protocolRuleDetailKey(modelRuleId, protocolId),
-    queryFn: () =>
-      apiGetDetail<ModelProtocolRuleView>(
-        `/routing/model-rules/${modelRuleId}/protocols/${protocolId}`,
-      ),
-    enabled: Boolean(modelRuleId) && Boolean(protocolId),
-  });
-  return {
-    data: query.data,
-    etag: query.data?.etag ?? "",
-    isLoading: query.isLoading,
-    error: query.error,
-    refetch: query.refetch,
-  };
-}
-export function useUpdateModelProtocolRule(
-  modelRuleId: string,
-  protocolId: string,
-) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({
-      input,
-      ifMatch,
-    }: {
-      input: ModelProtocolRuleInput;
-      ifMatch: string;
-    }) =>
-      apiPut<MutationResponse>(
-        `/routing/model-rules/${modelRuleId}/protocols/${protocolId}`,
-        input,
-        ifMatch,
-      ),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: RULES_KEY });
-      void queryClient.invalidateQueries({ queryKey: ruleDetailKey(modelRuleId) });
-      void queryClient.invalidateQueries({
-        queryKey: protocolRuleDetailKey(modelRuleId, protocolId),
-      });
-    },
-  });
-}
-
 // ---- Proxies ----
 const PROXIES_KEY = ["console", "proxies"] as const;
 const proxyDetailKey = (id: string) => ["console", "proxies", id] as const;
@@ -970,40 +709,6 @@ export function useClearSessionAffinityCache() {
     },
     onSuccess: (response) => {
       queryClient.setQueryData(SESSION_AFFINITY_CACHE_KEY, response.cache);
-    },
-  });
-}
-
-// ---- Combined reference snapshot for forms ----
-export function useControlPlaneLists() {
-  return useQuery({
-    queryKey: ["console", "control-plane-lists"] as const,
-    queryFn: async (): Promise<ControlPlaneLists> => {
-      const [users, user_groups, models, api_keys, api_key_policies, channel_groups, channels, model_rules, proxies, config_templates] =
-        await Promise.all([
-          apiGet<ControlPlaneUser[]>("/users"),
-          apiGet<UserGroupView[]>("/user-groups"),
-          apiGet<ControlPlaneModel[]>("/models"),
-          apiGet<AdminApiKeyView[]>("/api-keys"),
-          apiGet<ApiKeyPolicyView[]>("/api-key-policies"),
-          apiGet<ChannelGroupView[]>("/routing/channel-groups"),
-          apiGet<ChannelView[]>("/routing/channels"),
-          apiGet<ModelRuleView[]>("/routing/model-rules"),
-          apiGet<ProxyView[]>("/network/proxies"),
-          apiGet<ConfigTemplateView[]>("/transforms/templates"),
-        ]);
-      return {
-        users,
-        user_groups,
-        models,
-        api_keys,
-        api_key_policies,
-        channel_groups,
-        channels,
-        model_rules,
-        proxies,
-        config_templates,
-      };
     },
   });
 }

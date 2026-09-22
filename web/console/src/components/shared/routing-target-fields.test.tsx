@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { I18nProvider } from "@/app/i18n-provider";
@@ -103,6 +103,39 @@ function DegradedRoutingHarness() {
 }
 
 describe("RoutingTargetFields", () => {
+  it("selects a multi-format logical target once without inventing per-format IDs", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(
+      <I18nProvider>
+        <RoutingTargetFields
+          groups={[{
+            id: "mixed-group", name: "Mixed group", enabled: true,
+            api_formats: ["open_ai_responses", "open_ai_images"],
+          }]}
+          channels={[{
+            id: "logical", name: "Logical channel", channel_group_id: "mixed-group",
+            channel_group_name: "Mixed group", channel_group_enabled: true,
+            enabled: true, auto_disabled: false,
+            api_formats: ["open_ai_responses", "open_ai_images"],
+          }]}
+          selectedGroupIds={[]}
+          selectedChannelIds={[]}
+          onChange={onChange}
+        />
+      </I18nProvider>,
+    );
+    const group = screen.getAllByRole("checkbox", { name: "Mixed group (Responses / Images)" });
+    expect(group).toHaveLength(1);
+    await user.click(group[0]!);
+    expect(onChange).toHaveBeenLastCalledWith(["mixed-group"], []);
+    await user.click(screen.getByRole("button", { name: /Show individual channels/ }));
+    const channel = screen.getAllByRole("checkbox", { name: "Logical channel (Mixed group)" });
+    expect(channel).toHaveLength(1);
+    await user.click(channel[0]!);
+    expect(onChange).toHaveBeenLastCalledWith([], ["logical"]);
+  });
+
   it("groups and sorts targets, hides disabled targets, and keeps channels advanced", async () => {
     const user = userEvent.setup();
     render(

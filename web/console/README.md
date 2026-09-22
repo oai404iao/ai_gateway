@@ -11,6 +11,11 @@ never on the public `/v1/*` data plane. See [`docs/development/console-ui.md`](.
 for the architecture and [`docs/openapi/console-v1.yaml`](../../docs/openapi/console-v1.yaml)
 for the API contract this UI consumes.
 
+The in-progress topology cutover uses fixed group/logical-channel capability grants
+for Key/Policy editing and canonical routing groups for Codex management. It is not
+deployable until legacy command/test cleanup and full system validation are complete;
+see the [cutover checklist](../../docs/development/upstream-identity-capabilities.md).
+
 ## Prerequisites
 
 - Node.js 24 (declared in `engines`) and pnpm 11.17.0 (pinned by

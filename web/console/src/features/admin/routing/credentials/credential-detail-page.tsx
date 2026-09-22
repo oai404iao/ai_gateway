@@ -16,7 +16,7 @@ import { ApiKeyValue } from "@/components/shared/api-key-value";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { ApiError, controlPlaneMutationErrorMessage } from "@/api/errors";
 import {
-  useChannels, useCreateUpstreamCredential, useDeleteUpstreamCredential,
+  useLogicalChannels, useCreateUpstreamCredential, useDeleteUpstreamCredential,
   useUpdateUpstreamCredential, useUpstreamCredential,
 } from "@/features/admin/api";
 import { useI18n } from "@/app/i18n";
@@ -42,7 +42,7 @@ export function CredentialDetailPage() {
   const navigate = useNavigate();
   const { t } = useI18n();
   const query = useUpstreamCredential(id);
-  const channels = useChannels();
+  const channels = useLogicalChannels();
   const create = useCreateUpstreamCredential();
   const update = useUpdateUpstreamCredential(id);
   const remove = useDeleteUpstreamCredential(id);
@@ -104,8 +104,8 @@ export function CredentialDetailPage() {
         {credential.channel_ids.length === 0 ? <p>{t("No referencing channels.")}</p> : credential.channel_ids.map((channelId) => {
           const channel = channels.data?.find((value) => value.id === channelId);
           const path = managed && channel
-            ? `/admin/providers/codex-oauth/${channel.channel_group_id}`
-            : `/admin/routing/channels/${channelId}`;
+            ? `/admin/providers/codex-oauth/${channel.group_id}`
+            : `/admin/routing/logical-channels/${channelId}`;
           return <Link key={channelId} to={path}>{channel?.name ?? channelId}</Link>;
         })}
         {managed ? <p>{t("This identity is managed by the Codex connector. Use its provider page to change or delete it.")}</p> : null}
