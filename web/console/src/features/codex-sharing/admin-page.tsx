@@ -1,34 +1,39 @@
-import { Link } from "react-router";
+import { useNavigate } from "react-router";
 import { useI18n } from "@/app/i18n";
 import { AsyncResource } from "@/components/shared/async-resource";
 import { PageHeader } from "@/components/shared/page-header";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { NavigationLink } from "@/components/shared/navigation-link";
+import { ResourceTable } from "@/components/shared/resource-table";
+import { StatusBadge } from "@/components/shared/status-badge";
+import { usePageOrigin, withReturnTo } from "@/lib/page-navigation";
+import { useListPagination } from "@/lib/use-list-pagination";
 import { useSharingGroups } from "./api";
 
 export function SharingGroupsPage() {
   const query = useSharingGroups();
   const { t } = useI18n();
+  const origin = usePageOrigin();
+  const navigate = useNavigate();
+  const pagination = useListPagination();
   return <div className="flex flex-col gap-6">
     <PageHeader title="Codex sharing" description="Dedicated credentials, fixed seats and provider-aligned USD windows."
-      actions={<Button nativeButton={false} render={<Link to="/admin/codex-sharing/new" />}>{t("New sharing group")}</Button>} />
+      actions={<NavigationLink variant="default" size="default" to={withReturnTo("/admin/codex-sharing/new", origin)}>{t("New sharing group")}</NavigationLink>} />
     {query.data && !query.data.runtime_available && <Alert><AlertDescription>
       {t("Enable codex_sharing.enabled on one gateway instance before enabling a sharing group.")}
     </AlertDescription></Alert>}
     <AsyncResource isLoading={query.isLoading} error={query.error} isEmpty={query.data?.groups.length === 0}>
-      <Table><TableHeader><TableRow>
-        {["Name", "Seats", "Primary window", "Secondary window", "Status"].map(label =>
-          <TableHead key={label}>{t(label)}</TableHead>)}
-      </TableRow></TableHeader><TableBody>
-        {query.data?.groups.map(group => <TableRow key={group.id}>
-          <TableCell><Link className="underline underline-offset-4" to={`/admin/codex-sharing/${group.id}`}>{group.name}</Link></TableCell>
-          <TableCell>{group.seats.filter(Boolean).length} / {group.seats.length}</TableCell>
-          <TableCell>${group.primary_limit_amount}</TableCell>
-          <TableCell>${group.secondary_limit_amount}</TableCell>
-          <TableCell>{t(group.enabled ? "Enabled" : "Paused")}</TableCell>
-        </TableRow>)}
-      </TableBody></Table>
+      <ResourceTable rows={query.data?.groups ?? []} rowKey={(group) => group.id}
+        rowHref={(group) => withReturnTo(`/admin/codex-sharing/${group.id}`, origin)}
+        onRowClick={(group) => navigate(withReturnTo(`/admin/codex-sharing/${group.id}`, origin))}
+        pagination={pagination}
+        columns={[
+          { key: "name", header: t("Name"), render: (group) => group.name },
+          { key: "seats", header: t("Seats"), render: (group) => `${group.seats.filter(Boolean).length} / ${group.seats.length}` },
+          { key: "primary", header: t("Primary window"), render: (group) => `$${group.primary_limit_amount}` },
+          { key: "secondary", header: t("Secondary window"), render: (group) => `$${group.secondary_limit_amount}` },
+          { key: "enabled", header: t("Status"), render: (group) => <StatusBadge value={group.enabled} label={t(group.enabled ? "Enabled" : "Paused")} /> },
+        ]} />
     </AsyncResource>
   </div>;
 }

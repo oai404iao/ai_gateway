@@ -23,7 +23,6 @@ pub mod accesses;
 pub(crate) mod authorization;
 pub mod capabilities;
 pub mod channels;
-pub(crate) mod codex;
 pub mod groups;
 pub mod profiles;
 pub mod rules;
@@ -36,7 +35,7 @@ pub use snapshot::pg_load_control_plane;
 #[cfg(feature = "sqlite-backend")]
 pub use snapshot::sqlite_load_control_plane;
 
-/// Fixed provenance of one capability grant.
+/// Fixed target provenance. `Capability` is accepted only by frozen migrations.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GrantOriginKind {
@@ -51,7 +50,6 @@ pub struct RoutingGroupRecord {
     pub id: Uuid,
     pub name: String,
     pub enabled: bool,
-    pub sharing_only: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub deleted_at: Option<DateTime<Utc>>,
@@ -86,6 +84,7 @@ pub struct LogicalChannelRecord {
     pub credential_id: Option<Uuid>,
     pub name: String,
     pub enabled: bool,
+    pub sharing_only: bool,
     pub binding_revision: Uuid,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -162,21 +161,47 @@ pub struct ApiKeyPolicyCapabilityGrantRecord {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApiKeyChannelGrantRecord {
+    pub api_key_id: Uuid,
+    pub channel_id: Uuid,
+    pub origin_kind: GrantOriginKind,
+    pub origin_id: Uuid,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApiKeyPolicyChannelGrantRecord {
+    pub policy_id: Uuid,
+    pub channel_id: Uuid,
+    pub origin_kind: GrantOriginKind,
+    pub origin_id: Uuid,
+    pub created_at: DateTime<Utc>,
+}
+
 /// Every canonical row of the joint topology read in one caller transaction.
 #[derive(Clone, Debug)]
-pub struct UpstreamTopologyRecords<S = CapabilitySettings> {
-    pub routing_groups: Vec<RoutingGroupRecord>,
+pub struct UpstreamTopologyRecords<
+    S = CapabilitySettings,
+    K = ApiKeyChannelGrantRecord,
+    P = ApiKeyPolicyChannelGrantRecord,
+    G = RoutingGroupRecord,
+    C = LogicalChannelRecord,
+> {
+    pub routing_groups: Vec<G>,
     pub upstream_accesses: Vec<UpstreamAccessRecord>,
-    pub logical_channels: Vec<LogicalChannelRecord>,
+    pub logical_channels: Vec<C>,
     pub channel_capabilities: Vec<ChannelCapabilityRecord<S>>,
     pub operation_rules: Vec<OperationRuleRecord>,
     pub operation_tiers: Vec<OperationTierRecord>,
     pub operation_candidates: Vec<OperationCandidateRecord>,
-    pub api_key_grants: Vec<ApiKeyCapabilityGrantRecord>,
-    pub policy_grants: Vec<ApiKeyPolicyCapabilityGrantRecord>,
+    pub api_key_grants: Vec<K>,
+    pub policy_grants: Vec<P>,
 }
 
-impl<S> Default for UpstreamTopologyRecords<S> {
+impl<S, K, P, G, C> Default for UpstreamTopologyRecords<S, K, P, G, C> {
     fn default() -> Self {
         Self {
             routing_groups: Vec::new(),
@@ -197,8 +222,6 @@ impl<S> Default for UpstreamTopologyRecords<S> {
 pub struct RoutingGroupInput {
     pub name: String,
     pub enabled: bool,
-    #[serde(default)]
-    pub sharing_only: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -229,6 +252,7 @@ pub struct LogicalChannelInput {
     pub credential_id: Option<Uuid>,
     pub name: String,
     pub enabled: bool,
+    pub sharing_only: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -375,29 +399,97 @@ async fn sqlite_decode<T: for<'de> Deserialize<'de>>(
 pub async fn pg_load(
     connection: &mut PgConnection,
 ) -> Result<UpstreamTopologyRecords, RepositoryError> {
-    pg_load_version(connection, false).await
+    pg_load_version(connection, TopologyVersion::Current).await
 }
 
 pub async fn pg_load_legacy(
     connection: &mut PgConnection,
 ) -> Result<super::capability_cutover::legacy_settings::Topology, RepositoryError> {
-    pg_load_version(connection, true).await
+    pg_load_version(connection, TopologyVersion::Legacy).await
 }
 
-async fn pg_load_version<S: serde::de::DeserializeOwned>(
+pub async fn pg_load_six_operations(
     connection: &mut PgConnection,
-    legacy: bool,
-) -> Result<UpstreamTopologyRecords<S>, RepositoryError> {
+) -> Result<super::capability_cutover::legacy_settings::SixOperationTopology, RepositoryError> {
+    pg_load_version(connection, TopologyVersion::SixOperations).await
+}
+
+pub async fn pg_load_channel_authorization(
+    connection: &mut PgConnection,
+) -> Result<super::capability_cutover::legacy_settings::ChannelAuthorizationTopology, RepositoryError>
+{
+    pg_load_version(connection, TopologyVersion::ChannelAuthorization).await
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum TopologyVersion {
+    Legacy,
+    SixOperations,
+    ChannelAuthorization,
+    Current,
+}
+
+async fn pg_load_version<
+    S: serde::de::DeserializeOwned,
+    K: serde::de::DeserializeOwned,
+    P: serde::de::DeserializeOwned,
+    G: serde::de::DeserializeOwned,
+    C: serde::de::DeserializeOwned,
+>(
+    connection: &mut PgConnection,
+    version: TopologyVersion,
+) -> Result<UpstreamTopologyRecords<S, K, P, G, C>, RepositoryError> {
+    let legacy = version == TopologyVersion::Legacy;
+    let legacy_grants = matches!(
+        version,
+        TopologyVersion::Legacy | TopologyVersion::SixOperations
+    );
     Ok(UpstreamTopologyRecords {
-        routing_groups: pg_decode(connection, PG_ROUTING_GROUPS, legacy).await?,
+        routing_groups: pg_decode(
+            connection,
+            if version == TopologyVersion::Current {
+                "SELECT row_to_json(g)::text FROM routing_groups g ORDER BY id"
+            } else {
+                PG_ROUTING_GROUPS
+            },
+            legacy,
+        )
+        .await?,
         upstream_accesses: pg_decode(connection, PG_UPSTREAM_ACCESSES, legacy).await?,
-        logical_channels: pg_decode(connection, PG_LOGICAL_CHANNELS, legacy).await?,
+        logical_channels: pg_decode(
+            connection,
+            if version == TopologyVersion::Current {
+                "SELECT row_to_json(c)::text FROM upstream_channels c ORDER BY id"
+            } else {
+                PG_LOGICAL_CHANNELS
+            },
+            legacy,
+        )
+        .await?,
         channel_capabilities: pg_decode(connection, PG_CHANNEL_CAPABILITIES, legacy).await?,
         operation_rules: pg_decode(connection, PG_OPERATION_RULES, legacy).await?,
         operation_tiers: pg_decode(connection, PG_OPERATION_TIERS, legacy).await?,
         operation_candidates: pg_decode(connection, PG_OPERATION_CANDIDATES, legacy).await?,
-        api_key_grants: pg_decode(connection, PG_API_KEY_GRANTS, legacy).await?,
-        policy_grants: pg_decode(connection, PG_POLICY_GRANTS, legacy).await?,
+        api_key_grants: pg_decode(
+            connection,
+            if legacy_grants {
+                PG_API_KEY_GRANTS
+            } else {
+                PG_API_KEY_CHANNEL_GRANTS
+            },
+            legacy,
+        )
+        .await?,
+        policy_grants: pg_decode(
+            connection,
+            if legacy_grants {
+                PG_POLICY_GRANTS
+            } else {
+                PG_POLICY_CHANNEL_GRANTS
+            },
+            legacy,
+        )
+        .await?,
     })
 }
 
@@ -409,35 +501,122 @@ async fn pg_load_version<S: serde::de::DeserializeOwned>(
 pub async fn sqlite_load(
     connection: &mut SqliteConnection,
 ) -> Result<UpstreamTopologyRecords, RepositoryError> {
-    sqlite_load_version(connection, false).await
+    sqlite_load_version(connection, TopologyVersion::Current).await
 }
 
 #[cfg(feature = "sqlite-backend")]
 pub async fn sqlite_load_legacy(
     connection: &mut SqliteConnection,
 ) -> Result<super::capability_cutover::legacy_settings::Topology, RepositoryError> {
-    sqlite_load_version(connection, true).await
+    sqlite_load_version(connection, TopologyVersion::Legacy).await
 }
 
 #[cfg(feature = "sqlite-backend")]
-async fn sqlite_load_version<S: serde::de::DeserializeOwned>(
+pub async fn sqlite_load_six_operations(
     connection: &mut SqliteConnection,
-    legacy: bool,
-) -> Result<UpstreamTopologyRecords<S>, RepositoryError> {
+) -> Result<super::capability_cutover::legacy_settings::SixOperationTopology, RepositoryError> {
+    sqlite_load_version(connection, TopologyVersion::SixOperations).await
+}
+
+#[cfg(feature = "sqlite-backend")]
+pub async fn sqlite_load_channel_authorization(
+    connection: &mut SqliteConnection,
+) -> Result<super::capability_cutover::legacy_settings::ChannelAuthorizationTopology, RepositoryError>
+{
+    sqlite_load_version(connection, TopologyVersion::ChannelAuthorization).await
+}
+
+#[cfg(feature = "sqlite-backend")]
+async fn sqlite_load_version<
+    S: serde::de::DeserializeOwned,
+    K: serde::de::DeserializeOwned,
+    P: serde::de::DeserializeOwned,
+    G: serde::de::DeserializeOwned,
+    C: serde::de::DeserializeOwned,
+>(
+    connection: &mut SqliteConnection,
+    version: TopologyVersion,
+) -> Result<UpstreamTopologyRecords<S, K, P, G, C>, RepositoryError> {
+    let legacy = version == TopologyVersion::Legacy;
+    let legacy_grants = matches!(
+        version,
+        TopologyVersion::Legacy | TopologyVersion::SixOperations
+    );
     Ok(UpstreamTopologyRecords {
-        routing_groups: sqlite_decode(connection, SQLITE_ROUTING_GROUPS, legacy).await?,
+        routing_groups: sqlite_decode(
+            connection,
+            if version == TopologyVersion::Current {
+                SQLITE_CURRENT_ROUTING_GROUPS
+            } else {
+                SQLITE_ROUTING_GROUPS
+            },
+            legacy,
+        )
+        .await?,
         upstream_accesses: sqlite_decode(connection, SQLITE_UPSTREAM_ACCESSES, legacy).await?,
-        logical_channels: sqlite_decode(connection, SQLITE_LOGICAL_CHANNELS, legacy).await?,
+        logical_channels: sqlite_decode(
+            connection,
+            if version == TopologyVersion::Current {
+                SQLITE_CURRENT_LOGICAL_CHANNELS
+            } else {
+                SQLITE_LOGICAL_CHANNELS
+            },
+            legacy,
+        )
+        .await?,
         channel_capabilities: sqlite_decode(connection, SQLITE_CHANNEL_CAPABILITIES, legacy)
             .await?,
         operation_rules: sqlite_decode(connection, SQLITE_OPERATION_RULES, legacy).await?,
         operation_tiers: sqlite_decode(connection, SQLITE_OPERATION_TIERS, legacy).await?,
         operation_candidates: sqlite_decode(connection, SQLITE_OPERATION_CANDIDATES, legacy)
             .await?,
-        api_key_grants: sqlite_decode(connection, SQLITE_API_KEY_GRANTS, legacy).await?,
-        policy_grants: sqlite_decode(connection, SQLITE_POLICY_GRANTS, legacy).await?,
+        api_key_grants: sqlite_decode(
+            connection,
+            if legacy_grants {
+                SQLITE_API_KEY_GRANTS
+            } else {
+                SQLITE_API_KEY_CHANNEL_GRANTS
+            },
+            legacy,
+        )
+        .await?,
+        policy_grants: sqlite_decode(
+            connection,
+            if legacy_grants {
+                SQLITE_POLICY_GRANTS
+            } else {
+                SQLITE_POLICY_CHANNEL_GRANTS
+            },
+            legacy,
+        )
+        .await?,
     })
 }
+
+const PG_API_KEY_CHANNEL_GRANTS: &str = "SELECT row_to_json(g)::text FROM api_key_channel_grants g ORDER BY api_key_id,channel_id,origin_kind,origin_id";
+const PG_POLICY_CHANNEL_GRANTS: &str = "SELECT row_to_json(g)::text FROM api_key_policy_channel_grants g ORDER BY policy_id,channel_id,origin_kind,origin_id";
+
+#[cfg(feature = "sqlite-backend")]
+const SQLITE_CURRENT_ROUTING_GROUPS: &str = "SELECT json_object(
+    'id',id,'name',name,'enabled',json(CASE enabled WHEN 1 THEN 'true' ELSE 'false' END),
+    'created_at',created_at,'updated_at',updated_at,'deleted_at',deleted_at)
+    FROM routing_groups ORDER BY id";
+
+#[cfg(feature = "sqlite-backend")]
+const SQLITE_CURRENT_LOGICAL_CHANNELS: &str = "SELECT json_object(
+    'id',id,'group_id',group_id,'access_id',access_id,'credential_id',credential_id,'name',name,
+    'enabled',json(CASE enabled WHEN 1 THEN 'true' ELSE 'false' END),
+    'sharing_only',json(CASE sharing_only WHEN 1 THEN 'true' ELSE 'false' END),
+    'binding_revision',binding_revision,'created_at',created_at,'updated_at',updated_at,'deleted_at',deleted_at)
+    FROM upstream_channels ORDER BY id";
+#[cfg(feature = "sqlite-backend")]
+const SQLITE_API_KEY_CHANNEL_GRANTS: &str = "SELECT json_object(
+    'api_key_id',api_key_id,'channel_id',channel_id,'origin_kind',origin_kind,'origin_id',origin_id,'created_at',created_at)
+    FROM api_key_channel_grants ORDER BY api_key_id,channel_id,origin_kind,origin_id";
+#[cfg(feature = "sqlite-backend")]
+const SQLITE_POLICY_CHANNEL_GRANTS: &str = "SELECT json_object(
+    'policy_id',policy_id,'channel_id',channel_id,'origin_kind',origin_kind,'origin_id',origin_id,'created_at',created_at)
+    FROM api_key_policy_channel_grants ORDER BY policy_id,channel_id,origin_kind,origin_id";
 
 const PG_ROUTING_GROUPS: &str = r"
 SELECT jsonb_build_object(
@@ -753,6 +932,7 @@ mod tests {
             "group_id": group_id,
             "access_id": access_id,
             "name": "channel",
+            "sharing_only": false,
             "enabled": true
         });
         assert!(serde_json::from_value::<LogicalChannelInput>(missing).is_err());
@@ -762,6 +942,7 @@ mod tests {
             "access_id": access_id,
             "credential_id": null,
             "name": "channel",
+            "sharing_only": false,
             "enabled": true
         });
         let input =
@@ -773,6 +954,7 @@ mod tests {
             "access_id": access_id,
             "credential_id": credential_id,
             "name": "channel",
+            "sharing_only": false,
             "enabled": false
         });
         let input = serde_json::from_value::<LogicalChannelInput>(bound).expect("bound credential");
@@ -828,7 +1010,13 @@ mod tests {
     fn inputs_apply_documented_defaults_and_reject_unknown_fields() {
         let group: RoutingGroupInput =
             serde_json::from_value(json!({"name": "group", "enabled": true})).expect("group");
-        assert!(!group.sharing_only);
+        assert_eq!(group.name, "group");
+        assert!(
+            serde_json::from_value::<RoutingGroupInput>(
+                json!({"name": "group", "enabled": true, "sharing_only": false})
+            )
+            .is_err()
+        );
 
         let access: UpstreamAccessInput = serde_json::from_value(json!({
             "name": "access",
@@ -894,6 +1082,7 @@ mod tests {
             "credential_id": null,
             "name": "channel",
             "enabled": true,
+            "sharing_only": false,
             "binding_revision": Uuid::new_v4(),
             "created_at": "2026-09-20T15:44:11.123456+00:00",
             "updated_at": "2026-09-20T15:44:11.123456+00:00",

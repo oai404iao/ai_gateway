@@ -139,6 +139,11 @@ async fn apply_next_migration_batch(
         if migration.version == 66 {
             super::capability_cutover::operation_split::storage::pg_validate(transaction).await?;
         }
+        if migration.version == 68 {
+            super::upstream_topology::pg_load_control_plane(transaction)
+                .await
+                .map_err(super::capability_cutover::io::CapabilityCutoverIoError::from)?;
+        }
     }
     Ok(has_more)
 }

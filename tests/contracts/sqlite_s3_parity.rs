@@ -71,7 +71,7 @@ impl Backend {
                 .install_schema()
                 .await
                 .expect("infrastructure: SQLite schema must install"),
-            6
+            9
         );
         Self::Sqlite {
             directory,
@@ -384,7 +384,6 @@ async fn world(repositories: &Repositories) -> World {
             expected: None,
             input: ai_gateway::persistence::RoutingGroupInput {
                 name: "Parity Group".into(),
-                sharing_only: false,
                 enabled: true,
             },
         },
@@ -418,6 +417,7 @@ async fn world(repositories: &Repositories) -> World {
                 access_id: access,
                 credential_id: None,
                 name: "Parity Channel".into(),
+                sharing_only: false,
                 enabled: true,
             },
         },
@@ -1030,7 +1030,14 @@ async fn self_service_contract(repositories: Repositories) {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(key.allowed_api_formats, ["open_ai_chat_completions"]);
+    assert_eq!(
+        key.allowed_api_formats,
+        [
+            "open_ai_chat_completions",
+            "open_ai_responses",
+            "open_ai_images"
+        ]
+    );
     assert_eq!(key.permissions, ["proxy", "models.read"]);
     assert!(
         repository
@@ -1058,7 +1065,6 @@ async fn self_service_contract(repositories: Repositories) {
             expected: None,
             input: ai_gateway::persistence::RoutingGroupInput {
                 name: "Outside Group".into(),
-                sharing_only: false,
                 enabled: true,
             },
         },
@@ -1076,6 +1082,7 @@ async fn self_service_contract(repositories: Repositories) {
                 access_id: world.access,
                 credential_id: None,
                 name: "Outside channel".into(),
+                sharing_only: false,
                 enabled: true,
             },
         },
@@ -1520,6 +1527,7 @@ fn logical_input(channel: &LogicalChannelRecord) -> ai_gateway::persistence::Log
         access_id: channel.access_id,
         credential_id: channel.credential_id,
         name: channel.name.clone(),
+        sharing_only: channel.sharing_only,
         enabled: channel.enabled,
     }
 }
@@ -1704,7 +1712,6 @@ async fn user_group_lifecycle_contract(repositories: Repositories) {
             expected: None,
             input: ai_gateway::persistence::RoutingGroupInput {
                 name: "Parity Codex".into(),
-                sharing_only: false,
                 enabled: true,
             },
         },
@@ -1786,7 +1793,7 @@ async fn user_group_lifecycle_contract(repositories: Repositories) {
         Some(world.policy)
     );
 
-    // A non-Codex target is rejected without writing; a stale version conflicts.
+    // A missing group is rejected without writing; a stale version conflicts.
     assert!(matches!(
         repository
             .prepare_mutation(
@@ -1794,7 +1801,7 @@ async fn user_group_lifecycle_contract(repositories: Repositories) {
                 ControlPlaneMutation::UpdateUserGroup {
                     id: created.id,
                     input: UserGroupInput {
-                        visible_codex_quota_group_ids: vec![world.group],
+                        visible_codex_quota_group_ids: vec![Uuid::nil()],
                         ..user_group_input("Parity Team")
                     },
                     expected_updated_at: expected_etag(group.updated_at),
@@ -2504,7 +2511,14 @@ async fn admin_api_key_and_policy_contract(repositories: Repositories) {
     assert_eq!(listed.name, "Admin key");
     assert_eq!(listed.secret, secret);
     assert_eq!(listed.status, "active");
-    assert_eq!(listed.allowed_api_formats, ["open_ai_chat_completions"]);
+    assert_eq!(
+        listed.allowed_api_formats,
+        [
+            "open_ai_chat_completions",
+            "open_ai_responses",
+            "open_ai_images"
+        ]
+    );
     assert_eq!(listed.permissions, ["proxy", "models.read"]);
     assert_eq!(listed.allowed_group_ids, vec![world.group]);
     assert!(listed.allowed_channel_ids.is_empty());
@@ -2569,7 +2583,11 @@ async fn admin_api_key_and_policy_contract(repositories: Repositories) {
     assert_eq!(listed.status, "disabled");
     assert_eq!(
         listed.allowed_api_formats,
-        ["open_ai_chat_completions", "open_ai_responses"]
+        [
+            "open_ai_chat_completions",
+            "open_ai_responses",
+            "open_ai_images"
+        ]
     );
     assert_eq!(listed.permissions, ["proxy"]);
     assert_eq!(listed.allowed_channel_ids, vec![world.channel]);
@@ -2778,6 +2796,7 @@ async fn reusable_upstream_identity_contract(repositories: Repositories) {
                     access_id: world.access,
                     credential_id: Some(id),
                     name: "second identity reference".into(),
+                    sharing_only: false,
                     enabled: false,
                 },
             },
@@ -3709,40 +3728,20 @@ async fn template_proxy_and_group_deletion_contract(repositories: Repositories) 
             .err(),
         Some(RepositoryError::Validation)
     ));
-    for mutation in [
-        ControlPlaneMutation::DeleteLogicalChannel {
-            id: world.channel,
-            expected: channel.updated_at,
-        },
-        ControlPlaneMutation::DeleteChannelCapability {
-            id: world.capability,
-            expected: capability.updated_at,
-        },
-    ] {
-        assert!(matches!(
-            repository
-                .prepare_mutation(world.admin, mutation)
-                .await
-                .err(),
-            Some(RepositoryError::RoutingDependencyInvalid)
-        ));
-    }
+    assert!(matches!(
+        repository
+            .prepare_mutation(
+                world.admin,
+                ControlPlaneMutation::DeleteLogicalChannel {
+                    id: world.channel,
+                    expected: channel.updated_at,
+                }
+            )
+            .await
+            .err(),
+        Some(RepositoryError::RoutingDependencyInvalid)
+    ));
     assert_eq!(observable_state(&repositories).await, observable);
-    commit_mutation(
-        &repositories,
-        world.admin,
-        ControlPlaneMutation::SaveOperationRule {
-            id: protocol.id,
-            expected_updated_at: Some(protocol.updated_at),
-            input: ai_gateway::persistence::OperationRuleInput {
-                model_routing_profile_id: profile,
-                operation: ai_gateway::domain::ApiOperation::ChatCompletions,
-                enabled: false,
-                routing_tiers: vec![],
-            },
-        },
-    )
-    .await;
     for mutation in [
         ControlPlaneMutation::DeleteChannelCapability {
             id: world.capability,
@@ -3767,6 +3766,15 @@ async fn template_proxy_and_group_deletion_contract(repositories: Repositories) 
 
     let lists = repository.control_plane_lists().await.unwrap();
     let topology = repository.topology().await.unwrap();
+    assert_ne!(
+        topology
+            .operation_rules
+            .iter()
+            .find(|rule| rule.id == protocol.id)
+            .unwrap()
+            .updated_at,
+        protocol.updated_at
+    );
     assert_eq!(
         serde_json::to_value(&topology.api_key_grants).unwrap(),
         serde_json::to_value(&before.api_key_grants).unwrap()
@@ -3983,7 +3991,6 @@ async fn authorization_and_etag_rollback_contract(repositories: Repositories) {
                 expected: None,
                 input: ai_gateway::persistence::RoutingGroupInput {
                     name: "Rollback Group 2".into(),
-                    sharing_only: false,
                     enabled: true,
                 },
             }),
@@ -3997,6 +4004,7 @@ async fn authorization_and_etag_rollback_contract(repositories: Repositories) {
                     group_id: world.group,
                     access_id: world.access,
                     name: "Rollback Channel 2".into(),
+                    sharing_only: false,
                     enabled: true,
                     credential_id: None,
                 },
@@ -4175,7 +4183,6 @@ async fn authorization_and_etag_rollback_contract(repositories: Repositories) {
                 id: world.group,
                 input: ai_gateway::persistence::RoutingGroupInput {
                     name: "Rollback Group Renamed".into(),
-                    sharing_only: false,
                     enabled: true,
                 },
                 expected: Some(version),
@@ -4414,6 +4421,7 @@ async fn authorization_and_etag_rollback_contract(repositories: Repositories) {
                 group_id: world.group,
                 access_id: world.access,
                 name: "Rollback Extra Channel".into(),
+                sharing_only: false,
                 enabled: true,
                 credential_id: None,
             },
@@ -4541,7 +4549,6 @@ async fn control_plane_projection_contract(repositories: Repositories) {
             id: world.group,
             input: ai_gateway::persistence::RoutingGroupInput {
                 name: "Group v2".into(),
-                sharing_only: before.sharing_only,
                 enabled: false,
             },
             expected: Some(expected_etag(before.updated_at)),
@@ -4565,7 +4572,6 @@ async fn control_plane_projection_contract(repositories: Repositories) {
             id: world.group,
             input: ai_gateway::persistence::RoutingGroupInput {
                 name: "Parity Group".into(),
-                sharing_only: after.sharing_only,
                 enabled: true,
             },
             expected: Some(expected_etag(after.updated_at)),
@@ -4791,7 +4797,6 @@ async fn missing_and_soft_deleted_resource_contract(repositories: Repositories) 
                 id: missing,
                 input: ai_gateway::persistence::RoutingGroupInput {
                     name: "x".into(),
-                    sharing_only: false,
                     enabled: true,
                 },
                 expected: Some(Utc::now()),
@@ -4990,6 +4995,7 @@ async fn missing_and_soft_deleted_resource_contract(repositories: Repositories) 
                 group_id: world.group,
                 access_id: world.access,
                 name: "Probe Channel".into(),
+                sharing_only: false,
                 enabled: true,
                 credential_id: None,
             },
@@ -5181,6 +5187,7 @@ async fn missing_and_soft_deleted_resource_contract(repositories: Repositories) 
                 access_id: world.access,
                 credential_id: None,
                 name: "Probe Auto Channel".into(),
+                sharing_only: false,
                 enabled: true,
             },
         },
@@ -5281,7 +5288,6 @@ async fn capability_validation_contract(repositories: Repositories) {
             expected: None,
             input: ai_gateway::persistence::RoutingGroupInput {
                 name: "Probe group".into(),
-                sharing_only: false,
                 enabled: true,
             },
         },
@@ -5307,6 +5313,7 @@ async fn capability_validation_contract(repositories: Repositories) {
                 access_id: world.access,
                 credential_id: None,
                 name: "Probe channel".into(),
+                sharing_only: false,
                 enabled: true,
             },
         },
@@ -5381,7 +5388,6 @@ async fn capability_validation_contract(repositories: Repositories) {
             input: ai_gateway::persistence::RoutingGroupInput {
                 name: "Renamed probe group".into(),
                 enabled: false,
-                sharing_only: false,
             },
         },
     )

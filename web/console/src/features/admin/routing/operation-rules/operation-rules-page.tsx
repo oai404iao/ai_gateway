@@ -1,4 +1,3 @@
-import { useNavigate } from "react-router";
 import { AdminListPage } from "@/features/admin/components/admin-list-page";
 import { useOperationRules, useRoutingProfiles } from "@/features/admin/api";
 import { StatusBadge } from "@/components/shared/status-badge";
@@ -6,7 +5,6 @@ import { useI18n } from "@/app/i18n";
 import { apiOperationLabel } from "@/lib/permissions";
 
 export function OperationRulesPage() {
-  const navigate = useNavigate();
   const query = useOperationRules();
   const profiles = useRoutingProfiles();
   const { t } = useI18n();
@@ -20,7 +18,7 @@ export function OperationRulesPage() {
       rowKey={(rule) => rule.id}
       detailPath={(rule) => `/admin/routing/operation-rules/${rule.id}`}
       createLabel={t("New operation rule")}
-      onCreate={() => navigate("/admin/routing/operation-rules/new")}
+      createPath="/admin/routing/operation-rules/new"
       columns={[
         {
           key: "profile",

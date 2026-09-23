@@ -37,6 +37,9 @@ describe("SystemPage", () => {
     await user.clear(originator);
     await user.type(originator, "unsaved-draft");
     await user.click(screen.getByRole("link", { name: "Upstream timeouts" }));
+    expect(await screen.findByRole("alertdialog", { name: "Discard unsaved changes?" })).toBeInTheDocument();
+    expect(originator).toHaveValue("unsaved-draft");
+    await user.click(screen.getByRole("button", { name: "Discard changes" }));
     expect(await screen.findByLabelText("Connect timeout (seconds)")).toBeInTheDocument();
     expect(screen.queryByLabelText("Codex originator")).not.toBeInTheDocument();
     await user.click(screen.getByRole("link", { name: "Codex" }));

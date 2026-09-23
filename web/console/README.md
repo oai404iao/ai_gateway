@@ -11,10 +11,15 @@ never on the public `/v1/*` data plane. See [`docs/development/console-ui.md`](.
 for the architecture and [`docs/openapi/console-v1.yaml`](../../docs/openapi/console-v1.yaml)
 for the API contract this UI consumes.
 
-The in-progress topology cutover uses fixed group/logical-channel capability grants
-for Key/Policy editing and canonical routing groups for Codex management. It is not
-deployable until legacy command/test cleanup and full system validation are complete;
-see the [cutover checklist](../../docs/development/upstream-identity-capabilities.md).
+Key/Policy grants target logical channels. Credentials are managed independently
+by connector; groups organize channels, and each channel explicitly binds its
+access and credential. Deployment requires the coordinated database migrations;
+see the [cutover record](../../docs/development/upstream-identity-capabilities.md).
+
+Follow the [Console interaction standard](../../docs/development/console-interaction-standard.md)
+for parent links, list state, detail layouts, unsaved drafts, labels, and legacy
+redirects. Navigation uses links; mutations use buttons. Do not add a second
+configuration navigation strip or duplicate Back controls.
 
 ## Prerequisites
 

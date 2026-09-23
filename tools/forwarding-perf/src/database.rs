@@ -338,7 +338,7 @@ async fn seed(
         (chat_channel_id, chat_group_id),
         (responses_channel_id, responses_group_id),
     ] {
-        sqlx::query("INSERT INTO api_key_capability_grants(api_key_id,capability_id,origin_kind,origin_id) VALUES($1,$2,'group',$3)")
+        sqlx::query("INSERT INTO api_key_channel_grants(api_key_id,channel_id,origin_kind,origin_id) VALUES($1,$2,'group',$3)")
             .bind(api_key_id).bind(capability).bind(group).execute(&mut *transaction).await?;
     }
 

@@ -9,7 +9,9 @@ use sqlx::{PgConnection, Postgres, Transaction};
 use uuid::Uuid;
 
 use super::{MutationResult, RepositoryError};
-use crate::domain::{CredentialTarget, UpstreamAuth};
+use crate::domain::{ConnectorKind, CredentialTarget, UpstreamAuth};
+
+pub(crate) mod codex;
 
 #[derive(Clone, Copy, Debug)]
 pub struct CredentialIdentity {
@@ -63,6 +65,7 @@ pub struct UpstreamCredentialView {
     pub id: Uuid,
     pub name: String,
     pub kind: String,
+    pub connector_kind: ConnectorKind,
     pub header_name: Option<String>,
     pub allowed_base_urls: Vec<String>,
     pub enabled: bool,
@@ -106,24 +109,22 @@ impl CredentialRecord {
             return Err(RepositoryError::Validation);
         }
         if self.kind == "codex_oauth" {
-            return if self.secret.is_none()
-                && self.header_name.is_none()
-                && self.allowed_base_urls.is_empty()
-            {
-                Ok(())
-            } else {
-                Err(RepositoryError::Validation)
-            };
+            if self.secret.is_some() || self.header_name.is_some() {
+                return Err(RepositoryError::Validation);
+            }
+        } else {
+            UpstreamAuth::compile(
+                &self.kind,
+                self.header_name.as_deref(),
+                self.secret.as_deref(),
+            )
+            .map_err(|_| RepositoryError::Validation)?;
         }
-        if !matches!(self.kind.as_str(), "bearer" | "header") || self.allowed_base_urls.is_empty() {
+        if !matches!(self.kind.as_str(), "bearer" | "header" | "codex_oauth")
+            || self.allowed_base_urls.is_empty()
+        {
             return Err(RepositoryError::Validation);
         }
-        UpstreamAuth::compile(
-            &self.kind,
-            self.header_name.as_deref(),
-            self.secret.as_deref(),
-        )
-        .map_err(|_| RepositoryError::Validation)?;
         let mut targets = std::collections::HashSet::new();
         for target in &self.allowed_base_urls {
             if !targets
@@ -160,6 +161,11 @@ impl CredentialRecord {
             id: self.id,
             name: self.name.clone(),
             kind: self.kind.clone(),
+            connector_kind: if self.kind == "codex_oauth" {
+                ConnectorKind::CodexOauth
+            } else {
+                ConnectorKind::OpenAiCompatible
+            },
             header_name: self.header_name.clone(),
             allowed_base_urls: self.allowed_base_urls.clone(),
             enabled: self.enabled,
@@ -350,14 +356,14 @@ pub(crate) async fn pg_validate_binding(
         .into_iter()
         .find(|record| record.id == id)
         .ok_or(RepositoryError::Validation)?;
-    validate_static_binding(&record, target)
+    validate_binding(&record, target)
 }
 
-pub(crate) fn validate_static_binding(
+pub(crate) fn validate_binding(
     record: &CredentialRecord,
     target: &str,
 ) -> Result<(), RepositoryError> {
-    if record.kind == "codex_oauth" || record.deleted_at.is_some() {
+    if record.deleted_at.is_some() {
         return Err(RepositoryError::Validation);
     }
     record.validate()?;

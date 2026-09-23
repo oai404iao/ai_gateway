@@ -1,6 +1,5 @@
 import { useMemo, useState } from "react";
 import {
-  ArrowLeft,
   FileJson,
   Pencil,
   RotateCcw,
@@ -8,7 +7,8 @@ import {
   Upload,
   WandSparkles,
 } from "lucide-react";
-import { Link, useParams } from "react-router";
+import { useReturnPath } from "@/lib/page-navigation";
+import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
 import { toast } from "sonner";
 import type {
   CodexCredentialImportInput,
@@ -70,7 +70,7 @@ import {
   TabsTrigger,
 } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { useRoutingGroup, useProxies } from "@/features/admin/api";
+import { useProxies } from "@/features/admin/api";
 import {
   type CodexCredentialImportDraft,
   type CodexImportDocument,
@@ -86,10 +86,9 @@ const MAX_FILES = 20;
 
 export default function CodexImportPage() {
   const { t } = useI18n();
-  const { id: groupId = "" } = useParams();
-  const group = useRoutingGroup(groupId);
+  const returnTo = useReturnPath("/admin/routing/upstream-credentials?connector=codex");
   const proxiesQuery = useProxies();
-  const importCredential = useImportCodexCredential(groupId);
+  const importCredential = useImportCodexCredential();
   const [jsonText, setJsonText] = useState("");
   const [uploadedDocuments, setUploadedDocuments] = useState<
     CodexImportDocument[]
@@ -104,6 +103,10 @@ export default function CodexImportPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [bulkProxyId, setBulkProxyId] = useState(NO_PROXY);
   const [importing, setImporting] = useState(false);
+  const [sourceDirty, setSourceDirty] = useState(false);
+  const { navigationGuard } = useConfigurationDraft(
+    importing, sourceDirty || credentials.some((credential) => credential.status !== "imported"),
+  );
 
   const proxies = proxiesQuery.data ?? [];
   const enabledProxies = useMemo(
@@ -172,6 +175,7 @@ export default function CodexImportPage() {
       })),
     );
     setParseErrors(parsed.errors);
+    setSourceDirty(parsed.errors.length > 0);
     if (parsed.credentials.length === 0) {
       toast.error(t("No importable Codex credentials were found."));
     } else {
@@ -200,6 +204,7 @@ export default function CodexImportPage() {
       })),
     );
     setUploadedDocuments(documents);
+    setSourceDirty(true);
   };
 
   const patchCredential = (
@@ -212,14 +217,14 @@ export default function CodexImportPage() {
           ? {
               ...credential,
               ...patch,
-              status:
+              status: patch.status ?? (
                 credential.status === "imported"
                   ? credential.status
-                  : "pending",
-              result_message:
+                  : "pending"),
+              result_message: patch.result_message ?? (
                 credential.status === "imported"
                   ? credential.result_message
-                  : "",
+                  : ""),
             }
           : credential,
       ),
@@ -335,6 +340,7 @@ export default function CodexImportPage() {
   };
 
   const clearSensitiveDrafts = () => {
+    setSourceDirty(false);
     setJsonText("");
     setUploadedDocuments([]);
     setCredentials([]);
@@ -345,23 +351,15 @@ export default function CodexImportPage() {
 
   return (
     <div className="flex flex-col gap-6">
+      {navigationGuard}
       <PageHeader
+        backTo={returnTo}
         title={t("Advanced Codex import")}
         description={t(
           "Parse native, CLIProxyAPI, and Sub2API JSON into editable drafts, configure proxies, then import.",
         )}
         actions={
           <>
-            <Button
-              variant="outline"
-              render={
-                <Link to={`/admin/providers/codex-oauth/${groupId}`} />
-              }
-              nativeButton={false}
-            >
-              <ArrowLeft data-icon="inline-start" />
-              {t("Back to credentials")}
-            </Button>
             <Button
               variant="outline"
               onClick={clearSensitiveDrafts}
@@ -379,7 +377,6 @@ export default function CodexImportPage() {
         }
       />
 
-      {group.error ? <ErrorAlert error={group.error} /> : null}
       {proxiesQuery.error ? <ErrorAlert error={proxiesQuery.error} /> : null}
 
       <Alert>
@@ -416,7 +413,10 @@ export default function CodexImportPage() {
                   <Textarea
                     id="codex-import-json"
                     value={jsonText}
-                    onChange={(event) => setJsonText(event.target.value)}
+                    onChange={(event) => {
+                      setJsonText(event.target.value);
+                      setSourceDirty(Boolean(event.target.value.trim() || uploadedDocuments.length));
+                    }}
                     rows={12}
                     spellCheck={false}
                     placeholder='{"type":"codex","access_token":"…","refresh_token":"…"}'
@@ -469,6 +469,7 @@ export default function CodexImportPage() {
               onClick={() => {
                 setUploadedDocuments([]);
                 setJsonText("");
+                setSourceDirty(false);
               }}
             >
               <Trash2 data-icon="inline-start" />
@@ -772,7 +773,7 @@ export default function CodexImportPage() {
                 </p>
                 <Button
                   onClick={() => void runImport()}
-                  disabled={importing || ready.length === 0 || !group.data || Boolean(group.error) || Boolean(group.data?.data.deleted_at)}
+                  disabled={importing || ready.length === 0}
                 >
                   {importing ? <Spinner data-icon="inline-start" /> : null}
                   <Upload data-icon="inline-start" />

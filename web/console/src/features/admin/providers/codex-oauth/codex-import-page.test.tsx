@@ -32,7 +32,7 @@ function renderPage() {
   window.history.replaceState(
     {},
     "",
-    `/admin/providers/codex-oauth/${GROUP_ID}/import`,
+    "/admin/routing/upstream-credentials/codex/import",
   );
   render(
     <AppProviders>
@@ -58,7 +58,7 @@ describe("CodexImportPage", () => {
         }),
       ),
       http.post(
-        "/console/v1/providers/codex-oauth/channel-groups/:id/credentials",
+        "/console/v1/routing/upstream-credentials/codex",
         async ({ request }) => {
           submitted = (await request.json()) as CodexCredentialImportInput;
           return HttpResponse.json(
@@ -119,7 +119,10 @@ describe("CodexImportPage", () => {
       }),
     );
     expect(submitted).not.toHaveProperty("weight");
-    expect(await screen.findByText("Imported")).toBeInTheDocument();
+    expect(await screen.findByText("Imported", { selector: "[data-slot=badge]" })).toBeInTheDocument();
+    await user.click(screen.getByRole("link", { name: "Back to credentials" }));
+    await waitFor(() => expect(window.location.pathname).toBe("/admin/routing/upstream-credentials"));
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   });
 
   it("uploads a Sub2API bundle, reviews its proxy, creates it, and assigns it before import", async () => {
@@ -144,7 +147,7 @@ describe("CodexImportPage", () => {
         );
       }),
       http.post(
-        "/console/v1/providers/codex-oauth/channel-groups/:id/credentials",
+        "/console/v1/routing/upstream-credentials/codex",
         async ({ request }) => {
           credentialInput =
             (await request.json()) as CodexCredentialImportInput;

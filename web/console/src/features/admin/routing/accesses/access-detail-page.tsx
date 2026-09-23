@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { useNavigate, useParams } from "react-router";
+import { useParams } from "react-router";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -14,6 +14,8 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import { ApiError, controlPlaneMutationErrorMessage } from "@/api/errors";
 import { useCreateUpstreamAccess, useProxies, useUpdateUpstreamAccess, useUpstreamAccess } from "@/features/admin/api";
 import { useI18n } from "@/app/i18n";
+import { useReturnPath, withReturnTo } from "@/lib/page-navigation";
+import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
 
 const timeout = z.string().regex(/^(?:[1-9][0-9]*)?$/)
   .refine((value) => value === "" || Number(value) <= 2147483647);
@@ -43,7 +45,7 @@ const optionalTimeout = (value: string) => value === "" ? null : Number(value);
 export function AccessDetailPage() {
   const { id = "" } = useParams();
   const isNew = id === "new";
-  const navigate = useNavigate();
+  const returnTo = useReturnPath("/admin/routing/accesses");
   const { t } = useI18n();
   const query = useUpstreamAccess(id);
   const proxies = useProxies();
@@ -52,6 +54,7 @@ export function AccessDetailPage() {
   const form = useForm<FormValues>({ resolver: zodResolver(schema), defaultValues: defaults });
   const access = query.data?.data;
   const busy = create.isPending || update.isPending;
+  const { navigate, navigationGuard, markSaved } = useConfigurationDraft(busy, form.formState.isDirty);
   useEffect(() => {
     if (access) form.reset({
       name: access.name, connector_kind: access.connector_kind, base_url: access.base_url,
@@ -73,10 +76,13 @@ export function AccessDetailPage() {
     try {
       if (isNew) {
         const result = await create.mutateAsync(input);
-        navigate(`/admin/routing/accesses/${result.id}`, { replace: true });
+        markSaved();
+        navigate(withReturnTo(`/admin/routing/accesses/${result.id}`, returnTo), { replace: true });
       } else {
         await update.mutateAsync({ input, ifMatch: query.etag });
       }
+      form.reset(values);
+      markSaved();
       toast.success(t("Access saved"));
     } catch (error) {
       if (error instanceof ApiError && error.isConflict) {
@@ -90,9 +96,9 @@ export function AccessDetailPage() {
   return <AdminDetailShell
     title={isNew ? t("New access") : access?.name ?? t("Upstream access")}
     description={t("Network changes affect all referencing channels and must satisfy every credential scope.")}
-    backPath="/admin/routing/accesses"
+    backPath={returnTo}
     isLoading={!isNew && query.isLoading} error={query.error}
-    hasData={isNew || Boolean(access)} saving={busy}
+    hasData={isNew || Boolean(access)} navigationGuard={navigationGuard}
     editCard={<Card>
       <CardHeader>
         <CardTitle>{t("Access settings")}</CardTitle>

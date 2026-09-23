@@ -537,6 +537,9 @@ fn finished_probe(
             model_rule_id: None,
             channel_group_id: Some(context.channel.group_id()),
             channel_id: Some(context.channel.id()),
+            upstream_credential: Some(crate::domain::RequestCredentialAttribution {
+                credential_id: context.channel.credential_id(),
+            }),
             model_id: Some(context.billing_model.id()),
             outcome,
             response_status_code,

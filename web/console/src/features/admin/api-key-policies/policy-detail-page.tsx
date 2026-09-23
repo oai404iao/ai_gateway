@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router";
+import { useParams } from "react-router";
+import { useReturnPath } from "@/lib/page-navigation";
+import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
 import { z } from "zod";
 import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -27,7 +29,6 @@ import {
 import { ApiError } from "@/api/errors";
 import type { ApiKeyPolicyInput } from "@/api/types";
 import { formatRelative } from "@/lib/dates";
-import { operationApiFormat } from "@/lib/permissions";
 import { useI18n } from "@/app/i18n";
 
 const schema = z
@@ -59,7 +60,7 @@ const empty: FormState = {
 export function ApiKeyPolicyDetailPage() {
   const { id = "" } = useParams();
   const isNew = id === "new";
-  const navigate = useNavigate();
+  const returnTo = useReturnPath("/admin/api-key-policies");
   const { data, etag, isLoading, error } = useApiKeyPolicy(id);
   const groups = useRoutingGroups();
   const channels = useLogicalChannels();
@@ -70,6 +71,7 @@ export function ApiKeyPolicyDetailPage() {
   const [state, setState] = useState<FormState>(empty);
   const [submitting, setSubmitting] = useState(false);
   const [validation, setValidation] = useState<z.ZodError | null>(null);
+  const draft = useConfigurationDraft(submitting);
 
   useEffect(() => {
     if (data) {
@@ -87,13 +89,9 @@ export function ApiKeyPolicyDetailPage() {
       (groups.data ?? []).map((group) => ({
         id: group.id,
         name: group.name,
-        api_formats: [...new Set((capabilities.data ?? [])
-          .filter((capability) => channels.data?.some((channel) =>
-            channel.id === capability.channel_id && channel.group_id === group.id))
-          .map((capability) => operationApiFormat(capability.settings.operation)))],
         enabled: group.enabled,
       })),
-    [groups.data, channels.data, capabilities.data],
+    [groups.data],
   );
   const targetChannels = useMemo<RoutingTargetChannel[]>(() => {
     const groupById = new Map((groups.data ?? []).map((group) => [group.id, group]));
@@ -107,8 +105,6 @@ export function ApiKeyPolicyDetailPage() {
         channel_group_name: group?.name,
         channel_group_enabled: group?.enabled ?? false,
         name: channel.name,
-        api_formats: [...new Set(channelCapabilities.map((capability) =>
-          operationApiFormat(capability.settings.operation)))],
         enabled: channel.enabled,
         auto_disabled: channelCapabilities.length > 0 &&
           channelCapabilities.every((capability) => capability.auto_disabled),
@@ -116,7 +112,10 @@ export function ApiKeyPolicyDetailPage() {
     });
   }, [channels.data, groups.data, capabilities.data]);
 
-  const patch = (partial: Partial<FormState>) => setState((prev) => ({ ...prev, ...partial }));
+  const patch = (partial: Partial<FormState>) => {
+    draft.markDirty();
+    setState((prev) => ({ ...prev, ...partial }));
+  };
 
   const submit = async () => {
     const parsed = schema.safeParse(state);
@@ -131,9 +130,11 @@ export function ApiKeyPolicyDetailPage() {
       if (isNew) {
         await create.mutateAsync(input);
         toast.success(t("Policy created"));
-        navigate("/admin/api-key-policies", { replace: true });
+        draft.markSaved();
+        draft.navigate(returnTo, { replace: true });
       } else {
         await update.mutateAsync({ input, ifMatch: etag });
+        draft.markSaved();
         toast.success(t("Policy updated"));
       }
     } catch (error) {
@@ -157,8 +158,8 @@ export function ApiKeyPolicyDetailPage() {
     <AdminDetailShell
       title={isNew ? t("New API key policy") : state.name || t("Policy")}
       description={t("Controls which channel groups and channels users may assign to API keys.")}
-      backPath="/admin/api-key-policies"
-      backLabel={t("Back to policies")}
+      backPath={returnTo}
+      navigationGuard={draft.navigationGuard}
       isLoading={isLoading || groups.isLoading || channels.isLoading || capabilities.isLoading}
       error={error ?? groups.error ?? channels.error ?? capabilities.error}
       hasData={isNew || Boolean(data)}
@@ -172,7 +173,7 @@ export function ApiKeyPolicyDetailPage() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <dl className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+              <dl className="grid grid-cols-1 gap-4">
                 <DetailField
                   label={t("Enabled")}
                   value={<StatusBadge value={data.data.enabled} />}
@@ -199,7 +200,7 @@ export function ApiKeyPolicyDetailPage() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="flex flex-col gap-4">
+            <form className="flex flex-col gap-4" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
               <FieldGroup className="grid gap-5 xl:grid-cols-2">
                 <Field data-invalid={Boolean(fieldError("name"))}>
                   <FieldLabel htmlFor="name">{t("Name")}</FieldLabel>
@@ -236,11 +237,11 @@ export function ApiKeyPolicyDetailPage() {
                   error={targetError}
                 />
               </FieldGroup>
-              <Button className="self-start" onClick={submit} disabled={submitting}>
+              <Button type="submit" className="self-start" disabled={submitting}>
                 {submitting ? <Spinner data-icon="inline-start" /> : null}
                 {isNew ? t("Create policy") : t("Save policy")}
               </Button>
-            </div>
+            </form>
           </CardContent>
         </Card>
       }

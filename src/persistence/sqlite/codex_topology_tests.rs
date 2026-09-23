@@ -124,7 +124,6 @@ async fn canonical_create_lifecycle_and_delete_round_trip() {
                 expected: None,
                 input: RoutingGroupInput {
                     name: "Codex lifecycle".into(),
-                    sharing_only: false,
                     enabled: true,
                 },
             },
@@ -138,7 +137,6 @@ async fn canonical_create_lifecycle_and_delete_round_trip() {
         .id;
 
     let input = CodexCredentialCreate {
-        channel_group_id: group,
         label: "Lifecycle credential".into(),
         enabled: true,
         proxy_id: None,
@@ -166,6 +164,70 @@ async fn canonical_create_lifecycle_and_delete_round_trip() {
         .0[0]
         .id;
 
+    let mut reader = database.acquire_read().await.unwrap();
+    assert!(
+        sqlite_load(&mut reader)
+            .await
+            .unwrap()
+            .logical_channels
+            .is_empty()
+    );
+    drop(reader);
+    let access_id = repository
+        .prepare_mutation(
+            admin,
+            ControlPlaneMutation::CreateUpstreamAccess(
+                serde_json::from_value(serde_json::json!({
+                    "name":"Explicit Codex access","connector_kind":"codex",
+                    "base_url":input.base_url,"enabled":true
+                }))
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap()
+        .commit()
+        .await
+        .unwrap()
+        .0[0]
+        .id;
+    repository
+        .prepare_mutation(
+            admin,
+            ControlPlaneMutation::SaveLogicalChannel {
+                id: credential,
+                expected: None,
+                input: serde_json::from_value(serde_json::json!({
+                    "name":"Explicit logical channel","group_id":group,"access_id":access_id,
+                    "credential_id":credential,"enabled":true,"sharing_only":false
+                }))
+                .unwrap(),
+            },
+        )
+        .await
+        .unwrap()
+        .commit()
+        .await
+        .unwrap();
+    for operation in [
+        "responses",
+        "responses-ws",
+        "web_search",
+        "images_generation",
+        "images_edit",
+    ] {
+        repository.prepare_mutation(admin, ControlPlaneMutation::SaveChannelCapability {
+            id:Uuid::new_v4(),expected:None,
+            input:serde_json::from_value(serde_json::json!({
+                "channel_id":credential,
+                "settings":{"operation":operation,"enabled":!operation.starts_with("images_"),
+                    "available_models":input.available_models,"request_compression":"default",
+                    "test_model":null,"test_pricing_model_id":null,"auto_disable_allowed":false},
+                "status_statistics_enabled":false,"config_template_id":null,
+                "override_document":{},"billing_multiplier":"1"
+            })).unwrap()
+        }).await.unwrap().commit().await.unwrap();
+    }
     let mut reader = database.acquire_read().await.unwrap();
     let topology = sqlite_load(&mut reader).await.unwrap();
     let logical = topology
@@ -230,7 +292,7 @@ async fn canonical_create_lifecycle_and_delete_round_trip() {
     .fetch_one(&mut *reader)
     .await
     .unwrap();
-    assert_eq!(registry, 6);
+    assert_eq!(registry, 0);
     let kind: String = sqlx::query_scalar("SELECT kind FROM upstream_credentials WHERE id=?")
         .bind(credential.to_string())
         .fetch_one(&mut *reader)
@@ -253,7 +315,6 @@ async fn canonical_create_lifecycle_and_delete_round_trip() {
     repository
         .prepare_codex_credentials_batch(
             admin,
-            group,
             CodexCredentialBatchInput {
                 items: vec![CodexCredentialBatchTarget {
                     id: credential,
@@ -299,7 +360,6 @@ async fn canonical_create_lifecycle_and_delete_round_trip() {
     repository
         .prepare_codex_credentials_batch(
             admin,
-            group,
             CodexCredentialBatchInput {
                 items: vec![CodexCredentialBatchTarget {
                     id: credential,
@@ -361,7 +421,7 @@ async fn canonical_create_lifecycle_and_delete_round_trip() {
         .iter()
         .find(|access| access.id == logical.access_id)
         .unwrap();
-    assert_eq!(access.base_url, reimport.base_url);
+    assert_eq!(access.base_url, input.base_url);
     let revision_reimported: String =
         sqlx::query_scalar("SELECT revision FROM upstream_credentials WHERE id=?")
             .bind(credential.to_string())
@@ -375,14 +435,15 @@ async fn canonical_create_lifecycle_and_delete_round_trip() {
     let mut transaction = database.begin_write().await.unwrap();
     sqlx::query(
         "INSERT INTO codex_sharing_groups
-         (id,credential_id,provider_account_id,provider_user_id,name,enabled,seats,
+         (id,credential_id,channel_id,provider_account_id,provider_user_id,name,enabled,seats,
           primary_limit_amount,secondary_limit_amount,request_reservation_amount,
           user_requests_per_minute,group_requests_per_minute,
           user_max_concurrent_requests,group_max_concurrent_requests)
-         VALUES (?,?,'sharing-account','sharing-user','Sharing',1,'[{}]',
+         VALUES (?,?,?,'account-lifecycle','user-lifecycle','Sharing',1,'[{}]',
                  '1','1','1',60,60,10,10)",
     )
     .bind(Uuid::new_v4().to_string())
+    .bind(credential.to_string())
     .bind(credential.to_string())
     .execute(&mut *transaction)
     .await
@@ -443,6 +504,43 @@ async fn canonical_create_lifecycle_and_delete_round_trip() {
         .unwrap();
     transaction.commit().await.unwrap();
 
+    let topology = repository.topology().await.unwrap();
+    for capability in &topology.channel_capabilities {
+        repository
+            .prepare_mutation(
+                admin,
+                ControlPlaneMutation::DeleteChannelCapability {
+                    id: capability.id,
+                    expected: capability.updated_at,
+                },
+            )
+            .await
+            .unwrap()
+            .commit()
+            .await
+            .unwrap();
+    }
+    let channel = repository
+        .topology()
+        .await
+        .unwrap()
+        .logical_channels
+        .into_iter()
+        .find(|channel| channel.id == credential)
+        .unwrap();
+    repository
+        .prepare_mutation(
+            admin,
+            ControlPlaneMutation::DeleteLogicalChannel {
+                id: credential,
+                expected: channel.updated_at,
+            },
+        )
+        .await
+        .unwrap()
+        .commit()
+        .await
+        .unwrap();
     let record = repository
         .codex_credential(credential)
         .await
@@ -485,7 +583,7 @@ async fn canonical_create_lifecycle_and_delete_round_trip() {
             .fetch_one(&mut *reader)
             .await
             .unwrap();
-    assert!(access_deleted.is_some());
+    assert!(access_deleted.is_none());
     drop(reader);
     drop(repository);
     database.close().await;

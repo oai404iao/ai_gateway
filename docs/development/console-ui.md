@@ -4,9 +4,12 @@
 > 和测试为准。原始分阶段计划保存在
 > [Console UI 实施计划归档](../archive/console-ui-implementation-plan.md)。
 
+页面结构、返回与跳转、列表、草稿和历史入口的统一约定见
+[Console 导航与页面交互规范](console-interaction-standard.md)。
+
 系统设置分类定义在 `web/console/src/features/admin/system/settings-sections.ts`，侧栏的
 可展开子菜单与 `/admin/system/:section` 页面共用此定义。旧 `/admin/system` 地址跳转
-到基础设置；每个分类切换时重建表单，保留完整 API 配置及 ETag，只挂载当前分类控件。
+到基础设置；分类切换前确认未保存修改，再重建表单，保留完整 API 配置及 ETag，只挂载当前分类控件。
 
 [上游实体联合重构](upstream-identity-capabilities.md)的接入管理位于
 `src/features/admin/routing/accesses/`，独立管理连接器、Base URL、代理和超时，
@@ -14,12 +17,19 @@
 不能作为独立功能发布到旧数据库。
 同目录的 `groups/`、`logical-channels/`、`capabilities/`、`operation-rules/`
 提供新拓扑的列表和版本化编辑；候选使用 `capability_id`。能力所属渠道和操作在
-创建后只读，Codex 既有能力的独立配置可修改。Key/Policy 选择组和逻辑渠道，使用固定能力
-授权；多协议目标只出现一次。新组详情提供 Codex 管理入口，导入和额度可见性使用新拓扑。
+创建后只读，所有连接器均可显式创建和删除支持的能力。Key/Policy 选择组和逻辑渠道，使用固定逻辑
+渠道授权；每个渠道只出现一次，其新增能力共享授权，后加入组的渠道不自动获权。
+“上游凭证”按 `general` / `codex` 页签管理，Codex 导入、OAuth、批量操作、quota 和导出
+不再接收组参数，也不隐式创建拓扑。渠道详情选择兼容的凭证并配置 `sharing_only`，
+组页面不再包含凭证入口或拼车开关。拼车表单保存 `channel_id`，本人 Key 选项使用
+`sharing_channels`，不再展开凭证的所有引用渠道。只读 quota 按账号去重。
 旧管理页面已移除，旧地址跳转到规范化列表；操作规则可以按定价模型选择或显式创建
 profile。批量修改与手动恢复位于能力页面，恢复不改变显式启用状态。
 普通能力编辑可按所选接入和凭证发现模型；选择结果只更新草稿，保存后发布。
+删除确认说明自动解绑候选、停用空规则；删除成功同时失效能力和操作规则缓存。
 旧删除影响预览、协议 DTO 和 mock CRUD 已移除，测试直接使用新拓扑。
+窄屏模型工作区使用列表/详情切换，避免操作路由编辑器被完整模型列表推到页面底部。
+表格在自身容器内滚动，Console 主区域保持 `min-w-0`，不撑宽浏览器视口。
 
 ## 1. 运行边界
 

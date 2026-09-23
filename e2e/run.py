@@ -356,11 +356,16 @@ def seed(console, password, upstream):
     channel, _ = api("/routing/logical-channels", "POST", {
         "group_id": group["id"], "access_id": access["id"],
         "name": "system-e2e", "enabled": True, "credential_id": credential["id"],
+        "sharing_only": False,
     })
     api("/routing/logical-channels", "POST", {
         "group_id": group["id"], "access_id": access["id"],
         "name": "system-e2e-disabled-reference", "enabled": False,
-        "credential_id": credential["id"],
+        "credential_id": credential["id"], "sharing_only": False,
+    })
+    key, _ = api("/api-keys", "POST", {
+        "user_id": user, "name": "system-e2e",
+        "permissions": ["proxy"], "allowed_group_ids": [group["id"]], "allowed_channel_ids": [],
     })
     capability_settings = {
         "operation": "responses",
@@ -398,10 +403,6 @@ def seed(console, password, upstream):
         }],
     })
     path = f"/routing/operation-rules/{protocol['id']}"
-    key, _ = api("/api-keys", "POST", {
-        "user_id": user, "name": "system-e2e", "allowed_api_formats": ["open_ai_responses"],
-        "permissions": ["proxy"], "allowed_group_ids": [group["id"]], "allowed_channel_ids": [],
-    })
     return {
         "console": console, "password": password, "token": token, "user_id": user,
         "api_key": key["secret"], "api_key_id": key["id"], "channel_id": capability["id"],

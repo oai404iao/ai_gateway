@@ -27,7 +27,7 @@ describe("ModelDetailPage", () => {
     renderAppAt(`/admin/models/${MODEL.id}`);
 
     await user.click(
-      await screen.findByRole("button", {
+      await screen.findByRole("link", {
         name: `Copy ${MODEL.display_name}`,
       }),
     );
@@ -83,10 +83,10 @@ describe("ModelDetailPage", () => {
     ).toBeInTheDocument();
     const editor = await screen.findByLabelText(/advanced billing/i);
     expect(
-      screen.getByRole("button", { name: /configure pricing/i }),
+      screen.getByRole("link", { name: /configure pricing/i }),
     ).toBeInTheDocument();
     fireEvent.change(editor, { target: { value: JSON.stringify(advancedBilling) } });
-    await user.click(screen.getByRole("button", { name: /save pricing model/i }));
+    await user.click(screen.getByRole("button", { name: /save client model/i }));
 
     await waitFor(() => {
       expect(submitted).toBeDefined();
@@ -111,17 +111,17 @@ describe("ModelDetailPage", () => {
     renderAppAt(`/admin/models/${MODEL.id}`);
 
     await user.click(
-      await screen.findByRole("button", { name: "Delete pricing model" }),
+      await screen.findByRole("button", { name: "Delete client model" }),
     );
     const confirmation = screen.getByRole("alertdialog", {
-      name: "Delete pricing model?",
+      name: "Delete client model?",
     });
     expect(
       within(confirmation).getByText(/clears scheduled test pricing references/i),
     ).toBeInTheDocument();
     await user.click(
       within(confirmation).getByRole("button", {
-        name: "Delete pricing model",
+        name: "Delete client model",
       }),
     );
 
@@ -129,6 +129,6 @@ describe("ModelDetailPage", () => {
       expect(window.location.pathname).toBe("/admin/models");
     });
     expect(ifMatch).toBe(`"${MODEL.updated_at}"`);
-    expect(await screen.findByText("Pricing model deleted")).toBeInTheDocument();
+    expect(await screen.findByText("Client model deleted")).toBeInTheDocument();
   });
 });

@@ -285,45 +285,45 @@ pub fn router(state: ConsoleState) -> Router {
             post(discover_channel_models),
         )
         .route(
-            "/console/v1/providers/codex-oauth/channel-groups/{id}/credentials",
+            "/console/v1/routing/upstream-credentials/codex",
             get(list_codex_credentials).post(import_codex_credential),
         )
         .route(
-            "/console/v1/providers/codex-oauth/channel-groups/{id}/oauth/flows",
+            "/console/v1/routing/upstream-credentials/codex/oauth/flows",
             post(start_codex_oauth),
         )
         .route(
-            "/console/v1/providers/codex-oauth/channel-groups/{id}/credentials/export",
+            "/console/v1/routing/upstream-credentials/codex/export",
             post(export_codex_credentials),
         )
         .route(
-            "/console/v1/providers/codex-oauth/channel-groups/{id}/credentials/batch",
+            "/console/v1/routing/upstream-credentials/codex/batch",
             post(update_codex_credentials_batch),
         )
         .route(
-            "/console/v1/providers/codex-oauth/oauth/flows/{id}/complete",
+            "/console/v1/routing/upstream-credentials/codex/oauth/flows/{id}/complete",
             post(complete_codex_oauth),
         )
         .route(
-            "/console/v1/providers/codex-oauth/credentials/{id}",
+            "/console/v1/routing/upstream-credentials/codex/{id}",
             get(get_codex_credential)
                 .put(update_codex_credential)
                 .delete(delete_codex_credential),
         )
         .route(
-            "/console/v1/providers/codex-oauth/credentials/{id}/refresh",
+            "/console/v1/routing/upstream-credentials/codex/{id}/refresh",
             post(refresh_codex_credential),
         )
         .route(
-            "/console/v1/providers/codex-oauth/credentials/{id}/quota/refresh",
+            "/console/v1/routing/upstream-credentials/codex/{id}/quota/refresh",
             post(refresh_codex_quota),
         )
         .route(
-            "/console/v1/providers/codex-oauth/credentials/{id}/quota/windows",
+            "/console/v1/routing/upstream-credentials/codex/{id}/quota/windows",
             get(get_codex_quota_window_history),
         )
         .route(
-            "/console/v1/providers/codex-oauth/credentials/{id}/quota/reset",
+            "/console/v1/routing/upstream-credentials/codex/{id}/quota/reset",
             post(reset_codex_quota),
         )
         .route(
@@ -2232,25 +2232,18 @@ async fn delete_upstream_credential(
 
 async fn list_codex_credentials(
     State(state): State<ConsoleState>,
-    Path(channel_group_id): Path<Uuid>,
 ) -> Result<Json<Vec<CodexCredentialView>>, ConsoleError> {
-    Ok(Json(
-        state
-            .codex_connector
-            .list_credentials(channel_group_id)
-            .await?,
-    ))
+    Ok(Json(state.codex_connector.list_credentials().await?))
 }
 
 async fn start_codex_oauth(
     State(state): State<ConsoleState>,
     Extension(principal): Extension<ConsolePrincipal>,
-    Path(channel_group_id): Path<Uuid>,
     Json(input): Json<CodexOauthStartInput>,
 ) -> Result<(StatusCode, Json<CodexOauthStartResponse>), ConsoleError> {
     let response = state
         .codex_connector
-        .start_oauth(principal.user_id(), channel_group_id, input)
+        .start_oauth(principal.user_id(), input)
         .await?;
     Ok((StatusCode::CREATED, Json(response)))
 }
@@ -2276,12 +2269,11 @@ async fn complete_codex_oauth(
 async fn import_codex_credential(
     State(state): State<ConsoleState>,
     Extension(principal): Extension<ConsolePrincipal>,
-    Path(channel_group_id): Path<Uuid>,
     Json(input): Json<CodexCredentialImportInput>,
 ) -> Result<(StatusCode, Json<MutationResponse>), ConsoleError> {
     let result = state
         .codex_connector
-        .import_credential(principal.user_id(), channel_group_id, input)
+        .import_credential(principal.user_id(), input)
         .await?;
     let status = if result.action == "create" {
         StatusCode::CREATED
@@ -2294,13 +2286,12 @@ async fn import_codex_credential(
 async fn export_codex_credentials(
     State(state): State<ConsoleState>,
     Extension(principal): Extension<ConsolePrincipal>,
-    Path(channel_group_id): Path<Uuid>,
     Json(input): Json<CodexCredentialExportInput>,
 ) -> Result<Json<CodexCredentialExportBundle>, ConsoleError> {
     Ok(Json(
         state
             .codex_connector
-            .export_credentials(principal.user_id(), channel_group_id, input)
+            .export_credentials(principal.user_id(), input)
             .await?,
     ))
 }
@@ -2308,12 +2299,11 @@ async fn export_codex_credentials(
 async fn update_codex_credentials_batch(
     State(state): State<ConsoleState>,
     Extension(principal): Extension<ConsolePrincipal>,
-    Path(channel_group_id): Path<Uuid>,
     Json(input): Json<CodexCredentialBatchInput>,
 ) -> Result<Json<CodexCredentialBatchResponse>, ConsoleError> {
     let result = state
         .codex_connector
-        .update_credentials_batch(principal.user_id(), channel_group_id, input)
+        .update_credentials_batch(principal.user_id(), input)
         .await?;
     Ok(Json(CodexCredentialBatchResponse {
         updated_ids: result.updated_ids,

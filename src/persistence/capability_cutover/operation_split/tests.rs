@@ -4,9 +4,11 @@ use serde_json::json;
 
 use super::*;
 use crate::domain::RequestCompression;
-use crate::persistence::capability_cutover::legacy_settings::CapabilitySettings;
+use crate::persistence::capability_cutover::legacy_settings::{
+    CapabilitySettings, LogicalChannelRecord,
+};
 use crate::persistence::upstream_topology::{
-    LogicalChannelRecord, OperationRuleRecord, OperationTierRecord, UpstreamAccessRecord,
+    OperationRuleRecord, OperationTierRecord, UpstreamAccessRecord,
 };
 
 fn id(value: u128) -> Uuid {

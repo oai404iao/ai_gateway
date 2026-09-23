@@ -33,16 +33,12 @@ import {
   InputGroupInput,
 } from "@/components/ui/input-group";
 import { StatusBadge } from "@/components/shared/status-badge";
-import type { ApiFormat } from "@/api/types";
-import { apiFormatLabel } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/app/i18n";
 
 export interface RoutingTargetGroup {
   id: string;
   name: string;
-  api_format?: ApiFormat;
-  api_formats?: ApiFormat[];
   enabled: boolean;
   model_capable?: boolean;
 }
@@ -53,8 +49,6 @@ export interface RoutingTargetChannel {
   channel_group_name?: string;
   channel_group_enabled: boolean;
   name: string;
-  api_format?: ApiFormat;
-  api_formats?: ApiFormat[];
   enabled: boolean;
   auto_disabled: boolean;
   model_capable?: boolean;
@@ -71,28 +65,6 @@ interface RoutingTargetFieldsProps {
   allowUnavailableSelection?: boolean;
   legend?: string;
   description?: string;
-}
-
-const FORMAT_ORDER: Record<ApiFormat, number> = {
-  open_ai_chat_completions: 0,
-  open_ai_responses: 1,
-  open_ai_images: 2,
-};
-
-function formatLabel(target: { api_format?: ApiFormat; api_formats?: ApiFormat[] }): string {
-  return [...(target.api_formats ?? (target.api_format ? [target.api_format] : []))]
-    .sort((a, b) => FORMAT_ORDER[a] - FORMAT_ORDER[b])
-    .map(apiFormatLabel)
-    .join(" / ");
-}
-
-function categories<T extends { api_format?: ApiFormat; api_formats?: ApiFormat[] }>(targets: T[]) {
-  const grouped = new Map<string, T[]>();
-  for (const target of targets) {
-    const label = formatLabel(target);
-    grouped.set(label, [...(grouped.get(label) ?? []), target]);
-  }
-  return [...grouped].map(([label, items]) => ({ label, items }));
 }
 
 function compareNames(left: string, right: string): number {
@@ -140,7 +112,6 @@ export function RoutingTargetFields({
     () =>
       [...groups].sort(
         (left, right) =>
-          compareNames(formatLabel(left), formatLabel(right)) ||
           compareNames(left.name, right.name) ||
           compareNames(left.id, right.id),
       ),
@@ -152,7 +123,6 @@ export function RoutingTargetFields({
         const leftGroup = groupById.get(left.channel_group_id);
         const rightGroup = groupById.get(right.channel_group_id);
         return (
-          compareNames(formatLabel(left), formatLabel(right)) ||
           compareNames(
             left.channel_group_name ?? leftGroup?.name ?? left.channel_group_id,
             right.channel_group_name ?? rightGroup?.name ?? right.channel_group_id,
@@ -169,7 +139,7 @@ export function RoutingTargetFields({
       (showDisabled || group.enabled || selectedGroupSet.has(group.id)) &&
       (!normalizedSearch ||
         matchesSearch(
-          [group.name, formatLabel(group)],
+          [group.name],
           normalizedSearch,
         )),
   );
@@ -183,14 +153,18 @@ export function RoutingTargetFields({
             channel.name,
             channel.channel_group_name,
             group?.name,
-            formatLabel(channel),
           ],
           normalizedSearch,
         ))
     );
   });
-  const groupCategories = categories(visibleGroups);
-  const channelCategories = categories(visibleChannels);
+  const channelCategories = [...new Set(visibleChannels.map((channel) => channel.channel_group_id))]
+    .map((id) => ({
+      id,
+      label: groupById.get(id)?.name ??
+        visibleChannels.find((channel) => channel.channel_group_id === id)?.channel_group_name ?? id,
+      items: visibleChannels.filter((channel) => channel.channel_group_id === id),
+    }));
   const disabledTargetCount =
     groups.filter((group) => !group.enabled).length +
     channels.filter((channel) => !channelAvailable(channel)).length;
@@ -225,7 +199,7 @@ export function RoutingTargetFields({
     >
       <FieldLegend>{legend ?? t("Routing targets")}</FieldLegend>
       <FieldDescription>
-        {description ?? t("Targets are grouped by API format and sorted by name.")}
+        {description ?? t("Select channel groups or individual logical channels.")}
       </FieldDescription>
 
       <div className="flex flex-wrap gap-2">
@@ -288,58 +262,43 @@ export function RoutingTargetFields({
           {t("Channel groups ({count})", { count: visibleGroups.length })}
         </FieldLegend>
         <FieldDescription>
-          {t("Authorization uses a fixed capability set. Later additions are not granted automatically.")}
+          {t("Group selection fixes the current logical channels. All current and future capabilities of those channels are authorized; later group members are not.")}
         </FieldDescription>
-        {groupCategories.length > 0 ? (
-          <FieldGroup className="gap-5">
-            {groupCategories.map((category) => (
-              <FieldSet key={category.label}>
-                <FieldLegend variant="label">
-                  <span className="flex items-center gap-2">
-                    <span>{category.label}</span>
-                    <Badge variant="outline">{category.items.length}</Badge>
-                  </span>
-                </FieldLegend>
-                <FieldGroup data-slot="checkbox-group" className="gap-3">
-                  {category.items.map((group) => {
-                    const checked = selectedGroupSet.has(group.id);
-                    const disabled =
-                      !allowUnavailableSelection && !group.enabled && !checked;
-                    const inputId = `${idPrefix}-group-${group.id}`;
-                    return (
-                      <Field
-                        key={group.id}
-                        orientation="horizontal"
-                        data-disabled={disabled || undefined}
-                        data-invalid={Boolean(error) || undefined}
-                      >
-                        <Checkbox
-                          id={inputId}
-                          checked={checked}
-                          disabled={disabled}
-                          aria-label={`${group.name} (${formatLabel(group)})`}
-                          aria-invalid={Boolean(error)}
-                          onCheckedChange={(nextChecked) =>
-                            toggleGroup(group.id, Boolean(nextChecked))
-                          }
-                        />
-                        <FieldContent>
-                          <FieldLabel htmlFor={inputId} className="font-normal">
-                            <span className="flex flex-wrap items-center gap-2">
-                              <span>{group.name}</span>
-                              {!group.enabled ? <StatusBadge value={false} /> : null}
-                              {group.model_capable === false ? (
-                                <Badge variant="warning">{t("Model unavailable")}</Badge>
-                              ) : null}
-                            </span>
-                          </FieldLabel>
-                        </FieldContent>
-                      </Field>
-                    );
-                  })}
-                </FieldGroup>
-              </FieldSet>
-            ))}
+        {visibleGroups.length > 0 ? (
+          <FieldGroup data-slot="checkbox-group" className="gap-3">
+            {visibleGroups.map((group) => {
+              const checked = selectedGroupSet.has(group.id);
+              const disabled = !allowUnavailableSelection && !group.enabled && !checked;
+              const inputId = `${idPrefix}-group-${group.id}`;
+              return (
+                <Field
+                  key={group.id}
+                  orientation="horizontal"
+                  data-disabled={disabled || undefined}
+                  data-invalid={Boolean(error) || undefined}
+                >
+                  <Checkbox
+                    id={inputId}
+                    checked={checked}
+                    disabled={disabled}
+                    aria-label={group.name}
+                    aria-invalid={Boolean(error)}
+                    onCheckedChange={(nextChecked) => toggleGroup(group.id, Boolean(nextChecked))}
+                  />
+                  <FieldContent>
+                    <FieldLabel htmlFor={inputId} className="font-normal">
+                      <span className="flex flex-wrap items-center gap-2">
+                        <span>{group.name}</span>
+                        {!group.enabled ? <StatusBadge value={false} /> : null}
+                        {group.model_capable === false ? (
+                          <Badge variant="warning">{t("Model unavailable")}</Badge>
+                        ) : null}
+                      </span>
+                    </FieldLabel>
+                  </FieldContent>
+                </Field>
+              );
+            })}
           </FieldGroup>
         ) : (
           <FieldDescription>
@@ -352,8 +311,8 @@ export function RoutingTargetFields({
 
       <Collapsible open={channelsOpen} onOpenChange={setChannelsOpen}>
         <Card size="sm">
-          <CardHeader>
-            <CardTitle>{t("Advanced: individual channels")}</CardTitle>
+          <CardHeader className="flex flex-col items-start">
+            <CardTitle>{t("Logical channels")}</CardTitle>
             <CardDescription>
               {t("Use individual channels only when the whole group should not be selected.")}
             </CardDescription>
@@ -376,7 +335,7 @@ export function RoutingTargetFields({
               {channelCategories.length > 0 ? (
                 <FieldGroup className="gap-5">
                   {channelCategories.map((category) => (
-                    <FieldSet key={category.label}>
+                    <FieldSet key={category.id}>
                       <FieldLegend variant="label">
                         <span className="flex items-center gap-2">
                           <span>{category.label}</span>

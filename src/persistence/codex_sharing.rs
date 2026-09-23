@@ -9,7 +9,7 @@ use crate::domain::codex_sharing::{SharingGroup, SharingGroupInput, SharingRecor
 use crate::persistence::*;
 
 const GROUP_JSON: &str = "jsonb_build_object('id',s.id,\
-     'credential_id',s.credential_id,'name',s.name,'enabled',s.enabled,'seats',s.seats,\
+     'channel_id',s.channel_id,'bound_credential_id',s.credential_id,'name',s.name,'enabled',s.enabled,'seats',s.seats,\
      'primary_limit_amount',s.primary_limit_amount::text,\
      'secondary_limit_amount',s.secondary_limit_amount::text,\
      'request_reservation_amount',s.request_reservation_amount::text,\
@@ -24,16 +24,14 @@ impl PostgresControlPlaneRepository {
         transaction: &mut Transaction<'_, Postgres>,
     ) -> Result<Vec<Uuid>, RepositoryError> {
         // Protect every capability bound to a sharing-only credential, plus
-        // capabilities reachable through the same provider identity in another
-        // pool. No token/identity material enters the compiled registry.
+        // capabilities reachable through another credential for the same
+        // provider identity. No token material enters the compiled registry.
         Ok(sqlx::query_scalar(
             "WITH restricted AS (SELECT DISTINCT channel.credential_id,identity.user_id, \
                  COALESCE(identity.account_id,'') AS account_id \
              FROM upstream_channels channel \
-             JOIN routing_groups source_group ON source_group.id=channel.group_id \
              JOIN codex_oauth_credentials identity ON identity.channel_id=channel.credential_id \
-             WHERE source_group.sharing_only AND source_group.deleted_at IS NULL \
-               AND channel.deleted_at IS NULL AND channel.credential_id IS NOT NULL \
+             WHERE channel.sharing_only AND channel.deleted_at IS NULL AND channel.credential_id IS NOT NULL \
                AND identity.deleted_at IS NULL), \
              protected AS ( \
                  SELECT credential_id FROM restricted \
@@ -145,7 +143,7 @@ impl PostgresControlPlaneRepository {
              ARRAY(SELECT capability.id FROM upstream_channels channel \
                    JOIN channel_capabilities capability ON capability.channel_id=channel.id \
                    WHERE channel.deleted_at IS NULL AND capability.deleted_at IS NULL \
-                     AND channel.credential_id=s.credential_id),\
+                     AND channel.id=s.channel_id AND channel.credential_id=s.credential_id),\
              ARRAY(SELECT capability.id FROM upstream_channels channel \
                    JOIN channel_capabilities capability ON capability.channel_id=channel.id \
                    JOIN codex_oauth_credentials identity ON identity.channel_id=channel.credential_id \
@@ -163,7 +161,7 @@ impl PostgresControlPlaneRepository {
                     serde_json::from_value(value).map_err(|_| RepositoryError::Validation)?;
                 let windows = windows
                     .iter()
-                    .filter(|w| w.credential_id == group.policy.credential_id)
+                    .filter(|w| w.credential_id == group.bound_credential_id)
                     .cloned()
                     .collect();
                 Ok(SharingRecord {
@@ -200,7 +198,7 @@ pub(super) async fn save_group(
             if previous.updated_at != version {
                 return Err(RepositoryError::Conflict);
             }
-            if previous.policy.credential_id != input.credential_id
+            if previous.policy.channel_id != input.channel_id
                 || input.seats.len() < previous.policy.seats.len()
             {
                 return Err(RepositoryError::Validation);
@@ -234,11 +232,16 @@ pub(super) async fn save_group(
     if count != members.len() as i64 {
         return Err(RepositoryError::Validation);
     }
-    let identity = sqlx::query_as::<_, (String, String)>(
-        "SELECT COALESCE(account_id,''),user_id FROM codex_oauth_credentials \
-         WHERE channel_id=$1 AND deleted_at IS NULL AND user_id IS NOT NULL AND user_id<>''",
+    let identity = sqlx::query_as::<_, (String, String, Uuid)>(
+        "SELECT COALESCE(credential.account_id,''),credential.user_id,credential.channel_id
+         FROM upstream_channels channel
+         JOIN upstream_accesses access ON access.id=channel.access_id AND access.connector_kind='codex'
+         JOIN codex_oauth_credentials credential ON credential.channel_id=channel.credential_id
+         WHERE channel.id=$1 AND channel.deleted_at IS NULL AND access.deleted_at IS NULL
+           AND credential.deleted_at IS NULL AND credential.user_id IS NOT NULL AND credential.user_id<>''
+         FOR SHARE OF channel,credential",
     )
-    .bind(input.credential_id)
+    .bind(input.channel_id)
     .fetch_optional(&mut **transaction)
     .await?
     .ok_or(RepositoryError::Validation)?;
@@ -256,7 +259,7 @@ pub(super) async fn save_group(
                          WHERE member.user_id=ANY($5))))",
     )
     .bind(id)
-    .bind(input.credential_id)
+    .bind(identity.2)
     .bind(&identity.0)
     .bind(&identity.1)
     .bind(&seated_users)
@@ -270,8 +273,8 @@ pub(super) async fn save_group(
          (id,credential_id,provider_account_id,provider_user_id,name,enabled,seats,\
           primary_limit_amount,secondary_limit_amount,request_reservation_amount,\
           user_requests_per_minute,group_requests_per_minute,user_max_concurrent_requests,\
-          group_max_concurrent_requests) \
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) \
+          group_max_concurrent_requests,channel_id) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) \
          ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name,enabled=EXCLUDED.enabled,\
           seats=EXCLUDED.seats,primary_limit_amount=EXCLUDED.primary_limit_amount,\
           secondary_limit_amount=EXCLUDED.secondary_limit_amount,\
@@ -283,7 +286,7 @@ pub(super) async fn save_group(
          RETURNING updated_at",
     )
     .bind(id)
-    .bind(input.credential_id)
+    .bind(identity.2)
     .bind(identity.0)
     .bind(identity.1)
     .bind(input.name.trim())
@@ -296,10 +299,12 @@ pub(super) async fn save_group(
     .bind(input.group_requests_per_minute as i32)
     .bind(input.user_max_concurrent_requests as i32)
     .bind(input.group_max_concurrent_requests as i32)
+    .bind(input.channel_id)
     .fetch_one(&mut **transaction)
     .await?;
     let after = serde_json::to_value(SharingGroup {
         id,
+        bound_credential_id: identity.2,
         policy: input,
         updated_at,
     })

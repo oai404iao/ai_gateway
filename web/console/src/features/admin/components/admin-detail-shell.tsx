@@ -1,15 +1,8 @@
-import { ArrowLeft } from "lucide-react";
-import { useNavigate } from "react-router";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { PageHeader } from "@/components/shared/page-header";
 import { AsyncResource } from "@/components/shared/async-resource";
 import { useI18n } from "@/app/i18n";
-import {
-  ConfigurationNav,
-  type ConfigurationLens,
-} from "@/features/admin/model-setup/configuration-navigation";
 
 interface AdminDetailShellProps {
   title: string;
@@ -25,12 +18,8 @@ interface AdminDetailShellProps {
   editCard?: React.ReactNode;
   /** Shown when data is present: destructive actions. */
   dangerZone?: React.ReactNode;
-  /** Additional primary actions shown in the page header before Back. */
   headerActions?: React.ReactNode;
-  configurationLens?: ConfigurationLens;
   navigationGuard?: React.ReactNode;
-  onBack?: () => void;
-  saving?: boolean;
   actionBar?: React.ReactNode;
   embedded?: boolean;
 }
@@ -47,14 +36,10 @@ export function AdminDetailShell({
   editCard,
   dangerZone,
   headerActions,
-  configurationLens,
   navigationGuard,
-  onBack,
-  saving,
   actionBar,
   embedded = false,
 }: AdminDetailShellProps) {
-  const navigate = useNavigate();
   const { t } = useI18n();
   if (embedded) {
     return (
@@ -67,38 +52,27 @@ export function AdminDetailShell({
     );
   }
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex min-w-0 flex-col gap-6">
       {navigationGuard}
-      {configurationLens && <ConfigurationNav lens={configurationLens} />}
       <PageHeader
         title={t(title)}
         description={description ? t(description) : undefined}
-        actions={
-          <>
-            {headerActions}
-            <Button variant="ghost" size="sm" disabled={saving} onClick={onBack ?? (() => navigate(backPath))}>
-              <ArrowLeft data-icon="inline-start" /> {backLabel ?? t("Back")}
-            </Button>
-          </>
-        }
+        backTo={backPath}
+        backLabel={backLabel}
+        actions={headerActions}
       />
       <AsyncResource isLoading={isLoading} error={error}>
         {hasData ? (
           <>
-            {configurationLens && detailCard ? (
+            {editCard && detailCard ? (
               <div className="grid min-w-0 items-start gap-5 xl:grid-cols-[minmax(0,1fr)_18rem]">
                 <div className="min-w-0">{editCard}</div>
                 <aside className="flex min-w-0 flex-col gap-4 xl:sticky xl:top-20">
                   {detailCard}
-                  <Card size="sm">
-                    <CardHeader><CardTitle>{t("Editing one resource")}</CardTitle>
-                      <CardDescription>{t("Related resources are not changed automatically.")}</CardDescription>
-                    </CardHeader>
-                    <CardContent><Button variant="outline" size="sm" disabled={saving} onClick={onBack ?? (() => navigate(backPath))}>{backLabel ?? t("Back")}</Button></CardContent>
-                  </Card>
                 </aside>
               </div>
-            ) : <>{detailCard}{editCard}</>}
+            ) : <>{editCard}{detailCard}</>}
+            {actionBar}
             {dangerZone ? (
               <>
                 <Separator />
@@ -113,7 +87,6 @@ export function AdminDetailShell({
                 </Card>
               </>
             ) : null}
-            {actionBar}
           </>
         ) : null}
       </AsyncResource>

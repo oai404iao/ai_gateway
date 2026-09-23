@@ -1,4 +1,3 @@
-import { useNavigate } from "react-router";
 import { AdminListPage } from "@/features/admin/components/admin-list-page";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { useApiKeyPolicies } from "@/features/admin/api";
@@ -6,7 +5,6 @@ import { formatRelative } from "@/lib/dates";
 import { useI18n } from "@/app/i18n";
 
 export function ApiKeyPoliciesPage() {
-  const navigate = useNavigate();
   const { data, isLoading, error } = useApiKeyPolicies();
   const { t } = useI18n();
   return (
@@ -17,7 +15,7 @@ export function ApiKeyPoliciesPage() {
       rowKey={(policy) => policy.id}
       detailPath={(policy) => `/admin/api-key-policies/${policy.id}`}
       createLabel={t("New policy")}
-      onCreate={() => navigate("/admin/api-key-policies/new")}
+      createPath="/admin/api-key-policies/new"
       columns={[
         {
           key: "name",

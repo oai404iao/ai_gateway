@@ -1,10 +1,8 @@
 //! Channel-capability writes own the operation, catalogue,
 //! transforms, compression, and probe configuration of one logical channel.
 //!
-//! A capability save or delete never creates grants or routing candidates and
-//! never enables anything implicitly: the administrator must still authorize a
-//! key and add an explicit route candidate. Codex owns capability identities,
-//! but administrators may configure each existing capability independently.
+//! Writes never create grants or route candidates. Existing logical-channel
+//! grants already cover new capabilities; routes remain explicit.
 
 use chrono::{DateTime, Utc};
 use serde_json::json;
@@ -12,10 +10,7 @@ use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
 use super::{ChannelCapabilityInput, ChannelCapabilityRecord, UpstreamTopologyRecords};
-use crate::{
-    domain::ConnectorKind,
-    persistence::{MutationResult, RepositoryError},
-};
+use crate::persistence::{MutationResult, RepositoryError};
 
 fn validate_replacement(
     topology: &UpstreamTopologyRecords,
@@ -58,9 +53,6 @@ fn validate_replacement(
         .iter()
         .find(|access| access.id == channel.access_id && access.deleted_at.is_none())
         .ok_or(RepositoryError::RoutingDependencyInvalid)?;
-    if access.connector_kind == ConnectorKind::CodexOauth && existing.is_none() {
-        return Err(RepositoryError::ProviderManagedResource);
-    }
     input
         .settings
         .validate(access.connector_kind)
@@ -75,9 +67,6 @@ fn validate_replacement(
     Ok(())
 }
 
-/// A capability referenced by any route candidate is still in use; the caller
-/// must withdraw the candidate first. Tombstoning leaves the row and its grant
-/// history intact.
 fn check_delete(
     topology: &UpstreamTopologyRecords,
     id: Uuid,
@@ -91,28 +80,24 @@ fn check_delete(
     if capability.updated_at != expected {
         return Err(RepositoryError::Conflict);
     }
-    if let Some(access) = topology
-        .logical_channels
-        .iter()
-        .find(|channel| channel.id == capability.channel_id)
-        .and_then(|channel| {
-            topology
-                .upstream_accesses
-                .iter()
-                .find(|access| access.id == channel.access_id)
-        })
-        && access.connector_kind == ConnectorKind::CodexOauth
-    {
-        return Err(RepositoryError::ProviderManagedResource);
-    }
-    if topology
+    Ok(())
+}
+
+fn affected_rules(topology: &UpstreamTopologyRecords, id: Uuid) -> Vec<Uuid> {
+    let tiers = topology
         .operation_candidates
         .iter()
-        .any(|candidate| candidate.capability_id == id)
-    {
-        return Err(RepositoryError::RoutingDependencyInvalid);
-    }
-    Ok(())
+        .filter(|candidate| candidate.capability_id == id)
+        .map(|candidate| candidate.tier_id)
+        .collect::<std::collections::HashSet<_>>();
+    topology
+        .operation_tiers
+        .iter()
+        .filter(|tier| tiers.contains(&tier.id))
+        .map(|tier| tier.rule_id)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 async fn pg_validate_references(
@@ -213,12 +198,27 @@ fn result(
         .iter()
         .find(|capability| capability.id == id)
         .ok_or(RepositoryError::NotFound)?;
+    let mut after_redacted = audit(Some(current));
+    if action == "delete" {
+        after_redacted["detached_routes"] = json!(
+            affected_rules(before, id)
+                .into_iter()
+                .map(|rule_id| {
+                    let disabled = after
+                        .operation_rules
+                        .iter()
+                        .any(|rule| rule.id == rule_id && !rule.enabled);
+                    json!({ "rule_id": rule_id, "disabled": disabled })
+                })
+                .collect::<Vec<_>>()
+        );
+    }
     Ok(MutationResult {
         id,
         object_type: "channel_capability",
         action,
         before_redacted: audit(previous),
-        after_redacted: audit(Some(current)),
+        after_redacted,
         created_secret: None,
         reason: None,
         updated_at: current.updated_at,
@@ -418,9 +418,8 @@ pub async fn sqlite_save(
     )
 }
 
-/// Runs inside the coordinator's serializable transaction. A capability that
-/// still appears in a route candidate cannot be deleted; nothing cascades and
-/// the row remains as a tombstone so grants and history stay resolvable.
+/// Candidate withdrawal, empty-tier removal, rule version changes and the
+/// capability tombstone commit together in the coordinator's transaction.
 pub async fn pg_delete(
     transaction: &mut Transaction<'_, Postgres>,
     id: Uuid,
@@ -432,6 +431,25 @@ pub async fn pg_delete(
         .await?;
     let before = super::pg_load(transaction).await?;
     check_delete(&before, id, expected)?;
+    let rules = affected_rules(&before, id);
+    sqlx::query("DELETE FROM model_capability_candidates WHERE capability_id=$1")
+        .bind(id)
+        .execute(&mut **transaction)
+        .await?;
+    sqlx::query(
+        "DELETE FROM model_capability_tiers t WHERE t.rule_id=ANY($1)
+        AND NOT EXISTS(SELECT 1 FROM model_capability_candidates c WHERE c.tier_id=t.id)",
+    )
+    .bind(&rules)
+    .execute(&mut **transaction)
+    .await?;
+    sqlx::query(
+        "UPDATE model_operation_rules r SET enabled=r.enabled AND EXISTS(
+        SELECT 1 FROM model_capability_tiers t WHERE t.rule_id=r.id) WHERE r.id=ANY($1)",
+    )
+    .bind(&rules)
+    .execute(&mut **transaction)
+    .await?;
     let changed = sqlx::query(
         "UPDATE channel_capabilities SET enabled=false,auto_disabled=false,
          auto_disable_reason=NULL,auto_disable_at=NULL,deleted_at=now(),revision=gen_random_uuid()
@@ -460,6 +478,24 @@ pub async fn sqlite_delete(
     use crate::persistence::sqlite::{SqliteTimestamp, SqliteUuid};
     let before = super::sqlite_load(transaction).await?;
     check_delete(&before, id, expected)?;
+    let rules = affected_rules(&before, id);
+    sqlx::query("DELETE FROM model_capability_candidates WHERE capability_id=?")
+        .bind(SqliteUuid(id))
+        .execute(&mut **transaction)
+        .await?;
+    for rule_id in rules {
+        sqlx::query("DELETE FROM model_capability_tiers WHERE rule_id=?
+            AND NOT EXISTS(SELECT 1 FROM model_capability_candidates c WHERE c.tier_id=model_capability_tiers.id)")
+            .bind(SqliteUuid(rule_id)).execute(&mut **transaction).await?;
+        sqlx::query(
+            "UPDATE model_operation_rules SET enabled=enabled AND EXISTS(
+            SELECT 1 FROM model_capability_tiers t WHERE t.rule_id=model_operation_rules.id),
+            updated_at=ag_now() WHERE id=?",
+        )
+        .bind(SqliteUuid(rule_id))
+        .execute(&mut **transaction)
+        .await?;
+    }
     let changed = sqlx::query(
         "UPDATE channel_capabilities SET enabled=0,auto_disabled=0,auto_disable_reason=NULL,
          auto_disable_at=NULL,deleted_at=ag_now(),revision=ag_md5_uuid(hex(randomblob(32))),
@@ -485,7 +521,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::domain::{ApiOperation, CapabilitySettings, RequestCompression};
+    use crate::domain::{ApiOperation, CapabilitySettings, ConnectorKind, RequestCompression};
     use crate::persistence::upstream_topology::{
         OperationCandidateRecord, RoutingGroupRecord, UpstreamAccessRecord,
     };
@@ -522,7 +558,6 @@ mod tests {
             id: Uuid::from_u128(id),
             name: format!("group-{id}"),
             enabled: true,
-            sharing_only: false,
             created_at: at(),
             updated_at: at(),
             deleted_at: None,
@@ -555,6 +590,7 @@ mod tests {
             credential_id: None,
             name: format!("channel-{id}"),
             enabled: true,
+            sharing_only: false,
             binding_revision: Uuid::from_u128(id + 600),
             created_at: at(),
             updated_at: at(),
@@ -633,13 +669,16 @@ mod tests {
     }
 
     #[test]
-    fn provider_managed_channels_and_channel_rebinding_are_rejected() {
+    fn codex_capabilities_are_editable_but_channel_rebinding_is_rejected() {
         let id = Uuid::from_u128(4);
         let mut codex = topology();
         codex.upstream_accesses[0].connector_kind = ConnectorKind::CodexOauth;
+        assert!(validate_replacement(&codex, id, &input(3), None).is_ok());
+        let mut unsupported = input(3);
+        unsupported.settings.operation = ApiOperation::ChatCompletions;
         assert!(matches!(
-            validate_replacement(&codex, id, &input(3), None),
-            Err(RepositoryError::ProviderManagedResource)
+            validate_replacement(&codex, id, &unsupported, None),
+            Err(RepositoryError::Validation)
         ));
 
         let mut topology = topology();
@@ -727,7 +766,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_blocks_routes_and_provider_managed_channels() {
+    fn delete_accepts_route_dependencies_for_all_connectors_but_rejects_stale_versions() {
         let id = Uuid::from_u128(4);
         let mut topology = topology();
         topology.channel_capabilities = vec![capability(4, 3, false)];
@@ -748,16 +787,10 @@ mod tests {
             upstream_model: "wire".into(),
             weight: 1,
         }];
-        assert!(matches!(
-            check_delete(&topology, id, at()),
-            Err(RepositoryError::RoutingDependencyInvalid)
-        ));
+        assert!(check_delete(&topology, id, at()).is_ok());
 
         topology.operation_candidates.clear();
         topology.upstream_accesses[0].connector_kind = ConnectorKind::CodexOauth;
-        assert!(matches!(
-            check_delete(&topology, id, at()),
-            Err(RepositoryError::ProviderManagedResource)
-        ));
+        assert!(check_delete(&topology, id, at()).is_ok());
     }
 }

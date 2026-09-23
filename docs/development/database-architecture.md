@@ -30,10 +30,10 @@
 | --- | --- | --- |
 | 上游身份 | `upstream_credentials` | 可复用静态认证材料、精确接入范围、连接 revision 与 Codex 公共身份。 |
 | 身份与授权 | `users`、`user_groups`、`user_sessions`、`user_invitations`、`registration_invitation_codes`、`api_key_policies`、`api_keys` | Console 身份、角色、生命周期、注册/邀请、用户可选路由边界和具体 Key 限制。 |
-| 模型与路由 | `models`、`model_routing_profiles`、`model_operation_rules`、`model_capability_tiers`、`model_capability_candidates`、`routing_groups`、`upstream_accesses`、`upstream_channels`、`channel_capabilities`、`api_key_capability_grants`、`api_key_policy_capability_grants`、`proxies`、`config_templates`、`system_settings` | 客户端模型价格、协议规则、候选级上游 wire 模型、路由层级/权重、格式隔离、Connector、网络/变换和数据库动态系统策略。 |
-| Codex Connector | `connector_pools`、`codex_oauth_credentials`、`codex_oauth_flows`、`codex_quota_window_periods`、`codex_quota_reset_events`、`user_group_codex_quota_visibility` | 共享逻辑凭证、独立操作能力、OAuth、quota 历史和用户组可见性。 |
+| 模型与路由 | `models`、`model_routing_profiles`、`model_operation_rules`、`model_capability_tiers`、`model_capability_candidates`、`routing_groups`、`upstream_accesses`、`upstream_channels`、`channel_capabilities`、`api_key_channel_grants`、`api_key_policy_channel_grants`、`proxies`、`config_templates`、`system_settings` | 客户端模型价格、协议规则、候选级上游 wire 模型、路由层级/权重、格式隔离、Connector、网络/变换和数据库动态系统策略。 |
+| Codex Connector | `codex_oauth_credentials`、`codex_oauth_flows`、`codex_quota_window_periods`、`codex_quota_reset_events`、`user_group_codex_quota_visibility` | 独立 OAuth 凭证、维护代理、quota 历史和经引用渠道限定的用户组可见性。 |
 | 日志与统计 | `request_log_ingest`、`request_logs`、`spend_leaderboard_periods`、`spend_leaderboard_entries`、`audit_logs` | 耐久事件入口、日志/排行榜投影和控制面审计。 |
-| 计量与结算 | `request_metering_facts`、`request_settlements`、`request_settlement_pending` | 不可变财务事实、唯一结算回执和可索引的未结算工作集合。 |
+| 计量与结算 | `request_metering_facts`、`request_credential_attributions`、`request_settlements`、`request_settlement_pending` | 不可变财务事实与凭证归属、唯一结算回执和可索引的未结算工作集合。 |
 
 ## 关键当前语义
 
@@ -47,20 +47,33 @@ PostgreSQL `0064` / SQLite `0004` 引入独立凭证；`0065` / `0005` 在启动
 
 - `upstream_credentials` 是静态认证材料与目标范围的唯一来源；Codex Token 仍由专属扩展持有。
 - `upstream_accesses` 拥有连接器、Base URL、代理及超时；`upstream_channels` 绑定接入、
-  nullable 凭证和格式中立的 `routing_groups`。
-- `channel_capabilities` 拥有操作、传输、模型目录、独立健康、探测、压缩、变换、倍率和统计开关。
-  能力所属逻辑渠道与操作不可改绑；Codex 一个逻辑凭证有四个能力，Images 初始停用。
+  nullable 凭证和格式中立的 `routing_groups`，并拥有 `sharing_only`。
+- `channel_capabilities` 拥有操作、模型目录、独立健康、探测、压缩、变换、倍率和统计开关。
+  传输由操作派生。能力所属逻辑渠道与操作不可改绑；所有连接器的能力均显式创建，
+  导入 Codex 凭证不创建拓扑，旧 Images 能力的停用状态在迁移中保持不变。
 - 凭证 revision、接入 revision、渠道 binding revision 与能力 revision 纳入连接身份失效；
   轮换、禁用、范围收窄及 A → B → A 改绑不能恢复旧 WebSocket continuation。
 - `models.source_model_id` 是不可变客户端计价身份；每个模型最多一个 `model_routing_profiles`。
   `model_operation_rules` 按 `(profile, operation)` 唯一，启用规则必须有非空 tier。
 - `model_capability_tiers` 保存 priority/strategy；`model_capability_candidates` 保存
   capability/wire-model/weight，同层完全相同组合不得重复，不随组成员变化自动扩展。
-- Key/Policy 保留组/逻辑渠道选择数组，同时在 `api_key_capability_grants` /
-  `api_key_policy_capability_grants` 固定实际能力及授权来源。只有新增来源才展开，
-  保留来源即使与新增来源混合编辑也不重新扩权；自助写入还与 Policy 固定范围取交集。
+- Key/Policy 保留组/逻辑渠道选择数组，同时在 `api_key_channel_grants` /
+  `api_key_policy_channel_grants` 固定逻辑渠道及来源。只有新增来源才展开组成员，
+  保留来源不重新扩权；自助写入与 Policy 固定渠道范围取交集。已授权渠道的后续能力共享授权。
+  `0067` / SQLite `0007` 按旧授权能力的所属渠道去重投影，不重新遍历当前组成员，
+  原组/渠道来源保持不变；旧直接能力来源转为所属渠道的直接选择，旧能力授权表删除。
+  废弃兼容字段 `allowed_api_formats` 不再是独立授权条件。
+- 删除任意能力在同一控制面事务里删除其全部候选和空层，无候选规则停用，受影响规则的
+  ETag 更新并记入删除审计；失败整体回滚，能力墓碑和财务历史保留。
 - `group_identity_registry`、`channel_identity_registry`、`model_rule_identity_registry`
   保留旧 UUID/名称及新能力身份，供日志、财务和 spool 重放引用，不参与管理或授权。
+- `0068` / SQLite `0008` 删除 Codex 凭证和 OAuth flow 的组/pool 归属。
+  OAuth 扩展的历史 `channel_id` 字段仍为凭证主键，不是逻辑渠道外键。
+  车队的 `channel_id` 是新增的逻辑渠道绑定，原 `credential_id` 及 provider identity
+  保留为不可变金融锚点。同账号最多一辆车；多个渠道复用凭证不扩展车队资格。
+- `0069` / SQLite `0009` 为新日志增加 append-only 凭证归属侧表，与事实同事务写入。
+  `request_credential_identities` 视图只对旧的未知归属使用冻结注册表回退；
+  明确无认证不回退，渠道改绑不改变已完成或在途请求费用归属。
 
 完整迁移及安全约束见[身份与能力设计](upstream-identity-capabilities.md)，配置步骤见
 [运维接口](../user/operations.md)和[上游凭证管理](../user/upstream-credentials.md)。
@@ -79,7 +92,8 @@ Connector 都只观察过滤后的请求。
 Codex quota 可见性；直接删除 Key 会覆盖其明文 secret。活动记录使用部分唯一索引，因此删除后
 可以用相同邮箱或自然名称创建新 UUID。完整阶段边界见[控制面软删除](soft-deletion.md)。
 
-上游资源删除不再隐式级联路由或固定授权：先撤销候选，再按能力、逻辑渠道、组的顺序退役。
+删除能力会原子撤销引用候选、清理空层，并停用没有候选的规则；逻辑渠道固定授权不变。
+逻辑渠道和组仍按能力、逻辑渠道、组的顺序退役。
 仍在用的接入或凭证不能删除；Codex 只能走专属生命周期。墓碑及历史身份保留，原 UUID
 不可恢复，同名新资源不继承授权。
 

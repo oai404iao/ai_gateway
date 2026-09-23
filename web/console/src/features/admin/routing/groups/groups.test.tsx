@@ -40,7 +40,7 @@ describe("routing groups", () => {
     await user.type(await screen.findByLabelText("Name"), "Fresh group");
     await user.click(screen.getByRole("button", { name: "Save group" }));
     await waitFor(() =>
-      expect(created).toEqual({ name: "Fresh group", enabled: true, sharing_only: false }),
+      expect(created).toEqual({ name: "Fresh group", enabled: true }),
     );
   });
 

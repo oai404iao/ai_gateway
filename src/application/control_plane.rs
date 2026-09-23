@@ -302,13 +302,12 @@ impl ControlPlaneCoordinator {
     pub async fn update_codex_credentials_batch(
         &self,
         actor: Uuid,
-        channel_group_id: Uuid,
         input: CodexCredentialBatchInput,
     ) -> Result<CodexCredentialBatchResult, ControlPlaneError> {
         let _guard = self.serial.lock().await;
         let change = self
             .repository
-            .prepare_codex_credentials_batch(actor, channel_group_id, input)
+            .prepare_codex_credentials_batch(actor, input)
             .await?;
         let (mutations, correlation_id) = self.commit_change(change).await?;
         Ok(CodexCredentialBatchResult {

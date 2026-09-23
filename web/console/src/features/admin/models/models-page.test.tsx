@@ -21,6 +21,32 @@ function renderAppAt(path: string) {
 }
 
 describe("ModelsPage", () => {
+  it.each([
+    [999, "999"],
+    [1_000, "1K"],
+    [1_000_000, "1M"],
+    [1_000_000_000, "1B"],
+  ])("shows base prices per %i tokens as %s in the list and details", async (tokens, unit) => {
+    seedAuthenticatedSession();
+    server.use(http.get("/console/v1/models", () => HttpResponse.json([{
+      ...MODEL, price_unit_tokens: tokens, input_unit_price: "0.123",
+      cached_input_unit_price: "0.000000001", output_unit_price: "0.456",
+    }])));
+    const user = userEvent.setup();
+    renderAppAt("/admin/models");
+    const model = await screen.findByRole("button", { name: new RegExp(MODEL.display_name) });
+    expect(within(model).getByText(`Base prices · USD / ${unit} tokens`)).toBeInTheDocument();
+    expect(within(model).getByText("Input price")).toBeInTheDocument();
+    expect(within(model).getByText("Cache hit price")).toBeInTheDocument();
+    expect(within(model).getByText("Output price")).toBeInTheDocument();
+    expect(within(model).getByText("0.123")).toBeInTheDocument();
+    expect(within(model).getByText("0.000000001")).toBeInTheDocument();
+    expect(within(model).getByText("0.456")).toBeInTheDocument();
+    await user.click(model);
+    expect(within(screen.getByRole("region", { name: "Operation routing" }))
+      .getByText(`Base prices · USD / ${unit} tokens`)).toBeInTheDocument();
+  });
+
   it("provides a direct pricing action without opening the general model editor", async () => {
     seedAuthenticatedSession();
     const user = userEvent.setup();
@@ -28,7 +54,7 @@ describe("ModelsPage", () => {
 
     await user.click(await screen.findByRole("button", { name: new RegExp(MODEL.display_name) }));
     await user.click(
-      await screen.findByRole("button", { name: /configure pricing/i }),
+      await screen.findByRole("link", { name: /configure pricing/i }),
     );
 
     await waitFor(() => {
@@ -97,8 +123,8 @@ describe("ModelsPage", () => {
     const user = userEvent.setup();
     renderAppAt(`/admin/models?model=${MODEL.id}&rule=new`);
     await user.click(await screen.findByRole("combobox", { name: "Operation" }));
+    expect(await screen.findAllByRole("option")).toHaveLength(5);
     expect(screen.queryByRole("option", { name: "Responses" })).not.toBeInTheDocument();
-    expect(screen.getAllByRole("option")).toHaveLength(5);
   });
 
   it("keeps a dirty operation selected when a concurrent creation conflicts", async () => {

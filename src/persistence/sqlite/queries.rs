@@ -705,9 +705,9 @@ impl SqliteMeteringQueries {
         if let Some(credential_id) = filter.codex_credential_id {
             query
                 .push(
-                    " AND log.channel_id IN (SELECT identity.id \
-                     FROM channel_identity_registry AS identity \
-                     WHERE identity.codex_credential_id = ",
+                    " AND log.id IN (SELECT identity.request_id \
+                     FROM request_credential_identities AS identity \
+                     WHERE identity.credential_id = ",
                 )
                 .push_bind(SqliteUuid(credential_id))
                 .push(")");

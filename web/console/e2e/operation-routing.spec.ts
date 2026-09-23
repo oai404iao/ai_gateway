@@ -38,7 +38,7 @@ test("operation routing displays its priced model and opens the operation graph"
   await prepare(page);
   await page.goto("/admin/routing/operation-rules");
   await page.getByText(MODEL.display_name, { exact: true }).click();
-  await expect(page).toHaveURL(new RegExp(`/operation-rules/${OPERATION_RULE.id}$`));
+  await expect(page).toHaveURL(new RegExp(`/operation-rules/${OPERATION_RULE.id}\\?returnTo=`));
   await expect(page.getByRole("button", { name: "Save operation rule" })).toBeVisible();
   await expect(page.getByRole("combobox", { name: "Upstream model for tier 1 row 1" }))
     .toHaveValue(OPERATION_RULE.routing_tiers[0].candidates[0].upstream_model);

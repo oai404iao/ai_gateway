@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router";
+import { useParams } from "react-router";
+import { useReturnPath } from "@/lib/page-navigation";
+import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
 import { z } from "zod";
 import { toast } from "sonner";
 import { ApiError } from "@/api/errors";
@@ -73,7 +75,7 @@ const empty: FormState = {
 export function UserGroupDetailPage() {
   const { id = "" } = useParams();
   const isNew = id === "new";
-  const navigate = useNavigate();
+  const returnTo = useReturnPath("/admin/user-groups");
   const detail = useUserGroup(id);
   const policies = useApiKeyPolicies();
   const channelGroups = useRoutingGroups();
@@ -86,6 +88,8 @@ export function UserGroupDetailPage() {
   const [state, setState] = useState<FormState>(empty);
   const [validation, setValidation] = useState<z.ZodError | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const pending = create.isPending || update.isPending || remove.isPending;
+  const draft = useConfigurationDraft(pending);
 
   useEffect(() => {
     if (detail.data) {
@@ -102,8 +106,10 @@ export function UserGroupDetailPage() {
   }, [detail.data]);
 
   const group = detail.data?.data;
-  const patch = (partial: Partial<FormState>) =>
+  const patch = (partial: Partial<FormState>) => {
+    draft.markDirty();
     setState((current) => ({ ...current, ...partial }));
+  };
   const fieldError = (path: string) => {
     const message = validation?.issues.find((issue) => issue.path.join(".") === path)
       ?.message;
@@ -134,9 +140,11 @@ export function UserGroupDetailPage() {
       if (isNew) {
         await create.mutateAsync(input);
         toast.success(t("User group created"));
-        navigate("/admin/user-groups", { replace: true });
+        draft.markSaved();
+        draft.navigate(returnTo, { replace: true });
       } else {
         await update.mutateAsync({ input, ifMatch: detail.etag });
+        draft.markSaved();
         toast.success(t("User group updated"));
       }
     } catch (error) {
@@ -154,7 +162,8 @@ export function UserGroupDetailPage() {
     try {
       await remove.mutateAsync({ ifMatch: detail.etag });
       toast.success(t("User group deleted"));
-      navigate("/admin/user-groups", { replace: true });
+      draft.markSaved();
+      draft.navigate(returnTo, { replace: true });
     } catch (error) {
       if (error instanceof ApiError && error.code === "protected_user_group") {
         toast.error(t("Built-in default groups cannot be deleted."));
@@ -167,7 +176,6 @@ export function UserGroupDetailPage() {
     }
   };
 
-  const pending = create.isPending || update.isPending || remove.isPending;
   const codexGroups = (channelGroups.data ?? []).filter(
     (candidate) =>
       state.visible_codex_quota_group_ids.includes(candidate.id) ||
@@ -189,8 +197,8 @@ export function UserGroupDetailPage() {
       <AdminDetailShell
         title={isNew ? t("New user group") : state.name || t("User group")}
         description={t("Group defaults apply when a user has no policy override.")}
-        backPath="/admin/user-groups"
-        backLabel={t("Back to user groups")}
+        backPath={returnTo}
+        navigationGuard={draft.navigationGuard}
         isLoading={
           detail.isLoading || policies.isLoading || channelGroups.isLoading ||
           channels.isLoading || accesses.isLoading
@@ -211,7 +219,7 @@ export function UserGroupDetailPage() {
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <dl className="grid grid-cols-1 gap-4">
                   <DetailField label={t("Members")} value={group.member_count} />
                   <DetailField
                     label={t("Default API key policy")}
@@ -242,7 +250,7 @@ export function UserGroupDetailPage() {
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="flex flex-col gap-4">
+                <form className="flex flex-col gap-4" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
                   <FieldGroup>
                     <Field data-invalid={Boolean(fieldError("name"))}>
                       <FieldLabel htmlFor="user_group_name">
@@ -365,15 +373,15 @@ export function UserGroupDetailPage() {
                         ))}
                         {codexGroups.length === 0 ? (
                           <FieldDescription>
-                            {t("No Codex OAuth credential groups are configured.")}
+                            {t("No channel groups with Codex channels are configured.")}
                           </FieldDescription>
                         ) : null}
                       </FieldGroup>
                     </FieldSet>
                   </FieldGroup>
                   <Button
+                    type="submit"
                     className="self-start"
-                    onClick={() => void submit()}
                     disabled={pending}
                   >
                     {create.isPending || update.isPending ? (
@@ -381,7 +389,7 @@ export function UserGroupDetailPage() {
                     ) : null}
                     {isNew ? t("Create user group") : t("Save user group")}
                   </Button>
-                </div>
+                </form>
               </CardContent>
             </Card>
 

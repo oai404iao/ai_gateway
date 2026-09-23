@@ -41,8 +41,8 @@ use crate::{
         ApiFormat, ApiKeyPermission, ApiOperation, AutomaticDisableSettings,
         AutomaticDisableTrigger, CompiledAdvancedBilling, CompiledApiKey, CompiledChannel,
         CompiledModelRule, MAX_REQUEST_RETRIES, ModelPriceSnapshot, RequestCompression,
-        RequestLogEvent, RequestLogOutcome, RequestLogSource, RequestProtocol,
-        SessionAffinityKeySource, SessionAffinitySettings,
+        RequestCredentialAttribution, RequestLogEvent, RequestLogOutcome, RequestLogSource,
+        RequestProtocol, SessionAffinityKeySource, SessionAffinitySettings,
     },
     request_policy::{
         RequestInterface, RequestPolicyError, RequestPolicyLayer, client_header_explicitly_ignored,
@@ -947,6 +947,9 @@ impl ProxyService {
             model_rule_id: None,
             channel_group_id: None,
             channel_id: None,
+            upstream_credential: Some(RequestCredentialAttribution {
+                credential_id: None,
+            }),
             model_id: None,
             outcome: RequestLogOutcome::Rejected,
             response_status_code: Some(StatusCode::NOT_FOUND.as_u16()),
@@ -993,6 +996,9 @@ impl ProxyService {
             model_rule_id: Some(rule.id()),
             channel_group_id: None,
             channel_id: None,
+            upstream_credential: Some(RequestCredentialAttribution {
+                credential_id: None,
+            }),
             model_id: Some(rule.model_id()),
             outcome: RequestLogOutcome::Failed,
             response_status_code: Some(error.status.as_u16()),
@@ -2685,6 +2691,7 @@ struct CompletionContext {
     model_rule_id: Uuid,
     channel_group_id: Uuid,
     channel_id: Uuid,
+    credential_id: Option<Uuid>,
     model_id: Uuid,
     api_format: ApiFormat,
     api_operation: ApiOperation,
@@ -2784,6 +2791,7 @@ impl CompletionGuard {
                 model_rule_id: rule.id(),
                 channel_group_id: channel.group_id(),
                 channel_id: channel.id(),
+                credential_id: channel.credential_id(),
                 model_id: rule.model_id(),
                 api_format,
                 api_operation,
@@ -2871,6 +2879,7 @@ impl CompletionGuard {
             context.model_rule_id = rule.id();
             context.channel_group_id = channel.group_id();
             context.channel_id = channel.id();
+            context.credential_id = channel.credential_id();
             context.model_id = rule.model_id();
             context.first_byte_at = None;
             context.upstream_status = None;
@@ -2916,6 +2925,7 @@ impl CompletionGuard {
             context.model_rule_id = rule.id();
             context.channel_group_id = channel.group_id();
             context.channel_id = channel.id();
+            context.credential_id = channel.credential_id();
             context.model_id = rule.model_id();
             context.first_byte_at = None;
             context.upstream_status = None;
@@ -3147,6 +3157,9 @@ impl CompletionGuard {
             model_rule_id: Some(context.model_rule_id),
             channel_group_id: Some(context.channel_group_id),
             channel_id: Some(context.channel_id),
+            upstream_credential: Some(RequestCredentialAttribution {
+                credential_id: context.credential_id,
+            }),
             model_id: Some(context.model_id),
             outcome: log_outcome,
             response_status_code: context

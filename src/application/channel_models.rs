@@ -399,6 +399,7 @@ mod tests {
                         id: uuid::Uuid::from_u128(91),
                         name: "discovery".into(),
                         kind: "bearer".into(),
+                        connector_kind: crate::domain::ConnectorKind::OpenAiCompatible,
                         header_name: None,
                         allowed_base_urls: vec![format!("http://{address}")],
                         enabled: true,

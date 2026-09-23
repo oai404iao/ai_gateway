@@ -874,7 +874,7 @@ export interface paths {
             cookie?: never;
         };
         get: operations["getRoutingGroup"];
-        /** @description Replaces organization and the sharing switch. Enabling sharing-only requires every live member channel to use the Codex OAuth connector and never grants access by itself. */
+        /** @description Replaces group organization and enabled state. Credentials and sharing restrictions belong to individual logical channels, not groups. */
         put: operations["updateRoutingGroup"];
         post?: never;
         /** @description Soft-deletes the group. Any non-deleted member channel, including disabled or unrouted channels, blocks deletion; nothing cascades. */
@@ -930,7 +930,7 @@ export interface paths {
         /** @description Administrator-only canonical channel capabilities, excluding tombstones. */
         get: operations["listChannelCapabilities"];
         put?: never;
-        /** @description Declares one operation, transport set and model catalog for an ordinary logical channel. Codex capability identities are created by credential import. It never enables routing or grants access. */
+        /** @description Declares one supported operation and model catalog for a logical channel, independently of credential creation. It never enables routing or grants access. */
         post: operations["createChannelCapability"];
         delete?: never;
         options?: never;
@@ -983,7 +983,7 @@ export interface paths {
         /** @description Replaces catalog, transforms and compression. Transports are fixed by the operation. The owning channel and operation are immutable. Existing Codex capabilities can be configured independently. Changes invalidate the capability revision without rewriting routes or grants. */
         put: operations["updateChannelCapability"];
         post?: never;
-        /** @description Soft-deletes an ordinary capability. Dependent routing candidates must be withdrawn first. Codex capabilities are deleted through their credential lifecycle. */
+        /** @description Atomically soft-deletes a capability and removes every route candidate referencing it. Empty tiers are removed; affected rules with no remaining candidates are disabled, and all affected rule ETags change. Logical-channel grants, credentials and financial history are retained. */
         delete: operations["deleteChannelCapability"];
         options?: never;
         head?: never;
@@ -1110,7 +1110,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/providers/codex-oauth/channel-groups/{id}/credentials": {
+    "/routing/upstream-credentials/codex": {
         parameters: {
             query?: never;
             header?: never;
@@ -1126,7 +1126,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/providers/codex-oauth/channel-groups/{id}/credentials/export": {
+    "/routing/upstream-credentials/codex/export": {
         parameters: {
             query?: never;
             header?: never;
@@ -1135,7 +1135,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Exports selected or all credentials in the shared connector pool, selected through this format-specific channel group, including raw OAuth tokens and optionally the assigned proxy definitions. The response is a sensitive portable backup and is never cached. */
+        /** @description Exports selected or all Codex credentials, including raw OAuth tokens and optionally their maintenance proxy definitions. The response is a sensitive portable backup and is never cached. */
         post: operations["exportCodexOAuthCredentials"];
         delete?: never;
         options?: never;
@@ -1143,7 +1143,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/providers/codex-oauth/channel-groups/{id}/credentials/batch": {
+    "/routing/upstream-credentials/codex/batch": {
         parameters: {
             query?: never;
             header?: never;
@@ -1152,7 +1152,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Atomically enables, disables, or deletes up to 100 selected credentials in one shared Codex connector pool. */
+        /** @description Atomically enables, disables, or deletes up to 100 selected independent Codex credentials. A live channel binding blocks deletion. */
         post: operations["updateCodexOAuthCredentialsBatch"];
         delete?: never;
         options?: never;
@@ -1160,7 +1160,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/providers/codex-oauth/channel-groups/{id}/oauth/flows": {
+    "/routing/upstream-credentials/codex/oauth/flows": {
         parameters: {
             query?: never;
             header?: never;
@@ -1176,7 +1176,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/providers/codex-oauth/oauth/flows/{id}/complete": {
+    "/routing/upstream-credentials/codex/oauth/flows/{id}/complete": {
         parameters: {
             query?: never;
             header?: never;
@@ -1192,7 +1192,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/providers/codex-oauth/credentials/{id}": {
+    "/routing/upstream-credentials/codex/{id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -1209,7 +1209,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/providers/codex-oauth/credentials/{id}/refresh": {
+    "/routing/upstream-credentials/codex/{id}/refresh": {
         parameters: {
             query?: never;
             header?: never;
@@ -1225,7 +1225,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/providers/codex-oauth/credentials/{id}/quota/refresh": {
+    "/routing/upstream-credentials/codex/{id}/quota/refresh": {
         parameters: {
             query?: never;
             header?: never;
@@ -1241,7 +1241,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/providers/codex-oauth/credentials/{id}/quota/windows": {
+    "/routing/upstream-credentials/codex/{id}/quota/windows": {
         parameters: {
             query?: never;
             header?: never;
@@ -1263,7 +1263,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/providers/codex-oauth/credentials/{id}/quota/reset": {
+    "/routing/upstream-credentials/codex/{id}/quota/reset": {
         parameters: {
             query?: never;
             header?: never;
@@ -1645,8 +1645,11 @@ export interface components {
         /** Format: date-time */
         DateTime: string;
         CodexSharingGroupInput: {
-            /** Format: uuid */
-            credential_id: string;
+            /**
+             * Format: uuid
+             * @description Logical channel selected for this car. Immutable after creation; its upstream account cannot be replaced.
+             */
+            channel_id: string;
             name: string;
             enabled: boolean;
             /** @description Stable slot order independent of user groups. A null reserves a vacant seat; non-null active user IDs must be unique across all sharing groups. */
@@ -1667,7 +1670,7 @@ export interface components {
             id: string;
             updated_at: components["schemas"]["DateTime"];
             /** Format: uuid */
-            credential_id: string;
+            channel_id: string;
             name: string;
             enabled: boolean;
             seats: (string | null)[];
@@ -2214,6 +2217,10 @@ export interface components {
             secret: string;
             status: string;
             expires_at: components["schemas"]["DateTimeNullable"];
+            /**
+             * @deprecated
+             * @description Compatibility metadata, not an authorization restriction. Active keys report all supported formats; access is determined by logical-channel grants and enabled operation routes.
+             */
             allowed_api_formats: components["schemas"]["ApiFormat"][];
             permissions: string[];
             allowed_group_ids: string[];
@@ -2230,7 +2237,7 @@ export interface components {
             user_id: string;
             user_status: string;
         };
-        /** @description Group and logical-channel selectors with a fixed capability grant set. Retained selectors never expand during edits; new capabilities require explicit reauthorization. */
+        /** @description Group and logical-channel selectors with a fixed logical-channel grant set. A newly selected group expands only to its current channels; retained groups never acquire later members. All current and future capabilities of each granted channel share that authorization. Group-origin grants require continued membership in that group. */
         ApiKeyPolicyView: {
             /** Format: uuid */
             id: string;
@@ -2247,25 +2254,23 @@ export interface components {
             policy_name: string | null;
             /** @description Whether the resolved user/group API Key Policy currently contributes ordinary targets. */
             policy_enabled: boolean;
-            /** @description Logical Codex credentials selectable because the current user occupies an explicit sharing seat; independent of API Key Policy. */
-            sharing_credentials: components["schemas"]["SelfApiKeySharingCredentialOption"][];
-            /** @description Ordinary groups contributed by the enabled API Key Policy; sharing-only groups and groups with no ordinary channel are excluded. */
+            /** @description Logical channels selectable because the current user occupies an explicit sharing seat; independent of API Key Policy. */
+            sharing_channels: components["schemas"]["SelfApiKeySharingChannelOption"][];
+            /** @description Ordinary groups contributed by the enabled API Key Policy; groups with no ordinary channel are excluded. */
             groups: components["schemas"]["SelfApiKeyGroupOption"][];
             /** @description Ordinary individual channels contributed by the enabled API Key Policy; sharing credentials and protected aliases are excluded. */
             channels: components["schemas"]["SelfApiKeyChannelOption"][];
         };
-        SelfApiKeySharingCredentialOption: {
+        SelfApiKeySharingChannelOption: {
             /** Format: uuid */
-            credential_id: string;
+            channel_id: string;
+            channel_name: string;
             /** Format: uuid */
             sharing_group_id: string;
             /** @description Administrator-defined sharing-group name; provider identity remains private. */
             name: string;
-            /** @description Whether the sharing group is enabled; disabled credentials may still be preselected on a Key. */
+            /** @description Combined channel, group, access, credential and car availability. Authorization covers this channel's current and future capabilities, subject to sharing admission; unmetered operations remain rejected. */
             enabled: boolean;
-            /** @description Canonical logical channels owned by this credential. Selecting one fixes its current billable capability set; standalone search is excluded. */
-            channel_ids: string[];
-            api_formats: components["schemas"]["ApiFormat"][];
         };
         SelfApiKeyGroupOption: {
             /** Format: uuid */
@@ -2406,8 +2411,6 @@ export interface components {
             id: string;
             name: string;
             enabled: boolean;
-            /** @description Codex-only. When set, every live member channel must use the Codex OAuth connector. */
-            sharing_only: boolean;
             created_at: components["schemas"]["DateTime"];
             updated_at: components["schemas"]["DateTime"];
             /** Format: date-time */
@@ -2416,11 +2419,6 @@ export interface components {
         RoutingGroupInput: {
             name: string;
             enabled: boolean;
-            /**
-             * @description Codex-only; rejected unless every live member channel uses the Codex OAuth connector.
-             * @default false
-             */
-            sharing_only: boolean;
         };
         LogicalChannelView: {
             /** Format: uuid */
@@ -2436,6 +2434,8 @@ export interface components {
             credential_id: string | null;
             name: string;
             enabled: boolean;
+            /** @description Only valid for a connector with sharing support. Protects the channel and recognized account aliases; it does not grant seats or create a car. */
+            sharing_only: boolean;
             /** Format: uuid */
             binding_revision: string;
             created_at: components["schemas"]["DateTime"];
@@ -2455,6 +2455,8 @@ export interface components {
             credential_id: string | null;
             name: string;
             enabled: boolean;
+            /** @description Channel-level policy. Disabling it never removes an existing car binding or its financial protection. */
+            sharing_only: boolean;
         };
         CapabilitySettings: {
             operation: components["schemas"]["ApiOperation"];
@@ -2543,6 +2545,7 @@ export interface components {
             /** Format: uuid */
             id: string;
             name: string;
+            connector_kind: components["schemas"]["ConnectorKind"];
             /** @enum {string} */
             kind: "bearer" | "header" | "codex_oauth";
             header_name: string | null;
@@ -2575,11 +2578,8 @@ export interface components {
         CodexCredentialView: {
             /** Format: uuid */
             id: string;
-            /**
-             * Format: uuid
-             * @description Canonical routing group owning the credential's Codex pool.
-             */
-            channel_group_id: string;
+            /** @description Live logical channels explicitly referencing this independent credential. */
+            channel_ids: string[];
             label: string;
             email: string | null;
             /** @description Optional ChatGPT workspace identifier. Personal credentials may omit it. */
@@ -2600,7 +2600,7 @@ export interface components {
             /**
              * @description Gateway-calculated USD cost of all priced requests routed through
              *     this logical credential during its current stored primary period,
-             *     across both Responses and Images projections. Null when no current
+             *     across all logical channels and operations. Null when no current
              *     primary period has been stored.
              */
             primary_window_cost_amount: components["schemas"]["DecimalNullable"];
@@ -2610,7 +2610,7 @@ export interface components {
             /**
              * @description Gateway-calculated USD cost of all priced requests routed through
              *     this logical credential during its current stored secondary period,
-             *     across both Responses and Images projections. Null when no current
+             *     across all logical channels and operations. Null when no current
              *     secondary period has been stored.
              */
             secondary_window_cost_amount: components["schemas"]["DecimalNullable"];
@@ -2678,11 +2678,8 @@ export interface components {
             id: string;
             /** @description Credential UUID rendered as a name; never the administrator label. */
             name: string;
-            /**
-             * Format: uuid
-             * @description Canonical routing group granting Codex quota visibility.
-             */
-            channel_group_id: string;
+            /** @description Referencing logical channels visible through the user's quota visibility groups. */
+            channel_ids: string[];
             /** @description Provider-reported subscription tier. */
             plan_type: string | null;
             primary_used_percent: number | null;
@@ -2690,8 +2687,8 @@ export interface components {
             primary_reset_at: components["schemas"]["DateTimeNullable"];
             /**
              * @description Credential-wide Gateway-calculated USD cost for the current stored
-             *     primary period. This includes every requesting user and both
-             *     Responses and Images projections; null means no stored period.
+             *     primary period. This includes every requesting user and logical
+             *     channel; null means no stored period.
              */
             primary_window_cost_amount: components["schemas"]["DecimalNullable"];
             secondary_used_percent: number | null;
@@ -2699,8 +2696,8 @@ export interface components {
             secondary_reset_at: components["schemas"]["DateTimeNullable"];
             /**
              * @description Credential-wide Gateway-calculated USD cost for the current stored
-             *     secondary period. This includes every requesting user and both
-             *     Responses and Images projections; null means no stored period.
+             *     secondary period. This includes every requesting user and logical
+             *     channel; null means no stored period.
              */
             secondary_window_cost_amount: components["schemas"]["DecimalNullable"];
             quota_checked_at: components["schemas"]["DateTimeNullable"];
@@ -2719,7 +2716,7 @@ export interface components {
             last_observed_at: components["schemas"]["DateTime"];
             /**
              * @description Credential-wide Gateway-calculated USD cost for this period,
-             *     including every requesting user and both managed projections.
+             *     including every requesting user and logical channel.
              */
             cost_amount: components["schemas"]["Decimal"];
         };
@@ -2728,8 +2725,7 @@ export interface components {
             credential_id: string;
             /** @description Credential UUID rendered as a name; never the administrator label. */
             name: string;
-            /** Format: uuid */
-            channel_group_id: string;
+            channel_ids: string[];
             plan_type: string | null;
             periods: components["schemas"]["SelfCodexQuotaWindowPeriod"][];
         };
@@ -2790,11 +2786,8 @@ export interface components {
             /** @enum {string} */
             type: "ai-gateway-codex-credentials";
             /** @enum {integer} */
-            version: 2;
+            version: 3;
             exported_at: components["schemas"]["DateTime"];
-            /** Format: uuid */
-            channel_group_id: string;
-            channel_group_name: string;
             proxies: components["schemas"]["CodexCredentialExportProxy"][];
             credentials: components["schemas"]["CodexCredentialExportItem"][];
         };
@@ -3422,7 +3415,11 @@ export interface components {
             /** Format: uuid */
             user_id: string;
             name: string;
-            allowed_api_formats: components["schemas"]["ApiFormat"][];
+            /**
+             * @deprecated
+             * @description Ignored compatibility input. Logical-channel authorization does not restrict individual capabilities or API formats.
+             */
+            allowed_api_formats?: components["schemas"]["ApiFormat"][];
             permissions: string[];
             allowed_group_ids: string[];
             allowed_channel_ids: string[];
@@ -3434,7 +3431,11 @@ export interface components {
         ApiKeyUpdateInput: {
             name: string;
             status: string;
-            allowed_api_formats: components["schemas"]["ApiFormat"][];
+            /**
+             * @deprecated
+             * @description Ignored compatibility input. Logical-channel authorization does not restrict individual capabilities or API formats.
+             */
+            allowed_api_formats?: components["schemas"]["ApiFormat"][];
             permissions: string[];
             allowed_group_ids: string[];
             allowed_channel_ids: string[];
@@ -6571,14 +6572,12 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                id: components["parameters"]["PathId"];
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Codex OAuth credentials in the shared connector pool selected by this format-specific channel group. */
+            /** @description Independent Codex credentials, including credentials not yet referenced by a channel. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -6595,9 +6594,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                id: components["parameters"]["PathId"];
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody: {
@@ -6615,7 +6612,7 @@ export interface operations {
                     "application/json": components["schemas"]["MutationResponse"];
                 };
             };
-            /** @description Credential validated and its format-specific managed channels created. */
+            /** @description Credential validated and created. No channel, capability or route is created. */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -6636,9 +6633,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                id: components["parameters"]["PathId"];
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody: {
@@ -6666,9 +6661,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                id: components["parameters"]["PathId"];
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody: {
@@ -6697,9 +6690,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                id: components["parameters"]["PathId"];
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody: {
@@ -6746,7 +6737,7 @@ export interface operations {
                     "application/json": components["schemas"]["MutationResponse"];
                 };
             };
-            /** @description Authorization code exchanged and format-specific managed channels created. */
+            /** @description Authorization code exchanged and an independent credential created. */
             201: {
                 headers: {
                     [name: string]: unknown;

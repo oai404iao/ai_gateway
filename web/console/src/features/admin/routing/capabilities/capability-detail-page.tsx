@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router";
+import { useParams, useSearchParams } from "react-router";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -54,6 +54,8 @@ import type {
   ChannelCapabilityInput,
   RequestCompression,
 } from "@/api/types";
+import { usePageOrigin, useReturnPath, withReturnTo } from "@/lib/page-navigation";
+import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
 
 const NONE = "__none__";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -109,10 +111,15 @@ const defaults: FormValues = {
   billing_multiplier: "1",
 };
 
-export function CapabilityDetailPage() {
-  const { id = "" } = useParams();
+export function CapabilityDetailPage({ capabilityId, channelId, embedded = false }: {
+  capabilityId?: string;
+  channelId?: string;
+  embedded?: boolean;
+} = {}) {
+  const { id: routeId = "" } = useParams();
+  const id = capabilityId ?? routeId;
   const isNew = id === "new";
-  const navigate = useNavigate();
+  const origin = usePageOrigin();
   const [params] = useSearchParams();
   const { t } = useI18n();
   const query = useChannelCapability(id);
@@ -129,12 +136,23 @@ export function CapabilityDetailPage() {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
-    defaultValues: { ...defaults, channel_id: params.get("channel") ?? defaults.channel_id },
+    defaultValues: { ...defaults, channel_id: channelId ?? params.get("channel") ?? defaults.channel_id },
   });
   const capability = query.data?.data;
   const selectedChannel = channels.data?.find((channel) => channel.id === form.watch("channel_id"));
   const selectedAccess = accesses.data?.find((access) => access.id === selectedChannel?.access_id);
   const busy = create.isPending || update.isPending || remove.isPending || recover.isPending;
+  const draft = useConfigurationDraft(busy, form.formState.isDirty);
+  const parentId = channelId ?? capability?.channel_id ?? params.get("channel");
+  const parentPath = parentId
+    ? `/admin/routing/logical-channels/${parentId}?view=capabilities`
+    : "/admin/routing/capabilities";
+  const returnTo = useReturnPath(parentPath);
+  const closeParams = new URLSearchParams(params);
+  closeParams.delete("capability");
+  const closePath = embedded
+    ? `/admin/routing/logical-channels/${channelId}?${closeParams}`
+    : returnTo;
   const channelNames = useMemo(
     () => new Map((channels.data ?? []).map((channel) => [channel.id, channel.name])),
     [channels.data],
@@ -208,10 +226,16 @@ export function CapabilityDetailPage() {
     try {
       if (isNew) {
         const result = await create.mutateAsync(input);
-        navigate(`/admin/routing/capabilities/${result.id}`, { replace: true });
+        draft.markSaved();
+        draft.navigate(withReturnTo(
+          `/admin/routing/logical-channels/${values.channel_id}?view=capabilities&capability=${result.id}`,
+          embedded ? origin : returnTo,
+        ), { replace: true });
       } else {
         await update.mutateAsync({ input, ifMatch: query.etag });
       }
+      form.reset(values);
+      draft.markSaved();
       toast.success(t("Capability saved"));
     } catch (error) {
       if (error instanceof ApiError && error.isConflict) {
@@ -227,7 +251,8 @@ export function CapabilityDetailPage() {
     try {
       await remove.mutateAsync({ ifMatch: query.etag });
       toast.success(t("Capability deleted"));
-      navigate(`/admin/routing/channels?channel=${form.getValues("channel_id")}`);
+      draft.markSaved();
+      draft.navigate(closePath, { replace: true });
     } catch (error) {
       toast.error(t(controlPlaneMutationErrorMessage(error, "Could not delete capability.")));
     }
@@ -248,24 +273,36 @@ export function CapabilityDetailPage() {
     }
   };
 
+  const deleteAction = isNew ? undefined : (
+    <div className="flex flex-col gap-3">
+      <p className="text-sm text-muted-foreground">
+        {t("Deleting this capability removes its routing candidates and disables rules left without candidates.")}
+      </p>
+      <Button type="button" variant="destructive" className="self-start" disabled={busy}
+        onClick={() => setConfirmingDelete(true)}>{t("Delete capability")}</Button>
+    </div>
+  );
+  const wrongChannel = Boolean(channelId && capability && capability.channel_id !== channelId);
+
   return (
     <>
       <AdminDetailShell
+        embedded={embedded}
         title={isNew ? t("New capability") : t("Channel capability")}
         description={t(
-          "Transports are fixed by the operation. Saving never grants API key access.",
+          "Transports are fixed by the operation. Authorization belongs to the logical channel.",
         )}
-        backPath={`/admin/routing/channels?channel=${form.watch("channel_id")}`}
+        backPath={returnTo}
         isLoading={!isNew && query.isLoading}
-        error={query.error}
-        hasData={isNew || Boolean(capability)}
-        saving={busy}
+        error={wrongChannel ? new Error(t("This capability belongs to another channel.")) : query.error}
+        hasData={!wrongChannel && (isNew || Boolean(capability))}
+        navigationGuard={draft.navigationGuard}
         editCard={
           <Card>
             <CardHeader>
               <CardTitle>{t("Capability settings")}</CardTitle>
               <CardDescription>
-                {t("Declared here; enabled, routed, and granted separately.")}
+                {t("Configure capabilities here; enable routing separately. Channel authorization covers all capabilities.")}
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -282,10 +319,10 @@ export function CapabilityDetailPage() {
               )}
               <form onSubmit={submit} className="flex flex-col gap-5">
                 <FieldGroup>
-                  <Field data-disabled={!isNew} data-invalid={Boolean(form.formState.errors.channel_id)}>
+                  <Field data-disabled={!isNew || Boolean(channelId)} data-invalid={Boolean(form.formState.errors.channel_id)}>
                     <FieldLabel htmlFor="capability-channel">{t("Logical channel")}</FieldLabel>
                     <Select
-                      disabled={!isNew}
+                      disabled={!isNew || Boolean(channelId)}
                       value={form.watch("channel_id") || NONE}
                       onValueChange={(value) =>
                         form.setValue("channel_id", value === NONE ? "" : value, {
@@ -500,33 +537,17 @@ export function CapabilityDetailPage() {
                   {t("Save capability")}
                 </Button>
               </form>
+              {embedded && deleteAction && <div className="mt-6">{deleteAction}</div>}
             </CardContent>
           </Card>
         }
-        dangerZone={
-          isNew ? undefined : (
-            <div className="flex flex-col gap-3">
-              <p className="text-sm text-muted-foreground">
-                {t("Routing candidates referencing this capability must be withdrawn first.")}
-              </p>
-              <Button
-                type="button"
-                variant="destructive"
-                className="self-start"
-                disabled={busy}
-                onClick={() => setConfirmingDelete(true)}
-              >
-                {t("Delete capability")}
-              </Button>
-            </div>
-          )
-        }
+        dangerZone={deleteAction}
       />
       <ConfirmDialog
         open={confirmingDelete}
         onOpenChange={setConfirmingDelete}
         title={t("Delete this capability?")}
-        description={t("The capability is soft-deleted after dependent routes are withdrawn.")}
+        description={t("This deletes the capability and all routing candidates referencing it. Empty route rules are disabled. Channel authorization and billing history are preserved.")}
         destructive
         confirmDisabled={busy}
         onConfirm={confirmDelete}

@@ -3,8 +3,8 @@
 use super::*;
 use crate::{
     persistence::{
-        AuthRepository, ControlPlaneMutation, RoutingGroupInput, SystemPassiveHealthSettingsInput,
-        SystemSettingsInput, SystemUpstreamSettingsInput, sqlite::SqliteDatabase,
+        AuthRepository, SystemPassiveHealthSettingsInput, SystemSettingsInput,
+        SystemUpstreamSettingsInput, sqlite::SqliteDatabase,
     },
     routing::{PassiveHealthPolicy, RoutingRuntime},
     runtime_config::compile_runtime_config,
@@ -55,28 +55,7 @@ async fn local_validation_precedes_intent_and_cancelled_http_remains_fenced() {
     })
     .await
     .unwrap();
-    let group = repo
-        .prepare_mutation(
-            admin,
-            ControlPlaneMutation::SaveRoutingGroup {
-                id: Uuid::new_v4(),
-                expected: None,
-                input: RoutingGroupInput {
-                    name: "Codex".into(),
-                    sharing_only: false,
-                    enabled: true,
-                },
-            },
-        )
-        .await
-        .unwrap()
-        .commit()
-        .await
-        .unwrap()
-        .0[0]
-        .id;
     let input = CodexCredentialCreate {
-        channel_group_id: group,
         label: "Fixture".into(),
         enabled: true,
         proxy_id: None,

@@ -202,6 +202,12 @@ async fn history_rebuild_preserves_rows_guards_and_rolls_back_as_one_transaction
         )
         .await
         .unwrap();
+        sqlx::raw_sql(include_str!(
+            "../../../migrations/sqlite/0007_logical_channel_authorization.sql"
+        ))
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
         assert_eq!(history_state(&mut transaction).await, original_state);
         if commit {
             transaction.commit().await.unwrap();

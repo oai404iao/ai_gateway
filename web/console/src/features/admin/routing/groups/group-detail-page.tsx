@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router";
+import { useParams } from "react-router";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -8,7 +8,7 @@ import { AdminDetailShell } from "@/features/admin/components/admin-detail-shell
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { ApiError, controlPlaneMutationErrorMessage } from "@/api/errors";
@@ -20,19 +20,20 @@ import {
 } from "@/features/admin/api";
 import { useI18n } from "@/app/i18n";
 import type { RoutingGroupInput } from "@/api/types";
+import { useReturnPath, withReturnTo } from "@/lib/page-navigation";
+import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
 
 const schema = z.object({
   name: z.string().trim().min(1).max(100),
   enabled: z.boolean(),
-  sharing_only: z.boolean(),
 });
 type FormValues = z.infer<typeof schema>;
-const defaults: FormValues = { name: "", enabled: true, sharing_only: false };
+const defaults: FormValues = { name: "", enabled: true };
 
 export function GroupDetailPage() {
   const { id = "" } = useParams();
   const isNew = id === "new";
-  const navigate = useNavigate();
+  const returnTo = useReturnPath("/admin/routing/channels?view=groups");
   const { t } = useI18n();
   const query = useRoutingGroup(id);
   const create = useCreateRoutingGroup();
@@ -42,13 +43,13 @@ export function GroupDetailPage() {
   const form = useForm<FormValues>({ resolver: zodResolver(schema), defaultValues: defaults });
   const group = query.data?.data;
   const busy = create.isPending || update.isPending || remove.isPending;
+  const { navigate, navigationGuard, markSaved } = useConfigurationDraft(busy, form.formState.isDirty);
 
   useEffect(() => {
     if (group) {
       form.reset({
         name: group.name,
         enabled: group.enabled,
-        sharing_only: group.sharing_only,
       });
     }
   }, [group, form]);
@@ -58,10 +59,13 @@ export function GroupDetailPage() {
     try {
       if (isNew) {
         const result = await create.mutateAsync(input);
-        navigate(`/admin/routing/groups/${result.id}`, { replace: true });
+        markSaved();
+        navigate(withReturnTo(`/admin/routing/groups/${result.id}`, returnTo), { replace: true });
       } else {
         await update.mutateAsync({ input, ifMatch: query.etag });
       }
+      form.reset(values);
+      markSaved();
       toast.success(t("Group saved"));
     } catch (error) {
       if (error instanceof ApiError && error.isConflict) {
@@ -77,7 +81,8 @@ export function GroupDetailPage() {
     try {
       await remove.mutateAsync({ ifMatch: query.etag });
       toast.success(t("Group deleted"));
-      navigate("/admin/routing/channels?view=groups");
+      markSaved();
+      navigate(returnTo, { replace: true });
     } catch (error) {
       toast.error(t(controlPlaneMutationErrorMessage(error, "Could not delete routing group.")));
     }
@@ -86,21 +91,15 @@ export function GroupDetailPage() {
   return (
     <>
       <AdminDetailShell
-        title={isNew ? t("New group") : group?.name ?? t("Routing group")}
+        title={isNew ? t("New group") : group?.name ?? t("Channel group")}
         description={t(
           "Groups organize logical channels. Deleting a group requires every member channel to be removed first.",
         )}
-        backPath="/admin/routing/channels?view=groups"
+        backPath={returnTo}
         isLoading={!isNew && query.isLoading}
         error={query.error}
         hasData={isNew || Boolean(group)}
-        saving={busy}
-        headerActions={!isNew && group ? (
-          <Button type="button" variant="outline"
-            onClick={() => navigate(`/admin/providers/codex-oauth/${group.id}`)}>
-            {t("Codex credentials")}
-          </Button>
-        ) : undefined}
+        navigationGuard={navigationGuard}
         editCard={
           <Card>
             <CardHeader>
@@ -130,21 +129,6 @@ export function GroupDetailPage() {
                         form.setValue("enabled", value, { shouldDirty: true })
                       }
                     />
-                  </Field>
-                  <Field>
-                    <FieldLabel htmlFor="group-sharing">{t("Sharing only")}</FieldLabel>
-                    <Switch
-                      id="group-sharing"
-                      checked={form.watch("sharing_only")}
-                      onCheckedChange={(value) =>
-                        form.setValue("sharing_only", value, { shouldDirty: true })
-                      }
-                    />
-                    <FieldDescription>
-                      {t(
-                        "Codex-only. Rejected unless every live member channel uses the Codex OAuth connector.",
-                      )}
-                    </FieldDescription>
                   </Field>
                 </FieldGroup>
                 <Button type="submit" disabled={busy}>

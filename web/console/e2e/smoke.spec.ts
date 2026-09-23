@@ -13,7 +13,7 @@ import {
 } from "./mock-api";
 
 test.describe("Console SPA smoke", () => {
-  test("model setup links the focused pricing, channel, and routing views", async ({
+  test("legacy model setup redirects to the single model workspace", async ({
     page,
   }) => {
     await mockConsoleApi(page);
@@ -24,18 +24,14 @@ test.describe("Console SPA smoke", () => {
     await page.getByRole("button", { name: /sign in/i }).click();
     await page.goto("/admin/model-setup");
 
-    await expect(page).toHaveURL(/\/admin\/model-setup$/);
+    await expect(page).toHaveURL(/\/admin\/models$/);
     await expect(
-      page.getByRole("heading", { name: "Model setup" }),
+      page.getByRole("heading", { name: "Model configuration", level: 1 }),
     ).toBeVisible();
-    await expect(page.getByText("1. Pricing models")).toBeVisible();
-    await expect(page.getByText("2. Channels")).toBeVisible();
-    await expect(page.getByText("3. Model rules")).toBeVisible();
-    await page.getByRole("button", { name: "Manage routing" }).click();
-    await expect(page).toHaveURL(/\/admin\/routing\/operation-rules$/);
-    await expect(
-      page.getByRole("heading", { name: "Operation rules" }),
-    ).toBeVisible();
+    await expect(page.getByRole("heading", { level: 1 })).toHaveCount(1);
+    await expect(page.getByRole("navigation", { name: "Model routing configuration" })).toHaveCount(0);
+    await page.getByRole("tab", { name: "Price sync" }).click();
+    await expect(page.getByRole("heading", { level: 1 })).toHaveCount(1);
   });
 
   test("model pricing has prominent entry points and a weekday-aware two-column workspace", async ({
@@ -50,13 +46,13 @@ test.describe("Console SPA smoke", () => {
     await page.goto("/admin/models");
     await page.getByRole("button", { name: new RegExp(E2E_MODEL.display_name) }).click();
 
-    const pricingAction = page.getByRole("button", {
+    const pricingAction = page.getByRole("link", {
       name: "Configure pricing",
     });
     await expect(pricingAction).toBeVisible();
     await pricingAction.click();
     await expect(page).toHaveURL(
-      new RegExp(`/admin/models/${E2E_MODEL.id}/pricing$`),
+      new RegExp(`/admin/models/${E2E_MODEL.id}/pricing\\?returnTo=`),
     );
 
     const basePrices = page.getByText("Base prices", { exact: true });
@@ -92,9 +88,9 @@ test.describe("Console SPA smoke", () => {
     await page.getByRole("button", { name: /sign in/i }).click();
     await page.goto(`/admin/models/${E2E_MODEL.id}`);
 
-    await page.getByRole("button", { name: "Delete pricing model" }).click();
+    await page.getByRole("button", { name: "Delete client model" }).click();
     const dialog = page.getByRole("alertdialog", {
-      name: "Delete pricing model?",
+      name: "Delete client model?",
     });
     await expect(
       dialog.getByText(/clears scheduled test pricing references/i),
@@ -105,13 +101,13 @@ test.describe("Console SPA smoke", () => {
         request.method() === "DELETE",
     );
     await dialog
-      .getByRole("button", { name: "Delete pricing model" })
+      .getByRole("button", { name: "Delete client model" })
       .click();
 
     const request = await deleteRequest;
     expect(request.headers()["if-match"]).toBe(`"${E2E_MODEL.updated_at}"`);
     await expect(page).toHaveURL(/\/admin\/models$/);
-    await expect(page.getByText("Pricing model deleted")).toBeVisible();
+    await expect(page.getByText("Client model deleted")).toBeVisible();
   });
 
   test("login page renders and a successful login reaches the account shell", async ({
@@ -251,7 +247,7 @@ test.describe("Console SPA smoke", () => {
     await page.getByRole("button", { name: /sign in/i }).click();
     await page.getByRole("link", { name: "API Keys" }).click();
     await page.getByText(E2E_API_KEY.name, { exact: true }).click();
-    await expect(page).toHaveURL(new RegExp(`/api-keys/${E2E_API_KEY.id}$`));
+    await expect(page).toHaveURL(new RegExp(`/api-keys/${E2E_API_KEY.id}\\?returnTo=`));
 
     await page.getByRole("button", { name: "Delete API key" }).click();
     const deleteRequest = page.waitForRequest(
@@ -544,7 +540,9 @@ test.describe("Console SPA smoke", () => {
 
     await expect(page).toHaveURL(/\/admin\/routing\/channels$/);
     await expect(page.getByRole("heading", { name: "Logical channels" })).toBeVisible();
-    await expect(page.getByText("Personal Plus", { exact: true })).toHaveCount(1);
+    await expect(page.getByRole("row").filter({
+      has: page.getByRole("cell", { name: "Personal Plus", exact: true }),
+    })).toHaveCount(1);
     await page.goto(`/admin/routing/groups/${E2E_ROUTING_GROUP_ID}`);
     await expect(page.getByLabel("Name", { exact: true })).toHaveValue("Standard group");
     const disableRequest = page.waitForRequest(
@@ -561,7 +559,6 @@ test.describe("Console SPA smoke", () => {
     );
     expect(disable.postDataJSON()).toEqual({
       name: "Standard group",
-      sharing_only: false,
       enabled: false,
     });
     await page.setViewportSize({ width: 390, height: 844 });
@@ -587,17 +584,15 @@ test.describe("Console SPA smoke", () => {
     await page.evaluate((path) => {
       window.history.pushState({}, "", path);
       window.dispatchEvent(new PopStateEvent("popstate"));
-    }, `/admin/routing/groups/${E2E_CODEX_GROUP_ID}`);
-    await page.getByRole("button", { name: "Codex credentials" }).click();
-    await expect(page).toHaveURL(
-      new RegExp(`/admin/providers/codex-oauth/${E2E_CODEX_GROUP_ID}$`),
-    );
+    }, "/admin/routing/upstream-credentials");
+    await page.getByRole("tab", { name: "Codex", exact: true }).click();
+    await expect(page).toHaveURL(/\/admin\/routing\/upstream-credentials\?connector=codex$/);
 
     await expect(
-      page.getByRole("heading", { name: "Codex subscriptions" }),
+      page.getByRole("heading", { name: "Upstream credentials" }),
     ).toBeVisible();
     await expect(
-      page.getByRole("button", { name: "Back to groups" }),
+      page.getByRole("button", { name: "Connect account" }),
     ).toBeVisible();
     await expect(page.getByText("Personal Plus")).toBeVisible();
     await expect(page.getByText("96% used")).toBeVisible();
@@ -652,7 +647,7 @@ test.describe("Console SPA smoke", () => {
     const refresh = page.waitForRequest(
       (request) =>
         request.url().endsWith(
-          `/console/v1/providers/codex-oauth/credentials/${E2E_CODEX_CREDENTIAL_ID}/quota/refresh`,
+          `/console/v1/routing/upstream-credentials/codex/${E2E_CODEX_CREDENTIAL_ID}/quota/refresh`,
         ) && request.method() === "POST",
     );
     await quotaButton.click();
@@ -662,7 +657,7 @@ test.describe("Console SPA smoke", () => {
     const reset = page.waitForRequest(
       (request) =>
         request.url().endsWith(
-          `/console/v1/providers/codex-oauth/credentials/${E2E_CODEX_CREDENTIAL_ID}/quota/reset`,
+          `/console/v1/routing/upstream-credentials/codex/${E2E_CODEX_CREDENTIAL_ID}/quota/reset`,
         ) && request.method() === "POST",
     );
     await resetButton.click();
@@ -678,7 +673,7 @@ test.describe("Console SPA smoke", () => {
     const batch = page.waitForRequest(
       (request) =>
         request.url().endsWith(
-          `/console/v1/providers/codex-oauth/channel-groups/${E2E_CODEX_GROUP_ID}/credentials/batch`,
+          "/console/v1/routing/upstream-credentials/codex/batch",
         ) && request.method() === "POST",
     );
     await page.getByRole("button", { name: "Disable" }).click();
@@ -782,6 +777,7 @@ test.describe("Console SPA smoke", () => {
       "Tokens",
       "Cost",
       "Duration",
+      "View details",
     ]);
     await expect(page.getByText("Responses", { exact: true })).toBeVisible();
     await expect(page.getByText("upstream-a", { exact: true })).toHaveCount(0);
@@ -860,6 +856,7 @@ test.describe("Console SPA smoke", () => {
       "Tokens",
       "Cost",
       "Duration",
+      "View details",
     ]);
     await expect(page.getByRole("cell", { name: "upstream-a" })).toBeVisible();
     await expect(page.getByRole("cell", { name: "Batch User" })).toBeVisible();
@@ -933,16 +930,16 @@ test.describe("Console SPA smoke", () => {
     await page.getByRole("button", { name: "New API key" }).click();
 
     await page.getByLabel(/^name$/i).fill("browser key");
-    await expect(page.getByText("Sharing credentials", { exact: true })).toBeVisible();
+    await expect(page.getByText("Sharing channels", { exact: true })).toBeVisible();
     await expect(page.getByText("API Key Policy targets", { exact: true })).toBeVisible();
     await expect(
-      page.getByRole("checkbox", { name: "Development car" }),
+      page.getByRole("checkbox", { name: "Personal Plus", exact: true }),
     ).toBeVisible();
     await expect(
       page.getByRole("checkbox", { name: "upstream-a (chat-primary)" }),
     ).toHaveCount(0);
     await expect(
-      page.getByRole("checkbox", { name: "images-disabled (Images)" }),
+      page.getByRole("checkbox", { name: "images-disabled" }),
     ).toHaveCount(0);
     const showDisabled = page.getByRole("checkbox", {
       name: /Show disabled targets/,
@@ -950,7 +947,7 @@ test.describe("Console SPA smoke", () => {
     await expect(showDisabled).toBeEnabled();
     await showDisabled.click();
     await expect(
-      page.getByRole("checkbox", { name: "images-disabled (Images)" }),
+      page.getByRole("checkbox", { name: "images-disabled" }),
     ).toHaveAttribute("aria-disabled", "true");
     await page
       .getByRole("button", { name: "Show individual channels (2)" })
@@ -964,7 +961,7 @@ test.describe("Console SPA smoke", () => {
       }),
     ).toHaveAttribute("aria-disabled", "true");
     await page
-      .getByRole("checkbox", { name: "chat-primary (Chat Completions)" })
+      .getByRole("checkbox", { name: "chat-primary", exact: true })
       .check();
     await page.getByLabel("Requests / minute").fill("45");
     await page.getByLabel("Max concurrent requests").fill("3");
@@ -1070,7 +1067,7 @@ test.describe("Console SPA smoke", () => {
     await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
     await page.getByRole("button", { name: /sign in/i }).click();
     await page.getByRole("link", { name: "Registration Codes" }).click();
-    await page.getByRole("button", { name: "New registration code" }).click();
+    await page.getByRole("link", { name: "New registration code" }).click();
 
     await page.getByLabel("Name").fill("Community launch");
     await page.getByLabel("Invitation code").fill("COMMUNITY-ACCESS-2026");

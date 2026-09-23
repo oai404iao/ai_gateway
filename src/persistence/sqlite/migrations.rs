@@ -209,7 +209,10 @@ pub(super) async fn run(
         migration.version == 6
             && migration.description == "six operation routing and connector names"
     });
-    if capability_cutover || operation_split {
+    let credential_ownership = migrations.iter().any(|migration| {
+        migration.version == 8 && migration.description == "channel owned credentials and sharing"
+    });
+    if capability_cutover || operation_split || credential_ownership {
         sqlx::query("PRAGMA foreign_keys=OFF")
             .execute(&mut *connection)
             .await?;
@@ -255,6 +258,12 @@ pub(super) async fn run(
                 }
             }
         }
+        if credential_ownership && migration.version == 8 {
+            crate::persistence::capability_cutover::credential_ownership::sqlite_prepare(
+                &mut transaction,
+            )
+            .await?;
+        }
         sqlx::Executor::execute(
             &mut *transaction,
             sqlx::AssertSqlSafe(migration.sql.to_owned()),
@@ -268,6 +277,13 @@ pub(super) async fn run(
                 &mut transaction,
             )
             .await?;
+        }
+        if credential_ownership && migration.version == 8 {
+            crate::persistence::upstream_topology::sqlite_load_control_plane(&mut transaction)
+                .await
+                .map_err(
+                    crate::persistence::capability_cutover::io::CapabilityCutoverIoError::from,
+                )?;
         }
         if rollback_observed.load(Ordering::Acquire) {
             return Err(SqliteMigrationError::InvalidManifest);
@@ -287,7 +303,7 @@ pub(super) async fn run(
     if check_identity(&mut transaction).await? != Some(database_id) {
         return Err(SqliteOpenError::ForeignDatabase.into());
     }
-    if (capability_cutover || operation_split)
+    if (capability_cutover || operation_split || credential_ownership)
         && sqlx::query("PRAGMA foreign_key_check")
             .fetch_optional(&mut *transaction)
             .await?

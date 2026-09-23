@@ -13,25 +13,21 @@ const GROUPS: RoutingTargetGroup[] = [
   {
     id: "chat-later",
     name: "chat-later",
-    api_format: "open_ai_chat_completions",
     enabled: true,
   },
   {
     id: "images-disabled",
     name: "images-disabled",
-    api_format: "open_ai_images",
     enabled: false,
   },
   {
     id: "responses",
     name: "responses",
-    api_format: "open_ai_responses",
     enabled: true,
   },
   {
     id: "chat-first",
     name: "chat-first",
-    api_format: "open_ai_chat_completions",
     enabled: true,
   },
 ];
@@ -43,7 +39,6 @@ const CHANNELS: RoutingTargetChannel[] = [
     channel_group_name: "chat-first",
     channel_group_enabled: true,
     name: "channel-enabled",
-    api_format: "open_ai_chat_completions",
     enabled: true,
     auto_disabled: false,
   },
@@ -53,7 +48,6 @@ const CHANNELS: RoutingTargetChannel[] = [
     channel_group_name: "hidden-disabled-group",
     channel_group_enabled: false,
     name: "channel-disabled",
-    api_format: "open_ai_responses",
     enabled: true,
     auto_disabled: false,
   },
@@ -103,7 +97,7 @@ function DegradedRoutingHarness() {
 }
 
 describe("RoutingTargetFields", () => {
-  it("selects a multi-format logical target once without inventing per-format IDs", async () => {
+  it("selects logical targets without format labels or per-format IDs", async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();
     render(
@@ -111,13 +105,11 @@ describe("RoutingTargetFields", () => {
         <RoutingTargetFields
           groups={[{
             id: "mixed-group", name: "Mixed group", enabled: true,
-            api_formats: ["open_ai_responses", "open_ai_images"],
           }]}
           channels={[{
             id: "logical", name: "Logical channel", channel_group_id: "mixed-group",
             channel_group_name: "Mixed group", channel_group_enabled: true,
             enabled: true, auto_disabled: false,
-            api_formats: ["open_ai_responses", "open_ai_images"],
           }]}
           selectedGroupIds={[]}
           selectedChannelIds={[]}
@@ -125,7 +117,8 @@ describe("RoutingTargetFields", () => {
         />
       </I18nProvider>,
     );
-    const group = screen.getAllByRole("checkbox", { name: "Mixed group (Responses / Images)" });
+    expect(screen.queryByText(/Responses|Images|Chat Completions/)).not.toBeInTheDocument();
+    const group = screen.getAllByRole("checkbox", { name: "Mixed group" });
     expect(group).toHaveLength(1);
     await user.click(group[0]!);
     expect(onChange).toHaveBeenLastCalledWith(["mixed-group"], []);
@@ -146,15 +139,15 @@ describe("RoutingTargetFields", () => {
 
     const groupCheckboxes = screen
       .getAllByRole("checkbox")
-      .filter((checkbox) => checkbox.getAttribute("aria-label")?.includes("("));
+      .filter((checkbox) => checkbox.getAttribute("aria-label"));
     expect(groupCheckboxes.map((checkbox) => checkbox.getAttribute("aria-label"))).toEqual([
-      "chat-first (Chat Completions)",
-      "chat-later (Chat Completions)",
-      "responses (Responses)",
+      "chat-first",
+      "chat-later",
+      "responses",
     ]);
     expect(screen.queryByText("Priority")).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("checkbox", { name: "images-disabled (Images)" }),
+      screen.queryByRole("checkbox", { name: "images-disabled" }),
     ).not.toBeInTheDocument();
     expect(
       screen.queryByRole("checkbox", {
@@ -182,7 +175,7 @@ describe("RoutingTargetFields", () => {
 
     await user.click(screen.getByRole("checkbox", { name: "Show disabled targets (2)" }));
     expect(
-      screen.getByRole("checkbox", { name: "images-disabled (Images)" }),
+      screen.getByRole("checkbox", { name: "images-disabled" }),
     ).toHaveAttribute("aria-disabled", "true");
     expect(
       screen.getByRole("checkbox", {
@@ -201,7 +194,7 @@ describe("RoutingTargetFields", () => {
 
     await user.click(screen.getByRole("checkbox", { name: "Show disabled targets (2)" }));
     const disabledGroup = screen.getByRole("checkbox", {
-      name: "images-disabled (Images)",
+      name: "images-disabled",
     });
     expect(disabledGroup).not.toBeDisabled();
     await user.click(disabledGroup);

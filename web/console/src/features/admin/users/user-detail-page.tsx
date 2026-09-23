@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router";
+import { useParams } from "react-router";
+import { useReturnPath } from "@/lib/page-navigation";
+import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
 import { Controller, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -103,7 +105,7 @@ function isManageableStatus(value: string): value is ManageableStatus {
 
 export function UserDetailPage() {
   const { id = "" } = useParams();
-  const navigate = useNavigate();
+  const returnTo = useReturnPath("/admin/users");
   const { data, etag, isLoading, error, refetch } = useUser(id);
   const update = useUpdateUser(id);
   const remove = useDeleteUser(id);
@@ -160,6 +162,11 @@ export function UserDetailPage() {
     defaultValues: emptyStatusValues,
     values: statusValues,
   });
+  const draft = useConfigurationDraft(
+    submitting !== null || remove.isPending,
+    accountForm.formState.isDirty || balanceForm.formState.isDirty ||
+      statusForm.formState.isDirty || Boolean(user && websocketEnabled !== user.websocket_enabled),
+  );
 
   const applyUpdate = async ({
     action,
@@ -179,6 +186,7 @@ export function UserDetailPage() {
       await update.mutateAsync({ input, ifMatch: etag });
       if (currentUser?.id === id) {
         if (invalidatesCurrentSession) {
+          draft.markSaved();
           toast.success(t("Account updated. Sign in again to continue."));
           clearSession();
           return;
@@ -324,7 +332,8 @@ export function UserDetailPage() {
     try {
       await remove.mutateAsync({ ifMatch: etag });
       toast.success(t("User deleted"));
-      navigate("/admin/users", { replace: true });
+      draft.markSaved();
+      draft.navigate(returnTo, { replace: true });
     } catch (error) {
       if (error instanceof ApiError && error.code === "cannot_delete_self") {
         toast.error(t("You cannot delete your own administrator account."));
@@ -357,7 +366,8 @@ export function UserDetailPage() {
       <AdminDetailShell
       title={user?.display_name ?? t("User")}
       description={t("Manage identity, policy, balance, and access independently.")}
-      backPath="/admin/users"
+      backPath={returnTo}
+      navigationGuard={draft.navigationGuard}
       backLabel={t("Back to users")}
       isLoading={isLoading || policies.isLoading || groups.isLoading}
       error={error ?? policies.error ?? groups.error}
@@ -370,7 +380,7 @@ export function UserDetailPage() {
               <CardDescription>{t("Current account facts and activation state.")}</CardDescription>
             </CardHeader>
             <CardContent>
-              <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <dl className="grid grid-cols-1 gap-4">
                 <DetailField label={t("Email")} value={user.email ?? "—"} />
                 <DetailField label={t("Role")} value={<StatusBadge value={user.role} />} />
                 <DetailField label={t("Status")} value={<StatusBadge value={user.status} />} />

@@ -357,6 +357,8 @@ fn add_grants(
 }
 
 pub mod activation;
+pub mod channel_authorization;
+pub mod credential_ownership;
 pub mod history;
 pub mod io;
 pub mod legacy_settings;

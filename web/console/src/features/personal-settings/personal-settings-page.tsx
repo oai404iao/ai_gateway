@@ -25,12 +25,15 @@ import {
   useUserSettings,
 } from "@/features/personal-settings/api";
 import { useI18n } from "@/app/i18n";
+import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
 
 export function PersonalSettingsPage() {
   const { t } = useI18n();
   const settings = useUserSettings();
   const update = useUpdateUserSettings();
   const [websocketEnabled, setWebsocketEnabled] = useState(false);
+  const draft = useConfigurationDraft(update.isPending,
+    Boolean(settings.data && websocketEnabled !== settings.data.websocket_enabled));
 
   useEffect(() => {
     if (settings.data) {
@@ -41,6 +44,7 @@ export function PersonalSettingsPage() {
   const save = async () => {
     try {
       await update.mutateAsync({ websocket_enabled: websocketEnabled });
+      draft.markSaved();
       toast.success(t("Personal settings saved."));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t("Save failed"));
@@ -49,6 +53,7 @@ export function PersonalSettingsPage() {
 
   return (
     <div className="flex flex-col gap-6">
+      {draft.navigationGuard}
       <PageHeader
         title={t("Personal settings")}
         description={t("Control optional forwarding capabilities for your account.")}

@@ -2,15 +2,63 @@
 
 use std::collections::HashSet;
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::domain::{ApiOperation, CapabilityTransport, ConnectorKind, RequestCompression};
 
-pub type Topology =
-    crate::persistence::upstream_topology::UpstreamTopologyRecords<CapabilitySettings>;
+pub type Topology = crate::persistence::upstream_topology::UpstreamTopologyRecords<
+    CapabilitySettings,
+    crate::persistence::upstream_topology::ApiKeyCapabilityGrantRecord,
+    crate::persistence::upstream_topology::ApiKeyPolicyCapabilityGrantRecord,
+    RoutingGroupRecord,
+    LogicalChannelRecord,
+>;
+pub type SixOperationTopology = crate::persistence::upstream_topology::UpstreamTopologyRecords<
+    crate::domain::CapabilitySettings,
+    crate::persistence::upstream_topology::ApiKeyCapabilityGrantRecord,
+    crate::persistence::upstream_topology::ApiKeyPolicyCapabilityGrantRecord,
+    RoutingGroupRecord,
+    LogicalChannelRecord,
+>;
+pub type ChannelAuthorizationTopology =
+    crate::persistence::upstream_topology::UpstreamTopologyRecords<
+        crate::domain::CapabilitySettings,
+        crate::persistence::upstream_topology::ApiKeyChannelGrantRecord,
+        crate::persistence::upstream_topology::ApiKeyPolicyChannelGrantRecord,
+        RoutingGroupRecord,
+        LogicalChannelRecord,
+    >;
 pub type Capability =
     crate::persistence::upstream_topology::ChannelCapabilityRecord<CapabilitySettings>;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoutingGroupRecord {
+    pub id: Uuid,
+    pub name: String,
+    pub enabled: bool,
+    pub sharing_only: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub deleted_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LogicalChannelRecord {
+    pub id: Uuid,
+    pub group_id: Uuid,
+    pub access_id: Uuid,
+    pub credential_id: Option<Uuid>,
+    pub name: String,
+    pub enabled: bool,
+    pub binding_revision: Uuid,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub deleted_at: Option<DateTime<Utc>>,
+}
 
 pub fn operation_name(operation: ApiOperation) -> &'static str {
     match operation {

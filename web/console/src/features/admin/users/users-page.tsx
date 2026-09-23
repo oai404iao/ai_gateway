@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
+import { usePageOrigin, withReturnTo } from "@/lib/page-navigation";
+import { useListPagination } from "@/lib/use-list-pagination";
 import { Controller, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -49,6 +51,8 @@ import type { ControlPlaneUser, UserRole } from "@/api/types";
 
 export function UsersPage() {
   const navigate = useNavigate();
+  const origin = usePageOrigin();
+  const pagination = useListPagination();
   const users = useUsers();
   const groups = useUserGroups();
   const policies = useApiKeyPolicies();
@@ -276,7 +280,7 @@ export function UsersPage() {
         <Card>
           <CardHeader>
             <CardTitle>{t("Users")}</CardTitle>
-            <CardDescription>{t("Click a row to view or edit.")}</CardDescription>
+            <CardDescription>{t("Select a name to view or edit.")}</CardDescription>
           </CardHeader>
           <CardContent>
             <AsyncResource
@@ -290,7 +294,10 @@ export function UsersPage() {
                 columns={columns}
                 rows={users.data ?? []}
                 rowKey={(user) => user.id}
-                onRowClick={(user) => navigate(`/admin/users/${user.id}`)}
+                linkColumnKey="name"
+                rowHref={(user) => withReturnTo(`/admin/users/${user.id}`, origin)}
+                onRowClick={(user) => navigate(withReturnTo(`/admin/users/${user.id}`, origin))}
+                pagination={pagination}
               />
             </AsyncResource>
           </CardContent>

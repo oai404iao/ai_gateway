@@ -14,6 +14,7 @@
 - [控制面软删除](soft-deletion.md)：不可恢复墓碑语义、自动解绑边界和三阶段实施记录。
 - [Console 认证与授权设计记录](console-auth.md)
 - [Console Web UI 架构与开发指南](console-ui.md)：当前 Base UI 技术栈、会话、安全、构建和测试。
+- [Console 导航与页面交互规范](console-interaction-standard.md)：父级返回、列表、详情布局、草稿和历史入口。
 - [请求日志耐久化流水线](request-log-durability.md)
 - [持久化行为契约基线](persistence-contracts.md)：金额、结算原子性、重放、约束测试和费用读写路径；
   明确独立计量事实实施前的已知限制。

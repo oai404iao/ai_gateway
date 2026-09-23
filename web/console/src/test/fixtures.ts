@@ -244,20 +244,20 @@ export const ADMIN_API_KEY: AdminApiKeyView = {
 
 export const CHANNEL_GROUP: RoutingGroupView = {
   id: "00000000-0000-0000-0000-000000000021", name: "chat-primary",
-  enabled: true, sharing_only: false, deleted_at: null,
+  enabled: true, deleted_at: null,
   created_at: "2026-01-02T00:00:00.000Z", updated_at: "2026-01-02T00:00:00.000Z",
 };
 
 export const CODEX_QUOTA_GROUP: RoutingGroupView = {
   id: "00000000-0000-0000-0000-00000000c001", name: "Codex subscriptions",
-  enabled: true, sharing_only: false, deleted_at: null,
+  enabled: true, deleted_at: null,
   created_at: "2026-08-03T00:00:00.000Z", updated_at: "2026-08-03T00:00:00.000Z",
 };
 
 export const OWN_CODEX_QUOTA: SelfCodexQuotaCredentialView = {
   id: "00000000-0000-0000-0000-00000000c010",
   name: "00000000-0000-0000-0000-00000000c010",
-  channel_group_id: CODEX_QUOTA_GROUP.id,
+  channel_ids: ["00000000-0000-0000-0000-00000000c011"],
   plan_type: "plus",
   primary_used_percent: 42,
   primary_window_seconds: 10_800,
@@ -273,7 +273,7 @@ export const OWN_CODEX_QUOTA: SelfCodexQuotaCredentialView = {
 export const OWN_CODEX_QUOTA_HISTORY: SelfCodexQuotaWindowHistory = {
   credential_id: OWN_CODEX_QUOTA.id,
   name: OWN_CODEX_QUOTA.name,
-  channel_group_id: CODEX_QUOTA_GROUP.id,
+  channel_ids: OWN_CODEX_QUOTA.channel_ids,
   plan_type: OWN_CODEX_QUOTA.plan_type,
   periods: [
     {
@@ -295,7 +295,7 @@ export const OWN_CODEX_QUOTA_HISTORY: SelfCodexQuotaWindowHistory = {
 export const CHANNEL: LogicalChannelView = {
   id: "00000000-0000-0000-0000-000000000022", group_id: CHANNEL_GROUP.id,
   access_id: UPSTREAM_ACCESS.id, credential_id: "00000000-0000-0000-0000-000000000023",
-  name: "upstream-a", enabled: true, deleted_at: null,
+  name: "upstream-a", enabled: true, sharing_only: false, deleted_at: null,
   binding_revision: "00000000-0000-0000-0000-000000000024",
   created_at: "2026-01-02T00:00:00.000Z", updated_at: "2026-01-02T00:00:00.000Z",
 };
@@ -303,6 +303,7 @@ export const CHANNEL: LogicalChannelView = {
 export const UPSTREAM_CREDENTIAL = {
   id: CHANNEL.credential_id!,
   name: "Shared upstream identity",
+  connector_kind: "general" as const,
   kind: "bearer" as const,
   header_name: null,
   allowed_base_urls: [UPSTREAM_ACCESS.base_url],
@@ -319,7 +320,7 @@ export const API_KEY_OPTIONS: SelfApiKeyOptions = {
   policy_id: API_KEY_POLICY.id,
   policy_name: API_KEY_POLICY.name,
   policy_enabled: true,
-  sharing_credentials: [],
+  sharing_channels: [],
   groups: [
     {
       id: CHANNEL_GROUP.id,
@@ -867,7 +868,7 @@ export const SYSTEM_LOAD_REPORT: SystemLoadReport = {
 export const SHARING_GROUP: CodexSharingGroup = {
   id: "00000000-0000-0000-0000-000000000801",
   updated_at: "2026-09-09T00:00:00.000000Z",
-  credential_id: CHANNEL.id,
+  channel_id: CHANNEL.id,
   name: "Development car",
   enabled: true,
   seats: [CONTROL_PLANE_USER.id, null],
@@ -909,7 +910,6 @@ export const ROUTING_GROUP: RoutingGroupView = {
   id: "00000000-0000-0000-0000-000000001501",
   name: "Primary group",
   enabled: true,
-  sharing_only: false,
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-02T00:00:00Z",
   deleted_at: null,
@@ -922,6 +922,7 @@ export const LOGICAL_CHANNEL: LogicalChannelView = {
   credential_id: UPSTREAM_CREDENTIAL.id,
   name: "Primary channel",
   enabled: true,
+  sharing_only: false,
   binding_revision: "00000000-0000-0000-0000-000000001602",
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-02T00:00:00Z",

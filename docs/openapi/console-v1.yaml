@@ -1594,7 +1594,7 @@ paths:
     put:
       tags: [RoutingTopology]
       operationId: updateRoutingGroup
-      description: Replaces organization and the sharing switch. Enabling sharing-only requires every live member channel to use the Codex OAuth connector and never grants access by itself.
+      description: Replaces group organization and enabled state. Credentials and sharing restrictions belong to individual logical channels, not groups.
       security: [{ bearerAuth: [] }]
       parameters:
         - $ref: "#/components/parameters/PathId"
@@ -1753,7 +1753,7 @@ paths:
     post:
       tags: [RoutingTopology]
       operationId: createChannelCapability
-      description: Declares one operation, transport set and model catalog for an ordinary logical channel. Codex capability identities are created by credential import. It never enables routing or grants access.
+      description: Declares one supported operation and model catalog for a logical channel, independently of credential creation. It never enables routing or grants access.
       security: [{ bearerAuth: [] }]
       requestBody:
         required: true
@@ -1860,7 +1860,7 @@ paths:
     delete:
       tags: [RoutingTopology]
       operationId: deleteChannelCapability
-      description: Soft-deletes an ordinary capability. Dependent routing candidates must be withdrawn first. Codex capabilities are deleted through their credential lifecycle.
+      description: Atomically soft-deletes a capability and removes every route candidate referencing it. Empty tiers are removed; affected rules with no remaining candidates are disabled, and all affected rule ETags change. Logical-channel grants, credentials and financial history are retained.
       security: [{ bearerAuth: [] }]
       parameters:
         - $ref: "#/components/parameters/PathId"
@@ -2136,18 +2136,14 @@ paths:
         "422": { $ref: "#/components/responses/Unprocessable" }
         "502": { $ref: "#/components/responses/BadGateway" }
 
-  /providers/codex-oauth/channel-groups/{id}/credentials:
+  /routing/upstream-credentials/codex:
     get:
       tags: [CodexOAuth]
       operationId: listCodexOAuthCredentials
       security: [{ bearerAuth: [] }]
-      parameters:
-        - $ref: "#/components/parameters/PathId"
       responses:
         "200":
-          description: >
-            Codex OAuth credentials in the shared connector pool selected by
-            this format-specific channel group.
+          description: Independent Codex credentials, including credentials not yet referenced by a channel.
           content:
             application/json:
               schema:
@@ -2159,8 +2155,6 @@ paths:
       tags: [CodexOAuth]
       operationId: importCodexOAuthCredential
       security: [{ bearerAuth: [] }]
-      parameters:
-        - $ref: "#/components/parameters/PathId"
       requestBody:
         required: true
         content:
@@ -2173,7 +2167,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/MutationResponse" }
         "201":
-          description: Credential validated and its format-specific managed channels created.
+          description: Credential validated and created. No channel, capability or route is created.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/MutationResponse" }
@@ -2184,18 +2178,15 @@ paths:
         "502": { $ref: "#/components/responses/BadGateway" }
         "504": { $ref: "#/components/responses/GatewayTimeout" }
 
-  /providers/codex-oauth/channel-groups/{id}/credentials/export:
+  /routing/upstream-credentials/codex/export:
     post:
       tags: [CodexOAuth]
       operationId: exportCodexOAuthCredentials
       description: >
-        Exports selected or all credentials in the shared connector pool,
-        selected through this format-specific channel group, including
-        raw OAuth tokens and optionally the assigned proxy definitions. The
+        Exports selected or all Codex credentials, including raw OAuth tokens
+        and optionally their maintenance proxy definitions. The
         response is a sensitive portable backup and is never cached.
       security: [{ bearerAuth: [] }]
-      parameters:
-        - $ref: "#/components/parameters/PathId"
       requestBody:
         required: true
         content:
@@ -2212,16 +2203,14 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/Unprocessable" }
 
-  /providers/codex-oauth/channel-groups/{id}/credentials/batch:
+  /routing/upstream-credentials/codex/batch:
     post:
       tags: [CodexOAuth]
       operationId: updateCodexOAuthCredentialsBatch
       description: >
         Atomically enables, disables, or deletes up to 100 selected
-        credentials in one shared Codex connector pool.
+        independent Codex credentials. A live channel binding blocks deletion.
       security: [{ bearerAuth: [] }]
-      parameters:
-        - $ref: "#/components/parameters/PathId"
       requestBody:
         required: true
         content:
@@ -2239,13 +2228,11 @@ paths:
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/Unprocessable" }
 
-  /providers/codex-oauth/channel-groups/{id}/oauth/flows:
+  /routing/upstream-credentials/codex/oauth/flows:
     post:
       tags: [CodexOAuth]
       operationId: startCodexOAuthFlow
       security: [{ bearerAuth: [] }]
-      parameters:
-        - $ref: "#/components/parameters/PathId"
       requestBody:
         required: true
         content:
@@ -2261,7 +2248,7 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/Unprocessable" }
 
-  /providers/codex-oauth/oauth/flows/{id}/complete:
+  /routing/upstream-credentials/codex/oauth/flows/{id}/complete:
     post:
       tags: [CodexOAuth]
       operationId: completeCodexOAuthFlow
@@ -2280,7 +2267,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/MutationResponse" }
         "201":
-          description: Authorization code exchanged and format-specific managed channels created.
+          description: Authorization code exchanged and an independent credential created.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/MutationResponse" }
@@ -2296,7 +2283,7 @@ paths:
         "502": { $ref: "#/components/responses/BadGateway" }
         "504": { $ref: "#/components/responses/GatewayTimeout" }
 
-  /providers/codex-oauth/credentials/{id}:
+  /routing/upstream-credentials/codex/{id}:
     get:
       tags: [CodexOAuth]
       operationId: getCodexOAuthCredential
@@ -2360,7 +2347,7 @@ paths:
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/Unprocessable" }
 
-  /providers/codex-oauth/credentials/{id}/refresh:
+  /routing/upstream-credentials/codex/{id}/refresh:
     post:
       tags: [CodexOAuth]
       operationId: refreshCodexOAuthCredential
@@ -2376,7 +2363,7 @@ paths:
         "502": { $ref: "#/components/responses/BadGateway" }
         "504": { $ref: "#/components/responses/GatewayTimeout" }
 
-  /providers/codex-oauth/credentials/{id}/quota/refresh:
+  /routing/upstream-credentials/codex/{id}/quota/refresh:
     post:
       tags: [CodexOAuth]
       operationId: refreshCodexOAuthQuota
@@ -2392,7 +2379,7 @@ paths:
         "502": { $ref: "#/components/responses/BadGateway" }
         "504": { $ref: "#/components/responses/GatewayTimeout" }
 
-  /providers/codex-oauth/credentials/{id}/quota/windows:
+  /routing/upstream-credentials/codex/{id}/quota/windows:
     get:
       tags: [CodexOAuth]
       operationId: getCodexOAuthQuotaWindowHistory
@@ -2416,7 +2403,7 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/Unprocessable" }
 
-  /providers/codex-oauth/credentials/{id}/quota/reset:
+  /routing/upstream-credentials/codex/{id}/quota/reset:
     post:
       tags: [CodexOAuth]
       operationId: resetCodexOAuthQuota
@@ -3178,11 +3165,14 @@ components:
       type: object
       additionalProperties: false
       required:
-        [credential_id, name, enabled, seats, primary_limit_amount,
+        [channel_id, name, enabled, seats, primary_limit_amount,
          secondary_limit_amount, request_reservation_amount, user_requests_per_minute,
          group_requests_per_minute, user_max_concurrent_requests, group_max_concurrent_requests]
       properties:
-        credential_id: { type: string, format: uuid }
+        channel_id:
+          type: string
+          format: uuid
+          description: Logical channel selected for this car. Immutable after creation; its upstream account cannot be replaced.
         name: { type: string, minLength: 1, maxLength: 120 }
         enabled: { type: boolean }
         seats:
@@ -3207,13 +3197,13 @@ components:
     CodexSharingGroup:
       type: object
       required:
-        [id, updated_at, credential_id, name, enabled, seats, primary_limit_amount,
+        [id, updated_at, channel_id, name, enabled, seats, primary_limit_amount,
          secondary_limit_amount, request_reservation_amount, user_requests_per_minute,
          group_requests_per_minute, user_max_concurrent_requests, group_max_concurrent_requests]
       properties:
         id: { type: string, format: uuid }
         updated_at: { $ref: "#/components/schemas/DateTime" }
-        credential_id: { type: string, format: uuid }
+        channel_id: { type: string, format: uuid }
         name: { type: string }
         enabled: { type: boolean }
         seats:
@@ -4005,6 +3995,8 @@ components:
         expires_at: { $ref: "#/components/schemas/DateTimeNullable" }
         allowed_api_formats:
           type: array
+          deprecated: true
+          description: Compatibility metadata, not an authorization restriction. Active keys report all supported formats; access is determined by logical-channel grants and enabled operation routes.
           items: { $ref: "#/components/schemas/ApiFormat" }
         permissions:
           type: array
@@ -4033,7 +4025,7 @@ components:
 
     ApiKeyPolicyView:
       type: object
-      description: Group and logical-channel selectors with a fixed capability grant set. Retained selectors never expand during edits; new capabilities require explicit reauthorization.
+      description: Group and logical-channel selectors with a fixed logical-channel grant set. A newly selected group expands only to its current channels; retained groups never acquire later members. All current and future capabilities of each granted channel share that authorization. Group-origin grants require continued membership in that group.
       required:
         [id, name, allowed_group_ids, allowed_channel_ids, enabled, created_at, updated_at]
       properties:
@@ -4052,48 +4044,40 @@ components:
     SelfApiKeyOptions:
       type: object
       required:
-        [policy_id, policy_name, policy_enabled, sharing_credentials, groups, channels]
+        [policy_id, policy_name, policy_enabled, sharing_channels, groups, channels]
       properties:
         policy_id: { type: string, format: uuid, nullable: true }
         policy_name: { type: string, nullable: true }
         policy_enabled:
           type: boolean
           description: Whether the resolved user/group API Key Policy currently contributes ordinary targets.
-        sharing_credentials:
+        sharing_channels:
           type: array
-          description: Logical Codex credentials selectable because the current user occupies an explicit sharing seat; independent of API Key Policy.
-          items: { $ref: "#/components/schemas/SelfApiKeySharingCredentialOption" }
+          description: Logical channels selectable because the current user occupies an explicit sharing seat; independent of API Key Policy.
+          items: { $ref: "#/components/schemas/SelfApiKeySharingChannelOption" }
         groups:
           type: array
-          description: Ordinary groups contributed by the enabled API Key Policy; sharing-only groups and groups with no ordinary channel are excluded.
+          description: Ordinary groups contributed by the enabled API Key Policy; groups with no ordinary channel are excluded.
           items: { $ref: "#/components/schemas/SelfApiKeyGroupOption" }
         channels:
           type: array
           description: Ordinary individual channels contributed by the enabled API Key Policy; sharing credentials and protected aliases are excluded.
           items: { $ref: "#/components/schemas/SelfApiKeyChannelOption" }
 
-    SelfApiKeySharingCredentialOption:
+    SelfApiKeySharingChannelOption:
       type: object
       required:
-        [credential_id, sharing_group_id, name, enabled, channel_ids, api_formats]
+        [channel_id, channel_name, sharing_group_id, name, enabled]
       properties:
-        credential_id: { type: string, format: uuid }
+        channel_id: { type: string, format: uuid }
+        channel_name: { type: string }
         sharing_group_id: { type: string, format: uuid }
         name:
           type: string
           description: Administrator-defined sharing-group name; provider identity remains private.
         enabled:
           type: boolean
-          description: Whether the sharing group is enabled; disabled credentials may still be preselected on a Key.
-        channel_ids:
-          type: array
-          minItems: 1
-          description: Canonical logical channels owned by this credential. Selecting one fixes its current billable capability set; standalone search is excluded.
-          items: { type: string, format: uuid }
-        api_formats:
-          type: array
-          minItems: 1
-          items: { $ref: "#/components/schemas/ApiFormat" }
+          description: Combined channel, group, access, credential and car availability. Authorization covers this channel's current and future capabilities, subject to sharing admission; unmetered operations remain rejected.
 
     SelfApiKeyGroupOption:
       type: object
@@ -4267,14 +4251,11 @@ components:
 
     RoutingGroupView:
       type: object
-      required: [id, name, enabled, sharing_only, created_at, updated_at, deleted_at]
+      required: [id, name, enabled, created_at, updated_at, deleted_at]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
         enabled: { type: boolean }
-        sharing_only:
-          type: boolean
-          description: Codex-only. When set, every live member channel must use the Codex OAuth connector.
         created_at: { $ref: "#/components/schemas/DateTime" }
         updated_at: { $ref: "#/components/schemas/DateTime" }
         deleted_at: { type: string, format: date-time, nullable: true }
@@ -4286,14 +4267,10 @@ components:
       properties:
         name: { type: string, minLength: 1, maxLength: 100 }
         enabled: { type: boolean }
-        sharing_only:
-          type: boolean
-          default: false
-          description: Codex-only; rejected unless every live member channel uses the Codex OAuth connector.
 
     LogicalChannelView:
       type: object
-      required: [id, group_id, access_id, credential_id, name, enabled, binding_revision, created_at, updated_at, deleted_at]
+      required: [id, group_id, access_id, credential_id, name, enabled, sharing_only, binding_revision, created_at, updated_at, deleted_at]
       properties:
         id: { type: string, format: uuid }
         group_id: { type: string, format: uuid }
@@ -4305,6 +4282,9 @@ components:
           description: Null means the channel sends no upstream authentication.
         name: { type: string }
         enabled: { type: boolean }
+        sharing_only:
+          type: boolean
+          description: Only valid for a connector with sharing support. Protects the channel and recognized account aliases; it does not grant seats or create a car.
         binding_revision: { type: string, format: uuid }
         created_at: { $ref: "#/components/schemas/DateTime" }
         updated_at: { $ref: "#/components/schemas/DateTime" }
@@ -4313,7 +4293,7 @@ components:
     LogicalChannelInput:
       type: object
       additionalProperties: false
-      required: [group_id, access_id, credential_id, name, enabled]
+      required: [group_id, access_id, credential_id, name, enabled, sharing_only]
       properties:
         group_id: { type: string, format: uuid }
         access_id: { type: string, format: uuid }
@@ -4324,6 +4304,9 @@ components:
           description: Required and nullable. Omitting the field is rejected so an update can never silently detach authentication.
         name: { type: string, minLength: 1, maxLength: 100 }
         enabled: { type: boolean }
+        sharing_only:
+          type: boolean
+          description: Channel-level policy. Disabling it never removes an existing car binding or its financial protection.
 
     CapabilitySettings:
       type: object
@@ -4436,10 +4419,11 @@ components:
 
     UpstreamCredentialView:
       type: object
-      required: [id, name, kind, header_name, allowed_base_urls, enabled, provider_managed, channel_ids, created_at, updated_at]
+      required: [id, name, connector_kind, kind, header_name, allowed_base_urls, enabled, provider_managed, channel_ids, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
+        connector_kind: { $ref: "#/components/schemas/ConnectorKind" }
         kind: { type: string, enum: [bearer, header, codex_oauth] }
         header_name: { type: string, nullable: true }
         allowed_base_urls: { type: array, items: { type: string } }
@@ -4492,7 +4476,7 @@ components:
     CodexCredentialView:
       type: object
       required:
-        [id, channel_group_id, label, email, account_id, user_id, plan_type, is_fedramp,
+        [id, channel_ids, label, email, account_id, user_id, plan_type, is_fedramp,
          access_token_expires_at, last_refreshed_at, quota_threshold_percent,
          runtime_status, quota_allowed, quota_limit_reached, primary_used_percent,
          primary_window_seconds, primary_reset_at, primary_window_cost_amount,
@@ -4503,10 +4487,10 @@ components:
          created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
-        channel_group_id:
-          type: string
-          format: uuid
-          description: Canonical routing group owning the credential's Codex pool.
+        channel_ids:
+          type: array
+          items: { type: string, format: uuid }
+          description: Live logical channels explicitly referencing this independent credential.
         label: { type: string }
         email: { type: string, nullable: true }
         account_id:
@@ -4533,7 +4517,7 @@ components:
           description: |
             Gateway-calculated USD cost of all priced requests routed through
             this logical credential during its current stored primary period,
-            across both Responses and Images projections. Null when no current
+            across all logical channels and operations. Null when no current
             primary period has been stored.
         secondary_used_percent: { type: integer, minimum: 0, maximum: 100, nullable: true }
         secondary_window_seconds: { type: integer, minimum: 1, nullable: true }
@@ -4543,7 +4527,7 @@ components:
           description: |
             Gateway-calculated USD cost of all priced requests routed through
             this logical credential during its current stored secondary period,
-            across both Responses and Images projections. Null when no current
+            across all logical channels and operations. Null when no current
             secondary period has been stored.
         quota_reset_credits_available:
           type: integer
@@ -4621,7 +4605,7 @@ components:
         Sanitized, read-only Codex quota snapshot. The stored credential
         label and account identity are deliberately omitted.
       required:
-        [id, name, channel_group_id, plan_type, primary_used_percent,
+        [id, name, channel_ids, plan_type, primary_used_percent,
          primary_window_seconds, primary_reset_at, primary_window_cost_amount,
          secondary_used_percent, secondary_window_seconds, secondary_reset_at,
          secondary_window_cost_amount, quota_checked_at]
@@ -4630,10 +4614,10 @@ components:
         name:
           type: string
           description: Credential UUID rendered as a name; never the administrator label.
-        channel_group_id:
-          type: string
-          format: uuid
-          description: Canonical routing group granting Codex quota visibility.
+        channel_ids:
+          type: array
+          items: { type: string, format: uuid }
+          description: Referencing logical channels visible through the user's quota visibility groups.
         plan_type:
           type: string
           nullable: true
@@ -4645,8 +4629,8 @@ components:
           allOf: [{ $ref: "#/components/schemas/DecimalNullable" }]
           description: |
             Credential-wide Gateway-calculated USD cost for the current stored
-            primary period. This includes every requesting user and both
-            Responses and Images projections; null means no stored period.
+            primary period. This includes every requesting user and logical
+            channel; null means no stored period.
         secondary_used_percent: { type: integer, minimum: 0, maximum: 100, nullable: true }
         secondary_window_seconds: { type: integer, minimum: 1, nullable: true }
         secondary_reset_at: { $ref: "#/components/schemas/DateTimeNullable" }
@@ -4654,8 +4638,8 @@ components:
           allOf: [{ $ref: "#/components/schemas/DecimalNullable" }]
           description: |
             Credential-wide Gateway-calculated USD cost for the current stored
-            secondary period. This includes every requesting user and both
-            Responses and Images projections; null means no stored period.
+            secondary period. This includes every requesting user and logical
+            channel; null means no stored period.
         quota_checked_at: { $ref: "#/components/schemas/DateTimeNullable" }
 
     SelfCodexQuotaWindowPeriod:
@@ -4682,17 +4666,17 @@ components:
           allOf: [{ $ref: "#/components/schemas/Decimal" }]
           description: |
             Credential-wide Gateway-calculated USD cost for this period,
-            including every requesting user and both managed projections.
+            including every requesting user and logical channel.
 
     SelfCodexQuotaWindowHistory:
       type: object
-      required: [credential_id, name, channel_group_id, plan_type, periods]
+      required: [credential_id, name, channel_ids, plan_type, periods]
       properties:
         credential_id: { type: string, format: uuid }
         name:
           type: string
           description: Credential UUID rendered as a name; never the administrator label.
-        channel_group_id: { type: string, format: uuid }
+        channel_ids: { type: array, items: { type: string, format: uuid } }
         plan_type: { type: string, nullable: true }
         periods:
           type: array
@@ -4793,16 +4777,13 @@ components:
     CodexCredentialExportBundle:
       type: object
       required:
-        [type, version, exported_at, channel_group_id, channel_group_name,
-         proxies, credentials]
+        [type, version, exported_at, proxies, credentials]
       properties:
         type:
           type: string
           enum: [ai-gateway-codex-credentials]
-        version: { type: integer, enum: [2] }
+        version: { type: integer, enum: [3] }
         exported_at: { $ref: "#/components/schemas/DateTime" }
-        channel_group_id: { type: string, format: uuid }
-        channel_group_name: { type: string }
         proxies:
           type: array
           items: { $ref: "#/components/schemas/CodexCredentialExportProxy" }
@@ -5770,13 +5751,15 @@ components:
     ApiKeyCreateInput:
       type: object
       required:
-        [user_id, name, allowed_api_formats, permissions, allowed_group_ids,
+        [user_id, name, permissions, allowed_group_ids,
          allowed_channel_ids]
       properties:
         user_id: { type: string, format: uuid }
         name: { type: string }
         allowed_api_formats:
           type: array
+          deprecated: true
+          description: Ignored compatibility input. Logical-channel authorization does not restrict individual capabilities or API formats.
           items: { $ref: "#/components/schemas/ApiFormat" }
         permissions:
           type: array
@@ -5795,13 +5778,15 @@ components:
     ApiKeyUpdateInput:
       type: object
       required:
-        [name, status, allowed_api_formats, permissions, allowed_group_ids,
+        [name, status, permissions, allowed_group_ids,
          allowed_channel_ids]
       properties:
         name: { type: string }
         status: { type: string }
         allowed_api_formats:
           type: array
+          deprecated: true
+          description: Ignored compatibility input. Logical-channel authorization does not restrict individual capabilities or API formats.
           items: { $ref: "#/components/schemas/ApiFormat" }
         permissions:
           type: array

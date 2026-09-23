@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { E2E_CODEX_GROUP, E2E_CODEX_GROUP_ID, mockConsoleApi } from "./mock-api";
+import { E2E_CODEX_CREDENTIAL_ID, E2E_CODEX_GROUP_ID, mockConsoleApi } from "./mock-api";
 import { SHARING_GROUP } from "../src/test/fixtures";
 
 test("a sharing member sees private USD windows on mobile", async ({ page }) => {
@@ -58,39 +58,41 @@ test("an administrator edits a fixed-seat budget with its ETag", async ({ page }
   await expect(page.getByRole("columnheader", { name: "Seat allowance" }).first()).toBeVisible();
 });
 
-test("an administrator saves sharing-only access on a mobile Codex group editor", async ({ page }) => {
+test("an administrator saves sharing-only access on a mobile logical channel editor", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await mockConsoleApi(page);
-  let group = {
-    id: E2E_CODEX_GROUP_ID, name: E2E_CODEX_GROUP.name,
+  let channel = {
+    id: E2E_CODEX_CREDENTIAL_ID, name: "Personal Plus",
+    group_id: E2E_CODEX_GROUP_ID, access_id: E2E_CODEX_GROUP_ID,
+    credential_id: E2E_CODEX_CREDENTIAL_ID, binding_revision: E2E_CODEX_CREDENTIAL_ID,
     enabled: true, sharing_only: false,
     created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-02T00:00:00Z",
     deleted_at: null,
   };
   let version = '"sharing-mode-1"';
-  await page.route(`**/console/v1/routing/groups/${E2E_CODEX_GROUP_ID}`, async route => {
+  await page.route(`**/console/v1/routing/logical-channels/${channel.id}`, async route => {
     if (route.request().method() === "PUT") {
       expect(route.request().headers()["if-match"]).toBe(version);
-      group = { ...group, ...route.request().postDataJSON() };
+      channel = { ...channel, ...route.request().postDataJSON() };
       version = '"sharing-mode-2"';
-      return route.fulfill({ status: 200, json: { id: group.id, correlation_id: group.id } });
+      return route.fulfill({ status: 200, json: { id: channel.id, correlation_id: channel.id } });
     }
-    return route.fulfill({ status: 200, headers: { ETag: version }, json: group });
+    return route.fulfill({ status: 200, headers: { ETag: version }, json: channel });
   });
   await page.goto("/login");
   await page.getByLabel("Email").fill("admin@example.com");
   await page.getByLabel("Password", { exact: true }).fill("mock-admin-password");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await expect(page).not.toHaveURL(/\/login/);
-  await page.goto(`/admin/routing/groups/${E2E_CODEX_GROUP_ID}`);
+  await page.goto(`/admin/routing/logical-channels/${channel.id}`);
   const toggle = page.getByRole("switch", { name: "Sharing only", exact: true });
   await expect(toggle).not.toBeChecked();
   await toggle.scrollIntoViewIfNeeded();
   await expect(toggle).toBeInViewport();
   await toggle.click();
   const saved = page.waitForResponse(response => response.request().method() === "PUT"
-    && response.url().endsWith(`/groups/${E2E_CODEX_GROUP_ID}`));
-  await page.getByRole("button", { name: "Save group", exact: true }).click();
+    && response.url().endsWith(`/logical-channels/${channel.id}`));
+  await page.getByRole("button", { name: "Save channel", exact: true }).click();
   expect((await saved).status()).toBe(200);
   await page.reload();
   await expect(toggle).toBeChecked();

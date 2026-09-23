@@ -22,6 +22,26 @@ function renderAppAt(path: string) {
 }
 
 describe("ApiKeysPage", () => {
+  it("distinguishes same-named logical channel grants in different groups", async () => {
+    seedAuthenticatedSession();
+    const channels = ["one", "two"].map((suffix) => ({
+      id: `channel-${suffix}`, channel_group_id: `group-${suffix}`, channel_group_name: `Group ${suffix}`,
+      channel_group_enabled: true, name: "Primary", enabled: true, auto_disabled: false,
+      api_formats: ["open_ai_responses"],
+    }));
+    server.use(
+      http.get("/console/v1/me/api-keys", () => HttpResponse.json([{
+        ...OWN_API_KEY, allowed_group_ids: [], allowed_channel_ids: channels.map((channel) => channel.id),
+      }])),
+      http.get("/console/v1/me/api-key-options", () => HttpResponse.json({
+        policy_id: null, policy_name: null, policy_enabled: false,
+        sharing_channels: [], groups: [], channels,
+      })),
+    );
+    renderAppAt("/api-keys");
+    expect(await screen.findByText("Primary (Group one), Primary (Group two)")).toBeInTheDocument();
+  });
+
   it("creates a key without a one-time secret dialog", async () => {
     seedAuthenticatedSession();
     const user = userEvent.setup();
@@ -29,6 +49,9 @@ describe("ApiKeysPage", () => {
 
     expect(await screen.findByText(OWN_API_KEY.name)).toBeInTheDocument();
     expect(screen.getByDisplayValue(maskApiKey(NEW_API_KEY_SECRET))).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Channel groups" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Logical channels" })).toBeInTheDocument();
+    expect(screen.queryByRole("columnheader", { name: "Formats" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /new api key/i }));
     const nameField = await screen.findByLabelText(/name/i);
@@ -42,20 +65,18 @@ describe("ApiKeysPage", () => {
     expect(screen.queryByText(/save it now/i)).not.toBeInTheDocument();
   });
 
-  it("creates a key from a sharing credential when no policy is assigned", async () => {
+  it("creates a key for exactly the seated logical channel without a policy", async () => {
     seedAuthenticatedSession();
-    const imageChannel = "00000000-0000-0000-0000-000000000812";
     const options: SelfApiKeyOptions = {
       policy_id: null,
       policy_name: null,
       policy_enabled: false,
-      sharing_credentials: [{
-        credential_id: SHARING_GROUP.credential_id,
+      sharing_channels: [{
+        channel_id: CHANNEL.id,
+        channel_name: CHANNEL.name,
         sharing_group_id: SHARING_GROUP.id,
         name: SHARING_GROUP.name,
         enabled: false,
-        channel_ids: [CHANNEL.id, imageChannel],
-        api_formats: ["open_ai_responses", "open_ai_images"],
       }],
       groups: [],
       channels: [],
@@ -76,18 +97,18 @@ describe("ApiKeysPage", () => {
     renderAppAt("/api-keys");
 
     await user.click(await screen.findByRole("button", { name: /new api key/i }));
-    expect(await screen.findByText("Sharing credentials")).toBeInTheDocument();
+    expect(await screen.findByText("Sharing channels")).toBeInTheDocument();
     expect(screen.getByText("API Key Policy targets")).toBeInTheDocument();
     expect(screen.getByText("No selectable channel groups.")).toBeInTheDocument();
     await user.type(screen.getByLabelText(/^name$/i), "sharing key");
-    await user.click(screen.getByRole("checkbox", { name: SHARING_GROUP.name }));
+    await user.click(screen.getByRole("checkbox", { name: CHANNEL.name }));
     await user.click(screen.getByRole("button", { name: /create key/i }));
 
     await waitFor(() => {
       expect(submitted).toMatchObject({
         name: "sharing key",
         allowed_group_ids: [],
-        allowed_channel_ids: [CHANNEL.id, imageChannel],
+        allowed_channel_ids: [CHANNEL.id],
       });
     });
   });
@@ -229,16 +250,16 @@ describe("ApiKeysPage", () => {
     seedAuthenticatedSession();
     renderAppAt(`/api-keys/${OWN_API_KEY.id}`);
 
-    const label = await screen.findByText(/^Allowed groups$/i);
+    const label = await screen.findByText(/^Channel groups$/i);
+    expect(screen.queryByText("Formats")).not.toBeInTheDocument();
     const value = label.nextElementSibling;
 
     expect(value).toHaveTextContent(CHANNEL_GROUP.name);
     expect(value).not.toHaveTextContent(CHANNEL_GROUP.id);
   });
 
-  it("keeps a migrated single-format sharing credential visible as partial", async () => {
+  it("shows a selected sharing channel independently of its available operations", async () => {
     seedAuthenticatedSession();
-    const imageChannel = "00000000-0000-0000-0000-000000000812";
     const key = {
       ...OWN_API_KEY,
       allowed_group_ids: [],
@@ -249,13 +270,12 @@ describe("ApiKeysPage", () => {
       policy_id: null,
       policy_name: null,
       policy_enabled: false,
-      sharing_credentials: [{
-        credential_id: SHARING_GROUP.credential_id,
+      sharing_channels: [{
+        channel_id: CHANNEL.id,
+        channel_name: CHANNEL.name,
         sharing_group_id: SHARING_GROUP.id,
         name: SHARING_GROUP.name,
         enabled: true,
-        channel_ids: [CHANNEL.id, imageChannel],
-        api_formats: ["open_ai_responses", "open_ai_images"],
       }],
       groups: [],
       channels: [],
@@ -267,11 +287,11 @@ describe("ApiKeysPage", () => {
     );
     renderAppAt(`/api-keys/${key.id}`);
 
-    const credential = await screen.findByRole("checkbox", { name: SHARING_GROUP.name });
-    expect(credential).toHaveAttribute("data-indeterminate");
-    expect(screen.getByText("Partially selected")).toBeInTheDocument();
-    const label = screen.getByText(/^Allowed channels$/i);
-    expect(label.nextElementSibling).toHaveTextContent(SHARING_GROUP.name);
+    const channel = await screen.findByRole("checkbox", { name: CHANNEL.name });
+    expect(channel).toHaveAttribute("aria-checked", "true");
+    expect(screen.queryByText("Partially selected")).not.toBeInTheDocument();
+    const label = screen.getByText(/^Logical channels$/i, { selector: "dt" });
+    expect(label.nextElementSibling).toHaveTextContent(CHANNEL.name);
   });
 
   it("saves a loaded disabled status without requiring reselection", async () => {

@@ -138,11 +138,8 @@ impl CodexConnectorService {
             .clone()
     }
 
-    pub async fn list_credentials(
-        &self,
-        channel_group_id: Uuid,
-    ) -> Result<Vec<CodexCredentialView>, CodexConnectorError> {
-        Ok(self.repository.codex_credentials(channel_group_id).await?)
+    pub async fn list_credentials(&self) -> Result<Vec<CodexCredentialView>, CodexConnectorError> {
+        Ok(self.repository.codex_credentials().await?)
     }
 
     pub async fn credential(
@@ -188,17 +185,12 @@ impl CodexConnectorService {
     pub async fn export_credentials(
         &self,
         actor: Uuid,
-        channel_group_id: Uuid,
         input: CodexCredentialExportInput,
     ) -> Result<CodexCredentialExportBundle, CodexConnectorError> {
         self.coordinator.verify_active_admin(actor).await?;
-        let bundle = self
-            .repository
-            .export_codex_credentials(channel_group_id, input)
-            .await?;
+        let bundle = self.repository.export_codex_credentials(input).await?;
         tracing::warn!(
             actor_user_id = %actor,
-            %channel_group_id,
             credential_count = bundle.credentials.len(),
             proxy_count = bundle.proxies.len(),
             "Codex credentials exported"
@@ -209,7 +201,6 @@ impl CodexConnectorService {
     pub async fn start_oauth(
         &self,
         actor: Uuid,
-        channel_group_id: Uuid,
         input: CodexOauthStartInput,
     ) -> Result<CodexOauthStartResponse, CodexConnectorError> {
         self.coordinator.verify_active_admin(actor).await?;
@@ -223,7 +214,6 @@ impl CodexConnectorService {
             .repository
             .create_codex_oauth_flow(
                 actor,
-                channel_group_id,
                 input,
                 protocol::CODEX_OAUTH_REDIRECT_URI.to_owned(),
                 state_hash(&state).to_vec(),
@@ -267,7 +257,6 @@ impl CodexConnectorService {
         .await?;
         let create = self
             .prepare_credential(
-                flow.channel_group_id,
                 flow.label,
                 true,
                 flow.proxy_id,
@@ -293,7 +282,6 @@ impl CodexConnectorService {
     pub async fn import_credential(
         &self,
         actor: Uuid,
-        channel_group_id: Uuid,
         input: CodexCredentialImportInput,
     ) -> Result<MutationResult, CodexConnectorError> {
         self.coordinator.verify_active_admin(actor).await?;
@@ -301,7 +289,6 @@ impl CodexConnectorService {
         let (client, policy) = self.client_for_proxy(input.proxy_id)?;
         let create = self
             .prepare_credential(
-                channel_group_id,
                 input.label,
                 input.enabled,
                 input.proxy_id,
@@ -356,12 +343,11 @@ impl CodexConnectorService {
     pub async fn update_credentials_batch(
         &self,
         actor: Uuid,
-        channel_group_id: Uuid,
         input: CodexCredentialBatchInput,
     ) -> Result<CodexCredentialBatchResult, CodexConnectorError> {
         let result = self
             .coordinator
-            .update_codex_credentials_batch(actor, channel_group_id, input)
+            .update_codex_credentials_batch(actor, input)
             .await?;
         self.reload_runtime().await?;
         Ok(result)
@@ -520,7 +506,6 @@ impl CodexConnectorService {
     #[allow(clippy::too_many_arguments)]
     async fn prepare_credential(
         &self,
-        channel_group_id: Uuid,
         label: String,
         enabled: bool,
         proxy_id: Option<Uuid>,
@@ -582,7 +567,6 @@ impl CodexConnectorService {
             }
         };
         Ok(CodexCredentialCreate {
-            channel_group_id,
             label,
             enabled,
             proxy_id,

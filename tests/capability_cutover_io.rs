@@ -66,9 +66,9 @@ fn decode<T: for<'de> serde::Deserialize<'de>>(rows: Vec<String>) -> Vec<T> {
         .collect()
 }
 
-fn assert_topology<S: Serialize>(
-    expected: &UpstreamTopologyRecords<S>,
-    loaded: &UpstreamTopologyRecords<S>,
+fn assert_topology<S: Serialize, K: Serialize, P: Serialize, G: Serialize, C: Serialize>(
+    expected: &UpstreamTopologyRecords<S, K, P, G, C>,
+    loaded: &UpstreamTopologyRecords<S, K, P, G, C>,
 ) {
     assert_eq!(
         sorted(&expected.routing_groups),
@@ -116,6 +116,50 @@ async fn apply_operations_pg(transaction: &mut sqlx::Transaction<'_, sqlx::Postg
         .await
         .unwrap();
     storage::pg_validate(transaction).await.unwrap();
+    let previous = ai_gateway::persistence::upstream_topology::pg_load_six_operations(transaction)
+        .await
+        .unwrap();
+    let projected =
+        ai_gateway::persistence::capability_cutover::channel_authorization::upgrade(&previous)
+            .unwrap();
+    sqlx::raw_sql(include_str!(
+        "../migrations/0067_logical_channel_authorization.sql"
+    ))
+    .execute(&mut **transaction)
+    .await
+    .unwrap();
+    assert_topology(
+        &projected,
+        &ai_gateway::persistence::upstream_topology::pg_load_channel_authorization(transaction)
+            .await
+            .unwrap(),
+    );
+    sqlx::raw_sql(include_str!(
+        "../migrations/0068_channel_owned_credentials_and_sharing.sql"
+    ))
+    .execute(&mut **transaction)
+    .await
+    .unwrap();
+    sqlx::raw_sql(include_str!(
+        "../migrations/0069_request_credential_attribution.sql"
+    ))
+    .execute(&mut **transaction)
+    .await
+    .unwrap();
+    ai_gateway::persistence::upstream_topology::pg_load_control_plane(transaction)
+        .await
+        .unwrap();
+}
+
+fn upgrade_topology(
+    old: &ai_gateway::persistence::capability_cutover::legacy_settings::Topology,
+) -> UpstreamTopologyRecords {
+    ai_gateway::persistence::capability_cutover::credential_ownership::upgrade(
+        &ai_gateway::persistence::capability_cutover::channel_authorization::upgrade(
+            &ai_gateway::persistence::capability_cutover::operation_split::upgrade(old).unwrap(),
+        )
+        .unwrap(),
+    )
 }
 
 fn operation_matrix_sql(sqlite: bool) -> String {
@@ -199,8 +243,7 @@ async fn postgres_six_operations_split_only_existing_transport_routes_and_grants
     let legacy = ai_gateway::persistence::upstream_topology::pg_load_legacy(&mut transaction)
         .await
         .unwrap();
-    let expected =
-        ai_gateway::persistence::capability_cutover::operation_split::upgrade(&legacy).unwrap();
+    let expected = upgrade_topology(&legacy);
     apply_operations_pg(&mut transaction).await;
     assert_topology(&expected, &pg_load(&mut transaction).await.unwrap());
     transaction.commit().await.unwrap();
@@ -544,7 +587,10 @@ async fn exercise_canonical_authorization(
         .await
         .unwrap();
     let options = repository.own_api_key_options(USER).await.unwrap();
-    assert_eq!(options.groups[0].api_formats, ["open_ai_chat_completions"]);
+    assert_eq!(
+        options.groups[0].api_formats,
+        ["open_ai_chat_completions", "open_ai_images"]
+    );
     let policy = repository
         .control_plane_lists()
         .await
@@ -603,7 +649,7 @@ async fn exercise_canonical_authorization(
         .filter(|g| g.api_key_id == self_key.id)
         .collect::<Vec<_>>();
     assert_eq!(grants.len(), 1);
-    assert_ne!(grants[0].capability_id, images);
+    assert_eq!(grants[0].channel_id, CHANNEL);
     let update = |channels| ApiKeyUpdate {
         name: "Renamed frozen key".into(),
         status: "active".into(),
@@ -676,21 +722,262 @@ async fn exercise_canonical_authorization(
         .iter()
         .filter(|g| g.api_key_id == key.id)
         .collect::<Vec<_>>();
-    assert_eq!(grants.len(), 3);
+    assert_eq!(grants.len(), 2);
     assert!(
         grants
             .iter()
             .filter(|g| g.origin_id == GROUP)
-            .all(|g| g.capability_id != images)
+            .all(|g| g.channel_id == CHANNEL)
     );
     assert!(
         grants
             .iter()
-            .any(|g| g.origin_id == CHANNEL && g.capability_id == images)
+            .any(|g| g.origin_id == CHANNEL && g.channel_id == CHANNEL)
     );
-    exercise_self_service_format_boundary(&repository, images).await;
+    exercise_self_service_channel_boundary(&repository, images).await;
     exercise_capability_batch_and_recovery(&repository).await;
+    exercise_channel_authority_and_route_withdrawal(
+        &repository,
+        key.id,
+        key.created_secret.as_deref().unwrap(),
+    )
+    .await;
     exercise_canonical_model_lifecycle(&repository).await;
+}
+
+async fn exercise_channel_authority_and_route_withdrawal(
+    repository: &ai_gateway::persistence::ControlPlaneRepository,
+    key_id: Uuid,
+    secret: &str,
+) {
+    use ai_gateway::domain::{ApiFormat, ApiKeyPermission, ApiOperation, RequestProtocol};
+    use ai_gateway::persistence::ControlPlaneMutation as M;
+    let initial = repository.topology().await.unwrap();
+    let grants = sorted(&initial.api_key_grants);
+    let policy_grants = sorted(&initial.policy_grants);
+    let access = initial
+        .logical_channels
+        .iter()
+        .find(|channel| channel.id == CHANNEL)
+        .unwrap()
+        .access_id;
+    let other = Uuid::new_v4();
+    let own_cap = Uuid::new_v4();
+    let other_cap = Uuid::new_v4();
+    let rule_id = Uuid::new_v4();
+    let create_capability = |id, channel, operation| M::SaveChannelCapability {
+        id,
+        expected: None,
+        input: serde_json::from_value(serde_json::json!({
+            "channel_id": channel,
+            "settings": {
+                "operation": operation, "enabled": true,
+                "available_models": ["wire-model", "wire-alias"],
+                "request_compression": "default", "test_model": null,
+                "test_pricing_model_id": null, "auto_disable_allowed": false
+            }
+        }))
+        .unwrap(),
+    };
+    for mutation in [
+        M::SaveLogicalChannel {
+            id: other, expected: None,
+            input: serde_json::from_value(serde_json::json!({
+                "group_id": GROUP, "access_id": access, "credential_id": null,
+                "name": "Later group member", "enabled": true, "sharing_only": false
+            })).unwrap(),
+        },
+        create_capability(own_cap, CHANNEL, "responses"),
+        create_capability(other_cap, other, "responses"),
+        M::SaveOperationRule {
+            id: rule_id, expected_updated_at: None,
+            input: serde_json::from_value(serde_json::json!({
+                "model_routing_profile_id": PROFILE, "operation": "responses", "enabled": true,
+                "routing_tiers": [
+                    {"priority": 0, "selection_strategy": "weighted_round_robin",
+                     "candidates": [
+                         {"capability_id": own_cap, "upstream_model": "wire-model", "weight": 2},
+                         {"capability_id": other_cap, "upstream_model": "wire-model", "weight": 7}]},
+                    {"priority": 9, "selection_strategy": "weighted_random",
+                     "candidates": [{"capability_id": own_cap, "upstream_model": "wire-alias", "weight": 5}]}
+                ]
+            })).unwrap(),
+        },
+    ] {
+        repository.prepare_mutation(USER, mutation).await.unwrap().commit().await.unwrap();
+    }
+    let before = repository.topology().await.unwrap();
+    assert_eq!(sorted(&before.api_key_grants), grants);
+    assert_eq!(sorted(&before.policy_grants), policy_grants);
+    assert!(
+        !repository
+            .own_api_key_options(USER)
+            .await
+            .unwrap()
+            .channels
+            .iter()
+            .any(|channel| channel.id == other)
+    );
+    let records = repository.load().await.unwrap();
+    let key = records
+        .api_keys
+        .iter()
+        .find(|key| key.id == key_id)
+        .unwrap();
+    assert!(key.allowed_channel_ids.contains(&own_cap));
+    assert!(!key.allowed_channel_ids.contains(&other_cap));
+    let snapshot = ai_gateway::runtime_config::compile_control_plane(records).unwrap();
+    let key = snapshot.authenticate(secret).unwrap();
+    assert!(key.permits(ApiFormat::OpenAiResponses, ApiKeyPermission::Proxy));
+    let routing = ai_gateway::routing::RoutingRuntime::new(
+        ai_gateway::routing::PassiveHealthPolicy::default(),
+    );
+    let selected = routing.select_operation_with_affinity_excluding(
+        &snapshot,
+        &key,
+        ApiOperation::Responses,
+        RequestProtocol::NonStream,
+        "cutover-model",
+        None,
+        &[],
+    );
+    let ai_gateway::routing::SelectionResult::Selected(selected) = selected else {
+        panic!("new capability must be routable without rewriting grants")
+    };
+    assert_eq!(selected.channel.id(), own_cap);
+    drop(selected);
+    let own_version = before
+        .channel_capabilities
+        .iter()
+        .find(|capability| capability.id == own_cap)
+        .unwrap()
+        .updated_at;
+    let pending = repository
+        .prepare_mutation(
+            USER,
+            M::DeleteChannelCapability {
+                id: own_cap,
+                expected: own_version,
+            },
+        )
+        .await
+        .unwrap();
+    drop(pending);
+    assert_topology(&before, &repository.topology().await.unwrap());
+    let (mutations, _) = repository
+        .prepare_mutation(
+            USER,
+            M::DeleteChannelCapability {
+                id: own_cap,
+                expected: own_version,
+            },
+        )
+        .await
+        .unwrap()
+        .commit()
+        .await
+        .unwrap();
+    assert_eq!(
+        mutations[0].after_redacted["detached_routes"],
+        serde_json::json!([
+            {"rule_id": rule_id, "disabled": false}
+        ])
+    );
+    let after = repository.topology().await.unwrap();
+    let tiers = after
+        .operation_tiers
+        .iter()
+        .filter(|tier| tier.rule_id == rule_id)
+        .collect::<Vec<_>>();
+    assert_eq!(tiers.len(), 1);
+    assert_eq!(tiers[0].priority, 0);
+    assert_eq!(tiers[0].strategy, "weighted_round_robin");
+    let candidates = after
+        .operation_candidates
+        .iter()
+        .filter(|candidate| candidate.tier_id == tiers[0].id)
+        .collect::<Vec<_>>();
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].capability_id, other_cap);
+    assert_eq!(candidates[0].weight, 7);
+    assert_eq!(candidates[0].upstream_model, "wire-model");
+    assert!(
+        after
+            .operation_rules
+            .iter()
+            .find(|rule| rule.id == rule_id)
+            .unwrap()
+            .enabled
+    );
+    assert!(
+        !repository
+            .load()
+            .await
+            .unwrap()
+            .api_keys
+            .iter()
+            .find(|key| key.id == key_id)
+            .unwrap()
+            .allowed_channel_ids
+            .contains(&other_cap)
+    );
+    repository
+        .prepare_mutation(
+            USER,
+            M::DeleteChannelCapability {
+                id: other_cap,
+                expected: after
+                    .channel_capabilities
+                    .iter()
+                    .find(|capability| capability.id == other_cap)
+                    .unwrap()
+                    .updated_at,
+            },
+        )
+        .await
+        .unwrap()
+        .commit()
+        .await
+        .unwrap();
+    let after = repository.topology().await.unwrap();
+    assert!(
+        !after
+            .operation_rules
+            .iter()
+            .find(|rule| rule.id == rule_id)
+            .unwrap()
+            .enabled
+    );
+    assert!(
+        after
+            .operation_tiers
+            .iter()
+            .all(|tier| tier.rule_id != rule_id)
+    );
+    assert_eq!(sorted(&after.api_key_grants), grants);
+    let replacement = Uuid::new_v4();
+    repository
+        .prepare_mutation(
+            USER,
+            create_capability(replacement, CHANNEL, "responses-ws"),
+        )
+        .await
+        .unwrap()
+        .commit()
+        .await
+        .unwrap();
+    assert!(
+        repository
+            .load()
+            .await
+            .unwrap()
+            .api_keys
+            .iter()
+            .find(|key| key.id == key_id)
+            .unwrap()
+            .allowed_channel_ids
+            .contains(&replacement)
+    );
 }
 
 async fn exercise_capability_batch_and_recovery(
@@ -1034,7 +1321,7 @@ async fn exercise_deleted_model_releases_capability(
     );
 }
 
-async fn exercise_self_service_format_boundary(
+async fn exercise_self_service_channel_boundary(
     repository: &ai_gateway::persistence::ControlPlaneRepository,
     dormant_images: Uuid,
 ) {
@@ -1062,13 +1349,13 @@ async fn exercise_self_service_format_boundary(
             input: RoutingGroupInput {
                 name: "Explicit Images scope".into(),
                 enabled: true,
-                sharing_only: false,
             },
         },
         ControlPlaneMutation::SaveLogicalChannel {
             id: channel,
             expected: None,
             input: LogicalChannelInput {
+                sharing_only: false,
                 group_id: group,
                 access_id: access,
                 credential_id: None,
@@ -1137,7 +1424,7 @@ async fn exercise_self_service_format_boundary(
             USER,
             ControlPlaneMutation::CreateApiKey(ApiKeyCreate {
                 user_id: USER,
-                name: "Format-restricted admin key".into(),
+                name: "Channel-authorized admin key".into(),
                 expires_at: None,
                 allowed_api_formats: vec!["open_ai_chat_completions".into()],
                 permissions: vec!["proxy".into()],
@@ -1162,7 +1449,17 @@ async fn exercise_self_service_format_boundary(
             .unwrap()
             .api_key_grants
             .iter()
-            .any(|g| g.api_key_id == key.id && g.capability_id == dormant_images)
+            .any(|g| g.api_key_id == key.id && g.channel_id == CHANNEL)
+    );
+    let runtime = repository.load().await.unwrap();
+    assert!(
+        runtime
+            .api_keys
+            .iter()
+            .find(|record| record.id == key.id)
+            .unwrap()
+            .allowed_channel_ids
+            .contains(&dormant_images)
     );
     let expanded = repository
         .prepare_own_api_key_update(
@@ -1189,16 +1486,16 @@ async fn exercise_self_service_format_boundary(
         .remove(0);
     let topology = repository.topology().await.unwrap();
     assert!(
-        !topology
+        topology
             .api_key_grants
             .iter()
-            .any(|g| g.api_key_id == key.id && g.capability_id == dormant_images)
+            .any(|g| g.api_key_id == key.id && g.channel_id == CHANNEL)
     );
     assert!(
         topology
             .api_key_grants
             .iter()
-            .any(|g| g.api_key_id == key.id && g.capability_id == capability)
+            .any(|g| g.api_key_id == key.id && g.channel_id == channel)
     );
     repository
         .prepare_own_api_key_update(
@@ -1228,8 +1525,8 @@ async fn exercise_self_service_format_boundary(
         .filter(|g| g.api_key_id == key.id)
         .collect::<Vec<_>>();
     assert_eq!(grants.len(), 1);
-    assert_ne!(grants[0].capability_id, dormant_images);
-    assert_ne!(grants[0].capability_id, capability);
+    assert_eq!(grants[0].channel_id, CHANNEL);
+    assert_ne!(grants[0].channel_id, channel);
 }
 
 #[tokio::test]
@@ -1272,8 +1569,7 @@ async fn six_operations_preserve_deleted_pricing_references_and_roll_back_atomic
         let old = ai_gateway::persistence::upstream_topology::pg_load_legacy(&mut transaction)
             .await
             .unwrap();
-        let expected =
-            ai_gateway::persistence::capability_cutover::operation_split::upgrade(&old).unwrap();
+        let expected = upgrade_topology(&old);
         apply_operations_pg(&mut transaction).await;
         assert_topology(&expected, &pg_load(&mut transaction).await.unwrap());
         let guards: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_trigger WHERE tgname IN ('channel_capabilities_enforce_active_test_pricing_model','model_operation_rules_enforce_active_pricing_model') AND tgenabled='O'")
@@ -1598,10 +1894,24 @@ async fn postgres_cutover_round_trips_legacy_configuration() {
     assert_eq!(output.topology.api_key_grants.len(), 1);
     assert_eq!(output.topology.policy_grants.len(), 1);
     assert_topology(&output.topology, &loaded);
-    let expected =
-        ai_gateway::persistence::capability_cutover::operation_split::upgrade(&loaded).unwrap();
+    let expected = upgrade_topology(&loaded);
+    ai_gateway::persistence::capability_cutover::history::pg_retarget_history(&mut transaction)
+        .await
+        .unwrap();
+    sqlx::raw_sql(include_str!(
+        "../src/persistence/capability_cutover/codex-retirement-postgres.sql"
+    ))
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
     sqlx::raw_sql(include_str!(
         "../src/persistence/capability_cutover/lifecycle-postgres.sql"
+    ))
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+    sqlx::raw_sql(include_str!(
+        "../src/persistence/capability_cutover/retire-postgres.sql"
     ))
     .execute(&mut *transaction)
     .await
@@ -1838,11 +2148,6 @@ async fn postgres_cutover_round_trips_legacy_configuration() {
             2
         );
     }
-    sqlx::query("UPDATE model_rules SET enabled=false WHERE model_routing_profile_id=$1")
-        .bind(CODEX_PROFILE)
-        .execute(&mut *transaction)
-        .await
-        .unwrap();
     sqlx::query("UPDATE model_operation_rules SET enabled=false WHERE model_routing_profile_id=$1")
         .bind(CODEX_PROFILE)
         .execute(&mut *transaction)
@@ -1882,6 +2187,7 @@ async fn postgres_cutover_round_trips_legacy_configuration() {
             .unwrap();
     transaction.commit().await.unwrap();
     let repository = ai_gateway::persistence::ControlPlaneRepository::new(database.pool.clone());
+    let topology_before = repository.topology().await.unwrap();
     let change = repository
         .prepare_codex_credential_update(
             USER,
@@ -1897,22 +2203,21 @@ async fn postgres_cutover_round_trips_legacy_configuration() {
         .await
         .unwrap();
     let (mutations, _) = change.commit().await.unwrap();
-    assert_eq!(mutations[0].after_redacted["base_url"], "[REDACTED]");
     assert_eq!(
-        mutations[0].after_redacted["capabilities"]
-            .as_array()
-            .unwrap()
-            .len(),
-        5
+        mutations[0].after_redacted["label"],
+        "Canonical audit label"
     );
-    assert_eq!(
-        mutations[0].before_redacted["access_id"],
-        mutations[0].after_redacted["access_id"]
-    );
-    assert_eq!(
-        mutations[0].before_redacted["access_revision"],
-        mutations[0].after_redacted["access_revision"]
-    );
+    for absent in [
+        "base_url",
+        "capabilities",
+        "access_id",
+        "access_revision",
+        "access_token",
+        "refresh_token",
+    ] {
+        assert!(mutations[0].after_redacted.get(absent).is_none());
+    }
+    assert_topology(&topology_before, &repository.topology().await.unwrap());
     database.cleanup().await;
 }
 
@@ -1984,14 +2289,7 @@ async fn postgres_activation_retargets_codex_and_supports_native_lifecycle() {
     transaction.commit().await.unwrap();
 
     let repository = ControlPlaneRepository::new(database.pool.clone());
-    assert_eq!(
-        repository
-            .codex_credentials(CODEX_GROUP)
-            .await
-            .unwrap()
-            .len(),
-        1
-    );
+    assert_eq!(repository.codex_credentials().await.unwrap().len(), 1);
     let group = Uuid::new_v4();
     repository
         .prepare_mutation(
@@ -2002,7 +2300,6 @@ async fn postgres_activation_retargets_codex_and_supports_native_lifecycle() {
                 input: RoutingGroupInput {
                     name: "Native Codex group".into(),
                     enabled: true,
-                    sharing_only: false,
                 },
             },
         )
@@ -2012,7 +2309,6 @@ async fn postgres_activation_retargets_codex_and_supports_native_lifecycle() {
         .await
         .unwrap();
     let input = CodexCredentialCreate {
-        channel_group_id: group,
         label: "Canonical import".into(),
         enabled: true,
         proxy_id: None,
@@ -2050,7 +2346,7 @@ async fn postgres_activation_retargets_codex_and_supports_native_lifecycle() {
             .await
             .unwrap();
     assert!(legacy_group.is_none());
-    assert_eq!(repository.codex_credentials(group).await.unwrap().len(), 1);
+    assert_eq!(repository.codex_credentials().await.unwrap().len(), 2);
     let row = repository.codex_credential(created).await.unwrap().unwrap();
     assert_eq!(row.available_models, ["wire"]);
     repository
@@ -2391,10 +2687,30 @@ mod sqlite_backend {
             ai_gateway::persistence::upstream_topology::sqlite_load_legacy(&mut transaction)
                 .await
                 .unwrap();
-        let expected =
-            ai_gateway::persistence::capability_cutover::operation_split::upgrade(&legacy).unwrap();
+        let expected = upgrade_topology(&legacy);
         transaction.commit().await.unwrap();
-        assert_eq!(database.install_schema().await.unwrap(), 1);
+        let mut through_six = Vec::from(legacy_migrations());
+        through_six.push(ai_gateway::persistence::sqlite::SqliteMigration {
+            version: 6,
+            description: "six operation routing and connector names",
+            sql: include_str!("../migrations/sqlite/0006_six_operations.sql"),
+        });
+        assert_eq!(database.migrate(&through_six).await.unwrap(), 1);
+        let mut transaction = database.begin_write().await.unwrap();
+        let previous = ai_gateway::persistence::upstream_topology::sqlite_load_six_operations(
+            &mut transaction,
+        )
+        .await
+        .unwrap();
+        let projected =
+            ai_gateway::persistence::capability_cutover::channel_authorization::upgrade(&previous)
+                .unwrap();
+        assert_topology(
+            &expected,
+            &ai_gateway::persistence::capability_cutover::credential_ownership::upgrade(&projected),
+        );
+        transaction.commit().await.unwrap();
+        assert_eq!(database.install_schema().await.unwrap(), 3);
         let mut transaction = database.begin_write().await.unwrap();
         assert_topology(
             &expected,
@@ -2440,8 +2756,7 @@ mod sqlite_backend {
             ai_gateway::persistence::upstream_topology::sqlite_load_legacy(&mut transaction)
                 .await
                 .unwrap();
-        let expected =
-            ai_gateway::persistence::capability_cutover::operation_split::upgrade(&legacy).unwrap();
+        let expected = upgrade_topology(&legacy);
         transaction.rollback().await.unwrap();
         database.install_schema().await.unwrap();
         let mut transaction = database.begin_write().await.unwrap();

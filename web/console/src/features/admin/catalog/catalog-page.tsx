@@ -26,7 +26,7 @@ function actionVariant(action: ModelSyncPreviewModel["action"]) {
   return "outline";
 }
 
-export function CatalogPage() {
+export function CatalogPage({ embedded = false }: { embedded?: boolean } = {}) {
   const preview = useModelSyncPreview();
   const applyCatalogModels = useApplyCatalogModels();
   const [providerIds, setProviderIds] = useState("");
@@ -139,6 +139,7 @@ export function CatalogPage() {
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
+        embedded={embedded}
         title={t("Price sync")}
         description={t(
           "Preview, import, or explicitly update models.dev prices and catalog billing rules.",

@@ -389,9 +389,11 @@ struct TestTopology {
     capability: Uuid,
 }
 
-fn codex_fixture_input(group: Uuid, label: &str) -> ai_gateway::persistence::CodexCredentialCreate {
+fn codex_fixture_input(
+    _group: Uuid,
+    label: &str,
+) -> ai_gateway::persistence::CodexCredentialCreate {
     ai_gateway::persistence::CodexCredentialCreate {
-        channel_group_id: group,
         label: label.into(),
         enabled: true,
         proxy_id: None,
@@ -431,8 +433,68 @@ async fn create_test_codex_credential(
 }
 
 async fn codex_capability_id(pool: &PgPool, credential: Uuid, operation: &str) -> Uuid {
-    sqlx::query_scalar("SELECT id FROM channel_capabilities WHERE channel_id=$1 AND operation=$2 AND deleted_at IS NULL")
+    sqlx::query_scalar("SELECT cap.id FROM channel_capabilities cap JOIN upstream_channels ch ON ch.id=cap.channel_id WHERE ch.credential_id=$1 AND cap.operation=$2 AND cap.deleted_at IS NULL")
         .bind(credential).bind(operation).fetch_one(pool).await.unwrap()
+}
+
+async fn bind_test_codex_channel(
+    pool: &PgPool,
+    app: &App,
+    group: Uuid,
+    credential: Uuid,
+    sharing_only: bool,
+) -> Uuid {
+    let repository = ControlPlaneRepository::new(pool.clone());
+    let identity = repository
+        .upstream_credential_detail(credential)
+        .await
+        .unwrap()
+        .unwrap();
+    let record = repository
+        .codex_credential(credential)
+        .await
+        .unwrap()
+        .unwrap();
+    let access = create_resource(
+        app,
+        "/console/v1/routing/accesses",
+        serde_json::json!({
+            "name":format!("Access {credential}"),"connector_kind":"codex",
+            "base_url":identity.credential.allowed_base_urls[0],"enabled":true
+        }),
+    )
+    .await;
+    let channel = create_resource(
+        app,
+        "/console/v1/routing/logical-channels",
+        serde_json::json!({
+            "name":format!("Channel {credential}"),"group_id":group,"access_id":access,
+            "credential_id":credential,"enabled":true,"sharing_only":sharing_only
+        }),
+    )
+    .await;
+    for operation in [
+        "responses",
+        "responses-ws",
+        "web_search",
+        "images_generation",
+        "images_edit",
+    ] {
+        create_resource(
+            app,
+            "/console/v1/routing/capabilities",
+            serde_json::json!({
+                "channel_id":channel,
+                "settings":{"operation":operation,"enabled":!operation.starts_with("images_"),
+                    "available_models":record.available_models,"request_compression":"default",
+                    "test_model":null,"test_pricing_model_id":null,"auto_disable_allowed":false},
+                "status_statistics_enabled":false,"config_template_id":null,
+                "override_document":{},"billing_multiplier":"1"
+            }),
+        )
+        .await;
+    }
+    channel
 }
 
 async fn create_test_pricing_model(app: &App) -> Uuid {
@@ -494,6 +556,7 @@ async fn seed_test_topology(app: &App, operation: &str) -> TestTopology {
         "/console/v1/routing/logical-channels",
         serde_json::json!({
             "group_id": group, "access_id": access, "credential_id": null,
+            "sharing_only": false,
             "name": "Spec channel", "enabled": true
         }),
     )
@@ -1483,7 +1546,7 @@ async fn upstream_access_contract_is_versioned_and_does_not_create_authority() {
     );
     let authority: i64 = sqlx::query_scalar(
         "SELECT (SELECT count(*) FROM upstream_channels)+(SELECT count(*) FROM channel_capabilities)
-              +(SELECT count(*) FROM model_capability_candidates)+(SELECT count(*) FROM api_key_capability_grants)",
+              +(SELECT count(*) FROM model_capability_candidates)+(SELECT count(*) FROM api_key_channel_grants)",
     ).fetch_one(&database.pool).await.unwrap();
     assert_eq!(authority, 0);
     let audit: Vec<serde_json::Value> = sqlx::query_scalar(
@@ -1610,6 +1673,7 @@ async fn canonical_topology_contract_has_versioned_immutable_capability_identity
     }
     let input = serde_json::json!({
         "group_id": owners[0], "access_id": owners[1], "credential_id": null,
+        "sharing_only": false,
         "name": "Canonical channel", "enabled": true,
     });
     let response = request(
@@ -1741,8 +1805,8 @@ async fn canonical_topology_contract_has_versioned_immutable_capability_identity
     assert_ne!(recovered["revision"], disabled["revision"]);
     let authority: i64 = sqlx::query_scalar(
         "SELECT (SELECT count(*) FROM model_capability_candidates)
-              +(SELECT count(*) FROM api_key_capability_grants)
-              +(SELECT count(*) FROM api_key_policy_capability_grants)",
+              +(SELECT count(*) FROM api_key_channel_grants)
+              +(SELECT count(*) FROM api_key_policy_channel_grants)",
     )
     .fetch_one(&database.pool)
     .await
@@ -1966,7 +2030,6 @@ async fn sharing_contract_is_versioned_scoped_and_never_exposes_provider_identit
         .create_codex_credential(
             app.user_id,
             CodexCredentialCreate {
-                channel_group_id: channel_group,
                 label: "Private provider label".into(),
                 enabled: true,
                 proxy_id: None,
@@ -1988,8 +2051,10 @@ async fn sharing_contract_is_versioned_scoped_and_never_exposes_provider_identit
         )
         .await
         .unwrap();
+    let channel =
+        bind_test_codex_channel(&database.pool, &app, channel_group, credential.id, false).await;
     let mut input = serde_json::json!({
-        "credential_id": credential.id,
+        "channel_id": channel,
         "name": "Shared development", "enabled": false, "seats": [null, null],
         "primary_limit_amount": "20", "secondary_limit_amount": "100",
         "request_reservation_amount": "0.10", "user_requests_per_minute": 30,
@@ -2080,14 +2145,16 @@ async fn sharing_contract_is_versioned_scoped_and_never_exposes_provider_identit
     assert_eq!(options["groups"], serde_json::json!([]));
     assert_eq!(options["channels"], serde_json::json!([]));
     assert_eq!(
-        options["sharing_credentials"][0]["credential_id"],
-        credential.id.to_string()
+        options["sharing_channels"][0]["channel_id"],
+        channel.to_string()
     );
-    assert_eq!(
-        options["sharing_credentials"][0]["name"],
-        "Shared development"
+    assert_eq!(options["sharing_channels"][0]["name"], "Shared development");
+    assert!(
+        options["sharing_channels"][0]
+            .get("credential_id")
+            .is_none()
     );
-    let sharing_channel_ids = options["sharing_credentials"][0]["channel_ids"].clone();
+    let sharing_channel_ids = serde_json::json!([channel]);
     let sharing_key = request(
         &app,
         "POST",
@@ -2134,10 +2201,7 @@ async fn sharing_contract_is_versioned_scoped_and_never_exposes_provider_identit
     assert_eq!(categorized["policy_enabled"], true);
     assert_eq!(categorized["groups"], serde_json::json!([]));
     assert_eq!(categorized["channels"], serde_json::json!([]));
-    assert_eq!(
-        categorized["sharing_credentials"].as_array().unwrap().len(),
-        1
-    );
+    assert_eq!(categorized["sharing_channels"].as_array().unwrap().len(), 1);
     let implicit_group_key = request(
         &app,
         "POST",
@@ -2203,8 +2267,8 @@ async fn sharing_contract_is_versioned_scoped_and_never_exposes_provider_identit
         ordinary_channel.to_string()
     );
     assert_eq!(
-        combined_options["sharing_credentials"][0]["credential_id"],
-        credential.id.to_string()
+        combined_options["sharing_channels"][0]["channel_id"],
+        channel.to_string()
     );
     let combined_key = request(
         &app,
@@ -3657,7 +3721,7 @@ async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
         .await
         .unwrap();
 
-    let ordinary_group_id = seed_test_topology(&app, "responses").await.group;
+    seed_test_topology(&app, "responses").await;
     let visible_group_id = create_resource(
         &app,
         "/console/v1/routing/groups",
@@ -3675,6 +3739,7 @@ async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
     )
     .await;
     let mut credential_ids = Vec::new();
+    let mut logical_channel_ids = Vec::new();
     for (group_id, label, plan_type, used) in [
         (visible_group_id, "Visible private label", "plus", 42),
         (hidden_group_id, "Hidden private label", "business", 81),
@@ -3685,6 +3750,8 @@ async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
         input.access_token = "private-access-token".into();
         input.refresh_token = "private-refresh-token".into();
         let id = create_test_codex_credential(&database.pool, &app, input).await;
+        logical_channel_ids
+            .push(bind_test_codex_channel(&database.pool, &app, group_id, id, false).await);
         sqlx::query(
             "UPDATE codex_oauth_credentials SET runtime_status='active',quota_allowed=true,
             quota_limit_reached=false,primary_used_percent=$2,primary_window_seconds=10800,
@@ -3737,13 +3804,15 @@ async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
     .unwrap();
     let visible_images_channel_id =
         codex_capability_id(&database.pool, visible_credential_id, "images_generation").await;
+    let visible_responses_channel_id =
+        codex_capability_id(&database.pool, visible_credential_id, "responses").await;
     for (request_user_id, api_format, api_operation, channel_group_id, channel_id, logs) in [
         (
             viewer_id,
             "open_ai_responses",
             "responses",
             visible_group_id,
-            visible_credential_id,
+            visible_responses_channel_id,
             vec![
                 (period_started_at, rust_decimal::Decimal::new(125, 2)),
                 (
@@ -3806,6 +3875,14 @@ async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
         }
     }
     metering_fixtures::copy_log_fixtures(&database.pool).await;
+    sqlx::query(
+        "INSERT INTO request_credential_attributions(request_id,known,credential_id)
+        SELECT id,true,$1 FROM request_metering_facts WHERE client_model='quota-cost-model'",
+    )
+    .bind(visible_credential_id)
+    .execute(&database.pool)
+    .await
+    .unwrap();
     let legacy_zero_started_at = period_started_at - chrono::Duration::minutes(30);
     sqlx::query(
         "INSERT INTO codex_quota_window_periods \
@@ -3833,7 +3910,7 @@ async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
         serde_json::json!([])
     );
 
-    for invalid_group_id in [ordinary_group_id, visible_images_channel_id] {
+    for invalid_group_id in [Uuid::new_v4(), visible_images_channel_id] {
         let invalid = request(
             &app,
             "PUT",
@@ -3909,7 +3986,10 @@ async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
     assert_eq!(quota.len(), 13);
     assert_eq!(quota["id"], visible_credential_id.to_string());
     assert_eq!(quota["name"], visible_credential_id.to_string());
-    assert_eq!(quota["channel_group_id"], visible_group_id.to_string());
+    assert_eq!(
+        quota["channel_ids"],
+        serde_json::json!([logical_channel_ids[0]])
+    );
     assert_eq!(quota["plan_type"], "plus");
     assert_eq!(quota["primary_used_percent"], 42);
     assert_eq!(quota["primary_window_cost_amount"], "2.00000000");
@@ -3944,7 +4024,10 @@ async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
     let history = body_json(history).await;
     assert_eq!(history["credential_id"], visible_credential_id.to_string());
     assert_eq!(history["name"], visible_credential_id.to_string());
-    assert_eq!(history["channel_group_id"], visible_group_id.to_string());
+    assert_eq!(
+        history["channel_ids"],
+        serde_json::json!([logical_channel_ids[0]])
+    );
     assert_eq!(history["plan_type"], "plus");
     let periods = history["periods"].as_array().unwrap();
     assert_eq!(periods.len(), 2);
@@ -3988,7 +4071,7 @@ async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
         &viewer_session.access_token,
         "GET",
         &format!(
-            "/console/v1/providers/codex-oauth/credentials/{visible_credential_id}/quota/windows"
+            "/console/v1/routing/upstream-credentials/codex/{visible_credential_id}/quota/windows"
         ),
         serde_json::json!({}),
         &[],
@@ -4932,12 +5015,12 @@ async fn request_compression_is_restricted_to_responses_capabilities() {
 }
 
 #[tokio::test]
-async fn sharing_only_mode_is_codex_scoped_versioned_and_pool_wide() {
+async fn sharing_only_mode_is_codex_scoped_versioned_and_channel_owned() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
-    let path = "/console/v1/routing/groups";
+    let path = "/console/v1/routing/logical-channels";
     let ordinary = seed_test_topology(&app, "responses").await;
-    let ordinary_path = format!("{path}/{}", ordinary.group);
+    let ordinary_path = format!("{path}/{}", ordinary.channel);
     let detail = request(&app, "GET", &ordinary_path, serde_json::json!({}), &[]).await;
     let ordinary_etag = detail.headers()[header::ETAG].to_str().unwrap().to_owned();
     let invalid = request(
@@ -4946,30 +5029,20 @@ async fn sharing_only_mode_is_codex_scoped_versioned_and_pool_wide() {
         &ordinary_path,
         serde_json::json!({
             "name":"invalid-sharing-only", "enabled":true, "sharing_only":true
+            ,"group_id":ordinary.group,"access_id":ordinary.access,"credential_id":null
         }),
         &[("if-match", &ordinary_etag)],
     )
     .await;
     assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    let created = request(
-        &app,
-        "POST",
-        path,
-        serde_json::json!({
-            "name":"sharing-only-contract", "enabled":true, "sharing_only":true
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(created.status(), StatusCode::CREATED);
-    let id = body_json(created).await["id"].as_str().unwrap().to_owned();
-    let group_id = Uuid::parse_str(&id).unwrap();
+    let group_id = ordinary.group;
     let credential = create_test_codex_credential(
         &database.pool,
         &app,
         codex_fixture_input(group_id, "sharing-only-member"),
     )
     .await;
+    let id = bind_test_codex_channel(&database.pool, &app, group_id, credential, true).await;
     let images = codex_capability_id(&database.pool, credential, "images_generation").await;
     let images_enabled: bool =
         sqlx::query_scalar("SELECT enabled FROM channel_capabilities WHERE id=$1")
@@ -4981,9 +5054,11 @@ async fn sharing_only_mode_is_codex_scoped_versioned_and_pool_wide() {
     let detail_path = format!("{path}/{id}");
     let detail = request(&app, "GET", &detail_path, serde_json::json!({}), &[]).await;
     let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
-    assert_eq!(body_json(detail).await["sharing_only"], true);
+    let detail = body_json(detail).await;
+    assert_eq!(detail["sharing_only"], true);
     let mut input = serde_json::json!({
-        "name":"sharing-only-renamed", "enabled":true, "sharing_only":true
+        "name":"sharing-only-renamed", "enabled":true, "sharing_only":true,
+        "group_id":group_id,"access_id":detail["access_id"],"credential_id":credential
     });
     let saved = request(
         &app,
@@ -5023,7 +5098,7 @@ async fn sharing_only_mode_is_codex_scoped_versioned_and_pool_wide() {
         StatusCode::OK
     );
     let images: (bool, bool) =
-        sqlx::query_as("SELECT c.enabled,g.sharing_only FROM channel_capabilities c JOIN upstream_channels u ON u.id=c.channel_id JOIN routing_groups g ON g.id=u.group_id WHERE c.id=$1")
+        sqlx::query_as("SELECT c.enabled,u.sharing_only FROM channel_capabilities c JOIN upstream_channels u ON u.id=c.channel_id WHERE c.id=$1")
             .bind(images)
             .fetch_one(&database.pool)
             .await
@@ -5085,7 +5160,7 @@ async fn codex_oauth_flow_contract_uses_pkce_and_actor_scoped_completion() {
     let legacy_import = request(
         &app,
         "POST",
-        &format!("/console/v1/providers/codex-oauth/channel-groups/{group_id}/credentials"),
+        "/console/v1/routing/upstream-credentials/codex",
         serde_json::json!({
             "label": "legacy-import",
             "weight": 100,
@@ -5101,7 +5176,7 @@ async fn codex_oauth_flow_contract_uses_pkce_and_actor_scoped_completion() {
     let legacy_start = request(
         &app,
         "POST",
-        &format!("/console/v1/providers/codex-oauth/channel-groups/{group_id}/oauth/flows"),
+        "/console/v1/routing/upstream-credentials/codex/oauth/flows",
         serde_json::json!({
             "label": "legacy-spec-account",
             "weight": 100,
@@ -5115,7 +5190,7 @@ async fn codex_oauth_flow_contract_uses_pkce_and_actor_scoped_completion() {
     let start = request(
         &app,
         "POST",
-        &format!("/console/v1/providers/codex-oauth/channel-groups/{group_id}/oauth/flows"),
+        "/console/v1/routing/upstream-credentials/codex/oauth/flows",
         serde_json::json!({
             "label": "spec-account",
             "quota_threshold_percent": 95
@@ -5158,7 +5233,7 @@ async fn codex_oauth_flow_contract_uses_pkce_and_actor_scoped_completion() {
     let list = request(
         &app,
         "GET",
-        &format!("/console/v1/providers/codex-oauth/channel-groups/{group_id}/credentials"),
+        "/console/v1/routing/upstream-credentials/codex",
         serde_json::json!({}),
         &[],
     )
@@ -5187,18 +5262,13 @@ async fn codex_oauth_flow_contract_uses_pkce_and_actor_scoped_completion() {
             &[],
         )
         .await;
-        if method == "GET" {
-            assert_eq!(response.status(), StatusCode::OK);
-            assert_eq!(body_json(response).await, serde_json::json!([]));
-        } else {
-            assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        }
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     let mismatched = request(
         &app,
         "POST",
-        &format!("/console/v1/providers/codex-oauth/oauth/flows/{flow_id}/complete"),
+        &format!("/console/v1/routing/upstream-credentials/codex/oauth/flows/{flow_id}/complete"),
         serde_json::json!({
             "callback_url":
                 "http://localhost:1455/auth/callback?code=spec-code&state=wrong-state"
@@ -5255,7 +5325,7 @@ async fn codex_export_and_proxy_delete_contracts_preserve_secrets_and_references
     let exported = request(
         &app,
         "POST",
-        &format!("/console/v1/providers/codex-oauth/channel-groups/{group_id}/credentials/export"),
+        "/console/v1/routing/upstream-credentials/codex/export",
         serde_json::json!({
             "credential_ids": [channel_id],
             "include_proxies": true
@@ -5266,7 +5336,7 @@ async fn codex_export_and_proxy_delete_contracts_preserve_secrets_and_references
     assert_eq!(exported.status(), StatusCode::OK);
     let exported = body_json(exported).await;
     assert_eq!(exported["type"], "ai-gateway-codex-credentials");
-    assert_eq!(exported["version"], 2);
+    assert_eq!(exported["version"], 3);
     assert_eq!(
         exported["credentials"][0]["account_id"],
         serde_json::Value::Null
@@ -5378,7 +5448,7 @@ async fn codex_business_batch_and_delete_contracts_are_versioned() {
     let list = request(
         &app,
         "GET",
-        &format!("/console/v1/providers/codex-oauth/channel-groups/{group_id}/credentials"),
+        "/console/v1/routing/upstream-credentials/codex",
         serde_json::json!({}),
         &[],
     )
@@ -5404,7 +5474,7 @@ async fn codex_business_batch_and_delete_contracts_are_versioned() {
     let disabled = request(
         &app,
         "POST",
-        &format!("/console/v1/providers/codex-oauth/channel-groups/{group_id}/credentials/batch"),
+        "/console/v1/routing/upstream-credentials/codex/batch",
         serde_json::json!({
             "items": items,
             "operation": "disable",
@@ -5424,7 +5494,7 @@ async fn codex_business_batch_and_delete_contracts_are_versioned() {
     let detail = request(
         &app,
         "GET",
-        &format!("/console/v1/providers/codex-oauth/credentials/{member_a}"),
+        &format!("/console/v1/routing/upstream-credentials/codex/{member_a}"),
         serde_json::json!({}),
         &[],
     )
@@ -5444,7 +5514,7 @@ async fn codex_business_batch_and_delete_contracts_are_versioned() {
     let legacy_update = request(
         &app,
         "PUT",
-        &format!("/console/v1/providers/codex-oauth/credentials/{member_a}"),
+        &format!("/console/v1/routing/upstream-credentials/codex/{member_a}"),
         serde_json::json!({
             "label": "business-member-a",
             "enabled": false,
@@ -5460,7 +5530,7 @@ async fn codex_business_batch_and_delete_contracts_are_versioned() {
     let deleted = request(
         &app,
         "DELETE",
-        &format!("/console/v1/providers/codex-oauth/credentials/{member_a}"),
+        &format!("/console/v1/routing/upstream-credentials/codex/{member_a}"),
         serde_json::json!({}),
         &[("if-match", &etag)],
     )
@@ -5471,7 +5541,7 @@ async fn codex_business_batch_and_delete_contracts_are_versioned() {
     let remaining = request(
         &app,
         "GET",
-        &format!("/console/v1/providers/codex-oauth/channel-groups/{group_id}/credentials"),
+        "/console/v1/routing/upstream-credentials/codex",
         serde_json::json!({}),
         &[],
     )
@@ -6124,14 +6194,14 @@ async fn model_rule_hierarchy_separates_pricing_from_candidate_models() {
 }
 
 #[tokio::test]
-async fn capability_deletion_preserves_fixed_grants_and_requires_route_withdrawal() {
+async fn capability_deletion_withdraws_routes_atomically_and_preserves_channel_grants() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
     let topology = seed_test_topology(&app, "chat_completion").await;
     let (profile, rule) =
         create_test_operation_rule(&app, topology.capability, "chat_completion").await;
     let key = create_resource(&app, "/console/v1/api-keys", serde_json::json!({
-        "user_id": app.user_id, "name": "deletion-key", "allowed_api_formats": ["open_ai_chat_completions"],
+        "user_id": app.user_id, "name": "deletion-key",
         "permissions": ["proxy"], "allowed_group_ids": [topology.group], "allowed_channel_ids": []
     })).await;
     let policy = create_resource(
@@ -6147,40 +6217,10 @@ async fn capability_deletion_preserves_fixed_grants_and_requires_route_withdrawa
     let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
     let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
     let before = body_json(detail).await;
-    assert_eq!(
-        request(
-            &app,
-            "DELETE",
-            &path,
-            serde_json::json!({}),
-            &[("if-match", &etag)]
-        )
-        .await
-        .status(),
-        StatusCode::UNPROCESSABLE_ENTITY
-    );
-    assert_eq!(
-        body_json(request(&app, "GET", &path, serde_json::json!({}), &[]).await).await,
-        before
-    );
     let rule_path = format!("/console/v1/routing/operation-rules/{rule}");
     let detail = request(&app, "GET", &rule_path, serde_json::json!({}), &[]).await;
     let rule_etag = detail.headers()["etag"].to_str().unwrap().to_owned();
-    assert_eq!(
-        request(
-            &app,
-            "PUT",
-            &rule_path,
-            serde_json::json!({
-                "model_routing_profile_id": profile, "operation": "chat_completion",
-                "enabled": false, "routing_tiers": []
-            }),
-            &[("if-match", &rule_etag)]
-        )
-        .await
-        .status(),
-        StatusCode::OK
-    );
+    let before_rule = body_json(detail).await;
     assert_eq!(
         request(
             &app,
@@ -6194,6 +6234,14 @@ async fn capability_deletion_preserves_fixed_grants_and_requires_route_withdrawa
         StatusCode::CONFLICT
     );
     assert_eq!(
+        body_json(request(&app, "GET", &path, serde_json::json!({}), &[]).await).await,
+        before
+    );
+    assert_eq!(
+        body_json(request(&app, "GET", &rule_path, serde_json::json!({}), &[]).await).await,
+        before_rule
+    );
+    assert_eq!(
         request(
             &app,
             "DELETE",
@@ -6204,6 +6252,26 @@ async fn capability_deletion_preserves_fixed_grants_and_requires_route_withdrawa
         .await
         .status(),
         StatusCode::OK
+    );
+    let changed = request(&app, "GET", &rule_path, serde_json::json!({}), &[]).await;
+    assert_ne!(changed.headers()["etag"].to_str().unwrap(), rule_etag);
+    let changed = body_json(changed).await;
+    assert_eq!(changed["enabled"], false);
+    assert_eq!(changed["routing_tiers"], serde_json::json!([]));
+    assert_eq!(
+        request(
+            &app,
+            "PUT",
+            &rule_path,
+            serde_json::json!({
+                "model_routing_profile_id": profile, "operation": "chat_completion",
+                "enabled": false, "routing_tiers": []
+            }),
+            &[("if-match", &rule_etag)]
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
     );
     assert_eq!(
         request(&app, "GET", &path, serde_json::json!({}), &[])
@@ -6223,17 +6291,22 @@ async fn capability_deletion_preserves_fixed_grants_and_requires_route_withdrawa
         .status(),
         StatusCode::NOT_FOUND
     );
-    let key_grants: Vec<(Uuid, String, Uuid)> = sqlx::query_as("SELECT capability_id,origin_kind,origin_id FROM api_key_capability_grants WHERE api_key_id=$1")
-        .bind(key).fetch_all(&database.pool).await.unwrap();
+    let key_grants: Vec<(Uuid, String, Uuid)> = sqlx::query_as(
+        "SELECT channel_id,origin_kind,origin_id FROM api_key_channel_grants WHERE api_key_id=$1",
+    )
+    .bind(key)
+    .fetch_all(&database.pool)
+    .await
+    .unwrap();
     assert_eq!(
         key_grants,
-        [(topology.capability, "group".into(), topology.group)]
+        [(topology.channel, "group".into(), topology.group)]
     );
-    let policy_grants: Vec<(Uuid, String, Uuid)> = sqlx::query_as("SELECT capability_id,origin_kind,origin_id FROM api_key_policy_capability_grants WHERE policy_id=$1")
+    let policy_grants: Vec<(Uuid, String, Uuid)> = sqlx::query_as("SELECT channel_id,origin_kind,origin_id FROM api_key_policy_channel_grants WHERE policy_id=$1")
         .bind(policy).fetch_all(&database.pool).await.unwrap();
     assert_eq!(
         policy_grants,
-        [(topology.capability, "channel".into(), topology.channel)]
+        [(topology.channel, "channel".into(), topology.channel)]
     );
     let channel = request(
         &app,
@@ -6349,13 +6422,12 @@ async fn group_deletion_requires_explicit_child_retirement_and_preserves_history
         detail["allowed_channel_ids"],
         serde_json::json!([topology.channel])
     );
-    let count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM api_key_policy_capability_grants WHERE policy_id=$1",
-    )
-    .bind(policy)
-    .fetch_one(&database.pool)
-    .await
-    .unwrap();
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM api_key_policy_channel_grants WHERE policy_id=$1")
+            .bind(policy)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
     assert_eq!(count, 2);
     let history: i64 =
         sqlx::query_scalar("SELECT count(*) FROM group_identity_registry WHERE id=$1")
@@ -6602,6 +6674,7 @@ async fn channel_and_template_details_return_stored_editable_values() {
     let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
     assert_eq!(request(&app, "PUT", &logical_path, serde_json::json!({
         "group_id": topology.group, "access_id": topology.access, "credential_id": credential_id,
+        "sharing_only": false,
         "name": "Bound channel", "enabled": true
     }), &[("if-match", &etag)]).await.status(), StatusCode::OK);
     let override_document = serde_json::json!({
@@ -6775,7 +6848,7 @@ async fn responses_websocket_and_search_are_independent_capabilities() {
             StatusCode::UNPROCESSABLE_ENTITY
         );
     }
-    let grants: i64 = sqlx::query_scalar("SELECT count(*) FROM api_key_capability_grants")
+    let grants: i64 = sqlx::query_scalar("SELECT count(*) FROM api_key_channel_grants")
         .fetch_one(&database.pool)
         .await
         .unwrap();
@@ -7349,7 +7422,11 @@ async fn self_api_key_create_reports_policy_preconditions() {
     assert_eq!(detail["allowed_channel_ids"], serde_json::json!([]));
     assert_eq!(
         detail["allowed_api_formats"],
-        serde_json::json!(["open_ai_chat_completions"])
+        serde_json::json!([
+            "open_ai_chat_completions",
+            "open_ai_responses",
+            "open_ai_images"
+        ])
     );
     assert_eq!(
         detail["permissions"],
@@ -8444,6 +8521,14 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
         codex_fixture_input(codex_group_id, "statistics-codex"),
     )
     .await;
+    bind_test_codex_channel(
+        &database.pool,
+        &app,
+        codex_group_id,
+        codex_credential_id,
+        false,
+    )
+    .await;
     let codex_images_channel = (
         codex_capability_id(&database.pool, codex_credential_id, "images_generation").await,
         codex_group_id,
@@ -8467,7 +8552,7 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
         &app,
         "GET",
         &format!(
-            "/console/v1/providers/codex-oauth/credentials/{codex_credential_id}/quota/windows?limit=10"
+            "/console/v1/routing/upstream-credentials/codex/{codex_credential_id}/quota/windows?limit=10"
         ),
         serde_json::json!({}),
         &[],
@@ -8488,12 +8573,14 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
         "openai_official"
     );
     let codex_started_at = started_at + chrono::Duration::hours(3);
+    let codex_responses_channel =
+        codex_capability_id(&database.pool, codex_credential_id, "responses").await;
     for (api_format, api_operation, group_id, channel_id) in [
         (
             "open_ai_responses",
             "responses",
             codex_group_id,
-            codex_credential_id,
+            codex_responses_channel,
         ),
         (
             "open_ai_images",
@@ -8524,6 +8611,14 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
         .unwrap();
     }
     metering_fixtures::copy_log_fixtures(&database.pool).await;
+    sqlx::query(
+        "INSERT INTO request_credential_attributions(request_id,known,credential_id)
+        SELECT id,true,$1 FROM request_metering_facts WHERE client_model='statistics-codex-model'",
+    )
+    .bind(codex_credential_id)
+    .execute(&database.pool)
+    .await
+    .unwrap();
     let codex_range_start = (codex_started_at - chrono::Duration::minutes(5))
         .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let codex_range_end = (codex_started_at + chrono::Duration::minutes(5))

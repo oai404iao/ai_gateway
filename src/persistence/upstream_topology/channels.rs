@@ -1,8 +1,7 @@
 //! Logical-channel writes bind one access and at most one credential.
 //!
 //! A channel save or delete never creates capabilities, routes, grants, or a
-//! credential, and never touches a provider-managed (Codex) channel: that
-//! lifecycle belongs to the dedicated connector APIs. Scope, connector, and
+//! credential. Scope, connector, and
 //! target checks run for every non-deleted owner, including disabled ones, so a
 //! disabled draft cannot hide a binding that the snapshot compiler would reject.
 
@@ -25,8 +24,7 @@ fn validate_input(input: &LogicalChannelInput) -> Result<(), RepositoryError> {
 }
 
 /// Structural graph checks that do not need credential rows. A missing or
-/// tombstoned group/access is a routing dependency; a sharing-only group may
-/// only own Codex channels, which generic writes must never create or rebind.
+/// tombstoned group/access is a routing dependency.
 fn validate_replacement(
     topology: &UpstreamTopologyRecords,
     id: Uuid,
@@ -51,7 +49,7 @@ fn validate_replacement(
         }
         (None, None) => {}
     }
-    let group = topology
+    topology
         .routing_groups
         .iter()
         .find(|group| group.id == input.group_id && group.deleted_at.is_none())
@@ -61,20 +59,8 @@ fn validate_replacement(
         .iter()
         .find(|access| access.id == input.access_id && access.deleted_at.is_none())
         .ok_or(RepositoryError::RoutingDependencyInvalid)?;
-    if access.connector_kind == ConnectorKind::CodexOauth {
-        return Err(RepositoryError::ProviderManagedResource);
-    }
-    if group.sharing_only {
+    if input.sharing_only && access.connector_kind != ConnectorKind::CodexOauth {
         return Err(RepositoryError::Validation);
-    }
-    if existing.is_some_and(|channel| {
-        topology
-            .upstream_accesses
-            .iter()
-            .find(|access| access.id == channel.access_id)
-            .is_some_and(|access| access.connector_kind == ConnectorKind::CodexOauth)
-    }) {
-        return Err(RepositoryError::ProviderManagedResource);
     }
     let name = input.name.trim();
     if topology.logical_channels.iter().any(|channel| {
@@ -124,6 +110,7 @@ fn audit(record: Option<&LogicalChannelRecord>) -> serde_json::Value {
                 "credential_id": record.credential_id,
                 "name": record.name,
                 "enabled": record.enabled,
+                "sharing_only": record.sharing_only,
                 "binding_revision": record.binding_revision,
                 "created_at": record.created_at,
                 "updated_at": record.updated_at,
@@ -193,8 +180,8 @@ pub async fn pg_save(
     let changed = if let Some(expected) = expected {
         sqlx::query(
             "UPDATE upstream_channels SET group_id=$2,access_id=$3,credential_id=$4,name=$5,
-             enabled=$6,binding_revision=$7
-             WHERE id=$1 AND updated_at=$8 AND deleted_at IS NULL",
+             enabled=$6,binding_revision=$7,sharing_only=$8
+             WHERE id=$1 AND updated_at=$9 AND deleted_at IS NULL",
         )
         .bind(id)
         .bind(input.group_id)
@@ -203,6 +190,7 @@ pub async fn pg_save(
         .bind(input.name.trim())
         .bind(input.enabled)
         .bind(binding_revision)
+        .bind(input.sharing_only)
         .bind(expected)
         .execute(&mut **transaction)
         .await?
@@ -210,8 +198,8 @@ pub async fn pg_save(
     } else {
         sqlx::query(
             "INSERT INTO upstream_channels
-             (id,group_id,access_id,credential_id,name,enabled,binding_revision)
-             VALUES ($1,$2,$3,$4,$5,$6,$7)",
+             (id,group_id,access_id,credential_id,name,enabled,binding_revision,sharing_only)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
         )
         .bind(id)
         .bind(input.group_id)
@@ -220,6 +208,7 @@ pub async fn pg_save(
         .bind(input.name.trim())
         .bind(input.enabled)
         .bind(binding_revision)
+        .bind(input.sharing_only)
         .execute(&mut **transaction)
         .await?
         .rows_affected()
@@ -274,13 +263,13 @@ pub async fn sqlite_save(
             .into_iter()
             .find(|record| record.id == credential_id)
             .ok_or(RepositoryError::Validation)?;
-        crate::persistence::upstream_credentials::validate_static_binding(&record, &base_url)?;
+        crate::persistence::upstream_credentials::validate_binding(&record, &base_url)?;
     }
     let binding_revision = Uuid::new_v4();
     let changed = if let Some(expected) = expected {
         sqlx::query(
             "UPDATE upstream_channels SET group_id=?,access_id=?,credential_id=?,name=?,
-             enabled=?,binding_revision=?,updated_at=ag_now()
+             enabled=?,binding_revision=?,sharing_only=?,updated_at=ag_now()
              WHERE id=? AND updated_at=? AND deleted_at IS NULL",
         )
         .bind(SqliteUuid(input.group_id))
@@ -289,6 +278,7 @@ pub async fn sqlite_save(
         .bind(input.name.trim())
         .bind(input.enabled)
         .bind(SqliteUuid(binding_revision))
+        .bind(input.sharing_only)
         .bind(SqliteUuid(id))
         .bind(SqliteTimestamp(expected))
         .execute(&mut **transaction)
@@ -297,8 +287,8 @@ pub async fn sqlite_save(
     } else {
         sqlx::query(
             "INSERT INTO upstream_channels
-             (id,group_id,access_id,credential_id,name,enabled,binding_revision)
-             VALUES (?,?,?,?,?,?,?)",
+             (id,group_id,access_id,credential_id,name,enabled,binding_revision,sharing_only)
+             VALUES (?,?,?,?,?,?,?,?)",
         )
         .bind(SqliteUuid(id))
         .bind(SqliteUuid(input.group_id))
@@ -307,6 +297,7 @@ pub async fn sqlite_save(
         .bind(input.name.trim())
         .bind(input.enabled)
         .bind(SqliteUuid(binding_revision))
+        .bind(input.sharing_only)
         .execute(&mut **transaction)
         .await?
         .rows_affected()
@@ -413,15 +404,15 @@ mod tests {
             credential_id: None,
             name: name.into(),
             enabled: true,
+            sharing_only: false,
         }
     }
 
-    fn group(id: u128, sharing_only: bool) -> RoutingGroupRecord {
+    fn group(id: u128) -> RoutingGroupRecord {
         RoutingGroupRecord {
             id: Uuid::from_u128(id),
             name: format!("group-{id}"),
             enabled: true,
-            sharing_only,
             created_at: at(),
             updated_at: at(),
             deleted_at: None,
@@ -454,6 +445,7 @@ mod tests {
             credential_id: None,
             name: name.into(),
             enabled: true,
+            sharing_only: false,
             binding_revision: Uuid::from_u128(id + 900),
             created_at: at(),
             updated_at: at(),
@@ -494,7 +486,7 @@ mod tests {
 
     fn topology() -> UpstreamTopologyRecords {
         UpstreamTopologyRecords {
-            routing_groups: vec![group(1, false)],
+            routing_groups: vec![group(1)],
             upstream_accesses: vec![access(2, ConnectorKind::OpenAiCompatible)],
             logical_channels: vec![channel(3, 1, 2, "channel")],
             ..Default::default()
@@ -554,21 +546,20 @@ mod tests {
     }
 
     #[test]
-    fn provider_managed_and_sharing_only_bindings_are_rejected() {
+    fn codex_channels_are_editable_and_sharing_only_requires_codex() {
         let id = Uuid::from_u128(3);
         let mut codex = topology();
         codex.upstream_accesses[0].connector_kind = ConnectorKind::CodexOauth;
-        assert!(matches!(
-            validate_replacement(&codex, id, &input(1, 2, "channel"), Some(at())),
-            Err(RepositoryError::ProviderManagedResource)
-        ));
+        assert!(validate_replacement(&codex, id, &input(1, 2, "channel"), Some(at())).is_ok());
 
-        let mut sharing = topology();
-        sharing.routing_groups[0].sharing_only = true;
+        let sharing = topology();
+        let mut sharing_input = input(1, 2, "channel");
+        sharing_input.sharing_only = true;
         assert!(matches!(
-            validate_replacement(&sharing, id, &input(1, 2, "channel"), Some(at())),
+            validate_replacement(&sharing, id, &sharing_input, Some(at())),
             Err(RepositoryError::Validation)
         ));
+        assert!(validate_replacement(&codex, id, &sharing_input, Some(at())).is_ok());
 
         let mut gone = topology();
         gone.upstream_accesses.clear();

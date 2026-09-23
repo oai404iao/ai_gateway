@@ -803,6 +803,7 @@ export function RequestLogsView({
               rows={query.data ?? []}
               rowKey={(log) => log.id}
               onRowClick={(log) => setSelectedId(log.id)}
+              rowActionLabel={t("View details")}
             />
           </AsyncResource>
         </CardContent>

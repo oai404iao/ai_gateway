@@ -1,4 +1,4 @@
-//! Fixed capability grants for explicit group/channel authorization commands.
+//! Fixed logical-channel grants for explicit group/channel authorization commands.
 
 use std::collections::{BTreeSet, HashSet};
 
@@ -11,34 +11,6 @@ use crate::persistence::{
     RepositoryError,
     postgres_control_plane::{SelfApiKeyPolicy, SelfApiKeySharingAccess},
 };
-
-pub(crate) fn sharing_options(
-    topology: &UpstreamTopologyRecords,
-    options: &mut [crate::persistence::SelfApiKeySharingCredentialOption],
-) {
-    for option in options {
-        option.channel_ids = topology
-            .logical_channels
-            .iter()
-            .filter(|channel| {
-                channel.credential_id == Some(option.credential_id) && channel.deleted_at.is_none()
-            })
-            .map(|channel| channel.id)
-            .collect();
-        option.api_formats = topology
-            .channel_capabilities
-            .iter()
-            .filter(|cap| {
-                option.channel_ids.contains(&cap.channel_id)
-                    && cap.deleted_at.is_none()
-                    && cap.settings.operation != crate::domain::ApiOperation::StandaloneWebSearch
-            })
-            .map(|cap| cap.settings.operation.api_format().as_str().to_owned())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-    }
-}
 
 pub(crate) fn options(
     topology: &UpstreamTopologyRecords,
@@ -62,7 +34,7 @@ pub(crate) fn options(
             groups.push(SelfApiKeyGroupOption {
                 id: group.id,
                 name: group.name.clone(),
-                api_formats: plan.formats,
+                api_formats: target_formats(topology, &plan.grants),
                 enabled: group.enabled,
             });
         }
@@ -79,18 +51,17 @@ pub(crate) fn options(
                     channel_group_id: group.id,
                     channel_group_name: group.name.clone(),
                     channel_group_enabled: group.enabled,
-                    api_formats: plan.formats,
+                    api_formats: target_formats(topology, &plan.grants),
                     name: channel.name.clone(),
                     enabled: channel.enabled,
-                    auto_disabled: topology
-                        .channel_capabilities
-                        .iter()
-                        .filter(|cap| {
-                            plan.grants
-                                .iter()
-                                .any(|grant| grant.capability_id == cap.id)
-                        })
-                        .all(|cap| cap.auto_disabled),
+                    auto_disabled: {
+                        let capabilities = topology
+                            .channel_capabilities
+                            .iter()
+                            .filter(|cap| cap.channel_id == channel.id && cap.deleted_at.is_none())
+                            .collect::<Vec<_>>();
+                        !capabilities.is_empty() && capabilities.iter().all(|cap| cap.auto_disabled)
+                    },
                 });
             }
         }
@@ -104,7 +75,7 @@ pub(crate) fn options(
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct Grant {
-    pub capability_id: Uuid,
+    pub channel_id: Uuid,
     pub group: bool,
     pub origin_id: Uuid,
 }
@@ -112,6 +83,29 @@ pub(crate) struct Grant {
 pub(crate) struct AuthorizationPlan {
     pub grants: Vec<Grant>,
     pub formats: Vec<String>,
+}
+
+pub(crate) fn all_formats() -> Vec<String> {
+    crate::domain::ApiFormat::ALL
+        .iter()
+        .map(|format| format.as_str().to_owned())
+        .collect()
+}
+
+fn target_formats(topology: &UpstreamTopologyRecords, grants: &[Grant]) -> Vec<String> {
+    topology
+        .channel_capabilities
+        .iter()
+        .filter(|cap| {
+            cap.deleted_at.is_none()
+                && grants
+                    .iter()
+                    .any(|grant| grant.channel_id == cap.channel_id)
+        })
+        .map(|cap| cap.settings.operation.api_format().as_str().to_owned())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 pub(crate) fn resolve(
@@ -140,15 +134,7 @@ pub(crate) fn resolve(
         return Err(RepositoryError::ApiKeyTargetNotAllowed);
     }
     let mut grants = Vec::new();
-    let mut formats = BTreeSet::new();
-    for capability in topology
-        .channel_capabilities
-        .iter()
-        .filter(|capability| capability.deleted_at.is_none())
-    {
-        let Some(channel) = live_channels.get(&capability.channel_id) else {
-            continue;
-        };
+    for channel in live_channels.values() {
         let group = live_groups[&channel.group_id];
         let group_selected = groups.contains(&group.id);
         let channel_selected = channels.contains(&channel.id);
@@ -162,45 +148,32 @@ pub(crate) fn resolve(
                 policy.enabled
                     && topology.policy_grants.iter().any(|grant| {
                         grant.policy_id == policy.id
-                            && grant.capability_id == capability.id
+                            && grant.channel_id == channel.id
                             && match grant.origin_kind {
                                 GrantOriginKind::Group => grant.origin_id == group.id,
                                 GrantOriginKind::Channel => grant.origin_id == channel.id,
-                                GrantOriginKind::Capability => grant.origin_id == capability.id,
+                                GrantOriginKind::Capability => false,
                             }
                     })
             });
-            let ordinary = !protected && !group.sharing_only && policy_allows;
-            let sharing_operation = owned
-                && capability.settings.operation
-                    != crate::domain::ApiOperation::StandaloneWebSearch;
-            (ordinary, ordinary || sharing_operation)
+            let ordinary = !protected && !channel.sharing_only && policy_allows;
+            (ordinary, ordinary || owned)
         } else {
             (true, true)
         };
         if group_selected && allow_group {
             grants.push(Grant {
-                capability_id: capability.id,
+                channel_id: channel.id,
                 group: true,
                 origin_id: group.id,
             });
         }
         if channel_selected && allow_channel {
             grants.push(Grant {
-                capability_id: capability.id,
+                channel_id: channel.id,
                 group: false,
                 origin_id: channel.id,
             });
-        }
-        if (group_selected && allow_group) || (channel_selected && allow_channel) {
-            formats.insert(
-                capability
-                    .settings
-                    .operation
-                    .api_format()
-                    .as_str()
-                    .to_owned(),
-            );
         }
     }
     if let Some((policy, _)) = self_service
@@ -219,7 +192,7 @@ pub(crate) fn resolve(
     }
     Ok(AuthorizationPlan {
         grants,
-        formats: formats.into_iter().collect(),
+        formats: all_formats(),
     })
 }
 
@@ -253,20 +226,6 @@ fn resolve_added(
     )
 }
 
-// A new self-service format must not activate dormant admin grants on retained targets.
-fn was_effective(topology: &UpstreamTopologyRecords, before: &Value, capability_id: Uuid) -> bool {
-    topology.channel_capabilities.iter().any(|capability| {
-        capability.id == capability_id
-            && before["allowed_api_formats"]
-                .as_array()
-                .is_some_and(|formats| {
-                    formats.iter().any(|format| {
-                        format.as_str() == Some(capability.settings.operation.api_format().as_str())
-                    })
-                })
-    })
-}
-
 /// Retained origins never expand, even when a different target is added. Empty
 /// origins are retained too: an empty draft cannot later become an implicit grant.
 fn reconcile(
@@ -296,7 +255,7 @@ fn reconcile(
         }
     }));
     let mut result = result.into_iter().collect::<Vec<_>>();
-    result.sort_by_key(|grant| (grant.group, grant.origin_id, grant.capability_id));
+    result.sort_by_key(|grant| (grant.group, grant.origin_id, grant.channel_id));
     Ok(result)
 }
 
@@ -311,7 +270,6 @@ pub(crate) async fn pg_write(
     plan: Option<AuthorizationPlan>,
 ) -> Result<(), RepositoryError> {
     let topology = super::pg_load(transaction).await?;
-    let self_service = plan.is_some();
     let plan = match plan {
         Some(plan) => plan,
         None => resolve_added(&topology, before, groups, channels)?,
@@ -321,14 +279,14 @@ pub(crate) async fn pg_write(
             .policy_grants
             .iter()
             .filter(|g| g.policy_id == id)
-            .map(|g| (g.capability_id, g.origin_kind, g.origin_id))
+            .map(|g| (g.channel_id, g.origin_kind, g.origin_id))
             .collect::<Vec<_>>()
     } else {
         topology
             .api_key_grants
             .iter()
             .filter(|g| g.api_key_id == id)
-            .map(|g| (g.capability_id, g.origin_kind, g.origin_id))
+            .map(|g| (g.channel_id, g.origin_kind, g.origin_id))
             .collect::<Vec<_>>()
     };
     if existing
@@ -340,11 +298,8 @@ pub(crate) async fn pg_write(
     let grants = reconcile(
         existing
             .into_iter()
-            .filter(|(capability_id, _, _)| {
-                !self_service || was_effective(&topology, before, *capability_id)
-            })
-            .map(|(capability_id, kind, origin_id)| Grant {
-                capability_id,
+            .map(|(channel_id, kind, origin_id)| Grant {
+                channel_id,
                 group: kind == GrantOriginKind::Group,
                 origin_id,
             })
@@ -356,15 +311,15 @@ pub(crate) async fn pg_write(
     )?;
     let (select, delete, insert) = if policy {
         (
-            "SELECT capability_id,origin_kind,origin_id FROM api_key_policy_capability_grants WHERE policy_id=$1",
-            "DELETE FROM api_key_policy_capability_grants WHERE policy_id=$1 AND capability_id=$2 AND origin_kind=$3 AND origin_id=$4",
-            "INSERT INTO api_key_policy_capability_grants (policy_id,capability_id,origin_kind,origin_id) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING",
+            "SELECT channel_id,origin_kind,origin_id FROM api_key_policy_channel_grants WHERE policy_id=$1",
+            "DELETE FROM api_key_policy_channel_grants WHERE policy_id=$1 AND channel_id=$2 AND origin_kind=$3 AND origin_id=$4",
+            "INSERT INTO api_key_policy_channel_grants (policy_id,channel_id,origin_kind,origin_id) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING",
         )
     } else {
         (
-            "SELECT capability_id,origin_kind,origin_id FROM api_key_capability_grants WHERE api_key_id=$1",
-            "DELETE FROM api_key_capability_grants WHERE api_key_id=$1 AND capability_id=$2 AND origin_kind=$3 AND origin_id=$4",
-            "INSERT INTO api_key_capability_grants (api_key_id,capability_id,origin_kind,origin_id) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING",
+            "SELECT channel_id,origin_kind,origin_id FROM api_key_channel_grants WHERE api_key_id=$1",
+            "DELETE FROM api_key_channel_grants WHERE api_key_id=$1 AND channel_id=$2 AND origin_kind=$3 AND origin_id=$4",
+            "INSERT INTO api_key_channel_grants (api_key_id,channel_id,origin_kind,origin_id) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING",
         )
     };
     // Delete only revoked rows so non-authorization edits preserve grant facts.
@@ -372,15 +327,15 @@ pub(crate) async fn pg_write(
         .bind(id)
         .fetch_all(&mut **transaction)
         .await?;
-    for (capability_id, kind, origin_id) in rows {
+    for (channel_id, kind, origin_id) in rows {
         if !grants.contains(&Grant {
-            capability_id,
+            channel_id,
             group: kind == "group",
             origin_id,
         }) {
             sqlx::query(delete)
                 .bind(id)
-                .bind(capability_id)
+                .bind(channel_id)
                 .bind(kind)
                 .bind(origin_id)
                 .execute(&mut **transaction)
@@ -390,7 +345,7 @@ pub(crate) async fn pg_write(
     for grant in grants {
         sqlx::query(insert)
             .bind(id)
-            .bind(grant.capability_id)
+            .bind(grant.channel_id)
             .bind(if grant.group { "group" } else { "channel" })
             .bind(grant.origin_id)
             .execute(&mut **transaction)
@@ -415,7 +370,6 @@ pub(crate) async fn sqlite_write(
 ) -> Result<(), RepositoryError> {
     use crate::persistence::sqlite::SqliteUuid;
     let topology = super::sqlite_load(transaction).await?;
-    let self_service = plan.is_some();
     let plan = match plan {
         Some(plan) => plan,
         None => resolve_added(&topology, before, groups, channels)?,
@@ -425,14 +379,14 @@ pub(crate) async fn sqlite_write(
             .policy_grants
             .iter()
             .filter(|g| g.policy_id == id)
-            .map(|g| (g.capability_id, g.origin_kind, g.origin_id))
+            .map(|g| (g.channel_id, g.origin_kind, g.origin_id))
             .collect::<Vec<_>>()
     } else {
         topology
             .api_key_grants
             .iter()
             .filter(|g| g.api_key_id == id)
-            .map(|g| (g.capability_id, g.origin_kind, g.origin_id))
+            .map(|g| (g.channel_id, g.origin_kind, g.origin_id))
             .collect::<Vec<_>>()
     };
     if existing
@@ -444,11 +398,8 @@ pub(crate) async fn sqlite_write(
     let grants = reconcile(
         existing
             .into_iter()
-            .filter(|(capability_id, _, _)| {
-                !self_service || was_effective(&topology, before, *capability_id)
-            })
-            .map(|(capability_id, kind, origin_id)| Grant {
-                capability_id,
+            .map(|(channel_id, kind, origin_id)| Grant {
+                channel_id,
                 group: kind == GrantOriginKind::Group,
                 origin_id,
             })
@@ -460,30 +411,30 @@ pub(crate) async fn sqlite_write(
     )?;
     let (select, delete, insert) = if policy {
         (
-            "SELECT capability_id,origin_kind,origin_id FROM api_key_policy_capability_grants WHERE policy_id=?",
-            "DELETE FROM api_key_policy_capability_grants WHERE policy_id=? AND capability_id=? AND origin_kind=? AND origin_id=?",
-            "INSERT INTO api_key_policy_capability_grants (policy_id,capability_id,origin_kind,origin_id) VALUES (?,?,?,?) ON CONFLICT DO NOTHING",
+            "SELECT channel_id,origin_kind,origin_id FROM api_key_policy_channel_grants WHERE policy_id=?",
+            "DELETE FROM api_key_policy_channel_grants WHERE policy_id=? AND channel_id=? AND origin_kind=? AND origin_id=?",
+            "INSERT INTO api_key_policy_channel_grants (policy_id,channel_id,origin_kind,origin_id) VALUES (?,?,?,?) ON CONFLICT DO NOTHING",
         )
     } else {
         (
-            "SELECT capability_id,origin_kind,origin_id FROM api_key_capability_grants WHERE api_key_id=?",
-            "DELETE FROM api_key_capability_grants WHERE api_key_id=? AND capability_id=? AND origin_kind=? AND origin_id=?",
-            "INSERT INTO api_key_capability_grants (api_key_id,capability_id,origin_kind,origin_id) VALUES (?,?,?,?) ON CONFLICT DO NOTHING",
+            "SELECT channel_id,origin_kind,origin_id FROM api_key_channel_grants WHERE api_key_id=?",
+            "DELETE FROM api_key_channel_grants WHERE api_key_id=? AND channel_id=? AND origin_kind=? AND origin_id=?",
+            "INSERT INTO api_key_channel_grants (api_key_id,channel_id,origin_kind,origin_id) VALUES (?,?,?,?) ON CONFLICT DO NOTHING",
         )
     };
     let rows = sqlx::query_as::<_, (SqliteUuid, String, SqliteUuid)>(select)
         .bind(SqliteUuid(id))
         .fetch_all(&mut **transaction)
         .await?;
-    for (capability_id, kind, origin_id) in rows {
+    for (channel_id, kind, origin_id) in rows {
         if !grants.contains(&Grant {
-            capability_id: capability_id.0,
+            channel_id: channel_id.0,
             group: kind == "group",
             origin_id: origin_id.0,
         }) {
             sqlx::query(delete)
                 .bind(SqliteUuid(id))
-                .bind(capability_id)
+                .bind(channel_id)
                 .bind(kind)
                 .bind(origin_id)
                 .execute(&mut **transaction)
@@ -493,7 +444,7 @@ pub(crate) async fn sqlite_write(
     for grant in grants {
         sqlx::query(insert)
             .bind(SqliteUuid(id))
-            .bind(SqliteUuid(grant.capability_id))
+            .bind(SqliteUuid(grant.channel_id))
             .bind(if grant.group { "group" } else { "channel" })
             .bind(SqliteUuid(grant.origin_id))
             .execute(&mut **transaction)

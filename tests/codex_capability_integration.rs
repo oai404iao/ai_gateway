@@ -98,13 +98,12 @@ fn system_settings() -> SystemSettingsInput {
 }
 
 fn business_codex_credential(
-    channel_group_id: Uuid,
+    _channel_group_id: Uuid,
     label: &str,
     email: &str,
     user_id: &str,
 ) -> CodexCredentialCreate {
     CodexCredentialCreate {
-        channel_group_id,
         label: label.into(),
         enabled: true,
         proxy_id: None,
@@ -150,6 +149,7 @@ fn request_log_event(
         model_rule_id: None,
         channel_group_id: Some(group),
         channel_id: Some(capability),
+        upstream_credential: None,
         model_id: Some(model),
         outcome: RequestLogOutcome::Succeeded,
         response_status_code: Some(200),

@@ -33,4 +33,21 @@ pub(crate) const MIGRATIONS: &[SqliteMigration<'static>] = &[
         description: "six operation routing and connector names",
         sql: include_str!("../../../migrations/sqlite/0006_six_operations.sql"),
     },
+    SqliteMigration {
+        version: 7,
+        description: "fixed logical channel authorization",
+        sql: include_str!("../../../migrations/sqlite/0007_logical_channel_authorization.sql"),
+    },
+    SqliteMigration {
+        version: 8,
+        description: "channel owned credentials and sharing",
+        sql: include_str!(
+            "../../../migrations/sqlite/0008_channel_owned_credentials_and_sharing.sql"
+        ),
+    },
+    SqliteMigration {
+        version: 9,
+        description: "immutable request credential attribution",
+        sql: include_str!("../../../migrations/sqlite/0009_request_credential_attribution.sql"),
+    },
 ];

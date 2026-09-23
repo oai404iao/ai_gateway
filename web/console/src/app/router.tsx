@@ -1,6 +1,5 @@
 import { lazy, useState } from "react";
 import {
-  Link,
   Navigate,
   Outlet,
   Route,
@@ -8,8 +7,9 @@ import {
   RouterProvider,
   createBrowserRouter,
   createRoutesFromElements,
+  useLocation,
 } from "react-router";
-import { Button } from "@/components/ui/button";
+import { NavigationLink } from "@/components/shared/navigation-link";
 import { EmptyState } from "@/components/shared/empty-state";
 import { useI18n } from "@/app/i18n";
 import { useSession } from "@/lib/use-session";
@@ -135,11 +135,6 @@ const ApiKeyPolicyDetailPage = lazy(() =>
     default: m.ApiKeyPolicyDetailPage,
   })),
 );
-const ModelSetupPage = lazy(() =>
-  import("@/features/admin/model-setup/model-setup-page").then((m) => ({
-    default: m.ModelSetupPage,
-  })),
-);
 const ModelsPage = lazy(() =>
   import("@/features/admin/models/models-page").then((m) => ({ default: m.ModelsPage })),
 );
@@ -153,12 +148,6 @@ const ModelPricingPage = lazy(() =>
     default: m.ModelPricingPage,
   })),
 );
-const CatalogPage = lazy(() =>
-  import("@/features/admin/catalog/catalog-page").then((m) => ({ default: m.CatalogPage })),
-);
-const CodexOauthPage = lazy(
-  () => import("@/features/admin/providers/codex-oauth/codex-oauth-page"),
-);
 const CodexImportPage = lazy(
   () => import("@/features/admin/providers/codex-oauth/codex-import-page"),
 );
@@ -168,16 +157,8 @@ const AccessesPage = lazy(() =>
 const AccessDetailPage = lazy(() =>
   import("@/features/admin/routing/accesses/access-detail-page").then((m) => ({ default: m.AccessDetailPage })),
 );
-const GroupsPage = lazy(() =>
-  import("@/features/admin/routing/groups/groups-page").then((m) => ({ default: m.GroupsPage })),
-);
 const GroupDetailPage = lazy(() =>
   import("@/features/admin/routing/groups/group-detail-page").then((m) => ({ default: m.GroupDetailPage })),
-);
-const LogicalChannelsPage = lazy(() =>
-  import("@/features/admin/routing/logical-channels/logical-channels-page").then((m) => ({
-    default: m.LogicalChannelsPage,
-  })),
 );
 const ChannelConfigurationPage = lazy(() =>
   import("@/features/admin/routing/channel-configuration-page").then((m) => ({
@@ -253,6 +234,15 @@ function RequireAuth() {
   return <Outlet />;
 }
 
+function WorkspaceRedirect({ to }: { to: string }) {
+  const { search } = useLocation();
+  const target = new URL(to, "https://console.invalid");
+  for (const [key, value] of new URLSearchParams(search)) {
+    if (!target.searchParams.has(key)) target.searchParams.set(key, value);
+  }
+  return <Navigate to={`${target.pathname}${target.search}`} replace />;
+}
+
 function RequirePasswordChange() {
   const { user } = useSession();
   if (!user?.password_change_required) return <Navigate to="/account" replace />;
@@ -281,9 +271,9 @@ function NotFound() {
       description={t("The page you were looking for does not exist.")}
       className="min-h-80 border"
       actions={
-        <Button render={<Link to="/account" />} nativeButton={false}>
+        <NavigationLink to="/account">
           {t("Back to account")}
-        </Button>
+        </NavigationLink>
       }
     />
   );
@@ -341,27 +331,27 @@ function appRouteElements() {
                 path="/admin/api-key-policies/:id"
                 element={<ApiKeyPolicyDetailPage />}
               />
-              <Route path="/admin/model-setup" element={<ModelSetupPage />} />
+              <Route path="/admin/model-setup" element={<WorkspaceRedirect to="/admin/models" />} />
               <Route path="/admin/routing/channels" element={<ChannelConfigurationPage />} />
               <Route path="/admin/models" element={<ModelsPage />} />
               <Route path="/admin/models/:id" element={<ModelDetailPage />} />
               <Route path="/admin/models/:id/pricing" element={<ModelPricingPage />} />
-              <Route path="/admin/catalog" element={<CatalogPage />} />
+              <Route path="/admin/catalog" element={<WorkspaceRedirect to="/admin/models?view=prices" />} />
               <Route
                 path="/admin/routing/channel-groups/*"
-                element={<Navigate to="/admin/routing/groups" replace />}
+                element={<WorkspaceRedirect to="/admin/routing/channels?view=groups" />}
               />
               <Route
                 path="/admin/routing/channels/*"
-                element={<Navigate to="/admin/routing/logical-channels" replace />}
+                element={<WorkspaceRedirect to="/admin/routing/channels" />}
               />
               <Route path="/admin/routing/upstream-credentials" element={<CredentialsPage />} />
               <Route path="/admin/routing/accesses" element={<AccessesPage />} />
-              <Route path="/admin/routing/groups" element={<GroupsPage />} />
+              <Route path="/admin/routing/groups" element={<WorkspaceRedirect to="/admin/routing/channels?view=groups" />} />
               <Route path="/admin/routing/groups/:id" element={<GroupDetailPage />} />
               <Route
                 path="/admin/routing/logical-channels"
-                element={<LogicalChannelsPage />}
+                element={<WorkspaceRedirect to="/admin/routing/channels" />}
               />
               <Route
                 path="/admin/routing/logical-channels/:id"
@@ -382,17 +372,18 @@ function appRouteElements() {
               />
               <Route path="/admin/routing/accesses/:id" element={<AccessDetailPage />} />
               <Route path="/admin/routing/upstream-credentials/:id" element={<CredentialDetailPage />} />
+              <Route path="/admin/routing/upstream-credentials/codex/import" element={<CodexImportPage />} />
               <Route
                 path="/admin/routing/model-rules/*"
                 element={<Navigate to="/admin/routing/operation-rules" replace />}
               />
               <Route
                 path="/admin/providers/codex-oauth/:id"
-                element={<CodexOauthPage />}
+                element={<Navigate to="/admin/routing/upstream-credentials?connector=codex" replace />}
               />
               <Route
                 path="/admin/providers/codex-oauth/:id/import"
-                element={<CodexImportPage />}
+                element={<Navigate to="/admin/routing/upstream-credentials/codex/import" replace />}
               />
               <Route path="/admin/network/proxies" element={<ProxiesPage />} />
               <Route

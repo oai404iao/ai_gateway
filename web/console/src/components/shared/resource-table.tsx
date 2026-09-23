@@ -10,6 +10,8 @@ import {
 } from "@/components/ui/table";
 import { TablePagination } from "@/components/shared/table-pagination";
 import { cn } from "@/lib/utils";
+import { Link } from "react-router";
+import { Button } from "@/components/ui/button";
 
 export interface Column<T> {
   key: string;
@@ -23,6 +25,9 @@ interface ResourceTableProps<T> {
   rows: T[];
   rowKey: (row: T) => string;
   onRowClick?: (row: T) => void;
+  rowHref?: (row: T) => string;
+  linkColumnKey?: string;
+  rowActionLabel?: string;
   empty?: ReactNode;
   groupBy?: (row: T) => string;
   pagination?:
@@ -30,6 +35,10 @@ interface ResourceTableProps<T> {
     | {
         defaultPageSize?: number;
         pageSizeOptions?: readonly number[];
+        page?: number;
+        pageSize?: number;
+        onPageChange?: (page: number) => void;
+        onPageSizeChange?: (size: number) => void;
       };
 }
 
@@ -42,6 +51,9 @@ export function ResourceTable<T>({
   rows,
   rowKey,
   onRowClick,
+  rowHref,
+  linkColumnKey = columns[0]?.key,
+  rowActionLabel,
   empty,
   groupBy,
   pagination,
@@ -52,15 +64,19 @@ export function ResourceTable<T>({
     paginationOptions?.pageSizeOptions ?? DEFAULT_PAGE_SIZE_OPTIONS;
   const defaultPageSize =
     paginationOptions?.defaultPageSize ?? DEFAULT_PAGE_SIZE;
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(defaultPageSize);
+  const [localPage, setLocalPage] = useState(1);
+  const [localPageSize, setLocalPageSize] = useState(defaultPageSize);
+  const page = paginationOptions?.page ?? localPage;
+  const pageSize = paginationOptions?.pageSize ?? localPageSize;
+  const setPage = paginationOptions?.onPageChange ?? setLocalPage;
+  const setPageSize = paginationOptions?.onPageSizeChange ?? setLocalPageSize;
   const pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
   const showPagination =
     paginationEnabled && rows.length > Math.min(...pageSizeOptions);
 
   useEffect(() => {
-    if (page > pageCount) setPage(pageCount);
-  }, [page, pageCount]);
+    if (rows.length > 0 && page > pageCount) setPage(pageCount);
+  }, [page, pageCount, rows.length, setPage]);
 
   const visibleRows = useMemo(() => {
     if (!paginationEnabled) return rows;
@@ -86,7 +102,7 @@ export function ResourceTable<T>({
     return <div>{empty}</div>;
   }
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex min-w-0 flex-col gap-4">
       <div className="overflow-x-auto rounded-lg border">
         <Table>
           <TableHeader>
@@ -96,6 +112,7 @@ export function ResourceTable<T>({
                   {column.header}
                 </TableHead>
               ))}
+              {rowActionLabel ? <TableHead><span className="sr-only">{rowActionLabel}</span></TableHead> : null}
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -103,10 +120,10 @@ export function ResourceTable<T>({
               <Fragment key={group.key}>
                 {group.label ? (
                   <TableRow>
-                    <TableCell colSpan={columns.length} className="bg-muted/50">
+                    <TableCell colSpan={columns.length + (rowActionLabel ? 1 : 0)} className="bg-muted/50">
                       <span className="flex items-center gap-2 font-medium">
                         {group.label}
-                        <Badge variant="secondary">{group.rows.length}</Badge>
+                        <Badge variant="secondary">{rows.filter((row) => groupBy?.(row) === group.key).length}</Badge>
                       </span>
                     </TableCell>
                   </TableRow>
@@ -136,9 +153,20 @@ export function ResourceTable<T>({
                   >
                     {columns.map((column) => (
                       <TableCell key={column.key} className={column.className}>
-                        {column.render(row)}
+                        {rowHref && column.key === linkColumnKey ? (
+                          <Link to={rowHref(row)} className="rounded-sm font-medium underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-ring">
+                            {column.render(row)}
+                          </Link>
+                        ) : column.render(row)}
                       </TableCell>
                     ))}
+                    {rowActionLabel ? (
+                      <TableCell>
+                        <Button variant="ghost" size="sm" onClick={() => onRowClick?.(row)}>
+                          {rowActionLabel}
+                        </Button>
+                      </TableCell>
+                    ) : null}
                   </TableRow>
                 ))}
               </Fragment>
@@ -156,7 +184,7 @@ export function ResourceTable<T>({
           onPageChange={setPage}
           onPageSizeChange={(nextPageSize) => {
             setPageSize(nextPageSize);
-            setPage(1);
+            if (!paginationOptions?.onPageSizeChange) setPage(1);
           }}
         />
       ) : null}

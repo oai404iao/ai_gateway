@@ -38,7 +38,7 @@ const createRoutes = [
   ["/admin/user-groups/new", /create user group/i],
   ["/admin/registration-invitation-codes/new", /create registration code/i],
   ["/admin/api-key-policies/new", /create policy/i],
-  ["/admin/models/new", /create pricing model/i],
+  ["/admin/models/new", /create client model/i],
   ["/admin/routing/groups/new", /save group/i],
   ["/admin/routing/logical-channels/new", /save channel/i],
   ["/admin/network/proxies/new", /create proxy/i],
@@ -53,7 +53,7 @@ const editRoutes = [
     /save registration code/i,
   ],
   [`/admin/api-key-policies/${API_KEY_POLICY.id}`, /save policy/i],
-  [`/admin/models/${MODEL.id}`, /save pricing model/i],
+  [`/admin/models/${MODEL.id}`, /save client model/i],
   [`/admin/models/${MODEL.id}/pricing`, /save model pricing/i],
   [`/admin/routing/groups/${ROUTING_GROUP.id}`, /save group/i],
   [`/admin/routing/logical-channels/${LOGICAL_CHANNEL.id}`, /save channel/i],
@@ -81,8 +81,8 @@ describe("Admin detail routes", () => {
   });
 
   it.each([
-    ["/admin/routing/channel-groups/new", "/admin/routing/groups", "Routing groups"],
-    ["/admin/routing/channels/old-id", "/admin/routing/logical-channels", "Logical channels"],
+    ["/admin/routing/channel-groups/new", "/admin/routing/channels", "Channel groups"],
+    ["/admin/routing/channels/old-id", "/admin/routing/channels", "Logical channels"],
     ["/admin/routing/model-rules/old-id/protocols/old-child", "/admin/routing/operation-rules", "Operation rules"],
   ])("redirects retired route %s to canonical management", async (path, target, heading) => {
     seedAuthenticatedSession();

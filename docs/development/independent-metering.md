@@ -1,6 +1,6 @@
 # 独立计量事实与结算回执
 
-> 状态：当前。P3 实现；schema 以 migration `0063_independent_metering_facts.sql` 为准。
+> 状态：当前。独立事实由 `0063` 引入；`0069` / SQLite `0009` 增加不可变请求凭证归属。
 > 这是停机硬切换，不能与旧结算者混跑，也不能直接回退旧二进制。
 
 ## 所有权
@@ -8,6 +8,7 @@
 | 数据 | 所有者与约束 |
 | --- | --- |
 | `request_metering_facts` | `MeteringRepository` 从可信终态事件物化；一请求 UUID 一行，禁止 UPDATE/DELETE，不引用日志表 |
+| `request_credential_attributions` | 与事实同事务持久化所选凭证归属；区分旧未知、明确无认证和凭证 UUID，禁止 UPDATE/DELETE |
 | `request_settlements` | `SettlementRepository` 的唯一普通扣款认领；一事实 UUID 一回执，金额/币种必须与合格事实一致，禁止 UPDATE/DELETE |
 | `request_settlement_pending` | PG 内部未结算工作集合；首次物化合格事实时同事务创建，结算时同事务删除；无回执不得删除或修改 |
 | `request_log_ingest` | COPY 耐久接收，计量/日志分别退避；只有事实与日志均持久化后才能 ack |
@@ -23,7 +24,7 @@
 intent / terminal slot / spool（第一阶段语义不变）
   -> PG COPY ingress 提交 -> spool checkpoint
   -> MeteringRepository 物化事务
-       写不可变事实 + 新事实的待结算工作项 + ingress.metered_at
+       写不可变事实/凭证归属 + 新事实的待结算工作项 + ingress.metered_at
        ├─ 唯一回执 + 余额/Key 额度 + 删除工作项（单事务）
        ├─ 财务统计 / Codex 窗口成本 / 拼车恢复
        └─ 日志投影 -> 确认 ingress
@@ -31,6 +32,9 @@ intent / terminal slot / spool（第一阶段语义不变）
 
 计量阶段与日志投影使用独立任务。计量的批量 SQL 失败先退避，再逐条隔离；
 坏 journal 或财务冲突保留原 ingress，不能提前标为可投影。
+journal v8 使用选路快照中的凭证身份，不在完成或查询时读取当前渠道绑定。
+`request_credential_identities` 只对旧未知归属回退到冻结的渠道身份注册表，
+明确无认证不回退。重复归属冲突不覆盖已存记录；侧表写入失败不能提交事实或推进 ingress。
 展示状态等非财务约束失败，只延迟日志投影，已确认费用可先结算。
 正常停机按 ingest → 计量 → 投影 → 结算顺序尽量排空；超时的耐久记录留待重启。
 

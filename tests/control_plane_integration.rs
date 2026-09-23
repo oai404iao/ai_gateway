@@ -623,6 +623,7 @@ async fn system_probe_identity_is_an_internal_active_administrator() {
         model_rule_id: None,
         channel_group_id: None,
         channel_id: None,
+        upstream_credential: None,
         model_id: Some(model_id),
         outcome: RequestLogOutcome::Succeeded,
         response_status_code: Some(200),
@@ -2151,7 +2152,7 @@ async fn seed(pool: &PgPool) -> Seed {
         .await
         .unwrap();
     if canonical {
-        sqlx::query("INSERT INTO api_key_capability_grants (api_key_id,capability_id,origin_kind,origin_id) VALUES ($1,$2,'group',$3)")
+        sqlx::query("INSERT INTO api_key_channel_grants (api_key_id,channel_id,origin_kind,origin_id) VALUES ($1,$2,'group',$3)")
             .bind(seed.key).bind(seed.channel).bind(seed.group).execute(pool).await.unwrap();
     }
     if normalized_routing || canonical {
@@ -2221,6 +2222,7 @@ fn request_log_event(seed: &Seed, outcome: RequestLogOutcome) -> RequestLogEvent
         model_rule_id: Some(seed.rule),
         channel_group_id: Some(seed.group),
         channel_id: Some(seed.channel),
+        upstream_credential: None,
         model_id: Some(seed.model),
         outcome,
         response_status_code: Some(200),
@@ -2254,14 +2256,13 @@ fn request_log_event(seed: &Seed, outcome: RequestLogOutcome) -> RequestLogEvent
 }
 
 fn business_codex_credential(
-    channel_group_id: Uuid,
+    _channel_group_id: Uuid,
     label: &str,
     email: &str,
     user_id: &str,
 ) -> CodexCredentialCreate {
     let now = Utc::now();
     CodexCredentialCreate {
-        channel_group_id,
         label: label.into(),
         enabled: true,
         proxy_id: None,
@@ -2281,13 +2282,81 @@ fn business_codex_credential(
     }
 }
 
+async fn bind_codex_channel_fixture(
+    coordinator: &ControlPlaneCoordinator,
+    repository: &ControlPlaneRepository,
+    actor: Uuid,
+    group: Uuid,
+    credential: Uuid,
+    channel: Uuid,
+    sharing_only: bool,
+) {
+    let record = repository
+        .codex_credential(credential)
+        .await
+        .unwrap()
+        .unwrap();
+    let identity = repository
+        .upstream_credential_detail(credential)
+        .await
+        .unwrap()
+        .unwrap();
+    let access = coordinator
+        .mutate(
+            actor,
+            ControlPlaneMutation::CreateUpstreamAccess(
+                serde_json::from_value(serde_json::json!({
+                    "name":format!("Access {channel}"),"connector_kind":"codex",
+                    "base_url":identity.credential.allowed_base_urls[0],"enabled":true
+                }))
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+    coordinator
+        .mutate(
+            actor,
+            ControlPlaneMutation::SaveLogicalChannel {
+                id: channel,
+                expected: None,
+                input: serde_json::from_value(serde_json::json!({
+                    "name":record.label,"group_id":group,"access_id":access.id,
+                    "credential_id":credential,"enabled":true,"sharing_only":sharing_only
+                }))
+                .unwrap(),
+            },
+        )
+        .await
+        .unwrap();
+    for operation in [
+        "responses",
+        "responses-ws",
+        "web_search",
+        "images_generation",
+        "images_edit",
+    ] {
+        coordinator.mutate(actor, ControlPlaneMutation::SaveChannelCapability {
+            id:Uuid::new_v4(),expected:None,
+            input:serde_json::from_value(serde_json::json!({
+                "channel_id":channel,
+                "settings":{"operation":operation,"enabled":!operation.starts_with("images_"),
+                    "available_models":record.available_models,"request_compression":"default",
+                    "test_model":null,"test_pricing_model_id":null,"auto_disable_allowed":false},
+                "status_statistics_enabled":false,"config_template_id":null,
+                "override_document":{},"billing_multiplier":"1"
+            })).unwrap(),
+        }).await.unwrap();
+    }
+}
+
 #[derive(FromRow)]
 struct DeletedCodexCredentialState {
     id_token: String,
     access_token: String,
     refresh_token: String,
     deleted_at: Option<DateTime<Utc>>,
-    channel_name: String,
+    credential_name: String,
     proxy_id: Option<Uuid>,
     quota_allowed: Option<bool>,
     primary_used_percent: Option<i32>,
@@ -2384,7 +2453,7 @@ async fn codex_business_credentials_are_unique_per_workspace_member() {
     assert_eq!(reauthorized_a.id, member_a.id);
     assert_eq!(reauthorized_a.action, "update");
 
-    let credentials = repository.codex_credentials(codex_group).await.unwrap();
+    let credentials = repository.codex_credentials().await.unwrap();
     assert_eq!(credentials.len(), 3);
     assert_eq!(
         credentials
@@ -2400,7 +2469,7 @@ async fn codex_business_credentials_are_unique_per_workspace_member() {
         .filter(|channel| channel.group_id == codex_group)
         .map(|channel| channel.id)
         .collect();
-    assert_eq!(channel_ids.len(), 3);
+    assert!(channel_ids.is_empty());
     let images: Vec<_> = topology
         .channel_capabilities
         .iter()
@@ -2412,10 +2481,10 @@ async fn codex_business_credentials_are_unique_per_workspace_member() {
                 )
         })
         .collect();
-    assert_eq!(images.len(), 6);
+    assert!(images.is_empty());
     assert!(images.iter().all(|capability| !capability.settings.enabled));
     assert_eq!(topology.api_key_grants.len(), 1);
-    assert_eq!(topology.api_key_grants[0].capability_id, seed.channel);
+    assert_eq!(topology.api_key_grants[0].channel_id, seed.channel);
 
     database.cleanup().await;
 }
@@ -2485,11 +2554,16 @@ async fn direct_seat_migration_preserves_existing_money_and_pending_reservations
         )
         .await
         .unwrap();
-    let group = repository
-        .sharing_groups(Some(seed.user))
-        .await
-        .unwrap()
-        .remove(0);
+    let legacy_group: serde_json::Value = sqlx::query_scalar(
+        "SELECT to_jsonb(s) || jsonb_build_object('channel_id',s.credential_id,
+            'bound_credential_id',s.credential_id) FROM codex_sharing_groups s WHERE id=$1",
+    )
+    .bind(group_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    let group: ai_gateway::domain::codex_sharing::SharingGroup =
+        serde_json::from_value(legacy_group).unwrap();
     let windows: Vec<SharingWindow> = sqlx::query_as("SELECT id,credential_id,window_kind,scheduled_reset_at,last_used_percent AS used_percent,last_observed_at AS checked_at FROM codex_quota_window_periods WHERE credential_id=$1 AND ended_at IS NULL")
         .bind(credential).fetch_all(&database.pool).await.unwrap();
     let registry = SharingRegistry::compile(vec![SharingRecord {
@@ -2637,8 +2711,8 @@ async fn codex_sharing_pins_credentials_and_settles_money_across_api_keys() {
         .with_state(captured.clone())).await;
     let codex_group = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO routing_groups (id,name,enabled,sharing_only) \
-        VALUES ($1,'sharing-test',true,true)",
+        "INSERT INTO routing_groups (id,name,enabled) \
+        VALUES ($1,'sharing-test',true)",
     )
     .bind(codex_group)
     .execute(&database.pool)
@@ -2716,12 +2790,32 @@ async fn codex_sharing_pins_credentials_and_settles_money_across_api_keys() {
         .create_codex_credential(seed.user, input.clone(), None)
         .await
         .unwrap();
+    bind_codex_channel_fixture(
+        &coordinator,
+        &repository,
+        seed.user,
+        codex_group,
+        credential.id,
+        credential.id,
+        true,
+    )
+    .await;
     input.user_id = Some("other-sharing-user".into());
     input.label = "other".into();
     let other = coordinator
         .create_codex_credential(seed.user, input, None)
         .await
         .unwrap();
+    bind_codex_channel_fixture(
+        &coordinator,
+        &repository,
+        seed.user,
+        codex_group,
+        other.id,
+        other.id,
+        true,
+    )
+    .await;
     insert_model_rule_fixture(
         &database.pool,
         Uuid::new_v4(),
@@ -2814,20 +2908,32 @@ async fn codex_sharing_pins_credentials_and_settles_money_across_api_keys() {
     .execute(&database.pool)
     .await
     .unwrap();
-    sqlx::query("INSERT INTO api_key_capability_grants(api_key_id,capability_id,origin_kind,origin_id)
-        SELECT $1,cap.id,'group',$2 FROM channel_capabilities cap JOIN upstream_channels c ON c.id=cap.channel_id WHERE c.group_id=$2")
-        .bind(seed.key).bind(codex_group).execute(&database.pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO api_key_channel_grants(api_key_id,channel_id,origin_kind,origin_id)
+        SELECT $1,c.id,'group',$2 FROM upstream_channels c WHERE c.group_id=$2",
+    )
+    .bind(seed.key)
+    .bind(codex_group)
+    .execute(&database.pool)
+    .await
+    .unwrap();
     let second_secret = Uuid::new_v4().to_string();
     let second_key = Uuid::new_v4();
     sqlx::query("INSERT INTO api_keys (id,user_id,name,secret_value,status,allowed_api_formats,permissions,allowed_group_ids,allowed_channel_ids) \
         SELECT $1,user_id,'second-sharing-key',$2,status,allowed_api_formats,permissions,allowed_group_ids,allowed_channel_ids FROM api_keys WHERE id=$3")
         .bind(second_key).bind(&second_secret).bind(seed.key).execute(&database.pool).await.unwrap();
-    sqlx::query("INSERT INTO api_key_capability_grants(api_key_id,capability_id,origin_kind,origin_id)
-        SELECT $1,capability_id,origin_kind,origin_id FROM api_key_capability_grants WHERE api_key_id=$2")
-        .bind(second_key).bind(seed.key).execute(&database.pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO api_key_channel_grants(api_key_id,channel_id,origin_kind,origin_id)
+        SELECT $1,channel_id,origin_kind,origin_id FROM api_key_channel_grants WHERE api_key_id=$2",
+    )
+    .bind(second_key)
+    .bind(seed.key)
+    .execute(&database.pool)
+    .await
+    .unwrap();
     let group_id = Uuid::new_v4();
     let policy = SharingGroupInput {
-        credential_id: credential.id,
+        channel_id: credential.id,
         name: "Fixed seats".into(),
         enabled: true,
         seats: vec![Some(seed.user), None],
@@ -2879,39 +2985,40 @@ async fn codex_sharing_pins_credentials_and_settles_money_across_api_keys() {
     .execute(&database.pool)
     .await
     .unwrap();
-    let alias = coordinator
-        .create_codex_credential(
-            seed.user,
-            business_codex_credential(alias_pool, "alias", "sharing@example.test", "sharing-user"),
-            None,
-        )
-        .await
-        .unwrap();
+    let alias = Uuid::new_v4();
+    bind_codex_channel_fixture(
+        &coordinator,
+        &repository,
+        seed.user,
+        alias_pool,
+        credential.id,
+        alias,
+        false,
+    )
+    .await;
     let alias_cap: Uuid = sqlx::query_scalar(
         "SELECT id FROM channel_capabilities WHERE channel_id=$1 AND operation='responses'",
     )
-    .bind(alias.id)
+    .bind(alias)
     .fetch_one(&database.pool)
     .await
     .unwrap();
     assert!(runtime.snapshot().sharing().is_protected(alias_cap));
-    let unbound_alias = coordinator
-        .create_codex_credential(
-            seed.user,
-            business_codex_credential(
-                alias_pool,
-                "unbound alias",
-                "other@example.test",
-                "other-sharing-user",
-            ),
-            None,
-        )
-        .await
-        .unwrap();
+    let unbound_alias = Uuid::new_v4();
+    bind_codex_channel_fixture(
+        &coordinator,
+        &repository,
+        seed.user,
+        alias_pool,
+        other.id,
+        unbound_alias,
+        false,
+    )
+    .await;
     let unbound_alias_cap: Uuid = sqlx::query_scalar(
         "SELECT id FROM channel_capabilities WHERE channel_id=$1 AND operation='responses'",
     )
-    .bind(unbound_alias.id)
+    .bind(unbound_alias)
     .fetch_one(&database.pool)
     .await
     .unwrap();
@@ -2929,7 +3036,7 @@ async fn codex_sharing_pins_credentials_and_settles_money_across_api_keys() {
             .permits(Uuid::new_v4(), alias_cap)
     );
     let mut duplicate_identity = policy.clone();
-    duplicate_identity.credential_id = alias.id;
+    duplicate_identity.channel_id = alias;
     duplicate_identity.seats = vec![None, None];
     assert!(matches!(
         coordinator
@@ -2947,7 +3054,7 @@ async fn codex_sharing_pins_credentials_and_settles_money_across_api_keys() {
         ))
     ));
     let mut duplicate_seat = policy.clone();
-    duplicate_seat.credential_id = unbound_alias.id;
+    duplicate_seat.channel_id = unbound_alias;
     assert!(matches!(
         coordinator
             .mutate(
@@ -3181,7 +3288,7 @@ async fn codex_sharing_pins_credentials_and_settles_money_across_api_keys() {
     );
     let pending_before = serde_json::to_value(sharing.inspect(&group, seed.user).await).unwrap();
     for sharing_only in [false, true] {
-        sqlx::query("UPDATE routing_groups SET sharing_only=$1 WHERE id=$2")
+        sqlx::query("UPDATE upstream_channels SET sharing_only=$1 WHERE group_id=$2")
             .bind(sharing_only)
             .bind(codex_group)
             .execute(&database.pool)
@@ -3449,7 +3556,7 @@ async fn codex_personal_credentials_without_account_ids_are_unique_by_user() {
     assert_eq!(reauthorized.id, original.id);
     assert_eq!(reauthorized.action, "update");
     assert_ne!(other.id, original.id);
-    let credentials = repository.codex_credentials(codex_group).await.unwrap();
+    let credentials = repository.codex_credentials().await.unwrap();
     assert_eq!(credentials.len(), 2);
     assert!(
         credentials
@@ -3520,7 +3627,7 @@ async fn batch_mutations_reject_empty_and_oversized_inputs() {
         .unwrap();
         assert!(matches!(
             repository
-                .prepare_codex_credentials_batch(seed.user, codex_group, credentials)
+                .prepare_codex_credentials_batch(seed.user, credentials)
                 .await,
             Err(ai_gateway::persistence::RepositoryError::Validation)
         ));
@@ -3593,12 +3700,11 @@ async fn codex_credentials_support_atomic_batch_state_changes_and_token_scrubbin
         )
         .await
         .unwrap();
-    let views = repository.codex_credentials(codex_group).await.unwrap();
+    let views = repository.codex_credentials().await.unwrap();
 
     let disabled = coordinator
         .update_codex_credentials_batch(
             seed.user,
-            codex_group,
             CodexCredentialBatchInput {
                 items: views
                     .iter()
@@ -3615,13 +3721,13 @@ async fn codex_credentials_support_atomic_batch_state_changes_and_token_scrubbin
     assert_eq!(disabled.updated_ids.len(), 2);
     assert!(
         repository
-            .codex_credentials(codex_group)
+            .codex_credentials()
             .await
             .unwrap()
             .iter()
             .all(|credential| !credential.enabled && credential.runtime_status == "disabled")
     );
-    let current_views = repository.codex_credentials(codex_group).await.unwrap();
+    let current_views = repository.codex_credentials().await.unwrap();
     let current_member_a = current_views
         .iter()
         .find(|credential| credential.id == member_a.id)
@@ -3633,7 +3739,6 @@ async fn codex_credentials_support_atomic_batch_state_changes_and_token_scrubbin
     let stale = coordinator
         .update_codex_credentials_batch(
             seed.user,
-            codex_group,
             CodexCredentialBatchInput {
                 items: vec![
                     CodexCredentialBatchTarget {
@@ -3657,7 +3762,7 @@ async fn codex_credentials_support_atomic_batch_state_changes_and_token_scrubbin
     ));
     assert!(
         repository
-            .codex_credentials(codex_group)
+            .codex_credentials()
             .await
             .unwrap()
             .iter()
@@ -3682,10 +3787,9 @@ async fn codex_credentials_support_atomic_batch_state_changes_and_token_scrubbin
     );
     let deleted = sqlx::query_as::<_, DeletedCodexCredentialState>(
         "SELECT c.id_token,c.access_token,c.refresh_token,c.deleted_at, \
-                ch.name AS channel_name, \
-                a.proxy_id,c.quota_allowed,c.primary_used_percent \
-         FROM codex_oauth_credentials c JOIN upstream_channels ch ON ch.id=c.channel_id \
-         JOIN upstream_accesses a ON a.id=ch.access_id \
+                c.label AS credential_name, \
+                c.proxy_id,c.quota_allowed,c.primary_used_percent \
+         FROM codex_oauth_credentials c \
          WHERE c.channel_id=$1",
     )
     .bind(member_a.id)
@@ -3696,7 +3800,7 @@ async fn codex_credentials_support_atomic_batch_state_changes_and_token_scrubbin
     assert_eq!(deleted.access_token, "deleted");
     assert_eq!(deleted.refresh_token, "deleted");
     assert!(deleted.deleted_at.is_some());
-    assert_eq!(deleted.channel_name, "delete-a");
+    assert_eq!(deleted.credential_name, "delete-a");
     assert!(deleted.proxy_id.is_none());
     assert!(deleted.quota_allowed.is_none());
     assert!(deleted.primary_used_percent.is_none());
@@ -3706,12 +3810,7 @@ async fn codex_credentials_support_atomic_batch_state_changes_and_token_scrubbin
             .fetch_all(&database.pool)
             .await
             .unwrap();
-    assert_eq!(deleted_capabilities.len(), 5);
-    assert!(
-        deleted_capabilities
-            .iter()
-            .all(|state| *state == (false, false, true))
-    );
+    assert!(deleted_capabilities.is_empty());
     coordinator
         .mutate(
             seed.user,
@@ -3731,7 +3830,6 @@ async fn codex_credentials_support_atomic_batch_state_changes_and_token_scrubbin
     coordinator
         .update_codex_credentials_batch(
             seed.user,
-            codex_group,
             CodexCredentialBatchInput {
                 items: vec![CodexCredentialBatchTarget {
                     id: member_b.id,
@@ -3742,13 +3840,7 @@ async fn codex_credentials_support_atomic_batch_state_changes_and_token_scrubbin
         )
         .await
         .unwrap();
-    assert!(
-        repository
-            .codex_credentials(codex_group)
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    assert!(repository.codex_credentials().await.unwrap().is_empty());
 
     let reimported = coordinator
         .create_codex_credential(
@@ -3769,7 +3861,7 @@ async fn codex_credentials_support_atomic_batch_state_changes_and_token_scrubbin
 }
 
 #[tokio::test]
-async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
+async fn codex_credentials_bind_explicit_channels_and_recompute_quota_state() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
     let codex_group = Uuid::new_v4();
@@ -3788,7 +3880,6 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
         .create_codex_credential(
             seed.user,
             CodexCredentialCreate {
-                channel_group_id: codex_group,
                 label: "plus-account".into(),
                 enabled: true,
                 proxy_id: None,
@@ -3827,6 +3918,16 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
     assert!(!audit.contains("secret-id-token"));
     assert!(!audit.contains("secret-access-token"));
     assert!(!audit.contains("secret-refresh-token"));
+    bind_codex_channel_fixture(
+        &coordinator,
+        &repository,
+        seed.user,
+        codex_group,
+        created.id,
+        created.id,
+        false,
+    )
+    .await;
     let topology = repository.topology().await.unwrap();
     let logical = topology
         .logical_channels
@@ -3912,7 +4013,7 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
     .await
     .unwrap();
     assert_eq!(images_timeouts, (Some(101), Some(202), Some(303)));
-    let credentials = repository.codex_credentials(codex_group).await.unwrap();
+    let credentials = repository.codex_credentials().await.unwrap();
     assert_eq!(credentials.len(), 1);
     assert_eq!(credentials[0].id, created.id);
 
@@ -4049,7 +4150,6 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
         .create_codex_credential(
             seed.user,
             CodexCredentialCreate {
-                channel_group_id: codex_group,
                 label: "plus-reauthorized".into(),
                 enabled: true,
                 proxy_id: None,
@@ -4087,7 +4187,10 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
         reauthorized_record.access_token,
         "reauthorized-access-token"
     );
-    assert_eq!(reauthorized_record.available_models, vec!["gpt-5-codex"]);
+    assert_eq!(
+        reauthorized_record.available_models,
+        vec!["gpt-5-codex", "gpt-5.1-codex"]
+    );
     let images_channel_after_reauthorization: (String, Vec<String>) =
         sqlx::query_as("SELECT c.name,cap.available_models FROM upstream_channels c JOIN channel_capabilities cap ON cap.channel_id=c.id WHERE cap.id=$1")
             .bind(images_channel)
@@ -4096,7 +4199,7 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
             .unwrap();
     assert_eq!(
         images_channel_after_reauthorization,
-        ("plus-reauthorized".into(), vec!["gpt-image-2".into()])
+        ("plus-account".into(), vec!["gpt-image-2".into()])
     );
 
     let topology = repository.topology().await.unwrap();
@@ -4528,7 +4631,6 @@ async fn codex_credentials_export_secrets_and_protect_assigned_proxies_from_dele
         .create_codex_credential(
             seed.user,
             CodexCredentialCreate {
-                channel_group_id: codex_group,
                 label: "portable-account".into(),
                 enabled: true,
                 proxy_id: Some(proxy.id),
@@ -4552,18 +4654,14 @@ async fn codex_credentials_export_secrets_and_protect_assigned_proxies_from_dele
         .unwrap();
 
     let exported = repository
-        .export_codex_credentials(
-            codex_group,
-            CodexCredentialExportInput {
-                credential_ids: vec![credential.id],
-                include_proxies: true,
-            },
-        )
+        .export_codex_credentials(CodexCredentialExportInput {
+            credential_ids: vec![credential.id],
+            include_proxies: true,
+        })
         .await
         .unwrap();
     assert_eq!(exported.export_type, "ai-gateway-codex-credentials");
-    assert_eq!(exported.version, 2);
-    assert_eq!(exported.channel_group_name, "codex-portable");
+    assert_eq!(exported.version, 3);
     assert_eq!(exported.credentials.len(), 1);
     assert_eq!(exported.credentials[0].id_token, "portable-id-token");
     assert_eq!(
@@ -4586,16 +4684,13 @@ async fn codex_credentials_export_secrets_and_protect_assigned_proxies_from_dele
         Some("proxy-password")
     );
     let exported_without_proxies = repository
-        .export_codex_credentials(
-            codex_group,
-            CodexCredentialExportInput {
-                credential_ids: vec![credential.id],
-                include_proxies: false,
-            },
-        )
+        .export_codex_credentials(CodexCredentialExportInput {
+            credential_ids: vec![credential.id],
+            include_proxies: false,
+        })
         .await
         .unwrap();
-    assert_eq!(exported_without_proxies.channel_group_id, codex_group);
+    assert_eq!(exported_without_proxies.version, 3);
     assert_eq!(exported_without_proxies.credentials.len(), 1);
     assert!(exported_without_proxies.proxies.is_empty());
 
@@ -4739,7 +4834,6 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         .create_codex_credential(
             seed.user,
             CodexCredentialCreate {
-                channel_group_id: codex_group,
                 label: "forwarding-account".into(),
                 enabled: true,
                 proxy_id: None,
@@ -4772,6 +4866,16 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         )
         .await
         .unwrap();
+    bind_codex_channel_fixture(
+        &coordinator,
+        &repository,
+        seed.user,
+        codex_group,
+        credential.id,
+        credential.id,
+        false,
+    )
+    .await;
     let topology = repository.topology().await.unwrap();
     let capabilities: Vec<_> = topology
         .channel_capabilities
@@ -4902,9 +5006,15 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     .execute(&database.pool)
     .await
     .unwrap();
-    sqlx::query("INSERT INTO api_key_capability_grants (api_key_id,capability_id,origin_kind,origin_id)
-        SELECT $1,cap.id,'group',$2 FROM channel_capabilities cap JOIN upstream_channels c ON c.id=cap.channel_id WHERE c.group_id=$2")
-        .bind(seed.key).bind(codex_group).execute(&database.pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO api_key_channel_grants (api_key_id,channel_id,origin_kind,origin_id)
+        SELECT $1,c.id,'group',$2 FROM upstream_channels c WHERE c.group_id=$2",
+    )
+    .bind(seed.key)
+    .bind(codex_group)
+    .execute(&database.pool)
+    .await
+    .unwrap();
     sqlx::query(
         "UPDATE system_settings \
          SET value=jsonb_set( \
@@ -8258,6 +8368,7 @@ async fn adding_a_group_channel_does_not_change_existing_route_candidates() {
             "access_id": seed.channel,
             "name": format!("later-member-{}", Uuid::new_v4()),
             "enabled": true,
+            "sharing_only": false,
             "credential_id": null
         }),
     )
@@ -8903,7 +9014,7 @@ async fn independent_credentials_rotate_disable_and_restrict_all_bound_channels(
         serde_json::json!({
             "group_id": seed.group, "access_id": seed.channel,
             "name": "shared identity channel",
-            "enabled": true, "credential_id": seed.channel
+            "enabled": true, "sharing_only": false, "credential_id": seed.channel
         }),
     )
     .await;
@@ -11428,7 +11539,7 @@ async fn group_authorization_and_expired_keys_are_not_usable() {
         .execute(&database.pool)
         .await
         .unwrap();
-    sqlx::query("DELETE FROM api_key_capability_grants WHERE api_key_id=$1")
+    sqlx::query("DELETE FROM api_key_channel_grants WHERE api_key_id=$1")
         .bind(seed.key)
         .execute(&database.pool)
         .await
@@ -11465,7 +11576,7 @@ async fn group_authorization_and_expired_keys_are_not_usable() {
     .execute(&database.pool)
     .await
     .unwrap();
-    sqlx::query("INSERT INTO api_key_capability_grants(api_key_id,capability_id,origin_kind,origin_id) VALUES($1,$2,'channel',$2)")
+    sqlx::query("INSERT INTO api_key_channel_grants(api_key_id,channel_id,origin_kind,origin_id) VALUES($1,$2,'channel',$2)")
         .bind(seed.key).bind(seed.channel).execute(&database.pool).await.unwrap();
     let channel_snapshot = compile_control_plane(
         ControlPlaneRepository::new(database.pool.clone())
@@ -12103,7 +12214,7 @@ async fn console_members_are_limited_to_their_own_keys_and_logs() {
     .execute(&database.pool)
     .await
     .unwrap();
-    sqlx::query("INSERT INTO api_key_policy_capability_grants(policy_id,capability_id,origin_kind,origin_id) VALUES($1,$2,'group',$3)")
+    sqlx::query("INSERT INTO api_key_policy_channel_grants(policy_id,channel_id,origin_kind,origin_id) VALUES($1,$2,'group',$3)")
         .bind(policy_id).bind(seed.channel).bind(seed.group).execute(&database.pool).await.unwrap();
     sqlx::query("UPDATE users SET default_api_key_policy_id=$2 WHERE id=$1")
         .bind(member_id)

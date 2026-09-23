@@ -1,5 +1,4 @@
 import { useMemo, useState } from "react";
-import { useNavigate } from "react-router";
 import { AdminListPage } from "@/features/admin/components/admin-list-page";
 import { useChannelCapabilities, useLogicalChannels } from "@/features/admin/api";
 import { StatusBadge } from "@/components/shared/status-badge";
@@ -10,7 +9,6 @@ import { Button } from "@/components/ui/button";
 import { CapabilityBatchDialog } from "./capability-batch-dialog";
 
 export function CapabilitiesPage({ channelId }: { channelId?: string } = {}) {
-  const navigate = useNavigate();
   const query = useChannelCapabilities();
   const channels = useLogicalChannels();
   const { t } = useI18n();
@@ -25,6 +23,8 @@ export function CapabilitiesPage({ channelId }: { channelId?: string } = {}) {
   return (
     <>
     <AdminListPage
+      embedded={!!channelId}
+      linkColumnKey="operation"
       title={t("Channel capabilities")}
       description={channelId ? channelNames.get(channelId) ?? channelId : t(
         "One operation and model catalogue per logical channel.",
@@ -35,9 +35,11 @@ export function CapabilitiesPage({ channelId }: { channelId?: string } = {}) {
         error: query.error ?? channels.error,
       }}
       rowKey={(capability) => capability.id}
-      detailPath={(capability) => `/admin/routing/capabilities/${capability.id}`}
+      detailPath={(capability) => `/admin/routing/logical-channels/${capability.channel_id}?view=capabilities&capability=${capability.id}`}
       createLabel={t("New capability")}
-      onCreate={() => navigate(`/admin/routing/capabilities/new${channelId ? `?channel=${channelId}` : ""}`)}
+      createPath={channelId
+        ? `/admin/routing/logical-channels/${channelId}?view=capabilities&capability=new`
+        : "/admin/routing/capabilities/new"}
       headerActions={<Button variant="outline" disabled={selectedCapabilities.length === 0 || selectedCapabilities.length > 100} onClick={() => setEditing(true)}>{t("Batch edit capabilities")} ({selectedCapabilities.length}/100)</Button>}
       columns={[
         {

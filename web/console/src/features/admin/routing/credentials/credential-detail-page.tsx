@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router";
+import { Link, useParams } from "react-router";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -20,6 +20,8 @@ import {
   useUpdateUpstreamCredential, useUpstreamCredential,
 } from "@/features/admin/api";
 import { useI18n } from "@/app/i18n";
+import { usePageOrigin, useReturnPath, withReturnTo } from "@/lib/page-navigation";
+import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
 
 const schema = z.object({
   name: z.string().trim().min(1).max(100),
@@ -39,7 +41,7 @@ const defaults: FormValues = { name: "", kind: "bearer", header_name: "", secret
 export function CredentialDetailPage() {
   const { id = "" } = useParams();
   const isNew = id === "new";
-  const navigate = useNavigate();
+  const origin = usePageOrigin();
   const { t } = useI18n();
   const query = useUpstreamCredential(id);
   const channels = useLogicalChannels();
@@ -50,7 +52,10 @@ export function CredentialDetailPage() {
   const form = useForm<FormValues>({ resolver: zodResolver(schema), defaultValues: defaults });
   const credential = query.data?.data;
   const managed = credential?.provider_managed ?? false;
+  const returnTo = useReturnPath(managed
+    ? "/admin/routing/upstream-credentials?connector=codex" : "/admin/routing/upstream-credentials");
   const busy = create.isPending || update.isPending || remove.isPending;
+  const { navigate, navigationGuard, markSaved } = useConfigurationDraft(busy, form.formState.isDirty);
   useEffect(() => {
     if (credential && !credential.provider_managed) {
       form.reset({
@@ -82,11 +87,13 @@ export function CredentialDetailPage() {
     try {
       if (isNew) {
         const result = await create.mutateAsync({ ...input, secret: values.secret });
-        navigate(`/admin/routing/upstream-credentials/${result.id}`, { replace: true });
+        markSaved();
+        navigate(withReturnTo(`/admin/routing/upstream-credentials/${result.id}`, returnTo), { replace: true });
       } else {
         await update.mutateAsync({ input: { ...input, ...(values.secret !== "" ? { secret: values.secret } : {}) }, ifMatch: query.etag });
       }
-      form.setValue("secret", "");
+      form.reset({ ...values, secret: "" });
+      markSaved();
       toast.success(t("Credential saved"));
     } catch (error) { await fail(error); }
   });
@@ -94,22 +101,19 @@ export function CredentialDetailPage() {
   return <AdminDetailShell
     title={isNew ? t("New credential") : credential?.name ?? t("Upstream credential")}
     description={t("Rotating or disabling this identity affects every referencing channel.")}
-    backPath="/admin/routing/upstream-credentials"
+    backPath={returnTo}
     isLoading={!isNew && query.isLoading} error={query.error}
-    hasData={isNew || Boolean(credential)} saving={busy}
+    hasData={isNew || Boolean(credential)} navigationGuard={navigationGuard}
     detailCard={credential ? <Card>
       <CardHeader><CardTitle>{t("Referencing channels")}</CardTitle>
         <CardDescription>{t("Disabled channels also retain their credential binding.")}</CardDescription></CardHeader>
       <CardContent className="flex flex-col gap-3">
         {credential.channel_ids.length === 0 ? <p>{t("No referencing channels.")}</p> : credential.channel_ids.map((channelId) => {
           const channel = channels.data?.find((value) => value.id === channelId);
-          const path = managed && channel
-            ? `/admin/providers/codex-oauth/${channel.group_id}`
-            : `/admin/routing/logical-channels/${channelId}`;
-          return <Link key={channelId} to={path}>{channel?.name ?? channelId}</Link>;
+          const path = `/admin/routing/logical-channels/${channelId}`;
+          return <Link key={channelId} to={withReturnTo(path, origin)} className="underline underline-offset-4">{channel?.name ?? channelId}</Link>;
         })}
-        {managed ? <p>{t("This identity is managed by the Codex connector. Use its provider page to change or delete it.")}</p> : null}
-        {credential.secret ? <ApiKeyValue value={credential.secret} /> : null}
+        {credential.secret ? <ApiKeyValue value={credential.secret} className="min-w-0 w-full" /> : null}
       </CardContent>
     </Card> : null}
     editCard={!managed ? <Card>
@@ -164,7 +168,10 @@ export function CredentialDetailPage() {
         title={t("Delete credential?")} description={t("The secret will be erased permanently. Referencing channels must be unbound first.")}
         confirmLabel={t("Delete credential")} destructive
         onConfirm={() => {
-          void remove.mutateAsync(query.etag).then(() => navigate("/admin/routing/upstream-credentials")).catch(fail);
+          void remove.mutateAsync(query.etag).then(() => {
+            markSaved();
+            navigate(returnTo, { replace: true });
+          }).catch(fail);
         }} />
     </> : null}
   />;

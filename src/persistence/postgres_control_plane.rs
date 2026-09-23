@@ -644,6 +644,7 @@ pub(super) struct PostgresControlPlaneRepository {
 pub struct ApiKeyCreate {
     pub user_id: Uuid,
     pub name: String,
+    #[serde(default)]
     pub allowed_api_formats: Vec<String>,
     pub permissions: Vec<String>,
     pub allowed_group_ids: Vec<Uuid>,
@@ -658,6 +659,7 @@ pub struct ApiKeyCreate {
 pub struct ApiKeyUpdate {
     pub name: String,
     pub status: String,
+    #[serde(default)]
     pub allowed_api_formats: Vec<String>,
     pub permissions: Vec<String>,
     pub allowed_group_ids: Vec<Uuid>,
@@ -1248,19 +1250,18 @@ pub struct SelfApiKeyOptions {
     pub policy_id: Option<Uuid>,
     pub policy_name: Option<String>,
     pub policy_enabled: bool,
-    pub sharing_credentials: Vec<SelfApiKeySharingCredentialOption>,
+    pub sharing_channels: Vec<SelfApiKeySharingChannelOption>,
     pub groups: Vec<SelfApiKeyGroupOption>,
     pub channels: Vec<SelfApiKeyChannelOption>,
 }
 
 #[derive(Clone, Serialize, FromRow)]
-pub struct SelfApiKeySharingCredentialOption {
-    pub credential_id: Uuid,
+pub struct SelfApiKeySharingChannelOption {
+    pub channel_id: Uuid,
+    pub channel_name: String,
     pub sharing_group_id: Uuid,
     pub name: String,
     pub enabled: bool,
-    pub channel_ids: Vec<Uuid>,
-    pub api_formats: Vec<String>,
 }
 
 #[derive(Clone, Serialize, FromRow)]
@@ -2327,10 +2328,10 @@ impl PostgresMeteringQueries {
                AND ($5::uuid IS NULL OR channel_id = $5)
                AND (
                    $6::uuid IS NULL
-                   OR channel_id IN (
-                       SELECT identity.id
-                       FROM channel_identity_registry AS identity
-                       WHERE identity.codex_credential_id = $6
+                   OR id IN (
+                       SELECT identity.request_id
+                       FROM request_credential_identities AS identity
+                       WHERE identity.credential_id = $6
                    )
                )",
         )
@@ -2361,10 +2362,10 @@ impl PostgresMeteringQueries {
                AND ($5::uuid IS NULL OR channel_id = $5)
                AND (
                    $6::uuid IS NULL
-                   OR channel_id IN (
-                       SELECT identity.id
-                       FROM channel_identity_registry AS identity
-                       WHERE identity.codex_credential_id = $6
+                   OR id IN (
+                       SELECT identity.request_id
+                       FROM request_credential_identities AS identity
+                       WHERE identity.credential_id = $6
                    )
                )
              GROUP BY bucket_started_at,
@@ -2409,10 +2410,10 @@ impl PostgresMeteringQueries {
                AND ($5::uuid IS NULL OR channel_id = $5)
                AND (
                    $6::uuid IS NULL
-                   OR channel_id IN (
-                       SELECT identity.id
-                       FROM channel_identity_registry AS identity
-                       WHERE identity.codex_credential_id = $6
+                   OR id IN (
+                       SELECT identity.request_id
+                       FROM request_credential_identities AS identity
+                       WHERE identity.credential_id = $6
                    )
                )
              GROUP BY COALESCE(upstream_model, client_model), api_format
@@ -2461,10 +2462,10 @@ impl PostgresMeteringQueries {
                    AND ($5::uuid IS NULL OR log.channel_id = $5)
                    AND (
                        $6::uuid IS NULL
-                       OR log.channel_id IN (
-                           SELECT identity.id
-                           FROM channel_identity_registry AS identity
-                           WHERE identity.codex_credential_id = $6
+                       OR log.id IN (
+                           SELECT identity.request_id
+                           FROM request_credential_identities AS identity
+                           WHERE identity.credential_id = $6
                        )
                    )
                  GROUP BY log.channel_id, log.channel_group_id, channel_group.label,
@@ -4885,10 +4886,14 @@ impl PostgresControlPlaneRepository {
         .bind(user_id)
         .fetch_optional(&mut *transaction)
         .await?;
-        let mut sharing_credentials = sqlx::query_as::<_, SelfApiKeySharingCredentialOption>(
-            "SELECT s.credential_id,s.id AS sharing_group_id,s.name,s.enabled, \
-                    ARRAY[]::uuid[] AS channel_ids, ARRAY[]::text[] AS api_formats \
+        let sharing_channels = sqlx::query_as::<_, SelfApiKeySharingChannelOption>(
+            "SELECT s.channel_id,c.name AS channel_name,s.id AS sharing_group_id,s.name, \
+                    (s.enabled AND c.enabled AND g.enabled AND a.enabled AND credential.enabled) AS enabled \
              FROM codex_sharing_groups s \
+             JOIN upstream_channels c ON c.id=s.channel_id AND c.deleted_at IS NULL \
+             JOIN routing_groups g ON g.id=c.group_id \
+             JOIN upstream_accesses a ON a.id=c.access_id \
+             JOIN upstream_credentials credential ON credential.id=c.credential_id \
              JOIN users u ON u.id=$1 AND u.status='active' AND u.deleted_at IS NULL \
                               AND NOT u.is_system \
              WHERE s.seats @> jsonb_build_array($1::uuid) \
@@ -4897,7 +4902,7 @@ impl PostgresControlPlaneRepository {
         .bind(user_id)
         .fetch_all(&mut *transaction)
         .await?;
-        if sharing_credentials.is_empty() {
+        if sharing_channels.is_empty() {
             ensure_optional_policy_enabled(policy.as_ref())?;
         }
 
@@ -4905,15 +4910,11 @@ impl PostgresControlPlaneRepository {
         let sharing = load_self_api_key_sharing_access(&mut transaction, user_id).await?;
         let (groups, channels) =
             super::upstream_topology::authorization::options(&topology, policy.as_ref(), &sharing);
-        super::upstream_topology::authorization::sharing_options(
-            &topology,
-            &mut sharing_credentials,
-        );
         Ok(SelfApiKeyOptions {
             policy_id: policy.as_ref().map(|p| p.id),
             policy_name: policy.as_ref().map(|p| p.name.clone()),
             policy_enabled: policy.as_ref().is_some_and(|p| p.enabled),
-            sharing_credentials,
+            sharing_channels,
             groups,
             channels,
         })
@@ -5461,7 +5462,8 @@ impl PostgresControlPlaneRepository {
                 deleted_by,
                 expected_updated_at,
             } => model_soft_delete(transaction, id, deleted_by, expected_updated_at).await,
-            ControlPlaneMutation::CreateApiKey(input) => {
+            ControlPlaneMutation::CreateApiKey(mut input) => {
+                input.allowed_api_formats = super::upstream_topology::authorization::all_formats();
                 ensure_api_key_owner_exists(transaction, input.user_id).await?;
                 validate_admin_api_key_input(
                     &input.name,
@@ -5512,9 +5514,10 @@ impl PostgresControlPlaneRepository {
             }
             ControlPlaneMutation::UpdateApiKey {
                 id,
-                input,
+                mut input,
                 expected_updated_at,
             } => {
+                input.allowed_api_formats = super::upstream_topology::authorization::all_formats();
                 validate_admin_api_key_input(
                     &input.name,
                     &input.allowed_api_formats,
@@ -5808,10 +5811,16 @@ async fn load_self_api_key_sharing_access(
     user_id: Uuid,
 ) -> Result<SelfApiKeySharingAccess, RepositoryError> {
     let rows = sqlx::query_as::<_, (Uuid, bool)>(
-        "SELECT projection.id, \
-                bool_or(candidate.channel_id=s.credential_id \
-                    AND s.seats @> jsonb_build_array($1::uuid)) AS owned \
-         FROM codex_sharing_groups s \
+        "WITH protected AS ( \
+             SELECT credential_id,provider_account_id,provider_user_id FROM codex_sharing_groups \
+             UNION SELECT c.credential_id,COALESCE(identity.account_id,''),identity.user_id \
+             FROM upstream_channels c JOIN codex_oauth_credentials identity ON identity.channel_id=c.credential_id \
+             WHERE c.sharing_only AND c.deleted_at IS NULL AND identity.deleted_at IS NULL \
+         ) SELECT projection.id, \
+                bool_or(EXISTS(SELECT 1 FROM codex_sharing_groups own \
+                    WHERE own.channel_id=projection.id AND own.credential_id=candidate.channel_id \
+                      AND own.seats @> jsonb_build_array($1::uuid))) AS owned \
+         FROM protected s \
          JOIN codex_oauth_credentials candidate \
            ON candidate.channel_id=s.credential_id \
            OR (COALESCE(candidate.account_id,'')=s.provider_account_id \
@@ -6366,7 +6375,7 @@ async fn replace_user_group_codex_quota_visibility(
     if !channel_group_ids.is_empty() {
         let valid_count = sqlx::query_scalar::<_, i64>(
             "SELECT count(*) \
-             FROM routing_groups g JOIN connector_pools pool ON pool.routing_group_id=g.id \
+             FROM routing_groups g \
              WHERE g.id=ANY($1) AND g.deleted_at IS NULL",
         )
         .bind(channel_group_ids)
@@ -7380,6 +7389,7 @@ async fn proxy_delete(
     }
     let in_use = sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(SELECT 1 FROM upstream_accesses WHERE proxy_id=$1) \
+             OR EXISTS(SELECT 1 FROM codex_oauth_credentials WHERE proxy_id=$1) \
              OR EXISTS(SELECT 1 FROM codex_oauth_flows WHERE proxy_id=$1)",
     )
     .bind(id)

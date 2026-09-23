@@ -36,7 +36,7 @@ async fn repository() -> (
     SqliteControlPlaneRepository,
 ) {
     let (directory, database) = database().await;
-    assert_eq!(database.install_schema().await.unwrap(), 6);
+    assert_eq!(database.install_schema().await.unwrap(), 9);
     let database = Arc::new(database);
     let repository = SqliteControlPlaneRepository::new(Arc::clone(&database));
     (directory, database, repository)
@@ -389,7 +389,7 @@ async fn console_reads_expose_lists_details_audit_and_self_service_options() {
 }
 
 #[tokio::test]
-async fn topology_deletion_requires_explicit_child_withdrawal_and_preserves_grants() {
+async fn capability_deletion_withdraws_routes_and_preserves_channel_grants() {
     let (_directory, database, repository) = repository().await;
     seed_admin_and_user(&database).await;
     seed_routing(&database).await;
@@ -402,8 +402,8 @@ async fn topology_deletion_requires_explicit_child_withdrawal_and_preserves_gran
               allowed_group_ids,allowed_channel_ids)
              VALUES ('{KEY}','{USER}','Bound key','sk-bound','active',
                      '[\"open_ai_chat_completions\"]','[\"proxy\"]','[\"{GROUP}\"]','[]');
-             INSERT INTO api_key_capability_grants(api_key_id,capability_id,origin_kind,origin_id)
-             VALUES ('{KEY}','{CAPABILITY}','group','{GROUP}');"
+             INSERT INTO api_key_channel_grants(api_key_id,channel_id,origin_kind,origin_id)
+             VALUES ('{KEY}','{CHANNEL}','group','{GROUP}');"
         ),
     )
     .await;
@@ -418,32 +418,10 @@ async fn topology_deletion_requires_explicit_child_withdrawal_and_preserves_gran
             id: CHANNEL,
             expected: before.logical_channels[0].updated_at,
         },
-        ControlPlaneMutation::DeleteChannelCapability {
-            id: CAPABILITY,
-            expected: before.channel_capabilities[0].updated_at,
-        },
     ] {
         assert!(repository.prepare_mutation(ADMIN, mutation).await.is_err());
     }
     assert!(control_plane_audits(&repository).await.is_empty());
-    let mut withdrawal = repository
-        .prepare_mutation(
-            ADMIN,
-            ControlPlaneMutation::SaveOperationRule {
-                id: RULE,
-                expected_updated_at: Some(before.operation_rules[0].updated_at),
-                input: ai_gateway::persistence::OperationRuleInput {
-                    model_routing_profile_id: PROFILE,
-                    operation: ai_gateway::domain::ApiOperation::ChatCompletions,
-                    enabled: false,
-                    routing_tiers: vec![],
-                },
-            },
-        )
-        .await
-        .unwrap();
-    compile_runtime_config(withdrawal.runtime_records().await.unwrap()).unwrap();
-    withdrawal.commit().await.unwrap();
     assert!(matches!(
         repository
             .prepare_mutation(
@@ -486,6 +464,10 @@ async fn topology_deletion_requires_explicit_child_withdrawal_and_preserves_gran
     );
     assert!(after.operation_candidates.is_empty());
     assert!(!after.operation_rules[0].enabled);
+    assert_ne!(
+        after.operation_rules[0].updated_at,
+        before.operation_rules[0].updated_at
+    );
     assert!(repository.load().await.unwrap().channels.is_empty());
     let key = repository.own_api_key(USER, KEY).await.unwrap().unwrap();
     assert_eq!(key.allowed_group_ids, vec![GROUP]);
@@ -639,7 +621,6 @@ async fn pending_group_change_can_roll_back_without_publishing_or_auditing() {
                 id: GROUP,
                 input: ai_gateway::persistence::RoutingGroupInput {
                     name: "Ordinary Group".into(),
-                    sharing_only: false,
                     enabled: false,
                 },
                 expected: Some(group_updated_at(&database).await),
@@ -724,9 +705,9 @@ async fn self_service_and_admin_writes_enforce_versions_and_policies() {
                    SELECT json_group_array(id) FROM routing_groups WHERE deleted_at IS NULL
                  ),
                  '[]',1);
-         INSERT INTO api_key_policy_capability_grants(policy_id,capability_id,origin_kind,origin_id)
-         SELECT '40200000-0000-0000-0000-000000000471',cap.id,'group',channel.group_id
-         FROM channel_capabilities cap JOIN upstream_channels channel ON channel.id=cap.channel_id",
+         INSERT INTO api_key_policy_channel_grants(policy_id,channel_id,origin_kind,origin_id)
+         SELECT '40200000-0000-0000-0000-000000000471',channel.id,'group',channel.group_id
+         FROM upstream_channels channel",
     )
     .await;
     execute(
@@ -773,7 +754,11 @@ async fn self_service_and_admin_writes_enforce_versions_and_policies() {
         .unwrap();
     assert_eq!(
         created.allowed_api_formats,
-        vec!["open_ai_chat_completions"]
+        vec![
+            "open_ai_chat_completions",
+            "open_ai_responses",
+            "open_ai_images"
+        ]
     );
 
     // A target outside the policy is rejected without writing anything.
@@ -1171,7 +1156,6 @@ async fn empty_routing_groups_do_not_create_connector_pools_or_capabilities() {
                 expected: None,
                 input: ai_gateway::persistence::RoutingGroupInput {
                     name: "Empty group".into(),
-                    sharing_only: false,
                     enabled: true,
                 },
             },
@@ -1183,7 +1167,11 @@ async fn empty_routing_groups_do_not_create_connector_pools_or_capabilities() {
     let (mutations, _) = change.commit().await.unwrap();
     assert_eq!(mutations[0].id, id);
     assert_eq!(
-        scalar::<i64>(&database, "SELECT count(*) FROM connector_pools").await,
+        scalar::<i64>(
+            &database,
+            "SELECT count(*) FROM sqlite_schema WHERE name='connector_pools'"
+        )
+        .await,
         0
     );
     let topology = repository.topology().await.unwrap();
@@ -1307,7 +1295,6 @@ async fn invalid_management_inputs_fail_before_writing() {
                     expected: None,
                     input: ai_gateway::persistence::RoutingGroupInput {
                         name: " ".into(),
-                        sharing_only: false,
                         enabled: true,
                     },
                 },
@@ -1362,7 +1349,7 @@ async fn seed_codex_credential(
     label: &str,
     account_id: &str,
     provider_user_id: &str,
-) -> Uuid {
+) -> (Uuid, Uuid) {
     repository
         .prepare_mutation(
             ADMIN,
@@ -1371,7 +1358,6 @@ async fn seed_codex_credential(
                 expected: None,
                 input: ai_gateway::persistence::RoutingGroupInput {
                     name: format!("{label} car"),
-                    sharing_only: false,
                     enabled: true,
                 },
             },
@@ -1381,11 +1367,10 @@ async fn seed_codex_credential(
         .commit()
         .await
         .unwrap();
-    repository
+    let credential = repository
         .prepare_codex_credential_create(
             ADMIN,
             ai_gateway::persistence::CodexCredentialCreate {
-                channel_group_id: responses_group,
                 label: label.into(),
                 enabled: true,
                 proxy_id: None,
@@ -1411,16 +1396,73 @@ async fn seed_codex_credential(
         .await
         .unwrap()
         .0[0]
-        .id
+        .id;
+    let access = repository
+        .prepare_mutation(
+            ADMIN,
+            ControlPlaneMutation::CreateUpstreamAccess(
+                serde_json::from_value(json!({
+                    "name":format!("{label} access"),"connector_kind":"codex",
+                    "base_url":"https://codex.invalid","enabled":true
+                }))
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap()
+        .commit()
+        .await
+        .unwrap()
+        .0[0]
+        .id;
+    let channel = Uuid::new_v4();
+    repository
+        .prepare_mutation(
+            ADMIN,
+            ControlPlaneMutation::SaveLogicalChannel {
+                id: channel,
+                expected: None,
+                input: serde_json::from_value(json!({
+                    "group_id":responses_group,"access_id":access,"credential_id":credential,
+                    "name":label,"enabled":true,"sharing_only":false
+                }))
+                .unwrap(),
+            },
+        )
+        .await
+        .unwrap()
+        .commit()
+        .await
+        .unwrap();
+    for operation in [
+        "responses",
+        "responses-ws",
+        "web_search",
+        "images_generation",
+        "images_edit",
+    ] {
+        repository.prepare_mutation(ADMIN, ControlPlaneMutation::SaveChannelCapability {
+            id:Uuid::new_v4(),expected:None,
+            input:serde_json::from_value(json!({
+                "channel_id":channel,
+                "settings":{"operation":operation,"enabled":true,"available_models":["gpt-test"],
+                    "request_compression":"default","test_model":null,"test_pricing_model_id":null,
+                    "auto_disable_allowed":false},
+                "status_statistics_enabled":false,"config_template_id":null,
+                "override_document":{},"billing_multiplier":"1"
+            })).unwrap()
+        }).await.unwrap().commit().await.unwrap();
+    }
+    (credential, channel)
 }
 
-async fn credential_capabilities(database: &SqliteDatabase, credential: Uuid) -> Vec<Uuid> {
+async fn channel_capabilities(database: &SqliteDatabase, channel: Uuid) -> Vec<Uuid> {
     let mut reader = database.acquire_read().await.unwrap();
     sqlx::query_scalar::<_, SqliteUuid>(
         "SELECT cap.id FROM channel_capabilities cap JOIN upstream_channels channel ON channel.id=cap.channel_id
-         WHERE channel.credential_id=? AND cap.deleted_at IS NULL AND channel.deleted_at IS NULL",
+         WHERE channel.id=? AND cap.deleted_at IS NULL AND channel.deleted_at IS NULL",
     )
-    .bind(SqliteUuid(credential))
+    .bind(SqliteUuid(channel))
     .fetch_all(&mut *reader)
     .await
     .unwrap()
@@ -1435,12 +1477,9 @@ fn sorted(mut values: Vec<Uuid>) -> Vec<Uuid> {
     values
 }
 
-/// Sharing associations must be keyed by the group's `credential_id`, not by the group's own id.
-/// The fixture gives the group an id distinct from its credential and adds a recognizable
-/// provider-identity alias in another pool, so a mis-keyed lookup returns empty channel/window
-/// lists and the alias loses its protection even though no group is `sharing_only`.
+// Eligibility is channel-specific, while quota and alias protection are account-wide.
 #[tokio::test]
-async fn sharing_projections_follow_the_credential_not_the_group_identity() {
+async fn sharing_selects_one_channel_and_protects_siblings_reusing_its_credential() {
     let (_directory, database, repository) = repository().await;
     seed_admin_and_user(&database).await;
     repository.ensure_system_settings(settings()).await.unwrap();
@@ -1452,7 +1491,7 @@ async fn sharing_projections_follow_the_credential_not_the_group_identity() {
     let alias_group = Uuid::from_u128(0x4c2);
     let outsider = Uuid::from_u128(0x4c3);
 
-    let credential = seed_codex_credential(
+    let (credential, channel) = seed_codex_credential(
         &repository,
         responses_group,
         "Canonical",
@@ -1460,7 +1499,7 @@ async fn sharing_projections_follow_the_credential_not_the_group_identity() {
         "shared-user",
     )
     .await;
-    let identity_alias = seed_codex_credential(
+    let (identity_alias, alias_channel) = seed_codex_credential(
         &repository,
         alias_group,
         "Alias",
@@ -1468,6 +1507,7 @@ async fn sharing_projections_follow_the_credential_not_the_group_identity() {
         "shared-user",
     )
     .await;
+    assert_eq!(identity_alias, credential);
     execute(
         &database,
         &format!(
@@ -1479,11 +1519,11 @@ async fn sharing_projections_follow_the_credential_not_the_group_identity() {
                  quota_checked_at='2099-01-01T00:00:00.000000Z' \
              WHERE channel_id='{credential}';
              INSERT INTO codex_sharing_groups
-             (id,credential_id,provider_account_id,provider_user_id,name,enabled,seats,
+             (id,credential_id,channel_id,provider_account_id,provider_user_id,name,enabled,seats,
               primary_limit_amount,secondary_limit_amount,request_reservation_amount,
               user_requests_per_minute,group_requests_per_minute,user_max_concurrent_requests,
               group_max_concurrent_requests)
-             VALUES ('{sharing_group}','{credential}','shared-account','shared-user','Car',1,
+             VALUES ('{sharing_group}','{credential}','{channel}','shared-account','shared-user','Car',1,
                      '[\"{ADMIN}\",\"{USER}\"]','10','10','0.01',10,10,1,1);
              INSERT INTO codex_quota_window_periods
              (id,credential_id,window_kind,window_seconds,started_at,scheduled_reset_at,
@@ -1504,21 +1544,21 @@ async fn sharing_projections_follow_the_credential_not_the_group_identity() {
     let records = repository.load_runtime().await.unwrap();
     assert!(
         records.sharing_only_channels.is_empty(),
-        "no group is sharing-only"
+        "no channel is sharing-only"
     );
     assert_eq!(records.sharing.len(), 1);
     let record = &records.sharing[0];
     assert_eq!(record.group.id, sharing_group);
-    assert_eq!(record.group.policy.credential_id, credential);
+    assert_eq!(record.group.bound_credential_id, credential);
 
-    let canonical_capabilities = credential_capabilities(&database, credential).await;
-    let alias_capabilities = credential_capabilities(&database, identity_alias).await;
+    let canonical_capabilities = channel_capabilities(&database, channel).await;
+    let alias_capabilities = channel_capabilities(&database, alias_channel).await;
     assert_eq!(canonical_capabilities.len(), 5);
     assert_eq!(alias_capabilities.len(), 5);
     assert_eq!(
         sorted(record.channel_ids.clone()),
         sorted(canonical_capabilities.clone()),
-        "channel projections are keyed by credential, not by the sharing group id"
+        "only the selected logical channel's capabilities are eligible"
     );
     assert_eq!(
         sorted(record.protected_channel_ids.clone()),
@@ -1552,9 +1592,6 @@ async fn sharing_projections_follow_the_credential_not_the_group_identity() {
     assert_eq!(windows[1].id, secondary_window);
     assert_eq!(windows[1].used_percent, 5);
 
-    // The compiled registry keeps the same protections: the group is not `sharing_only`, yet an
-    // unseated user is still denied the alias channel, the member reaches only the canonical
-    // projections, and the alias itself is never an eligible canonical channel.
     let compiled = compile_runtime_config(records).unwrap();
     let sharing = compiled.sharing();
     assert_eq!(

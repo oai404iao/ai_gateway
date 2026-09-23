@@ -77,14 +77,12 @@ pub(crate) enum CanonicalGraphError {
     CredentialKindMismatch,
     #[error("canonical credential {credential_id} is invalid")]
     InvalidCredential { credential_id: Uuid },
-    #[error("canonical logical channel {channel_id} does not match its managed credential id")]
-    CredentialIdentityMismatch { channel_id: Uuid },
     #[error("canonical credential {credential_id} is deleted while still bound")]
     DeletedCredential { credential_id: Uuid },
     #[error("canonical credential {credential_id} does not allow the bound access base URL")]
     CredentialScope { credential_id: Uuid },
-    #[error("canonical routing group {group_id} is sharing-only but has non-Codex capabilities")]
-    SharingOnlyRequiresCodex { group_id: Uuid },
+    #[error("canonical logical channel {channel_id} is sharing-only but does not use Codex")]
+    SharingOnlyRequiresCodex { channel_id: Uuid },
     #[error("canonical operation rule {rule_id} has no model routing profile binding")]
     MissingProfile { rule_id: Uuid },
     #[error("canonical operation rule {rule_id} references a missing model")]
@@ -93,7 +91,7 @@ pub(crate) enum CanonicalGraphError {
     InconsistentOperation { rule_id: Uuid },
     #[error("canonical model rule {rule_id} references an unknown routing capability")]
     UnknownRouteTarget { rule_id: Uuid },
-    #[error("canonical api-key grant references an unknown capability")]
+    #[error("canonical logical-channel grant has an invalid target or origin")]
     UnknownGrantTarget,
 }
 
@@ -142,19 +140,18 @@ pub(crate) fn resolve_runtime(
     validate_group_names(&groups)?;
     validate_logical_credentials(&logical, &accesses, &groups, &credentials)?;
     let live = resolve_capabilities(&capabilities, &logical, &accesses, &groups, &credentials)?;
-    validate_sharing_only_groups(&groups, &live)?;
 
     let channels = build_channels(&live);
     let channel_ids = channels.iter().map(|channel| channel.id).collect();
     let model_rules = build_model_rules(topology, &profiles, &models, &live, &channel_ids)?;
-    let known_capabilities = capabilities.keys().copied().collect::<HashSet<_>>();
+    let known_channels = logical.keys().copied().collect::<HashSet<_>>();
     let api_keys = fold_grants(
         base.api_keys,
         &topology.api_key_grants,
         &live,
-        &known_capabilities,
+        &known_channels,
     )?;
-    validate_policy_grants(&topology.policy_grants, &live, &known_capabilities)?;
+    validate_policy_grants(&topology.policy_grants, &known_channels)?;
     let routing_groups = build_groups(&groups);
 
     Ok(ControlPlaneRecords {
@@ -322,6 +319,11 @@ fn validate_logical_credentials<'a>(
             None => None,
         };
         resolve_credential(access, credential, &channel.id)?;
+        if channel.sharing_only && access.connector_kind != ConnectorKind::CodexOauth {
+            return Err(CanonicalGraphError::SharingOnlyRequiresCodex {
+                channel_id: channel.id,
+            });
+        }
     }
     Ok(())
 }
@@ -420,42 +422,17 @@ fn resolve_credential(
     if managed != provider_managed {
         return Err(CanonicalGraphError::CredentialKindMismatch);
     }
-    if managed && credential.id != *channel_id {
-        return Err(CanonicalGraphError::CredentialIdentityMismatch {
-            channel_id: *channel_id,
-        });
-    }
     if credential.deleted_at.is_some() {
         return Err(CanonicalGraphError::DeletedCredential {
             credential_id: credential.id,
         });
     }
-    if !managed {
-        credential.allows_target(&access.base_url).map_err(|_| {
-            CanonicalGraphError::CredentialScope {
-                credential_id: credential.id,
-            }
-        })?;
-    }
+    credential.allows_target(&access.base_url).map_err(|_| {
+        CanonicalGraphError::CredentialScope {
+            credential_id: credential.id,
+        }
+    })?;
     Ok(credential.enabled)
-}
-
-fn validate_sharing_only_groups(
-    groups: &HashMap<Uuid, &RoutingGroupRecord>,
-    live: &[LiveCapability<'_>],
-) -> Result<(), CanonicalGraphError> {
-    for group in groups.values() {
-        if !is_live(group.deleted_at) || !group.sharing_only {
-            continue;
-        }
-        if live.iter().any(|capability| {
-            capability.group.id == group.id
-                && capability.connector_kind != ConnectorKind::CodexOauth
-        }) {
-            return Err(CanonicalGraphError::SharingOnlyRequiresCodex { group_id: group.id });
-        }
-    }
-    Ok(())
 }
 
 fn build_channels(live: &[LiveCapability<'_>]) -> Vec<ChannelRecord> {
@@ -529,7 +506,7 @@ fn build_groups(groups: &HashMap<Uuid, &RoutingGroupRecord>) -> Vec<ChannelGroup
             api_format: String::new(),
             connector_kind: String::new(),
             request_compression: String::new(),
-            sharing_only: group.sharing_only,
+            sharing_only: false,
             enabled: group.enabled,
         })
         .collect()
@@ -629,24 +606,21 @@ fn build_model_rules(
     Ok(rules)
 }
 
-/// Folds only explicit canonical capability grants into `allowed_channel_ids`.
-///
-/// Group-origin grants are kept only while the capability still belongs to the
-/// granting group, channel-origin grants only while the capability still
-/// belongs to the granting logical channel, and no grant may widen the key's
-/// own API-format permissions. Group ids never authorize canonical channels.
+/// Routing still uses capability identities. Expand fixed logical-channel grants
+/// against this snapshot only; never re-expand a group's current membership.
 fn fold_grants(
     mut api_keys: Vec<ApiKeyRecord>,
-    grants: &[super::ApiKeyCapabilityGrantRecord],
+    grants: &[super::ApiKeyChannelGrantRecord],
     live: &[LiveCapability<'_>],
-    known_capabilities: &HashSet<Uuid>,
+    known_channels: &HashSet<Uuid>,
 ) -> Result<Vec<ApiKeyRecord>, CanonicalGraphError> {
-    let capabilities = live
-        .iter()
-        .map(|capability| (capability.capability.id, capability))
-        .collect::<HashMap<_, _>>();
-    let mut grants_by_key = HashMap::<Uuid, Vec<&super::ApiKeyCapabilityGrantRecord>>::new();
+    let mut grants_by_key = HashMap::<Uuid, Vec<&super::ApiKeyChannelGrantRecord>>::new();
     for grant in grants {
+        if !known_channels.contains(&grant.channel_id)
+            || grant.origin_kind == GrantOriginKind::Capability
+        {
+            return Err(CanonicalGraphError::UnknownGrantTarget);
+        }
         grants_by_key
             .entry(grant.api_key_id)
             .or_default()
@@ -655,62 +629,45 @@ fn fold_grants(
     for key in &mut api_keys {
         let mut allowed = HashSet::new();
         for grant in grants_by_key.get(&key.id).into_iter().flatten() {
-            let Some(capability) = capabilities.get(&grant.capability_id) else {
-                // A tombstoned capability keeps its grant rows; it authorizes
-                // nothing. A grant to a capability that never existed is a
-                // graph inconsistency.
-                if known_capabilities.contains(&grant.capability_id) {
-                    continue;
+            for capability in live
+                .iter()
+                .filter(|capability| capability.logical.id == grant.channel_id)
+            {
+                if grant_matches_origin(grant, capability) {
+                    allowed.insert(capability.capability.id);
                 }
-                return Err(CanonicalGraphError::UnknownGrantTarget);
-            };
-            if !grant_matches_origin(grant, capability) {
-                continue;
             }
-            if !key.allowed_api_formats.iter().any(|format| {
-                format
-                    == capability
-                        .capability
-                        .settings
-                        .operation
-                        .api_format()
-                        .as_str()
-            }) {
-                continue;
-            }
-            allowed.insert(grant.capability_id);
         }
         let mut allowed = allowed.into_iter().collect::<Vec<_>>();
         allowed.sort_unstable();
         key.allowed_group_ids.clear();
         key.allowed_channel_ids = allowed;
+        key.allowed_api_formats = crate::domain::ApiFormat::ALL
+            .iter()
+            .map(|format| format.as_str().to_owned())
+            .collect();
     }
     Ok(api_keys)
 }
 
 fn grant_matches_origin(
-    grant: &super::ApiKeyCapabilityGrantRecord,
+    grant: &super::ApiKeyChannelGrantRecord,
     capability: &LiveCapability<'_>,
 ) -> bool {
     match grant.origin_kind {
         GrantOriginKind::Group => capability.group.id == grant.origin_id,
         GrantOriginKind::Channel => capability.logical.id == grant.origin_id,
-        GrantOriginKind::Capability => capability.capability.id == grant.origin_id,
+        GrantOriginKind::Capability => false,
     }
 }
 
 fn validate_policy_grants(
-    grants: &[super::ApiKeyPolicyCapabilityGrantRecord],
-    live: &[LiveCapability<'_>],
-    known_capabilities: &HashSet<Uuid>,
+    grants: &[super::ApiKeyPolicyChannelGrantRecord],
+    known_channels: &HashSet<Uuid>,
 ) -> Result<(), CanonicalGraphError> {
-    let live_capabilities = live
-        .iter()
-        .map(|capability| capability.capability.id)
-        .collect::<HashSet<_>>();
     if grants.iter().any(|grant| {
-        !live_capabilities.contains(&grant.capability_id)
-            && !known_capabilities.contains(&grant.capability_id)
+        !known_channels.contains(&grant.channel_id)
+            || grant.origin_kind == GrantOriginKind::Capability
     }) {
         return Err(CanonicalGraphError::UnknownGrantTarget);
     }
@@ -725,7 +682,7 @@ mod tests {
     use serde_json::json;
 
     use super::super::{
-        ApiKeyCapabilityGrantRecord, OperationCandidateRecord, OperationRuleRecord,
+        ApiKeyChannelGrantRecord, OperationCandidateRecord, OperationRuleRecord,
         OperationTierRecord,
     };
     use super::*;
@@ -734,12 +691,11 @@ mod tests {
         DateTime::from_timestamp(1_700_000_000, 0).expect("timestamp")
     }
 
-    fn group(id: u128, sharing_only: bool) -> RoutingGroupRecord {
+    fn group(id: u128) -> RoutingGroupRecord {
         RoutingGroupRecord {
             id: Uuid::from_u128(id),
             name: format!("group-{id}"),
             enabled: true,
-            sharing_only,
             created_at: at(),
             updated_at: at(),
             deleted_at: None,
@@ -777,6 +733,7 @@ mod tests {
             credential_id: credential_id.map(Uuid::from_u128),
             name: format!("channel-{id}"),
             enabled: true,
+            sharing_only: false,
             binding_revision: Uuid::from_u128(id + 700),
             created_at: at(),
             updated_at: at(),
@@ -836,11 +793,7 @@ mod tests {
             kind: kind.into(),
             header_name: None,
             secret: (!codex).then(|| "secret".into()),
-            allowed_base_urls: if codex {
-                Vec::new()
-            } else {
-                allowed.iter().map(|value| (*value).to_owned()).collect()
-            },
+            allowed_base_urls: allowed.iter().map(|value| (*value).to_owned()).collect(),
             enabled: true,
             revision: Uuid::from_u128(id + 300),
             created_at: at(),
@@ -898,7 +851,7 @@ mod tests {
 
     fn topology(capabilities: Vec<ChannelCapabilityRecord>) -> UpstreamTopologyRecords {
         UpstreamTopologyRecords {
-            routing_groups: vec![group(1, false)],
+            routing_groups: vec![group(1)],
             upstream_accesses: vec![access(
                 2,
                 ConnectorKind::OpenAiCompatible,
@@ -1031,7 +984,7 @@ mod tests {
     }
 
     #[test]
-    fn grants_fold_only_matching_origins_and_key_formats() {
+    fn channel_grants_cover_every_capability_without_a_separate_format_gate() {
         let mut records = topology(vec![
             capability(
                 100,
@@ -1063,41 +1016,25 @@ mod tests {
             weight: 1,
         }];
         records.api_key_grants = vec![
-            ApiKeyCapabilityGrantRecord {
+            ApiKeyChannelGrantRecord {
                 api_key_id: Uuid::from_u128(300),
-                capability_id: Uuid::from_u128(100),
+                channel_id: Uuid::from_u128(3),
                 origin_kind: GrantOriginKind::Group,
                 origin_id: Uuid::from_u128(1),
                 created_at: at(),
             },
-            ApiKeyCapabilityGrantRecord {
+            ApiKeyChannelGrantRecord {
                 api_key_id: Uuid::from_u128(300),
-                capability_id: Uuid::from_u128(100),
+                channel_id: Uuid::from_u128(3),
                 origin_kind: GrantOriginKind::Channel,
                 origin_id: Uuid::from_u128(3),
                 created_at: at(),
             },
-            ApiKeyCapabilityGrantRecord {
+            ApiKeyChannelGrantRecord {
                 api_key_id: Uuid::from_u128(300),
-                capability_id: Uuid::from_u128(100),
-                origin_kind: GrantOriginKind::Capability,
-                origin_id: Uuid::from_u128(100),
-                created_at: at(),
-            },
-            // Origin no longer matches the capability's current parent.
-            ApiKeyCapabilityGrantRecord {
-                api_key_id: Uuid::from_u128(300),
-                capability_id: Uuid::from_u128(100),
+                channel_id: Uuid::from_u128(3),
                 origin_kind: GrantOriginKind::Group,
                 origin_id: Uuid::from_u128(404),
-                created_at: at(),
-            },
-            // Explicit grant the key's own format permissions do not cover.
-            ApiKeyCapabilityGrantRecord {
-                api_key_id: Uuid::from_u128(300),
-                capability_id: Uuid::from_u128(101),
-                origin_kind: GrantOriginKind::Capability,
-                origin_id: Uuid::from_u128(101),
                 created_at: at(),
             },
         ];
@@ -1106,11 +1043,18 @@ mod tests {
         let resolved = resolve_runtime(&records, base, &[profile()], &[]).expect("resolve");
         let key = resolved.api_keys.first().expect("key");
         assert!(key.allowed_group_ids.is_empty());
-        assert_eq!(key.allowed_channel_ids, vec![Uuid::from_u128(100)]);
+        assert_eq!(
+            key.allowed_channel_ids,
+            vec![Uuid::from_u128(100), Uuid::from_u128(101)]
+        );
+        assert_eq!(
+            key.allowed_api_formats,
+            super::super::authorization::all_formats()
+        );
     }
 
     #[test]
-    fn grants_to_tombstoned_capabilities_are_dropped_and_unknown_targets_fail_closed() {
+    fn channel_grants_survive_capability_retirement_but_unknown_channels_fail_closed() {
         let mut records = topology(vec![
             capability(
                 100,
@@ -1124,19 +1068,22 @@ mod tests {
             ),
         ]);
         records.channel_capabilities[1].deleted_at = Some(at());
-        let grant = |capability_id: u128| ApiKeyCapabilityGrantRecord {
+        let grant = |channel_id: u128| ApiKeyChannelGrantRecord {
             api_key_id: Uuid::from_u128(300),
-            capability_id: Uuid::from_u128(capability_id),
-            origin_kind: GrantOriginKind::Capability,
-            origin_id: Uuid::from_u128(capability_id),
+            channel_id: Uuid::from_u128(channel_id),
+            origin_kind: GrantOriginKind::Channel,
+            origin_id: Uuid::from_u128(channel_id),
             created_at: at(),
         };
         let mut tombstoned_base = base();
         tombstoned_base.api_keys = vec![api_key(300, &["open_ai_responses"])];
 
-        records.api_key_grants = vec![grant(102)];
+        records.api_key_grants = vec![grant(3)];
         let resolved = resolve_runtime(&records, tombstoned_base, &[], &[]).expect("resolve");
-        assert!(resolved.api_keys[0].allowed_channel_ids.is_empty());
+        assert_eq!(
+            resolved.api_keys[0].allowed_channel_ids,
+            [Uuid::from_u128(100)]
+        );
 
         let mut unknown_base = base();
         unknown_base.api_keys = vec![api_key(300, &["open_ai_responses"])];
@@ -1148,7 +1095,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_connector_requires_matching_managed_credential() {
+    fn codex_connector_requires_compatible_credential_not_matching_channel_id() {
         let mut records = topology(vec![capability(
             100,
             3,
@@ -1169,13 +1116,8 @@ mod tests {
             CanonicalGraphError::CredentialKindMismatch
         );
 
-        let wrong_identity = credential(400, "codex_oauth", &[], false);
-        assert_eq!(
-            resolve_runtime(&records, base(), &[], &[wrong_identity]).unwrap_err(),
-            CanonicalGraphError::CredentialIdentityMismatch {
-                channel_id: Uuid::from_u128(3)
-            }
-        );
+        let independent = credential(400, "codex_oauth", &["https://codex.example"], false);
+        assert!(resolve_runtime(&records, base(), &[], &[independent]).is_ok());
 
         records.logical_channels = vec![logical(3, 1, 2, Some(3))];
         let deleted = credential(3, "codex_oauth", &[], true);
@@ -1248,7 +1190,7 @@ mod tests {
             "https://codex.example",
         )];
         records.logical_channels = vec![logical(3, 1, 2, Some(3))];
-        let mut disabled = credential(3, "codex_oauth", &[], false);
+        let mut disabled = credential(3, "codex_oauth", &["https://codex.example"], false);
         disabled.enabled = false;
         let resolved = resolve_runtime(&records, base(), &[], &[disabled]).expect("resolve");
         assert!(!resolved.channels[0].enabled);
@@ -1260,7 +1202,7 @@ mod tests {
         records.logical_channels[0].enabled = false;
         records.routing_groups = vec![RoutingGroupRecord {
             deleted_at: Some(at()),
-            ..group(1, false)
+            ..group(1)
         }];
         assert_eq!(
             resolve_runtime(&records, base(), &[], &[]).unwrap_err(),
@@ -1340,17 +1282,17 @@ mod tests {
     }
 
     #[test]
-    fn sharing_only_groups_reject_non_codex_capabilities() {
+    fn sharing_only_channels_reject_non_codex_capabilities() {
         let mut records = topology(vec![capability(
             100,
             3,
             settings(ApiOperation::Responses, vec![CapabilityTransport::HttpSse]),
         )]);
-        records.routing_groups = vec![group(1, true)];
+        records.logical_channels[0].sharing_only = true;
         assert_eq!(
             resolve_runtime(&records, base(), &[], &[]).unwrap_err(),
             CanonicalGraphError::SharingOnlyRequiresCodex {
-                group_id: Uuid::from_u128(1)
+                channel_id: Uuid::from_u128(3)
             }
         );
     }

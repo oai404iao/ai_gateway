@@ -22,6 +22,24 @@ function renderAt(path: string) {
 }
 
 describe("channel capabilities", () => {
+  it("creates a capability inside its channel without changing the binding", async () => {
+    let submitted: ChannelCapabilityInput | undefined;
+    server.use(http.post("/console/v1/routing/capabilities", async ({ request }) => {
+      submitted = await request.json() as ChannelCapabilityInput;
+      return HttpResponse.json({ id: CHANNEL_CAPABILITY.id }, { status: 201 });
+    }));
+    const user = userEvent.setup();
+    renderAt(`/admin/routing/logical-channels/${LOGICAL_CHANNEL.id}?view=capabilities&capability=new`);
+    await user.click(await screen.findByRole("combobox", { name: "Operation" }));
+    await user.click(await screen.findByRole("option", { name: "Responses WebSocket" }));
+    await user.click(screen.getByRole("button", { name: "Save capability" }));
+    await waitFor(() => expect(submitted?.channel_id).toBe(LOGICAL_CHANNEL.id));
+    expect(submitted?.settings.operation).toBe("responses-ws");
+    expect(submitted?.settings).not.toHaveProperty("transports");
+    await waitFor(() => expect(new URLSearchParams(window.location.search).get("capability")).toBe(CHANNEL_CAPABILITY.id));
+    expect(window.location.pathname).toBe(`/admin/routing/logical-channels/${LOGICAL_CHANNEL.id}`);
+  });
+
   it("discovers through the selected access and credential without saving until confirmed", async () => {
     let discovery: ChannelModelDiscoveryInput | undefined;
     let saved: ChannelCapabilityInput | undefined;
@@ -71,7 +89,7 @@ describe("channel capabilities", () => {
       }),
     );
     const user = userEvent.setup();
-    renderAt(`/admin/routing/capabilities/${CHANNEL_CAPABILITY.id}`);
+    renderAt(`/admin/routing/logical-channels/${LOGICAL_CHANNEL.id}?view=capabilities&capability=${CHANNEL_CAPABILITY.id}`);
     await waitFor(() =>
       expect(screen.getByLabelText("Logical channel")).toHaveTextContent(
         LOGICAL_CHANNEL.name,
@@ -85,6 +103,34 @@ describe("channel capabilities", () => {
     expect(submitted?.settings.operation).toBe("responses");
     expect(submitted?.settings).not.toHaveProperty("transports");
     expect(ifMatch).toBe(`"${CHANNEL_CAPABILITY.updated_at}"`);
+    expect(window.location.pathname).toBe(`/admin/routing/logical-channels/${LOGICAL_CHANNEL.id}`);
+  });
+
+  it("does not embed another channel's capability through a mismatched URL", async () => {
+    server.use(http.get("/console/v1/routing/capabilities/:id", () => HttpResponse.json({
+      ...CHANNEL_CAPABILITY, channel_id: "00000000-0000-4000-8000-000000000099",
+    }, { headers: { ETag: `"${CHANNEL_CAPABILITY.updated_at}"` } })));
+    renderAt(`/admin/routing/logical-channels/${LOGICAL_CHANNEL.id}?view=capabilities&capability=${CHANNEL_CAPABILITY.id}`);
+    expect(await screen.findByText("This capability belongs to another channel.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save capability" })).not.toBeInTheDocument();
+  });
+
+  it("confirms route withdrawal before deleting a capability with its version", async () => {
+    let ifMatch: string | null = null;
+    server.use(http.delete("/console/v1/routing/capabilities/:id", ({ request }) => {
+      ifMatch = request.headers.get("if-match");
+      return new HttpResponse(null, { status: 204 });
+    }));
+    const user = userEvent.setup();
+    renderAt(`/admin/routing/logical-channels/${LOGICAL_CHANNEL.id}?view=capabilities&capability=${CHANNEL_CAPABILITY.id}`);
+    await user.click(await screen.findByRole("button", { name: "Delete capability" }));
+    expect(screen.getByText("This deletes the capability and all routing candidates referencing it. Empty route rules are disabled. Channel authorization and billing history are preserved.")).toBeInTheDocument();
+    expect(ifMatch).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() => expect(ifMatch).toBe(`"${CHANNEL_CAPABILITY.updated_at}"`));
+    await waitFor(() => expect(new URLSearchParams(window.location.search).has("capability")).toBe(false));
+    expect(window.location.pathname).toBe(`/admin/routing/logical-channels/${LOGICAL_CHANNEL.id}`);
+    expect(new URLSearchParams(window.location.search).get("view")).toBe("capabilities");
   });
 
   it("selects capabilities without navigating and batches only changed fields with their versions", async () => {

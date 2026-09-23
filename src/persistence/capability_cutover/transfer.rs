@@ -17,8 +17,8 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::legacy_settings::{
-    Capability as ChannelCapabilityRecord, CapabilitySettings, Topology as UpstreamTopologyRecords,
-    operation_name,
+    Capability as ChannelCapabilityRecord, CapabilitySettings, LogicalChannelRecord,
+    RoutingGroupRecord, Topology as UpstreamTopologyRecords, operation_name,
 };
 use super::{
     CapabilityCutoverError, CapabilityCutoverIndex, CapabilityGrantOrigin, LegacyCapabilityTarget,
@@ -29,8 +29,7 @@ use crate::domain::{
 };
 use crate::persistence::upstream_topology::{
     ApiKeyCapabilityGrantRecord, ApiKeyPolicyCapabilityGrantRecord, GrantOriginKind,
-    LogicalChannelRecord, OperationCandidateRecord, OperationRuleRecord, OperationTierRecord,
-    RoutingGroupRecord, UpstreamAccessRecord,
+    OperationCandidateRecord, OperationRuleRecord, OperationTierRecord, UpstreamAccessRecord,
 };
 use crate::persistence::{ModelRoutingProfileBinding, ModelRuleRecord};
 
@@ -1181,7 +1180,12 @@ mod tests {
             deleted_at: Some(ts(7)),
         };
         let records = resolve_runtime(
-            &super::super::operation_split::upgrade(&output.topology).unwrap(),
+            &super::super::credential_ownership::upgrade(
+                &super::super::channel_authorization::upgrade(
+                    &super::super::operation_split::upgrade(&output.topology).unwrap(),
+                )
+                .unwrap(),
+            ),
             BaseControlPlaneRecords::default(),
             &[],
             &[credential],

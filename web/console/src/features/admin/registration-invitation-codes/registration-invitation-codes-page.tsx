@@ -1,4 +1,3 @@
-import { useNavigate } from "react-router";
 import type { RegistrationInvitationCodeView } from "@/api/types";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { AdminListPage } from "@/features/admin/components/admin-list-page";
@@ -24,7 +23,6 @@ function status(code: RegistrationInvitationCodeView): CodeStatus {
 }
 
 export function RegistrationInvitationCodesPage() {
-  const navigate = useNavigate();
   const codes = useRegistrationInvitationCodes();
   const groups = useUserGroups();
   const { t } = useI18n();
@@ -56,7 +54,7 @@ export function RegistrationInvitationCodesPage() {
       rowKey={(code) => code.id}
       detailPath={(code) => `/admin/registration-invitation-codes/${code.id}`}
       createLabel={t("New registration code")}
-      onCreate={() => navigate("/admin/registration-invitation-codes/new")}
+      createPath="/admin/registration-invitation-codes/new"
       columns={[
         {
           key: "name",

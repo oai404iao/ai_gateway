@@ -343,6 +343,7 @@ mod tests {
             model_rule_id: None,
             channel_group_id: None,
             channel_id: None,
+            upstream_credential: None,
             model_id: None,
             outcome: RequestLogOutcome::Rejected,
             response_status_code: Some(404),

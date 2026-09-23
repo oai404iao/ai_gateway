@@ -2,8 +2,10 @@
 
 use sqlx::{Postgres, Transaction};
 
+#[cfg(feature = "sqlite-backend")]
+use crate::persistence::RepositoryError;
 use crate::persistence::capability_cutover::io::CapabilityCutoverIoError;
-use crate::persistence::{RepositoryError, upstream_topology};
+use crate::persistence::upstream_topology;
 
 pub async fn pg_prepare(
     transaction: &mut Transaction<'_, Postgres>,
@@ -34,7 +36,6 @@ pub async fn pg_validate(
     if missing {
         return Err(CapabilityCutoverIoError::InvalidRow);
     }
-    upstream_topology::pg_load_control_plane(transaction).await?;
     Ok(())
 }
 
@@ -150,7 +151,6 @@ pub async fn sqlite_apply(
     sqlx::query("DROP TABLE _operation_upgrade_plan")
         .execute(&mut *connection)
         .await?;
-    upstream_topology::sqlite_load_control_plane(transaction).await?;
     Ok(())
 }
 

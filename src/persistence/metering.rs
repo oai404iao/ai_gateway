@@ -156,7 +156,7 @@ async fn write_facts(
          SELECT id,completed_at FROM request_metering_facts
          WHERE id=ANY($1) AND amount_state IN ('priced','zero_by_policy')",
     )
-    .bind(inserted)
+    .bind(&inserted)
     .execute(&mut **transaction)
     .await?;
     let matches: Vec<bool> = sqlx::query_scalar(
@@ -174,10 +174,50 @@ async fn write_facts(
     if matches.len() != events.len() {
         return Err(RepositoryError::Validation);
     }
+    let attributions = Value::Array(
+        events
+            .iter()
+            .zip(&matches)
+            .filter(|(_, equal)| **equal)
+            .map(|(event, _)| {
+                json!({
+                    "request_id": event.id,
+                    "known": event.upstream_credential.is_some(),
+                    "credential_id": event.upstream_credential.and_then(|value| value.credential_id),
+                })
+            })
+            .collect(),
+    );
+    sqlx::query(
+        "INSERT INTO request_credential_attributions(request_id,known,credential_id)
+         SELECT request_id,known,credential_id
+         FROM jsonb_populate_recordset(NULL::request_credential_attributions,$1) incoming
+         WHERE request_id=ANY($2) OR NOT known
+         ON CONFLICT(request_id) DO NOTHING",
+    )
+    .bind(&attributions)
+    .bind(&inserted)
+    .execute(&mut **transaction)
+    .await?;
+    let attributed: Vec<(Uuid, bool, Option<Uuid>)> = sqlx::query_as(
+        "SELECT request_id,known,credential_id FROM request_credential_attributions WHERE request_id=ANY($1)",
+    ).bind(events.iter().map(|event| event.id).collect::<Vec<_>>())
+        .fetch_all(&mut **transaction).await?;
+    let attributed = attributed
+        .into_iter()
+        .map(|(id, known, credential)| (id, (known, credential)))
+        .collect::<std::collections::HashMap<_, _>>();
     Ok(matches
         .into_iter()
-        .map(|equal| {
-            if equal {
+        .zip(events)
+        .map(|(equal, event)| {
+            let expected = (
+                event.upstream_credential.is_some(),
+                event
+                    .upstream_credential
+                    .and_then(|value| value.credential_id),
+            );
+            if equal && attributed.get(&event.id) == Some(&expected) {
                 MeteringWriteOutcome::Accepted
             } else {
                 MeteringWriteOutcome::Conflict

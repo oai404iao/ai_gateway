@@ -35,6 +35,10 @@ pub struct RequestLogEvent {
     pub model_rule_id: Option<Uuid>,
     pub channel_group_id: Option<Uuid>,
     pub channel_id: Option<Uuid>,
+    /// Missing only in legacy journals. A present null identity explicitly
+    /// records an unauthenticated route and must not use historical fallback.
+    #[serde(default)]
+    pub upstream_credential: Option<RequestCredentialAttribution>,
     pub model_id: Option<Uuid>,
     pub outcome: RequestLogOutcome,
     pub response_status_code: Option<u16>,
@@ -45,6 +49,19 @@ pub struct RequestLogEvent {
     pub error_code: Option<String>,
     #[serde(deserialize_with = "deserialize_required_error_summary")]
     pub error_summary: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestCredentialAttribution {
+    #[serde(deserialize_with = "required_credential_identity")]
+    pub credential_id: Option<Uuid>,
+}
+
+fn required_credential_identity<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Uuid>, D::Error> {
+    Option::<Uuid>::deserialize(deserializer)
 }
 
 fn deserialize_required_error_summary<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>

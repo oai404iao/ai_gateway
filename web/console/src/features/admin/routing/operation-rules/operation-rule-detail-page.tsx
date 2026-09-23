@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router";
+import { useParams } from "react-router";
 import { z } from "zod";
 import { toast } from "sonner";
 import { AdminDetailShell } from "@/features/admin/components/admin-detail-shell";
@@ -33,6 +33,7 @@ import { API_OPERATIONS, apiOperationLabel } from "@/lib/permissions";
 import type { ApiOperation, OperationRuleInput, OperationTierInput } from "@/api/types";
 import { OperationRuleTierEditor } from "./operation-rule-tier-editor";
 import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
+import { useReturnPath, withReturnTo } from "@/lib/page-navigation";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -125,7 +126,6 @@ export function OperationRuleDetailPage({
   const { id: pathId = "" } = useParams();
   const id = ruleId ?? pathId;
   const isNew = id === "new";
-  const navigate = useNavigate();
   const { t } = useI18n();
   const query = useOperationRule(id);
   const capabilities = useChannelCapabilities();
@@ -144,6 +144,9 @@ export function OperationRuleDetailPage({
   const rule = query.data?.data;
   const busy = submitting || create.isPending || update.isPending || createProfile.isPending;
   const draft = useConfigurationDraft(busy);
+  const parentModelId = modelId ?? profiles.data?.find((profile) => profile.id === rule?.model_routing_profile_id)?.model_id;
+  const returnTo = useReturnPath(parentModelId
+    ? `/admin/models?model=${parentModelId}` : "/admin/routing/operation-rules");
 
   const addProfile = async () => {
     try {
@@ -247,7 +250,7 @@ export function OperationRuleDetailPage({
         toast.success(t("Operation rule created"));
         draft.markSaved();
         if (onCreated) onCreated(result.id);
-        else navigate(`/admin/routing/operation-rules/${result.id}`, { replace: true });
+        else draft.navigate(withReturnTo(`/admin/routing/operation-rules/${result.id}`, returnTo), { replace: true });
       } else {
         await update.mutateAsync({ input, ifMatch: query.etag });
         draft.markSaved();
@@ -276,11 +279,10 @@ export function OperationRuleDetailPage({
       description={t(
         "Candidates reference an explicit capability and upstream model. Tiers, priorities, and weights are never inferred from legacy channels.",
       )}
-      backPath="/admin/routing/operation-rules"
+      backPath={returnTo}
       isLoading={(!isNew && query.isLoading) || capabilities.isLoading || channels.isLoading || profiles.isLoading || models.isLoading || rules.isLoading}
       error={query.error ?? capabilities.error ?? channels.error ?? profiles.error ?? models.error ?? rules.error}
       hasData={isNew || Boolean(rule)}
-      saving={busy}
       detailCard={
         rule ? (
           <Card size="sm">
@@ -300,6 +302,7 @@ export function OperationRuleDetailPage({
             </CardDescription>
           </CardHeader>
           <CardContent>
+            <form onSubmit={(event) => { event.preventDefault(); void submit(); }}>
             <FieldGroup>
               {!modelId && <Field data-invalid={Boolean(fieldError("model_routing_profile_id"))}>
                 <FieldLabel htmlFor="operation-rule-profile">
@@ -400,11 +403,12 @@ export function OperationRuleDetailPage({
                   onCheckedChange={(checked) => patch({ enabled: checked })}
                 />
               </Field>
-              <Button type="button" disabled={busy} onClick={() => void submit()}>
+              <Button type="submit" disabled={busy}>
                 {busy ? <Spinner data-icon="inline-start" /> : null}
                 {isNew ? t("Create operation rule") : t("Save operation rule")}
               </Button>
             </FieldGroup>
+            </form>
           </CardContent>
         </Card>
       }

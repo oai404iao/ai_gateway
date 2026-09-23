@@ -258,7 +258,7 @@ const E2E_STANDARD_CHANNEL_GROUPS = Array.from({ length: 5 }, (_, index) => ({
   updated_at: "2026-07-29T12:00:00.000Z",
 }));
 export const E2E_STANDARD_GROUP_ID = E2E_STANDARD_CHANNEL_GROUPS[0].id;
-export const E2E_STANDARD_CHANNEL_ID = "00000000-0000-0000-0000-00000000030";
+export const E2E_STANDARD_CHANNEL_ID = "00000000-0000-0000-0000-000000000030";
 
 export const E2E_ROUTING_GROUP_ID = "00000000-0000-0000-0000-0000000002a0";
 
@@ -267,7 +267,6 @@ const E2E_ROUTING_GROUPS = [
     id: E2E_ROUTING_GROUP_ID,
     name: "Standard group",
     enabled: true,
-    sharing_only: false,
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-02T00:00:00Z",
     deleted_at: null,
@@ -276,7 +275,6 @@ const E2E_ROUTING_GROUPS = [
     id: E2E_CODEX_GROUP_ID,
     name: "Codex subscriptions",
     enabled: true,
-    sharing_only: false,
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-02T00:00:00Z",
     deleted_at: null,
@@ -291,6 +289,7 @@ const E2E_LOGICAL_CHANNELS = [
     credential_id: null,
     name: "Upstream A",
     enabled: true,
+    sharing_only: false,
     binding_revision: "00000000-0000-0000-0000-0000000000b1",
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-02T00:00:00Z",
@@ -303,6 +302,7 @@ const E2E_LOGICAL_CHANNELS = [
     credential_id: E2E_CODEX_CREDENTIAL_ID,
     name: "Personal Plus",
     enabled: true,
+    sharing_only: false,
     binding_revision: "00000000-0000-0000-0000-0000000000b2",
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-02T00:00:00Z",
@@ -364,7 +364,7 @@ const E2E_OPERATION_RULES = [
 
 export const E2E_CODEX_CREDENTIAL = {
   id: E2E_CODEX_CREDENTIAL_ID,
-  channel_group_id: E2E_CODEX_GROUP_ID,
+  channel_ids: [E2E_CODEX_CREDENTIAL_ID],
   label: "Personal Plus",
   email: "codex@example.test",
   account_id: "account-123",
@@ -664,7 +664,7 @@ export async function mockConsoleApi(page: Page): Promise<void> {
   let session = ADMIN_PROFILE;
   let sharing = {
     ...SHARING_GROUP,
-    credential_id: E2E_CODEX_CREDENTIAL_ID, seats: [E2E_USER.id, null],
+    channel_id: E2E_CODEX_CREDENTIAL_ID, seats: [E2E_USER.id, null],
   };
   await page.route("**/console/v1/**", (route: Route) => {
     const url = new URL(route.request().url());
@@ -786,7 +786,7 @@ export async function mockConsoleApi(page: Page): Promise<void> {
           {
             id: E2E_CODEX_CREDENTIAL_ID,
             name: E2E_CODEX_CREDENTIAL_ID,
-            channel_group_id: E2E_CODEX_GROUP_ID,
+            channel_ids: [E2E_CODEX_CREDENTIAL_ID],
             plan_type: "plus",
             primary_used_percent: 96,
             primary_window_seconds: 10_800,
@@ -811,7 +811,7 @@ export async function mockConsoleApi(page: Page): Promise<void> {
         json: {
           credential_id: E2E_CODEX_CREDENTIAL_ID,
           name: E2E_CODEX_CREDENTIAL_ID,
-          channel_group_id: E2E_CODEX_GROUP_ID,
+          channel_ids: [E2E_CODEX_CREDENTIAL_ID],
           plan_type: "plus",
           periods: [
             {
@@ -1067,7 +1067,7 @@ export async function mockConsoleApi(page: Page): Promise<void> {
     }
     if (
       path ===
-        `/console/v1/providers/codex-oauth/channel-groups/${E2E_CODEX_GROUP_ID}/credentials` &&
+        "/console/v1/routing/upstream-credentials/codex" &&
       method === "GET"
     ) {
       return route.fulfill({
@@ -1077,14 +1077,14 @@ export async function mockConsoleApi(page: Page): Promise<void> {
     }
     if (
       path ===
-        `/console/v1/providers/codex-oauth/credentials/${E2E_CODEX_CREDENTIAL_ID}/quota/refresh` &&
+        `/console/v1/routing/upstream-credentials/codex/${E2E_CODEX_CREDENTIAL_ID}/quota/refresh` &&
       method === "POST"
     ) {
       return route.fulfill({ status: 204 });
     }
     if (
       path ===
-        `/console/v1/providers/codex-oauth/credentials/${E2E_CODEX_CREDENTIAL_ID}/quota/reset` &&
+        `/console/v1/routing/upstream-credentials/codex/${E2E_CODEX_CREDENTIAL_ID}/quota/reset` &&
       method === "POST"
     ) {
       return route.fulfill({
@@ -1099,7 +1099,7 @@ export async function mockConsoleApi(page: Page): Promise<void> {
     }
     if (
       path ===
-        `/console/v1/providers/codex-oauth/credentials/${E2E_CODEX_CREDENTIAL_ID}/quota/windows` &&
+        `/console/v1/routing/upstream-credentials/codex/${E2E_CODEX_CREDENTIAL_ID}/quota/windows` &&
       method === "GET"
     ) {
       return route.fulfill({
@@ -1128,7 +1128,7 @@ export async function mockConsoleApi(page: Page): Promise<void> {
     }
     if (
       path ===
-        `/console/v1/providers/codex-oauth/channel-groups/${E2E_CODEX_GROUP_ID}/credentials/batch` &&
+        "/console/v1/routing/upstream-credentials/codex/batch" &&
       method === "POST"
     ) {
       return route.fulfill({
@@ -1140,7 +1140,12 @@ export async function mockConsoleApi(page: Page): Promise<void> {
       });
     }
     if (path === "/console/v1/routing/upstream-credentials" && method === "GET") {
-      return route.fulfill({ status: 200, json: [] });
+      return route.fulfill({ status: 200, json: [{
+        id: E2E_CODEX_CREDENTIAL_ID, name: "Personal Plus", connector_kind: "codex",
+        kind: "codex_oauth", header_name: null, allowed_base_urls: ["https://codex.test"],
+        enabled: true, provider_managed: true, channel_ids: [E2E_CODEX_CREDENTIAL_ID],
+        created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-02T00:00:00Z",
+      }] });
     }
     if (path === "/console/v1/routing/accesses" && method === "GET") {
       return route.fulfill({ status: 200, json: [{
@@ -1247,14 +1252,13 @@ export async function mockConsoleApi(page: Page): Promise<void> {
           policy_id: "00000000-0000-0000-0000-000000000031",
           policy_name: "default",
           policy_enabled: true,
-          sharing_credentials: [
+          sharing_channels: [
             {
-              credential_id: SHARING_GROUP.credential_id,
+              channel_id: SHARING_GROUP.channel_id,
+              channel_name: "Personal Plus",
               sharing_group_id: SHARING_GROUP.id,
               name: SHARING_GROUP.name,
               enabled: SHARING_GROUP.enabled,
-              channel_ids: [SHARING_GROUP.credential_id],
-              api_formats: ["open_ai_responses"],
             },
           ],
           groups: [

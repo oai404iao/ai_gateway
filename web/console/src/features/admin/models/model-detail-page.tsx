@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { useParams, useSearchParams } from "react-router";
 import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
 import { ConfigurationSaveBar } from "@/features/admin/model-setup/configuration-save-bar";
+import { NavigationLink } from "@/components/shared/navigation-link";
+import { usePageOrigin, withReturnTo } from "@/lib/page-navigation";
 import { Calculator, Copy } from "lucide-react";
 import { z } from "zod";
 import { toast } from "sonner";
@@ -113,7 +115,7 @@ export function ModelDetailPage() {
     searchParams.get("returnTo"),
     "/admin/models",
   );
-  const returnsToSetup = returnTo.startsWith("/admin/model-setup");
+  const origin = usePageOrigin();
   const { data, etag, isLoading, error, refetch } = useModel(id);
   const copySource = useModel(copyFrom ?? "");
   const modelRules = useRoutingProfiles();
@@ -247,17 +249,17 @@ export function ModelDetailPage() {
       if (isNew) {
         await create.mutateAsync(input);
         markSaved();
-        toast.success(t("Pricing model created"));
+        toast.success(t("Client model created"));
         navigate(returnTo, { replace: true });
       } else {
         await update.mutateAsync({ input, ifMatch: etag });
         markSaved();
-        toast.success(t("Pricing model updated"));
+        toast.success(t("Client model updated"));
         if (searchParams.has("returnTo")) navigate(returnTo, { replace: true });
       }
     } catch (error) {
       if (error instanceof ApiError && error.isConflict) {
-        toast.error(t("This pricing model was changed elsewhere. Reloading."));
+        toast.error(t("This client model was changed elsewhere. Reloading."));
       } else {
         toast.error(error instanceof Error ? error.message : t("Save failed"));
       }
@@ -276,12 +278,12 @@ export function ModelDetailPage() {
     try {
       await remove.mutateAsync({ ifMatch: etag });
       markSaved();
-      toast.success(t("Pricing model deleted"));
+      toast.success(t("Client model deleted"));
       navigate(returnTo, { replace: true });
     } catch (error) {
       if (error instanceof ApiError && error.isConflict) {
         await refetch();
-        toast.error(t("This pricing model was changed elsewhere. Reloading."));
+        toast.error(t("This client model was changed elsewhere. Reloading."));
       } else {
         toast.error(error instanceof Error ? error.message : t("Delete failed"));
       }
@@ -291,30 +293,24 @@ export function ModelDetailPage() {
   return (
     <>
       <AdminDetailShell
-      configurationLens="models"
       navigationGuard={navigationGuard}
-      saving={pending}
-      onBack={() => navigate(returnTo)}
       actionBar={
-        <ConfigurationSaveBar dirty={dirty} saving={pending} onCancel={() => navigate(returnTo)}>
-          <Button onClick={submit} disabled={pending}>
+        <ConfigurationSaveBar dirty={dirty}>
+          <Button type="submit" form="model-editor" disabled={pending}>
             {submitting ? <Spinner data-icon="inline-start" /> : null}
-            {isNew ? t(copyFrom ? "Create copied model" : "Create pricing model") : t("Save pricing model")}
+            {isNew ? t(copyFrom ? "Create copied model" : "Create client model") : t("Save client model")}
           </Button>
         </ConfigurationSaveBar>
       }
       title={
         copyFrom
-          ? t("Copy pricing model")
+          ? t("Copy client model")
           : isNew
-            ? t("New pricing model")
-            : state.display_name || t("Pricing model")
+            ? t("New client model")
+            : state.display_name || t("Client model")
       }
       description={t("A client-visible model identifier with its USD billing price.")}
       backPath={returnTo}
-      backLabel={
-        returnsToSetup ? t("Back to model setup") : t("Back to pricing models")
-      }
       isLoading={
         isLoading ||
         (Boolean(copyFrom) &&
@@ -330,40 +326,24 @@ export function ModelDetailPage() {
       headerActions={
         !isNew && data ? (
           <>
-            <Button
-              variant="outline"
+            <NavigationLink
               aria-label={t("Copy {name}", {
                 name: data.data.display_name,
               })}
-              onClick={() =>
-                navigate(
-                  adminPath("/admin/models/new", {
-                    copyFrom: data.data.id,
-                    returnTo,
-                  }),
-                )
-              }
+              to={adminPath("/admin/models/new", { copyFrom: data.data.id, returnTo: origin })}
             >
               <Copy data-icon="inline-start" />
               {t("Copy model")}
-            </Button>
-            <Button
+            </NavigationLink>
+            <NavigationLink
               aria-label={t("Configure pricing for {model}", {
                 model: data.data.display_name,
               })}
-              onClick={() =>
-                navigate(
-                  adminPath(`/admin/models/${id}/pricing`, {
-                    returnTo: returnsToSetup
-                      ? returnTo
-                      : `/admin/models/${id}`,
-                  }),
-                )
-              }
+              to={withReturnTo(`/admin/models/${id}/pricing`, origin)}
             >
               <Calculator data-icon="inline-start" />
               {t("Configure pricing")}
-            </Button>
+            </NavigationLink>
           </>
         ) : null
       }
@@ -375,7 +355,7 @@ export function ModelDetailPage() {
               <CardDescription className="font-mono">{data.data.source_model_id}</CardDescription>
             </CardHeader>
             <CardContent>
-              <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <dl className="grid grid-cols-1 gap-4">
                 <DetailField
                   label={t("Enabled")}
                   value={<StatusBadge value={data.data.enabled} />}
@@ -414,14 +394,14 @@ export function ModelDetailPage() {
         <Card>
           <CardHeader>
             <CardTitle>
-              {isNew ? t("Create pricing model") : t("Edit pricing model")}
+              {isNew ? t("Create client model") : t("Edit client model")}
             </CardTitle>
             <CardDescription>
               {t("USD prices are per the configured price unit tokens.")}
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="flex flex-col gap-4">
+            <form id="model-editor" className="flex flex-col gap-4" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
               {copyFrom ? (
                 <Alert>
                   <Copy />
@@ -566,7 +546,7 @@ export function ModelDetailPage() {
                   />
                 </Field>
               </FieldGroup>
-            </div>
+            </form>
           </CardContent>
         </Card>
       }
@@ -579,7 +559,7 @@ export function ModelDetailPage() {
             onClick={() => setDeleteOpen(true)}
           >
             {remove.isPending ? <Spinner data-icon="inline-start" /> : null}
-            {t("Delete pricing model")}
+            {t("Delete client model")}
           </Button>
         ) : undefined
       }
@@ -587,11 +567,11 @@ export function ModelDetailPage() {
       <ConfirmDialog
         open={deleteOpen}
         onOpenChange={setDeleteOpen}
-        title={t("Delete pricing model?")}
+        title={t("Delete client model?")}
         description={t(
           "This disables and hides every protocol rule for the model, clears scheduled test pricing references, and preserves request logs and audit history. This action cannot be undone.",
         )}
-        confirmLabel={t("Delete pricing model")}
+        confirmLabel={t("Delete client model")}
         destructive
         confirmDisabled={pending}
         onConfirm={() => void deleteModel()}

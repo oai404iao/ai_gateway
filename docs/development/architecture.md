@@ -79,8 +79,9 @@ Browser or Console client
    渠道时，才退回目标渠道位图，使原本已授权的断开规则仍可识别。随后使用渠道授权位图过滤
    实际模型兼容候选，并依次应用 operation capability、Session 粘性、规则中最低可用
    `priority` tier 和被动健康过滤。权重只比较该 tier 内仍然合格的渠道/模型候选，不跨 tier 比较；
-   API Key 的 group/logical-channel 选择保存为固定能力授权；新增成员或能力不扩大已有授权，
-   Console 路由编辑也不授予权限。HTTP 授权范围内没有可选候选时返回 `503 no_healthy_channel`；
+   API Key 的 group/logical-channel 选择保存为固定逻辑渠道授权；快照编译时展开为该渠道
+   当前能力的位图，新增能力共享授权，新加入组的渠道不自动获权。Console 路由编辑不创建
+   渠道授权。HTTP 授权范围内没有可选候选时返回 `503 no_healthy_channel`；
    Responses WS 使用下文的 `426 websocket_unavailable` 回退提示。
    `/v1/models` 额外要求 API Key 范围与模型兼容位图相交，所以不公布断开规则。
    Standalone web search 使用独立 Search 能力与操作规则，不借用 Responses 规则。
@@ -178,41 +179,38 @@ observation 接口，不包含 provider 的 OAuth claim、路径或 Header 细�
 - `ConnectorKind` 编译进 group/channel 快照。新增 provider 时扩展 registry 和独立 provider
   模块，不能在标准 Chat Completions/Responses/Images 逻辑中再建一套路由器。
 
-Codex 的每个逻辑凭证属于一个 `connector_pools` 记录，并通过
-`codex_oauth_credential_channels` 投影为独立的 Responses 与 Images provider-managed Channel；
-同一 pool 有两个格式隔离的 Channel Group。普通 Channel CRUD 和批量修改在 repository 层拒绝
-managed channel；provider API 在 serializable 控制面事务中同时创建/修改共享凭证和对应
-projections，再编译并发布统一路由快照。
+Codex 与通用凭证统一使用 `upstream_credentials`，OAuth 扩展独立保存 Token、quota、
+维护代理和账号目录，不属于渠道组或 pool。逻辑渠道通过凭证 UUID 显式绑定身份，并单独引用接入。
+导入不创建拓扑；统一渠道/能力 CRUD 管理所有连接器，再编译并发布完整快照。
 凭证有 workspace account ID 时由 account/member 共同确定；个人 Token 缺少 account ID 时按
 user ID 确定。因此同一 Business workspace 可以包含多个独立凭证，Free/Plus/Pro 等个人凭证也
-不需要伪造 workspace ID；单条/批量删除会清除 Token 并保留不含敏感信息的两个历史 channel
-tombstone。
-managed channels 保留为统一路由中的稳定壳，credential 的 enable/quota/重新授权状态由独立
+不需要伪造 workspace ID；删除前须解除全部活动渠道引用，删除只清除 Token 并保留凭证墓碑。
+credential 的 enable/quota/重新授权状态由独立
 Connector 快照判定；这样 Responses 新 Session 和 Images 请求可在发送前排除不可用账户，
 Responses affinity hit 会持续命中原 channel 并 fail closed，不会因一次失败静默改绑账户。
-路由顺序和权重不属于 managed channel 或 credential。Responses 与 Images 模型规则分别维护自己
-的 routing tiers 和 group/channel assignments；一个格式的修改不会投影或同步到另一个格式。
+路由顺序和权重不属于 channel 或 credential，各操作规则独立维护 capability/model candidates；
+一个操作的修改不会同步到其他操作。
 
-Codex token 与 quota 使用独立 `ArcSwap` 凭证快照；两个 projection channel ID 指向同一份
-credential，避免每次 token 轮换都重编译整个控制面。
+Codex token 与 quota 使用按凭证 UUID 索引的独立 `ArcSwap` 快照；渠道通过实际 credential_id
+获取身份，避免每次 token 轮换都重编译整个控制面。
 维护 worker 从 PostgreSQL 周期收敛多实例更新，并以有界并发处理各凭证；单凭证 token refresh
 同时使用进程内 mutex、PostgreSQL row lock 和 `refresh_generation`，防止 rotating refresh token
 并发重用。正式代理请求仍直接通过 reqwest streaming path，不经过 worker actor。
 
 Codex 凭证可移植性仍沿用相同 provider 边界：服务端显式导出 API 从 repository 读取敏感 Token
-及实际引用的代理，生成不含路由权重的 version 2 原生 Bundle；高级导入页在浏览器内把原生、
+及实际引用的维护代理，生成不含组归属或路由权重的 version 3 原生 Bundle；高级导入页在浏览器内把原生、
 CLIProxyAPI 和
 Sub2API JSON 标准化成可编辑草稿，完成代理 CRUD/映射后再逐条调用既有服务端验证导入事务。导入
 格式解析不是数据面职责，也不会绕过“account/user 至少存在一个”、models、代理 enable 或
-managed channel 的现有不变量。代理删除使用 optimistic concurrency，并在 repository 层拒绝仍被渠道或待完成 OAuth
+凭证范围和拼车保护。代理删除使用 optimistic concurrency，并在 repository 层拒绝仍被接入、凭证或 OAuth
 授权流引用的记录。
 
 Responses WebSocket 使用同一个 `/v1/responses` 路径的 `GET` Upgrade。握手先验证 API Key
 认证与 Responses `proxy` 权限，再要求数据库系统设置、API Key 所属用户和最终候选渠道三层均显式
 允许 WebSocket；系统、用户和普通 channel 默认关闭。每条顺序的 `response.create` 重新读取当前快照并
 独立执行鉴权、准入、选路、变换、Connector 凭证准备、usage 和日志。普通 Responses channel
-由管理员显式声明能力；Codex OAuth Responses projection 在创建和 migration 时自动声明该能力，
-Images projection 永不声明，并且 Responses 仍受系统与用户开关限制。由于
+与 Codex 渠道都由管理员显式声明 `responses-ws` 能力；迁移只保留原有 WS 范围，
+Images 操作不使用 WebSocket，并且 Responses 仍受系统与用户开关限制。由于
 `previous_response_id` 的增量缓存属于具体上游连接，下游连接会固定到一个仍可用的上游渠道和
 WebSocket 身份，不做请求多路复用。每个成功请求结束后，上游连接立即回到按 API Key、Session
 握手身份、渠道/上游模型候选、网络配置、目标和最终 Header 精确隔离的有界空闲池；下一条消息
@@ -284,8 +282,8 @@ Console 用户采用单用户组模型。内置默认用户组和默认管理员
 邀请码，原子检查启用状态、过期时间和剩余次数，再创建 active user、分配邀请码当前用户组与初始
 余额并递增使用次数。注册成功后直接签发 Console session，不经过邮箱确认。
 
-用户组还通过独立关联表授予 canonical Codex Responses Channel Group 的额度可见性。普通用户查询
-始终按 JWT 用户当前所属组在 PostgreSQL 中限定 credential pool，只投影凭证 UUID、订阅等级和额度
+用户组还通过独立关联表授予指定渠道组中所引用 Codex 账号的额度可见性。普通用户查询
+始终按 JWT 用户当前所属组在数据库中限定可见渠道，并对复用凭证去重，只投影凭证 UUID、可见渠道 UUID、订阅等级和额度
 窗口/周期字段；管理员 label、账户身份、Token、代理、运行状态和 reset-credit 等字段不进入 DTO。
 该能力只挂载 owner-scoped `GET` 路由，不进入数据面快照，也不提供 refresh、reset 或其他 mutation。
 

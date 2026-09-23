@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { Link, Navigate, useNavigate } from "react-router";
+import { Navigate, useNavigate } from "react-router";
+import { NavigationLink } from "@/components/shared/navigation-link";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -86,14 +87,13 @@ export function ActivateInvitationPage() {
         </form>
         <p className="mt-4 text-center text-xs text-muted-foreground">
           {t("Already have an account?")}{" "}
-          <Button
+          <NavigationLink
             variant="link"
             size="xs"
-            render={<Link to="/login" />}
-            nativeButton={false}
+            to="/login"
           >
             {t("Sign in")}
-          </Button>
+          </NavigationLink>
         </p>
       </CardContent>
     </Card>

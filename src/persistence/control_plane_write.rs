@@ -200,12 +200,11 @@ impl PostgresControlPlaneRepository {
     pub async fn prepare_codex_credentials_batch(
         &self,
         actor: Uuid,
-        channel_group_id: Uuid,
         input: CodexCredentialBatchInput,
     ) -> Result<PostgresPreparedControlPlaneChange<'_>, RepositoryError> {
         let mut transaction = self.admin_write(actor).await?;
         let results = self
-            .update_codex_credentials_batch(&mut transaction, channel_group_id, input)
+            .update_codex_credentials_batch(&mut transaction, input)
             .await?;
         Ok(self.prepared(transaction, results, Audit::Admin(actor)))
     }

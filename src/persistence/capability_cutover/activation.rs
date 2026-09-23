@@ -1,6 +1,6 @@
 //! Atomic topology transfer and identity retargeting, called only by startup migration.
-//! Runtime compilation is deferred until the following six-operation migration;
-//! its loader cannot read this frozen intermediate schema.
+//! Runtime compilation is deferred until the operation and channel-authorization
+//! migrations finish; its loader cannot read this frozen intermediate schema.
 
 use sqlx::{Postgres, Transaction};
 

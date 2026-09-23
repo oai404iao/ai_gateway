@@ -47,7 +47,7 @@ enum CodexRequestContext {
 impl PreparedCodexAttempt {
     pub(crate) fn prepare(
         runtime: &CodexCredentialRuntime,
-        channel_id: Uuid,
+        credential_id: Uuid,
         api_operation: ApiOperation,
         affinity_cache_hit: bool,
         client_headers: &HeaderMap,
@@ -73,7 +73,7 @@ impl PreparedCodexAttempt {
             ApiOperation::ChatCompletions => CodexRequestContext::Unsupported,
         };
         Ok(Self {
-            credential: runtime.credential(channel_id, affinity_cache_hit)?,
+            credential: runtime.credential(credential_id, affinity_cache_hit)?,
             request,
             outbound_identity,
         })
@@ -412,9 +412,6 @@ mod tests {
         let runtime = CodexCredentialRuntime::new();
         runtime.replace(vec![CodexCredentialRecord {
             channel_id: Uuid::from_u128(1),
-            channel_group_id: Uuid::from_u128(2),
-            connector_pool_id: Uuid::from_u128(2),
-            projection_channel_ids: vec![Uuid::from_u128(1), Uuid::from_u128(3)],
             label: "credential".into(),
             email: None,
             account_id: Some("account-123".into()),
@@ -518,7 +515,7 @@ mod tests {
     }
 
     #[test]
-    fn platform_installation_id_is_stable_for_credential_projections() {
+    fn platform_installation_id_is_stable_across_operations_sharing_a_credential() {
         let runtime = runtime();
         let responses = PreparedCodexAttempt::prepare(
             &runtime,
@@ -532,7 +529,7 @@ mod tests {
         .unwrap();
         let images = PreparedCodexAttempt::prepare(
             &runtime,
-            Uuid::from_u128(3),
+            Uuid::from_u128(1),
             ApiOperation::ImagesGeneration,
             false,
             &HeaderMap::new(),
@@ -728,7 +725,7 @@ mod tests {
         client_headers.insert("thread-id", HeaderValue::from_static("client-thread"));
         let attempt = PreparedCodexAttempt::prepare(
             &runtime(),
-            Uuid::from_u128(3),
+            Uuid::from_u128(1),
             ApiOperation::ImagesGeneration,
             false,
             &client_headers,
@@ -755,7 +752,7 @@ mod tests {
         );
 
         let channel = CompiledChannel::new(
-            Uuid::from_u128(3),
+            Uuid::from_u128(1),
             Uuid::from_u128(4),
             crate::domain::ApiFormat::OpenAiImages,
             Url::parse("https://chatgpt.example/backend-api/codex").unwrap(),
@@ -840,7 +837,7 @@ mod tests {
         for operation in [ApiOperation::ImagesGeneration, ApiOperation::ImagesEdit] {
             let attempt = PreparedCodexAttempt::prepare(
                 &runtime(),
-                Uuid::from_u128(3),
+                Uuid::from_u128(1),
                 operation,
                 false,
                 &HeaderMap::new(),
@@ -920,7 +917,7 @@ mod tests {
                 let client = filter_client_headers(interface, &incoming).unwrap();
                 let attempt = PreparedCodexAttempt::prepare(
                     &runtime(),
-                    Uuid::from_u128(3),
+                    Uuid::from_u128(1),
                     operation,
                     false,
                     &client,
@@ -1083,9 +1080,6 @@ mod tests {
     fn runtime_record(now: chrono::DateTime<Utc>) -> CodexCredentialRecord {
         CodexCredentialRecord {
             channel_id: Uuid::from_u128(1),
-            channel_group_id: Uuid::from_u128(2),
-            connector_pool_id: Uuid::from_u128(2),
-            projection_channel_ids: vec![Uuid::from_u128(1), Uuid::from_u128(3)],
             label: "credential".into(),
             email: None,
             account_id: Some("account-123".into()),

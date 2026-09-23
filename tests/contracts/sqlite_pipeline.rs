@@ -60,7 +60,7 @@ struct Pipeline {
 impl Pipeline {
     async fn new() -> Self {
         let (directory, database) = database().await;
-        assert_eq!(database.install_schema().await.unwrap(), 6);
+        assert_eq!(database.install_schema().await.unwrap(), 9);
         let database = Arc::new(database);
         let logs = SqliteRequestLogRepository::new(Arc::clone(&database));
         Self {
@@ -399,6 +399,7 @@ fn event(outcome: RequestLogOutcome) -> RequestLogEvent {
         model_rule_id: Some(RULE),
         channel_group_id: Some(GROUP),
         channel_id: Some(CAPABILITY),
+        upstream_credential: None,
         model_id: Some(MODEL),
         outcome,
         response_status_code: Some(200),

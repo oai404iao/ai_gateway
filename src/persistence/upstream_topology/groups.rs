@@ -1,4 +1,4 @@
-//! Routing-group writes own organization and the sharing switch only.
+//! Routing-group writes own channel organization and group enablement.
 //!
 //! A group save or delete never creates channels, capabilities, gates, or
 //! routes; those remain explicit writes on their own owners. Creation records a
@@ -10,43 +10,11 @@ use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
 use super::{RoutingGroupInput, RoutingGroupRecord, UpstreamTopologyRecords};
-use crate::{
-    domain::ConnectorKind,
-    persistence::{MutationResult, RepositoryError},
-};
+use crate::persistence::{MutationResult, RepositoryError};
 
 fn validate_input(input: &RoutingGroupInput) -> Result<(), RepositoryError> {
     if input.name.trim().is_empty() || input.name.chars().count() > 100 {
         return Err(RepositoryError::Validation);
-    }
-    Ok(())
-}
-
-/// Enabling sharing-only is the one unsafe group edit: it subjects every member
-/// channel to the Codex sharing ledger. Require each live member channel to be
-/// Codex, including disabled and unrouted drafts, so the switch can never widen
-/// sharing to an ordinary connector. The switch grants nothing by itself.
-fn validate_sharing_only(
-    topology: &UpstreamTopologyRecords,
-    id: Uuid,
-    input: &RoutingGroupInput,
-) -> Result<(), RepositoryError> {
-    if !input.sharing_only {
-        return Ok(());
-    }
-    for channel in topology
-        .logical_channels
-        .iter()
-        .filter(|channel| channel.group_id == id && channel.deleted_at.is_none())
-    {
-        let access = topology
-            .upstream_accesses
-            .iter()
-            .find(|access| access.id == channel.access_id)
-            .ok_or(RepositoryError::Validation)?;
-        if access.connector_kind != ConnectorKind::CodexOauth {
-            return Err(RepositoryError::Validation);
-        }
     }
     Ok(())
 }
@@ -80,7 +48,7 @@ fn validate_replacement(
     {
         return Err(RepositoryError::Conflict);
     }
-    validate_sharing_only(topology, id, input)
+    Ok(())
 }
 
 /// Any live member channel blocks deletion, even when disabled or unrouted;
@@ -116,7 +84,6 @@ fn audit(record: Option<&RoutingGroupRecord>) -> serde_json::Value {
                 "id": record.id,
                 "name": record.name,
                 "enabled": record.enabled,
-                "sharing_only": record.sharing_only,
                 "created_at": record.created_at,
                 "updated_at": record.updated_at,
                 "deleted_at": record.deleted_at,
@@ -166,28 +133,24 @@ pub async fn pg_save(
     validate_replacement(&before, id, input, expected)?;
     let changed = if let Some(expected) = expected {
         sqlx::query(
-            "UPDATE routing_groups SET name=$2,enabled=$3,sharing_only=$4
-             WHERE id=$1 AND updated_at=$5 AND deleted_at IS NULL",
+            "UPDATE routing_groups SET name=$2,enabled=$3
+             WHERE id=$1 AND updated_at=$4 AND deleted_at IS NULL",
         )
         .bind(id)
         .bind(input.name.trim())
         .bind(input.enabled)
-        .bind(input.sharing_only)
         .bind(expected)
         .execute(&mut **transaction)
         .await?
         .rows_affected()
     } else {
-        sqlx::query(
-            "INSERT INTO routing_groups (id,name,enabled,sharing_only) VALUES ($1,$2,$3,$4)",
-        )
-        .bind(id)
-        .bind(input.name.trim())
-        .bind(input.enabled)
-        .bind(input.sharing_only)
-        .execute(&mut **transaction)
-        .await?
-        .rows_affected()
+        sqlx::query("INSERT INTO routing_groups (id,name,enabled) VALUES ($1,$2,$3)")
+            .bind(id)
+            .bind(input.name.trim())
+            .bind(input.enabled)
+            .execute(&mut **transaction)
+            .await?
+            .rows_affected()
     };
     if changed != 1 {
         return Err(RepositoryError::Conflict);
@@ -228,23 +191,21 @@ pub async fn sqlite_save(
     validate_replacement(&before, id, input, expected)?;
     let changed = if let Some(expected) = expected {
         sqlx::query(
-            "UPDATE routing_groups SET name=?,enabled=?,sharing_only=?,updated_at=ag_now()
+            "UPDATE routing_groups SET name=?,enabled=?,updated_at=ag_now()
              WHERE id=? AND updated_at=? AND deleted_at IS NULL",
         )
         .bind(input.name.trim())
         .bind(input.enabled)
-        .bind(input.sharing_only)
         .bind(SqliteUuid(id))
         .bind(SqliteTimestamp(expected))
         .execute(&mut **transaction)
         .await?
         .rows_affected()
     } else {
-        sqlx::query("INSERT INTO routing_groups (id,name,enabled,sharing_only) VALUES (?,?,?,?)")
+        sqlx::query("INSERT INTO routing_groups (id,name,enabled) VALUES (?,?,?)")
             .bind(SqliteUuid(id))
             .bind(input.name.trim())
             .bind(input.enabled)
-            .bind(input.sharing_only)
             .execute(&mut **transaction)
             .await?
             .rows_affected()
@@ -335,6 +296,7 @@ pub async fn sqlite_delete(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::ConnectorKind;
     use crate::persistence::upstream_topology::{LogicalChannelRecord, UpstreamAccessRecord};
 
     fn at() -> DateTime<Utc> {
@@ -345,7 +307,6 @@ mod tests {
         RoutingGroupInput {
             name: name.into(),
             enabled: true,
-            sharing_only: false,
         }
     }
 
@@ -354,7 +315,6 @@ mod tests {
             id: Uuid::from_u128(id),
             name: name.into(),
             enabled: true,
-            sharing_only: false,
             created_at: at(),
             updated_at: at(),
             deleted_at: None,
@@ -388,6 +348,7 @@ mod tests {
             name: format!("channel-{id}"),
             enabled: true,
             binding_revision: Uuid::from_u128(id + 900),
+            sharing_only: false,
             created_at: at(),
             updated_at: at(),
             deleted_at: None,
@@ -447,7 +408,7 @@ mod tests {
     }
 
     #[test]
-    fn sharing_only_requires_every_live_member_to_be_codex() {
+    fn group_organization_allows_mixed_connectors_without_changing_channel_policy() {
         let id = Uuid::from_u128(1);
         let mut topology = UpstreamTopologyRecords {
             routing_groups: vec![group(1, "group")],
@@ -456,29 +417,16 @@ mod tests {
             ..Default::default()
         };
 
-        let mut sharing = input("group");
-        sharing.sharing_only = true;
-        assert!(validate_replacement(&topology, id, &sharing, Some(at())).is_ok());
+        topology.logical_channels[0].sharing_only = true;
+        assert!(validate_replacement(&topology, id, &input("group"), Some(at())).is_ok());
 
         topology
             .upstream_accesses
             .push(access(4, ConnectorKind::OpenAiCompatible));
         topology.logical_channels.push(channel(5, 1, 4));
-        assert!(matches!(
-            validate_replacement(&topology, id, &sharing, Some(at())),
-            Err(RepositoryError::Validation)
-        ));
         assert!(validate_replacement(&topology, id, &input("group"), Some(at())).is_ok());
-
-        topology.logical_channels[1].deleted_at = Some(at());
-        assert!(validate_replacement(&topology, id, &sharing, Some(at())).is_ok());
-
-        topology.logical_channels.clear();
-        topology.logical_channels.push(channel(6, 1, 99));
-        assert!(matches!(
-            validate_replacement(&topology, id, &sharing, Some(at())),
-            Err(RepositoryError::Validation)
-        ));
+        assert!(topology.logical_channels[0].sharing_only);
+        assert!(!topology.logical_channels[1].sharing_only);
     }
 
     #[test]

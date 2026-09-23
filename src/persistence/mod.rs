@@ -54,8 +54,9 @@ pub use upstream_topology::ModelRoutingProfileBinding;
 #[cfg(feature = "sqlite-backend")]
 pub use upstream_topology::sqlite_load;
 pub use upstream_topology::{
-    ApiKeyCapabilityGrantInput, ApiKeyCapabilityGrantRecord, ApiKeyPolicyCapabilityGrantInput,
-    ApiKeyPolicyCapabilityGrantRecord, ChannelCapabilityInput, ChannelCapabilityRecord,
+    ApiKeyCapabilityGrantInput, ApiKeyCapabilityGrantRecord, ApiKeyChannelGrantRecord,
+    ApiKeyPolicyCapabilityGrantInput, ApiKeyPolicyCapabilityGrantRecord,
+    ApiKeyPolicyChannelGrantRecord, ChannelCapabilityInput, ChannelCapabilityRecord,
     GrantOriginKind, LogicalChannelInput, LogicalChannelRecord, OperationCandidateInput,
     OperationCandidateRecord, OperationRuleInput, OperationRuleRecord, OperationTierInput,
     OperationTierRecord, RoutingGroupInput, RoutingGroupRecord, UpstreamAccessInput,

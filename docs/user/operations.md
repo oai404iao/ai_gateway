@@ -55,6 +55,14 @@ Codex 双投影一次性转存为管理组、接入、逻辑渠道、操作能�
 启动迁移在同一事务中完成转存、历史外键迁移和完整快照编译；任一步失败整批回滚。
 修复后可重试，重复启动不会重复转存。旧日志、金融事实、结算收据、spool 和拼车账本不改写。
 
+随后 `0066` / SQLite `0006` 拆分六种操作并删除可配置 transports；
+`0067` / SQLite `0007` 将能力授权按所属逻辑渠道去重迁移为渠道授权。
+已授权渠道的所有能力共享授权，但组中新加入的渠道不会自动授权。
+`0068` / SQLite `0008` 删除凭证的组/pool 归属，将拼车绑定及 `sharing_only` 移到逻辑渠道；
+`0069` / SQLite `0009` 增加不可变逐请求凭证归属，避免渠道改绑转移历史或在途费用。
+原凭证、渠道、能力、席位、窗口、金额和 WAL 身份均保留；旧未完成的组绑定 OAuth 流失效。
+完整快照在整批迁移结束后验证，失败仍回滚整批。
+
 升级必须停止所有旧 Gateway 写入，先备份数据库和 spool；SQLite 使用成对离线备份。
 不能新旧版本滚动混跑，也不能把已升级数据库直接交给旧二进制。需要回滚时恢复完整备份及
 匹配版本。升级预检拒绝无法表示的停用草稿、非法凭证范围或路由；错误只报告 ID/类别，
@@ -219,8 +227,8 @@ boundary padding 分别最多 `8 KiB`、`16 KiB` 与 `1 KiB`，防止畸形 fram
 `400 image_edit_json_transform_unsupported`。Header 和响应 Header 变换仍照常执行。当前不接受
 JSON/data URL 形式的公开客户端 edit 请求。
 
-配置 Images 路由时，渠道组、渠道、顶层模型规则下的协议规则和 API Key 格式均使用
-`open_ai_images`；顶层模型规则自身没有格式。Images 渠道不支持 `test_model`，不会进入定时付费探测；Session
+配置 Images 路由时，使用 `images_generation` 或 `images_edit` 能力及同操作路由规则；
+Key 必须获得所属逻辑渠道授权，不再单独限制 API 格式。Images 能力不支持 `test_model`，不会进入定时付费探测；Session
 粘性、SSE 变换和 WebSocket 也不适用于该格式。普通 Header 变换、请求 JSON 变换、目标模型改写、
 被动健康、准入、请求日志和结算仍沿用统一数据面基础设施。
 
@@ -228,7 +236,7 @@ JSON/data URL 形式的公开客户端 edit 请求。
 
 `models.source_model_id` 是客户端模型身份，最多绑定一个 routing profile。每个 profile
 按操作分别配置 `chat_completion`、`responses`、`responses-ws`、`web_search`、
-`images_edit`、`images_generation` 规则；不会跨格式转换、降级或借用另一操作的授权。
+`images_edit`、`images_generation` 规则；不会跨格式转换、降级或借用另一操作的路由。
 停用规则可以是空草稿，启用规则必须包含非空 tier。
 
 每个 tier 保存 `capability_id + upstream_model + weight` 显式候选。较低 priority
@@ -244,47 +252,57 @@ JSON/data URL 形式的公开客户端 edit 请求。
 传输由操作固定：Chat Completions/Responses HTTP 支持 JSON 与 SSE，`responses-ws`
 只使用 WebSocket，搜索与图片生成使用非流式 JSON，图片编辑使用 multipart。
 Console 中从“模型配置”选择客户端模型，再在右侧按操作添加路由规则。
+客户端模型列表和选中模型面板展示输入、缓存命中、输出基础价格，并标明实际价格单位
+Token 数；高级计价仍在价格配置页维护。
 
-Key/Policy 仍选择组或逻辑渠道，不提供能力选择器。新增选择在保存时展开为固定能力授权，
-保留的选择不重新展开；以后增加能力或组成员不会自动扩权。删除后重新选择是显式授权变更。
-自助 Key 的普通目标还必须属于有效 Policy 的固定能力范围；拼车目标只来自本人固定席位，
-没有 Policy 也可创建仅拼车 Key。候选配置、能力启用和授权是三个独立步骤。
+Key/Policy 选择组或逻辑渠道，不提供能力选择器。组选择在保存时展开为固定逻辑渠道集合；
+保留选择不重新展开，后来加入组的渠道需要显式授权。组来源授权还要求渠道仍属于原组。
+已授权逻辑渠道的现有和后续新增能力均共享授权，不再逐能力或按 API 格式限制。
+自助 Key 的普通目标必须属于有效 Policy 的固定渠道范围；拼车目标只来自本人固定席位，
+没有 Policy 也可创建仅拼车 Key。候选配置、能力启用和渠道授权仍是三个独立步骤。
+旧管理 API 的 `allowed_api_formats` 作为废弃兼容字段保留，输入可省略且不参与授权；
+活跃 Key 返回全部受支持格式。协议验证仍按请求操作执行，不能跨格式转换。
+
+删除普通渠道能力时，后端在同一事务中解绑所有引用它的路由候选，删除空层，并把无候选的
+规则停用为草稿；仍有候选的规则保留原开关、权重和策略。受影响规则的 ETag 更新。
+版本冲突或审计失败会整体回滚；渠道、计价模型、固定渠道授权及历史计费事实不变。
+Codex 使用相同的渠道与能力管理接口；删除能力同样自动解绑候选，不删除凭证或历史金额。
 
 ### Codex OAuth Connect
 
-可选 [Codex 拼车](codex-sharing.md) 将直接分配给用户的固定席位绑定到专用凭证，并增加 USD
-双窗口预占/结算门禁。该单实例功能默认关闭；启用后不借用其他凭证，Images 仍需显式授权，
+可选 [Codex 拼车](codex-sharing.md) 将直接分配给用户的固定席位绑定到逻辑渠道及其账号，并增加 USD
+双窗口预占/结算门禁。该单实例功能默认关闭；启用后不借用其他凭证，Images 仍需显式启用并配置路由，
 经拼车凭证的不可计价 standalone search 会被拒绝，同一用户经普通渠道的请求保持原行为。
-Codex 渠道组可开启整池同步的“仅拼车使用”模式；未绑定凭证也受限制，但不自动开启 Images。
-车队可先保存空席；本人创建 Key 时，拼车凭证与 Policy 普通目标分栏选择，没有 Policy
-也可创建仅含席位凭证的 Key。
+Codex 逻辑渠道可开启“仅拼车使用”；同账号别名不能绕过限制，但不自动开启 Images。
+车队可先保存空席；本人创建 Key 时，拼车渠道与 Policy 普通目标分栏选择，没有 Policy
+也可创建仅含席位渠道的 Key。
 
 管理员可把 ChatGPT Codex 订阅作为 Connector 接入，无需 sidecar。每个凭证保留稳定
-credential UUID，并对应一个逻辑渠道和四个独立能力：Responses、独立 Search、Images
-generation、Images edit。Token、quota、proxy 状态共享；健康、目录、路由及授权按能力分离。
+credential UUID，可由多个兼容的逻辑渠道引用，没有组或池归属。渠道可显式配置 Responses HTTP、
+Responses WS、独立 Search、Images generation、Images edit 能力。Token、quota 和维护代理属于凭证，
+转发代理属于接入，健康、目录和路由按能力分离，访问授权属于逻辑渠道。
 
 配置步骤：
 
-1. 在 `/admin/routing/groups` 新建管理组，再进入
-   `/admin/providers/codex-oauth/<group-id>`。首次导入或 OAuth flow 在事务内建立 Connector pool。
+1. 打开 **上游凭证 → Codex**：`/admin/routing/upstream-credentials?connector=codex`。
 2. 使用 **Connect account** 的 PKCE 流程，或 **Import tokens** / **Advanced import**。
    PKCE 回调地址仍为 `http://localhost:1455/auth/callback`，复制完整地址回 Console 完成交换。
    高级导入支持原生 Bundle、CPA 和 Sub2API；草稿与 Token 只留在当前页面内存。
    workspace/member 或无 workspace 的个人 user ID 用于原位重授权，不按 Token 文本去重。
-3. 在能力页分别确认启用状态、传输和模型目录。Images 两个能力初始停用；
-   新建目录来自导入时的模型列表，重导入不覆盖已有独立目录，必要时显式补充 Images wire model。
+3. 配置 Codex 上游接入、渠道组及引用该凭证的逻辑渠道，再在渠道详情添加操作能力和模型目录。
+   导入不会自动创建渠道或能力；旧配置迁移保留 Images 的停用状态，重导入不覆盖渠道的独立目录。
    HTTP Responses 的 zstd 压缩只在 Responses 能力配置，不影响 Search、Images 或 WebSocket。
 4. 建立计价模型/profile，并为需要的每个操作分别保存能力/模型候选。Search 不再隐式借用
    Responses 规则；Images generation/edit 也各有规则。新增凭证不会自动加入候选。
-5. 显式给 API Key/Policy 添加所需组或逻辑渠道，并允许对应 API 格式与 `proxy` 权限。
-   导入、启用能力或修改路由都不会自动扩大已有固定授权。
+5. 显式给 API Key/Policy 添加所需组或逻辑渠道；Key 需要 `proxy` 权限。
+   新导入渠道不会自动加入已有组授权；已授权渠道的全部能力无需逐项重新授权。
 6. 客户端 Codex provider 的 base URL 指向 Gateway `/v1`；独立搜索仍需客户端
    `supports_standalone_web_search = true`。需要 Responses/Search 固定账户时配置 Session affinity。
 
-凭证的 label、enable、proxy、quota threshold、刷新和删除仍由 Codex 专属接口管理；
-普通逻辑渠道/凭证 CRUD 不得绕过托管身份或拼车保护。能力页可独立修改已存在能力的配置，
-但不能创建额外 Codex 能力。删除清除 Token，墓碑化能力与逻辑渠道；不再被其他渠道使用的
-接入释放代理引用，共享接入保留。历史身份和金融事实不删除。
+Codex 认证生命周期通过 `/console/v1/routing/upstream-credentials/codex` 及其子路径管理。
+逻辑渠道与能力使用统一 CRUD；普通静态密钥接口不能替代 OAuth 认证流程。
+删除凭证前必须解除全部活动渠道引用，且不得存在拼车绑定；删除只清除 Token 和维护代理，
+不级联删除接入、渠道、能力或金融事实。维护代理修改不改写渠道接入的转发代理。
 
 凭证状态含义：
 
@@ -296,7 +314,7 @@ generation、Images edit。Token、quota、proxy 状态共享；健康、目录�
 
 永久 refresh 失败会设置持久的重新授权状态；后续 quota 成功或普通设置编辑不会把该凭证重新置为
 `active`。重新执行 OAuth 或导入同一 workspace/member 身份，或同一无 workspace 个人 user ID
-的新 Token，会复用原逻辑渠道和能力 IDs 并清除该状态。
+的新 Token，会复用原凭证并清除该状态，不更改已绑定渠道和能力。
 
 凭证列表支持多选后批量启用、停用、删除和导出选中项。单条和批量删除都使用乐观并发版本：
 删除成功后凭证立即从列表消失，保存的 ID/access/refresh token 被清除，代理引用被释放；为保留
@@ -416,10 +434,11 @@ WebSocket Upgrade 在 HTTP 握手阶段验证 Gateway API Key 和 Responses `pro
 1. 管理员在 `/console/v1/system/settings` 中设置 `websocket.enabled = true`；
 2. 用户在个人设置页 `/account/settings` 中开启 WebSocket，对应
    `GET/PUT /console/v1/me/settings` 的 `websocket_enabled`；
-3. 管理员配置独立的 `responses-ws` 能力和同操作路由，并显式授权给 API Key；
-   HTTP `responses` 能力、路由和授权不能替代 WS 配置。
+3. 管理员配置独立的 `responses-ws` 能力和同操作路由，API Key 已授权所属逻辑渠道；
+   HTTP `responses` 能力和路由不能替代 WS 配置。
 
-升级仅拆出旧配置已有的 WS 能力及候选，固定授权按原范围迁移，不自动授予 WS。
+六操作升级只拆出旧配置已有的 WS 能力及候选。之后的逻辑渠道授权迁移不会创建或启用
+新能力/路由，但已有渠道授权覆盖其 WS 能力，不再需要额外能力授权。
 新建 Codex 凭证提供独立 Responses HTTP 与 WS 能力，但仍需配置路由及授权；
 系统与用户开关仍默认关闭。没有可配置的 `transports` 字段。
 Chat Completions 渠道不能声明 WebSocket 支持。系统、用户未开启，或没有可用且声明支持的
@@ -618,9 +637,9 @@ Policy 不再保存额度、RPM、并发、格式、权限或最大活动 Key �
 `default_api_key_policy_required`、`default_api_key_policy_disabled` 或
 `api_key_target_not_allowed`。
 
-用户组还可以授权只读查看指定 Codex 凭证池的额度窗口。管理员只配置 canonical
-`open_ai_responses` Codex Channel Group；同一 Connector pool 的 Images 能力 自动共享这份
-可见性。普通用户接口只返回凭证 UUID（`name` 固定使用同一个 UUID）、Provider 报告的
+用户组还可以授权只读查看指定渠道组内渠道所引用 Codex 账号的额度窗口。同一凭证仅展示一次，
+返回的 `channel_ids` 只含可见组中的引用渠道，不因其他渠道复用该凭证而扩大可见范围。
+普通用户接口只返回凭证 UUID（`name` 固定使用同一个 UUID）、Provider 报告的
 `plan_type`、当前主/次窗口、凭证级周期花费以及窗口周期历史，不返回管理员 label、邮箱、可选
 workspace/member 身份、Token、代理、运行状态、错误或 reset-credit 信息。周期花费汇总该
 凭证全部调用者，不按当前用户过滤，但不会暴露用户、API Key、请求或渠道明细。接口没有写方法，

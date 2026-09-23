@@ -13,8 +13,8 @@ async fn window_cost(
     let mut sum = CostSum::default();
     let mut rows=sqlx::query_scalar::<_,SqliteAmount>(
         "SELECT f.cost_amount FROM request_metering_facts f
-         JOIN channel_identity_registry identity ON identity.id=f.channel_id
-         WHERE identity.codex_credential_id=? AND f.cost_amount IS NOT NULL AND f.started_at>=? AND f.started_at<?")
+         JOIN request_credential_identities identity ON identity.request_id=f.id
+         WHERE identity.credential_id=? AND f.cost_amount IS NOT NULL AND f.started_at>=? AND f.started_at<?")
         .bind(SqliteUuid(credential)).bind(SqliteTimestamp(start)).bind(SqliteTimestamp(end))
         .fetch(connection);
     while let Some(amount) = rows.try_next().await? {
@@ -48,7 +48,10 @@ async fn view(
     }
     Ok(CodexCredentialView {
         id: r.channel_id,
-        channel_group_id: r.channel_group_id,
+        channel_ids: sqlx::query_scalar::<_, SqliteUuid>(
+            "SELECT id FROM upstream_channels WHERE credential_id=? AND deleted_at IS NULL ORDER BY id",
+        ).bind(SqliteUuid(r.channel_id)).fetch_all(&mut *connection).await?
+            .into_iter().map(|id| id.0).collect(),
         label: r.label,
         email: r.email,
         account_id: r.account_id,
@@ -80,11 +83,11 @@ async fn view(
         updated_at: r.updated_at,
     })
 }
-fn self_view(r: CodexCredentialView) -> SelfCodexQuotaCredentialView {
+fn self_view(r: CodexCredentialView, channel_ids: Vec<Uuid>) -> SelfCodexQuotaCredentialView {
     SelfCodexQuotaCredentialView {
         id: r.id,
         name: r.id.to_string(),
-        channel_group_id: r.channel_group_id,
+        channel_ids,
         plan_type: r.plan_type,
         primary_used_percent: r.primary_used_percent,
         primary_window_seconds: r.primary_window_seconds,
@@ -138,11 +141,33 @@ async fn history(
     })
 }
 
-const VISIBLE:&str="JOIN connector_pools visible_group ON visible_group.id=c.connector_pool_id
-    JOIN user_group_codex_quota_visibility visibility ON visibility.channel_group_id=visible_group.routing_group_id
+const VISIBLE: &str = "WHERE c.deleted_at IS NULL AND EXISTS (
+    SELECT 1 FROM upstream_channels ch
+    JOIN user_group_codex_quota_visibility visibility ON visibility.channel_group_id=ch.group_id
     JOIN users console_user ON console_user.user_group_id=visibility.user_group_id
-    WHERE console_user.id=?1 AND console_user.status='active' AND console_user.deleted_at IS NULL
-    AND c.deleted_at IS NULL";
+    WHERE ch.credential_id=c.channel_id AND ch.deleted_at IS NULL
+      AND console_user.id=?1 AND console_user.status='active' AND console_user.deleted_at IS NULL)";
+
+async fn visible_channels(
+    connection: &mut SqliteConnection,
+    user: Uuid,
+    credential: Uuid,
+) -> Result<Vec<Uuid>, RepositoryError> {
+    Ok(sqlx::query_scalar::<_, SqliteUuid>(
+        "SELECT ch.id FROM upstream_channels ch
+         JOIN user_group_codex_quota_visibility v ON v.channel_group_id=ch.group_id
+         JOIN users u ON u.user_group_id=v.user_group_id
+         WHERE ch.credential_id=? AND ch.deleted_at IS NULL AND u.id=?
+           AND u.status='active' AND u.deleted_at IS NULL ORDER BY ch.id",
+    )
+    .bind(SqliteUuid(credential))
+    .bind(SqliteUuid(user))
+    .fetch_all(connection)
+    .await?
+    .into_iter()
+    .map(|id| id.0)
+    .collect())
+}
 
 impl SqliteControlPlaneRepository {
     pub async fn set_codex_user_id_if_missing(
@@ -156,8 +181,8 @@ impl SqliteControlPlaneRepository {
         let mut tx = self.database.begin_write().await.map_err(open_failure)?;
         let changed=sqlx::query("UPDATE codex_oauth_credentials AS target SET updated_at=ag_now(),user_id=?2
             WHERE target.channel_id=?1 AND target.user_id IS NULL AND target.deleted_at IS NULL AND NOT EXISTS(
-            SELECT 1 FROM codex_oauth_credentials existing WHERE existing.connector_pool_id=target.connector_pool_id
-              AND existing.account_id IS target.account_id AND existing.user_id=?2 AND existing.deleted_at IS NULL)")
+            SELECT 1 FROM codex_oauth_credentials existing
+            WHERE existing.account_id IS target.account_id AND existing.user_id=?2 AND existing.deleted_at IS NULL)")
             .bind(SqliteUuid(id)).bind(user_id.trim()).execute(&mut *tx).await?.rows_affected()==1;
         tx.commit().await?;
         Ok(changed)
@@ -166,7 +191,6 @@ impl SqliteControlPlaneRepository {
     pub async fn create_codex_oauth_flow(
         &self,
         actor: Uuid,
-        group: Uuid,
         input: CodexOauthStartInput,
         redirect_uri: String,
         state_hash: Vec<u8>,
@@ -175,11 +199,11 @@ impl SqliteControlPlaneRepository {
     ) -> Result<CodexOauthFlowRecord, RepositoryError> {
         validate_credential_settings(&input.label, input.quota_threshold_percent)?;
         let mut tx = self.database.begin_write().await.map_err(open_failure)?;
-        validate_codex_group_and_proxy_transaction(&mut tx, group, input.proxy_id).await?;
+        validate_codex_proxy(&mut tx, input.proxy_id).await?;
         let row=sqlx::query_as::<_,CodexOauthFlowRecordRow>(
-            "INSERT INTO codex_oauth_flows(id,actor_user_id,channel_group_id,label,proxy_id,quota_threshold_percent,
-             redirect_uri,state_hash,code_verifier,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?) RETURNING *")
-            .bind(SqliteUuid(Uuid::new_v4())).bind(SqliteUuid(actor)).bind(SqliteUuid(group))
+            "INSERT INTO codex_oauth_flows(id,actor_user_id,label,proxy_id,quota_threshold_percent,
+             redirect_uri,state_hash,code_verifier,expires_at) VALUES (?,?,?,?,?,?,?,?,?) RETURNING *")
+            .bind(SqliteUuid(Uuid::new_v4())).bind(SqliteUuid(actor))
             .bind(input.label.trim()).bind(input.proxy_id.map(SqliteUuid)).bind(input.quota_threshold_percent)
             .bind(redirect_uri).bind(state_hash).bind(code_verifier).bind(SqliteTimestamp(expires_at))
             .fetch_one(&mut *tx).await?.0;
@@ -198,7 +222,6 @@ impl SqliteControlPlaneRepository {
     }
     pub async fn export_codex_credentials(
         &self,
-        group: Uuid,
         input: CodexCredentialExportInput,
     ) -> Result<CodexCredentialExportBundle, RepositoryError> {
         let ids = input
@@ -211,16 +234,10 @@ impl SqliteControlPlaneRepository {
         }
         let mut reader = self.database.acquire_read().await.map_err(open_failure)?;
         let mut tx = reader.begin().await?;
-        let pool = codex_pool_context_connection(&mut tx, group).await?;
-        let name: String =
-            sqlx::query_scalar("SELECT name FROM routing_groups WHERE id=? AND deleted_at IS NULL")
-                .bind(SqliteUuid(group))
-                .fetch_one(&mut *tx)
-                .await?;
         let rows=sqlx::query_as::<_,CodexCredentialRecordRow>(sqlx::AssertSqlSafe(credential_select(
-            "WHERE c.connector_pool_id=?1 AND c.deleted_at IS NULL
-             AND (?2 OR c.channel_id IN (SELECT value FROM json_each(?3))) ORDER BY c.label,c.channel_id")))
-            .bind(SqliteUuid(pool.connector_pool_id)).bind(ids.is_empty()).bind(sqlx::types::Json(&ids))
+            "WHERE c.deleted_at IS NULL
+             AND (?1 OR c.channel_id IN (SELECT value FROM json_each(?2))) ORDER BY c.label,c.channel_id")))
+            .bind(ids.is_empty()).bind(sqlx::types::Json(&ids))
             .fetch_all(&mut *tx).await?;
         if !ids.is_empty() && rows.len() != ids.len() {
             return Err(RepositoryError::NotFound);
@@ -284,24 +301,20 @@ impl SqliteControlPlaneRepository {
         tx.commit().await?;
         Ok(CodexCredentialExportBundle {
             export_type: "ai-gateway-codex-credentials",
-            version: 2,
+            version: 3,
             exported_at: Utc::now(),
-            channel_group_id: group,
-            channel_group_name: name,
             proxies,
             credentials,
         })
     }
-    pub async fn codex_credentials(
-        &self,
-        group: Uuid,
-    ) -> Result<Vec<CodexCredentialView>, RepositoryError> {
+    pub async fn codex_credentials(&self) -> Result<Vec<CodexCredentialView>, RepositoryError> {
         let mut reader = self.database.acquire_read().await.map_err(open_failure)?;
         let mut tx = reader.begin().await?;
-        let rows=sqlx::query_as::<_,CodexCredentialRecordRow>(sqlx::AssertSqlSafe(credential_select(
-            "WHERE c.connector_pool_id=(SELECT id FROM connector_pools WHERE routing_group_id=? AND connector_kind='codex')
-             AND c.deleted_at IS NULL ORDER BY c.label,c.channel_id")))
-            .bind(SqliteUuid(group)).fetch_all(&mut *tx).await?;
+        let rows = sqlx::query_as::<_, CodexCredentialRecordRow>(sqlx::AssertSqlSafe(
+            credential_select("WHERE c.deleted_at IS NULL ORDER BY c.label,c.channel_id"),
+        ))
+        .fetch_all(&mut *tx)
+        .await?;
         let mut result = Vec::with_capacity(rows.len());
         for row in rows {
             result.push(view(&mut tx, row.0).await?);
@@ -345,16 +358,16 @@ impl SqliteControlPlaneRepository {
     ) -> Result<Vec<SelfCodexQuotaCredentialView>, RepositoryError> {
         let mut reader = self.database.acquire_read().await.map_err(open_failure)?;
         let mut tx = reader.begin().await?;
-        let rows =
-            sqlx::query_as::<_, CodexCredentialRecordRow>(sqlx::AssertSqlSafe(credential_select(
-                &format!("{VISIBLE} ORDER BY visibility.channel_group_id,c.channel_id"),
-            )))
-            .bind(SqliteUuid(user))
-            .fetch_all(&mut *tx)
-            .await?;
+        let rows = sqlx::query_as::<_, CodexCredentialRecordRow>(sqlx::AssertSqlSafe(
+            credential_select(&format!("{VISIBLE} ORDER BY c.channel_id")),
+        ))
+        .bind(SqliteUuid(user))
+        .fetch_all(&mut *tx)
+        .await?;
         let mut result = Vec::with_capacity(rows.len());
         for row in rows {
-            result.push(self_view(view(&mut tx, row.0).await?));
+            let channels = visible_channels(&mut tx, user, row.0.channel_id).await?;
+            result.push(self_view(view(&mut tx, row.0).await?, channels));
         }
         tx.commit().await?;
         Ok(result)
@@ -397,11 +410,12 @@ impl SqliteControlPlaneRepository {
                 cost_amount: r.cost_amount,
             })
             .collect();
+        let channel_ids = visible_channels(&mut tx, user, id).await?;
         tx.commit().await?;
         Ok(SelfCodexQuotaWindowHistory {
             credential_id: id,
             name: id.to_string(),
-            channel_group_id: r.channel_group_id,
+            channel_ids,
             plan_type: r.plan_type,
             periods,
         })

@@ -76,10 +76,11 @@ describe("upstream credential management", () => {
 
   it("does not expose ordinary credential editing for provider-managed identities", async () => {
     server.use(http.get("/console/v1/routing/upstream-credentials/:id", () => HttpResponse.json({
-      ...UPSTREAM_CREDENTIAL_DETAIL, kind: "codex_oauth", provider_managed: true, secret: null, allowed_base_urls: [],
+      ...UPSTREAM_CREDENTIAL_DETAIL, connector_kind: "codex", kind: "codex_oauth", provider_managed: true, secret: null,
     }, { headers: { ETag: `"${UPSTREAM_CREDENTIAL.updated_at}"` } })));
     renderAt(UPSTREAM_CREDENTIAL.id);
-    expect(await screen.findByText("This identity is managed by the Codex connector. Use its provider page to change or delete it.")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("link", { name: "Back to credentials" }))
+      .toHaveAttribute("href", "/admin/routing/upstream-credentials?connector=codex"));
     expect(screen.queryByRole("button", { name: "Save credential" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Delete credential" })).not.toBeInTheDocument();
   });

@@ -1,24 +1,23 @@
 {
-  "api_key_capability_grants": {
+  "api_key_channel_grants": {
     "checks": [
-      "api_key_capability_grants_capability_origin_check",
-      "api_key_capability_grants_origin_kind_check"
+      "api_key_channel_grants_origin_kind_check"
     ],
     "columns": [
       "api_key_id",
-      "capability_id",
+      "channel_id",
       "origin_kind",
       "origin_id",
       "created_at"
     ],
     "constraints": [
-      "api_key_capability_grants_api_key_id_fkey",
-      "api_key_capability_grants_capability_id_fkey",
-      "api_key_capability_grants_pkey"
+      "api_key_channel_grants_api_key_id_fkey",
+      "api_key_channel_grants_channel_id_fkey",
+      "api_key_channel_grants_pkey"
     ],
     "types": {
       "api_key_id": "uuid",
-      "capability_id": "uuid",
+      "channel_id": "uuid",
       "created_at": "timestamptz",
       "origin_id": "uuid",
       "origin_kind": "text"
@@ -52,25 +51,24 @@
       "updated_at": "timestamptz"
     }
   },
-  "api_key_policy_capability_grants": {
+  "api_key_policy_channel_grants": {
     "checks": [
-      "api_key_policy_capability_grants_capability_origin_check",
-      "api_key_policy_capability_grants_origin_kind_check"
+      "api_key_policy_channel_grants_origin_kind_check"
     ],
     "columns": [
       "policy_id",
-      "capability_id",
+      "channel_id",
       "origin_kind",
       "origin_id",
       "created_at"
     ],
     "constraints": [
-      "api_key_policy_capability_grants_capability_id_fkey",
-      "api_key_policy_capability_grants_pkey",
-      "api_key_policy_capability_grants_policy_id_fkey"
+      "api_key_policy_channel_grants_channel_id_fkey",
+      "api_key_policy_channel_grants_pkey",
+      "api_key_policy_channel_grants_policy_id_fkey"
     ],
     "types": {
-      "capability_id": "uuid",
+      "channel_id": "uuid",
       "created_at": "timestamptz",
       "origin_id": "uuid",
       "origin_kind": "text",
@@ -287,6 +285,7 @@
       "codex_oauth_credentials_access_token_check",
       "codex_oauth_credentials_account_id_check",
       "codex_oauth_credentials_account_or_user_check",
+      "codex_oauth_credentials_available_models_check",
       "codex_oauth_credentials_check",
       "codex_oauth_credentials_id_token_check",
       "codex_oauth_credentials_label_check",
@@ -303,7 +302,6 @@
     ],
     "columns": [
       "channel_id",
-      "channel_group_id",
       "label",
       "email",
       "account_id",
@@ -334,22 +332,21 @@
       "updated_at",
       "user_id",
       "deleted_at",
-      "connector_pool_id",
-      "quota_reset_credits_available"
+      "quota_reset_credits_available",
+      "proxy_id",
+      "available_models"
     ],
     "constraints": [
-      "codex_oauth_credentials_channel_group_id_fkey",
       "codex_oauth_credentials_channel_id_fkey",
-      "codex_oauth_credentials_connector_pool_id_fkey",
-      "codex_oauth_credentials_pkey"
+      "codex_oauth_credentials_pkey",
+      "codex_oauth_credentials_proxy_id_fkey"
     ],
     "types": {
       "access_token": "text",
       "access_token_expires_at": "timestamptz",
       "account_id": "varchar",
-      "channel_group_id": "uuid",
+      "available_models": "jsonb",
       "channel_id": "uuid",
-      "connector_pool_id": "uuid",
       "created_at": "timestamptz",
       "deleted_at": "timestamptz",
       "email": "varchar",
@@ -364,6 +361,7 @@
       "primary_reset_at": "timestamptz",
       "primary_used_percent": "int4",
       "primary_window_seconds": "int4",
+      "proxy_id": "uuid",
       "quota_allowed": "bool",
       "quota_checked_at": "timestamptz",
       "quota_limit_reached": "bool",
@@ -391,7 +389,6 @@
     "columns": [
       "id",
       "actor_user_id",
-      "channel_group_id",
       "label",
       "proxy_id",
       "quota_threshold_percent",
@@ -404,13 +401,11 @@
     ],
     "constraints": [
       "codex_oauth_flows_actor_user_id_fkey",
-      "codex_oauth_flows_channel_group_id_fkey",
       "codex_oauth_flows_pkey",
       "codex_oauth_flows_proxy_id_fkey"
     ],
     "types": {
       "actor_user_id": "uuid",
-      "channel_group_id": "uuid",
       "code_verifier": "text",
       "completed_at": "timestamptz",
       "created_at": "timestamptz",
@@ -536,15 +531,19 @@
       "user_max_concurrent_requests",
       "group_max_concurrent_requests",
       "created_at",
-      "updated_at"
+      "updated_at",
+      "channel_id"
     ],
     "constraints": [
+      "codex_sharing_channel_unique",
+      "codex_sharing_groups_channel_id_fkey",
       "codex_sharing_groups_credential_id_fkey",
       "codex_sharing_groups_credential_id_key",
       "codex_sharing_groups_pkey",
       "codex_sharing_groups_provider_account_id_provider_user_id_key"
     ],
     "types": {
+      "channel_id": "uuid",
       "created_at": "timestamptz",
       "credential_id": "uuid",
       "enabled": "bool",
@@ -605,27 +604,6 @@
       "id": "uuid",
       "name": "varchar",
       "updated_at": "timestamptz"
-    }
-  },
-  "connector_pools": {
-    "checks": [
-      "connector_pools_connector_kind_check"
-    ],
-    "columns": [
-      "id",
-      "connector_kind",
-      "created_at",
-      "routing_group_id"
-    ],
-    "constraints": [
-      "connector_pools_pkey",
-      "connector_pools_routing_group_id_fkey"
-    ],
-    "types": {
-      "connector_kind": "text",
-      "created_at": "timestamptz",
-      "id": "uuid",
-      "routing_group_id": "uuid"
     }
   },
   "group_identity_registry": {
@@ -902,6 +880,26 @@
       "updated_at": "timestamptz",
       "used_count": "int8",
       "user_group_id": "uuid"
+    }
+  },
+  "request_credential_attributions": {
+    "checks": [
+      "request_credential_attributions_check"
+    ],
+    "columns": [
+      "request_id",
+      "known",
+      "credential_id"
+    ],
+    "constraints": [
+      "request_credential_attributions_credential_id_fkey",
+      "request_credential_attributions_pkey",
+      "request_credential_attributions_request_id_fkey"
+    ],
+    "types": {
+      "credential_id": "uuid",
+      "known": "bool",
+      "request_id": "uuid"
     }
   },
   "request_log_ingest": {
@@ -1214,7 +1212,6 @@
       "id",
       "name",
       "enabled",
-      "sharing_only",
       "created_at",
       "updated_at",
       "deleted_at"
@@ -1228,7 +1225,6 @@
       "enabled": "bool",
       "id": "uuid",
       "name": "varchar",
-      "sharing_only": "bool",
       "updated_at": "timestamptz"
     }
   },
@@ -1368,7 +1364,8 @@
       "binding_revision",
       "created_at",
       "updated_at",
-      "deleted_at"
+      "deleted_at",
+      "sharing_only"
     ],
     "constraints": [
       "upstream_channels_access_id_fkey",
@@ -1386,6 +1383,7 @@
       "group_id": "uuid",
       "id": "uuid",
       "name": "varchar",
+      "sharing_only": "bool",
       "updated_at": "timestamptz"
     }
   },
@@ -1407,13 +1405,15 @@
       "revision",
       "created_at",
       "updated_at",
-      "deleted_at"
+      "deleted_at",
+      "connector_kind"
     ],
     "constraints": [
       "upstream_credentials_pkey"
     ],
     "types": {
       "allowed_base_urls": "jsonb",
+      "connector_kind": "text",
       "created_at": "timestamptz",
       "deleted_at": "timestamptz",
       "enabled": "bool",

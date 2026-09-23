@@ -78,6 +78,7 @@ describe("RequestLogsView", () => {
       "Tokens",
       "Cost",
       "Duration",
+      "View details",
     ]);
     expect(screen.getByText("Chat Completions")).toBeInTheDocument();
     expect(screen.getByText("SSE")).toBeInTheDocument();
@@ -199,6 +200,7 @@ describe("RequestLogsView", () => {
       "Tokens",
       "Cost",
       "Duration",
+      "View details",
     ]);
     expect(screen.getByText(CHANNEL_GROUP.name)).toBeInTheDocument();
     expect(screen.getByRole("cell", { name: CHANNEL.name })).toBeInTheDocument();
@@ -418,6 +420,7 @@ describe("RequestLogsView", () => {
       "Tokens",
       "Cost",
       "Duration",
+      "View details",
     ]);
     expect(await screen.findByText(CHANNEL_GROUP.name)).toBeInTheDocument();
 

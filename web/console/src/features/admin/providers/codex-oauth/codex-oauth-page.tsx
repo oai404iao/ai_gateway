@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  ArrowLeft,
   CheckCheck,
   Download,
   ExternalLink,
@@ -15,7 +14,9 @@ import {
   RotateCcw,
   Trash2,
 } from "lucide-react";
-import { useNavigate, useParams } from "react-router";
+import { useNavigate } from "react-router";
+import { NavigationLink } from "@/components/shared/navigation-link";
+import { usePageOrigin, withReturnTo } from "@/lib/page-navigation";
 import { toast } from "sonner";
 import type {
   CodexCredentialImportInput,
@@ -26,7 +27,7 @@ import type {
 } from "@/api/types";
 import { ApiError } from "@/api/errors";
 import { translate, useI18n } from "@/app/i18n";
-import { AsyncResource, ErrorAlert } from "@/components/shared/async-resource";
+import { AsyncResource } from "@/components/shared/async-resource";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { PageHeader } from "@/components/shared/page-header";
 import { StatusBadge } from "@/components/shared/status-badge";
@@ -93,7 +94,6 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import {
-  useRoutingGroup,
   useProxies,
 } from "@/features/admin/api";
 import { formatDateTime } from "@/lib/dates";
@@ -397,20 +397,18 @@ function SettingsFields({
 
 export default function CodexOauthPage() {
   const { t } = useI18n();
-  const { id: groupId = "" } = useParams();
-  const navigate = useNavigate();
-  const group = useRoutingGroup(groupId);
+  const origin = usePageOrigin();
   const proxiesQuery = useProxies();
-  const credentials = useCodexCredentials(groupId);
-  const startOauth = useStartCodexOauth(groupId);
-  const completeOauth = useCompleteCodexOauth(groupId);
-  const importCredential = useImportCodexCredential(groupId);
-  const exportCredentials = useExportCodexCredentials(groupId);
-  const batchUpdate = useBatchUpdateCodexCredentials(groupId);
-  const deleteCredential = useDeleteCodexCredential(groupId);
-  const refreshCredential = useRefreshCodexCredential(groupId);
-  const refreshQuota = useRefreshCodexQuota(groupId);
-  const resetQuota = useResetCodexQuota(groupId);
+  const credentials = useCodexCredentials();
+  const startOauth = useStartCodexOauth();
+  const completeOauth = useCompleteCodexOauth();
+  const importCredential = useImportCodexCredential();
+  const exportCredentials = useExportCodexCredentials();
+  const batchUpdate = useBatchUpdateCodexCredentials();
+  const deleteCredential = useDeleteCodexCredential();
+  const refreshCredential = useRefreshCodexCredential();
+  const refreshQuota = useRefreshCodexQuota();
+  const resetQuota = useResetCodexQuota();
 
   const [oauthOpen, setOauthOpen] = useState(false);
   const [oauthSettings, setOauthSettings] =
@@ -558,9 +556,7 @@ export default function CodexOauthPage() {
       });
       downloadJson(
         bundle,
-        `codex-credentials-${safeFilename(
-          group.data?.data.name ?? "export",
-        )}-${new Date().toISOString().slice(0, 10)}.json`,
+        `codex-credentials-${new Date().toISOString().slice(0, 10)}.json`,
       );
       toast.success(t("Codex credentials exported."));
       setExportIds(null);
@@ -668,26 +664,18 @@ export default function CodexOauthPage() {
     }
   };
 
-  const managementEnabled =
-    Boolean(group.data && !group.data.data.deleted_at && !group.error);
+  const managementEnabled = !credentials.error;
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex min-w-0 flex-col gap-6">
       <PageHeader
-        title={group.data?.data.name ?? t("Codex OAuth")}
+        embedded
+        title={t("Codex")}
         description={t(
-          "Connect ChatGPT Codex subscriptions, share credentials across Responses and Images channels, assign proxies, and monitor quota. Estimated total quota divides current period spend by the most recently provider-reported used percentage.",
+          "Manage Codex accounts, token refresh, maintenance proxies and quota independently of routing. Bind credentials to logical channels in Channel configuration.",
         )}
         actions={
           <>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => navigate(`/admin/routing/groups/${groupId}`)}
-            >
-              <ArrowLeft data-icon="inline-start" />
-              {t("Back to groups")}
-            </Button>
             <Button
               variant="outline"
               disabled={!managementEnabled || !credentials.data?.length || exportCredentials.isPending}
@@ -696,16 +684,10 @@ export default function CodexOauthPage() {
               <Download data-icon="inline-start" />
               {t("Export credentials")}
             </Button>
-            <Button
-              variant="outline"
-              disabled={!managementEnabled}
-              onClick={() =>
-                navigate(`/admin/providers/codex-oauth/${groupId}/import`)
-              }
-            >
+            <NavigationLink to={withReturnTo("/admin/routing/upstream-credentials/codex/import", origin)}>
               <FileUp data-icon="inline-start" />
               {t("Advanced import")}
-            </Button>
+            </NavigationLink>
             <Button
               variant="outline"
               disabled={!managementEnabled}
@@ -722,8 +704,6 @@ export default function CodexOauthPage() {
           </>
         }
       />
-
-      {group.error ? <ErrorAlert error={group.error} /> : null}
 
       <div className="grid gap-4 sm:grid-cols-3">
         <Card>
@@ -756,12 +736,12 @@ export default function CodexOauthPage() {
         </Card>
       </div>
 
-      <Card>
+      <Card className="min-w-0">
         <CardHeader>
           <CardTitle>{t("Managed credentials")}</CardTitle>
           <CardDescription>
             {t(
-              "Each credential projects to separate Responses and Images managed channels. Existing sticky Responses sessions may continue while quota is draining.",
+              "Importing a credential does not create channels or routing rules. Existing sticky sessions may continue while quota is draining.",
             )}
           </CardDescription>
         </CardHeader>
@@ -887,7 +867,7 @@ export default function CodexOauthPage() {
                     <TableHead>{t("Status")}</TableHead>
                     <TableHead>{t("Quota")}</TableHead>
                     <TableHead>{t("Token")}</TableHead>
-                    <TableHead>{t("Routing")}</TableHead>
+                    <TableHead>{t("Maintenance proxy")}</TableHead>
                     <TableHead className="text-right">{t("Actions")}</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -937,7 +917,7 @@ export default function CodexOauthPage() {
                           ) : null}
                         </div>
                         <p className="mt-2 text-xs text-muted-foreground">
-                          {t("Responses models: {count}", {
+                          {t("Available models: {count}", {
                             count: credential.available_models.length,
                           })}
                         </p>
@@ -1368,7 +1348,6 @@ export default function CodexOauthPage() {
       </Dialog>
 
       <EditCredentialDialog
-        groupId={groupId}
         credentialId={editingId}
         proxies={proxies}
         onClose={() => setEditingId(null)}
@@ -1642,19 +1621,17 @@ function QuotaWindowPeriodsTable({
 }
 
 function EditCredentialDialog({
-  groupId,
   credentialId,
   proxies,
   onClose,
 }: {
-  groupId: string;
   credentialId: string | null;
   proxies: Array<{ id: string; name: string }>;
   onClose: () => void;
 }) {
   const { t } = useI18n();
   const detail = useCodexCredential(credentialId ?? "");
-  const update = useUpdateCodexCredential(groupId, credentialId ?? "");
+  const update = useUpdateCodexCredential(credentialId ?? "");
   const [state, setState] = useState<EditState>({
     ...EMPTY_SETTINGS,
     enabled: true,
@@ -1742,15 +1719,6 @@ function EditCredentialDialog({
       </DialogContent>
     </Dialog>
   );
-}
-
-function safeFilename(value: string): string {
-  const normalized = value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return normalized || "export";
 }
 
 function downloadJson(value: unknown, filename: string) {

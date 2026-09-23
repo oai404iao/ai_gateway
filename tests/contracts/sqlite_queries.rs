@@ -56,7 +56,7 @@ struct Queries {
 impl Queries {
     async fn new() -> Self {
         let (directory, database) = database().await;
-        assert_eq!(database.install_schema().await.unwrap(), 6);
+        assert_eq!(database.install_schema().await.unwrap(), 9);
         let database = Arc::new(database);
         let request_logs =
             ai_gateway::persistence::sqlite::SqliteRequestLogQueries::new(Arc::clone(&database));
@@ -146,7 +146,6 @@ async fn seed(queries: &Queries) -> Uuid {
                 input: ai_gateway::persistence::RoutingGroupInput {
                     name: "Codex car".into(),
                     enabled: true,
-                    sharing_only: false,
                 },
             },
         )
@@ -159,7 +158,6 @@ async fn seed(queries: &Queries) -> Uuid {
         .prepare_codex_credential_create(
             ADMIN,
             ai_gateway::persistence::CodexCredentialCreate {
-                channel_group_id: CODEX_GROUP_RESPONSES,
                 label: "Codex".into(),
                 enabled: true,
                 proxy_id: None,

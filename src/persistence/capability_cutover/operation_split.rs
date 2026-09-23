@@ -121,7 +121,7 @@ impl From<Operation> for ApiOperation {
 /// in the serving path.
 pub fn upgrade(
     input: &UpstreamTopologyRecords,
-) -> Result<crate::persistence::upstream_topology::UpstreamTopologyRecords, SplitError> {
+) -> Result<super::legacy_settings::SixOperationTopology, SplitError> {
     use crate::persistence::upstream_topology as current;
     let plan = plan(input)?;
     let capabilities: HashMap<_, _> = input

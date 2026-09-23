@@ -33,8 +33,8 @@ pub use compiled_routing::{
 pub use connector::{ConnectorKind, RequestCompression};
 pub use console_auth::{ConsolePrincipal, ConsoleSessionPurpose, UserRole};
 pub use request_log::{
-    RequestBilling, RequestLogEvent, RequestLogOutcome, RequestLogSource, RequestPriceSnapshot,
-    RequestProtocol, RequestUsage,
+    RequestBilling, RequestCredentialAttribution, RequestLogEvent, RequestLogOutcome,
+    RequestLogSource, RequestPriceSnapshot, RequestProtocol, RequestUsage,
 };
 pub use system_settings::{
     AutomaticDisableSettings, AutomaticDisableTrigger, CodexOutboundIdentity,
