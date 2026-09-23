@@ -7,6 +7,8 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-09-23
+
 ### Added
 
 - Add the complete Linux SQLite backend, with atomic migrations, exact financial
