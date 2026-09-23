@@ -71,6 +71,24 @@ describe("channel capabilities", () => {
     ]));
   });
 
+  it("fetches models for a codex-credentialed channel through the shared discovery endpoint", async () => {
+    let discovery: ChannelModelDiscoveryInput | undefined;
+    server.use(
+      http.get("/console/v1/routing/accesses", () =>
+        HttpResponse.json([{ ...UPSTREAM_ACCESS, connector_kind: "codex" }]),
+      ),
+      http.post("/console/v1/routing/channels/models/discover", async ({ request }) => {
+        discovery = await request.json() as ChannelModelDiscoveryInput;
+        return HttpResponse.json({ models: ["gpt-5-codex"] });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAt(`/admin/routing/capabilities/${CHANNEL_CAPABILITY.id}`);
+    await user.click(await screen.findByRole("button", { name: "Fetch models" }));
+    await waitFor(() => expect(discovery?.credential_id).toBe(LOGICAL_CHANNEL.credential_id));
+    expect(await screen.findByRole("checkbox", { name: "Select gpt-5-codex" })).toBeInTheDocument();
+  });
+
   it("lists operation capabilities without configurable transports", async () => {
     renderAt("/admin/routing/capabilities");
     expect(await screen.findByText("Primary channel")).toBeInTheDocument();

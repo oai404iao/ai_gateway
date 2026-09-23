@@ -1712,6 +1712,16 @@ async fn discover_channel_models(
         ),
         None => None,
     };
+    if let Some(detail) = credential
+        .as_ref()
+        .filter(|detail| detail.credential.provider_managed)
+    {
+        let models = state
+            .codex_connector
+            .discover_models(detail.credential.id)
+            .await?;
+        return Ok(Json(ChannelModelDiscoveryResponse { models }));
+    }
     Ok(Json(
         state.channel_models.discover(input, credential).await?,
     ))

@@ -676,7 +676,9 @@ workspace/member 身份、Token、代理、运行状态、错误或 reset-credit
 旧渠道组、渠道和模型协议管理页面已移除，旧浏览器地址仅跳转到新列表；旧 HTTP CRUD 返回
 JSON 404，不提供旧字段兼容写入。模型发现服务仍使用
 `POST /console/v1/routing/channels/models/discover`，能力编辑页从所选接入、凭证及当前变换构造
-发现请求，选择结果只修改草稿，保存后才发布。
+发现请求，选择结果只修改草稿，保存后才发布。普通凭证请求上游 OpenAI 兼容的 `GET /v1/models`；
+Codex 托管凭证则用该凭证的 OAuth Token、代理与出站身份实时读取 Codex 后端模型目录，两者都不
+持久化任何凭证或渠道改动。
 
 用户详情支持带 `If-Match` 的 `PATCH /console/v1/users/{id}`，只修改请求中出现的字段；
 例如仅提交 `balance_amount` 不会重写邮箱、角色、用户组、策略或状态。用户级

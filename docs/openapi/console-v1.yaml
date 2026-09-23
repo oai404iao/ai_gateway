@@ -2115,10 +2115,13 @@ paths:
       tags: [Channels]
       operationId: discoverChannelModels
       description: >
-        Fetches an OpenAI-compatible `GET /v1/models` response using the
-        unsaved channel draft's base URL, proxy, timeout, request-header
-        transforms, and upstream authentication. This operation does not
-        persist any channel changes.
+        Fetches the selected credential's upstream model list without
+        persisting any channel changes. Ordinary credentials use an
+        OpenAI-compatible `GET /v1/models` request built from the unsaved
+        channel draft's base URL, proxy, timeout, request-header transforms,
+        and upstream authentication. Provider-managed Codex OAuth credentials
+        instead fetch the Codex backend model catalog with the credential's
+        OAuth token, proxy, and connector outbound identity.
       security: [{ bearerAuth: [] }]
       requestBody:
         required: true
@@ -2127,7 +2130,7 @@ paths:
             schema: { $ref: "#/components/schemas/ChannelModelDiscoveryInput" }
       responses:
         "200":
-          description: Unique upstream model IDs in upstream response order.
+          description: Unique supported upstream model IDs.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ChannelModelDiscoveryResponse" }
@@ -5917,7 +5920,9 @@ components:
         base_url:
           type: string
           format: uri
-          description: HTTP(S) URL without embedded credentials, query, or fragment.
+          description: >
+            HTTP(S) URL without embedded credentials, query, or fragment.
+            Ignored when `credential_id` names a provider-managed credential.
         proxy_id: { type: string, format: uuid, nullable: true }
         config_template_id: { type: string, format: uuid, nullable: true }
         override_document:
