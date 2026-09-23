@@ -9,7 +9,11 @@ use crate::{
     routing::{PassiveHealthPolicy, RoutingRuntime},
     runtime_config::compile_runtime_config,
 };
-use axum::{Json, Router, routing::post};
+use axum::{
+    Json, Router,
+    http::{HeaderMap, Uri},
+    routing::{get, post},
+};
 use std::{os::unix::fs::PermissionsExt, time::Duration};
 
 async fn pending(database: &SqliteDatabase) -> i64 {
@@ -173,4 +177,137 @@ async fn local_validation_precedes_intent_and_cancelled_http_remains_fenced() {
     );
     reopened.close().await;
     server.abort();
+}
+
+#[tokio::test]
+async fn model_discovery_fetches_supported_codex_models_for_the_credential() {
+    use axum::serve;
+
+    let directory = tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .unwrap();
+    let path = directory.path().join("gateway.sqlite");
+    let database = Arc::new(SqliteDatabase::open(&path).await.unwrap());
+    database.install_schema().await.unwrap();
+    let repo = ControlPlaneRepository::from_sqlite(Arc::clone(&database));
+    let admin = AuthRepository::from_sqlite(Arc::clone(&database))
+        .bootstrap_admin(
+            "sqlite-codex-models@example.test",
+            "Admin",
+            "$argon2id$fixture",
+        )
+        .await
+        .unwrap();
+    repo.ensure_system_settings(SystemSettingsInput {
+        api_hosts: vec![],
+        upstream: SystemUpstreamSettingsInput {
+            connect_timeout_seconds: 1,
+            response_header_timeout_seconds: 30,
+            images_response_header_timeout_seconds: 300,
+            standalone_web_search_response_header_timeout_seconds: 300,
+            stream_idle_timeout_seconds: 3,
+        },
+        passive_health: SystemPassiveHealthSettingsInput {
+            connection_failure_threshold: 3,
+            cooldown_seconds: 30,
+        },
+        request_retry: Default::default(),
+        automatic_disable: Default::default(),
+        scheduled_testing: Default::default(),
+        session_affinity: Default::default(),
+        websocket: Default::default(),
+        codex: Default::default(),
+    })
+    .await
+    .unwrap();
+    let credential_id = repo
+        .prepare_codex_credential_create(
+            admin,
+            CodexCredentialCreate {
+                label: "Fixture".into(),
+                enabled: true,
+                proxy_id: None,
+                quota_threshold_percent: 95,
+                base_url: "https://chatgpt.com/backend-api/codex".into(),
+                email: Some("member@example.test".into()),
+                account_id: Some("account".into()),
+                user_id: Some("member".into()),
+                plan_type: Some("business".into()),
+                is_fedramp: false,
+                id_token: "fixture-id".into(),
+                access_token: "valid-fixture-access".into(),
+                refresh_token: "fixture-refresh".into(),
+                access_token_expires_at: Some(Utc::now() + chrono::Duration::hours(1)),
+                available_models: vec!["stale-fixture".into()],
+                quota: None,
+            },
+            None,
+        )
+        .await
+        .unwrap()
+        .commit()
+        .await
+        .unwrap()
+        .0[0]
+        .id;
+    let runtime = Arc::new(RuntimeConfig::new(
+        compile_runtime_config(repo.load_runtime().await.unwrap()).unwrap(),
+    ));
+    let coordinator = ControlPlaneCoordinator::new(
+        repo.clone(),
+        Arc::clone(&runtime),
+        RoutingRuntime::new(PassiveHealthPolicy::default()),
+    );
+    let models = Router::new().route(
+        "/backend-api/codex/models",
+        get(|headers: HeaderMap, uri: Uri| async move {
+            assert_eq!(
+                headers
+                    .get("authorization")
+                    .and_then(|value| value.to_str().ok()),
+                Some("Bearer valid-fixture-access")
+            );
+            assert_eq!(
+                headers
+                    .get("chatgpt-account-id")
+                    .and_then(|value| value.to_str().ok()),
+                Some("account")
+            );
+            assert!(
+                uri.query()
+                    .is_some_and(|query| query.contains("client_version=")),
+                "models request must carry the configured client version"
+            );
+            Json(serde_json::json!({
+                "models": [
+                    {"slug": "gpt-5-codex"},
+                    {"slug": "gpt-5", "supported_in_api": false},
+                    {"slug": "gpt-5-codex"}
+                ]
+            }))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { serve(listener, models).await.unwrap() });
+    let service = CodexConnectorService::new_with_endpoints(
+        repo,
+        coordinator,
+        runtime,
+        Arc::new(UpstreamClientRegistry::new()),
+        CodexEndpoints {
+            issuer: base.parse().unwrap(),
+            responses_base_url: format!("{base}/backend-api/codex").parse().unwrap(),
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        service.discover_models(credential_id).await.unwrap(),
+        vec!["gpt-5-codex".to_owned()]
+    );
+    server.abort();
+    database.close().await;
 }

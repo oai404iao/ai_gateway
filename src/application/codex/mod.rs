@@ -373,6 +373,42 @@ impl CodexConnectorService {
             .await
     }
 
+    /// Fetches the credential's live Codex model catalog for Console discovery.
+    ///
+    /// Refreshes an expiring access token first so the discovery request does
+    /// not fail on a credential that the maintenance worker has not reached.
+    pub async fn discover_models(
+        &self,
+        credential_id: Uuid,
+    ) -> Result<Vec<String>, CodexConnectorError> {
+        let mut record = self
+            .repository
+            .codex_credential(credential_id)
+            .await?
+            .ok_or(CodexConnectorError::CredentialNotFound)?;
+        validate_usable_credential(&record)?;
+        if refresh_due(&record) {
+            self.refresh_credential_system(credential_id).await?;
+            record = self
+                .repository
+                .codex_credential(credential_id)
+                .await?
+                .ok_or(CodexConnectorError::CredentialNotFound)?;
+        }
+        let (client, policy) = self.client_for_proxy(record.proxy_id)?;
+        fetch_models(
+            &client,
+            &self.endpoints,
+            &self.outbound_identity(),
+            &record.access_token,
+            record.account_id.as_deref(),
+            record.is_fedramp,
+            policy.timeouts().response_header(),
+            policy.timeouts().stream_idle(),
+        )
+        .await
+    }
+
     pub async fn reset_quota(
         &self,
         actor: Uuid,
@@ -387,7 +423,7 @@ impl CodexConnectorService {
             .lock_codex_quota_reset(channel_id)
             .await?
             .ok_or(CodexConnectorError::CredentialNotFound)?;
-        validate_quota_credential(&record)?;
+        validate_usable_credential(&record)?;
         let (client, policy) = self.client_for_proxy(record.proxy_id)?;
         let requested_at = Utc::now();
         let redeem_request_id = Uuid::new_v4();
@@ -757,7 +793,7 @@ impl CodexConnectorService {
         mut record: CodexCredentialRecord,
         outbound_identity: &CodexOutboundIdentity,
     ) -> Result<(), CodexConnectorError> {
-        validate_quota_credential(&record)?;
+        validate_usable_credential(&record)?;
         let channel_id = record.channel_id;
         let mut refreshed_after_unauthorized = false;
         loop {
@@ -930,7 +966,7 @@ fn quota_due_at(quota_checked_at: Option<DateTime<Utc>>, now: DateTime<Utc>) -> 
     quota_checked_at.is_none_or(|checked_at| checked_at <= now - QUOTA_REFRESH_INTERVAL)
 }
 
-fn validate_quota_credential(record: &CodexCredentialRecord) -> Result<(), CodexConnectorError> {
+fn validate_usable_credential(record: &CodexCredentialRecord) -> Result<(), CodexConnectorError> {
     if !record.enabled || record.runtime_status == "disabled" {
         return Err(CodexConnectorError::CredentialDisabled);
     }

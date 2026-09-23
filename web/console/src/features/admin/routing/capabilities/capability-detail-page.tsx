@@ -381,7 +381,7 @@ export function CapabilityDetailPage({ capabilityId, channelId, embedded = false
                       form.setValue("available_models", value, { shouldDirty: true })
                     }
                   />
-                  {selectedAccess?.connector_kind === "general" && (
+                  {selectedAccess && (
                     <Button type="button" variant="outline" disabled={discover.isPending}
                       onClick={() => void discoverModels()}>
                       {t("Fetch models")}
