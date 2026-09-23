@@ -78,7 +78,7 @@ SQLite 在 S2 文件/进程所有权之上取得一个数据库实例共享的�
 ## 验证入口
 
 ```bash
-cargo test --locked --features sqlite-backend --test control_plane_integration sqlite_s5_parity
+cargo test --locked --features sqlite-backend --test codex_capability_integration
 cargo test --locked --features sqlite-backend --lib application::codex::sqlite_tests
 cargo test --locked --workspace --features sqlite-backend
 cargo clippy --locked --workspace --all-targets --features sqlite-backend

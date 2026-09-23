@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Navigate, useParams } from "react-router";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
+import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
 import { z } from "zod";
 import { toast } from "sonner";
 import { RefreshCw, Save } from "lucide-react";
@@ -400,6 +401,7 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
     resolver: zodResolver(systemSettingsSchema),
     defaultValues,
   });
+  const draft = useConfigurationDraft(updateSettings.isPending, form.formState.isDirty);
 
   useEffect(() => {
     if (settings.data) {
@@ -457,6 +459,8 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
         ifMatch: settings.data.etag,
       });
       setCorrelation(result.correlation_id);
+      form.reset(values);
+      draft.markSaved();
       toast.success(t("System settings saved and applied."));
     } catch (error) {
       if (error instanceof ApiError && error.isConflict) {
@@ -480,6 +484,7 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
 
   return (
     <div className="flex flex-col gap-6">
+      {draft.navigationGuard}
       <PageHeader
         title={`${t("System settings")} · ${t(label)}`}
         description={t("Database-backed runtime settings for future requests.")}

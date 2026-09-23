@@ -156,11 +156,16 @@ async fn write_facts(
          SELECT id,completed_at FROM request_metering_facts
          WHERE id=ANY($1) AND amount_state IN ('priced','zero_by_policy')",
     )
-    .bind(inserted)
+    .bind(&inserted)
     .execute(&mut **transaction)
     .await?;
     let matches: Vec<bool> = sqlx::query_scalar(
-        "SELECT (to_jsonb(stored)-'amount_state') = (to_jsonb(incoming)-'amount_state')
+        "SELECT (to_jsonb(stored)-'amount_state'-'api_operation') = (to_jsonb(incoming)-'amount_state'-'api_operation')
+             AND (CASE stored.api_operation
+                 WHEN 'chat_completions' THEN 'chat_completion'
+                 WHEN 'standalone_web_search' THEN 'web_search'
+                 WHEN 'responses' THEN CASE WHEN stored.request_protocol='websocket' THEN 'responses-ws' ELSE 'responses' END
+                 ELSE stored.api_operation END) = incoming.api_operation
          FROM jsonb_array_elements($1) WITH ORDINALITY AS input(value,ordinal)
          CROSS JOIN LATERAL jsonb_populate_record(NULL::request_metering_facts,input.value) AS incoming
          JOIN request_metering_facts AS stored ON stored.id=incoming.id
@@ -169,10 +174,50 @@ async fn write_facts(
     if matches.len() != events.len() {
         return Err(RepositoryError::Validation);
     }
+    let attributions = Value::Array(
+        events
+            .iter()
+            .zip(&matches)
+            .filter(|(_, equal)| **equal)
+            .map(|(event, _)| {
+                json!({
+                    "request_id": event.id,
+                    "known": event.upstream_credential.is_some(),
+                    "credential_id": event.upstream_credential.and_then(|value| value.credential_id),
+                })
+            })
+            .collect(),
+    );
+    sqlx::query(
+        "INSERT INTO request_credential_attributions(request_id,known,credential_id)
+         SELECT request_id,known,credential_id
+         FROM jsonb_populate_recordset(NULL::request_credential_attributions,$1) incoming
+         WHERE request_id=ANY($2) OR NOT known
+         ON CONFLICT(request_id) DO NOTHING",
+    )
+    .bind(&attributions)
+    .bind(&inserted)
+    .execute(&mut **transaction)
+    .await?;
+    let attributed: Vec<(Uuid, bool, Option<Uuid>)> = sqlx::query_as(
+        "SELECT request_id,known,credential_id FROM request_credential_attributions WHERE request_id=ANY($1)",
+    ).bind(events.iter().map(|event| event.id).collect::<Vec<_>>())
+        .fetch_all(&mut **transaction).await?;
+    let attributed = attributed
+        .into_iter()
+        .map(|(id, known, credential)| (id, (known, credential)))
+        .collect::<std::collections::HashMap<_, _>>();
     Ok(matches
         .into_iter()
-        .map(|equal| {
-            if equal {
+        .zip(events)
+        .map(|(equal, event)| {
+            let expected = (
+                event.upstream_credential.is_some(),
+                event
+                    .upstream_credential
+                    .and_then(|value| value.credential_id),
+            );
+            if equal && attributed.get(&event.id) == Some(&expected) {
                 MeteringWriteOutcome::Accepted
             } else {
                 MeteringWriteOutcome::Conflict

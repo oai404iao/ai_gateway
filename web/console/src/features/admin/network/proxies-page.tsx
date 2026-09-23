@@ -1,4 +1,3 @@
-import { useNavigate } from "react-router";
 import { AdminListPage } from "@/features/admin/components/admin-list-page";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { useProxies } from "@/features/admin/api";
@@ -7,7 +6,6 @@ import { formatList } from "@/lib/formatters";
 import { useI18n } from "@/app/i18n";
 
 export function ProxiesPage() {
-  const navigate = useNavigate();
   const { data, isLoading, error } = useProxies();
   const { t } = useI18n();
   return (
@@ -18,7 +16,7 @@ export function ProxiesPage() {
       rowKey={(proxy) => proxy.id}
       detailPath={(proxy) => `/admin/network/proxies/${proxy.id}`}
       createLabel={t("New proxy")}
-      onCreate={() => navigate("/admin/network/proxies/new")}
+      createPath="/admin/network/proxies/new"
       columns={[
         {
           key: "name",

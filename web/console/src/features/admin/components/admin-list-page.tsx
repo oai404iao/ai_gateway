@@ -1,11 +1,12 @@
 import { useNavigate } from "react-router";
 import { Plus } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageHeader } from "@/components/shared/page-header";
 import { AsyncResource } from "@/components/shared/async-resource";
 import { ResourceTable, type Column } from "@/components/shared/resource-table";
 import { useI18n } from "@/app/i18n";
+import { NavigationLink } from "@/components/shared/navigation-link";
+import { usePageOrigin, withReturnTo } from "@/lib/page-navigation";
+import { useListPagination } from "@/lib/use-list-pagination";
 
 interface ListResult<T> {
   data: T[] | undefined;
@@ -21,9 +22,11 @@ interface AdminListPageProps<T> {
   rowKey: (row: T) => string;
   detailPath: (row: T) => string;
   createLabel?: string;
-  onCreate?: () => void;
+  createPath?: string;
   headerActions?: React.ReactNode;
   groupBy?: (row: T) => string;
+  embedded?: boolean;
+  linkColumnKey?: string;
 }
 
 export function AdminListPage<T>({
@@ -34,36 +37,36 @@ export function AdminListPage<T>({
   rowKey,
   detailPath,
   createLabel,
-  onCreate,
+  createPath,
   headerActions,
   groupBy,
+  embedded,
+  linkColumnKey,
 }: AdminListPageProps<T>) {
   const navigate = useNavigate();
   const { t } = useI18n();
+  const origin = usePageOrigin();
+  const pagination = useListPagination();
+  const href = (row: T) => withReturnTo(detailPath(row), origin);
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex min-w-0 flex-col gap-6">
       <PageHeader
         title={title}
         description={description}
+        embedded={embedded}
         actions={
-          headerActions || (onCreate && createLabel) ? (
+          headerActions || (createPath && createLabel) ? (
             <>
               {headerActions}
-              {onCreate && createLabel ? (
-                <Button onClick={onCreate}>
+              {createPath && createLabel ? (
+                <NavigationLink to={withReturnTo(createPath, origin)} variant="default" size="default">
                   <Plus data-icon="inline-start" /> {createLabel}
-                </Button>
+                </NavigationLink>
               ) : null}
             </>
           ) : undefined
         }
       />
-      <Card>
-        <CardHeader>
-          <CardTitle>{t(title)}</CardTitle>
-          <CardDescription>{t("Click a row to view or edit.")}</CardDescription>
-        </CardHeader>
-        <CardContent>
           <AsyncResource
             isLoading={query.isLoading}
             error={query.error}
@@ -75,12 +78,13 @@ export function AdminListPage<T>({
               columns={columns}
               rows={query.data ?? []}
               rowKey={rowKey}
-              onRowClick={(row) => navigate(detailPath(row))}
+              rowHref={href}
+              linkColumnKey={linkColumnKey}
+              onRowClick={(row) => navigate(href(row))}
               groupBy={groupBy}
+              pagination={pagination}
             />
           </AsyncResource>
-        </CardContent>
-      </Card>
     </div>
   );
 }

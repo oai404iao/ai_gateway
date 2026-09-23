@@ -10,26 +10,8 @@ use sqlx::{FromRow, Row, Sqlite, SqliteConnection, Transaction};
 use std::collections::{BTreeSet, HashSet};
 use uuid::Uuid;
 
-const CODEX_CONNECTOR_KIND: &str = "codex_oauth";
-const CODEX_RESPONSES_API_FORMAT: &str = "open_ai_responses";
 const QUOTA_WINDOW_IDENTITY_TOLERANCE: Duration = Duration::seconds(90);
 const MANUAL_RESET_MATCH_WINDOW: Duration = Duration::minutes(15);
-
-struct CodexPoolContext {
-    connector_pool_id: Uuid,
-    responses_channel_group_id: Uuid,
-}
-
-impl<'r> FromRow<'r, sqlx::sqlite::SqliteRow> for CodexPoolContext {
-    fn from_row(row: &'r sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error> {
-        Ok(CodexPoolContext {
-            connector_pool_id: row.try_get::<SqliteUuid, _>("connector_pool_id")?.0,
-            responses_channel_group_id: row
-                .try_get::<SqliteUuid, _>("responses_channel_group_id")?
-                .0,
-        })
-    }
-}
 
 #[derive(Clone, Copy)]
 enum CodexQuotaWindowKind {
@@ -96,17 +78,7 @@ impl SqliteControlPlaneRepository {
         oauth_flow_id: Option<Uuid>,
     ) -> Result<MutationResult, RepositoryError> {
         validate_credential_settings(&input.label, input.quota_threshold_percent)?;
-        let requested_channel_group_id = input.channel_group_id;
-        let pool = validate_codex_group_and_proxy_transaction(
-            transaction,
-            requested_channel_group_id,
-            input.proxy_id,
-        )
-        .await?;
-        let input = CodexCredentialCreate {
-            channel_group_id: pool.responses_channel_group_id,
-            ..input
-        };
+        validate_codex_proxy(transaction, input.proxy_id).await?;
         if input
             .account_id
             .as_ref()
@@ -125,7 +97,6 @@ impl SqliteControlPlaneRepository {
         }
         let existing_channel_id = existing_codex_channel_id(
             transaction,
-            pool.connector_pool_id,
             input.account_id.as_deref(),
             input.user_id.as_deref(),
             input.email.as_deref(),
@@ -134,10 +105,9 @@ impl SqliteControlPlaneRepository {
         if let Some(flow_id) = oauth_flow_id {
             let updated = sqlx::query(
                 "UPDATE codex_oauth_flows SET completed_at=ag_now() \
-                 WHERE id=?1 AND channel_group_id=?2 AND completed_at IS NULL AND expires_at>ag_now()",
+                 WHERE id=?1 AND completed_at IS NULL AND expires_at>ag_now()",
             )
             .bind(SqliteUuid(flow_id))
-            .bind(SqliteUuid(requested_channel_group_id))
             .execute(&mut **transaction)
             .await?;
             if updated.rows_affected() != 1 {
@@ -154,18 +124,19 @@ impl SqliteControlPlaneRepository {
             .bind(SqliteUuid(channel_id))
             .fetch_one(&mut **transaction)
             .await?;
-            sqlx::query(
-                "UPDATE channels SET updated_at=ag_now(),\
-                 name=?2,base_url=?3,enabled=true,proxy_id=?4,available_models=?5, \
-                 supports_websocket=true,supports_standalone_web_search=true \
-                 WHERE id=?1",
+            crate::persistence::upstream_credentials::codex::sqlite_reconfigure(
+                transaction,
+                channel_id,
+                &input.label,
+                input.proxy_id,
             )
-            .bind(SqliteUuid(channel_id))
-            .bind(input.label.trim())
-            .bind(&input.base_url)
-            .bind(input.proxy_id.map(SqliteUuid))
-            .bind(sqlx::types::Json(&input.available_models))
-            .execute(&mut **transaction)
+            .await?;
+            crate::persistence::upstream_credentials::codex::sqlite_update_credential_lifecycle(
+                transaction,
+                channel_id,
+                input.enabled,
+                true,
+            )
             .await?;
 
             let quota = input.quota.as_ref().filter(|quota| {
@@ -201,7 +172,7 @@ impl SqliteControlPlaneRepository {
                  quota_reset_credits_available=CASE \
                      WHEN ?13 THEN ?23 ELSE quota_reset_credits_available END, \
                  last_error_code=NULL,last_error_summary=NULL, \
-                 user_id=COALESCE(?24,user_id) \
+                 user_id=COALESCE(?24,user_id),available_models=?25 \
                  WHERE channel_id=?1 AND deleted_at IS NULL \
                  RETURNING updated_at",
             )
@@ -229,6 +200,7 @@ impl SqliteControlPlaneRepository {
             .bind(quota.map(|quota| quota.checked_at).map(SqliteTimestamp))
             .bind(quota.and_then(|quota| quota.reset_credits_available))
             .bind(input.user_id)
+            .bind(sqlx::types::Json(&input.available_models))
             .fetch_one(&mut **transaction)
             .await?;
             if let Some(quota) = quota {
@@ -249,22 +221,15 @@ impl SqliteControlPlaneRepository {
         }
 
         let channel_id = Uuid::new_v4();
-        let updated_at = sqlx::query_scalar::<_, SqliteTimestamp>(
-            "INSERT INTO channels \
-             (id,channel_group_id,api_format,name,base_url,enabled,billing_multiplier, \
-              proxy_id,override_document,upstream_auth_kind,available_models, \
-              auto_disable_allowed,supports_websocket,supports_standalone_web_search) \
-             VALUES (?1,?2,?3,?4,?5,true,1,?6,'{}','none',?7,false,true,true) \
-             RETURNING updated_at",
+        crate::persistence::upstream_credentials::codex::sqlite_create(
+            transaction,
+            crate::persistence::upstream_credentials::codex::CodexIdentityCreate {
+                credential_id: channel_id,
+                label: input.label.trim(),
+                base_url: &input.base_url,
+                enabled: input.enabled,
+            },
         )
-        .bind(SqliteUuid(channel_id))
-        .bind(SqliteUuid(input.channel_group_id))
-        .bind(CODEX_RESPONSES_API_FORMAT)
-        .bind(input.label.trim())
-        .bind(input.base_url)
-        .bind(input.proxy_id.map(SqliteUuid))
-        .bind(sqlx::types::Json(&input.available_models))
-        .fetch_one(&mut **transaction)
         .await?;
 
         let quota = input.quota.as_ref();
@@ -275,19 +240,20 @@ impl SqliteControlPlaneRepository {
         } else {
             "disabled"
         };
-        sqlx::query(
+        let updated_at = sqlx::query_scalar::<_, SqliteTimestamp>(
             "INSERT INTO codex_oauth_credentials \
-             (channel_id,channel_group_id,connector_pool_id,label,email,account_id,user_id,plan_type,is_fedramp,id_token, \
+             (channel_id,proxy_id,available_models,label,email,account_id,user_id,plan_type,is_fedramp,id_token, \
               access_token,refresh_token,access_token_expires_at,last_refreshed_at, \
               enabled,quota_threshold_percent,runtime_status,quota_allowed,quota_limit_reached, \
               primary_used_percent,primary_window_seconds,primary_reset_at, \
               secondary_used_percent,secondary_window_seconds,secondary_reset_at, \
               quota_reset_credits_available,quota_checked_at) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27)",
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27) \
+             RETURNING updated_at",
         )
         .bind(SqliteUuid(channel_id))
-        .bind(SqliteUuid(input.channel_group_id))
-        .bind(SqliteUuid(pool.connector_pool_id))
+        .bind(input.proxy_id.map(SqliteUuid))
+        .bind(sqlx::types::Json(&input.available_models))
         .bind(input.label.trim())
         .bind(input.email)
         .bind(input.account_id)
@@ -312,7 +278,7 @@ impl SqliteControlPlaneRepository {
         .bind(quota.and_then(|quota| quota.secondary_reset_at).map(SqliteTimestamp))
         .bind(quota.and_then(|quota| quota.reset_credits_available))
         .bind(quota.map(|quota| quota.checked_at).map(SqliteTimestamp))
-        .execute(&mut **transaction)
+        .fetch_one(&mut **transaction)
         .await?;
         if let Some(quota) = quota {
             reconcile_codex_quota_windows(transaction, channel_id, quota).await?;
@@ -340,11 +306,7 @@ impl SqliteControlPlaneRepository {
     ) -> Result<MutationResult, RepositoryError> {
         validate_credential_settings(&input.label, input.quota_threshold_percent)?;
         let before = codex_credential_audit(transaction, channel_id).await?;
-        let group_id = before["channel_group_id"]
-            .as_str()
-            .and_then(|value| Uuid::parse_str(value).ok())
-            .ok_or(RepositoryError::Validation)?;
-        validate_codex_group_and_proxy_transaction(transaction, group_id, input.proxy_id).await?;
+        validate_codex_proxy(transaction, input.proxy_id).await?;
         let updated_at = sqlx::query_scalar::<_, SqliteTimestamp>(
             "UPDATE codex_oauth_credentials \
              SET updated_at=ag_now(),label=?2,quota_threshold_percent=?3,enabled=?4,runtime_status=CASE \
@@ -366,12 +328,20 @@ impl SqliteControlPlaneRepository {
         .fetch_optional(&mut **transaction)
         .await?
         .ok_or(RepositoryError::Conflict)?;
-        sqlx::query("UPDATE channels SET updated_at=ag_now(),name=?2,proxy_id=?3 WHERE id=?1")
-            .bind(SqliteUuid(channel_id))
-            .bind(input.label.trim())
-            .bind(input.proxy_id.map(SqliteUuid))
-            .execute(&mut **transaction)
-            .await?;
+        crate::persistence::upstream_credentials::codex::sqlite_reconfigure(
+            transaction,
+            channel_id,
+            &input.label,
+            input.proxy_id,
+        )
+        .await?;
+        crate::persistence::upstream_credentials::codex::sqlite_update_credential_lifecycle(
+            transaction,
+            channel_id,
+            input.enabled,
+            false,
+        )
+        .await?;
 
         Ok(MutationResult {
             id: channel_id,
@@ -392,13 +362,12 @@ impl SqliteControlPlaneRepository {
         channel_id: Uuid,
         expected_updated_at: DateTime<Utc>,
     ) -> Result<MutationResult, RepositoryError> {
-        delete_codex_credential(transaction, channel_id, None, expected_updated_at).await
+        delete_codex_credential(transaction, channel_id, expected_updated_at).await
     }
 
     pub(super) async fn update_codex_credentials_batch(
         &self,
         transaction: &mut Transaction<'_, Sqlite>,
-        channel_group_id: Uuid,
         input: CodexCredentialBatchInput,
     ) -> Result<Vec<MutationResult>, RepositoryError> {
         const MAX_BATCH_SIZE: usize = 100;
@@ -406,8 +375,6 @@ impl SqliteControlPlaneRepository {
         if input.items.is_empty() || input.items.len() > MAX_BATCH_SIZE {
             return Err(RepositoryError::Validation);
         }
-        let pool =
-            validate_codex_group_and_proxy_transaction(transaction, channel_group_id, None).await?;
         let mut ids = HashSet::with_capacity(input.items.len());
         if input.items.iter().any(|item| !ids.insert(item.id)) {
             return Err(RepositoryError::Validation);
@@ -417,33 +384,15 @@ impl SqliteControlPlaneRepository {
         for item in input.items {
             let result = match input.operation {
                 CodexCredentialBatchOperation::Enable => {
-                    set_codex_credential_enabled(
-                        transaction,
-                        item.id,
-                        pool.connector_pool_id,
-                        item.updated_at,
-                        true,
-                    )
-                    .await?
+                    set_codex_credential_enabled(transaction, item.id, item.updated_at, true)
+                        .await?
                 }
                 CodexCredentialBatchOperation::Disable => {
-                    set_codex_credential_enabled(
-                        transaction,
-                        item.id,
-                        pool.connector_pool_id,
-                        item.updated_at,
-                        false,
-                    )
-                    .await?
+                    set_codex_credential_enabled(transaction, item.id, item.updated_at, false)
+                        .await?
                 }
                 CodexCredentialBatchOperation::Delete => {
-                    delete_codex_credential(
-                        transaction,
-                        item.id,
-                        Some(pool.connector_pool_id),
-                        item.updated_at,
-                    )
-                    .await?
+                    delete_codex_credential(transaction, item.id, item.updated_at).await?
                 }
             };
             results.push(result);
@@ -842,103 +791,55 @@ fn timestamps_within(left: DateTime<Utc>, right: DateTime<Utc>, tolerance: Durat
 
 async fn existing_codex_channel_id(
     transaction: &mut Transaction<'_, Sqlite>,
-    connector_pool_id: Uuid,
     account_id: Option<&str>,
     user_id: Option<&str>,
     email: Option<&str>,
 ) -> Result<Option<Uuid>, RepositoryError> {
-    let Some(account_id) = account_id else {
-        let Some(user_id) = user_id else {
-            return Err(RepositoryError::Validation);
-        };
-        return sqlx::query_scalar::<_, SqliteUuid>(
-            "SELECT channel_id FROM codex_oauth_credentials \
-             WHERE connector_pool_id=?1 AND account_id IS NULL AND user_id=?2 \
-               AND deleted_at IS NULL \
-            ",
-        )
-        .bind(SqliteUuid(connector_pool_id))
-        .bind(user_id)
-        .fetch_optional(&mut **transaction)
-        .await
-        .map(|value| value.map(|v| v.0))
-        .map_err(RepositoryError::from);
-    };
-
-    if let Some(user_id) = user_id {
-        let exact = sqlx::query_scalar::<_, SqliteUuid>(
-            "SELECT channel_id FROM codex_oauth_credentials \
-             WHERE connector_pool_id=?1 AND account_id=?2 AND user_id=?3 \
-               AND deleted_at IS NULL \
-            ",
-        )
-        .bind(SqliteUuid(connector_pool_id))
-        .bind(account_id)
-        .bind(user_id)
-        .fetch_optional(&mut **transaction)
-        .await?;
-        if exact.is_some() {
-            return Ok(exact.map(|v| v.0));
+    use crate::persistence::codex::unique_identity;
+    if account_id.is_none() && user_id.is_none() {
+        return Err(RepositoryError::Validation);
+    }
+    let exact = sqlx::query_scalar::<_, SqliteUuid>(
+        "SELECT channel_id FROM codex_oauth_credentials
+         WHERE account_id IS ?1 AND user_id IS ?2 AND deleted_at IS NULL ORDER BY channel_id",
+    )
+    .bind(account_id)
+    .bind(user_id)
+    .fetch_all(&mut **transaction)
+    .await?
+    .into_iter()
+    .map(|id| id.0)
+    .collect::<Vec<_>>();
+    if user_id.is_some() || email.is_none() || account_id.is_none() {
+        match exact.as_slice() {
+            [id] => return Ok(Some(*id)),
+            [] => {}
+            _ => return Err(RepositoryError::Conflict),
         }
     }
-
-    if let Some(email) = email.map(str::trim).filter(|value| !value.is_empty()) {
-        // Once the token carries a member ID, email is only a migration bridge
-        // for legacy rows that have not been backfilled yet.
-        let matches = sqlx::query_scalar::<_, SqliteUuid>(
-            "SELECT channel_id FROM codex_oauth_credentials \
-             WHERE connector_pool_id=?1 AND account_id=?2 \
-               AND ag_lower(email)=ag_lower(?3) AND deleted_at IS NULL \
-               AND (?4 OR user_id IS NULL) \
-             ORDER BY channel_id \
-            ",
-        )
-        .bind(SqliteUuid(connector_pool_id))
-        .bind(account_id)
-        .bind(email)
-        .bind(user_id.is_none())
-        .fetch_all(&mut **transaction)
-        .await?;
-        return match matches.as_slice() {
-            [] => Ok(None),
-            [channel_id] => Ok(Some(channel_id.0)),
-            _ => Err(RepositoryError::Conflict),
-        };
-    }
-
-    if user_id.is_none() {
-        return sqlx::query_scalar::<_, SqliteUuid>(
-            "SELECT channel_id FROM codex_oauth_credentials \
-             WHERE connector_pool_id=?1 AND account_id=?2 AND user_id IS NULL \
-               AND deleted_at IS NULL \
-            ",
-        )
-        .bind(SqliteUuid(connector_pool_id))
-        .bind(account_id)
-        .fetch_optional(&mut **transaction)
-        .await
-        .map(|value| value.map(|v| v.0))
-        .map_err(RepositoryError::from);
-    }
-
-    Ok(None)
+    let Some(email) = email.map(str::trim).filter(|value| !value.is_empty()) else {
+        return unique_identity(exact);
+    };
+    let matches = sqlx::query_scalar::<_, SqliteUuid>(
+        "SELECT channel_id FROM codex_oauth_credentials
+         WHERE account_id IS ?1 AND ag_lower(email)=ag_lower(?2)
+           AND (?3 OR user_id IS NULL) AND deleted_at IS NULL ORDER BY channel_id",
+    )
+    .bind(account_id)
+    .bind(email)
+    .bind(user_id.is_none())
+    .fetch_all(&mut **transaction)
+    .await?;
+    unique_identity(matches.into_iter().map(|id| id.0).collect())
 }
 
 async fn set_codex_credential_enabled(
     transaction: &mut Transaction<'_, Sqlite>,
     channel_id: Uuid,
-    connector_pool_id: Uuid,
     expected_updated_at: DateTime<Utc>,
     enabled: bool,
 ) -> Result<MutationResult, RepositoryError> {
     let before = codex_credential_audit(transaction, channel_id).await?;
-    let actual_connector_pool_id = before["connector_pool_id"]
-        .as_str()
-        .and_then(|value| Uuid::parse_str(value).ok())
-        .ok_or(RepositoryError::Validation)?;
-    if actual_connector_pool_id != connector_pool_id {
-        return Err(RepositoryError::NotFound);
-    }
     let updated_at = sqlx::query_scalar::<_, SqliteTimestamp>(
         "UPDATE codex_oauth_credentials SET updated_at=ag_now(),\
          enabled=?3,runtime_status=CASE \
@@ -958,6 +859,13 @@ async fn set_codex_credential_enabled(
     .fetch_optional(&mut **transaction)
     .await?
     .ok_or(RepositoryError::Conflict)?;
+    crate::persistence::upstream_credentials::codex::sqlite_update_credential_lifecycle(
+        transaction,
+        channel_id,
+        enabled,
+        false,
+    )
+    .await?;
     Ok(MutationResult {
         id: channel_id,
         object_type: "codex_oauth_credential",
@@ -974,7 +882,6 @@ async fn set_codex_credential_enabled(
 async fn delete_codex_credential(
     transaction: &mut Transaction<'_, Sqlite>,
     channel_id: Uuid,
-    expected_connector_pool_id: Option<Uuid>,
     expected_updated_at: DateTime<Utc>,
 ) -> Result<MutationResult, RepositoryError> {
     let sharing: bool = sqlx::query_scalar(
@@ -987,13 +894,6 @@ async fn delete_codex_credential(
         return Err(RepositoryError::SharingCredentialInUse);
     }
     let before = codex_credential_audit(transaction, channel_id).await?;
-    let actual_connector_pool_id = before["connector_pool_id"]
-        .as_str()
-        .and_then(|value| Uuid::parse_str(value).ok())
-        .ok_or(RepositoryError::Validation)?;
-    if expected_connector_pool_id.is_some_and(|expected| expected != actual_connector_pool_id) {
-        return Err(RepositoryError::NotFound);
-    }
     let updated_at = sqlx::query_scalar::<_, SqliteTimestamp>(
         "UPDATE codex_oauth_credentials SET updated_at=ag_now(),\
          enabled=false,runtime_status='disabled',reauth_required=false, \
@@ -1002,7 +902,7 @@ async fn delete_codex_credential(
          primary_used_percent=NULL,primary_window_seconds=NULL,primary_reset_at=NULL, \
          secondary_used_percent=NULL,secondary_window_seconds=NULL,secondary_reset_at=NULL, \
          quota_reset_credits_available=NULL,quota_checked_at=NULL, \
-         last_error_code=NULL,last_error_summary=NULL,deleted_at=ag_now() \
+         last_error_code=NULL,last_error_summary=NULL,proxy_id=NULL,deleted_at=ag_now() \
          WHERE channel_id=?1 AND updated_at=?2 AND deleted_at IS NULL \
          RETURNING updated_at",
     )
@@ -1011,11 +911,7 @@ async fn delete_codex_credential(
     .fetch_optional(&mut **transaction)
     .await?
     .ok_or(RepositoryError::Conflict)?;
-    sqlx::query("UPDATE channels SET updated_at=ag_now(),name=?2,proxy_id=NULL WHERE id=?1")
-        .bind(SqliteUuid(channel_id))
-        .bind(format!("deleted-codex-{channel_id}"))
-        .execute(&mut **transaction)
-        .await?;
+    crate::persistence::upstream_credentials::codex::sqlite_delete(transaction, channel_id).await?;
     Ok(MutationResult {
         id: channel_id,
         object_type: "codex_oauth_credential",
@@ -1029,20 +925,10 @@ async fn delete_codex_credential(
     })
 }
 
-async fn validate_codex_group_and_proxy_transaction(
-    transaction: &mut Transaction<'_, Sqlite>,
-    channel_group_id: Uuid,
-    proxy_id: Option<Uuid>,
-) -> Result<CodexPoolContext, RepositoryError> {
-    validate_codex_group_and_proxy_connection(transaction, channel_group_id, proxy_id).await
-}
-
-async fn validate_codex_group_and_proxy_connection(
+async fn validate_codex_proxy(
     connection: &mut SqliteConnection,
-    channel_group_id: Uuid,
     proxy_id: Option<Uuid>,
-) -> Result<CodexPoolContext, RepositoryError> {
-    let context = codex_pool_context_connection(&mut *connection, channel_group_id).await?;
+) -> Result<(), RepositoryError> {
     if let Some(proxy_id) = proxy_id {
         let valid_proxy = sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS(SELECT 1 FROM proxies WHERE id=?1 AND enabled)",
@@ -1054,30 +940,7 @@ async fn validate_codex_group_and_proxy_connection(
             return Err(RepositoryError::Validation);
         }
     }
-    Ok(context)
-}
-
-async fn codex_pool_context_connection(
-    connection: &mut SqliteConnection,
-    channel_group_id: Uuid,
-) -> Result<CodexPoolContext, RepositoryError> {
-    sqlx::query_as::<_, CodexPoolContext>(
-        "SELECT selected.connector_pool_id, \
-                responses.id AS responses_channel_group_id \
-         FROM channel_groups AS selected \
-         JOIN channel_groups AS responses \
-           ON responses.connector_pool_id=selected.connector_pool_id \
-          AND responses.api_format='open_ai_responses' \
-         JOIN channel_groups AS images \
-           ON images.connector_pool_id=selected.connector_pool_id \
-          AND images.api_format='open_ai_images' \
-         WHERE selected.id=?1 AND selected.connector_kind=?2",
-    )
-    .bind(SqliteUuid(channel_group_id))
-    .bind(CODEX_CONNECTOR_KIND)
-    .fetch_optional(&mut *connection)
-    .await?
-    .ok_or(RepositoryError::Validation)
+    Ok(())
 }
 
 fn validate_credential_settings(
@@ -1111,11 +974,6 @@ impl<'r> FromRow<'r, sqlx::sqlite::SqliteRow> for CodexCredentialRecordRow {
     fn from_row(row: &'r sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error> {
         Ok(Self(CodexCredentialRecord {
             channel_id: row.try_get::<SqliteUuid, _>("channel_id")?.0,
-            channel_group_id: row.try_get::<SqliteUuid, _>("channel_group_id")?.0,
-            connector_pool_id: row.try_get::<SqliteUuid, _>("connector_pool_id")?.0,
-            projection_channel_ids: row
-                .try_get::<sqlx::types::Json<Vec<Uuid>>, _>("projection_channel_ids")?
-                .0,
             label: row.try_get::<String, _>("label")?,
             email: row.try_get::<Option<String>, _>("email")?,
             account_id: row.try_get::<Option<String>, _>("account_id")?,
@@ -1171,7 +1029,6 @@ impl<'r> FromRow<'r, sqlx::sqlite::SqliteRow> for CodexOauthFlowRecordRow {
         Ok(Self(CodexOauthFlowRecord {
             id: row.try_get::<SqliteUuid, _>("id")?.0,
             actor_user_id: row.try_get::<SqliteUuid, _>("actor_user_id")?.0,
-            channel_group_id: row.try_get::<SqliteUuid, _>("channel_group_id")?.0,
             label: row.try_get::<String, _>("label")?,
             proxy_id: row
                 .try_get::<Option<SqliteUuid>, _>("proxy_id")?
@@ -1213,13 +1070,7 @@ fn open_failure(error: super::SqliteOpenError) -> RepositoryError {
 }
 
 fn credential_select(suffix: &str) -> String {
-    format!(
-        "SELECT c.*,ch.proxy_id,ch.available_models,
-      (SELECT json_group_array(channel_id) FROM
-        (SELECT channel_id FROM codex_oauth_credential_channels
-         WHERE credential_id=c.channel_id ORDER BY api_format)) AS projection_channel_ids
-      FROM codex_oauth_credentials c JOIN channels ch ON ch.id=c.channel_id {suffix}"
-    )
+    format!("SELECT c.* FROM codex_oauth_credentials c {suffix}")
 }
 
 impl SqliteControlPlaneRepository {
@@ -1305,13 +1156,10 @@ impl SqliteControlPlaneRepository {
     pub async fn prepare_codex_credentials_batch(
         &self,
         actor: Uuid,
-        channel_group_id: Uuid,
         input: CodexCredentialBatchInput,
     ) -> Result<super::SqlitePreparedControlPlaneChange, RepositoryError> {
         let mut tx = self.admin_write(actor).await?;
-        let mutations = self
-            .update_codex_credentials_batch(&mut tx, channel_group_id, input)
-            .await?;
+        let mutations = self.update_codex_credentials_batch(&mut tx, input).await?;
         Ok(self.prepared(tx, mutations, super::control_plane::AuditKind::Admin(actor)))
     }
 }
@@ -1320,28 +1168,22 @@ async fn codex_credential_audit(
     transaction: &mut Transaction<'_, Sqlite>,
     channel_id: Uuid,
 ) -> Result<Value, RepositoryError> {
-    let c = sqlx::query_as::<_, CodexCredentialRecordRow>(sqlx::AssertSqlSafe(credential_select(
-        "WHERE c.channel_id=? AND c.deleted_at IS NULL",
-    )))
+    let record = sqlx::query_scalar::<_, sqlx::types::Json<Value>>(
+        "SELECT json_object(
+             'id',c.channel_id,
+             'label',c.label,'email',c.email,'account_id',c.account_id,'user_id',c.user_id,'plan_type',c.plan_type,
+             'is_fedramp',json(CASE c.is_fedramp WHEN 1 THEN 'true' ELSE 'false' END),
+             'access_token_expires_at',c.access_token_expires_at,'last_refreshed_at',c.last_refreshed_at,
+             'quota_threshold_percent',c.quota_threshold_percent,'runtime_status',c.runtime_status,
+             'proxy_id',c.proxy_id,'enabled',json(CASE c.enabled WHEN 1 THEN 'true' ELSE 'false' END),
+             'available_models',json(c.available_models),
+             'created_at',c.created_at,'updated_at',c.updated_at)
+         FROM codex_oauth_credentials c
+         WHERE c.channel_id=? AND c.deleted_at IS NULL",
+    )
     .bind(SqliteUuid(channel_id))
     .fetch_optional(&mut **transaction)
     .await?
-    .ok_or(RepositoryError::NotFound)?
-    .0;
-    let rows=sqlx::query_as::<_,(String,SqliteUuid,SqliteUuid,sqlx::types::Json<Vec<String>>,bool,bool)>(
-        "SELECT p.api_format,p.channel_id,ch.channel_group_id,ch.available_models,ch.supports_websocket,ch.supports_standalone_web_search
-         FROM codex_oauth_credential_channels p JOIN channels ch ON ch.id=p.channel_id
-         WHERE p.credential_id=? ORDER BY p.api_format")
-        .bind(SqliteUuid(channel_id)).fetch_all(&mut **transaction).await?;
-    let projections:Vec<_>=rows.into_iter().map(|(format,id,group,models,ws,search)|json!({
-        "api_format":format,"channel_id":id.0,"channel_group_id":group.0,"available_models":models.0,
-        "supports_websocket":ws,"supports_standalone_web_search":search})).collect();
-    Ok(json!({
-        "id":c.channel_id,"channel_group_id":c.channel_group_id,"connector_pool_id":c.connector_pool_id,
-        "label":c.label,"email":c.email,"account_id":c.account_id,"user_id":c.user_id,"plan_type":c.plan_type,
-        "is_fedramp":c.is_fedramp,"access_token_expires_at":c.access_token_expires_at,
-        "last_refreshed_at":c.last_refreshed_at,"quota_threshold_percent":c.quota_threshold_percent,
-        "runtime_status":c.runtime_status,"proxy_id":c.proxy_id,"enabled":c.enabled,
-        "available_models":c.available_models,"projections":projections,"created_at":c.created_at,"updated_at":c.updated_at
-    }))
+    .ok_or(RepositoryError::NotFound)?;
+    Ok(record.0)
 }

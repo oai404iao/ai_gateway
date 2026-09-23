@@ -383,6 +383,11 @@ async fn legacy_database() -> TestDatabase {
 
 async fn insert_legacy_event(pool: &PgPool, event: &RequestLogEvent, billed: bool) {
     let mut row = serde_json::to_value(event).unwrap();
+    row["api_operation"] = json!(
+        ai_gateway::persistence::capability_cutover::legacy_settings::operation_name(
+            event.api_operation
+        )
+    );
     let billing = row.as_object_mut().unwrap().remove("billing").unwrap();
     if let Some(billing) = billing.as_object() {
         for (key, value) in billing {
@@ -470,11 +475,17 @@ async fn cutover_backfills_receipts_without_charging_and_replays_legacy_ingress_
     let before = accounts(&database.pool, seed.key).await;
     let queued = request_log_event(&seed, RequestLogOutcome::Succeeded);
     for event in [&billed, &billed, &queued] {
+        let mut payload = serde_json::to_value(event).unwrap();
+        payload["api_operation"] = json!(
+            ai_gateway::persistence::capability_cutover::legacy_settings::operation_name(
+                event.api_operation
+            )
+        );
         sqlx::query(
             "INSERT INTO request_log_ingest(request_log_id,schema_version,payload) VALUES($1,6,$2)",
         )
         .bind(event.id)
-        .bind(serde_json::to_vec(event).unwrap())
+        .bind(serde_json::to_vec(&payload).unwrap())
         .execute(&database.pool)
         .await
         .unwrap();

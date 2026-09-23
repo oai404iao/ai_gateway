@@ -92,7 +92,7 @@ export function useConfigurationDraft(
     };
   }, [dataRouter, dirty, saving]);
   const navigationGuard = dataRouter ? (
-    <ConfigurationDraftBlocker dirty={dirty} saving={saving} bypass={bypass} />
+    dirty || saving ? <ConfigurationDraftBlocker dirty={dirty} saving={saving} bypass={bypass} /> : null
   ) : (
     <ConfirmDialog
       open={pending !== null}

@@ -21,20 +21,27 @@ function renderAppAt(path: string) {
 }
 
 describe("ModelPricingPage", () => {
-  it("returns to the originating model-setup tab", async () => {
+  it("abbreviates the displayed token unit without changing the editable value", async () => {
+    seedAuthenticatedSession();
+    renderAppAt(`/admin/models/${MODEL.id}/pricing`);
+    expect(await screen.findByLabelText("Price unit tokens")).toHaveValue(1_000_000);
+    expect(screen.getByText("1M", { selector: "dd" })).toBeInTheDocument();
+  });
+
+  it("returns to the originating model workspace tab", async () => {
     seedAuthenticatedSession();
     const user = userEvent.setup();
     renderAppAt(
       `/admin/models/${MODEL.id}/pricing?returnTo=${encodeURIComponent(
-        "/admin/model-setup?view=models",
+        "/admin/models?view=models",
       )}`,
     );
 
     await user.click(
-      await screen.findByRole("button", { name: "Back to model setup" }),
+      await screen.findByRole("link", { name: "Back to client models" }),
     );
     await waitFor(() => {
-      expect(window.location.pathname).toBe("/admin/model-setup");
+      expect(window.location.pathname).toBe("/admin/models");
       expect(new URLSearchParams(window.location.search).get("view")).toBe(
         "models",
       );

@@ -81,49 +81,28 @@ Codex 拼车席位保留原用户 UUID 作为历史成员；数据面只承认�
 明文 API Key 和上游渠道凭据不进入删除影响或删除后的审计快照。直接 SQL `DELETE` 由数据库
 触发器拒绝，避免绕过墓碑和历史外键。
 
-## 阶段二语义
+## 上游拓扑删除语义
 
-### 普通渠道
+联合能力切换已替代原渠道/组的级联删除与影响 token。当前删除要求详情 `ETag`，
+在完整控制面事务中检查依赖：先显式撤销路由候选，再删除能力、逻辑渠道和管理组。
+能力仍被候选引用、逻辑渠道仍有能力、管理组仍有成员时拒绝删除，不隐式改写路由或授权。
 
-管理员先读取 `GET /console/v1/routing/channels/{id}/deletion-impact`，再用详情 `ETag` 和预览返回的
-`confirmation_token` 调用 `DELETE /console/v1/routing/channels/{id}`。删除事务会：
+墓碑隐藏于活动列表和选路；固定 Key/Policy 授权来源与非敏感历史身份保留，同名新 UUID
+不会继承授权。接入和静态凭证只在没有未删除逻辑渠道引用时可删除，不因删除一个渠道
+连带删除共享身份。详细资源路径见[运维接口](../user/operations.md)。
 
-1. 移除该渠道的全部显式渠道/模型候选。
-2. 删除因此为空的 tier；协议规则失去最后一个 tier 时自动停用。
-3. 从未删除 API Key 和 API Key Policy 的显式渠道数组中移除该 UUID。
-4. 停用渠道，清除自动禁用状态、上游 URL、代理、超时、转换模板、渠道转换、上游凭据、模型能力和
-   定时测试引用，再写入墓碑。
-
-渠道名称在同一组中可以由新的 UUID 复用。请求日志和审计事实仍按旧 UUID 读取墓碑；普通列表、
-详情、运行时快照、定时测试和 API Key 可选项均隐藏旧记录。
-
-### 普通渠道组
-
-渠道组使用对应的 `/deletion-impact` 与 `DELETE` 接口。删除会先对组内全部普通渠道执行上述墓碑
-处理，再移除这些渠道的模型路由候选、API Key/API Key Policy group 与 child-channel 引用，以及
-匹配的 quota 可见性关系。组级状态监控同时关闭，空 tier 和空协议规则按同一规则规范化。组名可由
-新的 UUID 复用。
-
-Codex OAuth 组及其 Responses/Images managed channels 返回
-`provider_managed_resource`，必须继续通过凭证和 connector pool 的专用生命周期管理，不能借普通
-删除路径重置身份、quota 或共享账本。
-
-### 权威影响确认
-
-影响预览列出将成为墓碑的渠道、路由将变化的协议规则、需解绑的 API Key/API Key Policy，以及将
-删除 quota 可见性的用户组。`confirmation_token` 对当前资源版本和上述依赖快照取指纹。删除事务在
-`SERIALIZABLE` 隔离级别中重新计算；依赖新增、移除或变化后，旧 token 返回
-`409 deletion_impact_changed`，Console 获取新预览并要求再次确认。根资源自身的并发修改仍由
-`If-Match` 独立检测。
+Codex 托管身份及能力必须走专属凭证生命周期；删除清除 Token 并墓碑化渠道/能力。
+仅无其他渠道引用的接入可以同时释放代理引用，不能重置 quota、共享席位或金额账本。
 
 ## 阶段三语义
 
 ### 计价模型
 
 管理员通过 `DELETE /console/v1/models/{id}` 和详情 `ETag` 进行不可恢复删除。串行化事务先停用该
-模型 routing profile 下全部已启用协议规则，再清除所有 Channel 成对设置的 `test_model` /
-`test_pricing_model_id`，最后停用模型并写入 `deleted_at`/`deleted_by`。Profile、协议规则、routing
-tier 和 candidate 行继续保留，已有 `request_logs.model_id` / `model_rule_id` 与审计引用因此保持有效。
+模型 routing profile 下全部已启用操作规则，撤销其 tier/candidate，再清除所有能力成对设置的
+`test_model` / `test_pricing_model_id`，最后停用模型并写入 `deleted_at`/`deleted_by`。
+Profile、操作规则和历史身份仍保留，已有 `request_logs.model_id` / `model_rule_id` 与审计引用有效。
+撤销候选避免不可再编辑的模型墓碑永久阻止能力删除。
 
 普通模型列表、详情、models.dev 同步匹配、运行时价格表和协议规则查询只读取活动模型。墓碑的
 `source_model_id` 由部分唯一索引释放；手工创建或目录导入同名模型会得到新 UUID，不会更新或恢复
@@ -140,7 +119,7 @@ tier 和 candidate 行继续保留，已有 `request_logs.model_id` / `model_rul
 重新暴露墓碑。
 
 管理员详情页统一使用同一危险操作区和不可恢复确认对话框。模型确认会明确提示协议规则停用、定时
-测试解绑和历史保留；用户、用户组、普通渠道及渠道组继续显示各自的保护条件或权威影响预览。
+测试解绑和历史保留；用户、用户组和上游资源显示各自的保护条件。
 
 ## 验证
 
@@ -155,16 +134,15 @@ tier 和 candidate 行继续保留，已有 `request_logs.model_id` / `model_rul
 阶段二重点验证：
 
 - 普通渠道/渠道组删除后从列表、详情、运行时快照、定时测试和可选项消失，自然名称可复用。
-- 渠道组的所有 child channels 都写入非敏感墓碑，上游凭据和转换配置已清除。
-- 路由渠道/模型候选、空 tier 和空协议规则按预览结果规范化；失去最后一个 tier 的协议
-  自动停用。
-- API Key、API Key Policy 和 quota 可见性引用自动解绑，旧影响 token 不会执行删除。
+- 存在子资源或候选时拒绝删除，显式撤销后允许按依赖顺序退役。
+- API Key/Policy 固定授权来源保留但不可授权墓碑或同名替代身份。
 - Codex managed channel/group 与直接 SQL 硬删除保护不变。
 
 阶段三重点验证：
 
 - 模型删除后从 Console 列表、详情、模型规则和运行时快照消失，全部协议规则保留但已停用。
 - 所有 Channel 的匹配定时测试计价引用成对清空，且不能重新引用墓碑模型。
+- 模型删除撤销路由依赖，后续普通能力与逻辑渠道可正常删除，历史身份仍可查询。
 - 原 `source_model_id` 可创建新 UUID；models.dev 同步不会更新旧墓碑。
 - 历史请求日志继续返回原模型、协议规则及渠道事实，审计保留删除 actor 和自动处理摘要。
 - 模型墓碑不可恢复、修改或硬删除，Console 组件与浏览器流程均要求不可恢复确认。

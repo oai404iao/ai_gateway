@@ -1,9 +1,9 @@
 import type {
   ApiFormat,
+  ApiOperation,
   ConnectorKind,
   RequestCompression,
   SelectionStrategy,
-  UpstreamAuthKind,
   UserRole,
 } from "@/api/types";
 import { translate } from "@/app/i18n";
@@ -20,13 +20,21 @@ export const SELECTION_STRATEGIES: readonly SelectionStrategy[] = [
 ];
 
 export const CONNECTOR_KINDS: readonly ConnectorKind[] = [
-  "openai_compatible",
-  "codex_oauth",
+  "general",
+  "codex",
 ];
 
 export const REQUEST_COMPRESSIONS: readonly RequestCompression[] = ["default", "zstd"];
 
-export const UPSTREAM_AUTH_KINDS: readonly UpstreamAuthKind[] = ["none", "bearer", "header"];
+export const API_OPERATIONS: readonly ApiOperation[] = [
+  "chat_completion",
+  "responses",
+  "responses-ws",
+  "web_search",
+  "images_generation",
+  "images_edit",
+];
+
 
 /** Permissions recognized by the data plane. */
 export const PERMISSIONS = ["proxy", "models.read"] as const;
@@ -46,6 +54,20 @@ export function apiFormatLabel(value: ApiFormat): string {
       return "Responses";
     case "open_ai_images":
       return "Images";
+  }
+}
+
+export function operationApiFormat(value: ApiOperation): ApiFormat {
+  switch (value) {
+    case "chat_completion":
+      return "open_ai_chat_completions";
+    case "responses":
+    case "responses-ws":
+    case "web_search":
+      return "open_ai_responses";
+    case "images_generation":
+    case "images_edit":
+      return "open_ai_images";
   }
 }
 
@@ -73,18 +95,31 @@ export function selectionStrategyLabel(value: SelectionStrategy): string {
 }
 
 export function connectorKindLabel(value: ConnectorKind): string {
-  return value === "openai_compatible"
-    ? translate("OpenAI-compatible")
-    : translate("Codex OAuth");
+  return value === "general"
+    ? translate("General")
+    : "Codex";
 }
 
 export function requestCompressionLabel(value: RequestCompression): string {
   return value === "default" ? translate("Default") : "Zstandard (zstd)";
 }
 
-export function upstreamAuthKindLabel(value: UpstreamAuthKind): string {
-  if (value === "none") return translate("No upstream auth");
-  return value === "bearer" ? translate("Bearer token") : translate("Custom header");
+/** OpenAI operation names intentionally remain in English product terms. */
+export function apiOperationLabel(value: ApiOperation): string {
+  switch (value) {
+    case "chat_completion":
+      return "Chat Completions";
+    case "responses":
+      return "Responses";
+    case "responses-ws":
+      return "Responses WebSocket";
+    case "web_search":
+      return "Standalone web search";
+    case "images_generation":
+      return "Images generation";
+    case "images_edit":
+      return "Images edit";
+  }
 }
 
 export function outcomeLabel(value: string): string {

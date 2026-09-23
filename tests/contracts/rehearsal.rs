@@ -235,7 +235,7 @@ async fn sharing_fixture(
             ControlPlaneMutation::SaveCodexSharing {
                 id: group_id,
                 input: SharingGroupInput {
-                    credential_id: credential.id,
+                    channel_id: credential.id,
                     name: "Rehearsal seats".into(),
                     enabled: true,
                     seats: vec![Some(seed.user)],

@@ -341,13 +341,41 @@ def seed(console, password, upstream):
     user = login["user"]["id"]
     _, headers = api(f"/users/{user}")
     api(f"/users/{user}", "PATCH", {"balance_amount": "100"}, headers["ETag"])
-    group, _ = api("/routing/channel-groups", "POST", {
-        "name": "system-e2e", "api_format": "open_ai_responses", "enabled": True,
+    group, _ = api("/routing/groups", "POST", {
+        "name": "system-e2e", "enabled": True,
     })
-    channel, _ = api("/routing/channels", "POST", {
-        "channel_group_id": group["id"], "api_format": "open_ai_responses",
-        "name": "system-e2e", "base_url": upstream, "enabled": True,
-        "upstream_auth_kind": "none", "available_models": ["e2e-before", "e2e-wire"],
+    upstream_secret = secrets.token_urlsafe(24)
+    credential, _ = api("/routing/upstream-credentials", "POST", {
+        "name": "System E2E shared identity", "kind": "bearer", "secret": upstream_secret,
+        "allowed_base_urls": [upstream], "enabled": True,
+    })
+    access, _ = api("/routing/accesses", "POST", {
+        "name": "system-e2e", "connector_kind": "general",
+        "base_url": upstream, "enabled": True,
+    })
+    channel, _ = api("/routing/logical-channels", "POST", {
+        "group_id": group["id"], "access_id": access["id"],
+        "name": "system-e2e", "enabled": True, "credential_id": credential["id"],
+        "sharing_only": False,
+    })
+    api("/routing/logical-channels", "POST", {
+        "group_id": group["id"], "access_id": access["id"],
+        "name": "system-e2e-disabled-reference", "enabled": False,
+        "credential_id": credential["id"], "sharing_only": False,
+    })
+    key, _ = api("/api-keys", "POST", {
+        "user_id": user, "name": "system-e2e",
+        "permissions": ["proxy"], "allowed_group_ids": [group["id"]], "allowed_channel_ids": [],
+    })
+    capability_settings = {
+        "operation": "responses",
+        "enabled": True, "available_models": ["e2e-before", "e2e-wire"],
+        "request_compression": "default", "auto_disable_allowed": False,
+        "test_model": None, "test_pricing_model_id": None,
+    }
+    capability, _ = api("/routing/capabilities", "POST", {
+        "channel_id": channel["id"],
+        "settings": capability_settings,
     })
     model, _ = api("/models", "POST", {
         "source_model_id": "e2e-client", "display_name": "System E2E model", "enabled": True,
@@ -355,27 +383,34 @@ def seed(console, password, upstream):
         "cached_input_unit_price": "0", "cache_write_unit_price": "0", "output_unit_price": "2",
         "price_effective_at": "2026-01-01T00:00:00Z",
     })
-    parent, _ = api("/routing/model-rules", "POST", {"model_id": model["id"]})
-    protocol, _ = api(f"/routing/model-rules/{parent['id']}/protocols", "POST", {
-        "api_format": "open_ai_responses",
+    parent, _ = api("/routing/profiles", "POST", {"model_id": model["id"]})
+    ws_capability, _ = api("/routing/capabilities", "POST", {
+        "channel_id": channel["id"],
+        "settings": {**capability_settings, "operation": "responses-ws"},
     })
-    path = f"/routing/model-rules/{parent['id']}/protocols/{protocol['id']}"
-    _, headers = api(path)
-    api(path, "PUT", {
-        "description": "Before browser edit", "enabled": True,
+    api("/routing/operation-rules", "POST", {
+        "model_routing_profile_id": parent["id"], "operation": "responses-ws", "enabled": True,
         "routing_tiers": [{
             "priority": 0, "selection_strategy": "weighted_round_robin",
-            "candidates": [{"channel_id": channel["id"], "upstream_model": "e2e-before", "weight": 1}],
+            "candidates": [{"capability_id": ws_capability["id"], "upstream_model": "e2e-wire", "weight": 1}],
         }],
-    }, headers["ETag"])
-    key, _ = api("/api-keys", "POST", {
-        "user_id": user, "name": "system-e2e", "allowed_api_formats": ["open_ai_responses"],
-        "permissions": ["proxy"], "allowed_group_ids": [group["id"]], "allowed_channel_ids": [],
     })
+    protocol, _ = api("/routing/operation-rules", "POST", {
+        "model_routing_profile_id": parent["id"], "operation": "responses", "enabled": True,
+        "routing_tiers": [{
+            "priority": 0, "selection_strategy": "weighted_round_robin",
+            "candidates": [{"capability_id": capability["id"], "upstream_model": "e2e-before", "weight": 1}],
+        }],
+    })
+    path = f"/routing/operation-rules/{protocol['id']}"
     return {
         "console": console, "password": password, "token": token, "user_id": user,
-        "api_key": key["secret"], "api_key_id": key["id"], "channel_id": channel["id"],
+        "api_key": key["secret"], "api_key_id": key["id"], "channel_id": capability["id"],
+        "websocket_channel_id": ws_capability["id"],
+        "logical_channel_id": channel["id"], "access_id": access["id"],
         "channel_group_id": group["id"], "protocol_path": path,
+        "upstream_credential_id": credential["id"], "upstream_secret": upstream_secret,
+        "upstream_rotated_secret": secrets.token_urlsafe(24),
     }
 
 
@@ -383,6 +418,13 @@ def set_upstream(data, url, websocket=False):
     def api(path, method="GET", body=None, etag=None):
         return request(data["console"], "/console/v1" + path, method, body, data["token"], etag)
 
+    credential_path = f"/routing/upstream-credentials/{data['upstream_credential_id']}"
+    credential, headers = api(credential_path)
+    api(credential_path, "PUT", {
+        "name": credential["name"], "kind": credential["kind"], "enabled": credential["enabled"],
+        "header_name": credential["header_name"],
+        "allowed_base_urls": sorted(set(credential["allowed_base_urls"] + [url])),
+    }, headers["ETag"])
     if websocket:
         settings, headers = api("/system/settings")
         settings.pop("updated_at", None)
@@ -390,13 +432,14 @@ def set_upstream(data, url, websocket=False):
         api("/system/settings", "PUT", settings, headers["ETag"])
         _, headers = api(f"/users/{data['user_id']}")
         api(f"/users/{data['user_id']}", "PATCH", {"websocket_enabled": True}, headers["ETag"])
-    path = f"/routing/channels/{data['channel_id']}"
-    _, headers = api(path)
+    path = f"/routing/accesses/{data['access_id']}"
+    access, headers = api(path)
     api(path, "PUT", {
-        "channel_group_id": data["channel_group_id"], "api_format": "open_ai_responses",
-        "name": "system-e2e", "base_url": url, "enabled": True,
-        "upstream_auth_kind": "none", "available_models": ["e2e-before", "e2e-wire"],
-        "supports_websocket": websocket,
+        "name": access["name"], "connector_kind": access["connector_kind"],
+        "base_url": url, "enabled": access["enabled"], "proxy_id": access["proxy_id"],
+        "connect_timeout_ms": access["connect_timeout_ms"],
+        "response_header_timeout_ms": access["response_header_timeout_ms"],
+        "stream_idle_timeout_ms": access["stream_idle_timeout_ms"],
     }, headers["ETag"])
 
 
@@ -498,7 +541,9 @@ def verify_settlement(data, expected_count, zero_count=0, protocols=None):
     for log in settled:
         check(log["outcome"] == "succeeded" and log["response_status_code"] == 200, "request failed")
         check(log["client_model"] == "e2e-client" and log["upstream_model"] == "e2e-wire", "log model mismatch")
-        check(log["channel_id"] == data["channel_id"], "log channel mismatch")
+        websocket = log["request_protocol"] == "websocket"
+        check(log["channel_id"] == data["websocket_channel_id" if websocket else "channel_id"], "log channel mismatch")
+        check(log["api_operation"] == ("responses-ws" if websocket else "responses"), "log operation mismatch")
         zero = log["input_tokens"] == 0 and log["output_tokens"] == 0
         check(zero or (log["input_tokens"] == 5 and log["output_tokens"] == 2), "usage mismatch")
         check(Decimal(log["cost_amount"]) == Decimal("0" if zero else "0.000009"), "cost mismatch")
@@ -562,7 +607,7 @@ def main():
             with Upstream(marker) as upstream:
                 report["stage"] = "provision"
                 data = seed(console, password, upstream.url)
-                secret_values.extend([data["token"], data["api_key"]])
+                secret_values.extend([data["token"], data["api_key"], data["upstream_secret"], data["upstream_rotated_secret"]])
                 data["public"] = f"http://127.0.0.1:{public_port}"
                 report["stage"] = "browser"
                 browser_env = {

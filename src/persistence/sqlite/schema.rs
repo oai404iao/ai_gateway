@@ -2,7 +2,7 @@
 
 use super::SqliteMigration;
 
-pub(super) const MIGRATIONS: &[SqliteMigration<'static>] = &[
+pub(crate) const MIGRATIONS: &[SqliteMigration<'static>] = &[
     SqliteMigration {
         version: 1,
         description: "business schema after PostgreSQL 0063",
@@ -17,5 +17,37 @@ pub(super) const MIGRATIONS: &[SqliteMigration<'static>] = &[
         version: 3,
         description: "durable Codex external-operation fences",
         sql: include_str!("../../../migrations/sqlite/0003_codex_operations.sql"),
+    },
+    SqliteMigration {
+        version: 4,
+        description: "independent upstream credential identities",
+        sql: include_str!("../../../migrations/sqlite/0004_upstream_credentials.sql"),
+    },
+    SqliteMigration {
+        version: 5,
+        description: "canonical upstream operation capabilities",
+        sql: include_str!("../../../migrations/sqlite/0005_upstream_capabilities.sql"),
+    },
+    SqliteMigration {
+        version: 6,
+        description: "six operation routing and connector names",
+        sql: include_str!("../../../migrations/sqlite/0006_six_operations.sql"),
+    },
+    SqliteMigration {
+        version: 7,
+        description: "fixed logical channel authorization",
+        sql: include_str!("../../../migrations/sqlite/0007_logical_channel_authorization.sql"),
+    },
+    SqliteMigration {
+        version: 8,
+        description: "channel owned credentials and sharing",
+        sql: include_str!(
+            "../../../migrations/sqlite/0008_channel_owned_credentials_and_sharing.sql"
+        ),
+    },
+    SqliteMigration {
+        version: 9,
+        description: "immutable request credential attribution",
+        sql: include_str!("../../../migrations/sqlite/0009_request_credential_attribution.sql"),
     },
 ];

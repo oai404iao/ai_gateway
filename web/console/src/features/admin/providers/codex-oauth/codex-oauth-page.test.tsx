@@ -6,7 +6,7 @@ import { BrowserRouter } from "react-router";
 import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
 import type {
-  ChannelGroupView,
+  RoutingGroupView,
   CodexCredentialBatchInput,
   CodexCredentialExportInput,
   CodexCredentialUpdateInput,
@@ -14,25 +14,22 @@ import type {
   CodexOauthCompleteInput,
   CodexOauthStartInput,
 } from "@/api/types";
-import { CHANNEL_GROUP } from "@/test/fixtures";
+import { ROUTING_GROUP } from "@/test/fixtures";
 import { seedAuthenticatedSession, server } from "@/test/msw";
 
 const GROUP_ID = "00000000-0000-0000-0000-00000000c001";
 const CREDENTIAL_ID = "00000000-0000-0000-0000-00000000c002";
 const FLOW_ID = "00000000-0000-0000-0000-00000000c003";
 
-const CODEX_GROUP: ChannelGroupView = {
-  ...CHANNEL_GROUP,
+const CODEX_GROUP: RoutingGroupView = {
+  ...ROUTING_GROUP,
   id: GROUP_ID,
   name: "Codex subscriptions",
-  api_format: "open_ai_responses",
-  connector_kind: "codex_oauth",
-  connector_pool_id: GROUP_ID,
 };
 
 const CREDENTIAL: CodexCredentialView = {
   id: CREDENTIAL_ID,
-  channel_group_id: GROUP_ID,
+  channel_ids: [],
   label: "Personal Plus",
   email: "codex@example.test",
   account_id: "account-123",
@@ -65,7 +62,7 @@ const CREDENTIAL: CodexCredentialView = {
 };
 
 function renderPage() {
-  window.history.replaceState({}, "", `/admin/providers/codex-oauth/${GROUP_ID}`);
+  window.history.replaceState({}, "", "/admin/routing/upstream-credentials?connector=codex");
   render(
     <AppProviders>
       <BrowserRouter>
@@ -77,13 +74,13 @@ function renderPage() {
 
 function baseHandlers(credentials: CodexCredentialView[]) {
   return [
-    http.get("/console/v1/routing/channel-groups/:id", () =>
+    http.get("/console/v1/routing/groups/:id", () =>
       HttpResponse.json(CODEX_GROUP, {
         headers: { ETag: `"${CODEX_GROUP.updated_at}"` },
       }),
     ),
     http.get(
-      "/console/v1/providers/codex-oauth/channel-groups/:id/credentials",
+      "/console/v1/routing/upstream-credentials/codex",
       () => HttpResponse.json(credentials),
     ),
   ];
@@ -94,19 +91,16 @@ afterEach(() => {
 });
 
 describe("CodexOauthPage", () => {
-  it("returns to the channels page", async () => {
+  it("manages detached credentials without reading a routing group", async () => {
     seedAuthenticatedSession();
     server.use(...baseHandlers([]));
-    const user = userEvent.setup();
+    server.use(http.get("/console/v1/routing/groups/:id", () =>
+      HttpResponse.json({ error: "not_found" }, { status: 404 })));
     renderPage();
 
-    await user.click(
-      await screen.findByRole("button", { name: "Back to channels" }),
-    );
-
-    await waitFor(() => {
-      expect(window.location.pathname).toBe("/admin/routing/channels");
-    });
+    expect(await screen.findByText("No Codex credentials")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Connect account" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Back to groups" })).not.toBeInTheDocument();
   });
 
   it("shows quota state and manually refreshes a credential quota", async () => {
@@ -115,7 +109,7 @@ describe("CodexOauthPage", () => {
     server.use(
       ...baseHandlers([CREDENTIAL]),
       http.post(
-        "/console/v1/providers/codex-oauth/credentials/:id/quota/refresh",
+        "/console/v1/routing/upstream-credentials/codex/:id/quota/refresh",
         ({ params }) => {
           refreshedId = String(params.id);
           return new HttpResponse(null, { status: 204 });
@@ -166,7 +160,7 @@ describe("CodexOauthPage", () => {
     server.use(
       ...baseHandlers([CREDENTIAL]),
       http.post(
-        "/console/v1/providers/codex-oauth/credentials/:id/quota/reset",
+        "/console/v1/routing/upstream-credentials/codex/:id/quota/reset",
         ({ params }) => {
           resetId = String(params.id);
           return HttpResponse.json({
@@ -207,7 +201,7 @@ describe("CodexOauthPage", () => {
     server.use(
       ...baseHandlers([CREDENTIAL]),
       http.get(
-        "/console/v1/providers/codex-oauth/credentials/:id/quota/windows",
+        "/console/v1/routing/upstream-credentials/codex/:id/quota/windows",
         () =>
           HttpResponse.json({
             credential_id: CREDENTIAL_ID,
@@ -337,14 +331,14 @@ describe("CodexOauthPage", () => {
     server.use(
       ...baseHandlers([CREDENTIAL]),
       http.get(
-        "/console/v1/providers/codex-oauth/credentials/:id",
+        "/console/v1/routing/upstream-credentials/codex/:id",
         () =>
           HttpResponse.json(CREDENTIAL, {
             headers: { ETag: `"${CREDENTIAL.updated_at}"` },
           }),
       ),
       http.put(
-        "/console/v1/providers/codex-oauth/credentials/:id",
+        "/console/v1/routing/upstream-credentials/codex/:id",
         async ({ request }) => {
           updateInput = (await request.json()) as CodexCredentialUpdateInput;
           return HttpResponse.json({
@@ -387,7 +381,7 @@ describe("CodexOauthPage", () => {
     server.use(
       ...baseHandlers([]),
       http.post(
-        "/console/v1/providers/codex-oauth/channel-groups/:id/oauth/flows",
+        "/console/v1/routing/upstream-credentials/codex/oauth/flows",
         async ({ request }) => {
           startInput = (await request.json()) as CodexOauthStartInput;
           return HttpResponse.json(
@@ -401,7 +395,7 @@ describe("CodexOauthPage", () => {
         },
       ),
       http.post(
-        "/console/v1/providers/codex-oauth/oauth/flows/:id/complete",
+        "/console/v1/routing/upstream-credentials/codex/oauth/flows/:id/complete",
         async ({ request }) => {
           completeInput = (await request.json()) as CodexOauthCompleteInput;
           return HttpResponse.json(
@@ -464,7 +458,7 @@ describe("CodexOauthPage", () => {
     server.use(
       ...baseHandlers([CREDENTIAL]),
       http.post(
-        "/console/v1/providers/codex-oauth/channel-groups/:id/credentials/export",
+        "/console/v1/routing/upstream-credentials/codex/export",
         async ({ request }) => {
           exportInput =
             (await request.json()) as CodexCredentialExportInput;
@@ -520,7 +514,7 @@ describe("CodexOauthPage", () => {
     server.use(
       ...baseHandlers([CREDENTIAL]),
       http.post(
-        "/console/v1/providers/codex-oauth/channel-groups/:id/credentials/batch",
+        "/console/v1/routing/upstream-credentials/codex/batch",
         async ({ request }) => {
           batchInput = (await request.json()) as CodexCredentialBatchInput;
           return HttpResponse.json({
@@ -557,7 +551,7 @@ describe("CodexOauthPage", () => {
     server.use(
       ...baseHandlers([CREDENTIAL]),
       http.delete(
-        "/console/v1/providers/codex-oauth/credentials/:id",
+        "/console/v1/routing/upstream-credentials/codex/:id",
         ({ request }) => {
           ifMatch = request.headers.get("if-match") ?? "";
           return HttpResponse.json({

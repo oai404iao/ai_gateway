@@ -14,6 +14,7 @@
 - [控制面软删除](soft-deletion.md)：不可恢复墓碑语义、自动解绑边界和三阶段实施记录。
 - [Console 认证与授权设计记录](console-auth.md)
 - [Console Web UI 架构与开发指南](console-ui.md)：当前 Base UI 技术栈、会话、安全、构建和测试。
+- [Console 导航与页面交互规范](console-interaction-standard.md)：父级返回、列表、详情布局、草稿和历史入口。
 - [请求日志耐久化流水线](request-log-durability.md)
 - [持久化行为契约基线](persistence-contracts.md)：金额、结算原子性、重放、约束测试和费用读写路径；
   明确独立计量事实实施前的已知限制。
@@ -35,6 +36,8 @@
 
 ## 设计提案
 
+- [上游身份、渠道能力与路由目标重构](upstream-identity-capabilities.md)：三阶段设计，
+  独立凭证身份优先实施；协议转换不在范围内。
 - [持久化边界与独立计量事实](persistence-boundaries.md)：第二阶段的存储职责、金额与恢复契约、
   PG 封装，以及独立计量事实/结算回执的迁移和验收计划；P4 提供小数据量演练，实际发布容量须匹配部署条件。
 

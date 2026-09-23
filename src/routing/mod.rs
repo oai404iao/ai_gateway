@@ -87,26 +87,50 @@ pub struct RoutingRuntime {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum ChannelCapability {
     Any,
+    UnsupportedProtocol,
     ResponsesWebSocket,
     StandaloneWebSearch,
+    Transport(crate::domain::CapabilityTransport),
+    ResponsesNonStream,
 }
 
 impl ChannelCapability {
     fn permits(self, channel: &CompiledChannel) -> bool {
         match self {
             Self::Any => true,
-            Self::ResponsesWebSocket => channel.supports_websocket(),
-            Self::StandaloneWebSearch => channel.supports_standalone_web_search(),
+            Self::UnsupportedProtocol => false,
+            Self::ResponsesWebSocket => {
+                channel.supports_websocket()
+                    && channel.permits_transport(crate::domain::CapabilityTransport::Websocket)
+            }
+            Self::StandaloneWebSearch => {
+                channel.supports_standalone_web_search()
+                    && channel.permits_transport(crate::domain::CapabilityTransport::HttpJson)
+            }
+            Self::Transport(transport) => channel.permits_transport(transport),
+            Self::ResponsesNonStream => {
+                channel.permits_transport(crate::domain::CapabilityTransport::HttpJson)
+                    || (channel.connector_kind() == crate::domain::ConnectorKind::CodexOauth
+                        && channel.permits_transport(crate::domain::CapabilityTransport::HttpSse))
+            }
         }
     }
 
-    fn for_operation(operation: ApiOperation) -> Self {
+    fn for_operation(operation: ApiOperation, protocol: crate::domain::RequestProtocol) -> Self {
+        use crate::domain::{CapabilityTransport as T, RequestProtocol as P};
+        if (protocol == P::WebSocket) != (operation == ApiOperation::ResponsesWebSocket) {
+            return Self::UnsupportedProtocol;
+        }
         match operation {
+            ApiOperation::ResponsesWebSocket => Self::ResponsesWebSocket,
             ApiOperation::StandaloneWebSearch => Self::StandaloneWebSearch,
-            ApiOperation::ChatCompletions
-            | ApiOperation::Responses
-            | ApiOperation::ImagesGeneration
-            | ApiOperation::ImagesEdit => Self::Any,
+            ApiOperation::ImagesGeneration => Self::Transport(T::HttpJson),
+            ApiOperation::ImagesEdit => Self::Transport(T::Multipart),
+            ApiOperation::ChatCompletions | ApiOperation::Responses if protocol == P::Sse => {
+                Self::Transport(T::HttpSse)
+            }
+            ApiOperation::Responses => Self::ResponsesNonStream,
+            ApiOperation::ChatCompletions => Self::Transport(T::HttpJson),
         }
     }
 }
@@ -651,17 +675,18 @@ impl RoutingRuntime {
         snapshot: &CompiledRuntimeConfig,
         key: &CompiledApiKey,
         operation: ApiOperation,
+        protocol: crate::domain::RequestProtocol,
         model: &str,
         affinity: Option<SessionAffinityMatch>,
     ) -> SelectionResult {
         self.select_with_affinity_excluding_capability(
             snapshot,
             key,
-            operation.api_format(),
+            operation,
             model,
             affinity,
             &[],
-            ChannelCapability::for_operation(operation),
+            ChannelCapability::for_operation(operation, protocol),
         )
     }
 
@@ -687,7 +712,7 @@ impl RoutingRuntime {
         self.select_preferred_channel_with_capability(
             snapshot,
             key,
-            format,
+            ApiOperation::legacy_default(format),
             model,
             preferred_channel_id,
             None,
@@ -711,10 +736,13 @@ impl RoutingRuntime {
         affinity: Option<SessionAffinityMatch>,
         excluded_candidate_slots: &[usize],
     ) -> Option<SelectedRoute> {
+        if format != ApiFormat::OpenAiResponses {
+            return None;
+        }
         self.select_preferred_channel_with_capability(
             snapshot,
             key,
-            format,
+            ApiOperation::ResponsesWebSocket,
             model,
             preferred_channel_id,
             None,
@@ -737,10 +765,13 @@ impl RoutingRuntime {
         affinity: Option<SessionAffinityMatch>,
         excluded_candidate_slots: &[usize],
     ) -> Option<SelectedRoute> {
+        if format != ApiFormat::OpenAiResponses {
+            return None;
+        }
         self.select_preferred_channel_with_capability(
             snapshot,
             key,
-            format,
+            ApiOperation::ResponsesWebSocket,
             model,
             preferred_channel_id,
             Some(preferred_upstream_model),
@@ -755,7 +786,7 @@ impl RoutingRuntime {
         &self,
         snapshot: &CompiledRuntimeConfig,
         key: &CompiledApiKey,
-        format: ApiFormat,
+        operation: ApiOperation,
         model: &str,
         preferred_channel_id: Uuid,
         preferred_upstream_model: Option<&str>,
@@ -763,7 +794,7 @@ impl RoutingRuntime {
         excluded_candidate_slots: &[usize],
         capability: ChannelCapability,
     ) -> Option<SelectedRoute> {
-        let rule = snapshot.model_rule(format, model)?;
+        let rule = snapshot.operation_rule(operation, model)?;
         if !key.permits_route(rule.route_slot()) {
             return None;
         }
@@ -874,7 +905,7 @@ impl RoutingRuntime {
         self.select_with_affinity_excluding_capability(
             snapshot,
             key,
-            format,
+            ApiOperation::legacy_default(format),
             model,
             affinity,
             excluded_candidate_slots,
@@ -883,11 +914,13 @@ impl RoutingRuntime {
     }
 
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn select_operation_with_affinity_excluding(
         &self,
         snapshot: &CompiledRuntimeConfig,
         key: &CompiledApiKey,
         operation: ApiOperation,
+        protocol: crate::domain::RequestProtocol,
         model: &str,
         affinity: Option<SessionAffinityMatch>,
         excluded_candidate_slots: &[usize],
@@ -895,11 +928,11 @@ impl RoutingRuntime {
         self.select_with_affinity_excluding_capability(
             snapshot,
             key,
-            operation.api_format(),
+            operation,
             model,
             affinity,
             excluded_candidate_slots,
-            ChannelCapability::for_operation(operation),
+            ChannelCapability::for_operation(operation, protocol),
         )
     }
 
@@ -915,10 +948,13 @@ impl RoutingRuntime {
         affinity: Option<SessionAffinityMatch>,
         excluded_candidate_slots: &[usize],
     ) -> SelectionResult {
+        if format != ApiFormat::OpenAiResponses {
+            return SelectionResult::UnknownOrInaccessibleModel;
+        }
         self.select_with_affinity_excluding_capability(
             snapshot,
             key,
-            format,
+            ApiOperation::ResponsesWebSocket,
             model,
             affinity,
             excluded_candidate_slots,
@@ -937,7 +973,7 @@ impl RoutingRuntime {
     ) -> bool {
         let now = self.inner.clock.now();
         snapshot.model_rules().any(|rule| {
-            rule.api_format() == ApiFormat::OpenAiResponses
+            rule.api_operation() == ApiOperation::ResponsesWebSocket
                 && key.permits_route(rule.route_slot())
                 && rule.tiers().iter().any(|tier| {
                     tier.candidates().iter().any(|candidate| {
@@ -956,13 +992,13 @@ impl RoutingRuntime {
         &self,
         snapshot: &CompiledRuntimeConfig,
         key: &CompiledApiKey,
-        format: ApiFormat,
+        operation: ApiOperation,
         model: &str,
         affinity: Option<SessionAffinityMatch>,
         excluded_candidate_slots: &[usize],
         capability: ChannelCapability,
     ) -> SelectionResult {
-        let Some(rule) = snapshot.model_rule(format, model) else {
+        let Some(rule) = snapshot.operation_rule(operation, model) else {
             return SelectionResult::UnknownOrInaccessibleModel;
         };
         if !key.permits_route(rule.route_slot()) {
@@ -1648,9 +1684,9 @@ mod tests {
 
     use crate::{
         domain::{
-            ApiFormat, AutomaticDisableSettings, CompiledRuntimeConfig, PassiveHealthSettings,
-            ScheduledTestingSettings, SessionAffinityRule, SessionAffinitySettings,
-            SystemRuntimeSettings, UpstreamTimeoutDefaults,
+            ApiFormat, ApiOperation, AutomaticDisableSettings, CompiledRuntimeConfig,
+            PassiveHealthSettings, ScheduledTestingSettings, SessionAffinityRule,
+            SessionAffinitySettings, SystemRuntimeSettings, UpstreamTimeoutDefaults,
         },
         persistence::{
             ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ControlPlaneRecords, ModelRuleRecord,
@@ -1788,7 +1824,7 @@ mod tests {
                     id: *id,
                     name: id.to_string(),
                     api_format: format.as_str().into(),
-                    connector_kind: "openai_compatible".into(),
+                    connector_kind: "general".into(),
                     request_compression: "default".into(),
                     sharing_only: false,
                     enabled: true,
@@ -1798,9 +1834,19 @@ mod tests {
                 .iter()
                 .zip(group_ids.iter())
                 .map(|(id, group_id)| ChannelRecord {
+                    credential: None,
+                    credential_binding_revision: Uuid::nil(),
                     id: *id,
                     channel_group_id: *group_id,
                     api_format: format.as_str().into(),
+                    logical_channel_id: Uuid::nil(),
+                    access_id: Uuid::nil(),
+                    api_operation: None,
+                    connector_kind: String::new(),
+                    request_compression: String::new(),
+                    access_revision: Uuid::nil(),
+                    capability_revision: Uuid::nil(),
+                    transports: Vec::new(),
                     name: id.to_string(),
                     base_url: base_url
                         .map(ToOwned::to_owned)
@@ -1830,6 +1876,7 @@ mod tests {
                 id: Uuid::from_u128(1_002),
                 client_model: "model".into(),
                 api_format: format.as_str().into(),
+                api_operation: ApiOperation::legacy_default(format),
                 model_id: Uuid::from_u128(1_003),
                 model_enabled: true,
                 model_currency: "USD".into(),
@@ -1850,6 +1897,61 @@ mod tests {
             templates: vec![],
         };
         (records, secret)
+    }
+
+    #[test]
+    fn response_operations_gate_each_dispatch_protocol() {
+        use crate::domain::{ConnectorKind, RequestProtocol as P};
+        for (connector, operation, expected) in [
+            (
+                ConnectorKind::OpenAiCompatible,
+                ApiOperation::Responses,
+                [true, true, false],
+            ),
+            (
+                ConnectorKind::OpenAiCompatible,
+                ApiOperation::ResponsesWebSocket,
+                [false, false, true],
+            ),
+            (
+                ConnectorKind::CodexOauth,
+                ApiOperation::Responses,
+                [true, true, false],
+            ),
+            (
+                ConnectorKind::CodexOauth,
+                ApiOperation::ResponsesWebSocket,
+                [false, false, true],
+            ),
+        ] {
+            let (mut records, _) = records_with_format(
+                &[(1, "weighted_random")],
+                &[1],
+                None,
+                ApiFormat::OpenAiResponses,
+            );
+            let channel = &mut records.channels[0];
+            channel.api_operation = Some(operation);
+            channel.logical_channel_id = Uuid::from_u128(200);
+            channel.access_id = Uuid::from_u128(201);
+            channel.connector_kind = connector.as_str().into();
+            channel.request_compression = "default".into();
+            channel.transports = operation.transports().to_vec();
+            channel.supports_websocket = operation == ApiOperation::ResponsesWebSocket;
+            records.model_rules[0].api_operation = operation;
+            let config = compile_control_plane(records).unwrap();
+            let channel = config.channels().next().unwrap();
+            for (protocol, allowed) in [P::NonStream, P::Sse, P::WebSocket]
+                .into_iter()
+                .zip(expected)
+            {
+                assert_eq!(
+                    super::ChannelCapability::for_operation(operation, protocol).permits(channel),
+                    allowed,
+                    "{connector:?} {operation:?} {protocol:?}"
+                );
+            }
+        }
     }
 
     fn affinity_system_settings(fingerprint: [u8; 32], ttl: Duration) -> SystemRuntimeSettings {
@@ -1971,14 +2073,98 @@ mod tests {
     }
 
     #[test]
+    fn operation_routing_is_exact_and_never_borrows_a_sibling_pool() {
+        let runtime = RoutingRuntime::new(PassiveHealthPolicy::default());
+
+        // A Responses-format channel that configured only `responses` must not
+        // serve standalone search.
+        let (mut records, secret) = records_with_format(
+            &[(0, "weighted_random")],
+            &[1],
+            None,
+            ApiFormat::OpenAiResponses,
+        );
+        records.model_rules[0].api_operation = ApiOperation::Responses;
+        let snapshot = compile_control_plane(records).unwrap();
+        let key = snapshot.authenticate(&secret).unwrap();
+        assert!(
+            snapshot
+                .operation_rule(ApiOperation::Responses, "model")
+                .is_some()
+        );
+        assert!(
+            snapshot
+                .operation_rule(ApiOperation::StandaloneWebSearch, "model")
+                .is_none()
+        );
+        assert!(matches!(
+            runtime.select_operation_with_affinity(
+                &snapshot,
+                &key,
+                ApiOperation::StandaloneWebSearch,
+                crate::domain::RequestProtocol::NonStream,
+                "model",
+                None,
+            ),
+            SelectionResult::UnknownOrInaccessibleModel
+        ));
+
+        // An Images-format channel that configured only generation must not
+        // serve image edits, while generation itself still selects.
+        let (mut records, secret) = records_with_format(
+            &[(0, "weighted_random")],
+            &[1],
+            None,
+            ApiFormat::OpenAiImages,
+        );
+        records.model_rules[0].api_operation = ApiOperation::ImagesGeneration;
+        let snapshot = compile_control_plane(records).unwrap();
+        let key = snapshot.authenticate(&secret).unwrap();
+        assert!(
+            snapshot
+                .operation_rule(ApiOperation::ImagesEdit, "model")
+                .is_none()
+        );
+        assert!(matches!(
+            runtime.select_operation_with_affinity(
+                &snapshot,
+                &key,
+                ApiOperation::ImagesEdit,
+                crate::domain::RequestProtocol::NonStream,
+                "model",
+                None,
+            ),
+            SelectionResult::UnknownOrInaccessibleModel
+        ));
+        assert!(matches!(
+            runtime.select_operation_with_affinity(
+                &snapshot,
+                &key,
+                ApiOperation::ImagesGeneration,
+                crate::domain::RequestProtocol::NonStream,
+                "model",
+                None,
+            ),
+            SelectionResult::Selected(_)
+        ));
+    }
+
+    #[test]
     fn websocket_preflight_does_not_advance_weights_or_claim_recovery_probes() {
-        let (snapshot, secret) = snapshot_with_format(
+        let (mut records, secret) = records_with_format(
             &[(0, "weighted_round_robin")],
             &[1],
             None,
-            SystemRuntimeSettings::default(),
             ApiFormat::OpenAiResponses,
         );
+        records.model_rules[0].api_operation = ApiOperation::ResponsesWebSocket;
+        let channel = &mut records.channels[0];
+        channel.api_operation = Some(ApiOperation::ResponsesWebSocket);
+        channel.connector_kind = "general".into();
+        channel.request_compression = "default".into();
+        channel.transports = ApiOperation::ResponsesWebSocket.transports().to_vec();
+        channel.supports_websocket = true;
+        let snapshot = compile_control_plane(records).unwrap();
         let clock = Arc::new(TestClock(AtomicU64::new(0)));
         let runtime = RoutingRuntime::with_seams(
             PassiveHealthPolicy {
@@ -2063,15 +2249,25 @@ mod tests {
                 id: group_id,
                 name: "group".into(),
                 api_format: "open_ai_chat_completions".into(),
-                connector_kind: "openai_compatible".into(),
+                connector_kind: "general".into(),
                 request_compression: "default".into(),
                 sharing_only: false,
                 enabled: true,
             }],
             channels: vec![ChannelRecord {
+                credential: None,
+                credential_binding_revision: Uuid::nil(),
                 id: channel_id,
                 channel_group_id: group_id,
                 api_format: "open_ai_chat_completions".into(),
+                logical_channel_id: Uuid::nil(),
+                access_id: Uuid::nil(),
+                api_operation: None,
+                connector_kind: String::new(),
+                request_compression: String::new(),
+                access_revision: Uuid::nil(),
+                capability_revision: Uuid::nil(),
+                transports: Vec::new(),
                 name: "channel".into(),
                 base_url: "https://upstream.test".into(),
                 enabled: true,
@@ -2098,6 +2294,7 @@ mod tests {
                 id: Uuid::from_u128(400),
                 client_model: "model".into(),
                 api_format: "open_ai_chat_completions".into(),
+                api_operation: ApiOperation::ChatCompletions,
                 model_id: Uuid::from_u128(401),
                 model_enabled: true,
                 model_currency: "USD".into(),

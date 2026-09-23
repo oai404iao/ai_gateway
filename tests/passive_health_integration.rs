@@ -13,7 +13,7 @@ use std::{
 use ai_gateway::{
     application::{ProxyService, RecordingRequestLogSink},
     domain::{
-        AutomaticDisableSettings, PassiveHealthSettings, RequestRetrySettings,
+        ApiOperation, AutomaticDisableSettings, PassiveHealthSettings, RequestRetrySettings,
         ScheduledTestingSettings, SessionAffinitySettings, SystemRuntimeSettings,
         UpstreamTimeoutDefaults,
     },
@@ -226,7 +226,7 @@ fn proxy_fixture_with_retry_and_candidates(
                 id: *id,
                 name: id.to_string(),
                 api_format: "open_ai_chat_completions".into(),
-                connector_kind: "openai_compatible".into(),
+                connector_kind: "general".into(),
                 request_compression: "default".into(),
                 sharing_only: false,
                 enabled: true,
@@ -237,9 +237,19 @@ fn proxy_fixture_with_retry_and_candidates(
             .zip(group_ids.iter())
             .zip(upstream_urls)
             .map(|((id, group_id), base_url)| ChannelRecord {
+                credential: None,
+                credential_binding_revision: Uuid::nil(),
                 id: *id,
                 channel_group_id: *group_id,
                 api_format: "open_ai_chat_completions".into(),
+                logical_channel_id: Uuid::nil(),
+                access_id: Uuid::nil(),
+                api_operation: None,
+                connector_kind: String::new(),
+                request_compression: String::new(),
+                access_revision: Uuid::nil(),
+                capability_revision: Uuid::nil(),
+                transports: Vec::new(),
                 name: id.to_string(),
                 base_url: base_url.clone(),
                 enabled: true,
@@ -271,6 +281,7 @@ fn proxy_fixture_with_retry_and_candidates(
             id: Uuid::new_v4(),
             client_model: "model".into(),
             api_format: "open_ai_chat_completions".into(),
+            api_operation: ApiOperation::ChatCompletions,
             model_id: Uuid::new_v4(),
             model_enabled: true,
             model_currency: "USD".into(),

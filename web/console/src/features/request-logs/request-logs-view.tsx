@@ -46,9 +46,10 @@ import { useI18n } from "@/app/i18n";
 const LIMITS = [25, 50, 100] as const;
 const OUTCOMES = ["succeeded", "failed", "rejected", "cancelled"] as const;
 const API_OPERATIONS = [
-  "chat_completions",
+  "chat_completion",
   "responses",
-  "standalone_web_search",
+  "responses-ws",
+  "web_search",
   "images_generation",
   "images_edit",
 ] as const satisfies readonly RequestLogView["api_operation"][];
@@ -157,11 +158,13 @@ function requestOperationLabel(
   t: (value: string) => string,
 ) {
   switch (operation) {
-    case "chat_completions":
+    case "chat_completion":
       return t("Chat Completions");
     case "responses":
       return t("Responses");
-    case "standalone_web_search":
+    case "responses-ws":
+      return "Responses WebSocket";
+    case "web_search":
       return t("Standalone web search");
     case "images_generation":
       return t("Image generation");
@@ -800,6 +803,7 @@ export function RequestLogsView({
               rows={query.data ?? []}
               rowKey={(log) => log.id}
               onRowClick={(log) => setSelectedId(log.id)}
+              rowActionLabel={t("View details")}
             />
           </AsyncResource>
         </CardContent>

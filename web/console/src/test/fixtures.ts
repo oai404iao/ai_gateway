@@ -9,11 +9,7 @@ import type {
   AdminApiKeyView,
   ApiKeyPolicyView,
   ApiKeyView,
-  ChannelDeletionImpact,
-  ChannelDetailView,
   ChannelGroupStatusReport,
-  ChannelGroupView,
-  ChannelView,
   ConfigTemplateDetailView,
   ConfigTemplateView,
   ConsoleProfile,
@@ -23,8 +19,6 @@ import type {
   ControlPlaneModel,
   ControlPlaneUser,
   LoginResponse,
-  ModelProtocolRuleView,
-  ModelRuleView,
   PersonalUsageReport,
   ProxyTestResponse,
   ProxyView,
@@ -39,7 +33,29 @@ import type {
   SystemSettings,
   UserGroupView,
   UserSettings,
+  UpstreamAccessView,
+  RoutingGroupView,
+  RoutingProfileView,
+  LogicalChannelView,
+  ChannelCapabilityView,
+  OperationRuleView,
 } from "@/api/types";
+
+export const UPSTREAM_ACCESS: UpstreamAccessView = {
+  id: "00000000-0000-0000-0000-000000001401",
+  name: "Primary access",
+  connector_kind: "general",
+  base_url: "https://api.example.test",
+  proxy_id: null,
+  connect_timeout_ms: null,
+  response_header_timeout_ms: 30000,
+  stream_idle_timeout_ms: null,
+  enabled: true,
+  revision: "00000000-0000-0000-0000-000000001402",
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-02T00:00:00Z",
+  deleted_at: null,
+};
 
 export const ADMIN_USER: ConsoleUser = {
   id: "00000000-0000-0000-0000-000000000001",
@@ -226,36 +242,22 @@ export const ADMIN_API_KEY: AdminApiKeyView = {
   user_status: "active",
 };
 
-export const CHANNEL_GROUP: ChannelGroupView = {
-  id: "00000000-0000-0000-0000-000000000021",
-  name: "chat-primary",
-  api_format: "open_ai_chat_completions",
-  connector_kind: "openai_compatible",
-  connector_pool_id: null,
-  request_compression: "default",
-  sharing_only: false,
-  enabled: true,
-  status_statistics_enabled: true,
-  updated_at: "2026-01-02T00:00:00.000Z",
+export const CHANNEL_GROUP: RoutingGroupView = {
+  id: "00000000-0000-0000-0000-000000000021", name: "chat-primary",
+  enabled: true, deleted_at: null,
+  created_at: "2026-01-02T00:00:00.000Z", updated_at: "2026-01-02T00:00:00.000Z",
 };
 
-export const CODEX_QUOTA_GROUP: ChannelGroupView = {
-  id: "00000000-0000-0000-0000-00000000c001",
-  name: "Codex subscriptions",
-  api_format: "open_ai_responses",
-  connector_kind: "codex_oauth",
-  connector_pool_id: "00000000-0000-0000-0000-00000000c001",
-  request_compression: "default",
-  sharing_only: false,
-  enabled: true,
-  status_statistics_enabled: false,
-  updated_at: "2026-08-03T00:00:00.000Z",
+export const CODEX_QUOTA_GROUP: RoutingGroupView = {
+  id: "00000000-0000-0000-0000-00000000c001", name: "Codex subscriptions",
+  enabled: true, deleted_at: null,
+  created_at: "2026-08-03T00:00:00.000Z", updated_at: "2026-08-03T00:00:00.000Z",
 };
 
 export const OWN_CODEX_QUOTA: SelfCodexQuotaCredentialView = {
   id: "00000000-0000-0000-0000-00000000c010",
   name: "00000000-0000-0000-0000-00000000c010",
-  channel_group_id: CODEX_QUOTA_GROUP.id,
+  channel_ids: ["00000000-0000-0000-0000-00000000c011"],
   plan_type: "plus",
   primary_used_percent: 42,
   primary_window_seconds: 10_800,
@@ -271,7 +273,7 @@ export const OWN_CODEX_QUOTA: SelfCodexQuotaCredentialView = {
 export const OWN_CODEX_QUOTA_HISTORY: SelfCodexQuotaWindowHistory = {
   credential_id: OWN_CODEX_QUOTA.id,
   name: OWN_CODEX_QUOTA.name,
-  channel_group_id: CODEX_QUOTA_GROUP.id,
+  channel_ids: OWN_CODEX_QUOTA.channel_ids,
   plan_type: OWN_CODEX_QUOTA.plan_type,
   periods: [
     {
@@ -290,73 +292,53 @@ export const OWN_CODEX_QUOTA_HISTORY: SelfCodexQuotaWindowHistory = {
   ],
 };
 
-export const CHANNEL: ChannelView = {
-  id: "00000000-0000-0000-0000-000000000022",
-  channel_group_id: CHANNEL_GROUP.id,
-  api_format: "open_ai_chat_completions",
-  connector_kind: "openai_compatible",
-  provider_managed: false,
-  name: "upstream-a",
-  base_url: "https://api.upstream.example",
-  enabled: true,
-  supports_websocket: false,
-  supports_standalone_web_search: false,
-  auto_disabled: false,
-  auto_disabled_reason: null,
-  auto_disable_allowed: true,
-  billing_multiplier: "1.25",
-  proxy_id: null,
-  config_template_id: null,
-  connect_timeout_ms: null,
-  response_header_timeout_ms: null,
-  stream_idle_timeout_ms: null,
-  upstream_auth_kind: "bearer",
-  upstream_auth_header_name: null,
-  upstream_credential_configured: true,
-  available_models: ["openai/gpt-4o-mini"],
-  test_model: "openai/gpt-4o-mini",
-  test_pricing_model_id: "00000000-0000-0000-0000-000000000030",
-  created_at: "2026-01-02T00:00:00.000Z",
-  updated_at: "2026-01-02T00:00:00.000Z",
+export const CHANNEL: LogicalChannelView = {
+  id: "00000000-0000-0000-0000-000000000022", group_id: CHANNEL_GROUP.id,
+  access_id: UPSTREAM_ACCESS.id, credential_id: "00000000-0000-0000-0000-000000000023",
+  name: "upstream-a", enabled: true, sharing_only: false, deleted_at: null,
+  binding_revision: "00000000-0000-0000-0000-000000000024",
+  created_at: "2026-01-02T00:00:00.000Z", updated_at: "2026-01-02T00:00:00.000Z",
 };
 
-export const CHANNEL_DETAIL: ChannelDetailView = {
-  ...CHANNEL,
-  override_document: {
-    version: 1,
-    api_format: "open_ai_chat_completions",
-    request_headers: {
-      set: {
-        "x-channel-source": "console-test",
-      },
-    },
-  },
-  upstream_api_key: "sk-upstream-test-secret",
+export const UPSTREAM_CREDENTIAL = {
+  id: CHANNEL.credential_id!,
+  name: "Shared upstream identity",
+  connector_kind: "general" as const,
+  kind: "bearer" as const,
+  header_name: null,
+  allowed_base_urls: [UPSTREAM_ACCESS.base_url],
+  enabled: true,
+  provider_managed: false,
+  channel_ids: [CHANNEL.id],
+  created_at: CHANNEL.created_at,
+  updated_at: CHANNEL.updated_at,
 };
+
+export const UPSTREAM_CREDENTIAL_DETAIL = { ...UPSTREAM_CREDENTIAL, secret: "sk-upstream-test-secret" };
 
 export const API_KEY_OPTIONS: SelfApiKeyOptions = {
   policy_id: API_KEY_POLICY.id,
   policy_name: API_KEY_POLICY.name,
   policy_enabled: true,
-  sharing_credentials: [],
+  sharing_channels: [],
   groups: [
     {
       id: CHANNEL_GROUP.id,
       name: CHANNEL_GROUP.name,
-      api_format: CHANNEL_GROUP.api_format,
+      api_formats: ["open_ai_chat_completions"],
       enabled: CHANNEL_GROUP.enabled,
     },
   ],
   channels: [
     {
       id: CHANNEL.id,
-      channel_group_id: CHANNEL.channel_group_id,
+      channel_group_id: CHANNEL.group_id,
       channel_group_name: CHANNEL_GROUP.name,
       channel_group_enabled: CHANNEL_GROUP.enabled,
-      api_format: CHANNEL.api_format,
+      api_formats: ["open_ai_chat_completions"],
       name: CHANNEL.name,
       enabled: CHANNEL.enabled,
-      auto_disabled: CHANNEL.auto_disabled,
+      auto_disabled: false,
     },
   ],
 };
@@ -382,148 +364,12 @@ export const MODEL: ControlPlaneModel = {
   updated_at: "2026-01-01T00:00:00.000Z",
 };
 
-export const MODEL_PROTOCOL_RULE: ModelProtocolRuleView = {
-  id: "00000000-0000-0000-0000-000000000025",
-  model_rule_id: "00000000-0000-0000-0000-000000000024",
-  api_format: "open_ai_chat_completions",
-  description: null,
-  routing_tiers: [
-    {
-      priority: 0,
-      selection_strategy: "weighted_random",
-      candidates: [
-        {
-          channel_id: CHANNEL.id,
-          upstream_model: MODEL.source_model_id,
-          weight: 100,
-        },
-      ],
-    },
-  ],
-  enabled: true,
-  routing_status: "ready",
-  target_candidate_count: 1,
-  model_capable_candidate_count: 1,
-  active_candidate_count: 1,
-  updated_at: "2026-01-02T00:00:00.000Z",
-};
-
-export const MODEL_RULE: ModelRuleView = {
-  id: MODEL_PROTOCOL_RULE.model_rule_id,
-  model_id: MODEL.id,
-  client_model: MODEL.source_model_id,
-  model_display_name: MODEL.display_name,
-  model_provider_name: MODEL.provider_name,
+export const MODEL_RULE: RoutingProfileView = {
+  id: "00000000-0000-0000-0000-000000000024", model_id: MODEL.id,
+  client_model: MODEL.source_model_id, model_display_name: MODEL.display_name,
   model_enabled: MODEL.enabled,
-  protocol_rules: [MODEL_PROTOCOL_RULE],
-  created_at: "2026-01-02T00:00:00.000Z",
-  updated_at: "2026-01-02T00:00:00.000Z",
+  created_at: "2026-01-02T00:00:00.000Z", updated_at: "2026-01-02T00:00:00.000Z",
 };
-
-export const CHANNEL_DELETION_IMPACT: ChannelDeletionImpact = {
-  resource_type: "channel",
-  resource_id: CHANNEL.id,
-  confirmation_token: "v1.test-channel-impact",
-  channels: [
-    {
-      id: CHANNEL.id,
-      channel_group_id: CHANNEL_GROUP.id,
-      name: CHANNEL.name,
-    },
-  ],
-  model_protocol_rules: [
-    {
-      id: MODEL_PROTOCOL_RULE.id,
-      model_rule_id: MODEL_RULE.id,
-      client_model: MODEL_RULE.client_model,
-      api_format: MODEL_PROTOCOL_RULE.api_format,
-      removed_channel_group_ids: [],
-      removed_channel_ids: [CHANNEL.id],
-      removed_tier_priorities: [0],
-      will_disable: true,
-    },
-  ],
-  api_keys: [{ id: ADMIN_API_KEY.id, name: ADMIN_API_KEY.name }],
-  api_key_policies: [{ id: API_KEY_POLICY.id, name: API_KEY_POLICY.name }],
-  quota_visibility_user_groups: [],
-};
-
-const SEARCH_PROTOCOL_RULE: ModelProtocolRuleView = {
-  id: "00000000-0000-0000-0000-000000000125",
-  model_rule_id: "00000000-0000-0000-0000-000000000124",
-  api_format: "open_ai_responses",
-  description: "Standalone web search routing.",
-  routing_tiers: [
-    {
-      priority: 0,
-      selection_strategy: "weighted_random",
-      candidates: [
-        {
-          channel_id: OWN_CODEX_QUOTA.id,
-          upstream_model: "gpt-5",
-          weight: 100,
-        },
-      ],
-    },
-  ],
-  enabled: true,
-  routing_status: "ready",
-  target_candidate_count: 1,
-  model_capable_candidate_count: 1,
-  active_candidate_count: 1,
-  updated_at: "2026-08-05T00:00:00.000Z",
-};
-
-export const SEARCH_MODEL_RULE: ModelRuleView = {
-  id: SEARCH_PROTOCOL_RULE.model_rule_id,
-  model_id: MODEL.id,
-  client_model: MODEL.source_model_id,
-  model_display_name: MODEL.display_name,
-  model_provider_name: MODEL.provider_name,
-  model_enabled: MODEL.enabled,
-  protocol_rules: [SEARCH_PROTOCOL_RULE],
-  created_at: "2026-08-05T00:00:00.000Z",
-  updated_at: "2026-08-05T00:00:00.000Z",
-};
-
-const IMAGE_PROTOCOL_RULE: ModelProtocolRuleView = {
-  id: "00000000-0000-0000-0000-000000000126",
-  model_rule_id: "00000000-0000-0000-0000-000000000127",
-  api_format: "open_ai_images",
-  description: "Image generation and editing routing.",
-  routing_tiers: [
-    {
-      priority: 0,
-      selection_strategy: "weighted_random",
-      candidates: [
-        {
-          channel_id: "00000000-0000-0000-0000-00000000c020",
-          upstream_model: "gpt-image-2",
-          weight: 100,
-        },
-      ],
-    },
-  ],
-  enabled: true,
-  routing_status: "disconnected",
-  target_candidate_count: 1,
-  model_capable_candidate_count: 0,
-  active_candidate_count: 0,
-  updated_at: "2026-08-05T00:00:00.000Z",
-};
-
-export const IMAGE_MODEL_RULE: ModelRuleView = {
-  id: IMAGE_PROTOCOL_RULE.model_rule_id,
-  model_id: MODEL.id,
-  client_model: MODEL.source_model_id,
-  model_display_name: MODEL.display_name,
-  model_provider_name: MODEL.provider_name,
-  model_enabled: MODEL.enabled,
-  protocol_rules: [IMAGE_PROTOCOL_RULE],
-  created_at: "2026-08-05T00:00:00.000Z",
-  updated_at: "2026-08-05T00:00:00.000Z",
-};
-
 
 export const REQUEST_LOG: RequestLogView = {
   id: "11111111-2222-4333-8444-555555555555",
@@ -534,13 +380,13 @@ export const REQUEST_LOG: RequestLogView = {
   api_key_id: OWN_API_KEY.id,
   request_source: "client",
   api_format: "open_ai_chat_completions",
-  api_operation: "chat_completions",
+  api_operation: "chat_completion",
   request_protocol: "sse",
   client_model: MODEL_RULE.client_model,
   reasoning_effort: "high",
   fast_mode: true,
   upstream_model: MODEL.source_model_id,
-  model_rule_id: MODEL_PROTOCOL_RULE.id,
+  model_rule_id: "00000000-0000-0000-0000-000000000025",
   channel_group_id: CHANNEL_GROUP.id,
   channel_group_name: CHANNEL_GROUP.name,
   channel_id: CHANNEL.id,
@@ -712,12 +558,12 @@ export const CHANNEL_GROUP_STATUS_REPORT: ChannelGroupStatusReport = {
   groups: [
     {
       id: CHANNEL_GROUP.id,
-      api_format: CHANNEL_GROUP.api_format,
+      api_format: "open_ai_chat_completions",
       name: CHANNEL_GROUP.name,
       enabled: CHANNEL_GROUP.enabled,
       models: [
         {
-          api_format: CHANNEL_GROUP.api_format,
+          api_format: "open_ai_chat_completions",
           model: MODEL.source_model_id,
           request_count: 120,
           success_rate: 0.975,
@@ -843,7 +689,7 @@ export const COST_STATISTICS_REPORT: CostStatisticsReport = {
       channel_group_id: CHANNEL_GROUP.id,
       channel_group_name: CHANNEL_GROUP.name,
       name: CHANNEL.name,
-      api_format: CHANNEL.api_format,
+      api_format: "open_ai_chat_completions",
       request_count: 18_878,
       total_tokens: 263_000_000,
       input_tokens: 210_000_000,
@@ -1022,7 +868,7 @@ export const SYSTEM_LOAD_REPORT: SystemLoadReport = {
 export const SHARING_GROUP: CodexSharingGroup = {
   id: "00000000-0000-0000-0000-000000000801",
   updated_at: "2026-09-09T00:00:00.000000Z",
-  credential_id: CHANNEL.id,
+  channel_id: CHANNEL.id,
   name: "Development car",
   enabled: true,
   seats: [CONTROL_PLANE_USER.id, null],
@@ -1058,4 +904,84 @@ export const OWN_SHARING: SelfCodexSharingView = {
   request_reservation_amount: "0.10",
   user_requests_per_minute: 30, user_max_concurrent_requests: 1,
   usage: SHARING_USAGE,
+};
+
+export const ROUTING_GROUP: RoutingGroupView = {
+  id: "00000000-0000-0000-0000-000000001501",
+  name: "Primary group",
+  enabled: true,
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-02T00:00:00Z",
+  deleted_at: null,
+};
+
+export const LOGICAL_CHANNEL: LogicalChannelView = {
+  id: "00000000-0000-0000-0000-000000001601",
+  group_id: ROUTING_GROUP.id,
+  access_id: UPSTREAM_ACCESS.id,
+  credential_id: UPSTREAM_CREDENTIAL.id,
+  name: "Primary channel",
+  enabled: true,
+  sharing_only: false,
+  binding_revision: "00000000-0000-0000-0000-000000001602",
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-02T00:00:00Z",
+  deleted_at: null,
+};
+
+export const CHANNEL_CAPABILITY: ChannelCapabilityView = {
+  id: "00000000-0000-0000-0000-000000001701",
+  channel_id: LOGICAL_CHANNEL.id,
+  settings: {
+    operation: "responses",
+    enabled: true,
+    available_models: ["gpt-5", "gpt-5-mini"],
+    request_compression: "default",
+    test_model: null,
+    test_pricing_model_id: null,
+    auto_disable_allowed: false,
+  },
+  auto_disabled: false,
+  auto_disable_reason: null,
+  auto_disable_at: null,
+  status_statistics_enabled: false,
+  config_template_id: null,
+  override_document: {},
+  billing_multiplier: "1",
+  revision: "00000000-0000-0000-0000-000000001702",
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-02T00:00:00Z",
+  deleted_at: null,
+};
+
+export const OPERATION_RULE: OperationRuleView = {
+  id: "00000000-0000-0000-0000-000000001801",
+  model_routing_profile_id: "00000000-0000-0000-0000-000000001802",
+  operation: "responses",
+  enabled: true,
+  routing_tiers: [
+    {
+      priority: 0,
+      selection_strategy: "weighted_random",
+      candidates: [
+        {
+          capability_id: CHANNEL_CAPABILITY.id,
+          upstream_model: "gpt-5",
+          weight: 1,
+        },
+      ],
+    },
+  ],
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-02T00:00:00Z",
+};
+
+export const ROUTING_PROFILE = {
+  id: OPERATION_RULE.model_routing_profile_id,
+  model_id: MODEL.id,
+  client_model: MODEL.source_model_id,
+  model_display_name: MODEL.display_name,
+  model_enabled: MODEL.enabled,
+  created_at: OPERATION_RULE.created_at,
+  updated_at: OPERATION_RULE.updated_at,
 };

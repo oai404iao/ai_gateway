@@ -6,18 +6,19 @@ use serde::{Deserialize, Serialize};
 /// upstream behavior and therefore must not be used as API-key permissions or
 /// model-rule formats.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
 pub enum ConnectorKind {
     #[default]
+    #[serde(rename = "general")]
     OpenAiCompatible,
+    #[serde(rename = "codex")]
     CodexOauth,
 }
 
 impl ConnectorKind {
     pub(crate) fn parse(value: &str) -> Option<Self> {
         match value {
-            "openai_compatible" => Some(Self::OpenAiCompatible),
-            "codex_oauth" => Some(Self::CodexOauth),
+            "general" => Some(Self::OpenAiCompatible),
+            "codex" => Some(Self::CodexOauth),
             _ => None,
         }
     }
@@ -25,8 +26,8 @@ impl ConnectorKind {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::OpenAiCompatible => "openai_compatible",
-            Self::CodexOauth => "codex_oauth",
+            Self::OpenAiCompatible => "general",
+            Self::CodexOauth => "codex",
         }
     }
 }

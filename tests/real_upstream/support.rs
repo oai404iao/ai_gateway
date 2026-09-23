@@ -332,6 +332,17 @@ async fn start_gateway_server(app: axum::Router) -> SmokeServer {
     SmokeServer { address, task }
 }
 
+/// Every operation the smoke request may exercise for one client format. The
+/// data plane routes by exact operation, so the fixture must seed each pool.
+fn smoke_operations(format: SmokeFormat) -> &'static [ApiOperation] {
+    match format {
+        SmokeFormat::ChatCompletions => &[ApiOperation::ChatCompletions],
+        SmokeFormat::Responses => &[ApiOperation::Responses, ApiOperation::ResponsesWebSocket],
+        SmokeFormat::StandaloneWebSearch => &[ApiOperation::StandaloneWebSearch],
+        SmokeFormat::Images => &[ApiOperation::ImagesGeneration, ApiOperation::ImagesEdit],
+    }
+}
+
 fn gateway(
     settings: &SmokeSettings,
     upstream_settings: &SmokeUpstream,
@@ -341,6 +352,11 @@ fn gateway(
 ) -> SmokeGateway {
     let group_id = Uuid::new_v4();
     let channel_id = Uuid::new_v4();
+    let priced_model_id = Uuid::new_v4();
+    let operations: Vec<_> = smoke_operations(format)
+        .iter()
+        .map(|operation| (*operation, Uuid::new_v4()))
+        .collect();
     let logs = RecordingRequestLogSink::default();
     let records = ControlPlaneRecords {
         api_keys: vec![ApiKeyRecord {
@@ -365,65 +381,82 @@ fn gateway(
             id: group_id,
             name: "real-upstream-smoke".into(),
             api_format: format.api_format_name().into(),
-            connector_kind: "openai_compatible".into(),
+            connector_kind: "general".into(),
             request_compression: "default".into(),
             sharing_only: false,
             enabled: true,
         }],
-        channels: vec![ChannelRecord {
-            id: channel_id,
-            channel_group_id: group_id,
-            api_format: format.api_format_name().into(),
-            name: "real-upstream-smoke".into(),
-            base_url: upstream_settings.base_url.clone(),
-            enabled: true,
-            supports_websocket: matches!(format, SmokeFormat::Responses),
-            supports_standalone_web_search: matches!(format, SmokeFormat::StandaloneWebSearch),
-            auto_disabled: false,
-            auto_disable_allowed: false,
-            billing_multiplier: Decimal::ONE,
-            proxy_id: None,
-            config_template_id: None,
-            override_document: json!({}),
-            connect_timeout_ms: None,
-            response_header_timeout_ms: None,
-            stream_idle_timeout_ms: None,
-            upstream_auth_kind: "bearer".into(),
-            upstream_auth_header_name: None,
-            upstream_api_key: Some(upstream_settings.api_key.clone()),
-            available_models: vec![upstream_model.into()],
-            test_model: None,
-            test_pricing_model_id: None,
-        }],
+        channels: operations
+            .iter()
+            .map(|(operation, capability_id)| ChannelRecord {
+                credential: None,
+                credential_binding_revision: Uuid::nil(),
+                id: *capability_id,
+                channel_group_id: group_id,
+                api_format: format.api_format_name().into(),
+                logical_channel_id: channel_id,
+                access_id: channel_id,
+                api_operation: Some(*operation),
+                connector_kind: "general".into(),
+                request_compression: "default".into(),
+                access_revision: Uuid::nil(),
+                capability_revision: Uuid::nil(),
+                transports: operation.transports().to_vec(),
+                name: "real-upstream-smoke".into(),
+                base_url: upstream_settings.base_url.clone(),
+                enabled: true,
+                supports_websocket: *operation == ApiOperation::ResponsesWebSocket,
+                supports_standalone_web_search: *operation == ApiOperation::StandaloneWebSearch,
+                auto_disabled: false,
+                auto_disable_allowed: false,
+                billing_multiplier: Decimal::ONE,
+                proxy_id: None,
+                config_template_id: None,
+                override_document: json!({}),
+                connect_timeout_ms: None,
+                response_header_timeout_ms: None,
+                stream_idle_timeout_ms: None,
+                upstream_auth_kind: "bearer".into(),
+                upstream_auth_header_name: None,
+                upstream_api_key: Some(upstream_settings.api_key.clone()),
+                available_models: vec![upstream_model.into()],
+                test_model: None,
+                test_pricing_model_id: None,
+            })
+            .collect(),
         models: vec![],
-        model_rules: vec![ModelRuleRecord {
-            id: Uuid::new_v4(),
-            client_model: client_model.into(),
-            api_format: format.api_format_name().into(),
-            model_id: Uuid::new_v4(),
-            model_enabled: true,
-            model_currency: "USD".into(),
-            price_unit_tokens: 1_000_000,
-            price_effective_at: chrono::Utc::now(),
-            input_unit_price: Decimal::ONE,
-            cached_input_unit_price: Decimal::new(5, 1),
-            cache_write_unit_price: Decimal::new(25, 2),
-            output_unit_price: Decimal::from(2_i64),
-            advanced_billing: json!({
-                "long_context_tiers": [],
-                "request_multipliers": [],
-            }),
-            routing_tiers: vec![ModelRuleRoutingTier {
-                priority: 0,
-                selection_strategy: "weighted_random".into(),
-                candidates: vec![ModelRuleRouteCandidate {
-                    channel_id,
-                    upstream_model: upstream_model.into(),
-                    weight: 1,
+        model_rules: operations
+            .iter()
+            .map(|(operation, capability_id)| ModelRuleRecord {
+                id: Uuid::new_v4(),
+                client_model: client_model.into(),
+                api_format: format.api_format_name().into(),
+                api_operation: *operation,
+                model_id: priced_model_id,
+                model_enabled: true,
+                model_currency: "USD".into(),
+                price_unit_tokens: 1_000_000,
+                price_effective_at: chrono::Utc::now(),
+                input_unit_price: Decimal::ONE,
+                cached_input_unit_price: Decimal::new(5, 1),
+                cache_write_unit_price: Decimal::new(25, 2),
+                output_unit_price: Decimal::from(2_i64),
+                advanced_billing: json!({
+                    "long_context_tiers": [],
+                    "request_multipliers": [],
+                }),
+                routing_tiers: vec![ModelRuleRoutingTier {
+                    priority: 0,
+                    selection_strategy: "weighted_random".into(),
+                    candidates: vec![ModelRuleRouteCandidate {
+                        channel_id: *capability_id,
+                        upstream_model: upstream_model.into(),
+                        weight: 1,
+                    }],
                 }],
-            }],
-            enabled: true,
-        }],
+                enabled: true,
+            })
+            .collect(),
         proxies: vec![],
         templates: vec![],
     };
@@ -982,7 +1015,7 @@ pub(super) async fn smoke_responses_websocket(settings: &SmokeSettings, upstream
     assert_usage_was_logged(
         std::slice::from_ref(successful_event),
         SmokeFormat::Responses,
-        ApiOperation::Responses,
+        ApiOperation::ResponsesWebSocket,
         RequestProtocol::WebSocket,
     );
     let expected = usage_from_sse_value(SmokeFormat::Responses, &completed)

@@ -1,4 +1,3 @@
-import { useNavigate } from "react-router";
 import { Badge } from "@/components/ui/badge";
 import { AdminListPage } from "@/features/admin/components/admin-list-page";
 import { useApiKeyPolicies, useUserGroups } from "@/features/admin/api";
@@ -7,7 +6,6 @@ import { roleLabel } from "@/lib/permissions";
 import { useI18n } from "@/app/i18n";
 
 export function UserGroupsPage() {
-  const navigate = useNavigate();
   const groups = useUserGroups();
   const policies = useApiKeyPolicies();
   const { t } = useI18n();
@@ -23,7 +21,7 @@ export function UserGroupsPage() {
       rowKey={(group) => group.id}
       detailPath={(group) => `/admin/user-groups/${group.id}`}
       createLabel={t("New user group")}
-      onCreate={() => navigate("/admin/user-groups/new")}
+      createPath="/admin/user-groups/new"
       columns={[
         {
           key: "name",

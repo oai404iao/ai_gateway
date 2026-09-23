@@ -120,11 +120,6 @@ impl CodexCredentialRuntime {
             let Some(status) = CodexCredentialStatus::parse(&record.runtime_status) else {
                 continue;
             };
-            let projection_channel_ids = if record.projection_channel_ids.is_empty() {
-                vec![record.channel_id]
-            } else {
-                record.projection_channel_ids.clone()
-            };
             let credential = Arc::new(CompiledCodexCredential {
                 credential_id: record.channel_id,
                 account_id: record.account_id.map(Arc::from),
@@ -134,21 +129,19 @@ impl CodexCredentialRuntime {
                 refresh_generation: record.refresh_generation,
                 status,
             });
-            for channel_id in projection_channel_ids {
-                credentials.insert(channel_id, Arc::clone(&credential));
-            }
+            credentials.insert(record.channel_id, credential);
         }
         self.snapshot.store(Arc::new(credentials));
     }
 
     pub fn credential(
         &self,
-        channel_id: Uuid,
+        credential_id: Uuid,
         affinity_cache_hit: bool,
     ) -> Result<Arc<CompiledCodexCredential>, CodexCredentialUnavailable> {
         let snapshot = self.snapshot.load();
         let credential = snapshot
-            .get(&channel_id)
+            .get(&credential_id)
             .cloned()
             .ok_or(CodexCredentialUnavailable::Missing)?;
         match credential.status {
@@ -177,9 +170,6 @@ mod tests {
         let now = Utc::now();
         CodexCredentialRecord {
             channel_id: Uuid::from_u128(1),
-            channel_group_id: Uuid::from_u128(2),
-            connector_pool_id: Uuid::from_u128(2),
-            projection_channel_ids: vec![Uuid::from_u128(1), Uuid::from_u128(3)],
             label: "credential".into(),
             email: Some("codex@example.test".into()),
             account_id: Some("account-123".into()),
@@ -265,10 +255,14 @@ mod tests {
         let runtime = CodexCredentialRuntime::new();
         runtime.replace(vec![record("active", None)]);
         let credential = runtime.credential(Uuid::from_u128(1), false).unwrap();
-        let images_projection = runtime.credential(Uuid::from_u128(3), false).unwrap();
+        let reused = runtime.credential(Uuid::from_u128(1), false).unwrap();
         let debug = format!("{credential:?}");
 
-        assert_eq!(images_projection.credential_id(), Uuid::from_u128(1));
+        assert!(Arc::ptr_eq(&credential, &reused));
+        assert!(matches!(
+            runtime.credential(Uuid::from_u128(3), false),
+            Err(CodexCredentialUnavailable::Missing)
+        ));
         assert!(debug.contains("REDACTED"));
         assert!(!debug.contains("access-token"));
     }

@@ -5,6 +5,7 @@ import { AppProviders } from "@/app/providers";
 import { ResourceTable } from "@/components/shared/resource-table";
 import { Checkbox } from "@/components/ui/checkbox";
 import { seedAuthenticatedSession } from "@/test/msw";
+import { MemoryRouter } from "react-router";
 
 interface TestRow {
   id: string;
@@ -26,6 +27,30 @@ function renderTable(rows: TestRow[]) {
 }
 
 describe("ResourceTable", () => {
+  it("exposes real links and does not wrap row checkboxes in them", () => {
+    render(<MemoryRouter><ResourceTable
+      rows={[{ id: "1", name: "One" }]} rowKey={(row) => row.id}
+      rowHref={(row) => `/items/${row.id}`} linkColumnKey="name"
+      columns={[
+        { key: "select", header: "Select", render: () => <Checkbox aria-label="Select one" /> },
+        { key: "name", header: "Name", render: (row) => row.name },
+      ]}
+    /></MemoryRouter>);
+    expect(screen.getByRole("link", { name: "One" })).toHaveAttribute("href", "/items/1");
+    expect(screen.getByRole("checkbox").closest("a")).toBeNull();
+  });
+
+  it("opens a sheet action by keyboard without firing the row twice", async () => {
+    const onRowClick = vi.fn();
+    const user = userEvent.setup();
+    const row = { id: "1", name: "One" };
+    render(<ResourceTable rows={[row]} rowKey={(item) => item.id}
+      columns={[{ key: "name", header: "Name", render: (item) => item.name }]}
+      onRowClick={onRowClick} rowActionLabel="View details" />);
+    screen.getByRole("button", { name: "View details" }).focus();
+    await user.keyboard("{Enter}");
+    expect(onRowClick).toHaveBeenCalledExactlyOnceWith(row);
+  });
   it("groups rows and paginates large collections", async () => {
     seedAuthenticatedSession();
     const user = userEvent.setup();

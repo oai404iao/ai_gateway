@@ -11,9 +11,9 @@ use ai_gateway::{
         RequestLogSink,
     },
     domain::{
-        ApiFormat, AutomaticDisableSettings, PassiveHealthSettings, ScheduledTestingSettings,
-        SessionAffinityKeySource, SessionAffinityRule, SessionAffinitySettings,
-        SystemRuntimeSettings, UpstreamTimeoutDefaults,
+        ApiFormat, ApiOperation, AutomaticDisableSettings, PassiveHealthSettings,
+        ScheduledTestingSettings, SessionAffinityKeySource, SessionAffinityRule,
+        SessionAffinitySettings, SystemRuntimeSettings, UpstreamTimeoutDefaults,
     },
     http,
     persistence::{
@@ -659,6 +659,7 @@ struct TransformDocuments {
     chat_override: Value,
     responses_override: Value,
     responses_search_supported: bool,
+    responses_transports: Vec<ai_gateway::domain::CapabilityTransport>,
     responses_request_compression: &'static str,
     images_override: Value,
     upstream_auth_kind: &'static str,
@@ -682,6 +683,7 @@ impl Default for TransformDocuments {
             chat_override: serde_json::json!({}),
             responses_override: serde_json::json!({}),
             responses_search_supported: true,
+            responses_transports: Vec::new(),
             responses_request_compression: "default",
             images_override: serde_json::json!({}),
             upstream_auth_kind: "bearer",
@@ -791,7 +793,7 @@ fn configured_proxy_with_policy_and_transforms(
         id,
         name: id.to_string(),
         api_format: api_format.to_owned(),
-        connector_kind: "openai_compatible".into(),
+        connector_kind: "general".into(),
         sharing_only: false,
         request_compression: if api_format == "open_ai_responses" {
             transforms.responses_request_compression.into()
@@ -802,9 +804,23 @@ fn configured_proxy_with_policy_and_transforms(
     };
     let template_id = transforms.template.as_ref().map(|_| Uuid::new_v4());
     let channel = |id: Uuid, group_id: Uuid, api_format: &str| ChannelRecord {
+        credential: None,
+        credential_binding_revision: Uuid::nil(),
         id,
         channel_group_id: group_id,
         api_format: api_format.into(),
+        logical_channel_id: Uuid::nil(),
+        access_id: Uuid::nil(),
+        api_operation: None,
+        connector_kind: String::new(),
+        request_compression: String::new(),
+        access_revision: Uuid::nil(),
+        capability_revision: Uuid::nil(),
+        transports: if api_format == "open_ai_responses" {
+            transforms.responses_transports.clone()
+        } else {
+            Vec::new()
+        },
         name: id.to_string(),
         base_url: upstream_url.into(),
         enabled: true,
@@ -863,61 +879,63 @@ fn configured_proxy_with_policy_and_transforms(
             quota_used_amount: Default::default(),
         }
     };
-    let rule = |model: &str, upstream: &str, format: &str, channel_id: Uuid| ModelRuleRecord {
-        id: Uuid::new_v4(),
-        client_model: model.into(),
-        api_format: format.into(),
-        model_id: Uuid::new_v4(),
-        model_enabled: true,
-        model_currency: "USD".into(),
-        price_unit_tokens: 1_000_000,
-        price_effective_at: chrono::Utc::now(),
-        input_unit_price: if transforms.filter_fast_mode {
-            Decimal::ONE
-        } else {
-            Decimal::ZERO
-        },
-        cached_input_unit_price: if transforms.filter_fast_mode {
-            Decimal::ONE
-        } else {
-            Decimal::ZERO
-        },
-        cache_write_unit_price: if transforms.filter_fast_mode {
-            Decimal::ONE
-        } else {
-            Decimal::ZERO
-        },
-        output_unit_price: if transforms.filter_fast_mode {
-            Decimal::ONE
-        } else {
-            Decimal::ZERO
-        },
-        advanced_billing: if transforms.filter_fast_mode {
-            serde_json::json!({
-                "long_context_tiers": [],
-                "request_multipliers": [{
-                    "json_pointer": "/service_tier",
-                    "value": "priority",
-                    "multiplier": "2"
+    let rule =
+        |model: &str, upstream: &str, operation: ApiOperation, channel_id: Uuid| ModelRuleRecord {
+            id: Uuid::new_v4(),
+            client_model: model.into(),
+            api_format: operation.api_format().as_str().into(),
+            api_operation: operation,
+            model_id: Uuid::new_v4(),
+            model_enabled: true,
+            model_currency: "USD".into(),
+            price_unit_tokens: 1_000_000,
+            price_effective_at: chrono::Utc::now(),
+            input_unit_price: if transforms.filter_fast_mode {
+                Decimal::ONE
+            } else {
+                Decimal::ZERO
+            },
+            cached_input_unit_price: if transforms.filter_fast_mode {
+                Decimal::ONE
+            } else {
+                Decimal::ZERO
+            },
+            cache_write_unit_price: if transforms.filter_fast_mode {
+                Decimal::ONE
+            } else {
+                Decimal::ZERO
+            },
+            output_unit_price: if transforms.filter_fast_mode {
+                Decimal::ONE
+            } else {
+                Decimal::ZERO
+            },
+            advanced_billing: if transforms.filter_fast_mode {
+                serde_json::json!({
+                    "long_context_tiers": [],
+                    "request_multipliers": [{
+                        "json_pointer": "/service_tier",
+                        "value": "priority",
+                        "multiplier": "2"
+                    }],
+                })
+            } else {
+                serde_json::json!({
+                    "long_context_tiers": [],
+                    "request_multipliers": [],
+                })
+            },
+            routing_tiers: vec![ModelRuleRoutingTier {
+                priority: 0,
+                selection_strategy: "weighted_random".into(),
+                candidates: vec![ModelRuleRouteCandidate {
+                    channel_id,
+                    upstream_model: upstream.into(),
+                    weight: 1,
                 }],
-            })
-        } else {
-            serde_json::json!({
-                "long_context_tiers": [],
-                "request_multipliers": [],
-            })
-        },
-        routing_tiers: vec![ModelRuleRoutingTier {
-            priority: 0,
-            selection_strategy: "weighted_random".into(),
-            candidates: vec![ModelRuleRouteCandidate {
-                channel_id,
-                upstream_model: upstream.into(),
-                weight: 1,
             }],
-        }],
-        enabled: true,
-    };
+            enabled: true,
+        };
     let mut records = ControlPlaneRecords {
         api_keys: vec![
             key(
@@ -963,33 +981,49 @@ fn configured_proxy_with_policy_and_transforms(
         ],
         models: vec![],
         model_rules: vec![
-            rule("same-model", "same-model", "open_ai_chat_completions", chat),
+            rule(
+                "same-model",
+                "same-model",
+                ApiOperation::ChatCompletions,
+                chat,
+            ),
             rule(
                 "alias-model",
                 "upstream-alias-model",
-                "open_ai_chat_completions",
+                ApiOperation::ChatCompletions,
                 chat,
             ),
             rule(
                 "chat-only-model",
                 "chat-only-model",
-                "open_ai_chat_completions",
+                ApiOperation::ChatCompletions,
                 chat,
             ),
             rule(
                 "responses-model",
                 "responses-model",
-                "open_ai_responses",
+                ApiOperation::Responses,
+                responses,
+            ),
+            rule(
+                "responses-model",
+                "responses-model",
+                ApiOperation::StandaloneWebSearch,
                 responses,
             ),
             rule(
                 "search-alias",
                 "responses-model",
-                "open_ai_responses",
+                ApiOperation::StandaloneWebSearch,
                 responses,
             ),
             {
-                let mut rule = rule("gpt-image-2", "gpt-image-2", "open_ai_images", images);
+                let mut rule = rule(
+                    "gpt-image-2",
+                    "gpt-image-2",
+                    ApiOperation::ImagesGeneration,
+                    images,
+                );
                 rule.routing_tiers[0]
                     .candidates
                     .push(ModelRuleRouteCandidate {
@@ -1000,7 +1034,44 @@ fn configured_proxy_with_policy_and_transforms(
                 rule
             },
             {
-                let mut rule = rule("image-alias", "gpt-image-2", "open_ai_images", images);
+                let mut rule = rule(
+                    "gpt-image-2",
+                    "gpt-image-2",
+                    ApiOperation::ImagesEdit,
+                    images,
+                );
+                rule.routing_tiers[0]
+                    .candidates
+                    .push(ModelRuleRouteCandidate {
+                        channel_id: images_alt,
+                        upstream_model: "gpt-image-2".into(),
+                        weight: 1,
+                    });
+                rule
+            },
+            {
+                let mut rule = rule(
+                    "image-alias",
+                    "gpt-image-2",
+                    ApiOperation::ImagesGeneration,
+                    images,
+                );
+                rule.routing_tiers[0]
+                    .candidates
+                    .push(ModelRuleRouteCandidate {
+                        channel_id: images_alt,
+                        upstream_model: "gpt-image-2".into(),
+                        weight: 1,
+                    });
+                rule
+            },
+            {
+                let mut rule = rule(
+                    "image-alias",
+                    "gpt-image-2",
+                    ApiOperation::ImagesEdit,
+                    images,
+                );
                 rule.routing_tiers[0]
                     .candidates
                     .push(ModelRuleRouteCandidate {
@@ -1276,9 +1347,19 @@ fn session_affinity_proxy(first_upstream_url: &str, second_upstream_url: &str) -
     let second_channel_id = Uuid::new_v4();
     let model_rule_id = Uuid::new_v4();
     let channel = |id: Uuid, name: &str, base_url: &str| ChannelRecord {
+        credential: None,
+        credential_binding_revision: Uuid::nil(),
         id,
         channel_group_id: group_id,
         api_format: "open_ai_chat_completions".into(),
+        logical_channel_id: Uuid::nil(),
+        access_id: Uuid::nil(),
+        api_operation: None,
+        connector_kind: String::new(),
+        request_compression: String::new(),
+        access_revision: Uuid::nil(),
+        capability_revision: Uuid::nil(),
+        transports: Vec::new(),
         name: name.into(),
         base_url: base_url.into(),
         enabled: true,
@@ -1323,7 +1404,7 @@ fn session_affinity_proxy(first_upstream_url: &str, second_upstream_url: &str) -
             id: group_id,
             name: "affinity".into(),
             api_format: "open_ai_chat_completions".into(),
-            connector_kind: "openai_compatible".into(),
+            connector_kind: "general".into(),
             request_compression: "default".into(),
             sharing_only: false,
             enabled: true,
@@ -1337,6 +1418,7 @@ fn session_affinity_proxy(first_upstream_url: &str, second_upstream_url: &str) -
             id: model_rule_id,
             client_model: "affinity-model".into(),
             api_format: "open_ai_chat_completions".into(),
+            api_operation: ApiOperation::ChatCompletions,
             model_id: Uuid::new_v4(),
             model_enabled: true,
             model_currency: "USD".into(),
@@ -1771,6 +1853,39 @@ async fn user_group_fast_filter_removes_service_tier_from_forwarding_logs_and_bi
     assert_eq!(billing.price.input_unit_price, Decimal::ONE);
     assert_eq!(billing.price.output_unit_price, Decimal::ONE);
     assert_eq!(billing.cost_amount, Some(Decimal::new(12, 6)));
+}
+
+#[tokio::test]
+async fn unsupported_response_transports_never_dispatch_upstream() {
+    use ai_gateway::domain::CapabilityTransport as T;
+    for (transport, stream) in [
+        (T::Websocket, false),
+        (T::Websocket, true),
+        (T::HttpJson, true),
+        (T::HttpSse, false),
+    ] {
+        let harness = harness_with_transforms(TransformDocuments {
+            responses_transports: vec![transport],
+            ..Default::default()
+        })
+        .await;
+        let response = authorized_post(
+            &client(),
+            harness.url("/v1/responses"),
+            CLIENT_KEY,
+            serde_json::to_vec(&serde_json::json!({
+                "model": "responses-model", "input": "hello", "stream": stream
+            }))
+            .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(body["error"]["code"], "no_healthy_channel");
+        assert!(harness.upstream_requests().is_empty());
+    }
 }
 
 #[tokio::test]

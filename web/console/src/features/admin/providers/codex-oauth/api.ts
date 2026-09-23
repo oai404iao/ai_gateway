@@ -16,21 +16,19 @@ import type {
   MutationResponse,
 } from "@/api/types";
 
-const credentialsKey = (groupId: string) =>
-  ["console", "codex-oauth", groupId, "credentials"] as const;
+const credentialsKey = ["console", "codex-oauth", "credentials"] as const;
 const credentialKey = (id: string) =>
   ["console", "codex-oauth", "credential", id] as const;
 const quotaWindowHistoryKey = (id: string) =>
   ["console", "codex-oauth", "credential", id, "quota-windows"] as const;
 
-export function useCodexCredentials(groupId: string) {
+export function useCodexCredentials() {
   return useQuery({
-    queryKey: credentialsKey(groupId),
+    queryKey: credentialsKey,
     queryFn: () =>
       apiGet<CodexCredentialView[]>(
-        `/providers/codex-oauth/channel-groups/${groupId}/credentials`,
+        "/routing/upstream-credentials/codex",
       ),
-    enabled: Boolean(groupId),
     refetchInterval: 30_000,
   });
 }
@@ -40,7 +38,7 @@ export function useCodexCredential(id: string) {
     queryKey: credentialKey(id),
     queryFn: () =>
       apiGetDetail<CodexCredentialView>(
-        `/providers/codex-oauth/credentials/${id}`,
+        `/routing/upstream-credentials/codex/${id}`,
       ),
     enabled: Boolean(id),
   });
@@ -58,23 +56,23 @@ export function useCodexQuotaWindowHistory(id: string) {
     queryKey: quotaWindowHistoryKey(id),
     queryFn: () =>
       apiGet<CodexQuotaWindowHistory>(
-        `/providers/codex-oauth/credentials/${id}/quota/windows`,
+        `/routing/upstream-credentials/codex/${id}/quota/windows`,
       ),
     enabled: Boolean(id),
   });
 }
 
-export function useStartCodexOauth(groupId: string) {
+export function useStartCodexOauth() {
   return useMutation({
     mutationFn: (input: CodexOauthStartInput) =>
       apiPost<CodexOauthStartResponse>(
-        `/providers/codex-oauth/channel-groups/${groupId}/oauth/flows`,
+        "/routing/upstream-credentials/codex/oauth/flows",
         input,
       ),
   });
 }
 
-export function useCompleteCodexOauth(groupId: string) {
+export function useCompleteCodexOauth() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({
@@ -85,11 +83,12 @@ export function useCompleteCodexOauth(groupId: string) {
       input: CodexOauthCompleteInput;
     }) =>
       apiPost<MutationResponse>(
-        `/providers/codex-oauth/oauth/flows/${flowId}/complete`,
+        `/routing/upstream-credentials/codex/oauth/flows/${flowId}/complete`,
         input,
       ),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: credentialsKey(groupId) });
+      void queryClient.invalidateQueries({ queryKey: credentialsKey });
+      void queryClient.invalidateQueries({ queryKey: ["console", "upstream-credentials"] });
       void queryClient.invalidateQueries({ queryKey: ["console", "channels"] });
       void queryClient.invalidateQueries({ queryKey: ["console", "model-rules"] });
       void queryClient.invalidateQueries({
@@ -99,16 +98,17 @@ export function useCompleteCodexOauth(groupId: string) {
   });
 }
 
-export function useImportCodexCredential(groupId: string) {
+export function useImportCodexCredential() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: CodexCredentialImportInput) =>
       apiPost<MutationResponse>(
-        `/providers/codex-oauth/channel-groups/${groupId}/credentials`,
+        "/routing/upstream-credentials/codex",
         input,
       ),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: credentialsKey(groupId) });
+      void queryClient.invalidateQueries({ queryKey: credentialsKey });
+      void queryClient.invalidateQueries({ queryKey: ["console", "upstream-credentials"] });
       void queryClient.invalidateQueries({ queryKey: ["console", "channels"] });
       void queryClient.invalidateQueries({ queryKey: ["console", "model-rules"] });
       void queryClient.invalidateQueries({
@@ -118,17 +118,17 @@ export function useImportCodexCredential(groupId: string) {
   });
 }
 
-export function useExportCodexCredentials(groupId: string) {
+export function useExportCodexCredentials() {
   return useMutation({
     mutationFn: (input: CodexCredentialExportInput) =>
       apiPost<CodexCredentialExportBundle>(
-        `/providers/codex-oauth/channel-groups/${groupId}/credentials/export`,
+        "/routing/upstream-credentials/codex/export",
         input,
       ),
   });
 }
 
-export function useUpdateCodexCredential(groupId: string, id: string) {
+export function useUpdateCodexCredential(id: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({
@@ -139,12 +139,13 @@ export function useUpdateCodexCredential(groupId: string, id: string) {
       ifMatch: string;
     }) =>
       apiPut<MutationResponse>(
-        `/providers/codex-oauth/credentials/${id}`,
+        `/routing/upstream-credentials/codex/${id}`,
         input,
         ifMatch,
       ),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: credentialsKey(groupId) });
+      void queryClient.invalidateQueries({ queryKey: credentialsKey });
+      void queryClient.invalidateQueries({ queryKey: ["console", "upstream-credentials"] });
       void queryClient.invalidateQueries({ queryKey: credentialKey(id) });
       void queryClient.invalidateQueries({ queryKey: ["console", "channels"] });
       void queryClient.invalidateQueries({ queryKey: ["console", "model-rules"] });
@@ -155,18 +156,19 @@ export function useUpdateCodexCredential(groupId: string, id: string) {
   });
 }
 
-export function useDeleteCodexCredential(groupId: string) {
+export function useDeleteCodexCredential() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ id, ifMatch }: { id: string; ifMatch: string }) =>
       apiSend<MutationResponse>(
-        `/providers/codex-oauth/credentials/${id}`,
+        `/routing/upstream-credentials/codex/${id}`,
         "DELETE",
         undefined,
         { ifMatch },
       ),
     onSuccess: (_data, { id }) => {
-      void queryClient.invalidateQueries({ queryKey: credentialsKey(groupId) });
+      void queryClient.invalidateQueries({ queryKey: credentialsKey });
+      void queryClient.invalidateQueries({ queryKey: ["console", "upstream-credentials"] });
       void queryClient.removeQueries({ queryKey: credentialKey(id) });
       void queryClient.invalidateQueries({ queryKey: ["console", "channels"] });
       void queryClient.invalidateQueries({ queryKey: ["console", "model-rules"] });
@@ -177,16 +179,17 @@ export function useDeleteCodexCredential(groupId: string) {
   });
 }
 
-export function useBatchUpdateCodexCredentials(groupId: string) {
+export function useBatchUpdateCodexCredentials() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: CodexCredentialBatchInput) =>
       apiPost<CodexCredentialBatchResponse>(
-        `/providers/codex-oauth/channel-groups/${groupId}/credentials/batch`,
+        "/routing/upstream-credentials/codex/batch",
         input,
       ),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: credentialsKey(groupId) });
+      void queryClient.invalidateQueries({ queryKey: credentialsKey });
+      void queryClient.invalidateQueries({ queryKey: ["console", "upstream-credentials"] });
       void queryClient.invalidateQueries({
         queryKey: ["console", "codex-oauth", "credential"],
       });
@@ -199,41 +202,41 @@ export function useBatchUpdateCodexCredentials(groupId: string) {
   });
 }
 
-export function useRefreshCodexCredential(groupId: string) {
+export function useRefreshCodexCredential() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id: string) =>
-      apiPost<void>(`/providers/codex-oauth/credentials/${id}/refresh`),
+      apiPost<void>(`/routing/upstream-credentials/codex/${id}/refresh`),
     onSuccess: (_data, id) => {
-      void queryClient.invalidateQueries({ queryKey: credentialsKey(groupId) });
+      void queryClient.invalidateQueries({ queryKey: credentialsKey });
       void queryClient.invalidateQueries({ queryKey: credentialKey(id) });
     },
   });
 }
 
-export function useRefreshCodexQuota(groupId: string) {
+export function useRefreshCodexQuota() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id: string) =>
       apiPost<void>(
-        `/providers/codex-oauth/credentials/${id}/quota/refresh`,
+        `/routing/upstream-credentials/codex/${id}/quota/refresh`,
       ),
     onSuccess: (_data, id) => {
-      void queryClient.invalidateQueries({ queryKey: credentialsKey(groupId) });
+      void queryClient.invalidateQueries({ queryKey: credentialsKey });
       void queryClient.invalidateQueries({ queryKey: credentialKey(id) });
     },
   });
 }
 
-export function useResetCodexQuota(groupId: string) {
+export function useResetCodexQuota() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id: string) =>
       apiPost<CodexQuotaResetResponse>(
-        `/providers/codex-oauth/credentials/${id}/quota/reset`,
+        `/routing/upstream-credentials/codex/${id}/quota/reset`,
       ),
     onSuccess: (_data, id) => {
-      void queryClient.invalidateQueries({ queryKey: credentialsKey(groupId) });
+      void queryClient.invalidateQueries({ queryKey: credentialsKey });
       void queryClient.invalidateQueries({ queryKey: credentialKey(id) });
       void queryClient.invalidateQueries({
         queryKey: quotaWindowHistoryKey(id),

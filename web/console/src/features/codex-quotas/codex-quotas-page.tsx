@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { History } from "lucide-react";
 import type {
   CodexQuotaResetReason,
@@ -266,21 +266,13 @@ export function CodexQuotasPage() {
   const quotas = useOwnCodexQuotas();
   const [historyCredential, setHistoryCredential] =
     useState<SelfCodexQuotaCredentialView | null>(null);
-  const groups = useMemo(() => {
-    const grouped = new Map<string, SelfCodexQuotaCredentialView[]>();
-    for (const credential of quotas.data ?? []) {
-      const current = grouped.get(credential.channel_group_id) ?? [];
-      grouped.set(credential.channel_group_id, [...current, credential]);
-    }
-    return [...grouped.entries()];
-  }, [quotas.data]);
 
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
         title={t("Codex quotas")}
         description={t(
-          "Read-only quota windows and credential-wide spend for Codex credential groups granted by your user group. Spend includes every caller and both Responses and Images. Estimated total quota divides current period spend by the most recently provider-reported used percentage.",
+          "Read-only account quota and total spend across referencing channels. Visibility is granted through your user group's channel groups; it does not grant channel access.",
         )}
       />
       <AsyncResource
@@ -293,11 +285,10 @@ export function CodexQuotasPage() {
         )}
       >
         <div className="flex flex-col gap-6">
-          {groups.map(([groupId, credentials]) => (
-            <Card key={groupId}>
+            <Card className="min-w-0">
               <CardHeader>
-                <CardTitle>{t("Channel group")}</CardTitle>
-                <CardDescription>{groupId}</CardDescription>
+                <CardTitle>{t("Credentials")}</CardTitle>
+                <CardDescription>{t("Each account is shown once, even when several channels use it.")}</CardDescription>
               </CardHeader>
               <CardContent>
                 <div className="overflow-x-auto rounded-xl border">
@@ -315,7 +306,7 @@ export function CodexQuotasPage() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {credentials.map((credential) => (
+                      {quotas.data?.map((credential) => (
                         <TableRow key={credential.id}>
                           <TableCell>{credential.name}</TableCell>
                           <TableCell>
@@ -368,7 +359,6 @@ export function CodexQuotasPage() {
                 </div>
               </CardContent>
             </Card>
-          ))}
         </div>
       </AsyncResource>
       <QuotaHistoryDialog

@@ -67,6 +67,7 @@ import {
   multiplyDecimal,
 } from "@/lib/decimal";
 import { formatDateTime } from "@/lib/dates";
+import { formatCompactTokens } from "@/lib/formatters";
 
 const UTC_TIME_PATTERN = /^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/;
 const MINUTES_PER_DAY = 24 * 60;
@@ -298,7 +299,6 @@ export function ModelPricingPage() {
     searchParams.get("returnTo"),
     `/admin/models/${id}`,
   );
-  const returnsToSetup = returnTo.startsWith("/admin/model-setup");
   const { data, etag, isLoading, error, refetch } = useModel(id);
   const update = useUpdateModel(id);
   const { t } = useI18n();
@@ -488,16 +488,10 @@ export function ModelPricingPage() {
 
   return (
     <AdminDetailShell
-      configurationLens="models"
       navigationGuard={navigationGuard}
-      saving={form.formState.isSubmitting}
-      onBack={() => navigate(returnTo)}
       title={data?.data.display_name || t("Model pricing")}
       description={t("Configure base USD prices and weekly UTC peak or off-peak multipliers.")}
       backPath={returnTo}
-      backLabel={t(
-        returnsToSetup ? "Back to model setup" : "Back to pricing model",
-      )}
       isLoading={isLoading}
       error={data ? null : error}
       hasData={Boolean(data)}
@@ -890,7 +884,7 @@ export function ModelPricingPage() {
                   <DetailField label={t("Model")} value={data.data.source_model_id} mono />
                   <DetailField
                     label={t("Price unit tokens")}
-                    value={form.watch("price_unit_tokens").toLocaleString()}
+                    value={formatCompactTokens(form.watch("price_unit_tokens"))}
                   />
                   <DetailField label={t("Price windows")} value={watchedWindows.length} />
                   <DetailField label={t("Window start weekdays")} value={weekdaySummary} />

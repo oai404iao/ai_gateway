@@ -134,7 +134,7 @@ function UserMenu() {
         </DropdownMenuGroup>
         <DropdownMenuSeparator />
         <DropdownMenuGroup>
-          <DropdownMenuItem onClick={() => navigate("/account")}>
+          <DropdownMenuItem render={<NavLink to="/account" />}>
             <User data-icon="inline-start" /> {t("Profile")}
           </DropdownMenuItem>
           <DropdownMenuItem onClick={onLogout}>
@@ -205,6 +205,7 @@ export function ConsoleLayout() {
   return (
     <SidebarProvider>
       <Sidebar collapsible="icon">
+        <nav aria-label={t("Console navigation")} className="flex min-h-0 flex-1 flex-col">
         <BrandHeader />
         <SidebarContent>
           {sections.map((section) => (
@@ -217,12 +218,17 @@ export function ConsoleLayout() {
                   ) : (
                     <SidebarMenuItem key={item.path}>
                       <SidebarMenuButton
-                        isActive={item.label === "Model configuration" && (
-                          pathname.startsWith("/admin/routing/") ||
-                          pathname.startsWith("/admin/models") ||
-                          pathname.startsWith("/admin/model-setup") ||
-                          pathname.startsWith("/admin/providers/codex-oauth")
-                        )}
+                        isActive={
+                          pathname.startsWith(item.path) ||
+                          (item.path === "/admin/models" && [
+                            "/admin/model-setup", "/admin/catalog", "/admin/routing/operation-rules",
+                          ].some((path) => pathname.startsWith(path))) ||
+                          (item.path === "/admin/routing/channels" && [
+                            "/admin/routing/groups", "/admin/routing/logical-channels", "/admin/routing/capabilities",
+                          ].some((path) => pathname.startsWith(path))) ||
+                          (item.path === "/admin/routing/upstream-credentials" &&
+                            pathname.startsWith("/admin/providers/codex-oauth"))
+                        }
                         render={<NavLink to={item.path} end={item.end} />}
                       >
                         <item.icon />
@@ -236,23 +242,24 @@ export function ConsoleLayout() {
           ))}
         </SidebarContent>
         <SidebarFooter />
+        </nav>
       </Sidebar>
-      <SidebarInset>
+      <SidebarInset className="min-w-0">
         <header className="sticky top-0 z-10 flex h-14 items-center gap-2 border-b bg-background/95 px-4 backdrop-blur">
-          <SidebarTrigger />
+          <SidebarTrigger aria-label={t("Toggle Sidebar")} />
           <div className="ml-auto flex items-center gap-1">
             <LocaleToggle />
             <ThemeToggle />
             <UserMenu />
           </div>
         </header>
-        <main className="min-w-0 flex-1 p-4 md:p-6">
+        <div className="min-w-0 flex-1 p-4 md:p-6">
           <div className="mx-auto flex w-full max-w-6xl min-w-0 flex-col gap-6">
             <Suspense fallback={<RouteFallback />}>
               <Outlet />
             </Suspense>
           </div>
-        </main>
+        </div>
       </SidebarInset>
     </SidebarProvider>
   );

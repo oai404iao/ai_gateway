@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
+import { usePageOrigin, withReturnTo } from "@/lib/page-navigation";
+import { useListPagination } from "@/lib/use-list-pagination";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -34,7 +36,7 @@ import { AsyncResource } from "@/components/shared/async-resource";
 import { ApiKeyValue } from "@/components/shared/api-key-value";
 import { DecimalField, NullableNumberField } from "@/components/shared/decimal-field";
 import { ResourceTable, type Column } from "@/components/shared/resource-table";
-import { SharingCredentialFields } from "@/components/shared/sharing-credential-fields";
+import { SharingChannelFields } from "@/components/shared/sharing-channel-fields";
 import { StatusBadge } from "@/components/shared/status-badge";
 import {
   useCreateOwnApiKey,
@@ -51,7 +53,6 @@ import {
   isFutureDateTimeLocal,
 } from "@/lib/dates";
 import { formatList } from "@/lib/formatters";
-import { apiFormatLabel } from "@/lib/permissions";
 import { useI18n } from "@/app/i18n";
 
 const createSchema = z
@@ -100,6 +101,8 @@ function createErrorMessage(error: unknown, t: (key: string) => string): string 
 
 export function ApiKeysPage() {
   const navigate = useNavigate();
+  const origin = usePageOrigin();
+  const pagination = useListPagination();
   const { data: keys, isLoading, error } = useOwnApiKeys();
   const create = useCreateOwnApiKey();
   const apiHosts = useApiHosts();
@@ -117,7 +120,7 @@ export function ApiKeysPage() {
     },
     [],
   );
-  const options = useOwnApiKeyOptions(createOpen);
+  const options = useOwnApiKeyOptions();
 
   const form = useForm<CreateValues>({
     resolver: zodResolver(createSchema),
@@ -165,8 +168,8 @@ export function ApiKeysPage() {
   const selectedGroupIds = form.watch("allowed_group_ids");
   const selectedChannelIds = form.watch("allowed_channel_ids");
   const sharingChannelIds = useMemo(
-    () => new Set(options.data?.sharing_credentials.flatMap((item) => item.channel_ids) ?? []),
-    [options.data?.sharing_credentials],
+    () => new Set(options.data?.sharing_channels.map((item) => item.channel_id) ?? []),
+    [options.data?.sharing_channels],
   );
   const selectedSharingChannelIds = selectedChannelIds.filter((id) =>
     sharingChannelIds.has(id),
@@ -213,20 +216,23 @@ export function ApiKeysPage() {
       className: "min-w-80",
     },
     {
-      key: "formats",
-      header: t("Formats"),
-      render: (key) => (
-        <span className="flex flex-wrap gap-1">
-          {key.allowed_api_formats.map((format) => (
-            <StatusBadge
-              key={format}
-              value={format}
-              label={apiFormatLabel(format)}
-              variant="info"
-            />
-          ))}
-        </span>
-      ),
+      key: "groups",
+      header: t("Channel groups"),
+      render: (key) => formatList(key.allowed_group_ids.map((id) =>
+        targetGroups.find((group) => group.id === id)?.name ?? id)),
+    },
+    {
+      key: "channels",
+      header: t("Logical channels"),
+      render: (key) => formatList([
+        ...(options.data?.sharing_channels ?? [])
+          .filter((channel) => key.allowed_channel_ids.includes(channel.channel_id))
+          .map((channel) => channel.channel_name),
+        ...key.allowed_channel_ids.filter((id) => !sharingChannelIds.has(id)).map((id) => {
+          const channel = targetChannels.find((channel) => channel.id === id);
+          return channel ? `${channel.name} (${channel.channel_group_name ?? channel.channel_group_id})` : id;
+        }),
+      ]),
     },
     {
       key: "permissions",
@@ -320,7 +326,9 @@ export function ApiKeysPage() {
               columns={columns}
               rows={keys ?? []}
               rowKey={(key) => key.id}
-              onRowClick={(key) => navigate(`/api-keys/${key.id}`)}
+              rowHref={(key) => withReturnTo(`/api-keys/${key.id}`, origin)}
+              onRowClick={(key) => navigate(withReturnTo(`/api-keys/${key.id}`, origin))}
+              pagination={pagination}
             />
           </AsyncResource>
         </CardContent>
@@ -373,8 +381,8 @@ export function ApiKeysPage() {
                 </FieldError>
               ) : null}
               <div className="grid items-start gap-4 md:col-span-2 lg:grid-cols-2">
-                <SharingCredentialFields
-                  credentials={options.data?.sharing_credentials ?? []}
+                <SharingChannelFields
+                  channels={options.data?.sharing_channels ?? []}
                   selectedChannelIds={selectedSharingChannelIds}
                   onChange={(channelIds) =>
                     form.setValue(

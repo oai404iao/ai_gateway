@@ -166,7 +166,9 @@ impl SqliteRequestLogQueries {
         }
         if let Some(api_operation) = filter.api_operation {
             query
-                .push(" AND log.api_operation = ")
+                .push(" AND ")
+                .push(super::super::postgres_control_plane::LOG_OPERATION_SQL)
+                .push(" = ")
                 .push_bind(api_operation);
         }
         if let Some(outcome) = filter.outcome {
@@ -218,26 +220,33 @@ impl SqliteRequestLogQueries {
         let mut transaction = connection.begin().await?;
 
         let mut groups = Vec::<StatusGroupBuilder>::new();
-        let mut group_indexes = BTreeMap::<Uuid, usize>::new();
+        let mut group_indexes = BTreeMap::<(Uuid, String), usize>::new();
         let mut overall_models = BTreeMap::<(String, String), StatusMetricAccumulator>::new();
         let tracked = sqlx::query_as::<_, TrackedChannelGroupRow>(
-            "SELECT channel_group.id AS id, channel_group.api_format AS api_format, \
+            "SELECT channel_group.id AS id, \
+                    CASE capability.operation \
+                        WHEN 'chat_completion' THEN 'open_ai_chat_completions' \
+                        WHEN 'images_generation' THEN 'open_ai_images' \
+                        WHEN 'images_edit' THEN 'open_ai_images' \
+                        ELSE 'open_ai_responses' END AS api_format, \
                     channel_group.name AS name, channel_group.enabled AS enabled, \
-                    channel.available_models AS available_models \
-             FROM channel_groups AS channel_group \
-             LEFT JOIN channels AS channel \
-               ON channel.channel_group_id = channel_group.id AND channel.deleted_at IS NULL \
-             WHERE channel_group.status_statistics_enabled \
-               AND channel_group.deleted_at IS NULL \
-             ORDER BY channel_group.name, channel_group.id",
+                    capability.available_models AS available_models \
+             FROM routing_groups AS channel_group \
+             JOIN upstream_channels AS channel \
+               ON channel.group_id = channel_group.id AND channel.deleted_at IS NULL \
+             JOIN channel_capabilities AS capability ON capability.channel_id=channel.id \
+               AND capability.deleted_at IS NULL AND capability.status_statistics_enabled \
+             WHERE channel_group.deleted_at IS NULL \
+             ORDER BY channel_group.name, channel_group.id, api_format",
         )
         .fetch_all(&mut *transaction)
         .await?;
         for group in tracked {
-            let index = match group_indexes.get(&group.id.0).copied() {
+            let group_key = (group.id.0, group.api_format.clone());
+            let index = match group_indexes.get(&group_key).copied() {
                 Some(index) => index,
                 None => {
-                    group_indexes.insert(group.id.0, groups.len());
+                    group_indexes.insert(group_key, groups.len());
                     groups.push(StatusGroupBuilder {
                         id: group.id.0,
                         api_format: group.api_format.clone(),
@@ -312,7 +321,7 @@ impl SqliteRequestLogQueries {
         transaction.commit().await?;
 
         for ((group_id, api_format, model), accumulator) in group_models {
-            let Some(index) = group_indexes.get(&group_id).copied() else {
+            let Some(index) = group_indexes.get(&(group_id, api_format.clone())).copied() else {
                 continue;
             };
             groups[index]
@@ -396,9 +405,10 @@ fn validate_request_log_filter(filter: &RequestLogFilter) -> Result<(), Reposito
         || filter.api_operation.as_deref().is_some_and(|value| {
             !matches!(
                 value,
-                "chat_completions"
+                "chat_completion"
                     | "responses"
-                    | "standalone_web_search"
+                    | "responses-ws"
+                    | "web_search"
                     | "images_generation"
                     | "images_edit"
             )
@@ -421,7 +431,7 @@ const CONSOLE_REQUEST_LOG_SELECT: &str = "SELECT log.id,log.started_at,log.compl
      request_user.display_name AS user_name,log.api_key_id,log.request_source,log.api_format AS api_format,\
      log.api_operation,log.request_protocol,log.client_model,log.reasoning_effort,log.fast_mode,\
      log.upstream_model,log.model_rule_id,log.channel_group_id,\
-     channel_group.name AS channel_group_name,log.channel_id,channel.name AS channel_name,log.outcome,\
+     channel_group.label AS channel_group_name,log.channel_id,channel.label AS channel_name,log.outcome,\
      log.response_status_code,log.streamed,log.ttft_ms,log.total_duration_ms,\
      log.output_tokens_per_second,log.input_tokens,log.cached_input_tokens,log.cache_write_tokens,\
      log.output_tokens,log.reasoning_tokens,log.cost_amount,log.peak_pricing,log.error_code,\
@@ -429,8 +439,8 @@ const CONSOLE_REQUEST_LOG_SELECT: &str = "SELECT log.id,log.started_at,log.compl
      FROM request_logs AS log \
      LEFT JOIN request_settlements AS receipt ON receipt.request_id=log.id \
      JOIN users AS request_user ON request_user.id=log.user_id \
-     LEFT JOIN channel_groups AS channel_group ON channel_group.id=log.channel_group_id \
-     LEFT JOIN channels AS channel ON channel.id=log.channel_id";
+     LEFT JOIN group_identity_registry AS channel_group ON channel_group.id=log.channel_group_id \
+     LEFT JOIN channel_identity_registry AS channel ON channel.id=log.channel_id";
 
 #[derive(FromRow)]
 struct ConsoleRequestLogRow {
@@ -482,7 +492,11 @@ impl ConsoleRequestLogRow {
             api_key_id: self.api_key_id.0,
             request_source: self.request_source,
             api_format: self.api_format,
-            api_operation: self.api_operation,
+            api_operation: crate::domain::ApiOperation::normalize_stored_name(
+                &self.api_operation,
+                &self.request_protocol,
+            )
+            .into(),
             request_protocol: self.request_protocol,
             client_model: self.client_model,
             reasoning_effort: self.reasoning_effort,
@@ -662,11 +676,11 @@ impl SqliteMeteringQueries {
                     log.cache_write_tokens AS cache_write_tokens, \
                     log.output_tokens AS output_tokens, log.cost_amount AS cost_amount, \
                     log.channel_id AS channel_id, log.channel_group_id AS channel_group_id, \
-                    channel.name AS channel_name, \
-                    channel_group.name AS channel_group_name \
+                    channel.label AS channel_name, \
+                    channel_group.label AS channel_group_name \
              FROM request_metering_facts AS log \
-             LEFT JOIN channels AS channel ON channel.id = log.channel_id \
-             LEFT JOIN channel_groups AS channel_group \
+             LEFT JOIN channel_identity_registry AS channel ON channel.id = log.channel_id \
+             LEFT JOIN group_identity_registry AS channel_group \
                ON channel_group.id = log.channel_group_id \
              WHERE log.started_at >= ",
         );
@@ -691,9 +705,9 @@ impl SqliteMeteringQueries {
         if let Some(credential_id) = filter.codex_credential_id {
             query
                 .push(
-                    " AND log.channel_id IN (SELECT projection.channel_id \
-                     FROM codex_oauth_credential_channels AS projection \
-                     WHERE projection.credential_id = ",
+                    " AND log.id IN (SELECT identity.request_id \
+                     FROM request_credential_identities AS identity \
+                     WHERE identity.credential_id = ",
                 )
                 .push_bind(SqliteUuid(credential_id))
                 .push(")");

@@ -45,6 +45,12 @@ pub struct SqliteMigration<'a> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum SqliteMigrationError {
+    #[error(transparent)]
+    CapabilityCutover(#[from] crate::persistence::capability_cutover::io::CapabilityCutoverIoError),
+    #[error(
+        "channel {channel_id} has invalid legacy authentication or credential scope; repair or delete it before upgrading"
+    )]
+    LegacyCredential { channel_id: Uuid },
     #[error("SQLite migration manifest is invalid or requests nontransactional execution")]
     InvalidManifest,
     #[error("SQLite migration history differs from this binary")]
@@ -195,6 +201,22 @@ pub(super) async fn run(
     let mut connection = pool.acquire().await?;
     // A cancelled migration must not return a connection carrying this commit hook to the pool.
     connection.close_on_drop();
+    let capability_cutover = migrations.iter().any(|migration| {
+        migration.version == 5
+            && migration.description == "canonical upstream operation capabilities"
+    });
+    let operation_split = migrations.iter().any(|migration| {
+        migration.version == 6
+            && migration.description == "six operation routing and connector names"
+    });
+    let credential_ownership = migrations.iter().any(|migration| {
+        migration.version == 8 && migration.description == "channel owned credentials and sharing"
+    });
+    if capability_cutover || operation_split || credential_ownership {
+        sqlx::query("PRAGMA foreign_keys=OFF")
+            .execute(&mut *connection)
+            .await?;
+    }
     let allow_commit = Arc::new(AtomicBool::new(false));
     let commit_gate = Arc::clone(&allow_commit);
     connection
@@ -214,11 +236,55 @@ pub(super) async fn run(
     }
     let applied = validate_history(&mut transaction, migrations).await?;
     for migration in &migrations[applied..] {
+        if migration.version == 4
+            && migration.description == "independent upstream credential identities"
+        {
+            let rows = sqlx::query_as::<_, (super::SqliteUuid, String, String, String, Option<String>, Option<String>)>(
+                "SELECT c.id,c.name,c.base_url,c.upstream_auth_kind,c.upstream_auth_header_name,c.upstream_api_key
+                 FROM channels c JOIN channel_groups g ON g.id=c.channel_group_id
+                 WHERE c.deleted_at IS NULL AND g.connector_kind='openai_compatible' ORDER BY c.id")
+                .fetch_all(&mut *transaction).await?;
+            for (channel_id, name, target, kind, header, secret) in rows {
+                if !crate::persistence::upstream_credentials::validate_legacy_auth(
+                    &name,
+                    &target,
+                    &kind,
+                    header.as_deref(),
+                    secret.as_deref(),
+                ) {
+                    return Err(SqliteMigrationError::LegacyCredential {
+                        channel_id: channel_id.0,
+                    });
+                }
+            }
+        }
+        if credential_ownership && migration.version == 8 {
+            crate::persistence::capability_cutover::credential_ownership::sqlite_prepare(
+                &mut transaction,
+            )
+            .await?;
+        }
         sqlx::Executor::execute(
             &mut *transaction,
             sqlx::AssertSqlSafe(migration.sql.to_owned()),
         )
         .await?;
+        if capability_cutover && migration.version == 5 {
+            crate::persistence::capability_cutover::activation::sqlite(&mut transaction).await?;
+        }
+        if operation_split && migration.version == 6 {
+            crate::persistence::capability_cutover::operation_split::storage::sqlite_apply(
+                &mut transaction,
+            )
+            .await?;
+        }
+        if credential_ownership && migration.version == 8 {
+            crate::persistence::upstream_topology::sqlite_load_control_plane(&mut transaction)
+                .await
+                .map_err(
+                    crate::persistence::capability_cutover::io::CapabilityCutoverIoError::from,
+                )?;
+        }
         if rollback_observed.load(Ordering::Acquire) {
             return Err(SqliteMigrationError::InvalidManifest);
         }
@@ -236,6 +302,14 @@ pub(super) async fn run(
     }
     if check_identity(&mut transaction).await? != Some(database_id) {
         return Err(SqliteOpenError::ForeignDatabase.into());
+    }
+    if (capability_cutover || operation_split || credential_ownership)
+        && sqlx::query("PRAGMA foreign_key_check")
+            .fetch_optional(&mut *transaction)
+            .await?
+            .is_some()
+    {
+        return Err(SqliteMigrationError::HistoryMismatch);
     }
     allow_commit.store(true, Ordering::Release);
     transaction.commit().await?;

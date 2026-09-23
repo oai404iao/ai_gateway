@@ -6,7 +6,6 @@ import { describe, expect, it } from "vitest";
 import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
 import {
-  CODEX_QUOTA_GROUP,
   OWN_CODEX_QUOTA,
 } from "@/test/fixtures";
 import { seedAuthenticatedSession, server } from "@/test/msw";
@@ -31,8 +30,7 @@ describe("CodexQuotasPage", () => {
     expect(
       await screen.findByRole("heading", { name: "Codex quotas" }),
     ).toBeInTheDocument();
-    expect(await screen.findByText(CODEX_QUOTA_GROUP.id)).toBeInTheDocument();
-    expect(screen.getByText(OWN_CODEX_QUOTA.name)).toBeInTheDocument();
+    expect(await screen.findByText(OWN_CODEX_QUOTA.name)).toBeInTheDocument();
     expect(screen.getByText("plus")).toBeInTheDocument();
     expect(screen.getByText("42%")).toBeInTheDocument();
     expect(screen.getByText("3.2174 USD")).toBeInTheDocument();

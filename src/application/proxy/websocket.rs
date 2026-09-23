@@ -408,11 +408,32 @@ impl ResponsesWebSocketSession {
         } = match route {
             SelectionResult::Selected(route) => route,
             SelectionResult::UnknownOrInaccessibleModel => {
+                if let Some(rule) = snapshot
+                    .operation_rule(ApiOperation::Responses, &parsed.model)
+                    .filter(|rule| api_key.permits_route(rule.route_slot()))
+                {
+                    let error = ProxyError::websocket_unavailable();
+                    self.proxy.record_no_healthy_channel(
+                        &api_key,
+                        RequestLogSource::Client,
+                        OPENAI_RESPONSES_FORMAT,
+                        ApiOperation::ResponsesWebSocket,
+                        &parsed.model,
+                        &parsed.log_metadata,
+                        RequestProtocol::WebSocket,
+                        &rule,
+                        started_wall_at,
+                        started_at,
+                        &error,
+                    );
+                    send_proxy_error(client, error).await;
+                    return SessionAction::Close;
+                }
                 self.proxy.record_rejected(
                     &api_key,
                     RequestLogSource::Client,
                     OPENAI_RESPONSES_FORMAT,
-                    ApiOperation::Responses,
+                    ApiOperation::ResponsesWebSocket,
                     &parsed.model,
                     &parsed.log_metadata,
                     RequestProtocol::WebSocket,
@@ -431,22 +452,41 @@ impl ResponsesWebSocketSession {
                 return SessionAction::Close;
             }
             SelectionResult::NoHealthyChannel { rule } => {
+                let error = if parsed.previous_response_id {
+                    ProxyError {
+                        status: StatusCode::NOT_FOUND,
+                        message: PREVIOUS_RESPONSE_NOT_FOUND_MESSAGE.to_owned(),
+                        error_type: "invalid_request_error",
+                        code: Some(PREVIOUS_RESPONSE_NOT_FOUND_CODE),
+                        param: None,
+                        authenticate: false,
+                        retry_after: None,
+                    }
+                } else {
+                    ProxyError::websocket_unavailable()
+                };
                 self.proxy.record_no_healthy_channel(
                     &api_key,
                     RequestLogSource::Client,
                     OPENAI_RESPONSES_FORMAT,
-                    ApiOperation::Responses,
+                    ApiOperation::ResponsesWebSocket,
                     &parsed.model,
                     &parsed.log_metadata,
                     RequestProtocol::WebSocket,
                     &rule,
                     started_wall_at,
                     started_at,
+                    &error,
                 );
+                if parsed.previous_response_id {
+                    self.release_pinned(pinned.take());
+                    send_previous_response_not_found(client).await;
+                    return SessionAction::Continue;
+                }
                 // A 503 wrapped event is treated as terminal server overload
                 // by Codex. 426 remains a transport failure, allowing its WS
                 // retry budget to reach HTTP fallback without replaying here.
-                send_proxy_error(client, ProxyError::websocket_unavailable()).await;
+                send_proxy_error(client, error).await;
                 return SessionAction::Close;
             }
         };
@@ -461,7 +501,7 @@ impl ResponsesWebSocketSession {
             &parsed.log_metadata,
             RequestProtocol::WebSocket,
             OPENAI_RESPONSES_FORMAT,
-            ApiOperation::Responses,
+            ApiOperation::ResponsesWebSocket,
             &rule,
             &channel,
             &upstream_model,
@@ -517,7 +557,7 @@ impl ResponsesWebSocketSession {
                     .is_some_and(crate::routing::SessionAffinitySelection::cache_hit);
             let connector = match self.proxy.connectors.prepare(
                 &current_channel,
-                ApiOperation::Responses,
+                ApiOperation::ResponsesWebSocket,
                 connector_affinity_hit,
                 &self.request_headers,
                 Some(connector_seed),
@@ -1446,6 +1486,11 @@ async fn reject_previous_response_not_found(
         Some(PREVIOUS_RESPONSE_NOT_FOUND_CODE),
         PREVIOUS_RESPONSE_NOT_FOUND_MESSAGE,
     );
+    send_previous_response_not_found(client).await;
+    SessionAction::Continue
+}
+
+async fn send_previous_response_not_found(client: &mut WebSocket) {
     send_json(
         client,
         json!({
@@ -1459,7 +1504,6 @@ async fn reject_previous_response_not_found(
         }),
     )
     .await;
-    SessionAction::Continue
 }
 
 async fn send_proxy_error(client: &mut WebSocket, error: ProxyError) {

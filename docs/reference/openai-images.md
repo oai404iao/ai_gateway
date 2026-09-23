@@ -85,7 +85,7 @@ edit 路径：
 - Images 不支持 Session 粘性、SSE 事件变换或 WebSocket。
 - generation JSON 仍受全局 `request_limits.proxy_body_bytes` 限制；edit 使用独立的
   `image_edit_*` 限制和磁盘 spool，不提高默认 `1 MiB` JSON 内存 body limit。
-- 普通 `openai_compatible` 与 Codex OAuth Images generation/edit 均已支持。Codex 凭证共享
+- 普通 `general` 与 Codex OAuth Images generation/edit 均已支持。Codex 凭证共享
   Token、可选 workspace/member、quota 和 outbound proxy，但使用独立的 Responses/Images group 与
   channel；Codex Images group 默认关闭，不会自动加入 API Key、Policy 或模型规则。
 - Codex Images generation 会把目标改为 `/backend-api/codex/images/generations`，注入

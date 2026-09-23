@@ -100,6 +100,7 @@ impl UpstreamTimeoutDefaults {
             ApiOperation::StandaloneWebSearch => self.standalone_web_search_response_header,
             ApiOperation::ChatCompletions
             | ApiOperation::Responses
+            | ApiOperation::ResponsesWebSocket
             | ApiOperation::ImagesGeneration
             | ApiOperation::ImagesEdit => self.response_header_for(operation.api_format()),
         }

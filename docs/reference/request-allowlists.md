@@ -46,7 +46,7 @@
    可安全推导的身份元数据时补齐，不伪造 beta、subagent、attestation、turn-state、residency、
    sandbox 或 request kind。
 
-普通 `openai_compatible` Connector 不执行第二层 provider 白名单，但仍受客户端入口策略、
+普通 `general` Connector 不执行第二层 provider 白名单，但仍受客户端入口策略、
 hop-by-hop 清理和上游鉴权覆盖约束。
 
 当前白名单只校验 JSON 对象或 multipart 表单的**顶层字段名**。`messages`、`input`、`tools`、

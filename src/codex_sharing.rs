@@ -670,7 +670,7 @@ impl Actor {
         for window in &mut windows {
             let Some(group) = groups
                 .iter()
-                .find(|g| g.policy.credential_id == window.credential_id)
+                .find(|g| g.bound_credential_id == window.credential_id)
             else {
                 continue;
             };
@@ -811,7 +811,7 @@ impl Actor {
         let windows = self
             .windows
             .iter()
-            .filter(|w| w.credential_id == group.policy.credential_id)
+            .filter(|w| w.credential_id == group.bound_credential_id)
             .collect::<Vec<_>>();
         !windows.is_empty()
             && windows.iter().all(|window| {
@@ -836,7 +836,7 @@ impl Actor {
         for window in self
             .windows
             .iter()
-            .filter(|w| w.credential_id == group.policy.credential_id)
+            .filter(|w| w.credential_id == group.bound_credential_id)
         {
             let Some(period) = self.store.state.periods.get(&window.id) else {
                 result.available = false;
@@ -1079,9 +1079,10 @@ mod tests {
         );
         let group = SharingGroup {
             id: Uuid::new_v4(),
+            bound_credential_id: Uuid::new_v4(),
             updated_at: Utc::now(),
             policy: SharingGroupInput {
-                credential_id: Uuid::new_v4(),
+                channel_id: Uuid::new_v4(),
                 name: "Shared credential".into(),
                 enabled: true,
                 seats: vec![Some(Uuid::new_v4()), Some(Uuid::new_v4())],
@@ -1098,7 +1099,7 @@ mod tests {
             .into_iter()
             .map(|kind| SharingWindow {
                 id: Uuid::new_v4(),
-                credential_id: group.policy.credential_id,
+                credential_id: group.bound_credential_id,
                 window_kind: kind.into(),
                 scheduled_reset_at: Utc::now() + chrono::Duration::hours(1),
                 checked_at: Utc::now(),

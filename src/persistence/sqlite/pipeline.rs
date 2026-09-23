@@ -1073,6 +1073,55 @@ async fn write_facts(
             MeteringWriteOutcome::Conflict
         });
     }
+    let inserted = inserted.into_iter().collect::<HashSet<_>>();
+    for chunk in events
+        .iter()
+        .zip(&outcomes)
+        .collect::<Vec<_>>()
+        .chunks(BIND_CHUNK)
+    {
+        let carrier = Value::Array(
+            chunk.iter()
+                .filter(|(event, outcome)| **outcome == MeteringWriteOutcome::Accepted
+                    && (inserted.contains(&event.id) || event.upstream_credential.is_none()))
+                .map(|(event, _)| json!({
+                        "request_id": event.id,
+                        "known": event.upstream_credential.is_some(),
+                        "credential_id": event.upstream_credential.and_then(|value| value.credential_id),
+                }))
+                .collect(),
+        ).to_string();
+        sqlx::query(
+            "INSERT INTO request_credential_attributions(request_id,known,credential_id)
+             SELECT json_extract(value,'$.request_id'),json_extract(value,'$.known'),
+                    json_extract(value,'$.credential_id') FROM json_each(?) WHERE true
+             ON CONFLICT(request_id) DO NOTHING",
+        )
+        .bind(carrier)
+        .execute(&mut **transaction)
+        .await?;
+    }
+    let attributed = sqlx::query_as::<_, (SqliteUuid, bool, Option<SqliteUuid>)>(
+        "SELECT request_id,known,credential_id FROM request_credential_attributions
+         WHERE request_id IN (SELECT value FROM json_each(?))",
+    )
+    .bind(uuid_array(&compared_ids))
+    .fetch_all(&mut **transaction)
+    .await?
+    .into_iter()
+    .map(|(id, known, credential)| (id.0, (known, credential.map(|id| id.0))))
+    .collect::<HashMap<_, _>>();
+    for (event, outcome) in events.iter().zip(&mut outcomes) {
+        let expected = (
+            event.upstream_credential.is_some(),
+            event
+                .upstream_credential
+                .and_then(|value| value.credential_id),
+        );
+        if attributed.get(&event.id) != Some(&expected) {
+            *outcome = MeteringWriteOutcome::Conflict;
+        }
+    }
     Ok(outcomes)
 }
 
@@ -1128,7 +1177,10 @@ impl FactRow {
             && self.api_key_id.0 == event.api_key_id
             && self.request_source == event.request_source.as_str()
             && self.api_format == event.api_format.as_str()
-            && self.api_operation == event.api_operation.as_str()
+            && crate::domain::ApiOperation::normalize_stored_name(
+                &self.api_operation,
+                &self.request_protocol,
+            ) == event.api_operation.as_str()
             && self.request_protocol == event.request_protocol.as_str()
             && self.client_model == event.client_model
             && self.upstream_model == event.upstream_model
@@ -1549,7 +1601,10 @@ impl RequestLogRow {
             && self.api_key_id.0 == event.api_key_id
             && self.request_source == event.request_source.as_str()
             && self.api_format == event.api_format.as_str()
-            && self.api_operation == event.api_operation.as_str()
+            && crate::domain::ApiOperation::normalize_stored_name(
+                &self.api_operation,
+                &self.request_protocol,
+            ) == event.api_operation.as_str()
             && self.request_protocol == event.request_protocol.as_str()
             && self.client_model == event.client_model
             && self.upstream_model == event.upstream_model
@@ -1604,7 +1659,6 @@ mod tests {
     const USER: Uuid = Uuid::from_u128(0x901);
     const KEY: Uuid = Uuid::from_u128(0x911);
     const MODEL: Uuid = Uuid::from_u128(0x921);
-    const PROFILE: Uuid = Uuid::from_u128(0x922);
     const RULE: Uuid = Uuid::from_u128(0x923);
     const GROUP: Uuid = Uuid::from_u128(0x931);
     const CHANNEL: Uuid = Uuid::from_u128(0x932);
@@ -1624,7 +1678,7 @@ mod tests {
             let database = SqliteDatabase::open(&directory.path().join("gateway.sqlite"))
                 .await
                 .unwrap();
-            assert_eq!(database.install_schema().await.unwrap(), 3);
+            assert_eq!(database.install_schema().await.unwrap(), 9);
             let database = Arc::new(database);
             let logs = SqliteRequestLogRepository::new(Arc::clone(&database));
             Self {
@@ -1671,14 +1725,10 @@ mod tests {
                      cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at)
                  VALUES ('{MODEL}','pipeline-model','Pipeline',1000000,'1','0','0','2',
                          '2026-01-01T00:00:00.000000Z');
-                 INSERT INTO channel_groups(id,name,api_format)
-                 VALUES ('{GROUP}','Unit group','open_ai_chat_completions');
-                 INSERT INTO channels(id,channel_group_id,api_format,name,base_url,upstream_auth_kind,available_models)
-                 VALUES ('{CHANNEL}','{GROUP}','open_ai_chat_completions','Unit channel',
-                         'https://upstream.invalid','none','[\"pipeline-model\"]');
-                 INSERT INTO model_routing_profiles(id,model_id) VALUES ('{PROFILE}','{MODEL}');
-                 INSERT INTO model_rules(id,model_routing_profile_id,api_format,enabled)
-                 VALUES ('{RULE}','{PROFILE}','open_ai_chat_completions',0);"
+                 INSERT INTO group_identity_registry(id,label) VALUES ('{GROUP}','Unit group');
+                 INSERT INTO channel_identity_registry(id,label) VALUES ('{CHANNEL}','Unit channel');
+                 INSERT INTO model_rule_identity_registry(id,label,created_at)
+                 VALUES ('{RULE}','Unit rule',ag_now());"
             ))
             .await;
         }
@@ -1705,6 +1755,7 @@ mod tests {
             model_rule_id: Some(RULE),
             channel_group_id: Some(GROUP),
             channel_id: Some(CHANNEL),
+            upstream_credential: None,
             model_id: Some(MODEL),
             outcome: RequestLogOutcome::Succeeded,
             response_status_code: Some(200),
@@ -1742,6 +1793,86 @@ mod tests {
             .iter()
             .map(|event| EncodedRequestLog::encode(event).unwrap())
             .collect()
+    }
+
+    #[tokio::test]
+    async fn credential_attribution_is_immutable_across_rebinding_and_known_null_never_falls_back()
+    {
+        use crate::domain::RequestCredentialAttribution;
+
+        let fixture = Fixture::new().await;
+        fixture.seed().await;
+        let first = Uuid::from_u128(0x940);
+        let second = Uuid::from_u128(0x941);
+        let channel = Uuid::from_u128(0x942);
+        let access = Uuid::from_u128(0x943);
+        fixture.execute(&format!(
+            "INSERT INTO upstream_credentials(id,name,kind,secret,allowed_base_urls)
+             VALUES ('{first}','First','bearer','fixture-a','[\"https://up.example\"]'),
+                    ('{second}','Second','bearer','fixture-b','[\"https://up.example\"]');
+             INSERT INTO routing_groups(id,name) VALUES ('{GROUP}','Bound group');
+             INSERT INTO upstream_accesses(id,name,connector_kind,base_url)
+             VALUES ('{access}','Bound access','general','https://up.example');
+             INSERT INTO upstream_channels(id,group_id,access_id,credential_id,name)
+             VALUES ('{channel}','{GROUP}','{access}','{first}','Bound channel');
+             INSERT INTO channel_identity_registry(id,label,canonical_channel_id,codex_credential_id)
+             VALUES ('{channel}','Historical identity','{channel}','{first}');"
+        )).await;
+        let mut before = event();
+        before.channel_id = Some(channel);
+        before.upstream_credential = Some(RequestCredentialAttribution {
+            credential_id: Some(first),
+        });
+        fixture.execute(&format!(
+            "UPDATE upstream_channels SET credential_id='{second}',updated_at=ag_now() WHERE id='{channel}'"
+        )).await;
+        let mut after = before.clone();
+        after.id = Uuid::new_v4();
+        after.upstream_credential = Some(RequestCredentialAttribution {
+            credential_id: Some(second),
+        });
+        let mut unauthenticated = before.clone();
+        unauthenticated.id = Uuid::new_v4();
+        unauthenticated.upstream_credential = Some(RequestCredentialAttribution {
+            credential_id: None,
+        });
+        let mut legacy = before.clone();
+        legacy.id = Uuid::new_v4();
+        legacy.upstream_credential = None;
+        let events = [
+            before.clone(),
+            after.clone(),
+            unauthenticated.clone(),
+            legacy.clone(),
+        ];
+        assert_eq!(
+            fixture.metering().record_batch(&events).await.unwrap(),
+            vec![MeteringWriteOutcome::Accepted; 4]
+        );
+        for (request, expected) in [
+            (before.id, Some(first)),
+            (after.id, Some(second)),
+            (unauthenticated.id, None),
+            (legacy.id, Some(first)),
+        ] {
+            let actual = fixture.scalar::<Option<SqliteUuid>>(&format!(
+                "SELECT credential_id FROM request_credential_identities WHERE request_id='{request}'"
+            )).await;
+            assert_eq!(actual.map(|id| id.0), expected);
+        }
+        assert_eq!(
+            fixture.metering().record_batch(&events).await.unwrap(),
+            vec![MeteringWriteOutcome::Accepted; 4]
+        );
+        before.upstream_credential = after.upstream_credential;
+        assert_eq!(
+            fixture.metering().record_batch(&[before]).await.unwrap(),
+            [MeteringWriteOutcome::Conflict]
+        );
+        let attribution_count: i64 = fixture
+            .scalar("SELECT count(*) FROM request_credential_attributions")
+            .await;
+        assert_eq!(attribution_count, 4);
     }
 
     #[tokio::test]
@@ -1860,6 +1991,12 @@ mod tests {
         assert_eq!(
             fixture
                 .scalar::<i64>("SELECT count(*) FROM request_metering_facts")
+                .await,
+            0
+        );
+        assert_eq!(
+            fixture
+                .scalar::<i64>("SELECT count(*) FROM request_credential_attributions")
                 .await,
             0
         );

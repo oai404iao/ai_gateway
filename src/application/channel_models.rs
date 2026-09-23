@@ -16,8 +16,8 @@ use tokio::time::timeout;
 use uuid::Uuid;
 
 use crate::{
-    domain::{CompiledChannel, UpstreamAuth},
-    persistence::ChannelRecord,
+    domain::{CompiledChannel, CredentialTarget, UpstreamAuth},
+    persistence::{ChannelRecord, UpstreamCredentialDetail},
     request_policy::strip_explicitly_ignored_client_headers,
     runtime_config::{RuntimeConfig, compile_channel_discovery_target},
     transforms::apply_header_plan,
@@ -48,9 +48,10 @@ impl ChannelModelDiscoveryService {
     pub async fn discover(
         &self,
         input: ChannelModelDiscoveryInput,
+        credential: Option<UpstreamCredentialDetail>,
     ) -> Result<ChannelModelDiscoveryResponse, ChannelModelDiscoveryError> {
         let snapshot = self.runtime.snapshot();
-        let channel = compile_channel_discovery_target(&input.into_record(), &snapshot)
+        let channel = compile_channel_discovery_target(&input.into_record(credential)?, &snapshot)
             .map_err(|_| ChannelModelDiscoveryError::InvalidConfiguration)?;
         let policy = ResolvedUpstreamPolicy::try_resolve(
             &snapshot.system_settings().upstream_timeouts(),
@@ -120,24 +121,56 @@ pub struct ChannelModelDiscoveryInput {
     pub response_header_timeout_ms: Option<i32>,
     #[serde(default)]
     pub stream_idle_timeout_ms: Option<i32>,
-    pub upstream_auth_kind: String,
-    #[serde(default)]
-    pub upstream_auth_header_name: Option<String>,
-    #[serde(default)]
-    pub upstream_api_key: Option<String>,
+    #[serde(deserialize_with = "required_credential")]
+    pub credential_id: Option<Uuid>,
+}
+
+fn required_credential<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Option<Uuid>, D::Error> {
+    Option::<Uuid>::deserialize(de)
 }
 
 impl ChannelModelDiscoveryInput {
-    fn into_record(self) -> ChannelRecord {
-        let (upstream_auth_header_name, upstream_api_key) = match self.upstream_auth_kind.as_str() {
-            "none" => (None, None),
-            "bearer" => (None, self.upstream_api_key),
-            _ => (self.upstream_auth_header_name, self.upstream_api_key),
-        };
-        ChannelRecord {
+    fn into_record(
+        self,
+        credential: Option<UpstreamCredentialDetail>,
+    ) -> Result<ChannelRecord, ChannelModelDiscoveryError> {
+        if self.credential_id != credential.as_ref().map(|detail| detail.credential.id) {
+            return Err(ChannelModelDiscoveryError::InvalidConfiguration);
+        }
+        let (upstream_auth_kind, upstream_auth_header_name, upstream_api_key) =
+            if let Some(detail) = credential {
+                let target = CredentialTarget::parse(&self.base_url)
+                    .map_err(|_| ChannelModelDiscoveryError::InvalidConfiguration)?;
+                if !detail.credential.enabled
+                    || detail.credential.provider_managed
+                    || !detail.credential.allowed_base_urls.iter().any(|scope| {
+                        CredentialTarget::parse(scope).is_ok_and(|scope| scope == target)
+                    })
+                {
+                    return Err(ChannelModelDiscoveryError::InvalidConfiguration);
+                }
+                (
+                    detail.credential.kind,
+                    detail.credential.header_name,
+                    detail.secret,
+                )
+            } else {
+                ("none".to_owned(), None, None)
+            };
+        Ok(ChannelRecord {
+            credential: None,
+            credential_binding_revision: Uuid::nil(),
             id: Uuid::nil(),
             channel_group_id: Uuid::nil(),
             api_format: self.api_format,
+            logical_channel_id: Uuid::nil(),
+            access_id: Uuid::nil(),
+            api_operation: None,
+            connector_kind: String::new(),
+            request_compression: String::new(),
+            access_revision: Uuid::nil(),
+            capability_revision: Uuid::nil(),
+            transports: Vec::new(),
             name: "channel-model-discovery".into(),
             base_url: self.base_url,
             enabled: true,
@@ -152,13 +185,13 @@ impl ChannelModelDiscoveryInput {
             connect_timeout_ms: self.connect_timeout_ms,
             response_header_timeout_ms: self.response_header_timeout_ms,
             stream_idle_timeout_ms: self.stream_idle_timeout_ms,
-            upstream_auth_kind: self.upstream_auth_kind,
+            upstream_auth_kind,
             upstream_auth_header_name,
             upstream_api_key,
             available_models: Vec::new(),
             test_model: None,
             test_pricing_model_id: None,
-        }
+        })
     }
 }
 
@@ -338,30 +371,46 @@ mod tests {
         );
 
         let response = service
-            .discover(ChannelModelDiscoveryInput {
-                api_format: "open_ai_chat_completions".into(),
-                base_url: format!("http://{address}"),
-                proxy_id: None,
-                config_template_id: None,
-                override_document: json!({
-                    "version": 1,
-                    "api_format": "open_ai_chat_completions",
-                    "request_headers": {
-                        "set": {
-                            "cf-connecting-ip": "192.0.2.1",
-                            "forwarded": "for=192.0.2.1;proto=https",
-                            "x-discovery-source": "channel-form",
-                            "x-forwarded-for": "192.0.2.1"
+            .discover(
+                ChannelModelDiscoveryInput {
+                    api_format: "open_ai_chat_completions".into(),
+                    base_url: format!("http://{address}"),
+                    proxy_id: None,
+                    config_template_id: None,
+                    override_document: json!({
+                        "version": 1,
+                        "api_format": "open_ai_chat_completions",
+                        "request_headers": {
+                            "set": {
+                                "cf-connecting-ip": "192.0.2.1",
+                                "forwarded": "for=192.0.2.1;proto=https",
+                                "x-discovery-source": "channel-form",
+                                "x-forwarded-for": "192.0.2.1"
+                            }
                         }
-                    }
+                    }),
+                    connect_timeout_ms: None,
+                    response_header_timeout_ms: None,
+                    stream_idle_timeout_ms: None,
+                    credential_id: Some(uuid::Uuid::from_u128(91)),
+                },
+                Some(crate::persistence::UpstreamCredentialDetail {
+                    credential: crate::persistence::UpstreamCredentialView {
+                        id: uuid::Uuid::from_u128(91),
+                        name: "discovery".into(),
+                        kind: "bearer".into(),
+                        connector_kind: crate::domain::ConnectorKind::OpenAiCompatible,
+                        header_name: None,
+                        allowed_base_urls: vec![format!("http://{address}")],
+                        enabled: true,
+                        provider_managed: false,
+                        channel_ids: vec![],
+                        created_at: chrono::Utc::now(),
+                        updated_at: chrono::Utc::now(),
+                    },
+                    secret: Some("discovery-secret".into()),
                 }),
-                connect_timeout_ms: None,
-                response_header_timeout_ms: None,
-                stream_idle_timeout_ms: None,
-                upstream_auth_kind: "bearer".into(),
-                upstream_auth_header_name: None,
-                upstream_api_key: Some("discovery-secret".into()),
-            })
+            )
             .await
             .unwrap();
 

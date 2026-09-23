@@ -6,8 +6,8 @@ import { describe, expect, it } from "vitest";
 import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
 import {
-  CHANNEL,
-  CODEX_QUOTA_GROUP,
+  LOGICAL_CHANNEL as CHANNEL,
+  UPSTREAM_ACCESS,
   CONTROL_PLANE_USER,
   OWN_SHARING,
   SHARING_GROUP,
@@ -29,9 +29,11 @@ function handlers() {
       HttpResponse.json(SHARING_GROUP, { headers: { ETag: `"${SHARING_GROUP.updated_at}"` } })),
     http.get("/console/v1/codex-sharing-groups/:id/usage", () =>
       HttpResponse.json({ seats: [{ seat_number: 1, user_id: SHARING_GROUP.seats[0], usage: SHARING_USAGE }] })),
-    http.get("/console/v1/routing/channel-groups", () => HttpResponse.json([CODEX_QUOTA_GROUP])),
-    http.get("/console/v1/routing/channels", () => HttpResponse.json([{
-      ...CHANNEL, api_format: "open_ai_responses", channel_group_id: CODEX_QUOTA_GROUP.id,
+    http.get("/console/v1/routing/accesses", () => HttpResponse.json([{
+      ...UPSTREAM_ACCESS, connector_kind: "codex",
+    }])),
+    http.get("/console/v1/routing/logical-channels", () => HttpResponse.json([{
+      ...CHANNEL, credential_id: CHANNEL.id,
     }])),
   );
 }
@@ -46,7 +48,7 @@ describe("Codex sharing", () => {
     renderAt("/codex-sharing");
     expect(await screen.findByText("$6.90")).toBeInTheDocument();
     expect(screen.getByText("$34.90")).toBeInTheDocument();
-    expect(screen.queryByText(SHARING_GROUP.credential_id)).not.toBeInTheDocument();
+    expect(screen.queryByText(SHARING_GROUP.channel_id)).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Refresh usage" }));
     await waitFor(() => expect(reads).toBeGreaterThan(1));
     expect(screen.getByText("$6.90")).toBeInTheDocument();
@@ -77,13 +79,13 @@ describe("Codex sharing", () => {
       return HttpResponse.json({ id: SHARING_GROUP.id, correlation_id: SHARING_GROUP.id }, { status: 201 });
     }));
     renderAt("/admin/codex-sharing/new");
-    await screen.findByText(/Bindings cannot be undone/);
+    await screen.findByText(/same account cannot join another car/);
     await userEvent.type(screen.getByLabelText("Name"), "New car");
-    await userEvent.click(screen.getByLabelText("Codex credential"));
+    await userEvent.click(screen.getByLabelText("Logical channel"));
     await userEvent.click(screen.getByRole("option", { name: CHANNEL.name }));
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(submitted).toMatchObject({
-      name: "New car", credential_id: CHANNEL.id,
+      name: "New car", channel_id: CHANNEL.id,
       enabled: false, seats: [null], request_reservation_amount: "0.10",
     }));
     expect(etag).toBeNull();
@@ -102,7 +104,7 @@ describe("Codex sharing", () => {
     await screen.findByDisplayValue(SHARING_GROUP.name);
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(submitted).toMatchObject({
-      credential_id: SHARING_GROUP.credential_id,
+      channel_id: SHARING_GROUP.channel_id,
       primary_limit_amount: "20", secondary_limit_amount: "100",
       seats: SHARING_GROUP.seats, enabled: true,
     }));
@@ -134,7 +136,7 @@ describe("Codex sharing", () => {
     renderAt(`/admin/codex-sharing/${SHARING_GROUP.id}`);
     await screen.findByDisplayValue(SHARING_GROUP.name);
     await userEvent.click(screen.getByLabelText("Seat 2"));
-    await userEvent.click(screen.getByRole("option", { name: otherGroupUser.display_name }));
+    await userEvent.click(await screen.findByRole("option", { name: otherGroupUser.display_name }));
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() =>

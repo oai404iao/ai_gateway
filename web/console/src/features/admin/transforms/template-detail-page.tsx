@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router";
+import { useParams } from "react-router";
+import { useReturnPath } from "@/lib/page-navigation";
+import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
 import { z } from "zod";
 import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -40,7 +42,7 @@ const empty: FormState = {
 export function ConfigTemplateDetailPage() {
   const { id = "" } = useParams();
   const isNew = id === "new";
-  const navigate = useNavigate();
+  const returnTo = useReturnPath("/admin/transforms/templates");
   const { data, etag, isLoading, error } = useConfigTemplate(id);
   const create = useCreateConfigTemplate();
   const update = useUpdateConfigTemplate(id);
@@ -49,6 +51,7 @@ export function ConfigTemplateDetailPage() {
   const [submitting, setSubmitting] = useState(false);
   const [validation, setValidation] = useState<z.ZodError | null>(null);
   const [documentValidation, setDocumentValidation] = useState<string | null>(null);
+  const draft = useConfigurationDraft(submitting);
 
   useEffect(() => {
     if (data) {
@@ -62,7 +65,10 @@ export function ConfigTemplateDetailPage() {
     }
   }, [data]);
 
-  const patch = (partial: Partial<FormState>) => setState((prev) => ({ ...prev, ...partial }));
+  const patch = (partial: Partial<FormState>) => {
+    draft.markDirty();
+    setState((prev) => ({ ...prev, ...partial }));
+  };
 
   const submit = async () => {
     if (documentValidation) {
@@ -104,7 +110,8 @@ export function ConfigTemplateDetailPage() {
         };
         await create.mutateAsync(input);
         toast.success(t("Template created"));
-        navigate("/admin/transforms/templates", { replace: true });
+        draft.markSaved();
+        draft.navigate(returnTo, { replace: true });
       } else {
         const input: ConfigTemplateInput = {
           name: parsed.data.name,
@@ -115,6 +122,7 @@ export function ConfigTemplateDetailPage() {
           input.document = document;
         }
         await update.mutateAsync({ input, ifMatch: etag });
+        draft.markSaved();
         toast.success(t("Template updated"));
       }
     } catch (error) {
@@ -137,8 +145,8 @@ export function ConfigTemplateDetailPage() {
     <AdminDetailShell
       title={isNew ? t("New template") : state.name || t("Template")}
       description={t("A reusable constrained transform document.")}
-      backPath="/admin/transforms/templates"
-      backLabel={t("Back to templates")}
+      backPath={returnTo}
+      navigationGuard={draft.navigationGuard}
       isLoading={isLoading}
       error={error}
       hasData={isNew || Boolean(data)}
@@ -150,7 +158,7 @@ export function ConfigTemplateDetailPage() {
               <CardDescription>{data.data.description ?? "—"}</CardDescription>
             </CardHeader>
             <CardContent>
-              <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <dl className="grid grid-cols-1 gap-4">
                 <DetailField
                   label={t("Enabled")}
                   value={<StatusBadge value={data.data.enabled} />}
@@ -166,7 +174,7 @@ export function ConfigTemplateDetailPage() {
             <CardTitle>{isNew ? t("Create template") : t("Edit template")}</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="flex flex-col gap-4">
+            <form className="flex flex-col gap-4" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
               <FieldGroup className="grid gap-5 xl:grid-cols-2">
                 <Field data-invalid={Boolean(fieldError("name"))}>
                   <FieldLabel htmlFor="name">{t("Name")}</FieldLabel>
@@ -207,11 +215,11 @@ export function ConfigTemplateDetailPage() {
                   />
                 </Field>
               </FieldGroup>
-              <Button className="self-start" onClick={submit} disabled={submitting}>
+              <Button type="submit" className="self-start" disabled={submitting}>
                 {submitting ? <Spinner data-icon="inline-start" /> : null}
                 {isNew ? t("Create template") : t("Save template")}
               </Button>
-            </div>
+            </form>
           </CardContent>
         </Card>
       }

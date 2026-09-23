@@ -97,6 +97,8 @@ Codex 分别显式运行 HTTP 与 WS；没有跨协议转换矩阵，也未覆�
 同一个已构建二进制分别运行 `--backend postgres` 与 `--backend sqlite`。
 SQLite 需要 `sqlite-backend,embedded-console-ui` 两个 feature，且不依赖 Docker。
 两种后端都运行全部浏览器、真实 CLI、请求计量与故障场景，并启用拼车账本。
+浏览器还验证独立上游凭证的共享引用、带 ETag 的密钥轮换和渠道不再内联编辑密钥；
+后续真实 CLI 转发使用轮换后的同一凭证。
 SQLite 额外核验：
 
 - 活跃 serve 拒绝备份及管理员 CLI；

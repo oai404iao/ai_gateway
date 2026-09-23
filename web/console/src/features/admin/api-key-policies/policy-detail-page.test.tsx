@@ -6,7 +6,7 @@ import { BrowserRouter } from "react-router";
 import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
 import { server, seedAuthenticatedSession } from "@/test/msw";
-import { CHANNEL } from "@/test/fixtures";
+import { LOGICAL_CHANNEL as CHANNEL } from "@/test/fixtures";
 import type { ApiKeyPolicyInput } from "@/api/types";
 
 function renderAppAt(path: string) {

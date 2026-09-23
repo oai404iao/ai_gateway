@@ -1,6 +1,6 @@
 # Codex OAuth Connector 设计记录
 
-> 状态：当前。描述 `connector_kind = codex_oauth` 的已实现架构与扩展约束。
+> 状态：当前。描述 `connector_kind = codex` 的已实现架构与扩展约束；凭证子类型仍为 `codex_oauth`。
 
 ## 决策
 
@@ -14,11 +14,11 @@ format-specific channel 之后的上游准备过程。
 
 ```text
 client format: OpenAiResponses | OpenAiImages
-client operation: Responses | StandaloneWebSearch | ImagesGeneration | ImagesEdit
+client operation: Responses | ResponsesWebSocket | StandaloneWebSearch | ImagesGeneration | ImagesEdit
 upstream connector: CodexOauth
 ```
 
-因此模型规则、API Key format 权限和 usage 解析仍使用对应的 Responses 或 Images 格式，不新增
+因此操作规则和 usage 解析仍使用对应的 Responses 或 Images 格式；API Key 授权逻辑渠道，不新增
 `ApiFormat::CodexResponses` / `CodexImages`，也不允许格式间转换。
 
 ## 运行时边界
@@ -52,54 +52,43 @@ attempt 不会在中途观察到新设置；OAuth authorization、Models 与 quo
 
 ## 持久化模型
 
-`channel_groups.connector_kind` 决定该组使用的 Connector。Codex group 可以使用
-`open_ai_responses` 或 `open_ai_images`，保存后 Connector 类型和格式不可修改。
+`upstream_credentials` 是公共凭证身份，`codex_oauth_credentials` 是同 UUID 的 OAuth 扩展。
+扩展表保留历史主键名称 `channel_id`，其含义是凭证 UUID，不再要求等于任一逻辑渠道 UUID。
+凭证拥有 Token、quota、维护代理和账号模型目录，没有组/pool 归属。
+未绑定任何渠道的凭证也能导入、刷新、查询或删除。
 
-`connector_pools` 把一个 Responses group 与一个 Images group 组成共享凭证池；
-`codex_oauth_credential_channels` 把每条凭证投影到两个 managed `channels` 记录：
+`routing_groups → upstream_channels → credential_id` 是所有连接器共用的组织关系。
+逻辑渠道另行引用 `upstream_accesses`，后者决定 Connector、目标和转发代理；
+各 `channel_capabilities` 显式声明操作、启用状态、模型目录、变换及健康配置。
+同一凭证可由多个兼容渠道复用，但不共享授权、连接池、路由赋值或能力开关。
+通用渠道和能力 CRUD 同样管理 Codex，不存在 provider-managed 渠道写入例外。
 
-- 既有 `codex_oauth_credentials.channel_id` 保留为稳定凭证 ID 与 Responses Channel ID；
-- Responses 与 Images channel 的 `proxy_id` 和各自 `available_models` 继续进入统一路由快照；
-- credential 的逻辑 `enabled` 和动态状态由 Connector 快照持有；底层 managed channel
-  始终保留为可选择的路由壳，Connector prepare 再排除新 Session 或让 affinity hit fail closed；
-- 两种 channel 都固定 `upstream_auth_kind = none`、`auto_disable_allowed = false`；
-  Responses 声明 `supports_websocket = true`，Images 必须为 false；状态监控不再是 channel
-  属性，而由 Responses 与 Images 各自的 `channel_groups.status_statistics_enabled` 独立控制，
-  新建时默认关闭；
-- 普通 channel create/update/batch API 在 repository 层拒绝 provider-managed channel；
-- provider mutation 在同一控制面事务中更新凭证与 channel、写 audit、编译候选快照并发布。
-
-Codex credential 和两个 projection channel 都不拥有 routing weight 或目标模型映射。权重、
-priority、selection strategy 和上游 wire model 属于顶层计价模型下的显式协议规则 candidate；
-Responses 和 Images 协议独立引用各自的 group/channel projection，不在两个格式之间同步路由
-赋值。Console 逐行选择 projection 渠道、模型和正权重；以后新接入的 credential 必须再次显式
-加入，不会自动继承既有路由。
-
-新建 Codex Responses group 时会同时创建一个默认关闭的 Images group。migration 对现有 group 和
-凭证执行同样投影，但不会增加 API Key format、Policy、模型规则或可访问路由。管理员必须显式启用
-Images group，并配置客户端计价模型、指向 `gpt-image-2` 的 Images 协议 candidate 和权限。
+导入账号只创建或更新凭证，绝不隐式创建接入、渠道、能力、授权或路由。
+权重、priority、selection strategy 和上游 wire model 属于客户端计价模型下的操作规则 candidate。
+旧投影通过迁移转存为逻辑渠道和独立操作能力，旧 Images 停用状态保持不变。
+管理员需要显式配置 Images 能力及其操作路由；凭证恢复不打开已关闭的能力。
 
 凭证的持久身份不是单独的 workspace account ID，而是
-`(connector_pool_id, account_id?, user_id)`，并要求 account ID 与 user ID 至少存在一个。
+`(account_id?, user_id)`，并要求 account ID 与 user ID 至少存在一个。
 `user_id` 优先来自 `chatgpt_user_id`，兼容同 namespace 的 `user_id` 和 JWT 顶层 `sub`
-fallback。这样同一 Business workspace 中的多个成员可以分别成为路由凭证，而没有 workspace
+fallback。这样同一 Business workspace 中的多个成员可以分别成为凭证，而没有 workspace
 account ID 的个人凭证按 user ID 独立保存。缺少 user claim 的旧 workspace Token 仍按
 account/email 回退匹配，服务启动时会从已保存 Token 尽力补齐旧记录的 user ID。
+匹配跨组全局进行；历史重复身份保留，匹配不唯一时拒绝导入，不静默合并金融身份。
 
-删除使用软删除凭证记录加 managed-channel tombstone：事务内关闭凭证、清除三个 OAuth Token、
-释放 proxy、记录 `deleted_at` 并把 Responses 与 Images channel 改成唯一 tombstone 名称。列表、
-导出、刷新和后续身份匹配忽略已删除记录，但 channel 壳继续保留，使请求日志和显式 channel 引用
-不失去历史主键。
+删除前必须解除所有活动渠道引用，且不能存在拼车绑定或未完成维护操作。
+删除在一个事务内关闭凭证、清除三个 OAuth Token、释放维护 proxy、记录墓碑；
+不删除接入、渠道、能力或金融历史。凭证与渠道改绑均通过完整快照验证及原子发布。
 
-OAuth PKCE 临时状态单独保存在 `codex_oauth_flows`，按 actor、group、过期时间和
+OAuth PKCE 临时状态单独保存在 `codex_oauth_flows`，按 actor、过期时间和
 `completed_at` 限定。数据库只保存 `state` 的 SHA-256；`code_verifier` 在一次性 flow
 完成或清理前保存。
 
 ## 凭证快照与维护
 
 Access token 不编入完整 `CompiledRuntimeConfig`，而是保存在独立
-`CodexCredentialRuntime` / `ArcSwap<HashMap<projection_channel_id, credential>>` 中。
-Responses 与 Images projection 指向同一个不可变 credential，数据面每次 attempt 只执行内存读取。
+`CodexCredentialRuntime` / `ArcSwap<HashMap<credential_id, credential>>` 中。
+各操作从选中渠道取得实际 credential UUID，数据面每次 attempt 只执行内存读取。
 
 worker 每分钟加载数据库记录并先替换本地凭证快照，使其他实例完成的 enable、quota 或 token
 更新最终收敛。需要维护的凭证以有界并发执行：
@@ -126,7 +115,7 @@ worker 每分钟加载数据库记录并先替换本地凭证快照，使其他�
 
 Console 读取当前或历史 quota 周期时，会按该周期的半开时间范围
 `[started_at, ended_at)` 聚合 `request_metering_facts.cost_amount`。当前周期的结束边界是
-`min(now(), scheduled_reset_at)`。聚合按逻辑凭证关联 Responses 与 Images 两个 projection，
+`min(now(), scheduled_reset_at)`。聚合按不可变逐请求凭证归属覆盖全部逻辑渠道和操作，
 不按发起请求的 Gateway 用户或 API Key 过滤，因此展示的是该凭证在周期内承担的全部
 Gateway 计价 USD 花费，而不是查看者的个人花费。未计价请求不进入金额；尚无已计价请求的已知
 周期返回 `0`，尚未保存的窗口返回 `null`。主窗口与次窗口通常重叠，两个金额不可相加。
@@ -137,12 +126,11 @@ worker、上游 `401` 恢复和多实例并发均传递 observed generation；�
 
 永久 refresh 失败设置持久的 `reauth_required`，maintenance 不再自动重复消费该 Token，quota
 成功和普通设置更新也不能清除状态。再次 OAuth 或导入相同
-Connector pool/workspace/member，或相同 accountless personal user ID 的新 Token
-会事务内更新原 credential/channel、递增 generation 并清除 `reauth_required`，不会创建重复
-channel。
+workspace/member，或相同 accountless personal user ID 的新 Token
+会事务内更新原 credential、递增 generation 并清除 `reauth_required`，不修改渠道和操作配置。
 
-原生凭证导出 Bundle 当前为 version 2，包含 Token、身份、enable/quota 和可选 proxy 数据，但
-不包含 routing weight。高级导入器会忽略旧原生 Bundle 或外部凭证对象中的 `weight` 并显示
+原生凭证导出 Bundle 当前为 version 3，包含 Token、身份、enable/quota 和可选维护 proxy 数据，
+不包含组、渠道归属或 routing weight。高级导入器会忽略旧原生 Bundle 或外部凭证对象中的 `weight` 并显示
 warning；导入完成后，凭证是否进入规则、使用哪个上游模型及其权重完全由现有协议规则的
 `all`/`selected` assignment 决定。
 
@@ -188,7 +176,7 @@ Responses Session ID 相同，推荐规则同时配置 `/prompt_cache_key` 和 `
 的 Search 请求沿用 Responses fail-closed 边界。
 
 Images 不使用 Session affinity。Images 请求在发送前遇到 draining/unavailable/disabled 凭证时，
-可以排除当前 projection 并选择同一 Images group 的其他凭证；一旦发送则不再换账户。
+可以排除当前能力候选并按操作路由选择其他凭证；一旦发送则不再换账户。
 
 客户端 `session-id` / `thread-id` 优先保留。缺失时，HTTP 请求若匹配 affinity，则从 session
 hash 加 domain separation 派生稳定 opaque UUID；没有 affinity 的 HTTP 请求生成本次请求 UUID。
@@ -212,7 +200,7 @@ Codex HTTP attempt：
 - 若 Responses 渠道组的 `request_compression` 选择 `zstd`，通用代理层会在 Connector
   完成 body 适配后使用 Zstandard level 3 编码，并生成
   `Content-Encoding: zstd` 与 `Content-Type: application/json`；默认 `default` 不压缩；
-- 目标固定为 managed channel base URL 下的 `/responses`；
+- 目标固定为所选渠道接入 Base URL 下的 `/responses`；
 - 注入 Bearer、存在 workspace account ID 时才注入 `ChatGPT-Account-ID`、可选 FedRAMP、
   session/thread、User-Agent、
   `originator` 和版本 Header。
@@ -229,7 +217,7 @@ Codex WebSocket attempt：
 - 保留客户端的 `previous_response_id`、`generate` 和 `client_metadata`；
 - 对 `client_metadata` 应用与 HTTP 相同的安装 ID/工作区归一化和缺失字段补全，不改写已有
   Session/thread、turn-state 或其他 metadata；
-- 把 managed channel base URL 转成 `/responses` 的 `ws`/`wss` 目标；
+- 把所选渠道接入 Base URL 转成 `/responses` 的 `ws`/`wss` 目标；
 - 使用 Codex 同源的 WebSocket Beta、Bearer/可选 account、FedRAMP、session/thread、
   User-Agent、`originator` 和版本 Header，不发送 HTTP SSE 专用的 `Accept`、
   `Accept-Encoding` 或 `Content-Type`；
@@ -242,7 +230,7 @@ Codex standalone web search attempt：
 - 在模型别名之后应用独立 Search body 白名单，允许 `id`、`model`、`reasoning`、`input`、
   `commands`、`settings` 与 `max_output_tokens`，不添加 body override；
 - 不允许 Request JSON Transform，但继续应用 Header 和响应 Header Transform；
-- 目标固定为 managed Responses channel base URL 下的 `/alpha/search`；
+- 目标固定为所选渠道接入 Base URL 下的 `/alpha/search`；
 - 保留合法的 `x-codex-turn-metadata`；turn metadata 缺失或无效时安全合成，安装 ID 与工作区
   使用同一凭证级/系统设置投影；
 - 无条件把 `originator` 和 `User-Agent` 覆盖为快照中的全局 Codex Connector 身份，
@@ -256,7 +244,7 @@ Codex Images generation attempt：
 - 只接受 `ApiOperation::ImagesGeneration` 的非流式 JSON；
 - 在模型别名和受限变换后应用 Codex Images generation body 白名单，只保留 wire type 字段；
   `output_format=png`、`moderation=auto` 等契约列出的等价值被删除，无法表达的非默认值返回错误；
-- 目标固定为 managed channel base URL 下的 `/images/generations`；
+- 目标固定为所选渠道接入 Base URL 下的 `/images/generations`；
 - 注入 Bearer/可选 account、FedRAMP、User-Agent、`originator` 和版本；保留有效的
   `x-codex-image-turn-id`，缺失或不可用时补全；
 - 与 Responses 共用 session/thread/request/window/turn metadata 的保留/缺失补全逻辑；
@@ -272,7 +260,7 @@ Codex Images edit attempt：
   `prompt`、`background`、`model`、`n`、`quality` 与 `size`；
 - provider-specific 地拒绝 `mask`、第六张图片及无法等价删除的字段；客户端兼容字段和
   `output_format=png` 等 provider 默认值按机器契约删除；
-- 目标固定为 managed channel base URL 下的 `/images/edits`；
+- 目标固定为所选渠道接入 Base URL 下的 `/images/edits`；
 - 使用与 generation 相同的 Bearer/可选 account/FedRAMP、User-Agent、`originator`、版本，
   以及会话身份和 `x-codex-image-turn-id` 的保留/缺失补全规则；
 - 成功响应继续按普通 JSON 与 Images usage collector 处理。
@@ -310,10 +298,10 @@ generation 去重 refresh；已经发送的图片请求不会重放。
 
 新增 provider 时：
 
-1. 增加 `ConnectorKind` 和 group/channel 编译校验；
+1. 增加 `ConnectorKind` 和接入、凭证、渠道能力编译校验；
 2. 在独立 provider 模块实现 attempt 与动态凭证运行时；
 3. 向 `UpstreamConnectorRegistry` 注册，不修改标准 Connector 行为；
-4. 使用 managed channel 复用统一路由、代理、权限、日志和计费；
+4. 使用逻辑渠道与能力复用统一路由、代理、权限、日志和计费；
 5. 增加 provider migration、Console OpenAPI、生成类型和独立管理页；
 6. 明确 streaming、发送后重试、Session affinity、WebSocket 和 secret 存储边界；
 7. 添加协议 mock、数据库事务、端到端转发、quota/draining、并发 refresh 和脱敏测试；

@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { Controller, useForm } from "react-hook-form";
-import { useNavigate, useParams } from "react-router";
+import { useParams } from "react-router";
+import { useReturnPath, withReturnTo } from "@/lib/page-navigation";
+import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { toast } from "sonner";
@@ -94,7 +96,7 @@ function codeStatus(code: RegistrationInvitationCodeView) {
 export function RegistrationInvitationCodeDetailPage() {
   const { id = "" } = useParams();
   const isNew = id === "new";
-  const navigate = useNavigate();
+  const returnTo = useReturnPath("/admin/registration-invitation-codes");
   const detail = useRegistrationInvitationCode(id);
   const groups = useUserGroups();
   const create = useCreateRegistrationInvitationCode();
@@ -177,6 +179,7 @@ export function RegistrationInvitationCodeDetailPage() {
       code.user_group_id
     : "";
   const pending = create.isPending || update.isPending;
+  const draft = useConfigurationDraft(pending, form.formState.isDirty);
   const fieldError = (name: keyof FormValues) => {
     const message = form.formState.errors[name]?.message;
     return typeof message === "string" ? t(message) : undefined;
@@ -206,6 +209,8 @@ export function RegistrationInvitationCodeDetailPage() {
           await update.mutateAsync({ input: common, ifMatch: detail.etag });
           toast.success(t("Registration code updated"));
         }
+        form.reset(values);
+        draft.markSaved();
       } catch (error) {
         if (error instanceof ApiError && error.isConflict) {
           if (error.code === "registration_invitation_code_conflict") {
@@ -229,8 +234,8 @@ export function RegistrationInvitationCodeDetailPage() {
         description={t(
           "Settings are evaluated atomically when each user registers and affect only future accounts.",
         )}
-        backPath="/admin/registration-invitation-codes"
-        backLabel={t("Back to registration codes")}
+        backPath={returnTo}
+        navigationGuard={draft.navigationGuard}
         isLoading={detail.isLoading || groups.isLoading}
         error={detail.error ?? groups.error}
         hasData={isNew || Boolean(code)}
@@ -244,7 +249,7 @@ export function RegistrationInvitationCodeDetailPage() {
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                <dl className="grid grid-cols-1 gap-4">
                   <DetailField
                     label={t("Status")}
                     value={
@@ -460,7 +465,7 @@ export function RegistrationInvitationCodeDetailPage() {
           if (open) return;
           setCreatedSecret(null);
           if (createdId) {
-            navigate(`/admin/registration-invitation-codes/${createdId}`, {
+            draft.navigate(withReturnTo(`/admin/registration-invitation-codes/${createdId}`, returnTo), {
               replace: true,
             });
           }

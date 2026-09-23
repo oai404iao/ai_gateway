@@ -18,6 +18,8 @@ const KEY: Uuid = Uuid::from_u128(0x903);
 const MODEL: Uuid = Uuid::from_u128(0x904);
 const GROUP: Uuid = Uuid::from_u128(0x905);
 const CHANNEL: Uuid = Uuid::from_u128(0x906);
+const LOGICAL_CHANNEL: Uuid = Uuid::from_u128(0x907);
+const ACCESS: Uuid = Uuid::from_u128(0x908);
 
 enum Backend {
     Pg(TestDatabase),
@@ -105,10 +107,17 @@ impl Backend {
              INSERT INTO models(id,source_model_id,display_name,enabled,currency,price_unit_tokens,
                input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at)
              VALUES ('{MODEL}','model','Model',true,'USD',1000000,'1','0','0','2',now());
-             INSERT INTO channel_groups(id,name,api_format,enabled,status_statistics_enabled)
-             VALUES ('{GROUP}','Group','open_ai_chat_completions',true,true);
-             INSERT INTO channels(id,channel_group_id,api_format,name,base_url,enabled,upstream_auth_kind)
-             VALUES ('{CHANNEL}','{GROUP}','open_ai_chat_completions','Channel','https://example.test',true,'none');"
+             INSERT INTO routing_groups(id,name,enabled) VALUES ('{GROUP}','Group',true);
+             INSERT INTO upstream_accesses(id,name,connector_kind,base_url,enabled)
+             VALUES ('{ACCESS}','Access','general','https://example.test',true);
+             INSERT INTO upstream_channels(id,group_id,access_id,name,enabled)
+             VALUES ('{LOGICAL_CHANNEL}','{GROUP}','{ACCESS}','Channel',true);
+             INSERT INTO channel_capabilities(id,channel_id,operation,enabled,status_statistics_enabled)
+             VALUES ('{CHANNEL}','{LOGICAL_CHANNEL}','chat_completion',true,true);
+             INSERT INTO group_identity_registry(id,label,created_at,canonical_group_id)
+             VALUES ('{GROUP}','Group',now(),'{GROUP}');
+             INSERT INTO channel_identity_registry(id,label,created_at,canonical_channel_id,capability_id)
+             VALUES ('{CHANNEL}','Channel',now(),'{LOGICAL_CHANNEL}','{CHANNEL}');"
         )).await.unwrap();
     }
     async fn finish(self) {
@@ -596,7 +605,7 @@ async fn query_contract(db: &Backend, now: DateTime<Utc>) -> Value {
             ..Default::default()
         },
         RequestLogFilter {
-            api_operation: Some("chat_completions".into()),
+            api_operation: Some("chat_completion".into()),
             ..Default::default()
         },
         RequestLogFilter {

@@ -32,6 +32,28 @@ try {
   const storage = await page.evaluate(() => Object.entries(localStorage));
   assert.ok(storage.every(([key]) => !/token|session|auth/i.test(key)), "auth must not persist in localStorage");
 
+  const credentialUrl = `${data.console}/console/v1/routing/upstream-credentials/${data.upstream_credential_id}`;
+  const credentialLoaded = page.waitForResponse((response) => response.url() === credentialUrl && response.request().method() === "GET");
+  await page.goto(`${data.console}/admin/routing/upstream-credentials/${data.upstream_credential_id}`);
+  const credentialEtag = (await credentialLoaded).headers().etag;
+  await expect(page.getByLabel("Name", { exact: true })).toHaveValue("System E2E shared identity");
+  await expect(page.getByLabel("Credential secret", { exact: true })).toHaveValue("");
+  await expect(page.getByRole("button", { name: "Delete credential", exact: true })).toBeDisabled();
+  await expect(page.getByRole("link", { name: "system-e2e-disabled-reference", exact: true })).toBeVisible();
+  await page.getByLabel("Credential secret", { exact: true }).fill(data.upstream_rotated_secret);
+  const credentialSaving = page.waitForResponse((response) => response.url() === credentialUrl && response.request().method() === "PUT");
+  await page.getByRole("button", { name: "Save credential", exact: true }).click();
+  const credentialSaved = await credentialSaving;
+  assert.equal(credentialSaved.status(), 200);
+  assert.equal(credentialSaved.request().headers()["if-match"], credentialEtag);
+  const credentialRead = await context.request.get(credentialUrl, { headers: { Authorization: `Bearer ${data.token}` } });
+  const credential = await credentialRead.json();
+  assert.equal(credential.secret, data.upstream_rotated_secret);
+  assert.equal(credential.channel_ids.length, 2);
+  await page.goto(`${data.console}/admin/routing/logical-channels/${data.logical_channel_id}`);
+  await expect(page.getByLabel("Credential", { exact: true })).toContainText("System E2E shared identity");
+  await expect(page.getByLabel("Upstream API key", { exact: true })).toHaveCount(0);
+
   const protocolUrl = `${data.console}/console/v1${data.protocol_path}`;
   const loaded = page.waitForResponse((response) =>
     response.url() === protocolUrl && response.request().method() === "GET",
@@ -43,17 +65,17 @@ try {
   await expect(model).toHaveValue("e2e-before");
   await model.fill("e2e-wire");
   await page.getByRole("option", { name: "e2e-wire", exact: true }).click();
-  await page.getByLabel("Description", { exact: true }).fill("Saved by real browser");
+  await page.getByRole("spinbutton", { name: "Weight for tier 1 row 1" }).fill("7");
   const saving = page.waitForResponse((response) =>
     response.url() === protocolUrl && response.request().method() === "PUT",
   );
-  await page.getByRole("button", { name: "Save protocol", exact: true }).click();
+  await page.getByRole("button", { name: "Save operation rule", exact: true }).click();
   const saved = await saving;
   assert.equal(saved.status(), 200);
   assert.equal(saved.request().headers()["if-match"], etag);
   await page.reload();
   await expect(model).toHaveValue("e2e-wire");
-  await expect(page.getByLabel("Description", { exact: true })).toHaveValue("Saved by real browser");
+  await expect(page.getByRole("spinbutton", { name: "Weight for tier 1 row 1" })).toHaveValue("7");
 
   const response = await context.request.post(`${data.public}/v1/responses`, {
     headers: { Authorization: `Bearer ${data.api_key}` },
@@ -75,6 +97,7 @@ try {
   console.log(JSON.stringify({
     id: "console-route-to-settlement", status: "passed",
     browser: browser.version(), refresh_rotated: true, etag_checked: true,
+    shared_upstream_credential_rotated: true,
   }));
 } finally {
   await browser.close();

@@ -130,6 +130,10 @@ Migration `0012_request_log_ingest.sql` 创建 `request_log_ingest`：
 复用批量 `UNNEST` 写 `request_logs`，成功后删除入口行。计量/投影各有独立退避，
 坏行保留且可逐条隔离。删除触发器拒绝缺事实或缺投影的提前 ack。
 
+当前 journal 写入 v8，要求携带请求选路时的凭证归属字段；旧 v2–7 解码为未知归属。
+明确无认证与旧未知不同。归属侧表随金融事实同事务持久化，渠道改绑不能改变历史或在途费用，
+见[独立计量](independent-metering.md)。此变更不改变拼车 WAL 格式。
+
 PG sequence 只作为不透明 `IngestReceipt` 交给 worker；批量接收接口为 `accept_batch`，
 COPY 编码与数据库确认留在持久化实现内。结算 worker 使用独立 `SettlementRepository`，
 查询/计量读取使用各自句柄；SQL/COPY 能力仍不暴露给应用调用者。

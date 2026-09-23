@@ -259,24 +259,17 @@ async fn seed(
         model_ids.insert(scenario.name.clone(), model_id);
     }
 
-    for (group_id, name, api_kind) in [
-        (chat_group_id, "performance-chat", ApiKind::ChatCompletions),
-        (
-            responses_group_id,
-            "performance-responses",
-            ApiKind::Responses,
-        ),
+    for (group_id, name) in [
+        (chat_group_id, "performance-chat"),
+        (responses_group_id, "performance-responses"),
     ] {
-        sqlx::query(
-            "INSERT INTO channel_groups
-             (id,name,api_format,enabled)
-             VALUES ($1,$2,$3::api_format,true)",
-        )
-        .bind(group_id)
-        .bind(name)
-        .bind(api_kind.database_name())
-        .execute(&mut *transaction)
-        .await?;
+        sqlx::query("INSERT INTO routing_groups (id,name,enabled) VALUES ($1,$2,true)")
+            .bind(group_id)
+            .bind(name)
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query("INSERT INTO group_identity_registry(id,label,created_at,canonical_group_id) VALUES($1,$2,now(),$1)")
+            .bind(group_id).bind(name).execute(&mut *transaction).await?;
     }
 
     let chat_models = scenarios
@@ -306,22 +299,23 @@ async fn seed(
         ),
     ] {
         sqlx::query(
-            "INSERT INTO channels
-             (id,channel_group_id,api_format,name,base_url,enabled,
-              upstream_auth_kind,upstream_api_key,available_models,
-              auto_disable_allowed)
-             VALUES ($1,$2,$3::api_format,$4,$5,true,
-                     'bearer',$6,$7,false)",
+            "INSERT INTO upstream_credentials(id,name,kind,secret,allowed_base_urls)
+             VALUES($1,$2,'bearer',$3,jsonb_build_array($4::text))",
         )
         .bind(channel_id)
-        .bind(group_id)
-        .bind(api_kind.database_name())
         .bind(name)
-        .bind(mock_base_url)
         .bind(UPSTREAM_API_KEY)
-        .bind(models)
+        .bind(mock_base_url)
         .execute(&mut *transaction)
         .await?;
+        sqlx::query("INSERT INTO upstream_accesses(id,name,connector_kind,base_url,enabled) VALUES($1,$2,'general',$3,true)")
+            .bind(channel_id).bind(name).bind(mock_base_url).execute(&mut *transaction).await?;
+        sqlx::query("INSERT INTO upstream_channels(id,group_id,access_id,credential_id,name,enabled) VALUES($1,$2,$1,$1,$3,true)")
+            .bind(channel_id).bind(group_id).bind(name).execute(&mut *transaction).await?;
+        sqlx::query("INSERT INTO channel_capabilities(id,channel_id,operation,enabled,available_models,auto_disable_allowed) VALUES($1,$1,$2,true,$3,false)")
+            .bind(channel_id).bind(operation(api_kind)).bind(models).execute(&mut *transaction).await?;
+        sqlx::query("INSERT INTO channel_identity_registry(id,label,created_at,canonical_channel_id,capability_id) VALUES($1,$2,now(),$1,$1)")
+            .bind(channel_id).bind(name).execute(&mut *transaction).await?;
     }
 
     sqlx::query(
@@ -340,6 +334,13 @@ async fn seed(
     .bind(responses_group_id)
     .execute(&mut *transaction)
     .await?;
+    for (capability, group) in [
+        (chat_channel_id, chat_group_id),
+        (responses_channel_id, responses_group_id),
+    ] {
+        sqlx::query("INSERT INTO api_key_channel_grants(api_key_id,channel_id,origin_kind,origin_id) VALUES($1,$2,'group',$3)")
+            .bind(api_key_id).bind(capability).bind(group).execute(&mut *transaction).await?;
+    }
 
     for scenario in scenarios {
         let channel_id = match scenario.api_kind {
@@ -358,31 +359,23 @@ async fn seed(
         .execute(&mut *transaction)
         .await?;
         sqlx::query(
-            "INSERT INTO model_rules
-             (id,model_routing_profile_id,api_format,enabled)
-             VALUES ($1,$2,$3::api_format,true)",
+            "INSERT INTO model_operation_rules
+             (id,model_routing_profile_id,operation,enabled)
+             VALUES ($1,$2,$3,true)",
         )
         .bind(model_rule_id)
         .bind(model_rule_profile_id)
-        .bind(scenario.api_kind.database_name())
+        .bind(operation(scenario.api_kind))
         .execute(&mut *transaction)
         .await?;
-        sqlx::query(
-            "INSERT INTO model_rule_routing_tiers
-             (model_rule_id,api_format,priority,selection_strategy)
-             VALUES ($1,$2::api_format,0,'weighted_random')",
-        )
-        .bind(model_rule_id)
-        .bind(scenario.api_kind.database_name())
-        .execute(&mut *transaction)
-        .await?;
-        sqlx::query(
-            "INSERT INTO model_rule_routing_candidates
-             (model_rule_id,api_format,priority,channel_id,upstream_model,weight)
-             VALUES ($1,$2::api_format,0,$3,$4,1)",
-        )
-        .bind(model_rule_id)
-        .bind(scenario.api_kind.database_name())
+        sqlx::query("INSERT INTO model_rule_identity_registry(id,label,created_at,canonical_rule_id) VALUES($1,$2,now(),$1)")
+            .bind(model_rule_id).bind(&scenario.model).execute(&mut *transaction).await?;
+        let tier_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO model_capability_tiers(id,rule_id,operation,priority,strategy) VALUES($1,$2,$3,0,'weighted_random')")
+            .bind(tier_id).bind(model_rule_id).bind(operation(scenario.api_kind)).execute(&mut *transaction).await?;
+        sqlx::query("INSERT INTO model_capability_candidates(tier_id,operation,capability_id,upstream_model,weight) VALUES($1,$2,$3,$4,1)")
+        .bind(tier_id)
+        .bind(operation(scenario.api_kind))
         .bind(channel_id)
         .bind(&scenario.model)
         .execute(&mut *transaction)
@@ -391,6 +384,13 @@ async fn seed(
 
     transaction.commit().await?;
     Ok(())
+}
+
+fn operation(kind: ApiKind) -> &'static str {
+    match kind {
+        ApiKind::ChatCompletions => "chat_completion",
+        ApiKind::Responses => "responses",
+    }
 }
 
 #[cfg(test)]

@@ -21,6 +21,19 @@ Versioning.
 - Add root-level system E2E and shared protocol fixtures covering the embedded
   Console, pinned Codex/Pi tool cycles, crash recovery and isolated storage faults.
 
+### Changed
+
+- Separate reusable upstream credentials, network accesses, logical channels and
+  operation capabilities. Route priced models through explicit capability/model
+  candidates; keep Responses, Search, Images generation and Images edit independent.
+- Replace legacy routing Console CRUD and configuration tables with the canonical
+  topology. PostgreSQL 0065 / SQLite 0005 atomically transfer existing configuration
+  and historical references at startup; stop old instances and back up before
+  upgrading. Rollback requires the complete backup and matching binary.
+- Persist fixed capability grants for API Key/Policy group and logical-channel
+  selections. New capabilities or group members never silently expand existing
+  authorization. Preserve Codex credential, quota, sharing and financial identities.
+
 ### Fixed
 
 - Close incomplete PostgreSQL ingress COPY connections on cancellation, including
@@ -30,6 +43,9 @@ Versioning.
   `503 request_log_unavailable`, and replay complete terminals idempotently.
   Interrupted requests without terminal evidence remain pending reconciliation,
   without fabricated usage, zero-cost settlement or a user freeze.
+- Preserve deleted pricing-model reference guards after capability migration, and
+  withdraw a deleted model's candidates so its tombstone cannot permanently block
+  retiring an otherwise unused capability.
 
 ## [0.11.1] - 2026-09-15
 

@@ -142,6 +142,7 @@ class HarnessTests(unittest.TestCase):
             "billed_at": "2026-09-16T00:00:00Z", "outcome": "succeeded",
             "response_status_code": 200, "client_model": "e2e-client",
             "upstream_model": "e2e-wire", "channel_id": "channel",
+            "request_protocol": "sse", "api_operation": "responses",
             "input_tokens": 5, "output_tokens": 2, "cost_amount": "0.000009",
         }
         data = {"console": "http://localhost", "token": "test", "api_key_id": "key", "channel_id": "channel"}

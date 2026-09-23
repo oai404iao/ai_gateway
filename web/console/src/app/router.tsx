@@ -1,6 +1,5 @@
 import { lazy, useState } from "react";
 import {
-  Link,
   Navigate,
   Outlet,
   Route,
@@ -8,8 +7,9 @@ import {
   RouterProvider,
   createBrowserRouter,
   createRoutesFromElements,
+  useLocation,
 } from "react-router";
-import { Button } from "@/components/ui/button";
+import { NavigationLink } from "@/components/shared/navigation-link";
 import { EmptyState } from "@/components/shared/empty-state";
 import { useI18n } from "@/app/i18n";
 import { useSession } from "@/lib/use-session";
@@ -135,11 +135,6 @@ const ApiKeyPolicyDetailPage = lazy(() =>
     default: m.ApiKeyPolicyDetailPage,
   })),
 );
-const ModelSetupPage = lazy(() =>
-  import("@/features/admin/model-setup/model-setup-page").then((m) => ({
-    default: m.ModelSetupPage,
-  })),
-);
 const ModelsPage = lazy(() =>
   import("@/features/admin/models/models-page").then((m) => ({ default: m.ModelsPage })),
 );
@@ -153,46 +148,53 @@ const ModelPricingPage = lazy(() =>
     default: m.ModelPricingPage,
   })),
 );
-const CatalogPage = lazy(() =>
-  import("@/features/admin/catalog/catalog-page").then((m) => ({ default: m.CatalogPage })),
-);
-const ChannelGroupDetailPage = lazy(() =>
-  import("@/features/admin/routing/channel-groups/channel-group-detail-page").then((m) => ({
-    default: m.ChannelGroupDetailPage,
-  })),
-);
-const ChannelsPage = lazy(() =>
-  import("@/features/admin/routing/channels/channels-page").then((m) => ({
-    default: m.ChannelsPage,
-  })),
-);
-const ChannelDetailPage = lazy(() =>
-  import("@/features/admin/routing/channels/channel-detail-page").then((m) => ({
-    default: m.ChannelDetailPage,
-  })),
-);
-const ModelRulesPage = lazy(() =>
-  import("@/features/admin/routing/model-rules/model-rules-page").then((m) => ({
-    default: m.ModelRulesPage,
-  })),
-);
-const ModelRuleDetailPage = lazy(() =>
-  import("@/features/admin/routing/model-rules/model-rule-detail-page").then((m) => ({
-    default: m.ModelRuleDetailPage,
-  })),
-);
-const ModelProtocolRuleDetailPage = lazy(() =>
-  import(
-    "@/features/admin/routing/model-rules/model-protocol-rule-detail-page"
-  ).then((m) => ({
-    default: m.ModelProtocolRuleDetailPage,
-  })),
-);
-const CodexOauthPage = lazy(
-  () => import("@/features/admin/providers/codex-oauth/codex-oauth-page"),
-);
 const CodexImportPage = lazy(
   () => import("@/features/admin/providers/codex-oauth/codex-import-page"),
+);
+const AccessesPage = lazy(() =>
+  import("@/features/admin/routing/accesses/accesses-page").then((m) => ({ default: m.AccessesPage })),
+);
+const AccessDetailPage = lazy(() =>
+  import("@/features/admin/routing/accesses/access-detail-page").then((m) => ({ default: m.AccessDetailPage })),
+);
+const GroupDetailPage = lazy(() =>
+  import("@/features/admin/routing/groups/group-detail-page").then((m) => ({ default: m.GroupDetailPage })),
+);
+const ChannelConfigurationPage = lazy(() =>
+  import("@/features/admin/routing/channel-configuration-page").then((m) => ({
+    default: m.ChannelConfigurationPage,
+  })),
+);
+const LogicalChannelDetailPage = lazy(() =>
+  import("@/features/admin/routing/logical-channels/logical-channel-detail-page").then((m) => ({
+    default: m.LogicalChannelDetailPage,
+  })),
+);
+const CapabilitiesPage = lazy(() =>
+  import("@/features/admin/routing/capabilities/capabilities-page").then((m) => ({
+    default: m.CapabilitiesPage,
+  })),
+);
+const CapabilityDetailPage = lazy(() =>
+  import("@/features/admin/routing/capabilities/capability-detail-page").then((m) => ({
+    default: m.CapabilityDetailPage,
+  })),
+);
+const OperationRulesPage = lazy(() =>
+  import("@/features/admin/routing/operation-rules/operation-rules-page").then((m) => ({
+    default: m.OperationRulesPage,
+  })),
+);
+const OperationRuleDetailPage = lazy(() =>
+  import("@/features/admin/routing/operation-rules/operation-rule-detail-page").then((m) => ({
+    default: m.OperationRuleDetailPage,
+  })),
+);
+const CredentialsPage = lazy(() =>
+  import("@/features/admin/routing/credentials/credentials-page").then((m) => ({ default: m.CredentialsPage })),
+);
+const CredentialDetailPage = lazy(() =>
+  import("@/features/admin/routing/credentials/credential-detail-page").then((m) => ({ default: m.CredentialDetailPage })),
 );
 const ProxiesPage = lazy(() =>
   import("@/features/admin/network/proxies-page").then((m) => ({ default: m.ProxiesPage })),
@@ -232,6 +234,15 @@ function RequireAuth() {
   return <Outlet />;
 }
 
+function WorkspaceRedirect({ to }: { to: string }) {
+  const { search } = useLocation();
+  const target = new URL(to, "https://console.invalid");
+  for (const [key, value] of new URLSearchParams(search)) {
+    if (!target.searchParams.has(key)) target.searchParams.set(key, value);
+  }
+  return <Navigate to={`${target.pathname}${target.search}`} replace />;
+}
+
 function RequirePasswordChange() {
   const { user } = useSession();
   if (!user?.password_change_required) return <Navigate to="/account" replace />;
@@ -260,9 +271,9 @@ function NotFound() {
       description={t("The page you were looking for does not exist.")}
       className="min-h-80 border"
       actions={
-        <Button render={<Link to="/account" />} nativeButton={false}>
+        <NavigationLink to="/account">
           {t("Back to account")}
-        </Button>
+        </NavigationLink>
       }
     />
   );
@@ -320,33 +331,59 @@ function appRouteElements() {
                 path="/admin/api-key-policies/:id"
                 element={<ApiKeyPolicyDetailPage />}
               />
-              <Route path="/admin/model-setup" element={<ModelSetupPage />} />
+              <Route path="/admin/model-setup" element={<WorkspaceRedirect to="/admin/models" />} />
+              <Route path="/admin/routing/channels" element={<ChannelConfigurationPage />} />
               <Route path="/admin/models" element={<ModelsPage />} />
               <Route path="/admin/models/:id" element={<ModelDetailPage />} />
               <Route path="/admin/models/:id/pricing" element={<ModelPricingPage />} />
-              <Route path="/admin/catalog" element={<CatalogPage />} />
+              <Route path="/admin/catalog" element={<WorkspaceRedirect to="/admin/models?view=prices" />} />
               <Route
-                path="/admin/routing/channel-groups/:id"
-                element={<ChannelGroupDetailPage />}
-              />
-              <Route path="/admin/routing/channels" element={<ChannelsPage />} />
-              <Route path="/admin/routing/channels/:id" element={<ChannelDetailPage />} />
-              <Route path="/admin/routing/model-rules" element={<ModelRulesPage />} />
-              <Route
-                path="/admin/routing/model-rules/:id"
-                element={<ModelRuleDetailPage />}
+                path="/admin/routing/channel-groups/*"
+                element={<WorkspaceRedirect to="/admin/routing/channels?view=groups" />}
               />
               <Route
-                path="/admin/routing/model-rules/:id/protocols/:protocolId"
-                element={<ModelProtocolRuleDetailPage />}
+                path="/admin/routing/channels/*"
+                element={<WorkspaceRedirect to="/admin/routing/channels" />}
+              />
+              <Route path="/admin/routing/upstream-credentials" element={<CredentialsPage />} />
+              <Route path="/admin/routing/accesses" element={<AccessesPage />} />
+              <Route path="/admin/routing/groups" element={<WorkspaceRedirect to="/admin/routing/channels?view=groups" />} />
+              <Route path="/admin/routing/groups/:id" element={<GroupDetailPage />} />
+              <Route
+                path="/admin/routing/logical-channels"
+                element={<WorkspaceRedirect to="/admin/routing/channels" />}
+              />
+              <Route
+                path="/admin/routing/logical-channels/:id"
+                element={<LogicalChannelDetailPage />}
+              />
+              <Route path="/admin/routing/capabilities" element={<CapabilitiesPage />} />
+              <Route
+                path="/admin/routing/capabilities/:id"
+                element={<CapabilityDetailPage />}
+              />
+              <Route
+                path="/admin/routing/operation-rules"
+                element={<OperationRulesPage />}
+              />
+              <Route
+                path="/admin/routing/operation-rules/:id"
+                element={<OperationRuleDetailPage />}
+              />
+              <Route path="/admin/routing/accesses/:id" element={<AccessDetailPage />} />
+              <Route path="/admin/routing/upstream-credentials/:id" element={<CredentialDetailPage />} />
+              <Route path="/admin/routing/upstream-credentials/codex/import" element={<CodexImportPage />} />
+              <Route
+                path="/admin/routing/model-rules/*"
+                element={<Navigate to="/admin/routing/operation-rules" replace />}
               />
               <Route
                 path="/admin/providers/codex-oauth/:id"
-                element={<CodexOauthPage />}
+                element={<Navigate to="/admin/routing/upstream-credentials?connector=codex" replace />}
               />
               <Route
                 path="/admin/providers/codex-oauth/:id/import"
-                element={<CodexImportPage />}
+                element={<Navigate to="/admin/routing/upstream-credentials/codex/import" replace />}
               />
               <Route path="/admin/network/proxies" element={<ProxiesPage />} />
               <Route

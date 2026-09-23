@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { Link, Navigate, useNavigate } from "react-router";
+import { Navigate, useNavigate } from "react-router";
+import { NavigationLink } from "@/components/shared/navigation-link";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -107,25 +108,23 @@ export function LoginPage() {
           </p>
           <p>
             {t("Have a registration code?")}{" "}
-            <Button
+            <NavigationLink
               variant="link"
               size="xs"
-              render={<Link to="/register" />}
-              nativeButton={false}
+              to="/register"
             >
               {t("Create account")}
-            </Button>
+            </NavigationLink>
           </p>
           <p>
             {t("Received a personal invitation?")}{" "}
-            <Button
+            <NavigationLink
               variant="link"
               size="xs"
-              render={<Link to="/activate-invitation" />}
-              nativeButton={false}
+              to="/activate-invitation"
             >
               {t("Activate it")}
-            </Button>
+            </NavigationLink>
           </p>
         </div>
       </CardContent>

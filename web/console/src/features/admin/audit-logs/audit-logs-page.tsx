@@ -1,4 +1,7 @@
 import { useState } from "react";
+import { useSearchParams } from "react-router";
+import { useI18n } from "@/app/i18n";
+import { useListPagination } from "@/lib/use-list-pagination";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Select,
@@ -27,14 +30,17 @@ import { formatDateTime, formatRelative } from "@/lib/dates";
 const LIMITS = [50, 100];
 
 export function AuditLogsPage() {
-  const [limit, setLimit] = useState(100);
+  const { t } = useI18n();
+  const [params, setParams] = useSearchParams();
+  const limit = Number(params.get("limit")) === 50 ? 50 : 100;
+  const pagination = useListPagination();
   const { data, isLoading, error } = useAuditLogs(limit);
   const [selected, setSelected] = useState<AuditLogView | null>(null);
 
   const columns: Column<AuditLogView>[] = [
     {
       key: "occurred",
-      header: "Occurred",
+      header: t("Occurred"),
       render: (log) => (
         <span className="flex flex-col">
           <span>{formatDateTime(log.occurred_at)}</span>
@@ -42,12 +48,12 @@ export function AuditLogsPage() {
         </span>
       ),
     },
-    { key: "action", header: "Action", render: (log) => <span className="font-mono text-xs">{log.action}</span> },
-    { key: "object", header: "Object", render: (log) => `${log.object_type}:${log.object_id.slice(0, 8)}` },
-    { key: "actor", header: "Actor", render: (log) => log.actor_role ?? log.actor_type },
+    { key: "action", header: t("Action"), render: (log) => <span className="font-mono text-xs">{log.action}</span> },
+    { key: "object", header: t("Object"), render: (log) => `${log.object_type}:${log.object_id.slice(0, 8)}` },
+    { key: "actor", header: t("Actor"), render: (log) => log.actor_role ?? log.actor_type },
     {
       key: "correlation",
-      header: "Correlation",
+      header: t("Correlation"),
       render: (log) => (log.correlation_id ? log.correlation_id.slice(0, 8) : "—"),
     },
   ];
@@ -58,15 +64,20 @@ export function AuditLogsPage() {
         title="Audit Logs"
         description="Control-plane mutations and administrative actions."
         actions={
-          <Select value={String(limit)} onValueChange={(value) => setLimit(Number(value))}>
-            <SelectTrigger className="w-32">
+          <Select value={String(limit)} onValueChange={(value) => setParams((current) => {
+            const next = new URLSearchParams(current);
+            next.set("limit", String(value));
+            next.delete("page");
+            return next;
+          }, { replace: true })}>
+            <SelectTrigger aria-label={t("Result limit")} className="w-32">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
               <SelectGroup>
                 {LIMITS.map((value) => (
                   <SelectItem key={value} value={String(value)}>
-                    Last {value}
+                    {t("Last {count}", { count: value })}
                   </SelectItem>
                 ))}
               </SelectGroup>
@@ -76,8 +87,8 @@ export function AuditLogsPage() {
       />
       <Card>
         <CardHeader>
-          <CardTitle>Events</CardTitle>
-          <CardDescription>Before/after payloads are redacted by the gateway.</CardDescription>
+          <CardTitle>{t("Events")}</CardTitle>
+          <CardDescription>{t("Before/after payloads are redacted by the gateway.")}</CardDescription>
         </CardHeader>
         <CardContent>
           <AsyncResource
@@ -92,6 +103,8 @@ export function AuditLogsPage() {
               rows={data ?? []}
               rowKey={(log) => log.id}
               onRowClick={(log) => setSelected(log)}
+              rowActionLabel={t("View details")}
+              pagination={pagination}
             />
           </AsyncResource>
         </CardContent>

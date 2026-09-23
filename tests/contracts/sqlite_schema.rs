@@ -1,4 +1,4 @@
-//! Direct-SQL business schema contracts; no mock repositories or permissive SQLite connections.
+//! Historical pre-capability schema contracts, pinned to migrations 1–4.
 
 use super::*;
 use ai_gateway::persistence::sqlite::{SqliteDate, SqliteTimestamp, SqliteUuid};
@@ -16,9 +16,32 @@ const REQUEST: &str = "80000000-0000-0000-0000-000000000001";
 const CODEX_GROUP: &str = "40000000-0000-0000-0000-000000000002";
 const CODEX_CHANNEL: &str = "50000000-0000-0000-0000-000000000002";
 
+pub(super) const IDENTITY_MIGRATIONS: &[SqliteMigration<'static>] = &[
+    SqliteMigration {
+        version: 1,
+        description: "business schema after PostgreSQL 0063",
+        sql: include_str!("../../migrations/sqlite/0001_baseline.sql"),
+    },
+    SqliteMigration {
+        version: 2,
+        description: "business constraints and derived projections",
+        sql: include_str!("../../migrations/sqlite/0002_guards.sql"),
+    },
+    SqliteMigration {
+        version: 3,
+        description: "durable Codex external-operation fences",
+        sql: include_str!("../../migrations/sqlite/0003_codex_operations.sql"),
+    },
+    SqliteMigration {
+        version: 4,
+        description: "independent upstream credential identities",
+        sql: include_str!("../../migrations/sqlite/0004_upstream_credentials.sql"),
+    },
+];
+
 async fn schema() -> (tempfile::TempDir, SqliteDatabase) {
     let (directory, db) = database().await;
-    assert_eq!(db.install_schema().await.unwrap(), 3);
+    assert_eq!(db.migrate(IDENTITY_MIGRATIONS).await.unwrap(), 4);
     (directory, db)
 }
 
@@ -123,12 +146,12 @@ async fn complete_baseline_has_all_columns_constraints_and_seeds_and_reopens() {
     );
     drop(reader);
     seed(&db).await;
-    assert_eq!(db.install_schema().await.unwrap(), 0);
+    assert_eq!(db.migrate(IDENTITY_MIGRATIONS).await.unwrap(), 0);
     db.close().await;
     let reopened = SqliteDatabase::open(&directory.path().join("gateway.sqlite"))
         .await
         .unwrap();
-    assert_eq!(reopened.install_schema().await.unwrap(), 0);
+    assert_eq!(reopened.migrate(IDENTITY_MIGRATIONS).await.unwrap(), 0);
     reopened.close().await;
 }
 
@@ -156,7 +179,7 @@ async fn complete_baseline_and_guards_rollback_as_one_pending_batch() {
     assert!(!table_exists(&db, "users").await);
     assert!(!table_exists(&db, "request_metering_facts").await);
     assert!(!table_exists(&db, "_gateway_routing_assertions").await);
-    assert_eq!(db.install_schema().await.unwrap(), 3);
+    assert_eq!(db.install_schema().await.unwrap(), 9);
     db.close().await;
 }
 
@@ -277,7 +300,7 @@ async fn normalized_log_replay_preserves_on_conflict_semantics() {
             sqlx::query("INSERT INTO request_logs(
                 id,started_at,completed_at,user_id,api_key_id,api_format,api_operation,client_model,outcome)
                 VALUES (?,ag_now(),ag_now(),?,?,?,?,?,'rejected') ON CONFLICT(id) DO NOTHING")
-                .bind(&id).bind(USER).bind(KEY).bind(format.as_str()).bind(operation.as_str())
+                .bind(&id).bind(USER).bind(KEY).bind(format.as_str()).bind(ai_gateway::persistence::capability_cutover::legacy_settings::operation_name(operation))
                 .bind("model").execute(&mut *tx).await.unwrap();
             tx.commit().await.unwrap();
         }

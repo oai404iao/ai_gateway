@@ -4,9 +4,32 @@
 > 和测试为准。原始分阶段计划保存在
 > [Console UI 实施计划归档](../archive/console-ui-implementation-plan.md)。
 
+页面结构、返回与跳转、列表、草稿和历史入口的统一约定见
+[Console 导航与页面交互规范](console-interaction-standard.md)。
+
 系统设置分类定义在 `web/console/src/features/admin/system/settings-sections.ts`，侧栏的
 可展开子菜单与 `/admin/system/:section` 页面共用此定义。旧 `/admin/system` 地址跳转
-到基础设置；每个分类切换时重建表单，保留完整 API 配置及 ETag，只挂载当前分类控件。
+到基础设置；分类切换前确认未保存修改，再重建表单，保留完整 API 配置及 ETag，只挂载当前分类控件。
+
+[上游实体联合重构](upstream-identity-capabilities.md)的接入管理位于
+`src/features/admin/routing/accesses/`，独立管理连接器、Base URL、代理和超时，
+不在该表单配置凭证或隐式扩展接口能力/授权。必须与联合数据库迁移一起部署，
+不能作为独立功能发布到旧数据库。
+同目录的 `groups/`、`logical-channels/`、`capabilities/`、`operation-rules/`
+提供新拓扑的列表和版本化编辑；候选使用 `capability_id`。能力所属渠道和操作在
+创建后只读，所有连接器均可显式创建和删除支持的能力。Key/Policy 选择组和逻辑渠道，使用固定逻辑
+渠道授权；每个渠道只出现一次，其新增能力共享授权，后加入组的渠道不自动获权。
+“上游凭证”按 `general` / `codex` 页签管理，Codex 导入、OAuth、批量操作、quota 和导出
+不再接收组参数，也不隐式创建拓扑。渠道详情选择兼容的凭证并配置 `sharing_only`，
+组页面不再包含凭证入口或拼车开关。拼车表单保存 `channel_id`，本人 Key 选项使用
+`sharing_channels`，不再展开凭证的所有引用渠道。只读 quota 按账号去重。
+旧管理页面已移除，旧地址跳转到规范化列表；操作规则可以按定价模型选择或显式创建
+profile。批量修改与手动恢复位于能力页面，恢复不改变显式启用状态。
+普通能力编辑可按所选接入和凭证发现模型；选择结果只更新草稿，保存后发布。
+删除确认说明自动解绑候选、停用空规则；删除成功同时失效能力和操作规则缓存。
+旧删除影响预览、协议 DTO 和 mock CRUD 已移除，测试直接使用新拓扑。
+窄屏模型工作区使用列表/详情切换，避免操作路由编辑器被完整模型列表推到页面底部。
+表格在自身容器内滚动，Console 主区域保持 `min-w-0`，不撑宽浏览器视口。
 
 ## 1. 运行边界
 
@@ -51,6 +74,11 @@ API router 在 SPA fallback 之前合并。未匹配的 `/console/v1/*` 返回 J
 Console API/UI 不可达。
 
 ## 4. 目录与契约
+
+`/admin/routing/upstream-credentials` 提供独立凭证列表及详情，普通渠道表单只选择
+nullable `credential_id`。凭证详情展示受影响渠道、显式轮换输入和受 ETag 保护的修改；
+Codex 身份为只读入口并跳转至专属管理页。相关边界见
+[上游凭证管理](../user/upstream-credentials.md)。
 
 `/codex-sharing` 是本人金额视图；`/admin/codex-sharing` 和其详情页负责不依赖用户组的固定
 席位配置、ETag 保存和逐席位用量。它们位于 `src/features/codex-sharing/`，不与只读 Codex
@@ -121,22 +149,19 @@ docs/openapi/console-v1.yaml
 
 ### 模型配置导航与层级编辑
 
-模型配置侧边栏入口默认打开 `/admin/routing/model-rules`。`configuration-navigation.tsx` 只
-提供计价模型、Channel 和模型规则之间的统一导航；各资源使用自己的表格和详情页，不再维护重复的
-目录/检查器状态或 `?mode=table` 分支。
+“模型与路由”侧边栏提供上游接入、上游凭证、渠道配置、模型配置四个入口。
 
-- 模型规则列表每个计价模型只显示一行，并在同一行列出其协议及状态。创建顶层规则时，只能从已
-  启用且尚未绑定顶层规则的计价模型中选择。
-- `/admin/routing/model-rules/:id` 显示不可编辑的客户端计价身份，以及 Chat Completions、
-  Responses 和 Images 协议入口。缺失协议由此创建为停用的空 `draft`。
-- `/admin/routing/model-rules/:id/protocols/:protocolId` 是实际路由编辑器。协议格式不可编辑；
-  每个 tier 用紧凑记录列表编辑可重复 Channel、但渠道/模型组合唯一的显式候选和独立权重。
-  “新增记录”追加空渠道、空模型、权重 `1` 的行，三个字段均可行内修改；渠道组仅作为渠道选项
-  的辅助信息，不提供批量添加入口。渠道和模型支持搜索，但上游模型仍只能从各 Channel 的
-  `available_models` 选择，不接受自由文本作为新模型。切换渠道仅在模型仍可用且组合不重复时
-  保留原模型，否则清空模型；权重保持不变。空行或非正整数权重阻止保存。
-- 渠道组、渠道、计价模型和协议规则编辑器继续使用统一双栏详情和 sticky 操作栏；价格编辑器
-  保留专用计算布局。每次保存仍只提交一个资源，没有跨资源原子保存。
+- `/admin/routing/channels` 在同一工作区展示组配置和按组列出的逻辑渠道；选择渠道后仅展示
+  该渠道的能力，新增能力自动带入渠道。原有详情页仍负责单资源编辑。
+- `/admin/models` 按服务商组织左侧客户端模型列表，右侧直接嵌入
+  `OperationRuleDetailPage`。URL 的 `model` / `rule` 参数记录选中身份，不保存草稿。
+  新增操作只列出该模型尚未配置的操作；操作与 profile 在创建后不可修改。
+- 首次保存操作时，缺失的 profile 先通过独立命令创建，再保存路由规则；失败重试复用已有
+  profile，不承诺跨资源原子保存。空路由只允许作为停用草稿保存。
+- 操作编辑器复用显式能力/上游模型候选、优先级层、权重和 ETag 更新；路由候选仍按操作过滤。
+  已有操作编辑和新建操作共用同一编辑器，不在工作区复制验证或提交逻辑。
+- 价格同步作为模型配置页签；模型属性、复制、价格编辑仍通过原有详情页完成。窄屏工作区
+  退化为模型列表在上、编辑器在下。
 - 生产使用 data router 的 `useBlocker` 保护 PUSH/REPLACE/浏览器 POP；表单草稿不持久化。
   Declarative `AppRouter` 留给组件测试，fallback 保护应用链接和返回操作；真正的 POP
   保护由详情页测试覆盖。页面刷新/关闭由 `beforeunload` 保护。

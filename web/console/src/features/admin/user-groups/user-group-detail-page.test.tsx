@@ -5,7 +5,7 @@ import { BrowserRouter } from "react-router";
 import { describe, expect, it } from "vitest";
 import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
-import { CODEX_QUOTA_GROUP, USER_GROUP } from "@/test/fixtures";
+import { CODEX_QUOTA_GROUP, USER_GROUP, ROUTING_GROUP, LOGICAL_CHANNEL, UPSTREAM_ACCESS } from "@/test/fixtures";
 import { server, seedAuthenticatedSession } from "@/test/msw";
 
 function renderAppAt(path: string) {
@@ -76,8 +76,14 @@ describe("UserGroupDetailPage", () => {
     seedAuthenticatedSession();
     let submitted: unknown;
     server.use(
-      http.get("/console/v1/routing/channel-groups", () =>
-        HttpResponse.json([CODEX_QUOTA_GROUP]),
+      http.get("/console/v1/routing/groups", () =>
+        HttpResponse.json([{ ...ROUTING_GROUP, id: CODEX_QUOTA_GROUP.id, name: CODEX_QUOTA_GROUP.name }]),
+      ),
+      http.get("/console/v1/routing/logical-channels", () =>
+        HttpResponse.json([{ ...LOGICAL_CHANNEL, group_id: CODEX_QUOTA_GROUP.id }]),
+      ),
+      http.get("/console/v1/routing/accesses", () =>
+        HttpResponse.json([{ ...UPSTREAM_ACCESS, connector_kind: "codex" }]),
       ),
       http.put("/console/v1/user-groups/:id", async ({ request }) => {
         submitted = await request.json();

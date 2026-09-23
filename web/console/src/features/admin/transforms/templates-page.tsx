@@ -1,4 +1,3 @@
-import { useNavigate } from "react-router";
 import { AdminListPage } from "@/features/admin/components/admin-list-page";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { useConfigTemplates } from "@/features/admin/api";
@@ -7,7 +6,6 @@ import { apiFormatLabel } from "@/lib/permissions";
 import { useI18n } from "@/app/i18n";
 
 export function ConfigTemplatesPage() {
-  const navigate = useNavigate();
   const { data, isLoading, error } = useConfigTemplates();
   const { t } = useI18n();
   return (
@@ -18,7 +16,7 @@ export function ConfigTemplatesPage() {
       rowKey={(template) => template.id}
       detailPath={(template) => `/admin/transforms/templates/${template.id}`}
       createLabel={t("New template")}
-      onCreate={() => navigate("/admin/transforms/templates/new")}
+      createPath="/admin/transforms/templates/new"
       columns={[
         {
           key: "name",

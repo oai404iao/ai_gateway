@@ -10,7 +10,7 @@ use uuid::Uuid;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SharingGroupInput {
-    pub credential_id: Uuid,
+    pub channel_id: Uuid,
     pub name: String,
     pub enabled: bool,
     pub seats: Vec<Option<Uuid>>,
@@ -59,6 +59,9 @@ impl SharingGroupInput {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SharingGroup {
     pub id: Uuid,
+    /// Immutable financial backing; administrators select the logical channel.
+    #[serde(skip_serializing)]
+    pub bound_credential_id: Uuid,
     #[serde(flatten)]
     pub policy: SharingGroupInput,
     pub updated_at: DateTime<Utc>,
@@ -126,8 +129,8 @@ impl SharingRegistry {
         self.protected.contains(&channel)
     }
 
-    /// Group-only channels (including recognizable identity aliases) fail closed
-    /// until a canonical projection has an eligible sharing seat.
+    /// Restricted channels and recognizable account aliases fail closed unless
+    /// the selected logical channel belongs to an eligible sharing seat.
     pub fn protect_channels(&mut self, channels: impl IntoIterator<Item = Uuid>) {
         self.protected.extend(channels);
     }
@@ -176,9 +179,10 @@ mod tests {
         let unbound = Uuid::new_v4();
         let group = SharingGroup {
             id: Uuid::new_v4(),
+            bound_credential_id: Uuid::new_v4(),
             updated_at: Utc::now(),
             policy: SharingGroupInput {
-                credential_id: channel,
+                channel_id: channel,
                 name: "test".into(),
                 enabled: true,
                 seats: vec![Some(user)],
@@ -226,9 +230,10 @@ mod tests {
         let record = |id| SharingRecord {
             group: SharingGroup {
                 id,
+                bound_credential_id: Uuid::new_v4(),
                 updated_at: Utc::now(),
                 policy: SharingGroupInput {
-                    credential_id: Uuid::new_v4(),
+                    channel_id: Uuid::new_v4(),
                     name: "test".into(),
                     enabled: true,
                     seats: vec![None, Some(user)],

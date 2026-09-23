@@ -215,10 +215,13 @@
       "supports_standalone_web_search",
       "test_pricing_model_id",
       "deleted_at",
-      "deleted_by"
+      "deleted_by",
+      "credential_id",
+      "credential_binding_revision"
     ],
     "checks": [
       "channels_available_models_no_nulls",
+      "channels_auth_externalized_check",
       "channels_base_url_check",
       "channels_billing_multiplier_non_negative",
       "channels_check",
@@ -241,6 +244,7 @@
       "channels_id_group_api_format_key",
       "channels_pkey",
       "channels_channel_group_id_api_format_fkey",
+      "channels_credential_id_fkey",
       "channels_config_template_id_fkey",
       "channels_deleted_by_fkey",
       "channels_proxy_id_fkey",
@@ -274,7 +278,9 @@
       "supports_standalone_web_search": "bool",
       "test_pricing_model_id": "uuid",
       "deleted_at": "timestamptz",
-      "deleted_by": "uuid"
+      "deleted_by": "uuid",
+      "credential_id": "uuid",
+      "credential_binding_revision": "uuid"
     }
   },
   "codex_oauth_credential_channels": {
@@ -1267,6 +1273,23 @@
       "user_group_id": "uuid",
       "channel_group_id": "uuid",
       "created_at": "timestamptz"
+    }
+  },
+  "upstream_credentials": {
+    "columns": [
+      "id", "name", "kind", "header_name", "secret", "allowed_base_urls",
+      "enabled", "revision", "created_at", "updated_at", "deleted_at"
+    ],
+    "checks": [
+      "upstream_credentials_auth_check", "upstream_credentials_kind_check",
+      "upstream_credentials_name_check", "upstream_credentials_scope_check"
+    ],
+    "constraints": ["upstream_credentials_pkey"],
+    "types": {
+      "id": "uuid", "name": "text", "kind": "text", "header_name": "text",
+      "secret": "text", "allowed_base_urls": "jsonb", "enabled": "bool",
+      "revision": "uuid", "created_at": "timestamptz", "updated_at": "timestamptz",
+      "deleted_at": "timestamptz"
     }
   },
   "user_groups": {

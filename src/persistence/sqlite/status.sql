@@ -1,13 +1,23 @@
 WITH base AS MATERIALIZED (
     -- Date math rounds fractional seconds; bucket identity must truncate them instead.
-    SELECT log.channel_group_id,log.api_format,
+    SELECT g.id AS channel_group_id,log.api_format,
            COALESCE(log.upstream_model,log.client_model) AS model,log.outcome,
            log.ttft_ms,log.output_tokens_per_second,
            unixepoch(substr(log.started_at,1,19)||'Z') -
              ((unixepoch(substr(log.started_at,1,19)||'Z') % ?3 + ?3) % ?3) AS bucket
     FROM request_logs AS log
-    JOIN channel_groups AS g ON g.id=log.channel_group_id
-    WHERE g.status_statistics_enabled AND g.deleted_at IS NULL
+    JOIN group_identity_registry AS group_identity ON group_identity.id=log.channel_group_id
+    JOIN routing_groups AS g ON g.id=group_identity.canonical_group_id
+    JOIN channel_identity_registry AS identity ON identity.id=log.channel_id
+    JOIN upstream_channels AS channel ON channel.id=identity.canonical_channel_id
+    JOIN channel_capabilities AS capability ON capability.channel_id=channel.id
+      AND capability.operation=CASE
+        WHEN log.api_operation='chat_completions' THEN 'chat_completion'
+        WHEN log.api_operation='standalone_web_search' THEN 'web_search'
+        WHEN log.api_operation='responses' AND log.request_protocol='websocket' THEN 'responses-ws'
+        ELSE log.api_operation END
+    WHERE capability.status_statistics_enabled AND capability.deleted_at IS NULL
+      AND channel.deleted_at IS NULL AND g.deleted_at IS NULL
       AND log.started_at >= ?1 AND log.started_at < ?2
 ), scoped AS MATERIALIZED (
     SELECT scope,CASE WHEN scope=0 THEN NULL ELSE channel_group_id END AS group_id,

@@ -69,6 +69,7 @@ struct Context {
     admin: Uuid,
     group: Uuid,
     id: Uuid,
+    channel: Uuid,
     input: CodexCredentialCreate,
 }
 async fn setup(backend: &Backend) -> Context {
@@ -84,15 +85,14 @@ async fn setup(backend: &Backend) -> Context {
     let (group, _) = repo
         .prepare_mutation(
             admin,
-            ControlPlaneMutation::CreateGroup(ChannelGroupInput {
-                name: "Codex".into(),
-                api_format: "open_ai_responses".into(),
-                connector_kind: "codex_oauth".into(),
-                request_compression: None,
-                sharing_only: None,
-                enabled: true,
-                status_statistics_enabled: None,
-            }),
+            ControlPlaneMutation::SaveRoutingGroup {
+                id: Uuid::new_v4(),
+                expected: None,
+                input: ai_gateway::persistence::RoutingGroupInput {
+                    name: "Codex".into(),
+                    enabled: true,
+                },
+            },
         )
         .await
         .unwrap()
@@ -107,13 +107,109 @@ async fn setup(backend: &Backend) -> Context {
         .unwrap();
     compile_runtime_config(pending.runtime_records().await.unwrap()).unwrap();
     let (created, _) = pending.commit().await.unwrap();
-    Context {
+    let context = Context {
         repo,
         admin,
         group,
         id: created[0].id,
+        channel: Uuid::new_v4(),
         input,
+    };
+    assert!(
+        context
+            .repo
+            .topology()
+            .await
+            .unwrap()
+            .logical_channels
+            .is_empty()
+    );
+    let access = context.repo.prepare_mutation(admin, ControlPlaneMutation::CreateUpstreamAccess(
+        serde_json::from_value(serde_json::json!({
+            "name":"Explicit Codex access","connector_kind":"codex","base_url":context.input.base_url,
+            "enabled":true
+        })).unwrap(),
+    )).await.unwrap().commit().await.unwrap().0[0].id;
+    context
+        .repo
+        .prepare_mutation(
+            admin,
+            ControlPlaneMutation::SaveLogicalChannel {
+                id: context.channel,
+                expected: None,
+                input: serde_json::from_value(serde_json::json!({
+                    "name":"Explicit Codex channel","group_id":group,"access_id":access,
+                    "credential_id":context.id,"enabled":true,"sharing_only":false
+                }))
+                .unwrap(),
+            },
+        )
+        .await
+        .unwrap()
+        .commit()
+        .await
+        .unwrap();
+    for operation in [
+        "responses",
+        "responses-ws",
+        "web_search",
+        "images_generation",
+        "images_edit",
+    ] {
+        context.repo.prepare_mutation(admin, ControlPlaneMutation::SaveChannelCapability {
+            id:Uuid::new_v4(),expected:None,
+            input:serde_json::from_value(serde_json::json!({
+                "channel_id":context.channel,
+                "settings":{"operation":operation,"enabled":!operation.starts_with("images_"),
+                    "available_models":context.input.available_models,"request_compression":"default",
+                    "test_model":null,"test_pricing_model_id":null,"auto_disable_allowed":false},
+                "status_statistics_enabled":false,"config_template_id":null,
+                "override_document":{},"billing_multiplier":"1"
+            })).unwrap(),
+        }).await.unwrap().commit().await.unwrap();
     }
+    context
+}
+
+async fn retire_channel(c: &Context) {
+    let topology = c.repo.topology().await.unwrap();
+    for cap in topology
+        .channel_capabilities
+        .iter()
+        .filter(|cap| cap.channel_id == c.channel)
+    {
+        c.repo
+            .prepare_mutation(
+                c.admin,
+                ControlPlaneMutation::DeleteChannelCapability {
+                    id: cap.id,
+                    expected: cap.updated_at,
+                },
+            )
+            .await
+            .unwrap()
+            .commit()
+            .await
+            .unwrap();
+    }
+    let channel = topology
+        .logical_channels
+        .iter()
+        .find(|channel| channel.id == c.channel)
+        .unwrap();
+    c.repo
+        .prepare_mutation(
+            c.admin,
+            ControlPlaneMutation::DeleteLogicalChannel {
+                id: c.channel,
+                expected: channel.updated_at,
+            },
+        )
+        .await
+        .unwrap()
+        .commit()
+        .await
+        .unwrap();
 }
 async fn run(case: u8) {
     let pg = Backend::Pg(TestDatabase::new().await);
@@ -192,52 +288,82 @@ async fn legacy_identity_proxy_exports_and_batch_rollback_match() {
 
 async fn crud(c: Context) {
     let r = c.repo.codex_credential(c.id).await.unwrap().unwrap();
-    assert_eq!(r.projection_channel_ids.len(), 2);
+    let identity = c
+        .repo
+        .upstream_credential_detail(c.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(identity.credential.provider_managed);
+    assert_eq!(identity.credential.kind, "codex_oauth");
+    assert!(identity.secret.is_none());
+    assert_eq!(identity.credential.channel_ids, vec![c.channel]);
+    assert!(
+        c.repo
+            .prepare_mutation(
+                c.admin,
+                ai_gateway::persistence::ControlPlaneMutation::DeleteUpstreamCredential {
+                    id: c.id,
+                    expected_updated_at: identity.credential.updated_at,
+                }
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(r.channel_id, c.id);
     assert_eq!(r.refresh_generation, 0);
     assert_eq!(r.user_id.as_deref(), Some("member-one"));
     let records = c.repo.load_runtime().await.unwrap();
-    let images = records
-        .control_plane
-        .groups
+    let topology = c.repo.topology().await.unwrap();
+    let expected_ids = topology
+        .channel_capabilities
         .iter()
-        .find(|g| g.api_format == "open_ai_images")
+        .filter(|capability| capability.channel_id == c.channel && capability.deleted_at.is_none())
+        .map(|capability| capability.id)
+        .collect::<Vec<_>>();
+    assert_eq!(expected_ids.len(), 5);
+    let runtime_channels = records
+        .control_plane
+        .channels
+        .iter()
+        .filter(|channel| expected_ids.contains(&channel.id))
+        .collect::<Vec<_>>();
+    assert_eq!(runtime_channels.len(), expected_ids.len());
+    for channel in runtime_channels {
+        assert_eq!(channel.credential.unwrap().id, c.id);
+    }
+    let images = topology
+        .channel_capabilities
+        .iter()
+        .find(|capability| capability.settings.operation == ApiOperation::ImagesGeneration)
         .unwrap();
-    assert!(!images.enabled);
-    assert_eq!(c.repo.codex_credentials(images.id).await.unwrap().len(), 1);
+    assert!(!images.settings.enabled);
+    assert_eq!(c.repo.codex_credentials().await.unwrap().len(), 1);
     let export = c
         .repo
-        .export_codex_credentials(
-            images.id,
-            CodexCredentialExportInput {
-                credential_ids: vec![c.id],
-                include_proxies: true,
-            },
-        )
+        .export_codex_credentials(CodexCredentialExportInput {
+            credential_ids: vec![c.id],
+            include_proxies: true,
+        })
         .await
         .unwrap();
     assert_eq!(export.credentials[0].refresh_token, "First-refresh-token");
     assert_eq!(export.credentials[0].user_id.as_deref(), Some("member-one"));
     assert!(
         c.repo
-            .export_codex_credentials(
-                c.group,
-                CodexCredentialExportInput {
-                    credential_ids: vec![c.id, c.id],
-                    include_proxies: true
-                }
-            )
+            .export_codex_credentials(CodexCredentialExportInput {
+                credential_ids: vec![c.id, c.id],
+                include_proxies: true
+            })
             .await
             .is_err()
     );
     assert!(
         c.repo
-            .export_codex_credentials(
-                c.group,
-                CodexCredentialExportInput {
-                    credential_ids: vec![Uuid::nil()],
-                    include_proxies: true
-                }
-            )
+            .export_codex_credentials(CodexCredentialExportInput {
+                credential_ids: vec![Uuid::nil()],
+                include_proxies: true
+            })
             .await
             .is_err()
     );
@@ -289,10 +415,17 @@ async fn crud(c: Context) {
         "disabled"
     );
     let current = c.repo.codex_credential(c.id).await.unwrap().unwrap();
+    let identity = c
+        .repo
+        .upstream_credential_detail(c.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!identity.credential.enabled);
+    assert_eq!(identity.credential.name, "Renamed");
     c.repo
         .prepare_codex_credentials_batch(
             c.admin,
-            c.group,
             CodexCredentialBatchInput {
                 operation: CodexCredentialBatchOperation::Enable,
                 items: vec![CodexCredentialBatchTarget {
@@ -308,7 +441,23 @@ async fn crud(c: Context) {
         .unwrap();
     let current = c.repo.codex_credential(c.id).await.unwrap().unwrap();
     assert!(current.enabled);
+    assert!(
+        c.repo
+            .upstream_credential_detail(c.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .credential
+            .enabled
+    );
     assert_eq!(current.label, "Renamed");
+    assert!(
+        c.repo
+            .prepare_codex_credential_delete(c.admin, c.id, current.updated_at)
+            .await
+            .is_err()
+    );
+    retire_channel(&c).await;
     c.repo
         .prepare_codex_credential_delete(c.admin, c.id, current.updated_at)
         .await
@@ -317,13 +466,20 @@ async fn crud(c: Context) {
         .await
         .unwrap();
     assert!(c.repo.codex_credential(c.id).await.unwrap().is_none());
+    assert!(
+        c.repo
+            .upstream_credential_detail(c.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert!(c.repo.load_codex_credentials().await.unwrap().is_empty());
-    let listed = c.repo.control_plane_lists().await.unwrap();
+    let listed = c.repo.topology().await.unwrap();
     assert!(
         listed
-            .channels
+            .logical_channels
             .iter()
-            .all(|ch| !r.projection_channel_ids.contains(&ch.id))
+            .all(|channel| channel.id != c.channel || channel.deleted_at.is_some())
     );
 }
 
@@ -332,7 +488,6 @@ async fn oauth(c: Context) {
         .repo
         .create_codex_oauth_flow(
             c.admin,
-            c.group,
             CodexOauthStartInput {
                 label: "OAuth".into(),
                 proxy_id: None,
@@ -579,7 +734,7 @@ async fn sharing(c: Context) {
     assert!(c.repo.claim_sharing_ledger(Uuid::new_v4()).await.is_err());
     let owner = c.repo.claim_sharing_ledger(ledger).await.unwrap();
     let input = SharingGroupInput {
-        credential_id: c.id,
+        channel_id: c.channel,
         name: "Car".into(),
         enabled: true,
         seats: vec![Some(c.admin), None],
@@ -629,8 +784,21 @@ async fn sharing(c: Context) {
             .is_err()
     );
     let snapshot = c.repo.load_runtime().await.unwrap();
-    assert_eq!(snapshot.sharing[0].channel_ids.len(), 2);
-    assert_eq!(snapshot.sharing[0].protected_channel_ids.len(), 2);
+    let topology = c.repo.topology().await.unwrap();
+    let mut capabilities = topology
+        .channel_capabilities
+        .iter()
+        .filter(|capability| capability.channel_id == c.channel)
+        .map(|capability| capability.id)
+        .collect::<Vec<_>>();
+    capabilities.sort_unstable();
+    assert_eq!(capabilities.len(), 5);
+    let mut channels = snapshot.sharing[0].channel_ids.clone();
+    channels.sort_unstable();
+    assert_eq!(channels, capabilities);
+    let mut protected = snapshot.sharing[0].protected_channel_ids.clone();
+    protected.sort_unstable();
+    assert_eq!(protected, capabilities);
     owner.close().await.unwrap();
 }
 
@@ -748,13 +916,10 @@ async fn identity_and_proxy_export(backend: &Backend, c: Context) {
     for include in [false, true] {
         let bundle = c
             .repo
-            .export_codex_credentials(
-                c.group,
-                CodexCredentialExportInput {
-                    credential_ids: vec![c.id],
-                    include_proxies: include,
-                },
-            )
+            .export_codex_credentials(CodexCredentialExportInput {
+                credential_ids: vec![c.id],
+                include_proxies: include,
+            })
             .await
             .unwrap();
         assert_eq!(bundle.proxies.len(), usize::from(include));
@@ -770,7 +935,6 @@ async fn identity_and_proxy_export(backend: &Backend, c: Context) {
         c.repo
             .prepare_codex_credentials_batch(
                 c.admin,
-                c.group,
                 CodexCredentialBatchInput {
                     operation: CodexCredentialBatchOperation::Disable,
                     items: vec![
@@ -794,6 +958,63 @@ async fn identity_and_proxy_export(backend: &Backend, c: Context) {
     let audit = serde_json::to_string(&c.repo.audit_logs(100).await.unwrap()).unwrap();
     assert!(!audit.contains("First-refresh-token"));
     assert!(!audit.contains("fixture-password"));
+    let proxy_view = c
+        .repo
+        .control_plane_lists()
+        .await
+        .unwrap()
+        .proxies
+        .into_iter()
+        .find(|item| item.id == proxy)
+        .unwrap();
+    assert!(matches!(
+        c.repo
+            .prepare_mutation(
+                c.admin,
+                ai_gateway::persistence::ControlPlaneMutation::DeleteProxy {
+                    id: proxy,
+                    expected_updated_at: proxy_view.updated_at,
+                }
+            )
+            .await,
+        Err(ai_gateway::persistence::RepositoryError::ProxyInUse)
+    ));
+    let topology = c.repo.topology().await.unwrap();
+    let access_id = topology
+        .logical_channels
+        .iter()
+        .find(|channel| channel.id == c.channel)
+        .unwrap()
+        .access_id;
+    retire_channel(&c).await;
+    c.repo
+        .prepare_codex_credential_delete(c.admin, c.id, after.updated_at)
+        .await
+        .unwrap()
+        .commit()
+        .await
+        .unwrap();
+    let topology = c.repo.topology().await.unwrap();
+    let access = topology
+        .upstream_accesses
+        .iter()
+        .find(|access| access.id == access_id)
+        .unwrap();
+    assert!(access.deleted_at.is_none());
+    assert_eq!(access.proxy_id, None);
+    c.repo
+        .prepare_mutation(
+            c.admin,
+            ai_gateway::persistence::ControlPlaneMutation::DeleteProxy {
+                id: proxy,
+                expected_updated_at: proxy_view.updated_at,
+            },
+        )
+        .await
+        .unwrap()
+        .commit()
+        .await
+        .unwrap();
 }
 
 async fn recovery_and_costs(backend: &Backend, c: Context) {
@@ -838,7 +1059,7 @@ async fn recovery_and_costs(backend: &Backend, c: Context) {
                 id: Uuid::new_v4(),
                 expected_updated_at: None,
                 input: SharingGroupInput {
-                    credential_id: c.id,
+                    channel_id: c.channel,
                     name: "Durable car".into(),
                     enabled: true,
                     seats: vec![Some(c.admin), None],
@@ -868,28 +1089,25 @@ async fn recovery_and_costs(backend: &Backend, c: Context) {
         .sync(vec![group.clone()], record.windows.clone())
         .await
         .unwrap();
-    let seed = Seed {
-        user: c.admin,
-        key,
-        model,
-        profile: Uuid::nil(),
-        rule: Uuid::nil(),
-        group: c.group,
-        other_group: Uuid::nil(),
-        channel: c.id,
-        proxy: Uuid::nil(),
-        template: Uuid::nil(),
-        secret: String::new(),
-        email: String::new(),
-        password: String::new(),
-        client_model: "s5-model".into(),
-    };
+    let topology = c.repo.topology().await.unwrap();
+    assert_eq!(record.channel_ids.len(), 5);
+    let metered_capabilities = topology
+        .channel_capabilities
+        .iter()
+        .filter(|capability| {
+            record.channel_ids.contains(&capability.id)
+                && capability.settings.operation != ApiOperation::StandaloneWebSearch
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(metered_capabilities.len(), 4);
+    let expected_amount = Decimal::new(10, 8);
     let mut events = Vec::new();
     let mut leases = Vec::new();
-    for (index, channel) in record.channel_ids.iter().enumerate() {
-        let mut event = request_log_event(&seed, RequestLogOutcome::Succeeded);
-        event.model_rule_id = None;
-        event.channel_id = Some(*channel);
+    for (index, capability) in metered_capabilities.iter().enumerate() {
+        let mut event = request_log_event(c.admin, key, model, c.group, capability.id);
+        event.upstream_credential = Some(ai_gateway::domain::RequestCredentialAttribution {
+            credential_id: Some(c.id),
+        });
         event.channel_group_id = Some(
             backend
                 .repo()
@@ -899,21 +1117,17 @@ async fn recovery_and_costs(backend: &Backend, c: Context) {
                 .control_plane
                 .channels
                 .iter()
-                .find(|c| c.id == *channel)
+                .find(|c| c.id == capability.id)
                 .unwrap()
                 .channel_group_id,
         );
-        event.api_format = if *channel == c.id {
-            ApiFormat::OpenAiResponses
+        event.api_operation = capability.settings.operation;
+        event.api_format = event.api_operation.api_format();
+        event.request_protocol = if event.api_operation == ApiOperation::ResponsesWebSocket {
+            RequestProtocol::WebSocket
         } else {
-            ApiFormat::OpenAiImages
+            RequestProtocol::NonStream
         };
-        event.api_operation = if *channel == c.id {
-            ApiOperation::Responses
-        } else {
-            ApiOperation::ImagesGeneration
-        };
-        event.request_protocol = RequestProtocol::NonStream;
         event.streamed = false;
         event.billing.as_mut().unwrap().cost_amount = Some(Decimal::new((index + 1) as i64, 8));
         let lease = runtime.reserve(&group, c.admin, event.id).await.unwrap();
@@ -943,7 +1157,7 @@ async fn recovery_and_costs(backend: &Backend, c: Context) {
         .sharing_completed_costs(&runtime.pending().await)
         .await
         .unwrap();
-    assert_eq!(costs.len(), 2);
+    assert_eq!(costs.len(), 4);
     for (id, cost) in &costs {
         runtime.finish(*id, Some(*cost));
         runtime.finish(*id, Some(*cost));
@@ -956,11 +1170,11 @@ async fn recovery_and_costs(backend: &Backend, c: Context) {
         usage
             .windows
             .iter()
-            .all(|w| w.used_amount == Decimal::new(3, 8))
+            .all(|w| w.used_amount == expected_amount)
     );
     let view = c.repo.codex_credential_view(c.id).await.unwrap().unwrap();
-    assert_eq!(view.primary_window_cost_amount, Some(Decimal::new(3, 8)));
-    assert_eq!(view.secondary_window_cost_amount, Some(Decimal::new(3, 8)));
+    assert_eq!(view.primary_window_cost_amount, Some(expected_amount));
+    assert_eq!(view.secondary_window_cost_amount, Some(expected_amount));
     let history = c
         .repo
         .self_codex_quota_window_history(c.admin, c.id, 10)
@@ -970,7 +1184,7 @@ async fn recovery_and_costs(backend: &Backend, c: Context) {
         history
             .periods
             .iter()
-            .all(|p| p.cost_amount == Decimal::new(3, 8))
+            .all(|p| p.cost_amount == expected_amount)
     );
     drop(runtime);
     owner.close().await.unwrap();
@@ -985,7 +1199,7 @@ async fn recovery_and_costs(backend: &Backend, c: Context) {
             .await
             .windows
             .iter()
-            .all(|w| w.used_amount == Decimal::new(3, 8))
+            .all(|w| w.used_amount == expected_amount)
     );
     drop(runtime);
 }

@@ -4,12 +4,14 @@ mod api_format;
 mod api_key;
 mod api_operation;
 mod billing;
+mod channel_capability;
 pub mod codex_sharing;
 mod compiled_routing;
 mod connector;
 mod console_auth;
 mod request_log;
 mod system_settings;
+mod upstream_credential;
 
 pub use api_format::ApiFormat;
 pub use api_key::ApiKeyHash;
@@ -18,19 +20,21 @@ pub use billing::{
     AdvancedBilling, AdvancedBillingError, BillingWeekday, CompiledAdvancedBilling,
     LongContextTier, RequestBillingMultiplier, TimeBillingMultiplier,
 };
+pub use channel_capability::{CapabilityError, CapabilitySettings, CapabilityTransport};
+pub(crate) use compiled_routing::ChannelIdentity;
 pub use compiled_routing::{
     ApiKeyPermission, AuthorizationProfile, ChannelTimeoutPolicy, CompiledApiKey,
     CompiledCandidate, CompiledChannel, CompiledChannelGroup, CompiledChannelUpstreamPolicy,
     CompiledConfigTemplate, CompiledModelRule, CompiledProxy, CompiledRouteTier,
     CompiledRuntimeConfig, CompiledScheduledTestModel, CompiledUnavailableRouteCandidate,
     ModelPriceSnapshot, ModelRouteKey, NoProxyHost, NoProxyHostError,
-    OutboundNetworkPolicyFingerprint, SelectionStrategy, UpstreamAuth,
+    OutboundNetworkPolicyFingerprint, SelectionStrategy,
 };
 pub use connector::{ConnectorKind, RequestCompression};
 pub use console_auth::{ConsolePrincipal, ConsoleSessionPurpose, UserRole};
 pub use request_log::{
-    RequestBilling, RequestLogEvent, RequestLogOutcome, RequestLogSource, RequestPriceSnapshot,
-    RequestProtocol, RequestUsage,
+    RequestBilling, RequestCredentialAttribution, RequestLogEvent, RequestLogOutcome,
+    RequestLogSource, RequestPriceSnapshot, RequestProtocol, RequestUsage,
 };
 pub use system_settings::{
     AutomaticDisableSettings, AutomaticDisableTrigger, CodexOutboundIdentity,
@@ -42,3 +46,4 @@ pub use system_settings::{
     ScheduledTestingSettings, SessionAffinityKeySource, SessionAffinityRule,
     SessionAffinitySettings, SystemRuntimeSettings, UpstreamTimeoutDefaults,
 };
+pub use upstream_credential::{CredentialTarget, UpstreamAuth, UpstreamCredentialError};

@@ -6,9 +6,10 @@
 
 - `migrations/0054_codex_sharing.sql`：车队、稳定席位、不可变绑定/上游身份、
   单个数据库账本 ID。配置金额为 `numeric(20,8)`，不是余额结算实体。
-- `migrations/0055_codex_sharing_only_groups.sql`：默认关闭的 Codex 整池访问模式，同步配对组，
-  不修改已有拼车、窗口或账本数据。
+- `migrations/0055_codex_sharing_only_groups.sql`：历史整池访问模式；现由 `0068` 迁移为渠道属性。
 - `migrations/0056_codex_sharing_direct_seats.sql`：移除用户组绑定，原样保留席位 JSON 和金额状态。
+- PostgreSQL `0068–0069` / SQLite `0008–0009`：凭证独立、车队绑定逻辑渠道、
+  `sharing_only` 下移及逐请求凭证归属；保留账本/WAL、席位和历史金额。
 - `src/domain/codex_sharing.rs`：输入验证、直接席位成员与受保护投影注册表。
 - `src/persistence/codex_sharing.rs`：管理员配置、所有权条件 SQL、完整窗口加载和批量对账。
 - `src/codex_sharing.rs`：独立单写线程、金额状态、预占 RAII、增量 WAL 与检查点。
@@ -24,30 +25,41 @@
 快照；关闭进程开关不能放开数据库中已经保留的受保护凭证。
 `ControlPlaneCoordinator` 在发布快照时同步账本元数据。数据面不逐请求访问 PostgreSQL。
 
-每个用户只能占一个车队席位；每个逻辑凭证、可识别的
+每个用户只能占一个车队席位；每个逻辑渠道、凭证、可识别的
 `(account_id?, provider_user_id)` 只能绑定一个车队。
-同一身份跨 pool 导入的其他投影也受到保护；拼车请求只使用原绑定的两个投影。
+输入 `channel_id` 由服务端解析为凭证及 provider identity，并固化绑定。
+内部 `SharingGroup.bound_credential_id` 用于窗口关联，不序列化到 Console 响应。
+同凭证的其他逻辑渠道及可识别同账号副本也受到保护，但只有原绑定逻辑渠道的能力可用于拼车。
 注册表按目标渠道而不是按用户整体实施限制。普通渠道保留既有授权和计费，完成回调
 仅在 `for_channel` 找到实际绑定时预占/结算拼车金额；普通调用不依赖拼车运行时健康。
 注册表只收窄 API Key 授权交集，不创建模型规则或启用 Images。
 暂停与空席仍保留保护；绑定和既有席位编号不可修改或删除。
+当前 Key/Policy 以逻辑渠道授权，快照编译时展开为该渠道的全部现有操作能力；
+新增能力无需重写授权。拼车的席位、身份副本保护和不可计价搜索拒绝仍独立执行，
+不因渠道级授权而允许无席位调用或重置金额。
 
-`channel_groups.sharing_only` 仅对 Codex 合法，默认 false、PUT 省略保留。数据库触发器
-将同池两个格式组同步；不会启用 Images。完整快照包含专用池及可识别身份副本的保护 ID，
+`upstream_channels.sharing_only` 仅对 Codex 合法，默认 false，PUT 必须明确提供。
+组不拥有此字段或连接器；设置它不会改动同组其他账号、能力或路由。完整快照包含该渠道、
+同凭证渠道及可识别身份副本的保护 ID，
 因此未绑定凭证也无法走普通路径，探测任务也不消费这些凭证。开关关闭不会解除已有绑定。
 已选中的拼车凭证在准备/准入失败后不改走普通渠道；初始目标仍服从原模型路由，需固定拼车
 用途的模型应使用专用规则。发布路由模式不修改窗口元数据和账本，保留金额与预占。
 
 成员关系只读取稳定席位数组，与用户当前用户组无关。车队可用全空席创建；新增/替换成员必须是
 任意用户组中的活跃非系统用户，并且不能已占用另一车队席位。历史席位引用可以保留。
-本人 API Key 选项把席位对应的 canonical Responses/Images 投影作为“拼车凭证”返回，
+本人 API Key 选项通过 `sharing_channels` 返回席位对应的单个逻辑渠道，
 与可选的 API Key Policy 普通目标分开。创建/改目标时，服务端重新验证当前席位；没有 Policy
-或 Policy 已停用时，仍可仅选择拼车凭证。受保护身份副本及整池 sharing-only 目标不能借
+或 Policy 已停用时，仍可仅选择拼车渠道。受保护身份副本及 sharing-only 目标不能借
 Policy 越权；普通 group target 在运行时也跳过已绑定投影，必须由 Key 的显式 channel target
 授权。`0056` 将旧 Key 原先经 group target 获得的有效拼车投影回填为显式 channel target，
 已有 Key 在席位移除后仍会由运行时授权交集立即失去对应渠道。
 保护渠道的计划探测会被跳过。搜索响应不能计价，因此共享请求的该操作在 dispatch 前拒绝。
 该限制不改变普通路径（包括拼车成员的普通调用）的独立搜索协议，也不修改请求白名单。
+
+新日志 journal v8 在不可变选路快照中捕获凭证 UUID（或明确无认证），与金融事实在同一事务
+写入 append-only `request_credential_attributions`。旧事实和 journal v2–7 保持未知归属，
+查询通过 `request_credential_identities` 回退到冻结的历史身份注册表；明确无认证不回退。
+不可在查询时用当前渠道绑定重算旧费用；重复请求的归属冲突必须与金额冲突一样保留证据。
 
 ## 金额与窗口
 

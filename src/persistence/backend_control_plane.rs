@@ -9,17 +9,17 @@ use crate::domain::AutomaticDisableTrigger;
 use crate::domain::codex_sharing::SharingGroup;
 
 use super::{
-    ChannelBatchUpdateInput, ChannelDeletionImpact, CodexCredentialBatchInput,
-    CodexCredentialCreate, CodexCredentialExportBundle, CodexCredentialExportInput,
-    CodexCredentialRecord, CodexCredentialUpdateInput, CodexCredentialView, CodexOauthFlowRecord,
-    CodexOauthStartInput, CodexQuotaReset, CodexQuotaResetOutcome, CodexQuotaUpdate,
-    CodexQuotaWindowHistory, CodexRefresh, ConsoleApiKey, ConsoleAuditLog,
-    ControlPlaneChannelDetail, ControlPlaneConfigTemplateDetail, ControlPlaneLists,
-    ControlPlaneMutation, ControlPlaneRecords, MutationResult, PostgresControlPlaneRepository,
-    ProxyRecord, RepositoryError, RuntimeConfigRecords, SelfApiKeyCreate, SelfApiKeyOptions,
-    SelfApiKeyUpdate, SelfCodexQuotaCredentialView, SelfCodexQuotaWindowHistory, SyncedModelInput,
-    SystemProbeIdentity, SystemSettingsInput, SystemSettingsView, UserBatchUpdateInput,
-    UserSettingsInput, UserSettingsView, control_plane_write::PostgresPreparedControlPlaneChange,
+    ChannelBatchUpdateInput, CodexCredentialBatchInput, CodexCredentialCreate,
+    CodexCredentialExportBundle, CodexCredentialExportInput, CodexCredentialRecord,
+    CodexCredentialUpdateInput, CodexCredentialView, CodexOauthFlowRecord, CodexOauthStartInput,
+    CodexQuotaReset, CodexQuotaResetOutcome, CodexQuotaUpdate, CodexQuotaWindowHistory,
+    CodexRefresh, ConsoleApiKey, ConsoleAuditLog, ControlPlaneConfigTemplateDetail,
+    ControlPlaneLists, ControlPlaneMutation, ControlPlaneRecords, MutationResult,
+    PostgresControlPlaneRepository, ProxyRecord, RepositoryError, RuntimeConfigRecords,
+    SelfApiKeyCreate, SelfApiKeyOptions, SelfApiKeyUpdate, SelfCodexQuotaCredentialView,
+    SelfCodexQuotaWindowHistory, SyncedModelInput, SystemProbeIdentity, SystemSettingsInput,
+    SystemSettingsView, UserBatchUpdateInput, UserSettingsInput, UserSettingsView,
+    control_plane_write::PostgresPreparedControlPlaneChange,
 };
 
 #[cfg(feature = "sqlite-backend")]
@@ -110,6 +110,45 @@ pub struct ControlPlaneRepository {
 }
 
 impl ControlPlaneRepository {
+    pub async fn routing_profiles(
+        &self,
+    ) -> Result<Vec<super::upstream_topology::profiles::RoutingProfileView>, RepositoryError> {
+        match &self.backend {
+            Backend::Postgres(repository) => repository.routing_profiles().await,
+            #[cfg(feature = "sqlite-backend")]
+            Backend::Sqlite(repository) => repository.routing_profiles().await,
+        }
+    }
+
+    pub async fn topology(&self) -> Result<super::UpstreamTopologyRecords, RepositoryError> {
+        match &self.backend {
+            Backend::Postgres(repository) => repository.topology().await,
+            #[cfg(feature = "sqlite-backend")]
+            Backend::Sqlite(repository) => repository.topology().await,
+        }
+    }
+
+    pub async fn upstream_credentials(
+        &self,
+    ) -> Result<Vec<super::UpstreamCredentialView>, RepositoryError> {
+        match &self.backend {
+            Backend::Postgres(repository) => repository.upstream_credentials().await,
+            #[cfg(feature = "sqlite-backend")]
+            Backend::Sqlite(repository) => repository.upstream_credentials().await,
+        }
+    }
+
+    pub async fn upstream_credential_detail(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<super::UpstreamCredentialDetail>, RepositoryError> {
+        match &self.backend {
+            Backend::Postgres(repository) => repository.upstream_credential_detail(id).await,
+            #[cfg(feature = "sqlite-backend")]
+            Backend::Sqlite(repository) => repository.upstream_credential_detail(id).await,
+        }
+    }
+
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
         Self {
@@ -202,39 +241,6 @@ impl ControlPlaneRepository {
             Backend::Postgres(repository) => repository.control_plane_lists().await,
             #[cfg(feature = "sqlite-backend")]
             Backend::Sqlite(repository) => repository.control_plane_lists().await,
-        }
-    }
-
-    pub async fn control_plane_channel_detail(
-        &self,
-        id: Uuid,
-    ) -> Result<Option<ControlPlaneChannelDetail>, RepositoryError> {
-        match &self.backend {
-            Backend::Postgres(repository) => repository.control_plane_channel_detail(id).await,
-            #[cfg(feature = "sqlite-backend")]
-            Backend::Sqlite(repository) => repository.control_plane_channel_detail(id).await,
-        }
-    }
-
-    pub async fn channel_group_deletion_impact(
-        &self,
-        id: Uuid,
-    ) -> Result<ChannelDeletionImpact, RepositoryError> {
-        match &self.backend {
-            Backend::Postgres(repository) => repository.channel_group_deletion_impact(id).await,
-            #[cfg(feature = "sqlite-backend")]
-            Backend::Sqlite(repository) => repository.channel_group_deletion_impact(id).await,
-        }
-    }
-
-    pub async fn channel_deletion_impact(
-        &self,
-        id: Uuid,
-    ) -> Result<ChannelDeletionImpact, RepositoryError> {
-        match &self.backend {
-            Backend::Postgres(repository) => repository.channel_deletion_impact(id).await,
-            #[cfg(feature = "sqlite-backend")]
-            Backend::Sqlite(repository) => repository.channel_deletion_impact(id).await,
         }
     }
 
@@ -590,30 +596,26 @@ impl ControlPlaneRepository {
     pub async fn prepare_codex_credentials_batch(
         &self,
         actor: Uuid,
-        channel_group_id: Uuid,
         input: CodexCredentialBatchInput,
     ) -> Result<PreparedControlPlaneChange<'_>, RepositoryError> {
         match &self.backend {
             Backend::Postgres(r) => r
-                .prepare_codex_credentials_batch(actor, channel_group_id, input)
+                .prepare_codex_credentials_batch(actor, input)
                 .await
                 .map(PreparedControlPlaneChange::from_postgres),
             #[cfg(feature = "sqlite-backend")]
             Backend::Sqlite(r) => r
-                .prepare_codex_credentials_batch(actor, channel_group_id, input)
+                .prepare_codex_credentials_batch(actor, input)
                 .await
                 .map(PreparedControlPlaneChange::from_sqlite),
         }
     }
 
-    pub async fn codex_credentials(
-        &self,
-        channel_group_id: Uuid,
-    ) -> Result<Vec<CodexCredentialView>, RepositoryError> {
+    pub async fn codex_credentials(&self) -> Result<Vec<CodexCredentialView>, RepositoryError> {
         match &self.backend {
-            Backend::Postgres(r) => r.codex_credentials(channel_group_id).await,
+            Backend::Postgres(r) => r.codex_credentials().await,
             #[cfg(feature = "sqlite-backend")]
-            Backend::Sqlite(r) => r.codex_credentials(channel_group_id).await,
+            Backend::Sqlite(r) => r.codex_credentials().await,
         }
     }
 
@@ -711,13 +713,12 @@ impl ControlPlaneRepository {
 
     pub async fn export_codex_credentials(
         &self,
-        channel_group_id: Uuid,
         input: CodexCredentialExportInput,
     ) -> Result<CodexCredentialExportBundle, RepositoryError> {
         match &self.backend {
-            Backend::Postgres(r) => r.export_codex_credentials(channel_group_id, input).await,
+            Backend::Postgres(r) => r.export_codex_credentials(input).await,
             #[cfg(feature = "sqlite-backend")]
-            Backend::Sqlite(r) => r.export_codex_credentials(channel_group_id, input).await,
+            Backend::Sqlite(r) => r.export_codex_credentials(input).await,
         }
     }
 
@@ -725,7 +726,6 @@ impl ControlPlaneRepository {
     pub async fn create_codex_oauth_flow(
         &self,
         actor_user_id: Uuid,
-        channel_group_id: Uuid,
         input: CodexOauthStartInput,
         redirect_uri: String,
         state_hash: Vec<u8>,
@@ -736,7 +736,6 @@ impl ControlPlaneRepository {
             Backend::Postgres(r) => {
                 r.create_codex_oauth_flow(
                     actor_user_id,
-                    channel_group_id,
                     input,
                     redirect_uri,
                     state_hash,
@@ -749,7 +748,6 @@ impl ControlPlaneRepository {
             Backend::Sqlite(r) => {
                 r.create_codex_oauth_flow(
                     actor_user_id,
-                    channel_group_id,
                     input,
                     redirect_uri,
                     state_hash,

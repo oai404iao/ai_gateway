@@ -3,7 +3,6 @@ import {
   ScrollText,
   Users,
   ShieldCheck,
-  GalleryVerticalEnd,
   Network,
   FileText,
   RefreshCw,
@@ -15,7 +14,8 @@ import {
   TicketCheck,
   UsersRound,
   Settings2,
-  Workflow,
+  Boxes,
+  Route,
   type LucideIcon,
 } from "lucide-react";
 import type { UserRole } from "@/api/types";
@@ -73,8 +73,10 @@ export const NAV_SECTIONS: NavSection[] = [
     title: "Model routing",
     roles: ["admin"],
     items: [
-      { label: "Model configuration", path: "/admin/routing/model-rules", icon: Workflow },
-      { label: "Price sync", path: "/admin/catalog", icon: GalleryVerticalEnd },
+      { label: "Upstream accesses", path: "/admin/routing/accesses", icon: Network },
+      { label: "Upstream credentials", path: "/admin/routing/upstream-credentials", icon: KeyRound },
+      { label: "Channel configuration", path: "/admin/routing/channels", icon: Boxes },
+      { label: "Model configuration", path: "/admin/models", icon: Route },
     ],
   },
   {

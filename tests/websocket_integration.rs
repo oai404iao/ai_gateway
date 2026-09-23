@@ -11,8 +11,8 @@ use ai_gateway::{
     admission::AdmissionRuntime,
     application::{ProxyService, RecordingRequestLogSink, SystemMetricsService},
     domain::{
-        ApiFormat, PassiveHealthSettings, RequestProtocol, ResponsesWebSocketSettings,
-        SystemRuntimeSettings, UpstreamTimeoutDefaults,
+        ApiFormat, ApiOperation, PassiveHealthSettings, RequestProtocol,
+        ResponsesWebSocketSettings, SystemRuntimeSettings, UpstreamTimeoutDefaults,
     },
     http,
     persistence::{
@@ -522,6 +522,8 @@ struct GatewayHarness {
 
 #[derive(Clone, Copy)]
 struct WebSocketControls {
+    credential_revision: u128,
+    credential_binding_revision: u128,
     system_enabled: bool,
     user_enabled: bool,
     proxy_permission: bool,
@@ -539,6 +541,8 @@ struct WebSocketControls {
 impl Default for WebSocketControls {
     fn default() -> Self {
         Self {
+            credential_revision: 1,
+            credential_binding_revision: 1,
             system_enabled: true,
             user_enabled: true,
             proxy_permission: true,
@@ -571,10 +575,15 @@ async fn gateway_harness_with_controls(
     outbound_proxy: Option<ProxyRecord>,
     controls: WebSocketControls,
 ) -> GatewayHarness {
-    let api_key_id = Uuid::new_v4();
-    let group_id = Uuid::new_v4();
-    let channel_id = Uuid::new_v4();
+    let api_key_id = Uuid::from_u128(101);
+    let group_id = Uuid::from_u128(102);
+    let channel_id = Uuid::from_u128(103);
     let proxy_id = outbound_proxy.as_ref().map(|proxy| proxy.id);
+    let operation = if controls.channel_supported {
+        ApiOperation::ResponsesWebSocket
+    } else {
+        ApiOperation::Responses
+    };
     let mut records = ControlPlaneRecords {
         api_keys: vec![ApiKeyRecord {
             id: api_key_id,
@@ -602,15 +611,28 @@ async fn gateway_harness_with_controls(
             id: group_id,
             name: "responses".into(),
             api_format: "open_ai_responses".into(),
-            connector_kind: "openai_compatible".into(),
+            connector_kind: "general".into(),
             request_compression: "default".into(),
             sharing_only: false,
             enabled: controls.group_enabled,
         }],
         channels: vec![ChannelRecord {
+            credential: Some(ai_gateway::persistence::CredentialIdentity {
+                id: Uuid::from_u128(104),
+                revision: Uuid::from_u128(controls.credential_revision),
+            }),
+            credential_binding_revision: Uuid::from_u128(controls.credential_binding_revision),
             id: channel_id,
             channel_group_id: group_id,
             api_format: "open_ai_responses".into(),
+            logical_channel_id: Uuid::nil(),
+            access_id: Uuid::nil(),
+            api_operation: Some(operation),
+            connector_kind: "general".into(),
+            request_compression: "default".into(),
+            access_revision: Uuid::nil(),
+            capability_revision: Uuid::nil(),
+            transports: operation.transports().to_vec(),
             name: "responses".into(),
             base_url: upstream.base_url(),
             enabled: controls.channel_enabled,
@@ -663,6 +685,7 @@ async fn gateway_harness_with_controls(
             id: Uuid::new_v4(),
             client_model: CLIENT_MODEL.into(),
             api_format: "open_ai_responses".into(),
+            api_operation: operation,
             model_id: Uuid::new_v4(),
             model_enabled: true,
             model_currency: "USD".into(),
@@ -706,7 +729,7 @@ async fn gateway_harness_with_controls(
             id: Uuid::new_v4(),
             name: "other-responses".into(),
             api_format: "open_ai_responses".into(),
-            connector_kind: "openai_compatible".into(),
+            connector_kind: "general".into(),
             request_compression: "default".into(),
             sharing_only: false,
             enabled: true,
@@ -717,9 +740,12 @@ async fn gateway_harness_with_controls(
         channel.enabled = true;
         channel.auto_disabled = false;
         channel.supports_websocket = true;
+        channel.api_operation = Some(ApiOperation::ResponsesWebSocket);
+        channel.transports = ApiOperation::ResponsesWebSocket.transports().to_vec();
         let mut rule = records.model_rules[0].clone();
         rule.id = Uuid::new_v4();
         rule.client_model = "other-ws-model".into();
+        rule.api_operation = ApiOperation::ResponsesWebSocket;
         rule.routing_tiers[0].candidates[0].channel_id = channel.id;
         if controls.other_route_authorized {
             records.api_keys[0].allowed_group_ids.push(group.id);
@@ -1204,6 +1230,70 @@ async fn responses_websocket_reports_missing_state_without_dispatching_increment
         logs[1].error_code.as_deref(),
         Some("previous_response_not_found")
     );
+}
+
+#[tokio::test]
+async fn credential_disabling_rotation_and_rebinding_invalidate_pinned_continuations() {
+    for controls in [
+        WebSocketControls {
+            channel_enabled: false,
+            ..WebSocketControls::default()
+        },
+        WebSocketControls {
+            credential_revision: 2,
+            ..WebSocketControls::default()
+        },
+        WebSocketControls {
+            credential_binding_revision: 2,
+            ..WebSocketControls::default()
+        },
+    ] {
+        let upstream = start_mock_upstream().await;
+        let gateway = gateway_harness(&upstream).await;
+        let (mut websocket, _) = connect_async(websocket_request(
+            gateway.server.address,
+            CLIENT_KEY,
+            "credential-revision",
+        ))
+        .await
+        .unwrap();
+        let first = response_create(&mut websocket, None).await;
+        let response_id = completed_response_id(&first).to_owned();
+        let replacement = gateway_harness_with_controls(&upstream, None, controls).await;
+        gateway
+            .runtime
+            .replace_snapshot(replacement.runtime.snapshot());
+        let missing = response_create(&mut websocket, Some(&response_id)).await;
+        assert_previous_response_not_found(&missing);
+        assert_eq!(upstream.requests().len(), 1);
+        assert_eq!(upstream.handshakes().len(), 1);
+        if !controls.channel_enabled {
+            let recovered = gateway_harness_with_controls(
+                &upstream,
+                None,
+                WebSocketControls {
+                    credential_revision: 3,
+                    ..WebSocketControls::default()
+                },
+            )
+            .await;
+            gateway
+                .runtime
+                .replace_snapshot(recovered.runtime.snapshot());
+        }
+        let retried = response_create(&mut websocket, None).await;
+        assert_eq!(completed_response_id(&retried), "resp-2");
+        assert_eq!(upstream.handshakes().len(), 2);
+        close_and_wait(websocket).await;
+        assert!(
+            gateway
+                .logs
+                .events()
+                .iter()
+                .any(|event| event.response_status_code == Some(404)
+                    && event.error_code.as_deref() == Some("previous_response_not_found"))
+        );
+    }
 }
 
 #[tokio::test]

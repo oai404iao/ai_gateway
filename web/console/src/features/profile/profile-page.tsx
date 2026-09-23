@@ -18,6 +18,7 @@ import { formatUsd } from "@/lib/formatters";
 import { formatDateTime as formatTs } from "@/lib/dates";
 import { roleLabel } from "@/lib/permissions";
 import { useI18n } from "@/app/i18n";
+import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
 
 export function ProfilePage() {
   const { data: profile, isLoading, error } = useProfile();
@@ -42,16 +43,23 @@ export function ProfilePage() {
 
   const profileForm = useForm<ProfileValues>({
     resolver: zodResolver(profileSchema),
+    defaultValues: { display_name: "" },
     values: profile ? { display_name: profile.display_name } : undefined,
   });
-  const passwordForm = useForm<PasswordValues>({ resolver: zodResolver(passwordSchema) });
+  const passwordForm = useForm<PasswordValues>({
+    resolver: zodResolver(passwordSchema),
+    defaultValues: { current_password: "", new_password: "", confirm_password: "" },
+  });
   const [savingProfile, setSavingProfile] = useState(false);
   const [savingPassword, setSavingPassword] = useState(false);
+  const draft = useConfigurationDraft(savingProfile || savingPassword,
+    profileForm.formState.isDirty || passwordForm.formState.isDirty);
 
   const onProfile = async (values: ProfileValues) => {
     setSavingProfile(true);
     try {
       await updateProfile.mutateAsync(values);
+      profileForm.reset(values);
       toast.success(t("Profile updated"));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t("Update failed"));
@@ -78,6 +86,7 @@ export function ProfilePage() {
 
   return (
     <div className="flex flex-col gap-6">
+      {draft.navigationGuard}
       <PageHeader title={t("Profile")} description={t("Your Console identity and security settings.")} />
       <AsyncResource isLoading={isLoading} error={error}>
         {profile ? (

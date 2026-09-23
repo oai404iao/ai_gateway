@@ -59,6 +59,9 @@ MCowBQYDK2VwAyEAQvs1EKtSBUS0aGjOVZhD2kqVMSiXHugcTiZTZyZxWiQ=
 -----END PUBLIC KEY-----
 "#;
 
+#[path = "support/upstream_credentials.rs"]
+mod upstream_credentials;
+
 struct TestDatabase {
     pool: PgPool,
     admin: PgPool,
@@ -95,7 +98,16 @@ impl TestDatabase {
             .connect(database_url.as_str())
             .await
             .expect("temp database connectable");
-        migrator.run(&pool).await.expect("migrations apply");
+        if std::ptr::eq(migrator, &MIGRATOR) {
+            ai_gateway::persistence::run_migrations(&pool)
+                .await
+                .expect("startup migrations apply");
+        } else {
+            migrator
+                .run(&pool)
+                .await
+                .expect("historical migrations apply");
+        }
         Self { pool, admin, name }
     }
 
@@ -370,87 +382,215 @@ async fn app_with_proxy_test_endpoint(
     }
 }
 
-async fn seed_test_protocol_rule(
+struct TestTopology {
+    group: Uuid,
+    access: Uuid,
+    channel: Uuid,
+    capability: Uuid,
+}
+
+fn codex_fixture_input(
+    _group: Uuid,
+    label: &str,
+) -> ai_gateway::persistence::CodexCredentialCreate {
+    ai_gateway::persistence::CodexCredentialCreate {
+        label: label.into(),
+        enabled: true,
+        proxy_id: None,
+        quota_threshold_percent: 95,
+        base_url: "https://chatgpt.com/backend-api/codex".into(),
+        email: Some(format!("{label}@example.test")),
+        account_id: Some(format!("{label}-account")),
+        user_id: Some(format!("{label}-user")),
+        plan_type: Some("plus".into()),
+        is_fedramp: false,
+        id_token: "id-token".into(),
+        access_token: "access-token".into(),
+        refresh_token: "refresh-token".into(),
+        access_token_expires_at: None,
+        available_models: vec!["gpt-5-codex".into()],
+        quota: None,
+    }
+}
+
+async fn create_test_codex_credential(
     pool: &PgPool,
-    channel_group_id: Uuid,
-    channel_id: Uuid,
-    channel_selection: &str,
-    upstream_model: &str,
-) -> (Uuid, Uuid) {
-    let model_id = Uuid::new_v4();
-    let profile_id = Uuid::new_v4();
-    let rule_id = Uuid::new_v4();
-    let source_model_id = format!("deletion-priced-{model_id}");
-    let mut transaction = pool.begin().await.unwrap();
-    sqlx::query(
-        "INSERT INTO models \
-         (id,source_model_id,display_name,enabled,currency,price_unit_tokens, \
-          input_unit_price,cached_input_unit_price,cache_write_unit_price, \
-          output_unit_price,price_effective_at) \
-         VALUES ($1,$2,$2,true,'USD',1000000,0,0,0,0,now())",
-    )
-    .bind(model_id)
-    .bind(&source_model_id)
-    .execute(&mut *transaction)
-    .await
-    .unwrap();
-    sqlx::query("INSERT INTO model_routing_profiles (id,model_id) VALUES ($1,$2)")
-        .bind(profile_id)
-        .bind(model_id)
-        .execute(&mut *transaction)
-        .await
-        .unwrap();
-    sqlx::query(
-        "INSERT INTO model_rules \
-         (id,model_routing_profile_id,api_format,enabled) \
-         VALUES ($1,$2,'open_ai_chat_completions',false)",
-    )
-    .bind(rule_id)
-    .bind(profile_id)
-    .execute(&mut *transaction)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO model_rule_routing_tiers \
-         (model_rule_id,api_format,priority,selection_strategy) \
-         VALUES ($1,'open_ai_chat_completions',0,'weighted_random')",
-    )
-    .bind(rule_id)
-    .execute(&mut *transaction)
-    .await
-    .unwrap();
-    let channel_ids = if channel_selection == "all" {
-        sqlx::query_scalar::<_, Uuid>(
-            "SELECT id FROM channels \
-             WHERE channel_group_id=$1 AND deleted_at IS NULL ORDER BY id",
-        )
-        .bind(channel_group_id)
-        .fetch_all(&mut *transaction)
+    app: &App,
+    input: ai_gateway::persistence::CodexCredentialCreate,
+) -> Uuid {
+    let coordinator = ControlPlaneCoordinator::new(
+        ControlPlaneRepository::new(pool.clone()),
+        Arc::clone(&app.runtime),
+        ai_gateway::routing::RoutingRuntime::new(
+            ai_gateway::routing::PassiveHealthPolicy::default(),
+        ),
+    );
+    coordinator
+        .create_codex_credential(app.user_id, input, None)
         .await
         .unwrap()
-    } else {
-        vec![channel_id]
-    };
-    for channel_id in channel_ids {
-        sqlx::query(
-            "INSERT INTO model_rule_routing_candidates \
-             (model_rule_id,api_format,priority,channel_id,upstream_model,weight) \
-             VALUES ($1,'open_ai_chat_completions',0,$2,$3,100)",
+        .id
+}
+
+async fn codex_capability_id(pool: &PgPool, credential: Uuid, operation: &str) -> Uuid {
+    sqlx::query_scalar("SELECT cap.id FROM channel_capabilities cap JOIN upstream_channels ch ON ch.id=cap.channel_id WHERE ch.credential_id=$1 AND cap.operation=$2 AND cap.deleted_at IS NULL")
+        .bind(credential).bind(operation).fetch_one(pool).await.unwrap()
+}
+
+async fn bind_test_codex_channel(
+    pool: &PgPool,
+    app: &App,
+    group: Uuid,
+    credential: Uuid,
+    sharing_only: bool,
+) -> Uuid {
+    let repository = ControlPlaneRepository::new(pool.clone());
+    let identity = repository
+        .upstream_credential_detail(credential)
+        .await
+        .unwrap()
+        .unwrap();
+    let record = repository
+        .codex_credential(credential)
+        .await
+        .unwrap()
+        .unwrap();
+    let access = create_resource(
+        app,
+        "/console/v1/routing/accesses",
+        serde_json::json!({
+            "name":format!("Access {credential}"),"connector_kind":"codex",
+            "base_url":identity.credential.allowed_base_urls[0],"enabled":true
+        }),
+    )
+    .await;
+    let channel = create_resource(
+        app,
+        "/console/v1/routing/logical-channels",
+        serde_json::json!({
+            "name":format!("Channel {credential}"),"group_id":group,"access_id":access,
+            "credential_id":credential,"enabled":true,"sharing_only":sharing_only
+        }),
+    )
+    .await;
+    for operation in [
+        "responses",
+        "responses-ws",
+        "web_search",
+        "images_generation",
+        "images_edit",
+    ] {
+        create_resource(
+            app,
+            "/console/v1/routing/capabilities",
+            serde_json::json!({
+                "channel_id":channel,
+                "settings":{"operation":operation,"enabled":!operation.starts_with("images_"),
+                    "available_models":record.available_models,"request_compression":"default",
+                    "test_model":null,"test_pricing_model_id":null,"auto_disable_allowed":false},
+                "status_statistics_enabled":false,"config_template_id":null,
+                "override_document":{},"billing_multiplier":"1"
+            }),
         )
-        .bind(rule_id)
-        .bind(channel_id)
-        .bind(upstream_model)
-        .execute(&mut *transaction)
-        .await
-        .unwrap();
+        .await;
     }
-    sqlx::query("UPDATE model_rules SET enabled=true WHERE id=$1")
-        .bind(rule_id)
-        .execute(&mut *transaction)
-        .await
-        .unwrap();
-    transaction.commit().await.unwrap();
-    (profile_id, rule_id)
+    channel
+}
+
+async fn create_test_pricing_model(app: &App) -> Uuid {
+    create_resource(
+        app,
+        "/console/v1/models",
+        serde_json::json!({
+            "source_model_id": format!("priced-{}", Uuid::new_v4()),
+            "display_name": "Spec pricing model", "enabled": true,
+            "price_unit_tokens": 1000000, "input_unit_price": "1",
+            "cached_input_unit_price": "0", "cache_write_unit_price": "0", "output_unit_price": "2",
+            "price_effective_at": "2026-01-01T00:00:00Z"
+        }),
+    )
+    .await
+}
+
+fn capability_input(channel: Uuid, operation: &str) -> serde_json::Value {
+    serde_json::json!({
+        "channel_id": channel,
+        "settings": {
+            "operation": operation, "enabled": true,
+            "available_models": ["wire-v1"], "request_compression": "default",
+            "auto_disable_allowed": false, "test_model": null, "test_pricing_model_id": null
+        },
+        "config_template_id": null, "override_document": {},
+        "billing_multiplier": "1", "status_statistics_enabled": false
+    })
+}
+
+async fn create_resource(app: &App, path: &str, input: serde_json::Value) -> Uuid {
+    let response = request(app, "POST", path, input, &[]).await;
+    let status = response.status();
+    let body = body_json(response).await;
+    assert_eq!(status, StatusCode::CREATED, "{path}: {body}");
+    serde_json::from_value(body["id"].clone()).unwrap()
+}
+
+async fn seed_test_topology(app: &App, operation: &str) -> TestTopology {
+    let group = create_resource(
+        app,
+        "/console/v1/routing/groups",
+        serde_json::json!({
+            "name": format!("spec-{}", Uuid::new_v4()), "enabled": true
+        }),
+    )
+    .await;
+    let access = create_resource(
+        app,
+        "/console/v1/routing/accesses",
+        serde_json::json!({
+            "name": "Spec access", "connector_kind": "general",
+            "base_url": "https://upstream.example.test", "enabled": true
+        }),
+    )
+    .await;
+    let channel = create_resource(
+        app,
+        "/console/v1/routing/logical-channels",
+        serde_json::json!({
+            "group_id": group, "access_id": access, "credential_id": null,
+            "sharing_only": false,
+            "name": "Spec channel", "enabled": true
+        }),
+    )
+    .await;
+    let capability = create_resource(
+        app,
+        "/console/v1/routing/capabilities",
+        capability_input(channel, operation),
+    )
+    .await;
+    TestTopology {
+        group,
+        access,
+        channel,
+        capability,
+    }
+}
+
+async fn create_test_operation_rule(app: &App, capability: Uuid, operation: &str) -> (Uuid, Uuid) {
+    let model = create_test_pricing_model(app).await;
+    let profile = create_resource(
+        app,
+        "/console/v1/routing/profiles",
+        serde_json::json!({"model_id": model}),
+    )
+    .await;
+    let rule = create_resource(app, "/console/v1/routing/operation-rules", serde_json::json!({
+        "model_routing_profile_id": profile, "operation": operation, "enabled": true,
+        "routing_tiers": [{
+            "priority": 0, "selection_strategy": "weighted_random",
+            "candidates": [{"capability_id": capability, "upstream_model": "wire-v1", "weight": 1}]
+        }]
+    })).await;
+    (profile, rule)
 }
 
 async fn proxy_test_ip_api(
@@ -1338,6 +1478,488 @@ async fn request(
     request_with_token(app, &app.access_token, method, path, body, headers).await
 }
 
+#[tokio::test]
+async fn upstream_access_contract_is_versioned_and_does_not_create_authority() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let path = "/console/v1/routing/accesses";
+    let input = serde_json::json!({
+        "name": "Spec access", "connector_kind": "general",
+        "base_url": "https://spec-access.test/private-path", "enabled": false,
+        "proxy_id": null, "connect_timeout_ms": null,
+        "response_header_timeout_ms": 30000, "stream_idle_timeout_ms": null,
+    });
+    assert_eq!(
+        request_with_token(&app, "", "GET", path, serde_json::json!({}), &[])
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let created = request(&app, "POST", path, input.clone(), &[]).await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let id = body_json(created).await["id"].as_str().unwrap().to_owned();
+    let detail_path = format!("{path}/{id}");
+    let detail = request(&app, "GET", &detail_path, serde_json::json!({}), &[]).await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    assert_eq!(detail.headers()["cache-control"], "no-store");
+    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    let before = body_json(detail).await;
+    assert_eq!(before["enabled"], false);
+    assert!(before.get("credential_id").is_none());
+    let mut changed = input.clone();
+    changed["name"] = serde_json::json!("Renamed access");
+    assert_eq!(
+        request(
+            &app,
+            "PUT",
+            &detail_path,
+            changed.clone(),
+            &[("if-match", &etag)]
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(&app, "PUT", &detail_path, changed, &[("if-match", &etag)])
+            .await
+            .status(),
+        StatusCode::CONFLICT
+    );
+    let detail = request(&app, "GET", &detail_path, serde_json::json!({}), &[]).await;
+    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    let after = body_json(detail).await;
+    assert_ne!(before["revision"], after["revision"]);
+    let mut invalid = input.clone();
+    invalid["connector_kind"] = serde_json::json!("codex");
+    assert_eq!(
+        request(&app, "PUT", &detail_path, invalid, &[("if-match", &etag)])
+            .await
+            .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let mut invalid = input;
+    invalid["credential_id"] = serde_json::json!(Uuid::new_v4());
+    assert_eq!(
+        request(&app, "POST", path, invalid, &[]).await.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let authority: i64 = sqlx::query_scalar(
+        "SELECT (SELECT count(*) FROM upstream_channels)+(SELECT count(*) FROM channel_capabilities)
+              +(SELECT count(*) FROM model_capability_candidates)+(SELECT count(*) FROM api_key_channel_grants)",
+    ).fetch_one(&database.pool).await.unwrap();
+    assert_eq!(authority, 0);
+    let audit: Vec<serde_json::Value> = sqlx::query_scalar(
+        "SELECT after_redacted FROM audit_logs WHERE object_type='upstream_access'",
+    )
+    .fetch_all(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(audit.len(), 2);
+    assert!(audit.iter().all(|event| event["base_url"] == "[REDACTED]"));
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn canonical_topology_contract_has_versioned_immutable_capability_identity() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    for path in [
+        "/console/v1/routing/channel-groups",
+        "/console/v1/routing/channels",
+        "/console/v1/routing/model-rules",
+    ] {
+        for method in ["GET", "POST", "PUT", "DELETE"] {
+            assert_eq!(
+                request(&app, method, path, serde_json::json!({}), &[])
+                    .await
+                    .status(),
+                StatusCode::NOT_FOUND,
+                "{method} {path}",
+            );
+            let detail = format!("{path}/{}", Uuid::new_v4());
+            assert_eq!(
+                request(&app, method, &detail, serde_json::json!({}), &[])
+                    .await
+                    .status(),
+                StatusCode::NOT_FOUND,
+                "{method} {detail}",
+            );
+        }
+    }
+    let model = request(&app, "POST", "/console/v1/models", serde_json::json!({
+        "source_model_id": "canonical-profile-model", "display_name": "Canonical profile model",
+        "enabled": true, "price_unit_tokens": 1000000, "input_unit_price": "0.1",
+        "cached_input_unit_price": "0", "cache_write_unit_price": "0", "output_unit_price": "0.2",
+        "price_effective_at": chrono::Utc::now().to_rfc3339()
+    }), &[]).await;
+    assert_eq!(model.status(), StatusCode::CREATED);
+    let model_id = body_json(model).await["id"].as_str().unwrap().to_owned();
+    let profile_input = serde_json::json!({"model_id": model_id});
+    let profile = request(
+        &app,
+        "POST",
+        "/console/v1/routing/profiles",
+        profile_input.clone(),
+        &[],
+    )
+    .await;
+    assert_eq!(profile.status(), StatusCode::CREATED);
+    let profile_id = body_json(profile).await["id"].as_str().unwrap().to_owned();
+    let detail = request(
+        &app,
+        "GET",
+        &format!("/console/v1/routing/profiles/{profile_id}"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    assert!(detail.headers().contains_key("etag"));
+    assert_eq!(body_json(detail).await["model_id"], model_id);
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            "/console/v1/routing/profiles",
+            profile_input,
+            &[]
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    let profiles = body_json(
+        request(
+            &app,
+            "GET",
+            "/console/v1/routing/profiles",
+            serde_json::json!({}),
+            &[],
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(profiles[0]["id"], profile_id);
+    let graph = body_json(
+        request(
+            &app,
+            "GET",
+            "/console/v1/routing/operation-rules",
+            serde_json::json!({}),
+            &[],
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(graph, serde_json::json!([]));
+    let mut owners = Vec::new();
+    for (path, input) in [
+        (
+            "/console/v1/routing/groups",
+            serde_json::json!({"name": "Canonical group", "enabled": true}),
+        ),
+        (
+            "/console/v1/routing/accesses",
+            serde_json::json!({
+                "name": "Canonical access", "enabled": true,
+                "connector_kind": "general", "base_url": "https://canonical.test"
+            }),
+        ),
+    ] {
+        let response = request(&app, "POST", path, input, &[]).await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        owners.push(body_json(response).await["id"].as_str().unwrap().to_owned());
+    }
+    let input = serde_json::json!({
+        "group_id": owners[0], "access_id": owners[1], "credential_id": null,
+        "sharing_only": false,
+        "name": "Canonical channel", "enabled": true,
+    });
+    let response = request(
+        &app,
+        "POST",
+        "/console/v1/routing/logical-channels",
+        input,
+        &[],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let channel = body_json(response).await["id"].as_str().unwrap().to_owned();
+    let mut input = serde_json::json!({
+        "channel_id": channel,
+        "settings": {
+            "operation": "images_generation",
+            "enabled": false, "available_models": ["image-wire"],
+            "request_compression": "default", "test_model": null,
+            "test_pricing_model_id": null, "auto_disable_allowed": false
+        }
+    });
+    let response = request(
+        &app,
+        "POST",
+        "/console/v1/routing/capabilities",
+        input.clone(),
+        &[],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let capability = body_json(response).await["id"].as_str().unwrap().to_owned();
+    let path = format!("/console/v1/routing/capabilities/{capability}");
+    let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    assert_eq!(detail.headers()["cache-control"], "no-store");
+    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    input["settings"]["enabled"] = serde_json::json!(true);
+    assert_eq!(
+        request(&app, "PUT", &path, input.clone(), &[("if-match", &etag)])
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(&app, "PUT", &path, input.clone(), &[("if-match", &etag)])
+            .await
+            .status(),
+        StatusCode::CONFLICT
+    );
+    let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
+    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    input["settings"]["operation"] = serde_json::json!("images_edit");
+    assert_eq!(
+        request(&app, "PUT", &path, input, &[("if-match", &etag)])
+            .await
+            .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let detail = body_json(request(&app, "GET", &path, serde_json::json!({}), &[]).await).await;
+    let batch = serde_json::json!({
+        "items": [{"id": capability, "updated_at": detail["updated_at"]}],
+        "changes": {"enabled": false, "auto_disable_allowed": true, "billing_multiplier": "1.5"}
+    });
+    let mut invalid_batch = batch.clone();
+    invalid_batch["items"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "id": Uuid::new_v4(), "updated_at": detail["updated_at"]
+        }));
+    let batch_path = "/console/v1/routing/capabilities/batch";
+    assert_eq!(
+        request(&app, "POST", batch_path, invalid_batch, &[])
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        body_json(request(&app, "GET", &path, serde_json::json!({}), &[]).await).await,
+        detail
+    );
+    let updated = request(&app, "POST", batch_path, batch.clone(), &[]).await;
+    assert_eq!(updated.status(), StatusCode::OK);
+    let updated = body_json(updated).await;
+    assert_eq!(updated["updated_ids"], serde_json::json!([capability]));
+    assert!(updated["correlation_id"].is_string());
+    assert_eq!(
+        request(&app, "POST", batch_path, batch, &[]).await.status(),
+        StatusCode::CONFLICT
+    );
+    let recover_path = format!("{path}/recover");
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            &recover_path,
+            serde_json::json!({}),
+            &[("if-match", &etag)]
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    sqlx::query("UPDATE channel_capabilities SET auto_disabled=true,auto_disable_reason='HTTP 429',auto_disable_at=now() WHERE id=$1")
+        .bind(capability.parse::<Uuid>().unwrap()).execute(&database.pool).await.unwrap();
+    let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
+    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    let disabled = body_json(detail).await;
+    assert_eq!(disabled["settings"]["enabled"], false);
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            &recover_path,
+            serde_json::json!({}),
+            &[("if-match", &etag)]
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
+    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    let recovered = body_json(detail).await;
+    assert_eq!(recovered["settings"]["enabled"], false);
+    assert_eq!(recovered["auto_disabled"], false);
+    assert!(recovered["auto_disable_reason"].is_null());
+    assert!(recovered["auto_disable_at"].is_null());
+    assert_ne!(recovered["revision"], disabled["revision"]);
+    let authority: i64 = sqlx::query_scalar(
+        "SELECT (SELECT count(*) FROM model_capability_candidates)
+              +(SELECT count(*) FROM api_key_channel_grants)
+              +(SELECT count(*) FROM api_key_policy_channel_grants)",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(authority, 0);
+    let channel_path = format!("/console/v1/routing/logical-channels/{channel}");
+    let detail = request(&app, "GET", &channel_path, serde_json::json!({}), &[]).await;
+    let channel_etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    assert_eq!(
+        request(
+            &app,
+            "DELETE",
+            &channel_path,
+            serde_json::json!({}),
+            &[("if-match", &channel_etag)]
+        )
+        .await
+        .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        request(
+            &app,
+            "DELETE",
+            &path,
+            serde_json::json!({}),
+            &[("if-match", &etag)]
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(
+            &app,
+            "DELETE",
+            &channel_path,
+            serde_json::json!({}),
+            &[("if-match", &channel_etag)]
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn upstream_credential_contract_is_secret_safe_versioned_and_strict() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let path = "/console/v1/routing/upstream-credentials";
+    let input = serde_json::json!({
+        "name": "spec shared identity", "kind": "header", "header_name": "x-api-key",
+        "secret": "spec-identity-secret", "enabled": true,
+        "allowed_base_urls": ["HTTPS://EXAMPLE.TEST:443/"],
+    });
+    let created = request(&app, "POST", path, input.clone(), &[]).await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let id = body_json(created).await["id"].as_str().unwrap().to_owned();
+    let detail_path = format!("{path}/{id}");
+    let listed = body_json(request(&app, "GET", path, serde_json::json!({}), &[]).await).await;
+    let listed = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|value| value["id"] == id)
+        .unwrap();
+    assert!(listed.get("secret").is_none());
+    assert_eq!(
+        listed["allowed_base_urls"],
+        serde_json::json!(["https://example.test"])
+    );
+    let detail = request(&app, "GET", &detail_path, serde_json::json!({}), &[]).await;
+    assert_eq!(detail.headers()["cache-control"], "no-store");
+    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    let detail = body_json(detail).await;
+    assert_eq!(detail["secret"], "spec-identity-secret");
+    assert_eq!(detail["kind"], "header");
+    assert_eq!(detail["provider_managed"], false);
+    assert_eq!(detail["channel_ids"], serde_json::json!([]));
+    let mut invalid = input.clone();
+    invalid["secret"] = serde_json::Value::Null;
+    assert_eq!(
+        request(&app, "PUT", &detail_path, invalid, &[("if-match", &etag)])
+            .await
+            .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let mut invalid = input.clone();
+    invalid["header_name"] = serde_json::json!("x-forwarded-for");
+    assert_eq!(
+        request(&app, "POST", path, invalid, &[]).await.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let mut invalid = input.clone();
+    invalid["allowed_base_urls"] = serde_json::json!(["https://secret@example.test"]);
+    assert_eq!(
+        request(&app, "POST", path, invalid, &[]).await.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let mut updated = input;
+    updated["secret"] = serde_json::json!("spec-rotated-secret");
+    assert_eq!(
+        request(
+            &app,
+            "PUT",
+            &detail_path,
+            updated.clone(),
+            &[("if-match", &etag)]
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(&app, "PUT", &detail_path, updated, &[("if-match", &etag)])
+            .await
+            .status(),
+        StatusCode::CONFLICT
+    );
+    let detail = request(&app, "GET", &detail_path, serde_json::json!({}), &[]).await;
+    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    assert_eq!(
+        request(
+            &app,
+            "DELETE",
+            &detail_path,
+            serde_json::json!({}),
+            &[("if-match", &etag)]
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(&app, "GET", &detail_path, serde_json::json!({}), &[])
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    let id: Uuid = id.parse().unwrap();
+    let tombstone: (Option<String>, bool, bool) = sqlx::query_as(
+        "SELECT secret,enabled,deleted_at IS NOT NULL FROM upstream_credentials WHERE id=$1",
+    )
+    .bind(id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(tombstone, (None, false, true));
+    database.cleanup().await;
+}
+
 async fn request_with_token(
     app: &App,
     access_token: &str,
@@ -1396,20 +2018,18 @@ async fn sharing_contract_is_versioned_scoped_and_never_exposes_provider_identit
         app.runtime.clone(),
         RoutingRuntime::new(PassiveHealthPolicy::default()),
     );
-    let channel_group = Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO channel_groups (id,name,api_format,connector_kind,enabled) \
-        VALUES ($1,'sharing-contract','open_ai_responses','codex_oauth',true)",
+    let channel_group = create_resource(
+        &app,
+        "/console/v1/routing/groups",
+        serde_json::json!({
+            "name": "sharing-contract", "enabled": true
+        }),
     )
-    .bind(channel_group)
-    .execute(&database.pool)
-    .await
-    .unwrap();
+    .await;
     let credential = coordinator
         .create_codex_credential(
             app.user_id,
             CodexCredentialCreate {
-                channel_group_id: channel_group,
                 label: "Private provider label".into(),
                 enabled: true,
                 proxy_id: None,
@@ -1431,8 +2051,10 @@ async fn sharing_contract_is_versioned_scoped_and_never_exposes_provider_identit
         )
         .await
         .unwrap();
+    let channel =
+        bind_test_codex_channel(&database.pool, &app, channel_group, credential.id, false).await;
     let mut input = serde_json::json!({
-        "credential_id": credential.id,
+        "channel_id": channel,
         "name": "Shared development", "enabled": false, "seats": [null, null],
         "primary_limit_amount": "20", "secondary_limit_amount": "100",
         "request_reservation_amount": "0.10", "user_requests_per_minute": 30,
@@ -1523,14 +2145,16 @@ async fn sharing_contract_is_versioned_scoped_and_never_exposes_provider_identit
     assert_eq!(options["groups"], serde_json::json!([]));
     assert_eq!(options["channels"], serde_json::json!([]));
     assert_eq!(
-        options["sharing_credentials"][0]["credential_id"],
-        credential.id.to_string()
+        options["sharing_channels"][0]["channel_id"],
+        channel.to_string()
     );
-    assert_eq!(
-        options["sharing_credentials"][0]["name"],
-        "Shared development"
+    assert_eq!(options["sharing_channels"][0]["name"], "Shared development");
+    assert!(
+        options["sharing_channels"][0]
+            .get("credential_id")
+            .is_none()
     );
-    let sharing_channel_ids = options["sharing_credentials"][0]["channel_ids"].clone();
+    let sharing_channel_ids = serde_json::json!([channel]);
     let sharing_key = request(
         &app,
         "POST",
@@ -1547,17 +2171,15 @@ async fn sharing_contract_is_versioned_scoped_and_never_exposes_provider_identit
     )
     .await;
     assert_eq!(sharing_key.status(), StatusCode::CREATED);
-    let policy_id = Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO api_key_policies \
-         (id,name,allowed_group_ids,allowed_channel_ids,enabled) \
-         VALUES ($1,'sharing-must-be-explicit',ARRAY[$2]::uuid[],'{}',true)",
+    let policy_id = create_resource(
+        &app,
+        "/console/v1/api-key-policies",
+        serde_json::json!({
+            "name": "sharing-must-be-explicit", "enabled": true,
+            "allowed_group_ids": [channel_group], "allowed_channel_ids": []
+        }),
     )
-    .bind(policy_id)
-    .bind(channel_group)
-    .execute(&database.pool)
-    .await
-    .unwrap();
+    .await;
     sqlx::query("UPDATE users SET default_api_key_policy_id=$2 WHERE id=$1")
         .bind(app.user_id)
         .bind(policy_id)
@@ -1579,10 +2201,7 @@ async fn sharing_contract_is_versioned_scoped_and_never_exposes_provider_identit
     assert_eq!(categorized["policy_enabled"], true);
     assert_eq!(categorized["groups"], serde_json::json!([]));
     assert_eq!(categorized["channels"], serde_json::json!([]));
-    assert_eq!(
-        categorized["sharing_credentials"].as_array().unwrap().len(),
-        1
-    );
+    assert_eq!(categorized["sharing_channels"].as_array().unwrap().len(), 1);
     let implicit_group_key = request(
         &app,
         "POST",
@@ -1606,35 +2225,27 @@ async fn sharing_contract_is_versioned_scoped_and_never_exposes_provider_identit
         body_json(implicit_group_key).await,
         serde_json::json!({"error": "api_key_target_not_allowed"})
     );
-    let ordinary_group = Uuid::new_v4();
-    let ordinary_channel = Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO channel_groups (id,name,api_format,connector_kind,enabled) \
-         VALUES ($1,'ordinary-policy-target','open_ai_chat_completions', \
-                 'openai_compatible',true)",
-    )
-    .bind(ordinary_group)
-    .execute(&database.pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO channels \
-         (id,channel_group_id,api_format,name,base_url,enabled,upstream_auth_kind) \
-         VALUES ($1,$2,'open_ai_chat_completions','ordinary-policy-target', \
-                 'https://ordinary.example.test',true,'none')",
-    )
-    .bind(ordinary_channel)
-    .bind(ordinary_group)
-    .execute(&database.pool)
-    .await
-    .unwrap();
-    sqlx::query("UPDATE api_key_policies SET allowed_group_ids=ARRAY[$2,$3]::uuid[] WHERE id=$1")
-        .bind(policy_id)
-        .bind(channel_group)
-        .bind(ordinary_group)
-        .execute(&database.pool)
+    let ordinary = seed_test_topology(&app, "chat_completion").await;
+    let ordinary_group = ordinary.group;
+    let ordinary_channel = ordinary.channel;
+    let policy_path = format!("/console/v1/api-key-policies/{policy_id}");
+    let policy = request(&app, "GET", &policy_path, serde_json::json!({}), &[]).await;
+    let policy_etag = policy.headers()[header::ETAG].to_str().unwrap().to_owned();
+    assert_eq!(
+        request(
+            &app,
+            "PUT",
+            &policy_path,
+            serde_json::json!({
+                "name": "sharing-must-be-explicit", "enabled": true,
+                "allowed_group_ids": [channel_group, ordinary_group], "allowed_channel_ids": []
+            }),
+            &[("if-match", &policy_etag)]
+        )
         .await
-        .unwrap();
+        .status(),
+        StatusCode::OK
+    );
     let combined_options = body_json(
         request(
             &app,
@@ -1656,8 +2267,8 @@ async fn sharing_contract_is_versioned_scoped_and_never_exposes_provider_identit
         ordinary_channel.to_string()
     );
     assert_eq!(
-        combined_options["sharing_credentials"][0]["credential_id"],
-        credential.id.to_string()
+        combined_options["sharing_channels"][0]["channel_id"],
+        channel.to_string()
     );
     let combined_key = request(
         &app,
@@ -1765,6 +2376,12 @@ async fn sharing_contract_is_versioned_scoped_and_never_exposes_provider_identit
         .await
         .is_null()
     );
+    sqlx::query("UPDATE users SET default_api_key_policy_id=$2 WHERE id=$1")
+        .bind(outsider)
+        .bind(policy_id)
+        .execute(&database.pool)
+        .await
+        .unwrap();
     let unseated_key = request_with_token(
         &app,
         &session.access_token,
@@ -2741,18 +3358,33 @@ async fn obsolete_control_plane_columns_are_absent() {
         assert!(!exists, "{table}.{column} must be removed");
     }
 
-    let group_status_monitoring_exists: bool = sqlx::query_scalar(
+    let capability_status_monitoring_exists: bool = sqlx::query_scalar(
         "SELECT EXISTS (\
          SELECT 1 FROM information_schema.columns \
          WHERE table_schema='public' \
-           AND table_name='channel_groups' \
+           AND table_name='channel_capabilities' \
            AND column_name='status_statistics_enabled'\
          )",
     )
     .fetch_one(&database.pool)
     .await
     .unwrap();
-    assert!(group_status_monitoring_exists);
+    assert!(capability_status_monitoring_exists);
+    for table in [
+        "channel_groups",
+        "channels",
+        "model_rules",
+        "model_rule_routing_tiers",
+        "model_rule_routing_candidates",
+        "codex_oauth_credential_channels",
+    ] {
+        let exists: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
+            .bind(table)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+        assert!(!exists, "{table} must be retired");
+    }
 
     database.cleanup().await;
 }
@@ -3089,96 +3721,54 @@ async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
         .await
         .unwrap();
 
-    let ordinary_group_id = Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO channel_groups \
-         (id,name,api_format,enabled) \
-         VALUES ($1,$2,'open_ai_responses',true)",
+    seed_test_topology(&app, "responses").await;
+    let visible_group_id = create_resource(
+        &app,
+        "/console/v1/routing/groups",
+        serde_json::json!({
+            "name": "Visible quota group", "enabled": true
+        }),
     )
-    .bind(ordinary_group_id)
-    .bind(format!("ordinary-{ordinary_group_id}"))
-    .execute(&database.pool)
-    .await
-    .unwrap();
-
-    let visible_group_id = Uuid::new_v4();
-    let visible_credential_id = Uuid::new_v4();
-    let hidden_group_id = Uuid::new_v4();
-    let hidden_credential_id = Uuid::new_v4();
-    for (group_id, credential_id, label, plan_type, primary_used_percent) in [
-        (
-            visible_group_id,
-            visible_credential_id,
-            "Visible private label",
-            "plus",
-            42,
-        ),
-        (
-            hidden_group_id,
-            hidden_credential_id,
-            "Hidden private label",
-            "business",
-            81,
-        ),
+    .await;
+    let hidden_group_id = create_resource(
+        &app,
+        "/console/v1/routing/groups",
+        serde_json::json!({
+            "name": "Hidden quota group", "enabled": true
+        }),
+    )
+    .await;
+    let mut credential_ids = Vec::new();
+    let mut logical_channel_ids = Vec::new();
+    for (group_id, label, plan_type, used) in [
+        (visible_group_id, "Visible private label", "plus", 42),
+        (hidden_group_id, "Hidden private label", "business", 81),
     ] {
+        let mut input = codex_fixture_input(group_id, label);
+        input.plan_type = Some(plan_type.into());
+        input.id_token = "private-id-token".into();
+        input.access_token = "private-access-token".into();
+        input.refresh_token = "private-refresh-token".into();
+        let id = create_test_codex_credential(&database.pool, &app, input).await;
+        logical_channel_ids
+            .push(bind_test_codex_channel(&database.pool, &app, group_id, id, false).await);
         sqlx::query(
-            "INSERT INTO channel_groups \
-             (id,name,api_format,connector_kind,enabled) \
-             VALUES ($1,$2,'open_ai_responses','codex_oauth',true)",
+            "UPDATE codex_oauth_credentials SET runtime_status='active',quota_allowed=true,
+            quota_limit_reached=false,primary_used_percent=$2,primary_window_seconds=10800,
+            primary_reset_at='2026-08-03T15:00:00Z',secondary_used_percent=12,
+            secondary_window_seconds=604800,secondary_reset_at='2026-08-10T12:00:00Z',
+            quota_reset_credits_available=3,quota_checked_at='2026-08-03T12:00:00Z'
+            WHERE channel_id=$1",
         )
-        .bind(group_id)
-        .bind(format!("codex-{group_id}"))
+        .bind(id)
+        .bind(used)
         .execute(&database.pool)
         .await
         .unwrap();
-        sqlx::query(
-            "INSERT INTO channels \
-             (id,channel_group_id,api_format,name,base_url,enabled, \
-              upstream_auth_kind,available_models,auto_disable_allowed,supports_websocket) \
-             VALUES ($1,$2,'open_ai_responses',$3, \
-                     'https://chatgpt.com/backend-api/codex',true,'none', \
-                     ARRAY['gpt-5-codex'],false,true)",
-        )
-        .bind(credential_id)
-        .bind(group_id)
-        .bind(label)
-        .execute(&database.pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO codex_oauth_credentials \
-             (channel_id,channel_group_id,label,email,account_id,user_id,plan_type,is_fedramp, \
-              id_token,access_token,refresh_token,last_refreshed_at,enabled, \
-              quota_threshold_percent,runtime_status,quota_allowed,quota_limit_reached, \
-              primary_used_percent,primary_window_seconds,primary_reset_at, \
-              secondary_used_percent,secondary_window_seconds,secondary_reset_at, \
-              quota_reset_credits_available,quota_checked_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,false, \
-                     'private-id-token','private-access-token','private-refresh-token', \
-                     now(),true,95,'active',true,false,$8,10800, \
-                     '2026-08-03T15:00:00Z',12,604800,'2026-08-10T12:00:00Z', \
-                     3,'2026-08-03T12:00:00Z')",
-        )
-        .bind(credential_id)
-        .bind(group_id)
-        .bind(label)
-        .bind(format!("{credential_id}@example.test"))
-        .bind(format!("account-{credential_id}"))
-        .bind(format!("member-{credential_id}"))
-        .bind(plan_type)
-        .bind(primary_used_percent)
-        .execute(&database.pool)
-        .await
-        .unwrap();
+        credential_ids.push(id);
     }
-    let visible_images_group_id: Uuid = sqlx::query_scalar(
-        "SELECT id FROM channel_groups \
-         WHERE connector_pool_id=$1 AND api_format='open_ai_images'::api_format",
-    )
-    .bind(visible_group_id)
-    .fetch_one(&database.pool)
-    .await
-    .unwrap();
+    let visible_credential_id = credential_ids[0];
+    let hidden_credential_id = credential_ids[1];
     let period_started_at = chrono::DateTime::parse_from_rfc3339("2026-08-03T09:00:00Z")
         .unwrap()
         .with_timezone(&chrono::Utc);
@@ -3212,23 +3802,17 @@ async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
     .execute(&database.pool)
     .await
     .unwrap();
-    let visible_images_channel_id: Uuid = sqlx::query_scalar(
-        "SELECT projection.channel_id \
-         FROM codex_oauth_credential_channels AS projection \
-         WHERE projection.credential_id=$1 \
-           AND projection.api_format='open_ai_images'::api_format",
-    )
-    .bind(visible_credential_id)
-    .fetch_one(&database.pool)
-    .await
-    .unwrap();
+    let visible_images_channel_id =
+        codex_capability_id(&database.pool, visible_credential_id, "images_generation").await;
+    let visible_responses_channel_id =
+        codex_capability_id(&database.pool, visible_credential_id, "responses").await;
     for (request_user_id, api_format, api_operation, channel_group_id, channel_id, logs) in [
         (
             viewer_id,
             "open_ai_responses",
             "responses",
             visible_group_id,
-            visible_credential_id,
+            visible_responses_channel_id,
             vec![
                 (period_started_at, rust_decimal::Decimal::new(125, 2)),
                 (
@@ -3245,7 +3829,7 @@ async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
             app.user_id,
             "open_ai_images",
             "images_generation",
-            visible_images_group_id,
+            visible_group_id,
             visible_images_channel_id,
             vec![(
                 period_started_at + chrono::Duration::hours(1),
@@ -3291,6 +3875,14 @@ async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
         }
     }
     metering_fixtures::copy_log_fixtures(&database.pool).await;
+    sqlx::query(
+        "INSERT INTO request_credential_attributions(request_id,known,credential_id)
+        SELECT id,true,$1 FROM request_metering_facts WHERE client_model='quota-cost-model'",
+    )
+    .bind(visible_credential_id)
+    .execute(&database.pool)
+    .await
+    .unwrap();
     let legacy_zero_started_at = period_started_at - chrono::Duration::minutes(30);
     sqlx::query(
         "INSERT INTO codex_quota_window_periods \
@@ -3318,7 +3910,7 @@ async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
         serde_json::json!([])
     );
 
-    for invalid_group_id in [ordinary_group_id, visible_images_group_id] {
+    for invalid_group_id in [Uuid::new_v4(), visible_images_channel_id] {
         let invalid = request(
             &app,
             "PUT",
@@ -3394,7 +3986,10 @@ async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
     assert_eq!(quota.len(), 13);
     assert_eq!(quota["id"], visible_credential_id.to_string());
     assert_eq!(quota["name"], visible_credential_id.to_string());
-    assert_eq!(quota["channel_group_id"], visible_group_id.to_string());
+    assert_eq!(
+        quota["channel_ids"],
+        serde_json::json!([logical_channel_ids[0]])
+    );
     assert_eq!(quota["plan_type"], "plus");
     assert_eq!(quota["primary_used_percent"], 42);
     assert_eq!(quota["primary_window_cost_amount"], "2.00000000");
@@ -3429,7 +4024,10 @@ async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
     let history = body_json(history).await;
     assert_eq!(history["credential_id"], visible_credential_id.to_string());
     assert_eq!(history["name"], visible_credential_id.to_string());
-    assert_eq!(history["channel_group_id"], visible_group_id.to_string());
+    assert_eq!(
+        history["channel_ids"],
+        serde_json::json!([logical_channel_ids[0]])
+    );
     assert_eq!(history["plan_type"], "plus");
     let periods = history["periods"].as_array().unwrap();
     assert_eq!(periods.len(), 2);
@@ -3473,7 +4071,7 @@ async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
         &viewer_session.access_token,
         "GET",
         &format!(
-            "/console/v1/providers/codex-oauth/credentials/{visible_credential_id}/quota/windows"
+            "/console/v1/routing/upstream-credentials/codex/{visible_credential_id}/quota/windows"
         ),
         serde_json::json!({}),
         &[],
@@ -3959,89 +4557,52 @@ async fn model_delete_hides_routing_clears_probes_and_preserves_history() {
     assert_eq!(model.status(), StatusCode::CREATED);
     let model_id = Uuid::parse_str(body_json(model).await["id"].as_str().unwrap()).unwrap();
 
-    let group = request(
+    let topology = seed_test_topology(&app, "chat_completion").await;
+    let group_id = topology.group;
+    let channel_id = topology.capability;
+    let group_name: String = sqlx::query_scalar("SELECT name FROM routing_groups WHERE id=$1")
+        .bind(group_id)
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    let cap_path = format!("/console/v1/routing/capabilities/{channel_id}");
+    let cap = request(&app, "GET", &cap_path, serde_json::json!({}), &[]).await;
+    let cap_etag = cap.headers()[header::ETAG].to_str().unwrap().to_owned();
+    let mut cap_input = capability_input(topology.channel, "chat_completion");
+    cap_input["settings"]["available_models"] = serde_json::json!(["model-delete-wire"]);
+    cap_input["settings"]["test_model"] = serde_json::json!("model-delete-wire");
+    cap_input["settings"]["test_pricing_model_id"] = serde_json::json!(model_id);
+    assert_eq!(
+        request(
+            &app,
+            "PUT",
+            &cap_path,
+            cap_input,
+            &[("if-match", &cap_etag)]
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let profile_id = create_resource(
         &app,
-        "POST",
-        "/console/v1/routing/channel-groups",
-        serde_json::json!({
-            "name": format!("model-delete-group-{model_id}"),
-            "api_format": "open_ai_chat_completions",
-            "enabled": true,
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(group.status(), StatusCode::CREATED);
-    let group_id = Uuid::parse_str(body_json(group).await["id"].as_str().unwrap()).unwrap();
-    let channel = request(
-        &app,
-        "POST",
-        "/console/v1/routing/channels",
-        serde_json::json!({
-            "channel_group_id": group_id,
-            "api_format": "open_ai_chat_completions",
-            "name": "model-delete-channel",
-            "base_url": "https://model-delete.example.test",
-            "enabled": true,
-            "upstream_auth_kind": "none",
-            "available_models": ["model-delete-wire"],
-            "test_model": "model-delete-wire",
-            "test_pricing_model_id": model_id,
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(channel.status(), StatusCode::CREATED);
-    let channel_id = Uuid::parse_str(body_json(channel).await["id"].as_str().unwrap()).unwrap();
-
-    let profile = request(
-        &app,
-        "POST",
-        "/console/v1/routing/model-rules",
+        "/console/v1/routing/profiles",
         serde_json::json!({"model_id": model_id}),
-        &[],
     )
     .await;
-    assert_eq!(profile.status(), StatusCode::CREATED);
-    let profile_id = Uuid::parse_str(body_json(profile).await["id"].as_str().unwrap()).unwrap();
-    let protocol = request(
+    let protocol_id = create_resource(
         &app,
-        "POST",
-        &format!("/console/v1/routing/model-rules/{profile_id}/protocols"),
-        serde_json::json!({"api_format": "open_ai_chat_completions"}),
-        &[],
-    )
-    .await;
-    assert_eq!(protocol.status(), StatusCode::CREATED);
-    let protocol_id = Uuid::parse_str(body_json(protocol).await["id"].as_str().unwrap()).unwrap();
-    let protocol_path =
-        format!("/console/v1/routing/model-rules/{profile_id}/protocols/{protocol_id}");
-    let protocol_detail = request(&app, "GET", &protocol_path, serde_json::json!({}), &[]).await;
-    let protocol_etag = protocol_detail.headers()[header::ETAG]
-        .to_str()
-        .unwrap()
-        .to_owned();
-    let configured = request(
-        &app,
-        "PUT",
-        &protocol_path,
+        "/console/v1/routing/operation-rules",
         serde_json::json!({
-            "description": "Deleted model route",
-            "routing_tiers": [{
-                "priority": 0,
-                "selection_strategy": "weighted_random",
-                "candidates": [{
-                    "channel_id": channel_id,
-                    "upstream_model": "model-delete-wire",
-                    "weight": 100
-                }]
-            }],
-            "enabled": true
+            "model_routing_profile_id": profile_id, "operation": "chat_completion",
+            "enabled": true, "routing_tiers": [{
+                "priority": 0, "selection_strategy": "weighted_random",
+                "candidates": [{"capability_id": channel_id,
+                    "upstream_model": "model-delete-wire", "weight": 100}]
+            }]
         }),
-        &[("if-match", &protocol_etag)],
     )
     .await;
-    assert_eq!(configured.status(), StatusCode::OK);
     assert!(
         app.runtime
             .snapshot()
@@ -4113,21 +4674,22 @@ async fn model_delete_hides_routing_clears_probes_and_preserves_history() {
     assert!(tombstone.1.is_some());
     assert_eq!(tombstone.2, Some(app.user_id));
     let retained_rule: (bool, i64) = sqlx::query_as(
-        "SELECT enabled,(SELECT count(*) FROM model_rule_routing_tiers \
-                         WHERE model_rule_id=model_rules.id) \
-         FROM model_rules WHERE id=$1",
+        "SELECT enabled,(SELECT count(*) FROM model_capability_tiers \
+                         WHERE rule_id=model_operation_rules.id) \
+         FROM model_operation_rules WHERE id=$1",
     )
     .bind(protocol_id)
     .fetch_one(&database.pool)
     .await
     .unwrap();
-    assert_eq!(retained_rule, (false, 1));
-    let probe: (Option<String>, Option<Uuid>) =
-        sqlx::query_as("SELECT test_model,test_pricing_model_id FROM channels WHERE id=$1")
-            .bind(channel_id)
-            .fetch_one(&database.pool)
-            .await
-            .unwrap();
+    assert_eq!(retained_rule, (false, 0));
+    let probe: (Option<String>, Option<Uuid>) = sqlx::query_as(
+        "SELECT test_model,test_pricing_model_id FROM channel_capabilities WHERE id=$1",
+    )
+    .bind(channel_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
     assert_eq!(probe, (None, None));
     assert!(
         app.runtime
@@ -4145,7 +4707,7 @@ async fn model_delete_hides_routing_clears_probes_and_preserves_history() {
         request(
             &app,
             "GET",
-            &format!("/console/v1/routing/model-rules/{profile_id}"),
+            &format!("/console/v1/routing/profiles/{profile_id}"),
             serde_json::json!({}),
             &[],
         )
@@ -4192,11 +4754,8 @@ async fn model_delete_hides_routing_clears_probes_and_preserves_history() {
     )
     .await;
     assert_eq!(historical_log["client_model"], source_model_id);
-    assert_eq!(
-        historical_log["channel_group_name"],
-        format!("model-delete-group-{model_id}")
-    );
-    assert_eq!(historical_log["channel_name"], "model-delete-channel");
+    assert_eq!(historical_log["channel_group_name"], group_name);
+    assert_eq!(historical_log["channel_name"], "Spec channel");
     let historical_ids: (Option<Uuid>, Option<Uuid>) =
         sqlx::query_as("SELECT model_id,model_rule_id FROM request_logs WHERE id=$1")
             .bind(historical_log_id)
@@ -4217,11 +4776,11 @@ async fn model_delete_hides_routing_clears_probes_and_preserves_history() {
     assert!(
         deletion_audit
             .1
-            .is_some_and(|reason| reason.contains("1 protocol rules disabled"))
+            .is_some_and(|reason| reason.contains("1 operation rules disabled"))
     );
 
     let deleted_probe_reference = sqlx::query(
-        "UPDATE channels \
+        "UPDATE channel_capabilities \
          SET test_model='model-delete-wire',test_pricing_model_id=$2 \
          WHERE id=$1",
     )
@@ -4237,7 +4796,7 @@ async fn model_delete_hides_routing_clears_probes_and_preserves_history() {
             .as_deref(),
         Some("23514")
     );
-    let reenabled_rule = sqlx::query("UPDATE model_rules SET enabled=true WHERE id=$1")
+    let reenabled_rule = sqlx::query("UPDATE model_operation_rules SET enabled=true WHERE id=$1")
         .bind(protocol_id)
         .execute(&database.pool)
         .await
@@ -4320,7 +4879,7 @@ async fn model_delete_hides_routing_clears_probes_and_preserves_history() {
     database.cleanup().await;
 }
 
-/// A mutable admin resource (`channel-groups`) returns an `ETag` on GET and
+/// A mutable admin resource returns an `ETag` on GET and
 /// requires `If-Match` on PUT; a stale `If-Match` yields `409` with an error
 /// body. Channel groups are chosen because updating them does not change the
 /// actor's `auth_version` (unlike `UpdateUser`), so the issued JWT stays valid
@@ -4333,7 +4892,7 @@ async fn etag_if_match_optimistic_concurrency_matches_spec() {
     let removed_group_routing = request(
         &app,
         "POST",
-        "/console/v1/routing/channel-groups",
+        "/console/v1/routing/groups",
         serde_json::json!({
             "name": "legacy-spec-group",
             "api_format": "open_ai_chat_completions",
@@ -4352,10 +4911,9 @@ async fn etag_if_match_optimistic_concurrency_matches_spec() {
     let create = request(
         &app,
         "POST",
-        "/console/v1/routing/channel-groups",
+        "/console/v1/routing/groups",
         serde_json::json!({
             "name": "spec-group",
-            "api_format": "open_ai_chat_completions",
             "enabled": true,
         }),
         &[],
@@ -4363,7 +4921,7 @@ async fn etag_if_match_optimistic_concurrency_matches_spec() {
     .await;
     assert_eq!(create.status(), StatusCode::CREATED);
     let group_id = body_json(create).await["id"].as_str().unwrap().to_owned();
-    let path = format!("/console/v1/routing/channel-groups/{group_id}");
+    let path = format!("/console/v1/routing/groups/{group_id}");
 
     let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
     assert_eq!(detail.status(), StatusCode::OK);
@@ -4375,14 +4933,13 @@ async fn etag_if_match_optimistic_concurrency_matches_spec() {
         .unwrap()
         .to_owned();
     let mut update = body_json(detail).await;
-    assert!(update["connector_pool_id"].is_null());
-    assert_eq!(update["request_compression"], "default");
-    assert_eq!(update["status_statistics_enabled"], false);
+    assert!(update.get("connector_pool_id").is_none());
+    assert!(update.get("request_compression").is_none());
+    assert!(update.get("status_statistics_enabled").is_none());
     assert!(update.get("priority").is_none());
     assert!(update.get("selection_strategy").is_none());
     update["name"] = serde_json::json!("spec-group-renamed");
-    update["status_statistics_enabled"] = serde_json::json!(true);
-    for field in ["id", "connector_pool_id", "updated_at"] {
+    for field in ["id", "created_at", "updated_at", "deleted_at"] {
         update.as_object_mut().unwrap().remove(field);
     }
 
@@ -4393,13 +4950,12 @@ async fn etag_if_match_optimistic_concurrency_matches_spec() {
         ok_body["correlation_id"].is_string(),
         "mutation correlation"
     );
-    let monitoring_enabled: bool =
-        sqlx::query_scalar("SELECT status_statistics_enabled FROM channel_groups WHERE id=$1")
-            .bind(Uuid::parse_str(&group_id).unwrap())
-            .fetch_one(&database.pool)
-            .await
-            .unwrap();
-    assert!(monitoring_enabled);
+    let renamed: String = sqlx::query_scalar("SELECT name FROM routing_groups WHERE id=$1")
+        .bind(Uuid::parse_str(&group_id).unwrap())
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(renamed, "spec-group-renamed");
 
     let conflict = request(&app, "PUT", &path, update, &[("if-match", &etag)]).await;
     assert_eq!(conflict.status(), StatusCode::CONFLICT);
@@ -4412,71 +4968,97 @@ async fn etag_if_match_optimistic_concurrency_matches_spec() {
 }
 
 #[tokio::test]
-async fn request_compression_is_restricted_to_responses_channel_groups() {
+async fn request_compression_is_restricted_to_responses_capabilities() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
-
-    let invalid = request(
-        &app,
-        "POST",
-        "/console/v1/routing/channel-groups",
-        serde_json::json!({
-            "name": "spec-chat-compression",
-            "api_format": "open_ai_chat_completions",
-            "connector_kind": "openai_compatible",
-            "request_compression": "zstd",
-            "enabled": true,
-        }),
-        &[],
-    )
-    .await;
-
-    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    for operation in [
+        "chat_completion",
+        "images_generation",
+        "images_edit",
+        "web_search",
+        "responses",
+        "responses-ws",
+    ] {
+        let topology = seed_test_topology(&app, operation).await;
+        let path = format!("/console/v1/routing/capabilities/{}", topology.capability);
+        let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
+        let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+        let before = body_json(detail).await;
+        let mut input = capability_input(topology.channel, operation);
+        input["settings"]["request_compression"] = serde_json::json!("zstd");
+        let response = request(&app, "PUT", &path, input.clone(), &[("if-match", &etag)]).await;
+        assert_eq!(
+            response.status(),
+            if operation == "responses" {
+                StatusCode::OK
+            } else {
+                StatusCode::UNPROCESSABLE_ENTITY
+            }
+        );
+        let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
+        let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+        let after = body_json(detail).await;
+        if operation == "responses" {
+            assert_eq!(after["settings"]["request_compression"], "zstd");
+            input["settings"]["transports"] = serde_json::json!(["websocket"]);
+            assert_eq!(
+                request(&app, "PUT", &path, input, &[("if-match", &etag)])
+                    .await
+                    .status(),
+                StatusCode::UNPROCESSABLE_ENTITY
+            );
+        } else {
+            assert_eq!(before, after);
+        }
+    }
     database.cleanup().await;
 }
 
 #[tokio::test]
-async fn sharing_only_mode_is_codex_scoped_versioned_and_pool_wide() {
+async fn sharing_only_mode_is_codex_scoped_versioned_and_channel_owned() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
-    let path = "/console/v1/routing/channel-groups";
+    let path = "/console/v1/routing/logical-channels";
+    let ordinary = seed_test_topology(&app, "responses").await;
+    let ordinary_path = format!("{path}/{}", ordinary.channel);
+    let detail = request(&app, "GET", &ordinary_path, serde_json::json!({}), &[]).await;
+    let ordinary_etag = detail.headers()[header::ETAG].to_str().unwrap().to_owned();
     let invalid = request(
         &app,
-        "POST",
-        path,
+        "PUT",
+        &ordinary_path,
         serde_json::json!({
-            "name":"invalid-sharing-only", "api_format":"open_ai_responses",
-            "connector_kind":"openai_compatible", "enabled":true, "sharing_only":true
+            "name":"invalid-sharing-only", "enabled":true, "sharing_only":true
+            ,"group_id":ordinary.group,"access_id":ordinary.access,"credential_id":null
         }),
-        &[],
+        &[("if-match", &ordinary_etag)],
     )
     .await;
     assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    let created = request(
+    let group_id = ordinary.group;
+    let credential = create_test_codex_credential(
+        &database.pool,
         &app,
-        "POST",
-        path,
-        serde_json::json!({
-            "name":"sharing-only-contract", "api_format":"open_ai_responses",
-            "connector_kind":"codex_oauth", "enabled":true, "sharing_only":true
-        }),
-        &[],
+        codex_fixture_input(group_id, "sharing-only-member"),
     )
     .await;
-    assert_eq!(created.status(), StatusCode::CREATED);
-    let id = body_json(created).await["id"].as_str().unwrap().to_owned();
-    let images: (Uuid, bool, bool) = sqlx::query_as(
-        "SELECT id,enabled,sharing_only FROM channel_groups WHERE connector_pool_id=$1 AND api_format='open_ai_images'"
-    ).bind(Uuid::parse_str(&id).unwrap()).fetch_one(&database.pool).await.unwrap();
-    assert!(!images.1);
-    assert!(images.2);
+    let id = bind_test_codex_channel(&database.pool, &app, group_id, credential, true).await;
+    let images = codex_capability_id(&database.pool, credential, "images_generation").await;
+    let images_enabled: bool =
+        sqlx::query_scalar("SELECT enabled FROM channel_capabilities WHERE id=$1")
+            .bind(images)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert!(!images_enabled);
     let detail_path = format!("{path}/{id}");
     let detail = request(&app, "GET", &detail_path, serde_json::json!({}), &[]).await;
     let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
-    assert_eq!(body_json(detail).await["sharing_only"], true);
+    let detail = body_json(detail).await;
+    assert_eq!(detail["sharing_only"], true);
     let mut input = serde_json::json!({
-        "name":"sharing-only-renamed", "api_format":"open_ai_responses",
-        "connector_kind":"codex_oauth", "enabled":true
+        "name":"sharing-only-renamed", "enabled":true, "sharing_only":true,
+        "group_id":group_id,"access_id":detail["access_id"],"credential_id":credential
     });
     let saved = request(
         &app,
@@ -4516,8 +5098,8 @@ async fn sharing_only_mode_is_codex_scoped_versioned_and_pool_wide() {
         StatusCode::OK
     );
     let images: (bool, bool) =
-        sqlx::query_as("SELECT enabled,sharing_only FROM channel_groups WHERE id=$1")
-            .bind(images.0)
+        sqlx::query_as("SELECT c.enabled,u.sharing_only FROM channel_capabilities c JOIN upstream_channels u ON u.id=c.channel_id WHERE c.id=$1")
+            .bind(images)
             .fetch_one(&database.pool)
             .await
             .unwrap();
@@ -4530,97 +5112,55 @@ async fn codex_oauth_flow_contract_uses_pkce_and_actor_scoped_completion() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
 
-    let direct_images_group = request(
+    let legacy_group = request(
         &app,
         "POST",
-        "/console/v1/routing/channel-groups",
+        "/console/v1/routing/groups",
         serde_json::json!({
-            "name": "spec-codex-images-orphan",
-            "api_format": "open_ai_images",
-            "connector_kind": "codex_oauth",
-            "enabled": false,
+            "name": "legacy-format-group", "api_format": "open_ai_images",
+            "connector_kind": "codex", "enabled": false
         }),
         &[],
     )
     .await;
-    assert_eq!(
-        direct_images_group.status(),
-        StatusCode::UNPROCESSABLE_ENTITY
-    );
-
-    let create_group = request(
+    assert_eq!(legacy_group.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let group_uuid = create_resource(
         &app,
-        "POST",
-        "/console/v1/routing/channel-groups",
+        "/console/v1/routing/groups",
         serde_json::json!({
-            "name": "spec-codex",
-            "api_format": "open_ai_responses",
-            "connector_kind": "codex_oauth",
-            "request_compression": "zstd",
-            "enabled": true,
+            "name": "spec-codex", "enabled": true
         }),
-        &[],
     )
     .await;
-    assert_eq!(create_group.status(), StatusCode::CREATED);
-    let group_id = body_json(create_group).await["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let group_uuid = Uuid::parse_str(&group_id).unwrap();
-    let (images_group_id, images_group_enabled): (Uuid, bool) = sqlx::query_as(
-        "SELECT id,enabled FROM channel_groups \
-         WHERE connector_pool_id=$1 AND api_format='open_ai_images'::api_format",
-    )
-    .bind(group_uuid)
-    .fetch_one(&database.pool)
-    .await
-    .unwrap();
-    assert!(!images_group_enabled);
-    let listed_groups = request(
-        &app,
-        "GET",
-        "/console/v1/routing/channel-groups",
-        serde_json::json!({}),
-        &[],
+    let group_id = group_uuid.to_string();
+    let groups = body_json(
+        request(
+            &app,
+            "GET",
+            "/console/v1/routing/groups",
+            serde_json::json!({}),
+            &[],
+        )
+        .await,
     )
     .await;
-    assert_eq!(listed_groups.status(), StatusCode::OK);
-    let listed_groups = body_json(listed_groups).await;
-    let listed_groups = listed_groups.as_array().unwrap();
-    let responses_group = listed_groups
-        .iter()
-        .find(|group| group["id"] == group_id)
+    assert_eq!(groups.as_array().unwrap().len(), 1);
+    assert_eq!(groups[0]["id"], group_id);
+    assert!(groups[0].get("connector_pool_id").is_none());
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM channel_capabilities")
+        .fetch_one(&database.pool)
+        .await
         .unwrap();
-    let images_group = listed_groups
-        .iter()
-        .find(|group| group["id"] == images_group_id.to_string())
-        .unwrap();
-    assert_eq!(responses_group["connector_pool_id"], group_id);
-    assert_eq!(images_group["connector_pool_id"], group_id);
-    assert_eq!(responses_group["request_compression"], "zstd");
-    assert_eq!(images_group["request_compression"], "default");
-    assert!(responses_group.get("priority").is_none());
-    assert!(responses_group.get("selection_strategy").is_none());
+    assert_eq!(count, 0);
     let group_audit: serde_json::Value = sqlx::query_scalar(
-        "SELECT after_redacted FROM audit_logs \
-         WHERE object_type='channel_group' AND object_id=$1 AND action='create'",
-    )
-    .bind(group_uuid)
-    .fetch_one(&database.pool)
-    .await
-    .unwrap();
-    assert_eq!(
-        group_audit["connector_pool_groups"]
-            .as_array()
-            .map(Vec::len),
-        Some(2)
-    );
+        "SELECT after_redacted FROM audit_logs WHERE object_type='routing_group' AND object_id=$1 AND action='create'"
+    ).bind(group_uuid).fetch_one(&database.pool).await.unwrap();
+    assert_eq!(group_audit["name"], "spec-codex");
 
     let legacy_import = request(
         &app,
         "POST",
-        &format!("/console/v1/providers/codex-oauth/channel-groups/{group_id}/credentials"),
+        "/console/v1/routing/upstream-credentials/codex",
         serde_json::json!({
             "label": "legacy-import",
             "weight": 100,
@@ -4633,46 +5173,10 @@ async fn codex_oauth_flow_contract_uses_pkce_and_actor_scoped_completion() {
     .await;
     assert_eq!(legacy_import.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
-    let images_group_path = format!("/console/v1/routing/channel-groups/{images_group_id}");
-    let images_group_detail =
-        request(&app, "GET", &images_group_path, serde_json::json!({}), &[]).await;
-    assert_eq!(images_group_detail.status(), StatusCode::OK);
-    let images_group_etag = images_group_detail
-        .headers()
-        .get(header::ETAG)
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_owned();
-    let mut images_group_update = body_json(images_group_detail).await;
-    assert_eq!(images_group_update["api_format"], "open_ai_images");
-    assert_eq!(images_group_update["connector_kind"], "codex_oauth");
-    assert_eq!(images_group_update["request_compression"], "default");
-    assert_eq!(images_group_update["enabled"], false);
-    images_group_update["enabled"] = serde_json::json!(true);
-    images_group_update.as_object_mut().unwrap().remove("id");
-    images_group_update
-        .as_object_mut()
-        .unwrap()
-        .remove("connector_pool_id");
-    images_group_update
-        .as_object_mut()
-        .unwrap()
-        .remove("updated_at");
-    let enabled_images_group = request(
-        &app,
-        "PUT",
-        &images_group_path,
-        images_group_update,
-        &[("if-match", &images_group_etag)],
-    )
-    .await;
-    assert_eq!(enabled_images_group.status(), StatusCode::OK);
-
     let legacy_start = request(
         &app,
         "POST",
-        &format!("/console/v1/providers/codex-oauth/channel-groups/{group_id}/oauth/flows"),
+        "/console/v1/routing/upstream-credentials/codex/oauth/flows",
         serde_json::json!({
             "label": "legacy-spec-account",
             "weight": 100,
@@ -4686,7 +5190,7 @@ async fn codex_oauth_flow_contract_uses_pkce_and_actor_scoped_completion() {
     let start = request(
         &app,
         "POST",
-        &format!("/console/v1/providers/codex-oauth/channel-groups/{group_id}/oauth/flows"),
+        "/console/v1/routing/upstream-credentials/codex/oauth/flows",
         serde_json::json!({
             "label": "spec-account",
             "quota_threshold_percent": 95
@@ -4729,40 +5233,42 @@ async fn codex_oauth_flow_contract_uses_pkce_and_actor_scoped_completion() {
     let list = request(
         &app,
         "GET",
-        &format!("/console/v1/providers/codex-oauth/channel-groups/{group_id}/credentials"),
+        "/console/v1/routing/upstream-credentials/codex",
         serde_json::json!({}),
         &[],
     )
     .await;
     assert_eq!(list.status(), StatusCode::OK);
     assert_eq!(body_json(list).await, serde_json::json!([]));
-    let images_list = request(
-        &app,
-        "GET",
-        &format!("/console/v1/providers/codex-oauth/channel-groups/{images_group_id}/credentials"),
-        serde_json::json!({}),
-        &[],
-    )
-    .await;
-    assert_eq!(images_list.status(), StatusCode::OK);
-    assert_eq!(body_json(images_list).await, serde_json::json!([]));
-    let images_start = request(
-        &app,
-        "POST",
-        &format!("/console/v1/providers/codex-oauth/channel-groups/{images_group_id}/oauth/flows"),
-        serde_json::json!({
-            "label": "spec-images-account",
-            "quota_threshold_percent": 95
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(images_start.status(), StatusCode::CREATED);
+
+    let missing_group = Uuid::new_v4();
+    for (method, path) in [
+        (
+            "GET",
+            format!("/console/v1/providers/codex-oauth/channel-groups/{missing_group}/credentials"),
+        ),
+        (
+            "POST",
+            format!("/console/v1/providers/codex-oauth/channel-groups/{missing_group}/oauth/flows"),
+        ),
+    ] {
+        let response = request(
+            &app,
+            method,
+            &path,
+            serde_json::json!({
+                "label": "unknown-group", "quota_threshold_percent": 95
+            }),
+            &[],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
 
     let mismatched = request(
         &app,
         "POST",
-        &format!("/console/v1/providers/codex-oauth/oauth/flows/{flow_id}/complete"),
+        &format!("/console/v1/routing/upstream-credentials/codex/oauth/flows/{flow_id}/complete"),
         serde_json::json!({
             "callback_url":
                 "http://localhost:1455/auth/callback?code=spec-code&state=wrong-state"
@@ -4783,19 +5289,16 @@ async fn codex_oauth_flow_contract_uses_pkce_and_actor_scoped_completion() {
 async fn codex_export_and_proxy_delete_contracts_preserve_secrets_and_references() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
-    let group_id = Uuid::new_v4();
+    let group_id = create_resource(
+        &app,
+        "/console/v1/routing/groups",
+        serde_json::json!({
+            "name": "spec-portable", "enabled": true
+        }),
+    )
+    .await;
     let assigned_proxy_id = Uuid::new_v4();
     let removable_proxy_id = Uuid::new_v4();
-    let channel_id = Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO channel_groups \
-         (id,name,api_format,connector_kind,enabled) \
-         VALUES ($1,'spec-portable','open_ai_responses','codex_oauth',true)",
-    )
-    .bind(group_id)
-    .execute(&database.pool)
-    .await
-    .unwrap();
     sqlx::query(
         "INSERT INTO proxies \
          (id,name,proxy_url,username,password,no_proxy_hosts,enabled) \
@@ -4808,39 +5311,21 @@ async fn codex_export_and_proxy_delete_contracts_preserve_secrets_and_references
     .execute(&database.pool)
     .await
     .unwrap();
-    sqlx::query(
-        "INSERT INTO channels \
-         (id,channel_group_id,api_format,name,base_url,enabled,proxy_id, \
-          upstream_auth_kind,available_models,auto_disable_allowed,supports_websocket) \
-         VALUES ($1,$2,'open_ai_responses','spec-portable', \
-                 'https://chatgpt.com/backend-api/codex',true,$3,'none', \
-                 ARRAY['gpt-5-codex'],false,true)",
-    )
-    .bind(channel_id)
-    .bind(group_id)
-    .bind(assigned_proxy_id)
-    .execute(&database.pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO codex_oauth_credentials \
-         (channel_id,channel_group_id,label,email,account_id,user_id,plan_type,is_fedramp, \
-          id_token,access_token,refresh_token,last_refreshed_at,enabled, \
-          quota_threshold_percent,runtime_status) \
-         VALUES ($1,$2,'spec-account','portable@example.test',NULL,'portable-user', \
-                 'free',false,'secret-id','secret-access','secret-refresh',now(), \
-                 true,95,'active')",
-    )
-    .bind(channel_id)
-    .bind(group_id)
-    .execute(&database.pool)
-    .await
-    .unwrap();
+    let mut input = codex_fixture_input(group_id, "spec-account");
+    input.proxy_id = Some(assigned_proxy_id);
+    input.email = Some("portable@example.test".into());
+    input.account_id = None;
+    input.user_id = Some("portable-user".into());
+    input.plan_type = Some("free".into());
+    input.id_token = "secret-id".into();
+    input.access_token = "secret-access".into();
+    input.refresh_token = "secret-refresh".into();
+    let channel_id = create_test_codex_credential(&database.pool, &app, input).await;
 
     let exported = request(
         &app,
         "POST",
-        &format!("/console/v1/providers/codex-oauth/channel-groups/{group_id}/credentials/export"),
+        "/console/v1/routing/upstream-credentials/codex/export",
         serde_json::json!({
             "credential_ids": [channel_id],
             "include_proxies": true
@@ -4851,7 +5336,7 @@ async fn codex_export_and_proxy_delete_contracts_preserve_secrets_and_references
     assert_eq!(exported.status(), StatusCode::OK);
     let exported = body_json(exported).await;
     assert_eq!(exported["type"], "ai-gateway-codex-credentials");
-    assert_eq!(exported["version"], 2);
+    assert_eq!(exported["version"], 3);
     assert_eq!(
         exported["credentials"][0]["account_id"],
         serde_json::Value::Null
@@ -4935,71 +5420,35 @@ async fn codex_export_and_proxy_delete_contracts_preserve_secrets_and_references
 async fn codex_business_batch_and_delete_contracts_are_versioned() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
-    let group_id = Uuid::new_v4();
-    let member_a = Uuid::new_v4();
-    let member_b = Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO channel_groups \
-         (id,name,api_format,connector_kind,enabled) \
-         VALUES ($1,'spec-business','open_ai_responses','codex_oauth',true)",
+    let group_id = create_resource(
+        &app,
+        "/console/v1/routing/groups",
+        serde_json::json!({
+            "name": "spec-business", "enabled": true
+        }),
     )
-    .bind(group_id)
-    .execute(&database.pool)
-    .await
-    .unwrap();
-    for (channel_id, label, email, user_id) in [
-        (
-            member_a,
-            "business-member-a",
-            "member-a@example.test",
-            "user-a",
-        ),
-        (
-            member_b,
-            "business-member-b",
-            "member-b@example.test",
-            "user-b",
-        ),
+    .await;
+    let mut members = Vec::new();
+    for (label, email, user_id) in [
+        ("business-member-a", "member-a@example.test", "user-a"),
+        ("business-member-b", "member-b@example.test", "user-b"),
     ] {
-        sqlx::query(
-            "INSERT INTO channels \
-             (id,channel_group_id,api_format,name,base_url,enabled, \
-              upstream_auth_kind,available_models,auto_disable_allowed,supports_websocket) \
-             VALUES ($1,$2,'open_ai_responses',$3, \
-                     'https://chatgpt.com/backend-api/codex',true,'none', \
-                     ARRAY['gpt-5-codex'],false,true)",
-        )
-        .bind(channel_id)
-        .bind(group_id)
-        .bind(label)
-        .execute(&database.pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO codex_oauth_credentials \
-             (channel_id,channel_group_id,label,email,account_id,user_id,plan_type,is_fedramp, \
-              id_token,access_token,refresh_token,last_refreshed_at,enabled, \
-              quota_threshold_percent,runtime_status) \
-             VALUES ($1,$2,$3,$4,'business-workspace',$5,'business',false, \
-                     $6,$7,$8,now(),true,95,'active')",
-        )
-        .bind(channel_id)
-        .bind(group_id)
-        .bind(label)
-        .bind(email)
-        .bind(user_id)
-        .bind(format!("{label}-id"))
-        .bind(format!("{label}-access"))
-        .bind(format!("{label}-refresh"))
-        .execute(&database.pool)
-        .await
-        .unwrap();
+        let mut input = codex_fixture_input(group_id, label);
+        input.email = Some(email.into());
+        input.account_id = Some("business-workspace".into());
+        input.user_id = Some(user_id.into());
+        input.plan_type = Some("business".into());
+        input.id_token = format!("{label}-id");
+        input.access_token = format!("{label}-access");
+        input.refresh_token = format!("{label}-refresh");
+        members.push(create_test_codex_credential(&database.pool, &app, input).await);
     }
+    let member_a = members[0];
 
     let list = request(
         &app,
         "GET",
-        &format!("/console/v1/providers/codex-oauth/channel-groups/{group_id}/credentials"),
+        "/console/v1/routing/upstream-credentials/codex",
         serde_json::json!({}),
         &[],
     )
@@ -5025,7 +5474,7 @@ async fn codex_business_batch_and_delete_contracts_are_versioned() {
     let disabled = request(
         &app,
         "POST",
-        &format!("/console/v1/providers/codex-oauth/channel-groups/{group_id}/credentials/batch"),
+        "/console/v1/routing/upstream-credentials/codex/batch",
         serde_json::json!({
             "items": items,
             "operation": "disable",
@@ -5045,7 +5494,7 @@ async fn codex_business_batch_and_delete_contracts_are_versioned() {
     let detail = request(
         &app,
         "GET",
-        &format!("/console/v1/providers/codex-oauth/credentials/{member_a}"),
+        &format!("/console/v1/routing/upstream-credentials/codex/{member_a}"),
         serde_json::json!({}),
         &[],
     )
@@ -5065,7 +5514,7 @@ async fn codex_business_batch_and_delete_contracts_are_versioned() {
     let legacy_update = request(
         &app,
         "PUT",
-        &format!("/console/v1/providers/codex-oauth/credentials/{member_a}"),
+        &format!("/console/v1/routing/upstream-credentials/codex/{member_a}"),
         serde_json::json!({
             "label": "business-member-a",
             "enabled": false,
@@ -5081,7 +5530,7 @@ async fn codex_business_batch_and_delete_contracts_are_versioned() {
     let deleted = request(
         &app,
         "DELETE",
-        &format!("/console/v1/providers/codex-oauth/credentials/{member_a}"),
+        &format!("/console/v1/routing/upstream-credentials/codex/{member_a}"),
         serde_json::json!({}),
         &[("if-match", &etag)],
     )
@@ -5092,7 +5541,7 @@ async fn codex_business_batch_and_delete_contracts_are_versioned() {
     let remaining = request(
         &app,
         "GET",
-        &format!("/console/v1/providers/codex-oauth/channel-groups/{group_id}/credentials"),
+        "/console/v1/routing/upstream-credentials/codex",
         serde_json::json!({}),
         &[],
     )
@@ -5470,43 +5919,30 @@ async fn model_rule_hierarchy_separates_pricing_from_candidate_models() {
     assert_eq!(model.status(), StatusCode::CREATED);
     let model_id = body_json(model).await["id"].as_str().unwrap().to_owned();
 
-    let group = request(
-        &app,
-        "POST",
-        "/console/v1/routing/channel-groups",
-        serde_json::json!({
-            "name": "spec-rule-group",
-            "api_format": "open_ai_chat_completions",
-            "enabled": true,
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(group.status(), StatusCode::CREATED);
-    let group_id = body_json(group).await["id"].as_str().unwrap().to_owned();
-    let channel = request(
-        &app,
-        "POST",
-        "/console/v1/routing/channels",
-        serde_json::json!({
-            "channel_group_id": group_id,
-            "api_format": "open_ai_chat_completions",
-            "name": "spec-rule-channel",
-            "base_url": "https://upstream.example.test",
-            "enabled": true,
-            "upstream_auth_kind": "none",
-            "available_models": ["spec-wire-model", "spec-wire-fallback"],
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(channel.status(), StatusCode::CREATED);
-    let channel_id = body_json(channel).await["id"].as_str().unwrap().to_owned();
-
+    let topology = seed_test_topology(&app, "chat_completion").await;
+    let channel_id = topology.capability;
+    let cap_path = format!("/console/v1/routing/capabilities/{channel_id}");
+    let cap = request(&app, "GET", &cap_path, serde_json::json!({}), &[]).await;
+    let cap_etag = cap.headers()[header::ETAG].to_str().unwrap().to_owned();
+    let mut cap_input = capability_input(topology.channel, "chat_completion");
+    cap_input["settings"]["available_models"] =
+        serde_json::json!(["spec-wire-model", "spec-wire-fallback"]);
+    assert_eq!(
+        request(
+            &app,
+            "PUT",
+            &cap_path,
+            cap_input,
+            &[("if-match", &cap_etag)]
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
     let parent = request(
         &app,
         "POST",
-        "/console/v1/routing/model-rules",
+        "/console/v1/routing/profiles",
         serde_json::json!({"model_id": model_id}),
         &[],
     )
@@ -5517,7 +5953,7 @@ async fn model_rule_hierarchy_separates_pricing_from_candidate_models() {
         request(
             &app,
             "POST",
-            "/console/v1/routing/model-rules",
+            "/console/v1/routing/profiles",
             serde_json::json!({"model_id": model_id}),
             &[],
         )
@@ -5529,7 +5965,7 @@ async fn model_rule_hierarchy_separates_pricing_from_candidate_models() {
     let parent = request(
         &app,
         "GET",
-        &format!("/console/v1/routing/model-rules/{parent_id}"),
+        &format!("/console/v1/routing/profiles/{parent_id}"),
         serde_json::json!({}),
         &[],
     )
@@ -5538,15 +5974,15 @@ async fn model_rule_hierarchy_separates_pricing_from_candidate_models() {
     let parent = body_json(parent).await;
     assert_eq!(parent["model_id"], model_id);
     assert_eq!(parent["client_model"], "spec-priced-client");
-    assert_eq!(parent["protocol_rules"], serde_json::json!([]));
+    assert!(parent.get("protocol_rules").is_none());
     assert!(parent.get("api_format").is_none());
     assert!(parent.get("upstream_model").is_none());
 
     let protocol = request(
         &app,
         "POST",
-        &format!("/console/v1/routing/model-rules/{parent_id}/protocols"),
-        serde_json::json!({"api_format": "open_ai_chat_completions"}),
+        "/console/v1/routing/operation-rules",
+        serde_json::json!({"model_routing_profile_id": parent_id, "operation": "chat_completion", "enabled": false, "routing_tiers": []}),
         &[],
     )
     .await;
@@ -5556,8 +5992,8 @@ async fn model_rule_hierarchy_separates_pricing_from_candidate_models() {
         request(
             &app,
             "POST",
-            &format!("/console/v1/routing/model-rules/{parent_id}/protocols"),
-            serde_json::json!({"api_format": "open_ai_chat_completions"}),
+            "/console/v1/routing/operation-rules",
+            serde_json::json!({"model_routing_profile_id": parent_id, "operation": "chat_completion", "enabled": false, "routing_tiers": []}),
             &[],
         )
         .await
@@ -5567,8 +6003,8 @@ async fn model_rule_hierarchy_separates_pricing_from_candidate_models() {
     let responses_protocol = request(
         &app,
         "POST",
-        &format!("/console/v1/routing/model-rules/{parent_id}/protocols"),
-        serde_json::json!({"api_format": "open_ai_responses"}),
+        "/console/v1/routing/operation-rules",
+        serde_json::json!({"model_routing_profile_id": parent_id, "operation": "responses", "enabled": false, "routing_tiers": []}),
         &[],
     )
     .await;
@@ -5576,22 +6012,15 @@ async fn model_rule_hierarchy_separates_pricing_from_candidate_models() {
     let parent_with_protocols = request(
         &app,
         "GET",
-        &format!("/console/v1/routing/model-rules/{parent_id}"),
+        "/console/v1/routing/operation-rules",
         serde_json::json!({}),
         &[],
     )
     .await;
     let parent_with_protocols = body_json(parent_with_protocols).await;
-    assert_eq!(
-        parent_with_protocols["protocol_rules"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
-    );
+    assert_eq!(parent_with_protocols.as_array().unwrap().len(), 2);
 
-    let protocol_path =
-        format!("/console/v1/routing/model-rules/{parent_id}/protocols/{protocol_id}");
+    let protocol_path = format!("/console/v1/routing/operation-rules/{protocol_id}");
     let detail = request(&app, "GET", &protocol_path, serde_json::json!({}), &[]).await;
     assert_eq!(detail.status(), StatusCode::OK);
     let etag = detail
@@ -5602,21 +6031,20 @@ async fn model_rule_hierarchy_separates_pricing_from_candidate_models() {
         .unwrap()
         .to_owned();
     let detail = body_json(detail).await;
-    assert_eq!(detail["model_rule_id"], parent_id);
-    assert_eq!(detail["api_format"], "open_ai_chat_completions");
-    assert_eq!(detail["routing_status"], "draft");
+    assert_eq!(detail["model_routing_profile_id"], parent_id);
+    assert_eq!(detail["operation"], "chat_completion");
     assert_eq!(detail["enabled"], false);
     assert_eq!(detail["routing_tiers"], serde_json::json!([]));
 
     let route = |upstream_model: &str| {
         serde_json::json!({
-            "description": "Candidate-owned wire models",
+            "model_routing_profile_id": parent_id, "operation": "chat_completion",
             "routing_tiers": [
                 {
                     "priority": 0,
                     "selection_strategy": "weighted_round_robin",
                     "candidates": [{
-                        "channel_id": channel_id,
+                        "capability_id": channel_id,
                         "upstream_model": upstream_model,
                         "weight": 7
                     }]
@@ -5625,7 +6053,7 @@ async fn model_rule_hierarchy_separates_pricing_from_candidate_models() {
                     "priority": 3,
                     "selection_strategy": "weighted_round_robin",
                     "candidates": [{
-                        "channel_id": channel_id,
+                        "capability_id": channel_id,
                         "upstream_model": "spec-wire-fallback",
                         "weight": 5
                     }]
@@ -5635,7 +6063,7 @@ async fn model_rule_hierarchy_separates_pricing_from_candidate_models() {
         })
     };
     let mut format_mutation = route("spec-wire-model");
-    format_mutation["api_format"] = serde_json::json!("open_ai_responses");
+    format_mutation["operation"] = serde_json::json!("responses");
     let immutable_format = request(
         &app,
         "PUT",
@@ -5646,23 +6074,20 @@ async fn model_rule_hierarchy_separates_pricing_from_candidate_models() {
     .await;
     assert_eq!(immutable_format.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
-    let mut missing_description = route("spec-wire-model");
-    missing_description
+    let mut missing_operation = route("spec-wire-model");
+    missing_operation
         .as_object_mut()
         .unwrap()
-        .remove("description");
-    let missing_description = request(
+        .remove("operation");
+    let missing_operation = request(
         &app,
         "PUT",
         &protocol_path,
-        missing_description,
+        missing_operation,
         &[("if-match", &etag)],
     )
     .await;
-    assert_eq!(
-        missing_description.status(),
-        StatusCode::UNPROCESSABLE_ENTITY
-    );
+    assert_eq!(missing_operation.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
     let mut missing_channel_model = route("spec-wire-model");
     missing_channel_model["routing_tiers"][0]["candidates"][0]
@@ -5687,12 +6112,12 @@ async fn model_rule_hierarchy_separates_pricing_from_candidate_models() {
         "PUT",
         &protocol_path,
         serde_json::json!({
-            "description": null,
+            "model_routing_profile_id": parent_id, "operation": "chat_completion",
             "routing_tiers": [{
                 "priority": 0,
                 "selection_strategy": "weighted_random",
                 "candidates": [{
-                    "channel_id": channel_id,
+                    "capability_id": channel_id,
                     "upstream_model": "not-advertised",
                     "weight": 100
                 }]
@@ -5734,11 +6159,7 @@ async fn model_rule_hierarchy_separates_pricing_from_candidate_models() {
     assert_eq!(updated.status(), StatusCode::OK);
     let current = request(&app, "GET", &protocol_path, serde_json::json!({}), &[]).await;
     let current = body_json(current).await;
-    assert_eq!(current["routing_status"], "ready");
     assert_eq!(current["routing_tiers"], updated_input["routing_tiers"]);
-    assert_eq!(current["target_candidate_count"], 2);
-    assert_eq!(current["model_capable_candidate_count"], 2);
-    assert_eq!(current["active_candidate_count"], 2);
 
     let stale = request(
         &app,
@@ -5752,788 +6173,269 @@ async fn model_rule_hierarchy_separates_pricing_from_candidate_models() {
     let audit: (serde_json::Value, serde_json::Value) = sqlx::query_as(
         "SELECT before_redacted,after_redacted \
          FROM audit_logs \
-         WHERE object_type='model_protocol_rule' AND object_id=$1 AND action='update'",
+         WHERE object_type='model_operation_rule' AND object_id=$1 AND action='update'",
     )
     .bind(Uuid::parse_str(&protocol_id).unwrap())
     .fetch_one(&database.pool)
     .await
     .unwrap();
-    assert_eq!(audit.0["routing_tiers"], serde_json::json!([]));
-    assert_eq!(audit.1["routing_tiers"], current["routing_tiers"]);
+    assert_eq!(audit.0["tiers"], serde_json::json!([]));
+    assert_eq!(audit.0["candidates"], serde_json::json!([]));
+    assert_eq!(audit.1["tiers"].as_array().unwrap().len(), 2);
+    assert_eq!(audit.1["candidates"].as_array().unwrap().len(), 2);
+    assert_eq!(audit.1["rule"]["enabled"], true);
+    assert!(audit.1["candidates"].as_array().unwrap().iter().any(
+        |candidate| candidate["capability_id"] == channel_id.to_string()
+            && candidate["upstream_model"] == "spec-wire-model"
+            && candidate["weight"] == 7
+    ));
 
     database.cleanup().await;
 }
 
 #[tokio::test]
-async fn channel_deletion_reconfirms_changed_impact_and_normalizes_dependencies() {
+async fn capability_deletion_withdraws_routes_atomically_and_preserves_channel_grants() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
-    let group = request(
+    let topology = seed_test_topology(&app, "chat_completion").await;
+    let (profile, rule) =
+        create_test_operation_rule(&app, topology.capability, "chat_completion").await;
+    let key = create_resource(&app, "/console/v1/api-keys", serde_json::json!({
+        "user_id": app.user_id, "name": "deletion-key",
+        "permissions": ["proxy"], "allowed_group_ids": [topology.group], "allowed_channel_ids": []
+    })).await;
+    let policy = create_resource(
         &app,
-        "POST",
-        "/console/v1/routing/channel-groups",
+        "/console/v1/api-key-policies",
         serde_json::json!({
-            "name": "channel-delete-group",
-            "api_format": "open_ai_chat_completions",
-            "enabled": true,
+            "name": "deletion-policy", "enabled": true, "allowed_group_ids": [],
+            "allowed_channel_ids": [topology.channel]
         }),
-        &[],
     )
     .await;
-    assert_eq!(group.status(), StatusCode::CREATED);
-    let group_id = Uuid::parse_str(body_json(group).await["id"].as_str().unwrap()).unwrap();
-    let channel = request(
-        &app,
-        "POST",
-        "/console/v1/routing/channels",
-        serde_json::json!({
-            "channel_group_id": group_id,
-            "api_format": "open_ai_chat_completions",
-            "name": "channel-delete-target",
-            "base_url": "https://delete-target.example.test",
-            "enabled": true,
-            "auto_disable_allowed": true,
-            "billing_multiplier": "1.25",
-            "connect_timeout_ms": 1000,
-            "response_header_timeout_ms": 2000,
-            "stream_idle_timeout_ms": 3000,
-            "override_document": {
-                "version": 1,
-                "api_format": "open_ai_chat_completions",
-                "request_headers": {"set": {"x-delete-test": "present"}}
-            },
-            "upstream_auth_kind": "bearer",
-            "upstream_api_key": "delete-upstream-secret",
-            "available_models": ["delete-wire-model"],
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(channel.status(), StatusCode::CREATED);
-    let channel_id = Uuid::parse_str(body_json(channel).await["id"].as_str().unwrap()).unwrap();
-    let (_profile_id, rule_id) = seed_test_protocol_rule(
-        &database.pool,
-        group_id,
-        channel_id,
-        "selected",
-        "delete-wire-model",
-    )
-    .await;
-    let fallback_group = request(
-        &app,
-        "POST",
-        "/console/v1/routing/channel-groups",
-        serde_json::json!({
-            "name": "channel-delete-fallback-group",
-            "api_format": "open_ai_chat_completions",
-            "enabled": true,
-        }),
-        &[],
-    )
-    .await;
-    let fallback_group_id =
-        Uuid::parse_str(body_json(fallback_group).await["id"].as_str().unwrap()).unwrap();
-    let fallback_channel = request(
-        &app,
-        "POST",
-        "/console/v1/routing/channels",
-        serde_json::json!({
-            "channel_group_id": fallback_group_id,
-            "api_format": "open_ai_chat_completions",
-            "name": "channel-delete-fallback",
-            "base_url": "https://delete-fallback.example.test",
-            "enabled": true,
-            "upstream_auth_kind": "none",
-            "available_models": ["delete-fallback-wire"],
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(fallback_channel.status(), StatusCode::CREATED);
-    let fallback_channel_id =
-        Uuid::parse_str(body_json(fallback_channel).await["id"].as_str().unwrap()).unwrap();
-    let mut routing_transaction = database.pool.begin().await.unwrap();
-    sqlx::query(
-        "INSERT INTO model_rule_routing_tiers \
-         (model_rule_id,api_format,priority,selection_strategy) \
-         VALUES ($1,'open_ai_chat_completions',1,'weighted_random')",
-    )
-    .bind(rule_id)
-    .execute(&mut *routing_transaction)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO model_rule_routing_candidates \
-         (model_rule_id,api_format,priority,channel_id,upstream_model,weight) \
-         VALUES ($1,'open_ai_chat_completions',1,$2,'delete-fallback-wire',100)",
-    )
-    .bind(rule_id)
-    .bind(fallback_channel_id)
-    .execute(&mut *routing_transaction)
-    .await
-    .unwrap();
-    routing_transaction.commit().await.unwrap();
-    let key_id = Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO api_keys \
-         (id,user_id,name,secret_value,status,allowed_api_formats,permissions, \
-          allowed_group_ids,allowed_channel_ids) \
-         VALUES ($1,$2,'channel delete key',$3,'active', \
-                 ARRAY['open_ai_chat_completions']::api_format[],ARRAY['proxy'], \
-                 ARRAY[$4]::uuid[],ARRAY[$5]::uuid[])",
-    )
-    .bind(key_id)
-    .bind(app.user_id)
-    .bind(format!("channel-delete-key-{key_id}"))
-    .bind(group_id)
-    .bind(channel_id)
-    .execute(&database.pool)
-    .await
-    .unwrap();
-    let policy_id = Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO api_key_policies \
-         (id,name,allowed_group_ids,allowed_channel_ids,enabled) \
-         VALUES ($1,$2,'{}',ARRAY[$3]::uuid[],true)",
-    )
-    .bind(policy_id)
-    .bind(format!("channel-delete-policy-{policy_id}"))
-    .bind(channel_id)
-    .execute(&database.pool)
-    .await
-    .unwrap();
-    let historical_log_id = Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO request_logs \
-         (id,started_at,completed_at,user_id,api_key_id,api_format,api_operation, \
-          client_model,upstream_model,model_rule_id,channel_group_id,channel_id, \
-          outcome,streamed,total_duration_ms) \
-         VALUES ($1,now(),now(),$2,$3,'open_ai_chat_completions','chat_completions', \
-                 'channel-delete-client','delete-wire-model',$4,$5,$6, \
-                 'succeeded',false,10)",
-    )
-    .bind(historical_log_id)
-    .bind(app.user_id)
-    .bind(key_id)
-    .bind(rule_id)
-    .bind(group_id)
-    .bind(channel_id)
-    .execute(&database.pool)
-    .await
-    .unwrap();
-
-    let detail_path = format!("/console/v1/routing/channels/{channel_id}");
-    let detail = request(&app, "GET", &detail_path, serde_json::json!({}), &[]).await;
-    assert_eq!(detail.status(), StatusCode::OK);
-    let etag = detail.headers()[header::ETAG].to_str().unwrap().to_owned();
-    let impact_path = format!("{detail_path}/deletion-impact");
-    let impact = request(&app, "GET", &impact_path, serde_json::json!({}), &[]).await;
-    assert_eq!(impact.status(), StatusCode::OK);
-    let impact = body_json(impact).await;
-    assert_eq!(impact["resource_type"], "channel");
-    assert_eq!(impact["channels"][0]["id"], channel_id.to_string());
-    assert_eq!(impact["model_protocol_rules"][0]["id"], rule_id.to_string());
+    let path = format!("/console/v1/routing/capabilities/{}", topology.capability);
+    let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
+    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    let before = body_json(detail).await;
+    let rule_path = format!("/console/v1/routing/operation-rules/{rule}");
+    let detail = request(&app, "GET", &rule_path, serde_json::json!({}), &[]).await;
+    let rule_etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    let before_rule = body_json(detail).await;
     assert_eq!(
-        impact["model_protocol_rules"][0]["removed_tier_priorities"],
-        serde_json::json!([0])
-    );
-    assert_eq!(impact["model_protocol_rules"][0]["will_disable"], false);
-    assert_eq!(impact["api_keys"][0]["id"], key_id.to_string());
-    assert_eq!(impact["api_key_policies"][0]["id"], policy_id.to_string());
-    let stale_token = impact["confirmation_token"].as_str().unwrap().to_owned();
-
-    let late_policy_id = Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO api_key_policies \
-         (id,name,allowed_group_ids,allowed_channel_ids,enabled) \
-         VALUES ($1,$2,'{}',ARRAY[$3]::uuid[],true)",
-    )
-    .bind(late_policy_id)
-    .bind(format!("late-channel-delete-policy-{late_policy_id}"))
-    .bind(channel_id)
-    .execute(&database.pool)
-    .await
-    .unwrap();
-    let stale_delete = request(
-        &app,
-        "DELETE",
-        &detail_path,
-        serde_json::json!({"confirmation_token": stale_token}),
-        &[("if-match", &etag)],
-    )
-    .await;
-    assert_eq!(stale_delete.status(), StatusCode::CONFLICT);
-    assert_eq!(
-        body_json(stale_delete).await,
-        serde_json::json!({"error": "deletion_impact_changed"})
-    );
-
-    let current_impact =
-        body_json(request(&app, "GET", &impact_path, serde_json::json!({}), &[]).await).await;
-    assert_ne!(
-        current_impact["confirmation_token"],
-        impact["confirmation_token"]
+        request(
+            &app,
+            "DELETE",
+            &path,
+            serde_json::json!({}),
+            &[("if-match", "\"2020-01-01T00:00:00Z\"")]
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
     );
     assert_eq!(
-        current_impact["api_key_policies"].as_array().unwrap().len(),
-        2
+        body_json(request(&app, "GET", &path, serde_json::json!({}), &[]).await).await,
+        before
     );
-    let deleted = request(
-        &app,
-        "DELETE",
-        &detail_path,
-        serde_json::json!({
-            "confirmation_token": current_impact["confirmation_token"]
-        }),
-        &[("if-match", &etag)],
-    )
-    .await;
-    assert_eq!(deleted.status(), StatusCode::OK);
-
-    let tombstone: serde_json::Value = sqlx::query_scalar(
-        "SELECT jsonb_build_object( \
-             'enabled',enabled,'auto_disabled',auto_disabled, \
-             'auto_disable_allowed',auto_disable_allowed, \
-             'base_url',base_url,'billing_multiplier',billing_multiplier, \
-             'proxy_id',proxy_id,'config_template_id',config_template_id, \
-             'override_document',override_document, \
-             'connect_timeout_ms',connect_timeout_ms, \
-             'response_header_timeout_ms',response_header_timeout_ms, \
-             'stream_idle_timeout_ms',stream_idle_timeout_ms, \
-             'upstream_auth_kind',upstream_auth_kind, \
-             'upstream_auth_header_name',upstream_auth_header_name, \
-             'upstream_api_key',upstream_api_key, \
-             'available_models',available_models,'test_model',test_model, \
-             'test_pricing_model_id',test_pricing_model_id, \
-             'deleted_at',deleted_at,'deleted_by',deleted_by) \
-         FROM channels WHERE id=$1",
-    )
-    .bind(channel_id)
-    .fetch_one(&database.pool)
-    .await
-    .unwrap();
-    assert_eq!(tombstone["enabled"], false);
-    assert_eq!(tombstone["auto_disabled"], false);
-    assert_eq!(tombstone["auto_disable_allowed"], false);
-    assert_eq!(tombstone["base_url"], "https://deleted.invalid");
-    assert_eq!(tombstone["billing_multiplier"].as_f64(), Some(1.0));
-    assert_eq!(tombstone["override_document"], serde_json::json!({}));
-    assert!(tombstone["connect_timeout_ms"].is_null());
-    assert!(tombstone["response_header_timeout_ms"].is_null());
-    assert!(tombstone["stream_idle_timeout_ms"].is_null());
-    assert_eq!(tombstone["upstream_auth_kind"], "none");
-    assert!(tombstone["upstream_api_key"].is_null());
-    assert_eq!(tombstone["available_models"], serde_json::json!([]));
-    assert!(tombstone["deleted_at"].is_string());
-    assert_eq!(tombstone["deleted_by"], app.user_id.to_string());
-
-    let key_targets: (Vec<Uuid>, Vec<Uuid>) =
-        sqlx::query_as("SELECT allowed_group_ids,allowed_channel_ids FROM api_keys WHERE id=$1")
-            .bind(key_id)
-            .fetch_one(&database.pool)
+    assert_eq!(
+        body_json(request(&app, "GET", &rule_path, serde_json::json!({}), &[]).await).await,
+        before_rule
+    );
+    assert_eq!(
+        request(
+            &app,
+            "DELETE",
+            &path,
+            serde_json::json!({}),
+            &[("if-match", &etag)]
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let changed = request(&app, "GET", &rule_path, serde_json::json!({}), &[]).await;
+    assert_ne!(changed.headers()["etag"].to_str().unwrap(), rule_etag);
+    let changed = body_json(changed).await;
+    assert_eq!(changed["enabled"], false);
+    assert_eq!(changed["routing_tiers"], serde_json::json!([]));
+    assert_eq!(
+        request(
+            &app,
+            "PUT",
+            &rule_path,
+            serde_json::json!({
+                "model_routing_profile_id": profile, "operation": "chat_completion",
+                "enabled": false, "routing_tiers": []
+            }),
+            &[("if-match", &rule_etag)]
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        request(&app, "GET", &path, serde_json::json!({}), &[])
             .await
-            .unwrap();
-    assert_eq!(key_targets, (vec![group_id], vec![]));
-    let policy_targets: Vec<Vec<Uuid>> = sqlx::query_scalar(
-        "SELECT allowed_channel_ids FROM api_key_policies \
-         WHERE id=ANY($1) ORDER BY id",
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &app,
+            "DELETE",
+            &path,
+            serde_json::json!({}),
+            &[("if-match", &etag)]
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    let key_grants: Vec<(Uuid, String, Uuid)> = sqlx::query_as(
+        "SELECT channel_id,origin_kind,origin_id FROM api_key_channel_grants WHERE api_key_id=$1",
     )
-    .bind(vec![policy_id, late_policy_id])
+    .bind(key)
     .fetch_all(&database.pool)
     .await
     .unwrap();
-    assert_eq!(policy_targets, vec![Vec::<Uuid>::new(), Vec::<Uuid>::new()]);
-    let normalized_rule: (bool, i64) = sqlx::query_as(
-        "SELECT enabled,(SELECT count(*) FROM model_rule_routing_tiers \
-                         WHERE model_rule_id=model_rules.id) \
-         FROM model_rules WHERE id=$1",
-    )
-    .bind(rule_id)
-    .fetch_one(&database.pool)
-    .await
-    .unwrap();
-    assert_eq!(normalized_rule, (true, 1));
-    assert!(app.runtime.snapshot().channel(channel_id).is_none());
-    let historical_log = body_json(
-        request(
-            &app,
-            "GET",
-            &format!("/console/v1/request-logs/{historical_log_id}"),
-            serde_json::json!({}),
-            &[],
-        )
-        .await,
-    )
-    .await;
-    assert_eq!(historical_log["channel_group_name"], "channel-delete-group");
-    assert_eq!(historical_log["channel_name"], "channel-delete-target");
-    let deletion_audit: (serde_json::Value, Option<String>) = sqlx::query_as(
-        "SELECT after_redacted,reason FROM audit_logs \
-         WHERE object_type='channel' AND object_id=$1 AND action='delete'",
-    )
-    .bind(channel_id)
-    .fetch_one(&database.pool)
-    .await
-    .unwrap();
     assert_eq!(
-        deletion_audit.0["upstream_credential_configured"],
-        serde_json::json!(false)
+        key_grants,
+        [(topology.channel, "group".into(), topology.group)]
     );
-    assert!(deletion_audit.0.get("upstream_api_key").is_none());
-    assert!(
-        deletion_audit
-            .1
-            .is_some_and(|reason| reason.contains("protocol rules affected"))
-    );
+    let policy_grants: Vec<(Uuid, String, Uuid)> = sqlx::query_as("SELECT channel_id,origin_kind,origin_id FROM api_key_policy_channel_grants WHERE policy_id=$1")
+        .bind(policy).fetch_all(&database.pool).await.unwrap();
     assert_eq!(
-        request(&app, "GET", &detail_path, serde_json::json!({}), &[],)
-            .await
-            .status(),
-        StatusCode::NOT_FOUND
+        policy_grants,
+        [(topology.channel, "channel".into(), topology.channel)]
     );
-    let visible_channels = body_json(
-        request(
-            &app,
-            "GET",
-            "/console/v1/routing/channels",
-            serde_json::json!({}),
-            &[],
-        )
-        .await,
-    )
-    .await;
-    assert!(
-        visible_channels
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|channel| channel["id"] != channel_id.to_string())
-    );
-    let key_path = format!("/console/v1/api-keys/{key_id}");
-    let key_detail = request(&app, "GET", &key_path, serde_json::json!({}), &[]).await;
-    let key_etag = key_detail.headers()[header::ETAG]
-        .to_str()
-        .unwrap()
-        .to_owned();
-    let key_detail = body_json(key_detail).await;
-    let key_reattach = request(
+    let channel = request(
         &app,
-        "PUT",
-        &key_path,
-        serde_json::json!({
-            "name": key_detail["name"],
-            "status": key_detail["status"],
-            "expires_at": key_detail["expires_at"],
-            "allowed_api_formats": key_detail["allowed_api_formats"],
-            "permissions": key_detail["permissions"],
-            "allowed_group_ids": [group_id],
-            "allowed_channel_ids": [channel_id],
-            "requests_per_minute": key_detail["requests_per_minute"],
-            "max_concurrent_requests": key_detail["max_concurrent_requests"],
-            "quota_limit_amount": key_detail["quota_limit_amount"],
-        }),
-        &[("if-match", &key_etag)],
-    )
-    .await;
-    assert_eq!(key_reattach.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    let policy_path = format!("/console/v1/api-key-policies/{policy_id}");
-    let policy_detail = request(&app, "GET", &policy_path, serde_json::json!({}), &[]).await;
-    let policy_etag = policy_detail.headers()[header::ETAG]
-        .to_str()
-        .unwrap()
-        .to_owned();
-    let policy_detail = body_json(policy_detail).await;
-    let policy_reattach = request(
-        &app,
-        "PUT",
-        &policy_path,
-        serde_json::json!({
-            "name": policy_detail["name"],
-            "allowed_group_ids": [],
-            "allowed_channel_ids": [channel_id],
-            "enabled": policy_detail["enabled"],
-        }),
-        &[("if-match", &policy_etag)],
-    )
-    .await;
-    assert_eq!(policy_reattach.status(), StatusCode::UNPROCESSABLE_ENTITY);
-
-    let reused = request(
-        &app,
-        "POST",
-        "/console/v1/routing/channels",
-        serde_json::json!({
-            "channel_group_id": group_id,
-            "api_format": "open_ai_chat_completions",
-            "name": "channel-delete-target",
-            "base_url": "https://replacement.example.test",
-            "enabled": true,
-            "upstream_auth_kind": "none",
-            "available_models": ["replacement-wire"],
-        }),
+        "GET",
+        &format!("/console/v1/routing/logical-channels/{}", topology.channel),
+        serde_json::json!({}),
         &[],
     )
     .await;
-    assert_eq!(reused.status(), StatusCode::CREATED);
-    assert_ne!(body_json(reused).await["id"], channel_id.to_string());
-
-    let tombstone_update_error = sqlx::query("UPDATE channels SET name=$2 WHERE id=$1")
-        .bind(channel_id)
-        .bind("mutated tombstone")
-        .execute(&database.pool)
-        .await
-        .unwrap_err();
-    assert_eq!(
-        tombstone_update_error
-            .as_database_error()
-            .and_then(sqlx::error::DatabaseError::code)
-            .as_deref(),
-        Some("23514")
+    assert_eq!(channel.status(), StatusCode::OK);
+    assert!(
+        app.runtime
+            .snapshot()
+            .channel(topology.capability)
+            .is_none()
     );
-    let hard_delete_error = sqlx::query("DELETE FROM channels WHERE id=$1")
-        .bind(channel_id)
-        .execute(&database.pool)
-        .await
-        .unwrap_err();
-    assert_eq!(
-        hard_delete_error
-            .as_database_error()
-            .and_then(sqlx::error::DatabaseError::code)
-            .as_deref(),
-        Some("23514")
-    );
+    let label: String =
+        sqlx::query_scalar("SELECT label FROM channel_identity_registry WHERE id=$1")
+            .bind(topology.capability)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(label, "Spec channel");
     database.cleanup().await;
 }
 
 #[tokio::test]
-async fn channel_group_deletion_cascades_tombstones_and_unbinds_every_dependency() {
+async fn group_deletion_requires_explicit_child_retirement_and_preserves_history() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
-    let group_name = "group-delete-target";
-    let group = request(
+    let topology = seed_test_topology(&app, "chat_completion").await;
+    let group_path = format!("/console/v1/routing/groups/{}", topology.group);
+    let channel_path = format!("/console/v1/routing/logical-channels/{}", topology.channel);
+    let capability_path = format!("/console/v1/routing/capabilities/{}", topology.capability);
+    let mut etags = Vec::new();
+    for path in [&group_path, &channel_path, &capability_path] {
+        let detail = request(&app, "GET", path, serde_json::json!({}), &[]).await;
+        etags.push(detail.headers()["etag"].to_str().unwrap().to_owned());
+    }
+    for (path, etag) in [(&group_path, &etags[0]), (&channel_path, &etags[1])] {
+        assert_eq!(
+            request(
+                &app,
+                "DELETE",
+                path,
+                serde_json::json!({}),
+                &[("if-match", etag)]
+            )
+            .await
+            .status(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+    let policy = create_resource(
         &app,
-        "POST",
-        "/console/v1/routing/channel-groups",
+        "/console/v1/api-key-policies",
         serde_json::json!({
-            "name": group_name,
-            "api_format": "open_ai_chat_completions",
-            "enabled": true,
-            "status_statistics_enabled": true,
+            "name": "retained-group-policy", "allowed_group_ids": [topology.group],
+            "allowed_channel_ids": [topology.channel], "enabled": true
         }),
-        &[],
     )
     .await;
-    let group_id = Uuid::parse_str(body_json(group).await["id"].as_str().unwrap()).unwrap();
-    let mut channel_ids = Vec::new();
-    for name in ["group-delete-a", "group-delete-b"] {
-        let channel = request(
+    for (path, etag) in [
+        (&capability_path, &etags[2]),
+        (&channel_path, &etags[1]),
+        (&group_path, &etags[0]),
+    ] {
+        let response = request(
             &app,
-            "POST",
-            "/console/v1/routing/channels",
-            serde_json::json!({
-                "channel_group_id": group_id,
-                "api_format": "open_ai_chat_completions",
-                "name": name,
-                "base_url": "https://group-delete.example.test",
-                "enabled": true,
-                "upstream_auth_kind": "none",
-                "available_models": ["group-delete-wire"],
-            }),
-            &[],
+            "DELETE",
+            path,
+            serde_json::json!({}),
+            &[("if-match", etag)],
         )
         .await;
-        assert_eq!(channel.status(), StatusCode::CREATED);
-        channel_ids
-            .push(Uuid::parse_str(body_json(channel).await["id"].as_str().unwrap()).unwrap());
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        assert!(body_json(response).await["correlation_id"].is_string());
+        assert_eq!(
+            request(&app, "GET", path, serde_json::json!({}), &[])
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
     }
-    let (_profile_id, rule_id) = seed_test_protocol_rule(
-        &database.pool,
-        group_id,
-        channel_ids[0],
-        "all",
-        "group-delete-wire",
-    )
-    .await;
-    let key_id = Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO api_keys \
-         (id,user_id,name,secret_value,status,allowed_api_formats,permissions, \
-          allowed_group_ids,allowed_channel_ids) \
-         VALUES ($1,$2,'group delete key',$3,'active', \
-                 ARRAY['open_ai_chat_completions']::api_format[],ARRAY['proxy'], \
-                 ARRAY[$4]::uuid[],ARRAY[$5]::uuid[])",
-    )
-    .bind(key_id)
-    .bind(app.user_id)
-    .bind(format!("group-delete-key-{key_id}"))
-    .bind(group_id)
-    .bind(channel_ids[0])
-    .execute(&database.pool)
-    .await
-    .unwrap();
-    let policy_id = Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO api_key_policies \
-         (id,name,allowed_group_ids,allowed_channel_ids,enabled) \
-         VALUES ($1,$2,ARRAY[$3]::uuid[],ARRAY[$4]::uuid[],true)",
-    )
-    .bind(policy_id)
-    .bind(format!("group-delete-policy-{policy_id}"))
-    .bind(group_id)
-    .bind(channel_ids[1])
-    .execute(&database.pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO user_group_codex_quota_visibility \
-         (user_group_id,channel_group_id) VALUES ($1,$2)",
-    )
-    .bind(DEFAULT_USER_GROUP_ID)
-    .bind(group_id)
-    .execute(&database.pool)
-    .await
-    .unwrap();
-
-    let detail_path = format!("/console/v1/routing/channel-groups/{group_id}");
-    let detail = request(&app, "GET", &detail_path, serde_json::json!({}), &[]).await;
-    let etag = detail.headers()[header::ETAG].to_str().unwrap().to_owned();
-    let impact = body_json(
+    assert_eq!(
         request(
             &app,
             "GET",
-            &format!("{detail_path}/deletion-impact"),
+            &format!("/console/v1/routing/accesses/{}", topology.access),
+            serde_json::json!({}),
+            &[]
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let detail = body_json(
+        request(
+            &app,
+            "GET",
+            &format!("/console/v1/api-key-policies/{policy}"),
             serde_json::json!({}),
             &[],
         )
         .await,
     )
     .await;
-    assert_eq!(impact["resource_type"], "channel_group");
-    assert_eq!(impact["channels"].as_array().unwrap().len(), 2);
     assert_eq!(
-        impact["model_protocol_rules"][0]["removed_channel_group_ids"],
-        serde_json::json!([group_id])
+        detail["allowed_group_ids"],
+        serde_json::json!([topology.group])
     );
-    assert_eq!(impact["model_protocol_rules"][0]["will_disable"], true);
-    assert_eq!(impact["api_keys"][0]["id"], key_id.to_string());
-    assert_eq!(impact["api_key_policies"][0]["id"], policy_id.to_string());
     assert_eq!(
-        impact["quota_visibility_user_groups"][0]["id"],
-        DEFAULT_USER_GROUP_ID.to_string()
+        detail["allowed_channel_ids"],
+        serde_json::json!([topology.channel])
     );
-
-    let deleted = request(
-        &app,
-        "DELETE",
-        &detail_path,
-        serde_json::json!({
-            "confirmation_token": impact["confirmation_token"]
-        }),
-        &[("if-match", &etag)],
-    )
-    .await;
-    assert_eq!(deleted.status(), StatusCode::OK);
-
-    let group_tombstone: (
-        bool,
-        bool,
-        Option<chrono::DateTime<chrono::Utc>>,
-        Option<Uuid>,
-    ) = sqlx::query_as(
-        "SELECT enabled,status_statistics_enabled,deleted_at,deleted_by \
-             FROM channel_groups WHERE id=$1",
-    )
-    .bind(group_id)
-    .fetch_one(&database.pool)
-    .await
-    .unwrap();
-    assert!(!group_tombstone.0);
-    assert!(!group_tombstone.1);
-    assert!(group_tombstone.2.is_some());
-    assert_eq!(group_tombstone.3, Some(app.user_id));
-    let channel_tombstones: Vec<(Uuid, bool, Option<chrono::DateTime<chrono::Utc>>)> =
-        sqlx::query_as(
-            "SELECT id,enabled,deleted_at FROM channels \
-             WHERE channel_group_id=$1 ORDER BY id",
-        )
-        .bind(group_id)
-        .fetch_all(&database.pool)
-        .await
-        .unwrap();
-    assert_eq!(channel_tombstones.len(), 2);
-    assert!(
-        channel_tombstones
-            .iter()
-            .all(|(_, enabled, deleted_at)| !enabled && deleted_at.is_some())
-    );
-    let key_targets: (Vec<Uuid>, Vec<Uuid>) =
-        sqlx::query_as("SELECT allowed_group_ids,allowed_channel_ids FROM api_keys WHERE id=$1")
-            .bind(key_id)
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM api_key_policy_channel_grants WHERE policy_id=$1")
+            .bind(policy)
             .fetch_one(&database.pool)
             .await
             .unwrap();
-    assert_eq!(key_targets, (vec![], vec![]));
-    let policy_targets: (Vec<Uuid>, Vec<Uuid>) = sqlx::query_as(
-        "SELECT allowed_group_ids,allowed_channel_ids \
-         FROM api_key_policies WHERE id=$1",
-    )
-    .bind(policy_id)
-    .fetch_one(&database.pool)
-    .await
-    .unwrap();
-    assert_eq!(policy_targets, (vec![], vec![]));
-    let visibility_count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM user_group_codex_quota_visibility \
-         WHERE channel_group_id=$1",
-    )
-    .bind(group_id)
-    .fetch_one(&database.pool)
-    .await
-    .unwrap();
-    assert_eq!(visibility_count, 0);
-    let normalized_rule: (bool, i64) = sqlx::query_as(
-        "SELECT enabled,(SELECT count(*) FROM model_rule_routing_tiers \
-                         WHERE model_rule_id=model_rules.id) \
-         FROM model_rules WHERE id=$1",
-    )
-    .bind(rule_id)
-    .fetch_one(&database.pool)
-    .await
-    .unwrap();
-    assert_eq!(normalized_rule, (false, 0));
-    assert!(
-        channel_ids
-            .iter()
-            .all(|id| app.runtime.snapshot().channel(*id).is_none())
-    );
-    assert_eq!(
-        request(&app, "GET", &detail_path, serde_json::json!({}), &[],)
+    assert_eq!(count, 2);
+    let history: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM group_identity_registry WHERE id=$1")
+            .bind(topology.group)
+            .fetch_one(&database.pool)
             .await
-            .status(),
-        StatusCode::NOT_FOUND
-    );
-    let visible_groups = body_json(
-        request(
-            &app,
-            "GET",
-            "/console/v1/routing/channel-groups",
-            serde_json::json!({}),
-            &[],
-        )
-        .await,
-    )
-    .await;
-    assert!(
-        visible_groups
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|group| group["id"] != group_id.to_string())
-    );
-    let child_reattach = request(
-        &app,
-        "POST",
-        "/console/v1/routing/channels",
-        serde_json::json!({
-            "channel_group_id": group_id,
-            "api_format": "open_ai_chat_completions",
-            "name": "invalid-deleted-parent",
-            "base_url": "https://invalid.example.test",
-            "enabled": false,
-            "upstream_auth_kind": "none",
-            "available_models": [],
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(child_reattach.status(), StatusCode::UNPROCESSABLE_ENTITY);
-
-    let replacement = request(
-        &app,
-        "POST",
-        "/console/v1/routing/channel-groups",
-        serde_json::json!({
-            "name": group_name,
-            "api_format": "open_ai_chat_completions",
-            "enabled": true,
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(replacement.status(), StatusCode::CREATED);
-    assert_ne!(body_json(replacement).await["id"], group_id.to_string());
-
-    let hard_delete_error = sqlx::query("DELETE FROM channel_groups WHERE id=$1")
-        .bind(group_id)
-        .execute(&database.pool)
-        .await
-        .unwrap_err();
-    assert_eq!(
-        hard_delete_error
-            .as_database_error()
-            .and_then(sqlx::error::DatabaseError::code)
-            .as_deref(),
-        Some("23514")
-    );
-
-    let managed_group = request(
-        &app,
-        "POST",
-        "/console/v1/routing/channel-groups",
-        serde_json::json!({
-            "name": "managed-delete-protection",
-            "api_format": "open_ai_responses",
-            "connector_kind": "codex_oauth",
-            "enabled": true,
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(managed_group.status(), StatusCode::CREATED);
-    let managed_group_id = body_json(managed_group).await["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let managed_impact = request(
-        &app,
-        "GET",
-        &format!("/console/v1/routing/channel-groups/{managed_group_id}/deletion-impact"),
-        serde_json::json!({}),
-        &[],
-    )
-    .await;
-    assert_eq!(managed_impact.status(), StatusCode::CONFLICT);
-    assert_eq!(
-        body_json(managed_impact).await,
-        serde_json::json!({"error": "provider_managed_resource"})
-    );
-    let managed_channel_id = Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO channels \
-         (id,channel_group_id,api_format,name,base_url,enabled, \
-          upstream_auth_kind,available_models) \
-         VALUES ($1,$2,'open_ai_responses',$3,'https://managed.example.test', \
-                 false,'none',ARRAY['gpt-5']::text[])",
-    )
-    .bind(managed_channel_id)
-    .bind(Uuid::parse_str(&managed_group_id).unwrap())
-    .bind(format!("managed-delete-protection-{managed_channel_id}"))
-    .execute(&database.pool)
-    .await
-    .unwrap();
-    let managed_channel_impact = request(
-        &app,
-        "GET",
-        &format!("/console/v1/routing/channels/{managed_channel_id}/deletion-impact"),
-        serde_json::json!({}),
-        &[],
-    )
-    .await;
-    assert_eq!(managed_channel_impact.status(), StatusCode::CONFLICT);
-    assert_eq!(
-        body_json(managed_channel_impact).await,
-        serde_json::json!({"error": "provider_managed_resource"})
-    );
+            .unwrap();
+    assert_eq!(history, 1);
     database.cleanup().await;
 }
 
@@ -6678,20 +6580,8 @@ async fn model_advanced_billing_is_returned_and_validated() {
 async fn api_key_create_returns_retrievable_prefixed_secret() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
-    let group = request(
-        &app,
-        "POST",
-        "/console/v1/routing/channel-groups",
-        serde_json::json!({
-            "name": "spec-key-group",
-            "api_format": "open_ai_chat_completions",
-            "enabled": true,
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(group.status(), StatusCode::CREATED);
-    let group_id = body_json(group).await["id"].as_str().unwrap().to_owned();
+    let topology = seed_test_topology(&app, "chat_completion").await;
+    let group_id = topology.group.to_string();
     let create = request(
         &app,
         "POST",
@@ -6735,34 +6625,15 @@ async fn api_key_create_returns_retrievable_prefixed_secret() {
 async fn channel_and_template_details_return_stored_editable_values() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
-    let group = request(
-        &app,
-        "POST",
-        "/console/v1/routing/channel-groups",
-        serde_json::json!({
-            "name": "editable-detail-group",
-            "api_format": "open_ai_chat_completions",
-            "enabled": true,
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(group.status(), StatusCode::CREATED);
-    let group_id = body_json(group).await["id"].as_str().unwrap().to_owned();
+    let topology = seed_test_topology(&app, "chat_completion").await;
+    let mut invalid_create = capability_input(topology.channel, "responses");
+    invalid_create["weight"] = serde_json::json!(1);
 
     let legacy_weight = request(
         &app,
         "POST",
-        "/console/v1/routing/channels",
-        serde_json::json!({
-            "channel_group_id": group_id,
-            "api_format": "open_ai_chat_completions",
-            "name": "legacy-weight-channel",
-            "base_url": "https://legacy-weight.example.test",
-            "enabled": true,
-            "weight": 1,
-            "upstream_auth_kind": "none",
-        }),
+        "/console/v1/routing/capabilities",
+        invalid_create,
         &[],
     )
     .await;
@@ -6790,38 +6661,43 @@ async fn channel_and_template_details_return_stored_editable_values() {
     let template_id = body_json(template).await["id"].as_str().unwrap().to_owned();
 
     let upstream_api_key = "sk-upstream-detail-secret";
+    let credential_id = Uuid::new_v4();
+    upstream_credentials::insert(
+        &database.pool,
+        credential_id,
+        "https://upstream.example.test",
+        upstream_api_key,
+    )
+    .await;
+    let logical_path = format!("/console/v1/routing/logical-channels/{}", topology.channel);
+    let detail = request(&app, "GET", &logical_path, serde_json::json!({}), &[]).await;
+    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    assert_eq!(request(&app, "PUT", &logical_path, serde_json::json!({
+        "group_id": topology.group, "access_id": topology.access, "credential_id": credential_id,
+        "sharing_only": false,
+        "name": "Bound channel", "enabled": true
+    }), &[("if-match", &etag)]).await.status(), StatusCode::OK);
     let override_document = serde_json::json!({
         "version": 1,
         "api_format": "open_ai_chat_completions",
         "request_headers": {"set": {"x-channel-source": "spec-test"}}
     });
-    let channel = request(
-        &app,
-        "POST",
-        "/console/v1/routing/channels",
-        serde_json::json!({
-            "channel_group_id": group_id,
-            "api_format": "open_ai_chat_completions",
-            "name": "editable-detail-channel",
-            "base_url": "https://editable-detail.example.test",
-            "enabled": true,
-            "billing_multiplier": "1.5",
-            "config_template_id": template_id,
-            "override_document": override_document,
-            "upstream_auth_kind": "bearer",
-            "upstream_api_key": upstream_api_key,
-            "available_models": ["editable-detail-model"],
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(channel.status(), StatusCode::CREATED);
-    let channel_id = body_json(channel).await["id"].as_str().unwrap().to_owned();
+    let channel_id = topology.capability.to_string();
+    let path = format!("/console/v1/routing/capabilities/{channel_id}");
+    let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
+    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    let mut input = capability_input(topology.channel, "chat_completion");
+    input["billing_multiplier"] = serde_json::json!("1.5");
+    input["config_template_id"] = serde_json::json!(template_id);
+    input["override_document"] = override_document.clone();
+    input["settings"]["available_models"] = serde_json::json!(["editable-detail-model"]);
+    let channel = request(&app, "PUT", &path, input.clone(), &[("if-match", &etag)]).await;
+    assert_eq!(channel.status(), StatusCode::OK);
 
     let channel_list = request(
         &app,
         "GET",
-        "/console/v1/routing/channels",
+        "/console/v1/routing/capabilities",
         serde_json::json!({}),
         &[],
     )
@@ -6834,19 +6710,12 @@ async fn channel_and_template_details_return_stored_editable_values() {
         .iter()
         .find(|item| item["id"] == channel_id)
         .unwrap();
-    assert!(channel_list_item.get("override_document").is_none());
+    assert_eq!(channel_list_item["override_document"], override_document);
     assert!(channel_list_item.get("upstream_api_key").is_none());
     assert!(channel_list_item.get("weight").is_none());
     assert_eq!(channel_list_item["billing_multiplier"], "1.500000000000");
 
-    let channel_detail = request(
-        &app,
-        "GET",
-        &format!("/console/v1/routing/channels/{channel_id}"),
-        serde_json::json!({}),
-        &[],
-    )
-    .await;
+    let channel_detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
     assert_eq!(channel_detail.status(), StatusCode::OK);
     let channel_etag = channel_detail
         .headers()
@@ -6857,26 +6726,20 @@ async fn channel_and_template_details_return_stored_editable_values() {
         .to_owned();
     let channel_detail = body_json(channel_detail).await;
     assert_eq!(channel_detail["override_document"], override_document);
-    assert_eq!(channel_detail["upstream_api_key"], upstream_api_key);
+    assert_eq!(
+        channel_detail["channel_id"],
+        serde_json::json!(topology.channel)
+    );
+    let logical =
+        body_json(request(&app, "GET", &logical_path, serde_json::json!({}), &[]).await).await;
+    assert_eq!(logical["credential_id"], serde_json::json!(credential_id));
+    assert!(channel_detail.get("upstream_api_key").is_none());
     assert!(channel_detail.get("weight").is_none());
     assert_eq!(channel_detail["billing_multiplier"], "1.500000000000");
 
-    let legacy_weight_update = request(
-        &app,
-        "PUT",
-        &format!("/console/v1/routing/channels/{channel_id}"),
-        serde_json::json!({
-            "channel_group_id": group_id,
-            "api_format": "open_ai_chat_completions",
-            "name": "editable-detail-channel",
-            "base_url": "https://editable-detail.example.test",
-            "enabled": true,
-            "weight": 1,
-            "upstream_auth_kind": "bearer",
-        }),
-        &[("if-match", &channel_etag)],
-    )
-    .await;
+    input["weight"] = serde_json::json!(1);
+    let legacy_weight_update =
+        request(&app, "PUT", &path, input, &[("if-match", &channel_etag)]).await;
     assert_eq!(
         legacy_weight_update.status(),
         StatusCode::UNPROCESSABLE_ENTITY
@@ -6919,114 +6782,77 @@ async fn channel_and_template_details_return_stored_editable_values() {
 }
 
 #[tokio::test]
-async fn channel_responses_capabilities_are_responses_only_and_default_to_opt_in() {
+async fn responses_websocket_and_search_are_independent_capabilities() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
-
-    let responses_group = request(
-        &app,
-        "POST",
-        "/console/v1/routing/channel-groups",
-        serde_json::json!({
-            "name": "websocket-responses-group",
-            "api_format": "open_ai_responses",
-            "enabled": true,
-        }),
-        &[],
-    )
-    .await;
-    let responses_group_id = body_json(responses_group).await["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let responses_channel = request(
-        &app,
-        "POST",
-        "/console/v1/routing/channels",
-        serde_json::json!({
-            "channel_group_id": responses_group_id,
-            "api_format": "open_ai_responses",
-            "name": "websocket-capable",
-            "base_url": "https://responses-websocket.example.test",
-            "enabled": true,
-            "supports_websocket": true,
-            "supports_standalone_web_search": true,
-            "upstream_auth_kind": "none",
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(responses_channel.status(), StatusCode::CREATED);
-    let responses_channel_id = body_json(responses_channel).await["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-
-    let detail = request(
-        &app,
-        "GET",
-        &format!("/console/v1/routing/channels/{responses_channel_id}"),
-        serde_json::json!({}),
-        &[],
-    )
-    .await;
-    assert_eq!(detail.status(), StatusCode::OK);
+    let topology = seed_test_topology(&app, "responses").await;
+    let path = format!("/console/v1/routing/capabilities/{}", topology.capability);
+    let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
+    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
     let detail = body_json(detail).await;
-    assert_eq!(detail["supports_websocket"], true);
-    assert_eq!(detail["supports_standalone_web_search"], true);
-
-    let chat_group = request(
+    assert!(detail["settings"].get("transports").is_none());
+    let mut input = capability_input(topology.channel, "responses");
+    input["settings"]["transports"] = serde_json::json!(["http_json", "http_sse", "websocket"]);
+    assert_eq!(
+        request(&app, "PUT", &path, input, &[("if-match", &etag)])
+            .await
+            .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let websocket = create_resource(
         &app,
-        "POST",
-        "/console/v1/routing/channel-groups",
-        serde_json::json!({
-            "name": "websocket-chat-group",
-            "api_format": "open_ai_chat_completions",
-            "enabled": true,
-        }),
-        &[],
+        "/console/v1/routing/capabilities",
+        capability_input(topology.channel, "responses-ws"),
     )
     .await;
-    let chat_group_id = body_json(chat_group).await["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let invalid = request(
+    assert_ne!(websocket, topology.capability);
+    let search = create_resource(
         &app,
-        "POST",
-        "/console/v1/routing/channels",
-        serde_json::json!({
-            "channel_group_id": chat_group_id,
-            "api_format": "open_ai_chat_completions",
-            "name": "invalid-websocket-chat",
-            "base_url": "https://chat-websocket.example.test",
-            "enabled": true,
-            "supports_websocket": true,
-            "upstream_auth_kind": "none",
-        }),
-        &[],
+        "/console/v1/routing/capabilities",
+        capability_input(topology.channel, "web_search"),
     )
     .await;
-    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
-
-    let invalid_search = request(
-        &app,
-        "POST",
-        "/console/v1/routing/channels",
-        serde_json::json!({
-            "channel_group_id": chat_group_id,
-            "api_format": "open_ai_chat_completions",
-            "name": "invalid-search-chat",
-            "base_url": "https://chat-search.example.test",
-            "enabled": true,
-            "supports_standalone_web_search": true,
-            "upstream_auth_kind": "none",
-        }),
-        &[],
+    assert_ne!(search, topology.capability);
+    let capabilities = body_json(
+        request(
+            &app,
+            "GET",
+            "/console/v1/routing/capabilities",
+            serde_json::json!({}),
+            &[],
+        )
+        .await,
     )
     .await;
-    assert_eq!(invalid_search.status(), StatusCode::UNPROCESSABLE_ENTITY);
-
+    assert_eq!(capabilities.as_array().unwrap().len(), 3);
+    assert!(
+        capabilities
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["id"] == search.to_string()
+                && item["settings"]["operation"] == "web_search"
+                && item["settings"].get("transports").is_none())
+    );
+    for fault in ["websocket", "legacy_search_flag"] {
+        let mut input = capability_input(topology.channel, "chat_completion");
+        if fault == "websocket" {
+            input["settings"]["transports"] = serde_json::json!(["websocket"]);
+        } else {
+            input["supports_standalone_web_search"] = serde_json::json!(true);
+        }
+        assert_eq!(
+            request(&app, "POST", "/console/v1/routing/capabilities", input, &[])
+                .await
+                .status(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+    let grants: i64 = sqlx::query_scalar("SELECT count(*) FROM api_key_channel_grants")
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(grants, 0);
     database.cleanup().await;
 }
 
@@ -7034,81 +6860,48 @@ async fn channel_responses_capabilities_are_responses_only_and_default_to_opt_in
 async fn images_control_plane_rejects_scheduled_probes_and_sse_transforms() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
-
-    let group = request(
-        &app,
-        "POST",
-        "/console/v1/routing/channel-groups",
-        serde_json::json!({
-            "name": "images-group",
-            "api_format": "open_ai_images",
-            "enabled": true,
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(group.status(), StatusCode::CREATED);
-    let group_id = body_json(group).await["id"].as_str().unwrap().to_owned();
-
-    let scheduled_probe = request(
-        &app,
-        "POST",
-        "/console/v1/routing/channels",
-        serde_json::json!({
-            "channel_group_id": group_id,
-            "api_format": "open_ai_images",
-            "name": "invalid-images-probe",
-            "base_url": "https://images.example.test",
-            "enabled": true,
-            "upstream_auth_kind": "none",
-            "available_models": ["gpt-image-2"],
-            "test_model": "gpt-image-2",
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(scheduled_probe.status(), StatusCode::UNPROCESSABLE_ENTITY);
-
-    let channel = request(
-        &app,
-        "POST",
-        "/console/v1/routing/channels",
-        serde_json::json!({
-            "channel_group_id": group_id,
-            "api_format": "open_ai_images",
-            "name": "images-generation",
-            "base_url": "https://images.example.test",
-            "enabled": true,
-            "upstream_auth_kind": "none",
-            "available_models": ["gpt-image-2"],
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(channel.status(), StatusCode::CREATED);
-
-    let sse_template = request(
+    let topology = seed_test_topology(&app, "images_generation").await;
+    let model = create_test_pricing_model(&app).await;
+    let path = format!("/console/v1/routing/capabilities/{}", topology.capability);
+    let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
+    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    let before = body_json(detail).await;
+    let mut input = capability_input(topology.channel, "images_generation");
+    input["settings"]["test_model"] = serde_json::json!("wire-v1");
+    input["settings"]["test_pricing_model_id"] = serde_json::json!(model);
+    assert_eq!(
+        request(&app, "PUT", &path, input, &[("if-match", &etag)])
+            .await
+            .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        body_json(request(&app, "GET", &path, serde_json::json!({}), &[]).await).await,
+        before
+    );
+    let document = serde_json::json!({
+        "version": 1, "api_format": "open_ai_images",
+        "sse": [{"event": "image_generation.partial_image", "json": []}]
+    });
+    let response = request(
         &app,
         "POST",
         "/console/v1/transforms/templates",
         serde_json::json!({
-            "name": "invalid-images-sse",
-            "api_format": "open_ai_images",
-            "document": {
-                "version": 1,
-                "api_format": "open_ai_images",
-                "sse": [{
-                    "event": "image_generation.partial_image",
-                    "json": []
-                }]
-            },
-            "enabled": true,
+            "name": "invalid-images-sse", "document": document, "enabled": true
         }),
         &[],
     )
     .await;
-    assert_eq!(sse_template.status(), StatusCode::UNPROCESSABLE_ENTITY);
-
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let mut input = capability_input(topology.channel, "images_generation");
+    input["override_document"] = document;
+    assert_eq!(
+        request(&app, "PUT", &path, input, &[("if-match", &etag)])
+            .await
+            .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
     database.cleanup().await;
 }
 
@@ -7128,6 +6921,14 @@ async fn channel_model_discovery_uses_draft_network_and_auth_settings() {
     });
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
+    let credential_id = Uuid::new_v4();
+    upstream_credentials::insert(
+        &database.pool,
+        credential_id,
+        &format!("http://{address}"),
+        "spec-model-discovery-secret",
+    )
+    .await;
 
     let response = request(
         &app,
@@ -7143,8 +6944,7 @@ async fn channel_model_discovery_uses_draft_network_and_auth_settings() {
                     "set": {"x-model-discovery": "console-spec"}
                 }
             },
-            "upstream_auth_kind": "bearer",
-            "upstream_api_key": "spec-model-discovery-secret"
+            "credential_id": credential_id
         }),
         &[],
     )
@@ -7163,48 +6963,15 @@ async fn channel_model_discovery_uses_draft_network_and_auth_settings() {
 async fn channel_batch_updates_are_atomic_versioned_and_published_once() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
-    let group = request(
-        &app,
-        "POST",
-        "/console/v1/routing/channel-groups",
-        serde_json::json!({
-            "name": "batch-channel-group",
-            "api_format": "open_ai_chat_completions",
-            "enabled": true,
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(group.status(), StatusCode::CREATED);
-    let group_id = body_json(group).await["id"].as_str().unwrap().to_owned();
-
-    let mut channel_ids = Vec::new();
-    for suffix in ["a", "b"] {
-        let channel = request(
-            &app,
-            "POST",
-            "/console/v1/routing/channels",
-            serde_json::json!({
-                "channel_group_id": group_id,
-                "api_format": "open_ai_chat_completions",
-                "name": format!("batch-channel-{suffix}"),
-                "base_url": format!("https://batch-{suffix}.example.test"),
-                "enabled": true,
-                "upstream_auth_kind": "none",
-                "available_models": [],
-            }),
-            &[],
-        )
-        .await;
-        assert_eq!(channel.status(), StatusCode::CREATED);
-        channel_ids.push(body_json(channel).await["id"].as_str().unwrap().to_owned());
-    }
+    let first = seed_test_topology(&app, "chat_completion").await;
+    let second = seed_test_topology(&app, "chat_completion").await;
+    let channel_ids = vec![first.capability.to_string(), second.capability.to_string()];
 
     let before = body_json(
         request(
             &app,
             "GET",
-            "/console/v1/routing/channels",
+            "/console/v1/routing/capabilities",
             serde_json::json!({}),
             &[],
         )
@@ -7230,7 +6997,7 @@ async fn channel_batch_updates_are_atomic_versioned_and_published_once() {
     let legacy_weight = request(
         &app,
         "POST",
-        "/console/v1/routing/channels/batch",
+        "/console/v1/routing/capabilities/batch",
         serde_json::json!({
             "items": before_items.clone(),
             "changes": {"weight": 7}
@@ -7243,7 +7010,7 @@ async fn channel_batch_updates_are_atomic_versioned_and_published_once() {
     let updated = request(
         &app,
         "POST",
-        "/console/v1/routing/channels/batch",
+        "/console/v1/routing/capabilities/batch",
         serde_json::json!({
             "items": before_items,
             "changes": {
@@ -7263,7 +7030,7 @@ async fn channel_batch_updates_are_atomic_versioned_and_published_once() {
         request(
             &app,
             "GET",
-            "/console/v1/routing/channels",
+            "/console/v1/routing/capabilities",
             serde_json::json!({}),
             &[],
         )
@@ -7279,7 +7046,7 @@ async fn channel_batch_updates_are_atomic_versioned_and_published_once() {
             .unwrap();
         assert!(channel.get("weight").is_none());
         assert_eq!(channel["billing_multiplier"], "2.500000000000");
-        assert_eq!(channel["auto_disable_allowed"], true);
+        assert_eq!(channel["settings"]["auto_disable_allowed"], true);
         let compiled = app
             .runtime
             .snapshot()
@@ -7330,7 +7097,7 @@ async fn channel_batch_updates_are_atomic_versioned_and_published_once() {
     let conflict = request(
         &app,
         "POST",
-        "/console/v1/routing/channels/batch",
+        "/console/v1/routing/capabilities/batch",
         serde_json::json!({
             "items": [
                 current_items[0].clone(),
@@ -7346,7 +7113,7 @@ async fn channel_batch_updates_are_atomic_versioned_and_published_once() {
     .await;
     assert_eq!(conflict.status(), StatusCode::CONFLICT);
     let persisted_multipliers: Vec<rust_decimal::Decimal> = sqlx::query_scalar(
-        "SELECT billing_multiplier FROM channels WHERE id = ANY($1) ORDER BY id",
+        "SELECT billing_multiplier FROM channel_capabilities WHERE id = ANY($1) ORDER BY id",
     )
     .bind(
         channel_ids
@@ -7386,42 +7153,12 @@ async fn channel_batch_updates_are_atomic_versioned_and_published_once() {
 async fn administrator_can_manually_recover_an_auto_disabled_channel() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
-    let group = request(
-        &app,
-        "POST",
-        "/console/v1/routing/channel-groups",
-        serde_json::json!({
-            "name": "manual-recovery-group",
-            "api_format": "open_ai_chat_completions",
-            "enabled": true,
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(group.status(), StatusCode::CREATED);
-    let group_id = body_json(group).await["id"].as_str().unwrap().to_owned();
-    let channel = request(
-        &app,
-        "POST",
-        "/console/v1/routing/channels",
-        serde_json::json!({
-            "channel_group_id": group_id,
-            "api_format": "open_ai_chat_completions",
-            "name": "manual-recovery-channel",
-            "base_url": "https://manual-recovery.example.test",
-            "enabled": true,
-            "upstream_auth_kind": "none",
-            "available_models": [],
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(channel.status(), StatusCode::CREATED);
-    let channel_id = Uuid::parse_str(body_json(channel).await["id"].as_str().unwrap()).unwrap();
+    let topology = seed_test_topology(&app, "chat_completion").await;
+    let channel_id = topology.capability;
 
     sqlx::query(
-        "UPDATE channels
-         SET auto_disabled=true, auto_disabled_reason='test automatic disable'
+        "UPDATE channel_capabilities
+         SET auto_disabled=true, auto_disable_reason='test automatic disable'
          WHERE id=$1",
     )
     .bind(channel_id)
@@ -7432,7 +7169,7 @@ async fn administrator_can_manually_recover_an_auto_disabled_channel() {
         request(
             &app,
             "GET",
-            "/console/v1/routing/channels",
+            "/console/v1/routing/capabilities",
             serde_json::json!({}),
             &[],
         )
@@ -7446,24 +7183,25 @@ async fn administrator_can_manually_recover_an_auto_disabled_channel() {
         .find(|channel| channel["id"] == channel_id.to_string())
         .unwrap();
     assert_eq!(channel["auto_disabled"], true);
-    let updated_at = channel["updated_at"].clone();
+    let etag = format!("\"{}\"", channel["updated_at"].as_str().unwrap());
 
     let recovered = request(
         &app,
         "POST",
-        &format!("/console/v1/routing/channels/{channel_id}/recover"),
-        serde_json::json!({ "updated_at": updated_at }),
-        &[],
+        &format!("/console/v1/routing/capabilities/{channel_id}/recover"),
+        serde_json::json!({}),
+        &[("if-match", &etag)],
     )
     .await;
     assert_eq!(recovered.status(), StatusCode::OK);
 
-    let state: (bool, Option<String>) =
-        sqlx::query_as("SELECT auto_disabled,auto_disabled_reason FROM channels WHERE id=$1")
-            .bind(channel_id)
-            .fetch_one(&database.pool)
-            .await
-            .unwrap();
+    let state: (bool, Option<String>) = sqlx::query_as(
+        "SELECT auto_disabled,auto_disable_reason FROM channel_capabilities WHERE id=$1",
+    )
+    .bind(channel_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
     assert_eq!(state, (false, None));
     let audit_count: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM audit_logs
@@ -7478,9 +7216,9 @@ async fn administrator_can_manually_recover_an_auto_disabled_channel() {
     let stale = request(
         &app,
         "POST",
-        &format!("/console/v1/routing/channels/{channel_id}/recover"),
-        serde_json::json!({ "updated_at": updated_at }),
-        &[],
+        &format!("/console/v1/routing/capabilities/{channel_id}/recover"),
+        serde_json::json!({}),
+        &[("if-match", &etag)],
     )
     .await;
     assert_eq!(stale.status(), StatusCode::CONFLICT);
@@ -7492,39 +7230,8 @@ async fn administrator_can_manually_recover_an_auto_disabled_channel() {
 async fn api_key_policy_only_stores_selectable_targets() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
-    let group = request(
-        &app,
-        "POST",
-        "/console/v1/routing/channel-groups",
-        serde_json::json!({
-            "name": "policy-target-group",
-            "api_format": "open_ai_chat_completions",
-            "enabled": true,
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(group.status(), StatusCode::CREATED);
-    let group_id = body_json(group).await["id"].as_str().unwrap().to_owned();
-    let channel = request(
-        &app,
-        "POST",
-        "/console/v1/routing/channels",
-        serde_json::json!({
-            "channel_group_id": group_id,
-            "api_format": "open_ai_chat_completions",
-            "name": "policy-target-channel",
-            "base_url": "https://upstream.example.test",
-            "enabled": true,
-            "upstream_auth_kind": "none",
-            "available_models": [],
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(channel.status(), StatusCode::CREATED);
-    let channel_id = body_json(channel).await["id"].as_str().unwrap().to_owned();
-
+    let topology = seed_test_topology(&app, "chat_completion").await;
+    let channel_id = topology.channel.to_string();
     let created = request(
         &app,
         "POST",
@@ -7576,38 +7283,9 @@ async fn api_key_policy_only_stores_selectable_targets() {
 async fn self_api_key_create_reports_policy_preconditions() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
-    let group = request(
-        &app,
-        "POST",
-        "/console/v1/routing/channel-groups",
-        serde_json::json!({
-            "name": "self-key-group",
-            "api_format": "open_ai_chat_completions",
-            "enabled": true,
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(group.status(), StatusCode::CREATED);
-    let group_id = body_json(group).await["id"].as_str().unwrap().to_owned();
-    let channel = request(
-        &app,
-        "POST",
-        "/console/v1/routing/channels",
-        serde_json::json!({
-            "channel_group_id": group_id,
-            "api_format": "open_ai_chat_completions",
-            "name": "self-key-channel",
-            "base_url": "https://upstream.example.test",
-            "enabled": true,
-            "upstream_auth_kind": "none",
-            "available_models": [],
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(channel.status(), StatusCode::CREATED);
-    let channel_id = body_json(channel).await["id"].as_str().unwrap().to_owned();
+    let topology = seed_test_topology(&app, "chat_completion").await;
+    let group_id = topology.group.to_string();
+    let channel_id = topology.channel.to_string();
     let key_input = |name: &str| {
         serde_json::json!({
             "name": name,
@@ -7633,18 +7311,15 @@ async fn self_api_key_create_reports_policy_preconditions() {
         serde_json::json!({"error": "default_api_key_policy_required"})
     );
 
-    let policy_id = Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO api_key_policies \
-         (id,name,allowed_group_ids,allowed_channel_ids,enabled) \
-         VALUES ($1,$2,ARRAY[$3]::uuid[],'{}',false)",
+    let policy_id = create_resource(
+        &app,
+        "/console/v1/api-key-policies",
+        serde_json::json!({
+            "name": "spec-policy", "allowed_group_ids": [group_id],
+            "allowed_channel_ids": [], "enabled": false
+        }),
     )
-    .bind(policy_id)
-    .bind(format!("spec-policy-{policy_id}"))
-    .bind(Uuid::parse_str(&group_id).unwrap())
-    .execute(&database.pool)
-    .await
-    .unwrap();
+    .await;
     sqlx::query("UPDATE users SET default_api_key_policy_id=$2 WHERE id=$1")
         .bind(app.user_id)
         .bind(policy_id)
@@ -7687,23 +7362,10 @@ async fn self_api_key_create_reports_policy_preconditions() {
     assert_eq!(options["channels"][0]["id"], channel_id);
     assert_eq!(options["channels"][0]["channel_group_enabled"], true);
 
-    let other_group = request(
-        &app,
-        "POST",
-        "/console/v1/routing/channel-groups",
-        serde_json::json!({
-            "name": "self-key-other-group",
-            "api_format": "open_ai_chat_completions",
-            "enabled": true,
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(other_group.status(), StatusCode::CREATED);
-    let other_group_id = body_json(other_group).await["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let other_group_id = seed_test_topology(&app, "chat_completion")
+        .await
+        .group
+        .to_string();
     let denied = request(
         &app,
         "POST",
@@ -7760,7 +7422,11 @@ async fn self_api_key_create_reports_policy_preconditions() {
     assert_eq!(detail["allowed_channel_ids"], serde_json::json!([]));
     assert_eq!(
         detail["allowed_api_formats"],
-        serde_json::json!(["open_ai_chat_completions"])
+        serde_json::json!([
+            "open_ai_chat_completions",
+            "open_ai_responses",
+            "open_ai_images"
+        ])
     );
     assert_eq!(
         detail["permissions"],
@@ -7930,7 +7596,7 @@ async fn request_log_filters_match_the_console_contract() {
     assert_eq!(body.as_array().unwrap().len(), 1);
     assert_eq!(body[0]["id"], matching_log_id.to_string());
     assert_eq!(body[0]["user_name"], format!("spec-{}", app.user_id));
-    assert_eq!(body[0]["api_operation"], "chat_completions");
+    assert_eq!(body[0]["api_operation"], "chat_completion");
     assert_eq!(body[0]["request_protocol"], "non_stream");
     assert_eq!(body[0]["reasoning_effort"], "high");
     assert_eq!(body[0]["fast_mode"], true);
@@ -7957,7 +7623,7 @@ async fn request_log_filters_match_the_console_contract() {
     let detail = body_json(detail).await;
     assert_eq!(detail["id"], matching_log_id.to_string());
     assert_eq!(detail["user_name"], format!("spec-{}", app.user_id));
-    assert_eq!(detail["api_operation"], "chat_completions");
+    assert_eq!(detail["api_operation"], "chat_completion");
     assert_eq!(detail["request_protocol"], "non_stream");
     assert_eq!(detail["reasoning_effort"], "high");
     assert_eq!(detail["fast_mode"], true);
@@ -7997,7 +7663,7 @@ async fn request_log_filters_match_the_console_contract() {
     let standalone_search_log_id = Uuid::new_v4();
     for (id, operation) in [
         (Uuid::new_v4(), "responses"),
-        (standalone_search_log_id, "standalone_web_search"),
+        (standalone_search_log_id, "web_search"),
     ] {
         sqlx::query(
             "INSERT INTO request_logs \
@@ -8016,7 +7682,7 @@ async fn request_log_filters_match_the_console_contract() {
     let operation_filtered = request(
         &app,
         "GET",
-        "/console/v1/request-logs?api_operation=standalone_web_search",
+        "/console/v1/request-logs?api_operation=web_search",
         serde_json::json!({}),
         &[],
     )
@@ -8097,56 +7763,38 @@ async fn request_log_filters_match_the_console_contract() {
 async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
-    let group_id = Uuid::new_v4();
+    let topology = seed_test_topology(&app, "chat_completion").await;
+    let group_id = topology.group;
+    let channel_id = topology.capability;
     let api_key_id = Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO channel_groups \
-         (id,name,api_format,enabled,status_statistics_enabled) \
-         VALUES ($1,$2,'open_ai_chat_completions',true,true)",
-    )
-    .bind(group_id)
-    .bind(format!("statistics-group-{group_id}"))
-    .execute(&database.pool)
-    .await
-    .unwrap();
-    let legacy_channel_monitoring = request(
+    let misplaced_monitoring = request(
         &app,
         "POST",
-        "/console/v1/routing/channels",
+        "/console/v1/routing/groups",
         serde_json::json!({
-            "channel_group_id": group_id,
-            "api_format": "open_ai_chat_completions",
-            "name": format!("legacy-statistics-channel-{group_id}"),
-            "base_url": "https://legacy-statistics.example.test",
+            "name": "misplaced-statistics",
             "enabled": true,
             "status_statistics_enabled": true,
-            "upstream_auth_kind": "none",
         }),
         &[],
     )
     .await;
     assert_eq!(
-        legacy_channel_monitoring.status(),
+        misplaced_monitoring.status(),
         StatusCode::UNPROCESSABLE_ENTITY
     );
-    let channel = request(
-        &app,
-        "POST",
-        "/console/v1/routing/channels",
-        serde_json::json!({
-            "channel_group_id": group_id,
-            "api_format": "open_ai_chat_completions",
-            "name": format!("statistics-channel-{group_id}"),
-            "base_url": "https://statistics.example.test",
-            "enabled": true,
-            "upstream_auth_kind": "none",
-            "available_models": ["statistics-model"],
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(channel.status(), StatusCode::CREATED);
-    let channel_id = Uuid::parse_str(body_json(channel).await["id"].as_str().unwrap()).unwrap();
+    let path = format!("/console/v1/routing/capabilities/{channel_id}");
+    let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
+    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    let mut input = capability_input(topology.channel, "chat_completion");
+    input["settings"]["available_models"] = serde_json::json!(["statistics-model"]);
+    input["status_statistics_enabled"] = serde_json::json!(true);
+    assert_eq!(
+        request(&app, "PUT", &path, input, &[("if-match", &etag)])
+            .await
+            .status(),
+        StatusCode::OK
+    );
     sqlx::query(
         "INSERT INTO api_keys \
          (id,user_id,name,secret_value,status,allowed_api_formats,permissions) \
@@ -8266,31 +7914,27 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     let channel_detail = request(
         &app,
         "GET",
-        &format!("/console/v1/routing/channels/{channel_id}"),
+        &format!("/console/v1/routing/capabilities/{channel_id}"),
         serde_json::json!({}),
         &[],
     )
     .await;
     assert_eq!(channel_detail.status(), StatusCode::OK);
-    assert!(
-        body_json(channel_detail)
-            .await
-            .get("status_statistics_enabled")
-            .is_none()
+    assert_eq!(
+        body_json(channel_detail).await["status_statistics_enabled"],
+        true
     );
     let group_detail = request(
         &app,
         "GET",
-        &format!("/console/v1/routing/channel-groups/{group_id}"),
+        &format!("/console/v1/routing/groups/{group_id}"),
         serde_json::json!({}),
         &[],
     )
     .await;
     assert_eq!(group_detail.status(), StatusCode::OK);
-    assert_eq!(
-        body_json(group_detail).await["status_statistics_enabled"],
-        true
-    );
+    let group_detail = body_json(group_detail).await;
+    assert!(group_detail.get("status_statistics_enabled").is_none());
 
     let status = request(
         &app,
@@ -8351,12 +7995,9 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     assert_eq!(costs["channels"][0]["id"], channel_id.to_string());
     assert_eq!(
         costs["channels"][0]["channel_group_name"],
-        format!("statistics-group-{group_id}")
+        group_detail["name"]
     );
-    assert_eq!(
-        costs["channels"][0]["name"],
-        format!("statistics-channel-{group_id}")
-    );
+    assert_eq!(costs["channels"][0]["name"], "Spec channel");
     assert_eq!(costs["channels"][0]["request_count"], 3);
     assert_eq!(costs["channels"][0]["success_rate"], 0.5);
     assert!(
@@ -8481,15 +8122,9 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     .await;
     assert_eq!(admin_logs.status(), StatusCode::OK);
     let admin_logs = body_json(admin_logs).await;
-    assert_eq!(
-        admin_logs[0]["channel_group_name"],
-        format!("statistics-group-{group_id}")
-    );
+    assert_eq!(admin_logs[0]["channel_group_name"], group_detail["name"]);
     assert_eq!(admin_logs[0]["channel_id"], channel_id.to_string());
-    assert_eq!(
-        admin_logs[0]["channel_name"],
-        format!("statistics-channel-{group_id}")
-    );
+    assert_eq!(admin_logs[0]["channel_name"], "Spec channel");
     assert_eq!(admin_logs[0]["user_name"], regular_display_name);
     assert_eq!(admin_logs[0]["request_protocol"], "non_stream");
 
@@ -8534,10 +8169,7 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     .await;
     assert_eq!(user_logs.status(), StatusCode::OK);
     let user_logs = body_json(user_logs).await;
-    assert_eq!(
-        user_logs[0]["channel_group_name"],
-        format!("statistics-group-{group_id}")
-    );
+    assert_eq!(user_logs[0]["channel_group_name"], group_detail["name"]);
     assert!(user_logs[0]["user_name"].is_null());
     assert!(user_logs[0]["channel_id"].is_null());
     assert!(user_logs[0]["channel_name"].is_null());
@@ -8687,6 +8319,36 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     )
     .await;
     assert_eq!(user_system_load.status(), StatusCode::FORBIDDEN);
+    for (method, path) in [
+        ("GET", "/console/v1/routing/upstream-credentials"),
+        ("POST", "/console/v1/routing/upstream-credentials"),
+        (
+            "GET",
+            "/console/v1/routing/upstream-credentials/00000000-0000-0000-0000-000000000001",
+        ),
+        (
+            "PUT",
+            "/console/v1/routing/upstream-credentials/00000000-0000-0000-0000-000000000001",
+        ),
+        (
+            "DELETE",
+            "/console/v1/routing/upstream-credentials/00000000-0000-0000-0000-000000000001",
+        ),
+    ] {
+        assert_eq!(
+            request_with_token(
+                &app,
+                &regular_session.access_token,
+                method,
+                path,
+                serde_json::json!({}),
+                &[]
+            )
+            .await
+            .status(),
+            StatusCode::FORBIDDEN
+        );
+    }
 
     let user_system_costs = request_with_token(
         &app,
@@ -8845,55 +8507,32 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
         StatusCode::UNPROCESSABLE_ENTITY
     );
 
-    let codex_group_id = Uuid::new_v4();
-    let codex_credential_id = Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO channel_groups \
-         (id,name,api_format,connector_kind,enabled) \
-         VALUES ($1,'statistics-codex','open_ai_responses','codex_oauth',true)",
+    let codex_group_id = create_resource(
+        &app,
+        "/console/v1/routing/groups",
+        serde_json::json!({
+            "name": "statistics-codex", "enabled": true
+        }),
     )
-    .bind(codex_group_id)
-    .execute(&database.pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO channels \
-         (id,channel_group_id,api_format,name,base_url,enabled, \
-          upstream_auth_kind,available_models,auto_disable_allowed,supports_websocket) \
-         VALUES ($1,$2,'open_ai_responses','statistics-codex', \
-                 'https://chatgpt.com/backend-api/codex',true,'none', \
-                 ARRAY['gpt-5-codex'],false,true)",
+    .await;
+    let codex_credential_id = create_test_codex_credential(
+        &database.pool,
+        &app,
+        codex_fixture_input(codex_group_id, "statistics-codex"),
     )
-    .bind(codex_credential_id)
-    .bind(codex_group_id)
-    .execute(&database.pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO codex_oauth_credentials \
-         (channel_id,channel_group_id,label,email,account_id,user_id,plan_type,is_fedramp, \
-          id_token,access_token,refresh_token,last_refreshed_at,enabled, \
-          quota_threshold_percent,runtime_status) \
-         VALUES ($1,$2,'statistics-codex','statistics-codex@example.test', \
-                 'statistics-codex-account','statistics-codex-user','plus',false, \
-                 'id-token','access-token','refresh-token',now(),true,95,'active')",
+    .await;
+    bind_test_codex_channel(
+        &database.pool,
+        &app,
+        codex_group_id,
+        codex_credential_id,
+        false,
     )
-    .bind(codex_credential_id)
-    .bind(codex_group_id)
-    .execute(&database.pool)
-    .await
-    .unwrap();
-    let codex_images_channel: (Uuid, Uuid) = sqlx::query_as(
-        "SELECT projection.channel_id,channel.channel_group_id \
-         FROM codex_oauth_credential_channels AS projection \
-         JOIN channels AS channel ON channel.id=projection.channel_id \
-         WHERE projection.credential_id=$1 \
-           AND projection.api_format='open_ai_images'::api_format",
-    )
-    .bind(codex_credential_id)
-    .fetch_one(&database.pool)
-    .await
-    .unwrap();
+    .await;
+    let codex_images_channel = (
+        codex_capability_id(&database.pool, codex_credential_id, "images_generation").await,
+        codex_group_id,
+    );
     let history_period_id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO codex_quota_window_periods \
@@ -8913,7 +8552,7 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
         &app,
         "GET",
         &format!(
-            "/console/v1/providers/codex-oauth/credentials/{codex_credential_id}/quota/windows?limit=10"
+            "/console/v1/routing/upstream-credentials/codex/{codex_credential_id}/quota/windows?limit=10"
         ),
         serde_json::json!({}),
         &[],
@@ -8934,12 +8573,14 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
         "openai_official"
     );
     let codex_started_at = started_at + chrono::Duration::hours(3);
+    let codex_responses_channel =
+        codex_capability_id(&database.pool, codex_credential_id, "responses").await;
     for (api_format, api_operation, group_id, channel_id) in [
         (
             "open_ai_responses",
             "responses",
             codex_group_id,
-            codex_credential_id,
+            codex_responses_channel,
         ),
         (
             "open_ai_images",
@@ -8970,6 +8611,14 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
         .unwrap();
     }
     metering_fixtures::copy_log_fixtures(&database.pool).await;
+    sqlx::query(
+        "INSERT INTO request_credential_attributions(request_id,known,credential_id)
+        SELECT id,true,$1 FROM request_metering_facts WHERE client_model='statistics-codex-model'",
+    )
+    .bind(codex_credential_id)
+    .execute(&database.pool)
+    .await
+    .unwrap();
     let codex_range_start = (codex_started_at - chrono::Duration::minutes(5))
         .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let codex_range_end = (codex_started_at + chrono::Duration::minutes(5))

@@ -6,7 +6,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 
 export function SharingUsage({ usage }: { usage: CodexSharingUsage }) {
   const { t, locale } = useI18n();
-  return <div className="flex flex-col gap-3">
+  return <div className="flex min-w-0 flex-col gap-3">
     <div className="flex flex-wrap gap-2">
       <Badge variant="secondary">{t(usage.available ? "Ledger ready" : "Waiting for sharing window")}</Badge>
       <Badge variant="outline">{t("Pending requests")}: {usage.pending_requests}</Badge>

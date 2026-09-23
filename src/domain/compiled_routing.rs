@@ -8,7 +8,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use reqwest::{Url, header::HeaderName};
+use reqwest::Url;
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -16,8 +16,8 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use super::{
-    ApiFormat, ApiKeyHash, CompiledAdvancedBilling, ConnectorKind, RequestCompression,
-    SystemRuntimeSettings,
+    ApiFormat, ApiKeyHash, ApiOperation, CompiledAdvancedBilling, ConnectorKind,
+    RequestCompression, SystemRuntimeSettings, UpstreamAuth,
 };
 use crate::transforms::TransformPlan;
 
@@ -695,24 +695,23 @@ fn bit_is_set(words: &[u64], slot: usize) -> bool {
         .is_some_and(|bits| bits & (1_u64 << (slot % u64::BITS as usize)) != 0)
 }
 
-#[derive(Clone)]
-pub enum UpstreamAuth {
-    None,
-    Bearer(Arc<str>),
-    Header { name: HeaderName, value: Arc<str> },
-}
-impl fmt::Debug for UpstreamAuth {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::None => f.write_str("UpstreamAuth::None"),
-            Self::Bearer(_) => f.write_str("UpstreamAuth::Bearer(REDACTED)"),
-            Self::Header { name, .. } => f
-                .debug_struct("UpstreamAuth::Header")
-                .field("name", name)
-                .field("value", &"REDACTED")
-                .finish(),
-        }
-    }
+/// Immutable routing identity of one compiled capability channel.
+///
+/// The capability id remains the channel id so passive health stays isolated
+/// per capability. The logical channel and access ids, their independent
+/// revisions, and the bound credential identity all participate in the
+/// connectivity fingerprint, so rebinding or an in-place revision change can
+/// never reuse an upstream socket from the previous identity.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ChannelIdentity {
+    pub logical_channel_id: Uuid,
+    pub access_id: Uuid,
+    pub api_operation: ApiOperation,
+    pub credential_id: Option<Uuid>,
+    pub credential_revision: Option<Uuid>,
+    pub binding_revision: Uuid,
+    pub access_revision: Uuid,
+    pub capability_revision: Uuid,
 }
 
 #[derive(Clone, Debug)]
@@ -720,12 +719,19 @@ pub struct CompiledChannel {
     id: Uuid,
     group_id: Uuid,
     api_format: ApiFormat,
+    logical_channel_id: Uuid,
+    access_id: Uuid,
+    api_operation: ApiOperation,
+    credential_id: Option<Uuid>,
     connector_kind: ConnectorKind,
     request_compression: RequestCompression,
     base_url: Url,
     connectivity_fingerprint: Arc<str>,
+    access_revision: Uuid,
+    capability_revision: Uuid,
     supports_websocket: bool,
     supports_standalone_web_search: bool,
+    transport_mask: u8,
     billing_multiplier: Decimal,
     upstream_auth: UpstreamAuth,
     available_models: HashSet<Arc<str>>,
@@ -735,9 +741,72 @@ pub struct CompiledChannel {
     upstream_policy: CompiledChannelUpstreamPolicy,
 }
 impl CompiledChannel {
+    pub(crate) fn with_transports(mut self, transports: &[super::CapabilityTransport]) -> Self {
+        if !transports.is_empty() {
+            self.transport_mask = transports
+                .iter()
+                .fold(0, |mask, transport| mask | transport_bit(*transport));
+            self.supports_websocket = self.permits_transport(super::CapabilityTransport::Websocket);
+        }
+        self.connectivity_fingerprint = Arc::from(format!(
+            "{}#transport={}",
+            self.connectivity_fingerprint, self.transport_mask
+        ));
+        self
+    }
+
+    #[must_use]
+    pub fn permits_transport(&self, transport: super::CapabilityTransport) -> bool {
+        self.transport_mask & transport_bit(transport) != 0
+    }
+
+    pub(crate) fn with_channel_identity(mut self, identity: ChannelIdentity) -> Self {
+        self.logical_channel_id = identity.logical_channel_id;
+        self.access_id = identity.access_id;
+        self.api_operation = identity.api_operation;
+        self.credential_id = identity.credential_id;
+        self.access_revision = identity.access_revision;
+        self.capability_revision = identity.capability_revision;
+        if identity.credential_id.is_some()
+            || !identity.binding_revision.is_nil()
+            || !identity.access_revision.is_nil()
+            || !identity.capability_revision.is_nil()
+        {
+            self.connectivity_fingerprint = Arc::from(format!(
+                "{}#{}/{}#{}/{}#{}/{}#{}/{}",
+                self.base_url,
+                identity.logical_channel_id,
+                identity.api_operation.as_str(),
+                identity.binding_revision,
+                identity.access_revision,
+                identity.access_id,
+                identity.capability_revision,
+                identity.credential_id.unwrap_or(Uuid::nil()),
+                identity.credential_revision.unwrap_or(Uuid::nil()),
+            ));
+        }
+        self
+    }
+
     #[must_use]
     pub fn id(&self) -> Uuid {
         self.id
+    }
+    #[must_use]
+    pub fn logical_channel_id(&self) -> Uuid {
+        self.logical_channel_id
+    }
+    #[must_use]
+    pub fn access_id(&self) -> Uuid {
+        self.access_id
+    }
+    #[must_use]
+    pub const fn api_operation(&self) -> ApiOperation {
+        self.api_operation
+    }
+    #[must_use]
+    pub fn credential_id(&self) -> Option<Uuid> {
+        self.credential_id
     }
     #[must_use]
     pub fn group_id(&self) -> Uuid {
@@ -924,16 +993,41 @@ impl CompiledChannel {
         upstream_policy: CompiledChannelUpstreamPolicy,
     ) -> Self {
         let connectivity_fingerprint = Arc::from(base_url.as_str());
+        use super::CapabilityTransport as T;
+        let mut transport_mask = match api_format {
+            ApiFormat::OpenAiChatCompletions => {
+                transport_bit(T::HttpJson) | transport_bit(T::HttpSse)
+            }
+            ApiFormat::OpenAiResponses => {
+                transport_bit(T::HttpSse)
+                    | if connector_kind == ConnectorKind::CodexOauth {
+                        0
+                    } else {
+                        transport_bit(T::HttpJson)
+                    }
+            }
+            ApiFormat::OpenAiImages => transport_bit(T::HttpJson) | transport_bit(T::Multipart),
+        };
+        if supports_websocket {
+            transport_mask |= transport_bit(T::Websocket);
+        }
         Self {
             id,
             group_id,
             api_format,
+            logical_channel_id: id,
+            access_id: Uuid::nil(),
+            api_operation: ApiOperation::legacy_default(api_format),
+            credential_id: None,
             connector_kind,
             request_compression,
             base_url,
             connectivity_fingerprint,
+            access_revision: Uuid::nil(),
+            capability_revision: Uuid::nil(),
             supports_websocket,
             supports_standalone_web_search,
+            transport_mask,
             billing_multiplier,
             upstream_auth,
             available_models,
@@ -942,6 +1036,15 @@ impl CompiledChannel {
             test_model,
             upstream_policy,
         }
+    }
+}
+
+const fn transport_bit(transport: super::CapabilityTransport) -> u8 {
+    match transport {
+        super::CapabilityTransport::HttpJson => 1,
+        super::CapabilityTransport::HttpSse => 2,
+        super::CapabilityTransport::Websocket => 4,
+        super::CapabilityTransport::Multipart => 8,
     }
 }
 
@@ -963,21 +1066,30 @@ impl SelectionStrategy {
 #[derive(Clone, Debug)]
 pub struct CompiledChannelGroup {
     id: Uuid,
-    api_format: ApiFormat,
-    connector_kind: ConnectorKind,
+    api_format: Option<ApiFormat>,
+    connector_kind: Option<ConnectorKind>,
 }
 impl CompiledChannelGroup {
     #[must_use]
     pub fn id(&self) -> Uuid {
         self.id
     }
+    /// Legacy protocol metadata. Canonical routing groups are neutral and own
+    /// no connector, compression, or format, so they return `None`.
     #[must_use]
-    pub fn api_format(&self) -> ApiFormat {
+    pub const fn api_format(&self) -> Option<ApiFormat> {
         self.api_format
     }
     #[must_use]
-    pub const fn connector_kind(&self) -> ConnectorKind {
+    pub const fn connector_kind(&self) -> Option<ConnectorKind> {
         self.connector_kind
+    }
+    pub(crate) fn new(id: Uuid) -> Self {
+        Self {
+            id,
+            api_format: None,
+            connector_kind: None,
+        }
     }
     pub(crate) fn new_with_connector(
         id: Uuid,
@@ -986,8 +1098,8 @@ impl CompiledChannelGroup {
     ) -> Self {
         Self {
             id,
-            api_format,
-            connector_kind,
+            api_format: Some(api_format),
+            connector_kind: Some(connector_kind),
         }
     }
 }
@@ -1111,7 +1223,7 @@ pub struct CompiledModelRule {
     id: Uuid,
     model_id: Uuid,
     client_model: Arc<str>,
-    api_format: ApiFormat,
+    api_operation: ApiOperation,
     price_snapshot: ModelPriceSnapshot,
     advanced_billing: CompiledAdvancedBilling,
     tiers: Arc<[CompiledRouteTier]>,
@@ -1206,8 +1318,12 @@ impl CompiledModelRule {
         &self.client_model
     }
     #[must_use]
-    pub fn api_format(&self) -> ApiFormat {
-        self.api_format
+    pub const fn api_operation(&self) -> ApiOperation {
+        self.api_operation
+    }
+    #[must_use]
+    pub const fn api_format(&self) -> ApiFormat {
+        self.api_operation.api_format()
     }
     #[must_use]
     pub fn price_snapshot(&self) -> &ModelPriceSnapshot {
@@ -1262,7 +1378,7 @@ impl CompiledModelRule {
         id: Uuid,
         model_id: Uuid,
         client_model: Arc<str>,
-        api_format: ApiFormat,
+        api_operation: ApiOperation,
         price_snapshot: ModelPriceSnapshot,
         advanced_billing: CompiledAdvancedBilling,
         tiers: Arc<[CompiledRouteTier]>,
@@ -1277,7 +1393,7 @@ impl CompiledModelRule {
             id,
             model_id,
             client_model,
-            api_format,
+            api_operation,
             price_snapshot,
             advanced_billing,
             tiers,
@@ -1352,54 +1468,59 @@ impl ModelPriceSnapshot {
     }
 }
 
+/// Exact data-plane route identity. An operation, not its parent format,
+/// selects the candidate pool so Responses and standalone search, or Images
+/// generation and edit, can never share rules by accident.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ModelRouteKey {
-    api_format: ApiFormat,
+    api_operation: ApiOperation,
     client_model: Arc<str>,
 }
 impl ModelRouteKey {
     #[must_use]
-    pub fn new(api_format: ApiFormat, client_model: impl Into<Arc<str>>) -> Self {
+    pub fn new(api_operation: ApiOperation, client_model: impl Into<Arc<str>>) -> Self {
         Self {
-            api_format,
+            api_operation,
             client_model: client_model.into(),
         }
+    }
+    #[must_use]
+    pub const fn api_operation(&self) -> ApiOperation {
+        self.api_operation
+    }
+    #[must_use]
+    pub const fn api_format(&self) -> ApiFormat {
+        self.api_operation.api_format()
+    }
+    #[must_use]
+    pub fn client_model(&self) -> &str {
+        &self.client_model
     }
 }
 
 #[derive(Debug, Default)]
 struct CompiledModelRoutes {
-    chat_completions: HashMap<Arc<str>, Arc<CompiledModelRule>>,
-    responses: HashMap<Arc<str>, Arc<CompiledModelRule>>,
-    images: HashMap<Arc<str>, Arc<CompiledModelRule>>,
+    by_operation: HashMap<ApiOperation, HashMap<Arc<str>, Arc<CompiledModelRule>>>,
 }
 impl CompiledModelRoutes {
     fn from_flat(routes: HashMap<ModelRouteKey, Arc<CompiledModelRule>>) -> Self {
-        let mut compiled = Self::default();
+        let mut by_operation =
+            HashMap::<ApiOperation, HashMap<Arc<str>, Arc<CompiledModelRule>>>::new();
         for (key, rule) in routes {
-            let target = match key.api_format {
-                ApiFormat::OpenAiChatCompletions => &mut compiled.chat_completions,
-                ApiFormat::OpenAiResponses => &mut compiled.responses,
-                ApiFormat::OpenAiImages => &mut compiled.images,
-            };
-            target.insert(key.client_model, rule);
+            by_operation
+                .entry(key.api_operation)
+                .or_default()
+                .insert(key.client_model, rule);
         }
-        compiled
+        Self { by_operation }
     }
 
-    fn get(&self, format: ApiFormat, model: &str) -> Option<&Arc<CompiledModelRule>> {
-        match format {
-            ApiFormat::OpenAiChatCompletions => self.chat_completions.get(model),
-            ApiFormat::OpenAiResponses => self.responses.get(model),
-            ApiFormat::OpenAiImages => self.images.get(model),
-        }
+    fn get(&self, operation: ApiOperation, model: &str) -> Option<&Arc<CompiledModelRule>> {
+        self.by_operation.get(&operation)?.get(model)
     }
 
     fn values(&self) -> impl Iterator<Item = &Arc<CompiledModelRule>> {
-        self.chat_completions
-            .values()
-            .chain(self.responses.values())
-            .chain(self.images.values())
+        self.by_operation.values().flat_map(HashMap::values)
     }
 }
 
@@ -1526,9 +1647,22 @@ impl CompiledRuntimeConfig {
             .filter(|key| !key.is_expired())
             .cloned()
     }
+    /// Format-level compatibility lookup. The data plane must use
+    /// [`Self::operation_rule`] so an operation never borrows a sibling
+    /// operation's candidate pool from the same format.
     #[must_use]
     pub fn model_rule(&self, format: ApiFormat, model: &str) -> Option<Arc<CompiledModelRule>> {
-        self.model_rules.get(format, model).cloned()
+        self.operation_rule(ApiOperation::legacy_default(format), model)
+    }
+    /// Exact operation-qualified lookup. Returns `None` when no rule was
+    /// configured for this operation; it never falls back to a sibling.
+    #[must_use]
+    pub fn operation_rule(
+        &self,
+        operation: ApiOperation,
+        model: &str,
+    ) -> Option<Arc<CompiledModelRule>> {
+        self.model_rules.get(operation, model).cloned()
     }
     #[must_use]
     pub fn channel(&self, id: Uuid) -> Option<Arc<CompiledChannel>> {
@@ -1586,7 +1720,7 @@ impl CompiledRuntimeConfig {
             .model_rules
             .values()
             .filter(|rule| {
-                rule.api_format == format
+                rule.api_format() == format
                     && key.permits_route(rule.route_slot)
                     && key.permits_model_capable_route(rule)
             })

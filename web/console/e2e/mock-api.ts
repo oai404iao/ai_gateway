@@ -236,7 +236,7 @@ export const E2E_CODEX_GROUP = {
   id: E2E_CODEX_GROUP_ID,
   name: "Codex subscriptions",
   api_format: "open_ai_responses",
-  connector_kind: "codex_oauth",
+  connector_kind: "codex",
   connector_pool_id: E2E_CODEX_GROUP_ID,
   request_compression: "default",
   sharing_only: false,
@@ -245,20 +245,11 @@ export const E2E_CODEX_GROUP = {
   updated_at: "2026-07-29T12:00:00.000Z",
 };
 
-const E2E_CODEX_IMAGES_GROUP = {
-  ...E2E_CODEX_GROUP,
-  id: "00000000-0000-0000-0000-00000000c010",
-  name: "Codex subscriptions Images",
-  api_format: "open_ai_images",
-  enabled: false,
-  status_statistics_enabled: false,
-};
-
 const E2E_STANDARD_CHANNEL_GROUPS = Array.from({ length: 5 }, (_, index) => ({
   id: `00000000-0000-0000-0000-0000000002${index}`,
   name: index === 4 ? "target-group" : `standard-group-${index + 1}`,
   api_format: "open_ai_chat_completions",
-  connector_kind: "openai_compatible",
+  connector_kind: "general",
   connector_pool_id: null,
   request_compression: "default",
   sharing_only: false,
@@ -267,171 +258,113 @@ const E2E_STANDARD_CHANNEL_GROUPS = Array.from({ length: 5 }, (_, index) => ({
   updated_at: "2026-07-29T12:00:00.000Z",
 }));
 export const E2E_STANDARD_GROUP_ID = E2E_STANDARD_CHANNEL_GROUPS[0].id;
+export const E2E_STANDARD_CHANNEL_ID = "00000000-0000-0000-0000-000000000030";
 
-const E2E_ROUTING_CHANNEL_GROUPS = [
-  ...E2E_STANDARD_CHANNEL_GROUPS,
-  E2E_CODEX_GROUP,
-  E2E_CODEX_IMAGES_GROUP,
-];
+export const E2E_ROUTING_GROUP_ID = "00000000-0000-0000-0000-0000000002a0";
 
-function routingChannel({
-  id,
-  channelGroupId,
-  name,
-  apiFormat = "open_ai_chat_completions",
-  connectorKind = "openai_compatible",
-  providerManaged = false,
-}: {
-  id: string;
-  channelGroupId: string;
-  name: string;
-  apiFormat?: "open_ai_chat_completions" | "open_ai_responses" | "open_ai_images";
-  connectorKind?: "openai_compatible" | "codex_oauth";
-  providerManaged?: boolean;
-}) {
-  return {
-    id,
-    channel_group_id: channelGroupId,
-    api_format: apiFormat,
-    connector_kind: connectorKind,
-    provider_managed: providerManaged,
-    name,
-    base_url: "https://upstream.e2e.example.test",
+const E2E_ROUTING_GROUPS = [
+  {
+    id: E2E_ROUTING_GROUP_ID,
+    name: "Standard group",
     enabled: true,
-    supports_websocket: apiFormat === "open_ai_responses",
-    supports_standalone_web_search: apiFormat === "open_ai_responses",
-    auto_disabled: false,
-    auto_disabled_reason: null,
-    auto_disable_allowed: !providerManaged,
-    billing_multiplier: "1.00",
-    proxy_id: null,
-    config_template_id: null,
-    connect_timeout_ms: null,
-    response_header_timeout_ms: null,
-    stream_idle_timeout_ms: null,
-    upstream_auth_kind: providerManaged ? "none" : "bearer",
-    upstream_auth_header_name: null,
-    upstream_credential_configured: !providerManaged,
-    available_models:
-      apiFormat === "open_ai_images" ? ["gpt-image-2"] : ["gpt-5-codex"],
-    test_model:
-      providerManaged || apiFormat === "open_ai_images"
-        ? null
-        : "gpt-5-codex",
-    test_pricing_model_id:
-      providerManaged || apiFormat === "open_ai_images" ? null : E2E_MODEL.id,
-    created_at: "2026-07-29T12:00:00.000Z",
-    updated_at: "2026-07-29T12:00:00.000Z",
-  };
-}
-
-const E2E_ROUTING_CHANNELS = [
-  ...E2E_STANDARD_CHANNEL_GROUPS.map((group, index) =>
-    routingChannel({
-      id: `00000000-0000-0000-0000-0000000003${index}`,
-      channelGroupId: group.id,
-      name: index === 4 ? "needle-upstream" : `standard-upstream-${index + 1}`,
-    }),
-  ),
-  routingChannel({
-    id: E2E_CODEX_CREDENTIAL_ID,
-    channelGroupId: E2E_CODEX_GROUP_ID,
-    name: "Personal Plus",
-    apiFormat: "open_ai_responses",
-    connectorKind: "codex_oauth",
-    providerManaged: true,
-  }),
-  routingChannel({
-    id: "00000000-0000-0000-0000-00000000c011",
-    channelGroupId: E2E_CODEX_IMAGES_GROUP.id,
-    name: "Personal Plus",
-    apiFormat: "open_ai_images",
-    connectorKind: "codex_oauth",
-    providerManaged: true,
-  }),
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-02T00:00:00Z",
+    deleted_at: null,
+  },
+  {
+    id: E2E_CODEX_GROUP_ID,
+    name: "Codex subscriptions",
+    enabled: true,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-02T00:00:00Z",
+    deleted_at: null,
+  },
 ];
-export const E2E_STANDARD_CHANNEL_ID = E2E_ROUTING_CHANNELS[0].id;
 
-export const E2E_SEARCH_MODEL_RULE = {
-  id: "00000000-0000-0000-0000-000000000124",
-  model_id: E2E_SEARCH_MODEL.id,
-  client_model: E2E_SEARCH_MODEL.source_model_id,
-  model_display_name: E2E_SEARCH_MODEL.display_name,
-  model_provider_name: E2E_SEARCH_MODEL.provider_name,
-  model_enabled: true,
-  protocol_rules: [
-    {
-      id: "00000000-0000-0000-0000-000000000125",
-      model_rule_id: "00000000-0000-0000-0000-000000000124",
-      api_format: "open_ai_responses",
-      description: "Standalone web search routing.",
-      routing_tiers: [
-        {
-          priority: 0,
-          selection_strategy: "weighted_random",
-          candidates: [
-            {
-              channel_id: E2E_CODEX_CREDENTIAL_ID,
-              upstream_model: "gpt-5-codex",
-              weight: 100,
-            },
-          ],
-        },
-      ],
-      enabled: true,
-      routing_status: "ready",
-      target_candidate_count: 1,
-      model_capable_candidate_count: 1,
-      active_candidate_count: 1,
-      updated_at: "2026-08-05T00:00:00.000Z",
-    },
-  ],
-  created_at: "2026-08-05T00:00:00.000Z",
-  updated_at: "2026-08-05T00:00:00.000Z",
-};
+const E2E_LOGICAL_CHANNELS = [
+  {
+    id: E2E_STANDARD_CHANNEL_ID,
+    group_id: E2E_ROUTING_GROUP_ID,
+    access_id: "00000000-0000-0000-0000-0000000000a1",
+    credential_id: null,
+    name: "Upstream A",
+    enabled: true,
+    sharing_only: false,
+    binding_revision: "00000000-0000-0000-0000-0000000000b1",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-02T00:00:00Z",
+    deleted_at: null,
+  },
+  {
+    id: E2E_CODEX_CREDENTIAL_ID,
+    group_id: E2E_CODEX_GROUP_ID,
+    access_id: E2E_CODEX_GROUP_ID,
+    credential_id: E2E_CODEX_CREDENTIAL_ID,
+    name: "Personal Plus",
+    enabled: true,
+    sharing_only: false,
+    binding_revision: "00000000-0000-0000-0000-0000000000b2",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-02T00:00:00Z",
+    deleted_at: null,
+  },
+];
 
-export const E2E_IMAGE_MODEL_RULE = {
-  id: "00000000-0000-0000-0000-000000000127",
-  model_id: E2E_IMAGE_MODEL.id,
-  client_model: E2E_IMAGE_MODEL.source_model_id,
-  model_display_name: E2E_IMAGE_MODEL.display_name,
-  model_provider_name: E2E_IMAGE_MODEL.provider_name,
-  model_enabled: true,
-  protocol_rules: [
-    {
-      id: "00000000-0000-0000-0000-000000000126",
-      model_rule_id: "00000000-0000-0000-0000-000000000127",
-      api_format: "open_ai_images",
-      description: "Image generation and editing routing.",
-      routing_tiers: [
-        {
-          priority: 0,
-          selection_strategy: "weighted_random",
-          candidates: [
-            {
-              channel_id: "00000000-0000-0000-0000-00000000c011",
-              upstream_model: "gpt-image-2",
-              weight: 100,
-            },
-          ],
-        },
-      ],
+const E2E_CHANNEL_CAPABILITIES = [
+  {
+    id: "00000000-0000-0000-0000-0000000000c1",
+    channel_id: E2E_STANDARD_CHANNEL_ID,
+    settings: {
+      operation: "chat_completion",
       enabled: true,
-      routing_status: "ready",
-      target_candidate_count: 1,
-      model_capable_candidate_count: 1,
-      active_candidate_count: 1,
-      updated_at: "2026-08-05T00:00:00.000Z",
+      available_models: ["gpt-5"],
+      request_compression: "default",
+      test_model: null,
+      test_pricing_model_id: null,
+      auto_disable_allowed: false,
     },
-  ],
-  created_at: "2026-08-05T00:00:00.000Z",
-  updated_at: "2026-08-05T00:00:00.000Z",
-};
+    auto_disabled: false,
+    auto_disable_reason: null,
+    auto_disable_at: null,
+    status_statistics_enabled: false,
+    config_template_id: null,
+    override_document: {},
+    billing_multiplier: "1",
+    revision: "00000000-0000-0000-0000-0000000000c2",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-02T00:00:00Z",
+    deleted_at: null,
+  },
+];
+
+const E2E_OPERATION_RULES = [
+  {
+    id: "00000000-0000-0000-0000-0000000000d1",
+    model_routing_profile_id: "00000000-0000-0000-0000-0000000000d2",
+    operation: "chat_completion",
+    enabled: true,
+    routing_tiers: [
+      {
+        priority: 0,
+        selection_strategy: "weighted_random",
+        candidates: [
+          {
+            capability_id: "00000000-0000-0000-0000-0000000000c1",
+            upstream_model: "gpt-5",
+            weight: 1,
+          },
+        ],
+      },
+    ],
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-02T00:00:00Z",
+  },
+];
 
 
 export const E2E_CODEX_CREDENTIAL = {
   id: E2E_CODEX_CREDENTIAL_ID,
-  channel_group_id: E2E_CODEX_GROUP_ID,
+  channel_ids: [E2E_CODEX_CREDENTIAL_ID],
   label: "Personal Plus",
   email: "codex@example.test",
   account_id: "account-123",
@@ -731,7 +664,7 @@ export async function mockConsoleApi(page: Page): Promise<void> {
   let session = ADMIN_PROFILE;
   let sharing = {
     ...SHARING_GROUP,
-    credential_id: E2E_CODEX_CREDENTIAL_ID, seats: [E2E_USER.id, null],
+    channel_id: E2E_CODEX_CREDENTIAL_ID, seats: [E2E_USER.id, null],
   };
   await page.route("**/console/v1/**", (route: Route) => {
     const url = new URL(route.request().url());
@@ -853,7 +786,7 @@ export async function mockConsoleApi(page: Page): Promise<void> {
           {
             id: E2E_CODEX_CREDENTIAL_ID,
             name: E2E_CODEX_CREDENTIAL_ID,
-            channel_group_id: E2E_CODEX_GROUP_ID,
+            channel_ids: [E2E_CODEX_CREDENTIAL_ID],
             plan_type: "plus",
             primary_used_percent: 96,
             primary_window_seconds: 10_800,
@@ -878,7 +811,7 @@ export async function mockConsoleApi(page: Page): Promise<void> {
         json: {
           credential_id: E2E_CODEX_CREDENTIAL_ID,
           name: E2E_CODEX_CREDENTIAL_ID,
-          channel_group_id: E2E_CODEX_GROUP_ID,
+          channel_ids: [E2E_CODEX_CREDENTIAL_ID],
           plan_type: "plus",
           periods: [
             {
@@ -1133,18 +1066,8 @@ export async function mockConsoleApi(page: Page): Promise<void> {
       return route.fulfill({ status: 200, json: E2E_SYSTEM_LOAD });
     }
     if (
-      path === `/console/v1/routing/channel-groups/${E2E_CODEX_GROUP_ID}` &&
-      method === "GET"
-    ) {
-      return route.fulfill({
-        status: 200,
-        headers: { ETag: `"${E2E_CODEX_GROUP.updated_at}"` },
-        json: E2E_CODEX_GROUP,
-      });
-    }
-    if (
       path ===
-        `/console/v1/providers/codex-oauth/channel-groups/${E2E_CODEX_GROUP_ID}/credentials` &&
+        "/console/v1/routing/upstream-credentials/codex" &&
       method === "GET"
     ) {
       return route.fulfill({
@@ -1154,14 +1077,14 @@ export async function mockConsoleApi(page: Page): Promise<void> {
     }
     if (
       path ===
-        `/console/v1/providers/codex-oauth/credentials/${E2E_CODEX_CREDENTIAL_ID}/quota/refresh` &&
+        `/console/v1/routing/upstream-credentials/codex/${E2E_CODEX_CREDENTIAL_ID}/quota/refresh` &&
       method === "POST"
     ) {
       return route.fulfill({ status: 204 });
     }
     if (
       path ===
-        `/console/v1/providers/codex-oauth/credentials/${E2E_CODEX_CREDENTIAL_ID}/quota/reset` &&
+        `/console/v1/routing/upstream-credentials/codex/${E2E_CODEX_CREDENTIAL_ID}/quota/reset` &&
       method === "POST"
     ) {
       return route.fulfill({
@@ -1176,7 +1099,7 @@ export async function mockConsoleApi(page: Page): Promise<void> {
     }
     if (
       path ===
-        `/console/v1/providers/codex-oauth/credentials/${E2E_CODEX_CREDENTIAL_ID}/quota/windows` &&
+        `/console/v1/routing/upstream-credentials/codex/${E2E_CODEX_CREDENTIAL_ID}/quota/windows` &&
       method === "GET"
     ) {
       return route.fulfill({
@@ -1205,7 +1128,7 @@ export async function mockConsoleApi(page: Page): Promise<void> {
     }
     if (
       path ===
-        `/console/v1/providers/codex-oauth/channel-groups/${E2E_CODEX_GROUP_ID}/credentials/batch` &&
+        "/console/v1/routing/upstream-credentials/codex/batch" &&
       method === "POST"
     ) {
       return route.fulfill({
@@ -1216,90 +1139,98 @@ export async function mockConsoleApi(page: Page): Promise<void> {
         },
       });
     }
-    if (path === "/console/v1/routing/channel-groups" && method === "GET") {
+    if (path === "/console/v1/routing/upstream-credentials" && method === "GET") {
+      return route.fulfill({ status: 200, json: [{
+        id: E2E_CODEX_CREDENTIAL_ID, name: "Personal Plus", connector_kind: "codex",
+        kind: "codex_oauth", header_name: null, allowed_base_urls: ["https://codex.test"],
+        enabled: true, provider_managed: true, channel_ids: [E2E_CODEX_CREDENTIAL_ID],
+        created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-02T00:00:00Z",
+      }] });
+    }
+    if (path === "/console/v1/routing/accesses" && method === "GET") {
+      return route.fulfill({ status: 200, json: [{
+        id: E2E_CODEX_GROUP_ID, name: "Codex access", connector_kind: "codex",
+        base_url: "https://codex.test", proxy_id: null, enabled: true,
+        connect_timeout_ms: null, response_header_timeout_ms: null, stream_idle_timeout_ms: null,
+        revision: "00000000-0000-0000-0000-0000000000a2",
+        created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-02T00:00:00Z", deleted_at: null,
+      }] });
+    }
+    if (path === "/console/v1/routing/groups" && method === "GET") {
+      return route.fulfill({ status: 200, json: E2E_ROUTING_GROUPS });
+    }
+    const routingGroup = E2E_ROUTING_GROUPS.find((group) =>
+      path === `/console/v1/routing/groups/${group.id}`);
+    if (routingGroup && method === "GET") {
       return route.fulfill({
-        status: 200,
-        json: E2E_ROUTING_CHANNEL_GROUPS,
+        status: 200, headers: { ETag: `"${routingGroup.updated_at}"` }, json: routingGroup,
       });
     }
-    if (
-      path.startsWith("/console/v1/routing/channel-groups/") &&
-      method === "PUT"
-    ) {
-      return route.fulfill({
-        status: 200,
-        json: {
-          id: path.split("/").at(-1),
-          correlation_id: "00000000-0000-0000-0000-0000000002ff",
-        },
-      });
-    }
-    if (path === "/console/v1/routing/channels" && method === "GET") {
-      return route.fulfill({ status: 200, json: E2E_ROUTING_CHANNELS });
+    if (routingGroup && method === "PUT") {
+      return route.fulfill({ status: 200, json: { id: routingGroup.id } });
     }
     if (
-      path === `/console/v1/routing/channels/${E2E_STANDARD_CHANNEL_ID}` &&
+      path === `/console/v1/routing/groups/${E2E_STANDARD_GROUP_ID}` &&
       method === "GET"
     ) {
-      const channel = E2E_ROUTING_CHANNELS.find(
-        (candidate) => candidate.id === E2E_STANDARD_CHANNEL_ID,
-      );
       return route.fulfill({
         status: 200,
-        headers: { ETag: `"${channel?.updated_at}"` },
-        json: {
-          ...channel,
-          override_document: {},
-          upstream_api_key: "e2e-upstream-secret",
-        },
+        headers: { ETag: `"${E2E_ROUTING_GROUPS[0].updated_at}"` },
+        json: E2E_ROUTING_GROUPS[0],
       });
+    }
+    if (path === "/console/v1/routing/logical-channels" && method === "GET") {
+      return route.fulfill({ status: 200, json: E2E_LOGICAL_CHANNELS });
+    }
+    if (
+      path === `/console/v1/routing/logical-channels/${E2E_STANDARD_CHANNEL_ID}` &&
+      method === "GET"
+    ) {
+      return route.fulfill({
+        status: 200,
+        headers: { ETag: `"${E2E_LOGICAL_CHANNELS[0].updated_at}"` },
+        json: E2E_LOGICAL_CHANNELS[0],
+      });
+    }
+    if (
+      path === `/console/v1/routing/logical-channels/${E2E_STANDARD_CHANNEL_ID}` &&
+      method === "DELETE"
+    ) {
+      return route.fulfill({ status: 200, json: { id: E2E_STANDARD_CHANNEL_ID } });
+    }
+    if (path === "/console/v1/routing/capabilities" && method === "GET") {
+      return route.fulfill({ status: 200, json: E2E_CHANNEL_CAPABILITIES });
     }
     if (
       path ===
-        `/console/v1/routing/channels/${E2E_STANDARD_CHANNEL_ID}/deletion-impact` &&
+        `/console/v1/routing/capabilities/${E2E_CHANNEL_CAPABILITIES[0].id}` &&
       method === "GET"
     ) {
-      const channel = E2E_ROUTING_CHANNELS.find(
-        (candidate) => candidate.id === E2E_STANDARD_CHANNEL_ID,
-      );
       return route.fulfill({
         status: 200,
-        json: {
-          resource_type: "channel",
-          resource_id: E2E_STANDARD_CHANNEL_ID,
-          confirmation_token: "v1.e2e-channel-deletion",
-          channels: [
-            {
-              id: E2E_STANDARD_CHANNEL_ID,
-              channel_group_id: E2E_STANDARD_GROUP_ID,
-              name: channel?.name,
-            },
-          ],
-          model_protocol_rules: [],
-          api_keys: [{ id: E2E_API_KEY.id, name: E2E_API_KEY.name }],
-          api_key_policies: [
-            { id: E2E_API_KEY_POLICY.id, name: E2E_API_KEY_POLICY.name },
-          ],
-          quota_visibility_user_groups: [],
-        },
+        headers: { ETag: `"${E2E_CHANNEL_CAPABILITIES[0].updated_at}"` },
+        json: E2E_CHANNEL_CAPABILITIES[0],
       });
     }
+    if (path === "/console/v1/routing/operation-rules" && method === "GET") {
+      return route.fulfill({ status: 200, json: E2E_OPERATION_RULES });
+    }
+    if (path === "/console/v1/routing/profiles" && method === "GET") {
+      return route.fulfill({ status: 200, json: [{
+        id: E2E_OPERATION_RULES[0].model_routing_profile_id,
+        model_id: E2E_MODEL.id, client_model: E2E_MODEL.source_model_id,
+        model_display_name: E2E_MODEL.display_name, model_enabled: true,
+        created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-02T00:00:00Z",
+      }] });
+    }
     if (
-      path === `/console/v1/routing/channels/${E2E_STANDARD_CHANNEL_ID}` &&
-      method === "DELETE"
+      path === `/console/v1/routing/operation-rules/${E2E_OPERATION_RULES[0].id}` &&
+      method === "GET"
     ) {
       return route.fulfill({
         status: 200,
-        json: {
-          id: E2E_STANDARD_CHANNEL_ID,
-          correlation_id: "00000000-0000-0000-0000-0000000003ff",
-        },
-      });
-    }
-    if (path === "/console/v1/routing/model-rules" && method === "GET") {
-      return route.fulfill({
-        status: 200,
-        json: [E2E_SEARCH_MODEL_RULE, E2E_IMAGE_MODEL_RULE],
+        headers: { ETag: `"${E2E_OPERATION_RULES[0].updated_at}"` },
+        json: E2E_OPERATION_RULES[0],
       });
     }
     if (path === "/console/v1/network/proxies/test" && method === "POST") {
@@ -1321,27 +1252,26 @@ export async function mockConsoleApi(page: Page): Promise<void> {
           policy_id: "00000000-0000-0000-0000-000000000031",
           policy_name: "default",
           policy_enabled: true,
-          sharing_credentials: [
+          sharing_channels: [
             {
-              credential_id: SHARING_GROUP.credential_id,
+              channel_id: SHARING_GROUP.channel_id,
+              channel_name: "Personal Plus",
               sharing_group_id: SHARING_GROUP.id,
               name: SHARING_GROUP.name,
               enabled: SHARING_GROUP.enabled,
-              channel_ids: [SHARING_GROUP.credential_id],
-              api_formats: ["open_ai_responses"],
             },
           ],
           groups: [
             {
               id: "00000000-0000-0000-0000-000000000021",
               name: "chat-primary",
-              api_format: "open_ai_chat_completions",
+              api_formats: ["open_ai_chat_completions"],
               enabled: true,
             },
             {
               id: "00000000-0000-0000-0000-000000000025",
               name: "images-disabled",
-              api_format: "open_ai_images",
+              api_formats: ["open_ai_images"],
               enabled: false,
             },
           ],
@@ -1351,7 +1281,7 @@ export async function mockConsoleApi(page: Page): Promise<void> {
               channel_group_id: "00000000-0000-0000-0000-000000000021",
               channel_group_name: "chat-primary",
               channel_group_enabled: true,
-              api_format: "open_ai_chat_completions",
+              api_formats: ["open_ai_chat_completions"],
               name: "upstream-a",
               enabled: true,
               auto_disabled: false,
@@ -1361,7 +1291,7 @@ export async function mockConsoleApi(page: Page): Promise<void> {
               channel_group_id: "00000000-0000-0000-0000-000000000025",
               channel_group_name: "images-disabled",
               channel_group_enabled: false,
-              api_format: "open_ai_images",
+              api_formats: ["open_ai_images"],
               name: "images-disabled-upstream",
               enabled: true,
               auto_disabled: false,

@@ -1,0 +1,24 @@
+DROP TABLE codex_oauth_credential_channels;
+DROP TABLE model_rule_routing_candidates;
+DROP TABLE model_rule_routing_tiers;
+DROP TABLE model_rules;
+DROP TABLE channels;
+DROP TABLE channel_groups;
+
+DROP FUNCTION sync_codex_upstream_identity();
+DROP FUNCTION bind_codex_upstream_identity();
+DROP FUNCTION guard_upstream_credential_binding();
+DROP FUNCTION guard_codex_identity_projection();
+DROP FUNCTION sync_codex_identity_name();
+DROP FUNCTION initialize_codex_connector_pool();
+DROP FUNCTION create_codex_images_group();
+DROP FUNCTION create_codex_credential_projections();
+DROP FUNCTION sync_codex_images_projection();
+DROP FUNCTION tombstone_codex_images_projection();
+DROP FUNCTION sync_codex_sharing_only_groups();
+DROP FUNCTION lock_model_rule_routing_parent();
+DROP FUNCTION validate_model_rule_routing_shape();
+DROP FUNCTION touch_model_routing_profile();
+DROP FUNCTION enforce_channel_tombstone_lifecycle();
+DROP FUNCTION prevent_channel_tombstone_update();
+DROP FUNCTION prevent_channel_tombstone_hard_delete();

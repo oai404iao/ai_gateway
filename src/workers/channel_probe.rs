@@ -25,9 +25,9 @@ use crate::{
         request_billing, request_billing_multiplier,
     },
     domain::{
-        ApiFormat, ApiOperation, AutomaticDisableTrigger, CompiledChannel,
-        CompiledScheduledTestModel, RequestCompression, RequestLogEvent, RequestLogOutcome,
-        RequestLogSource, RequestProtocol, ScheduledTestingMode, UpstreamAuth,
+        ApiOperation, AutomaticDisableTrigger, CompiledChannel, CompiledScheduledTestModel,
+        RequestCompression, RequestLogEvent, RequestLogOutcome, RequestLogSource, RequestProtocol,
+        ScheduledTestingMode, UpstreamAuth,
     },
     persistence::SystemProbeIdentity,
     request_policy::strip_explicitly_ignored_client_headers,
@@ -205,7 +205,7 @@ async fn probe_channel(
     let mut outcome = RequestLogOutcome::Failed;
     let mut error_code = Some("scheduled_test_setup_failed");
 
-    let body = match build_probe_body(channel.api_format(), model, prompt) {
+    let body = match build_probe_body(channel.api_operation(), model, prompt) {
         Ok(body) => body,
         Err(()) => {
             return finished_probe(
@@ -528,7 +528,7 @@ fn finished_probe(
             api_key_id: context.identity.api_key_id,
             request_source: RequestLogSource::ScheduledTest,
             api_format: context.channel.api_format(),
-            api_operation: ApiOperation::legacy_default(context.channel.api_format()),
+            api_operation: context.channel.api_operation(),
             request_protocol: RequestProtocol::NonStream,
             client_model: model.to_owned(),
             reasoning_effort: None,
@@ -537,6 +537,9 @@ fn finished_probe(
             model_rule_id: None,
             channel_group_id: Some(context.channel.group_id()),
             channel_id: Some(context.channel.id()),
+            upstream_credential: Some(crate::domain::RequestCredentialAttribution {
+                credential_id: context.channel.credential_id(),
+            }),
             model_id: Some(context.billing_model.id()),
             outcome,
             response_status_code,
@@ -555,19 +558,19 @@ fn error_summary(error_code: Option<&str>, message: &str) -> Option<String> {
     ResponseErrorDetails::from_message(error_code, message).summary
 }
 
-fn build_probe_body(api_format: ApiFormat, model: &str, prompt: &str) -> Result<Bytes, ()> {
-    let value = match api_format {
-        ApiFormat::OpenAiChatCompletions => json!({
+fn build_probe_body(operation: ApiOperation, model: &str, prompt: &str) -> Result<Bytes, ()> {
+    let value = match operation {
+        ApiOperation::ChatCompletions => json!({
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
             "stream": false,
         }),
-        ApiFormat::OpenAiResponses => json!({
+        ApiOperation::Responses => json!({
             "model": model,
             "input": prompt,
             "stream": false,
         }),
-        ApiFormat::OpenAiImages => return Err(()),
+        _ => return Err(()),
     };
     serde_json::to_vec(&value).map(Bytes::from).map_err(|_| ())
 }
@@ -582,10 +585,10 @@ fn encode_probe_body(body: Bytes, compression: RequestCompression) -> Result<Byt
 }
 
 fn probe_url(channel: &CompiledChannel) -> Result<reqwest::Url, ()> {
-    let path = match channel.api_format() {
-        ApiFormat::OpenAiChatCompletions => "/v1/chat/completions",
-        ApiFormat::OpenAiResponses => "/v1/responses",
-        ApiFormat::OpenAiImages => return Err(()),
+    let path = match channel.api_operation() {
+        ApiOperation::ChatCompletions => "/v1/chat/completions",
+        ApiOperation::Responses => "/v1/responses",
+        _ => return Err(()),
     };
     reqwest::Url::parse(&format!(
         "{}{path}",

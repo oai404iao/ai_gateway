@@ -33,18 +33,16 @@ use crate::{
     },
     domain::{ConsolePrincipal, UserRole},
     persistence::{
-        ApiKeyCreate, ApiKeyPolicyInput, ApiKeyUpdate, ChannelBatchUpdateInput, ChannelCreateInput,
-        ChannelDeletionImpact, ChannelGroupInput, ChannelGroupStatusWindow, ChannelInput,
-        ChannelRecoverInput, CodexCredentialBatchInput, CodexCredentialExportBundle,
-        CodexCredentialExportInput, CodexCredentialImportInput, CodexCredentialUpdateInput,
-        CodexCredentialView, CodexOauthStartInput, CodexQuotaWindowHistory,
-        ConfigTemplateCreateInput, ConfigTemplateInput, ConsoleApiKey, ControlPlaneMutation,
-        CostStatisticsFilter, DeletionConfirmationInput, InviteUserInput, ModelInput,
-        ModelProtocolRuleCreateInput, ModelProtocolRuleInput, ModelRuleCreateInput,
-        ProxyCreateInput, ProxyInput, RequestLogFilter, SelfApiKeyCreate, SelfApiKeyUpdate,
-        SelfCodexQuotaCredentialView, SelfCodexQuotaWindowHistory, SpendLeaderboardFilter,
-        SpendLeaderboardPeriod, StatisticsGranularity, SystemSettingsInput, UserBatchUpdateInput,
-        UserGroupInput, UserInput, UserSettingsInput, UserUpdateInput,
+        ApiKeyCreate, ApiKeyPolicyInput, ApiKeyUpdate, ChannelGroupStatusWindow,
+        CodexCredentialBatchInput, CodexCredentialExportBundle, CodexCredentialExportInput,
+        CodexCredentialImportInput, CodexCredentialUpdateInput, CodexCredentialView,
+        CodexOauthStartInput, CodexQuotaWindowHistory, ConfigTemplateCreateInput,
+        ConfigTemplateInput, ConsoleApiKey, ControlPlaneMutation, CostStatisticsFilter,
+        InviteUserInput, ModelInput, ModelRuleCreateInput, ProxyCreateInput, ProxyInput,
+        RequestLogFilter, SelfApiKeyCreate, SelfApiKeyUpdate, SelfCodexQuotaCredentialView,
+        SelfCodexQuotaWindowHistory, SpendLeaderboardFilter, SpendLeaderboardPeriod,
+        StatisticsGranularity, SystemSettingsInput, UserBatchUpdateInput, UserGroupInput,
+        UserInput, UserSettingsInput, UserUpdateInput,
     },
     runtime_config::ConfigError,
 };
@@ -211,94 +209,121 @@ pub fn router(state: ConsoleState) -> Router {
         )
         .route("/console/v1/api-keys/{id}/revoke", post(revoke_api_key))
         .route(
-            "/console/v1/routing/channel-groups",
-            get(list_groups).post(create_group),
+            "/console/v1/routing/upstream-credentials",
+            get(list_upstream_credentials).post(create_upstream_credential),
         )
         .route(
-            "/console/v1/routing/channel-groups/{id}",
-            get(get_group).put(update_group).delete(delete_group),
+            "/console/v1/routing/accesses",
+            get(list_upstream_accesses).post(create_upstream_access),
         )
         .route(
-            "/console/v1/routing/channel-groups/{id}/deletion-impact",
-            get(get_group_deletion_impact),
+            "/console/v1/routing/accesses/{id}",
+            get(get_upstream_access).put(update_upstream_access),
         )
         .route(
-            "/console/v1/routing/channels",
-            get(list_channels).post(create_channel),
+            "/console/v1/routing/groups",
+            get(list_routing_groups).post(create_routing_group),
+        )
+        .route(
+            "/console/v1/routing/groups/{id}",
+            get(get_routing_group)
+                .put(update_routing_group)
+                .delete(delete_routing_group),
+        )
+        .route(
+            "/console/v1/routing/logical-channels",
+            get(list_logical_channels).post(create_logical_channel),
+        )
+        .route(
+            "/console/v1/routing/logical-channels/{id}",
+            get(get_logical_channel)
+                .put(update_logical_channel)
+                .delete(delete_logical_channel),
+        )
+        .route(
+            "/console/v1/routing/capabilities",
+            get(list_channel_capabilities).post(create_channel_capability),
+        )
+        .route(
+            "/console/v1/routing/capabilities/batch",
+            post(update_capabilities_batch),
+        )
+        .route(
+            "/console/v1/routing/capabilities/{id}/recover",
+            post(recover_capability),
+        )
+        .route(
+            "/console/v1/routing/capabilities/{id}",
+            get(get_channel_capability)
+                .put(update_channel_capability)
+                .delete(delete_channel_capability),
+        )
+        .route(
+            "/console/v1/routing/operation-rules",
+            get(list_operation_rules).post(create_operation_rule),
+        )
+        .route(
+            "/console/v1/routing/profiles",
+            get(list_routing_profiles).post(create_rule),
+        )
+        .route(
+            "/console/v1/routing/profiles/{id}",
+            get(get_routing_profile),
+        )
+        .route(
+            "/console/v1/routing/operation-rules/{id}",
+            get(get_operation_rule).put(update_operation_rule),
+        )
+        .route(
+            "/console/v1/routing/upstream-credentials/{id}",
+            get(get_upstream_credential)
+                .put(update_upstream_credential)
+                .delete(delete_upstream_credential),
         )
         .route(
             "/console/v1/routing/channels/models/discover",
             post(discover_channel_models),
         )
         .route(
-            "/console/v1/routing/channels/batch",
-            post(update_channels_batch),
-        )
-        .route(
-            "/console/v1/routing/channels/{id}",
-            get(get_channel).put(update_channel).delete(delete_channel),
-        )
-        .route(
-            "/console/v1/routing/channels/{id}/deletion-impact",
-            get(get_channel_deletion_impact),
-        )
-        .route(
-            "/console/v1/routing/channels/{id}/recover",
-            post(recover_channel),
-        )
-        .route(
-            "/console/v1/routing/model-rules",
-            get(list_rules).post(create_rule),
-        )
-        .route("/console/v1/routing/model-rules/{id}", get(get_rule))
-        .route(
-            "/console/v1/routing/model-rules/{id}/protocols",
-            post(create_protocol_rule),
-        )
-        .route(
-            "/console/v1/routing/model-rules/{id}/protocols/{protocol_id}",
-            get(get_protocol_rule).put(update_protocol_rule),
-        )
-        .route(
-            "/console/v1/providers/codex-oauth/channel-groups/{id}/credentials",
+            "/console/v1/routing/upstream-credentials/codex",
             get(list_codex_credentials).post(import_codex_credential),
         )
         .route(
-            "/console/v1/providers/codex-oauth/channel-groups/{id}/oauth/flows",
+            "/console/v1/routing/upstream-credentials/codex/oauth/flows",
             post(start_codex_oauth),
         )
         .route(
-            "/console/v1/providers/codex-oauth/channel-groups/{id}/credentials/export",
+            "/console/v1/routing/upstream-credentials/codex/export",
             post(export_codex_credentials),
         )
         .route(
-            "/console/v1/providers/codex-oauth/channel-groups/{id}/credentials/batch",
+            "/console/v1/routing/upstream-credentials/codex/batch",
             post(update_codex_credentials_batch),
         )
         .route(
-            "/console/v1/providers/codex-oauth/oauth/flows/{id}/complete",
+            "/console/v1/routing/upstream-credentials/codex/oauth/flows/{id}/complete",
             post(complete_codex_oauth),
         )
         .route(
-            "/console/v1/providers/codex-oauth/credentials/{id}",
+            "/console/v1/routing/upstream-credentials/codex/{id}",
             get(get_codex_credential)
                 .put(update_codex_credential)
                 .delete(delete_codex_credential),
         )
         .route(
-            "/console/v1/providers/codex-oauth/credentials/{id}/refresh",
+            "/console/v1/routing/upstream-credentials/codex/{id}/refresh",
             post(refresh_codex_credential),
         )
         .route(
-            "/console/v1/providers/codex-oauth/credentials/{id}/quota/refresh",
+            "/console/v1/routing/upstream-credentials/codex/{id}/quota/refresh",
             post(refresh_codex_quota),
         )
         .route(
-            "/console/v1/providers/codex-oauth/credentials/{id}/quota/windows",
+            "/console/v1/routing/upstream-credentials/codex/{id}/quota/windows",
             get(get_codex_quota_window_history),
         )
         .route(
-            "/console/v1/providers/codex-oauth/credentials/{id}/quota/reset",
+            "/console/v1/routing/upstream-credentials/codex/{id}/quota/reset",
             post(reset_codex_quota),
         )
         .route(
@@ -527,12 +552,6 @@ struct MutationResponse {
 
 #[derive(Serialize)]
 struct ReloadResponse {
-    correlation_id: Uuid,
-}
-
-#[derive(Serialize)]
-struct ChannelBatchUpdateResponse {
-    updated_ids: Vec<Uuid>,
     correlation_id: Uuid,
 }
 
@@ -1679,41 +1698,79 @@ async fn revoke_api_key(
     .await
 }
 
-async fn list_groups(
+async fn discover_channel_models(
     State(state): State<ConsoleState>,
-) -> Result<Json<serde_json::Value>, ConsoleError> {
+    Json(input): Json<ChannelModelDiscoveryInput>,
+) -> Result<Json<ChannelModelDiscoveryResponse>, ConsoleError> {
+    let credential = match input.credential_id {
+        Some(id) => Some(
+            state
+                .coordinator
+                .upstream_credential_detail(id)
+                .await?
+                .ok_or(ConsoleError::NotFound)?,
+        ),
+        None => None,
+    };
     Ok(Json(
-        serde_json::to_value(state.coordinator.lists().await?.channel_groups)
-            .expect("Console channel-group DTO serializes"),
+        state.channel_models.discover(input, credential).await?,
     ))
 }
 
-async fn create_group(
+async fn list_upstream_accesses(
     State(state): State<ConsoleState>,
-    Extension(principal): Extension<ConsolePrincipal>,
-    Json(input): Json<ChannelGroupInput>,
-) -> Result<(StatusCode, Json<MutationResponse>), ConsoleError> {
-    mutate_created(&state, principal, ControlPlaneMutation::CreateGroup(input)).await
+) -> Result<Json<Vec<crate::persistence::UpstreamAccessRecord>>, ConsoleError> {
+    Ok(Json(
+        state
+            .coordinator
+            .topology()
+            .await?
+            .upstream_accesses
+            .into_iter()
+            .filter(|access| access.deleted_at.is_none())
+            .collect(),
+    ))
 }
 
-async fn get_group(
+async fn get_upstream_access(
     State(state): State<ConsoleState>,
     Path(id): Path<Uuid>,
 ) -> Result<Response, ConsoleError> {
-    get_resource(state, id, Resource::Group).await
+    let access = state
+        .coordinator
+        .topology()
+        .await?
+        .upstream_accesses
+        .into_iter()
+        .find(|access| access.id == id && access.deleted_at.is_none())
+        .ok_or(ConsoleError::NotFound)?;
+    resource_response(to_json(access))
 }
 
-async fn update_group(
+async fn create_upstream_access(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Json(input): Json<crate::persistence::UpstreamAccessInput>,
+) -> Result<(StatusCode, Json<MutationResponse>), ConsoleError> {
+    mutate_created(
+        &state,
+        principal,
+        ControlPlaneMutation::CreateUpstreamAccess(input),
+    )
+    .await
+}
+
+async fn update_upstream_access(
     State(state): State<ConsoleState>,
     Extension(principal): Extension<ConsolePrincipal>,
     Path(id): Path<Uuid>,
     headers: HeaderMap,
-    Json(input): Json<ChannelGroupInput>,
+    Json(input): Json<crate::persistence::UpstreamAccessInput>,
 ) -> Result<Json<MutationResponse>, ConsoleError> {
     mutate(
         &state,
         principal,
-        ControlPlaneMutation::UpdateGroup {
+        ControlPlaneMutation::UpdateUpstreamAccess {
             id,
             input,
             expected_updated_at: if_match(&headers)?,
@@ -1722,103 +1779,432 @@ async fn update_group(
     .await
 }
 
-async fn get_group_deletion_impact(
+async fn canonical_topology(
+    state: &ConsoleState,
+) -> Result<crate::persistence::UpstreamTopologyRecords, ConsoleError> {
+    Ok(state.coordinator.topology().await?)
+}
+
+async fn list_routing_groups(
     State(state): State<ConsoleState>,
-    Path(id): Path<Uuid>,
-) -> Result<Json<ChannelDeletionImpact>, ConsoleError> {
+) -> Result<Json<Vec<crate::persistence::RoutingGroupRecord>>, ConsoleError> {
     Ok(Json(
-        state.coordinator.channel_group_deletion_impact(id).await?,
+        canonical_topology(&state)
+            .await?
+            .routing_groups
+            .into_iter()
+            .filter(|group| group.deleted_at.is_none())
+            .collect(),
     ))
 }
 
-async fn delete_group(
+async fn get_routing_group(
+    State(state): State<ConsoleState>,
+    Path(id): Path<Uuid>,
+) -> Result<Response, ConsoleError> {
+    let group = canonical_topology(&state)
+        .await?
+        .routing_groups
+        .into_iter()
+        .find(|group| group.id == id && group.deleted_at.is_none())
+        .ok_or(ConsoleError::NotFound)?;
+    resource_response(to_json(group))
+}
+
+async fn create_routing_group(
     State(state): State<ConsoleState>,
     Extension(principal): Extension<ConsolePrincipal>,
-    Path(id): Path<Uuid>,
-    headers: HeaderMap,
-    Json(input): Json<DeletionConfirmationInput>,
-) -> Result<Json<MutationResponse>, ConsoleError> {
-    mutate(
+    Json(input): Json<crate::persistence::RoutingGroupInput>,
+) -> Result<(StatusCode, Json<MutationResponse>), ConsoleError> {
+    mutate_created(
         &state,
         principal,
-        ControlPlaneMutation::DeleteGroup {
-            id,
-            deleted_by: principal.user_id(),
-            expected_updated_at: if_match(&headers)?,
-            confirmation_token: input.confirmation_token,
+        ControlPlaneMutation::SaveRoutingGroup {
+            id: Uuid::new_v4(),
+            input,
+            expected: None,
         },
     )
     .await
 }
 
-async fn list_channels(
-    State(state): State<ConsoleState>,
-) -> Result<Json<serde_json::Value>, ConsoleError> {
-    Ok(Json(
-        serde_json::to_value(state.coordinator.lists().await?.channels)
-            .expect("Console channel DTO serializes"),
-    ))
-}
-
-async fn create_channel(
+async fn update_routing_group(
     State(state): State<ConsoleState>,
     Extension(principal): Extension<ConsolePrincipal>,
-    Json(input): Json<ChannelCreateInput>,
-) -> Result<(StatusCode, Json<MutationResponse>), ConsoleError> {
-    mutate_created(
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(input): Json<crate::persistence::RoutingGroupInput>,
+) -> Result<Json<MutationResponse>, ConsoleError> {
+    mutate(
         &state,
         principal,
-        ControlPlaneMutation::CreateChannel(input),
+        ControlPlaneMutation::SaveRoutingGroup {
+            id,
+            input,
+            expected: Some(if_match(&headers)?),
+        },
     )
     .await
 }
 
-async fn discover_channel_models(
-    State(state): State<ConsoleState>,
-    Json(input): Json<ChannelModelDiscoveryInput>,
-) -> Result<Json<ChannelModelDiscoveryResponse>, ConsoleError> {
-    Ok(Json(state.channel_models.discover(input).await?))
-}
-
-async fn update_channels_batch(
+async fn delete_routing_group(
     State(state): State<ConsoleState>,
     Extension(principal): Extension<ConsolePrincipal>,
-    Json(input): Json<ChannelBatchUpdateInput>,
-) -> Result<Json<ChannelBatchUpdateResponse>, ConsoleError> {
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<MutationResponse>, ConsoleError> {
+    mutate(
+        &state,
+        principal,
+        ControlPlaneMutation::DeleteRoutingGroup {
+            id,
+            expected: if_match(&headers)?,
+        },
+    )
+    .await
+}
+
+async fn list_logical_channels(
+    State(state): State<ConsoleState>,
+) -> Result<Json<Vec<crate::persistence::LogicalChannelRecord>>, ConsoleError> {
+    Ok(Json(
+        canonical_topology(&state)
+            .await?
+            .logical_channels
+            .into_iter()
+            .filter(|channel| channel.deleted_at.is_none())
+            .collect(),
+    ))
+}
+
+async fn get_logical_channel(
+    State(state): State<ConsoleState>,
+    Path(id): Path<Uuid>,
+) -> Result<Response, ConsoleError> {
+    let channel = canonical_topology(&state)
+        .await?
+        .logical_channels
+        .into_iter()
+        .find(|channel| channel.id == id && channel.deleted_at.is_none())
+        .ok_or(ConsoleError::NotFound)?;
+    resource_response(to_json(channel))
+}
+
+async fn create_logical_channel(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Json(input): Json<crate::persistence::LogicalChannelInput>,
+) -> Result<(StatusCode, Json<MutationResponse>), ConsoleError> {
+    mutate_created(
+        &state,
+        principal,
+        ControlPlaneMutation::SaveLogicalChannel {
+            id: Uuid::new_v4(),
+            input,
+            expected: None,
+        },
+    )
+    .await
+}
+
+async fn update_logical_channel(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(input): Json<crate::persistence::LogicalChannelInput>,
+) -> Result<Json<MutationResponse>, ConsoleError> {
+    mutate(
+        &state,
+        principal,
+        ControlPlaneMutation::SaveLogicalChannel {
+            id,
+            input,
+            expected: Some(if_match(&headers)?),
+        },
+    )
+    .await
+}
+
+async fn delete_logical_channel(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<MutationResponse>, ConsoleError> {
+    mutate(
+        &state,
+        principal,
+        ControlPlaneMutation::DeleteLogicalChannel {
+            id,
+            expected: if_match(&headers)?,
+        },
+    )
+    .await
+}
+
+async fn list_channel_capabilities(
+    State(state): State<ConsoleState>,
+) -> Result<Json<Vec<crate::persistence::ChannelCapabilityRecord>>, ConsoleError> {
+    Ok(Json(
+        canonical_topology(&state)
+            .await?
+            .channel_capabilities
+            .into_iter()
+            .filter(|capability| capability.deleted_at.is_none())
+            .collect(),
+    ))
+}
+
+async fn get_channel_capability(
+    State(state): State<ConsoleState>,
+    Path(id): Path<Uuid>,
+) -> Result<Response, ConsoleError> {
+    let capability = canonical_topology(&state)
+        .await?
+        .channel_capabilities
+        .into_iter()
+        .find(|capability| capability.id == id && capability.deleted_at.is_none())
+        .ok_or(ConsoleError::NotFound)?;
+    resource_response(to_json(capability))
+}
+
+async fn create_channel_capability(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Json(input): Json<crate::persistence::ChannelCapabilityInput>,
+) -> Result<(StatusCode, Json<MutationResponse>), ConsoleError> {
+    mutate_created(
+        &state,
+        principal,
+        ControlPlaneMutation::SaveChannelCapability {
+            id: Uuid::new_v4(),
+            input,
+            expected: None,
+        },
+    )
+    .await
+}
+
+async fn update_channel_capability(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(input): Json<crate::persistence::ChannelCapabilityInput>,
+) -> Result<Json<MutationResponse>, ConsoleError> {
+    mutate(
+        &state,
+        principal,
+        ControlPlaneMutation::SaveChannelCapability {
+            id,
+            input,
+            expected: Some(if_match(&headers)?),
+        },
+    )
+    .await
+}
+
+async fn delete_channel_capability(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<MutationResponse>, ConsoleError> {
+    mutate(
+        &state,
+        principal,
+        ControlPlaneMutation::DeleteChannelCapability {
+            id,
+            expected: if_match(&headers)?,
+        },
+    )
+    .await
+}
+
+async fn update_capabilities_batch(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Json(input): Json<crate::persistence::ChannelBatchUpdateInput>,
+) -> Result<Json<CapabilityBatchUpdateResponse>, ConsoleError> {
     let result = state
         .coordinator
         .update_channels_batch(principal.user_id(), input)
         .await?;
-    Ok(Json(ChannelBatchUpdateResponse {
+    Ok(Json(CapabilityBatchUpdateResponse {
         updated_ids: result.updated_ids,
         correlation_id: result.correlation_id,
     }))
 }
 
-async fn get_channel(
-    State(state): State<ConsoleState>,
-    Path(id): Path<Uuid>,
-) -> Result<Response, ConsoleError> {
-    let value = state
-        .coordinator
-        .channel_detail(id)
-        .await?
-        .map(to_json)
-        .ok_or(ConsoleError::NotFound)?;
-    resource_response(value)
+#[derive(Serialize)]
+struct CapabilityBatchUpdateResponse {
+    updated_ids: Vec<Uuid>,
+    correlation_id: Uuid,
 }
 
-async fn update_channel(
+async fn recover_capability(
     State(state): State<ConsoleState>,
     Extension(principal): Extension<ConsolePrincipal>,
     Path(id): Path<Uuid>,
     headers: HeaderMap,
-    Json(input): Json<ChannelInput>,
 ) -> Result<Json<MutationResponse>, ConsoleError> {
     mutate(
         &state,
         principal,
-        ControlPlaneMutation::UpdateChannel {
+        ControlPlaneMutation::RecoverChannel {
+            id,
+            expected_updated_at: if_match(&headers)?,
+        },
+    )
+    .await
+}
+
+/// Projects one rule and its tier graph into the atomic input shape the Console
+/// edits, plus the version fields used for `ETag`/`If-Match`.
+fn operation_rule_view(
+    topology: &crate::persistence::UpstreamTopologyRecords,
+    rule: &crate::persistence::OperationRuleRecord,
+) -> serde_json::Value {
+    let mut value = to_json(crate::persistence::upstream_topology::rules::rule_input(
+        topology, rule,
+    ));
+    let object = value
+        .as_object_mut()
+        .expect("operation rule input serializes to an object");
+    object.insert("id".into(), to_json(rule.id));
+    object.insert("created_at".into(), to_json(rule.created_at));
+    object.insert("updated_at".into(), to_json(rule.updated_at));
+    value
+}
+
+async fn list_operation_rules(
+    State(state): State<ConsoleState>,
+) -> Result<Json<Vec<serde_json::Value>>, ConsoleError> {
+    let topology = canonical_topology(&state).await?;
+    Ok(Json(
+        topology
+            .operation_rules
+            .iter()
+            .map(|rule| operation_rule_view(&topology, rule))
+            .collect(),
+    ))
+}
+
+async fn list_routing_profiles(
+    State(state): State<ConsoleState>,
+) -> Result<
+    Json<Vec<crate::persistence::upstream_topology::profiles::RoutingProfileView>>,
+    ConsoleError,
+> {
+    Ok(Json(state.coordinator.routing_profiles().await?))
+}
+
+async fn get_routing_profile(
+    State(state): State<ConsoleState>,
+    Path(id): Path<Uuid>,
+) -> Result<Response, ConsoleError> {
+    let profile = state
+        .coordinator
+        .routing_profiles()
+        .await?
+        .into_iter()
+        .find(|profile| profile.id == id)
+        .ok_or(ConsoleError::NotFound)?;
+    resource_response(to_json(profile))
+}
+
+async fn get_operation_rule(
+    State(state): State<ConsoleState>,
+    Path(id): Path<Uuid>,
+) -> Result<Response, ConsoleError> {
+    let topology = canonical_topology(&state).await?;
+    let rule = topology
+        .operation_rules
+        .iter()
+        .find(|rule| rule.id == id)
+        .ok_or(ConsoleError::NotFound)?;
+    resource_response(operation_rule_view(&topology, rule))
+}
+
+async fn create_operation_rule(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Json(input): Json<crate::persistence::OperationRuleInput>,
+) -> Result<(StatusCode, Json<MutationResponse>), ConsoleError> {
+    mutate_created(
+        &state,
+        principal,
+        ControlPlaneMutation::SaveOperationRule {
+            id: Uuid::new_v4(),
+            input,
+            expected_updated_at: None,
+        },
+    )
+    .await
+}
+
+async fn update_operation_rule(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(input): Json<crate::persistence::OperationRuleInput>,
+) -> Result<Json<MutationResponse>, ConsoleError> {
+    mutate(
+        &state,
+        principal,
+        ControlPlaneMutation::SaveOperationRule {
+            id,
+            input,
+            expected_updated_at: Some(if_match(&headers)?),
+        },
+    )
+    .await
+}
+
+async fn list_upstream_credentials(
+    State(state): State<ConsoleState>,
+) -> Result<Json<Vec<crate::persistence::UpstreamCredentialView>>, ConsoleError> {
+    Ok(Json(state.coordinator.upstream_credentials().await?))
+}
+
+async fn get_upstream_credential(
+    State(state): State<ConsoleState>,
+    Path(id): Path<Uuid>,
+) -> Result<Response, ConsoleError> {
+    let detail = state
+        .coordinator
+        .upstream_credential_detail(id)
+        .await?
+        .ok_or(ConsoleError::NotFound)?;
+    resource_response(to_json(detail))
+}
+
+async fn create_upstream_credential(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Json(input): Json<crate::persistence::UpstreamCredentialInput>,
+) -> Result<(StatusCode, Json<MutationResponse>), ConsoleError> {
+    mutate_created(
+        &state,
+        principal,
+        ControlPlaneMutation::CreateUpstreamCredential(input),
+    )
+    .await
+}
+
+async fn update_upstream_credential(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(input): Json<crate::persistence::UpstreamCredentialInput>,
+) -> Result<Json<MutationResponse>, ConsoleError> {
+    mutate(
+        &state,
+        principal,
+        ControlPlaneMutation::UpdateUpstreamCredential {
             id,
             input,
             expected_updated_at: if_match(&headers)?,
@@ -1827,28 +2213,18 @@ async fn update_channel(
     .await
 }
 
-async fn get_channel_deletion_impact(
-    State(state): State<ConsoleState>,
-    Path(id): Path<Uuid>,
-) -> Result<Json<ChannelDeletionImpact>, ConsoleError> {
-    Ok(Json(state.coordinator.channel_deletion_impact(id).await?))
-}
-
-async fn delete_channel(
+async fn delete_upstream_credential(
     State(state): State<ConsoleState>,
     Extension(principal): Extension<ConsolePrincipal>,
     Path(id): Path<Uuid>,
     headers: HeaderMap,
-    Json(input): Json<DeletionConfirmationInput>,
 ) -> Result<Json<MutationResponse>, ConsoleError> {
     mutate(
         &state,
         principal,
-        ControlPlaneMutation::DeleteChannel {
+        ControlPlaneMutation::DeleteUpstreamCredential {
             id,
-            deleted_by: principal.user_id(),
             expected_updated_at: if_match(&headers)?,
-            confirmation_token: input.confirmation_token,
         },
     )
     .await
@@ -1856,25 +2232,18 @@ async fn delete_channel(
 
 async fn list_codex_credentials(
     State(state): State<ConsoleState>,
-    Path(channel_group_id): Path<Uuid>,
 ) -> Result<Json<Vec<CodexCredentialView>>, ConsoleError> {
-    Ok(Json(
-        state
-            .codex_connector
-            .list_credentials(channel_group_id)
-            .await?,
-    ))
+    Ok(Json(state.codex_connector.list_credentials().await?))
 }
 
 async fn start_codex_oauth(
     State(state): State<ConsoleState>,
     Extension(principal): Extension<ConsolePrincipal>,
-    Path(channel_group_id): Path<Uuid>,
     Json(input): Json<CodexOauthStartInput>,
 ) -> Result<(StatusCode, Json<CodexOauthStartResponse>), ConsoleError> {
     let response = state
         .codex_connector
-        .start_oauth(principal.user_id(), channel_group_id, input)
+        .start_oauth(principal.user_id(), input)
         .await?;
     Ok((StatusCode::CREATED, Json(response)))
 }
@@ -1900,12 +2269,11 @@ async fn complete_codex_oauth(
 async fn import_codex_credential(
     State(state): State<ConsoleState>,
     Extension(principal): Extension<ConsolePrincipal>,
-    Path(channel_group_id): Path<Uuid>,
     Json(input): Json<CodexCredentialImportInput>,
 ) -> Result<(StatusCode, Json<MutationResponse>), ConsoleError> {
     let result = state
         .codex_connector
-        .import_credential(principal.user_id(), channel_group_id, input)
+        .import_credential(principal.user_id(), input)
         .await?;
     let status = if result.action == "create" {
         StatusCode::CREATED
@@ -1918,13 +2286,12 @@ async fn import_codex_credential(
 async fn export_codex_credentials(
     State(state): State<ConsoleState>,
     Extension(principal): Extension<ConsolePrincipal>,
-    Path(channel_group_id): Path<Uuid>,
     Json(input): Json<CodexCredentialExportInput>,
 ) -> Result<Json<CodexCredentialExportBundle>, ConsoleError> {
     Ok(Json(
         state
             .codex_connector
-            .export_credentials(principal.user_id(), channel_group_id, input)
+            .export_credentials(principal.user_id(), input)
             .await?,
     ))
 }
@@ -1932,12 +2299,11 @@ async fn export_codex_credentials(
 async fn update_codex_credentials_batch(
     State(state): State<ConsoleState>,
     Extension(principal): Extension<ConsolePrincipal>,
-    Path(channel_group_id): Path<Uuid>,
     Json(input): Json<CodexCredentialBatchInput>,
 ) -> Result<Json<CodexCredentialBatchResponse>, ConsoleError> {
     let result = state
         .codex_connector
-        .update_credentials_batch(principal.user_id(), channel_group_id, input)
+        .update_credentials_batch(principal.user_id(), input)
         .await?;
     Ok(Json(CodexCredentialBatchResponse {
         updated_ids: result.updated_ids,
@@ -2035,102 +2401,12 @@ async fn reset_codex_quota(
     ))
 }
 
-async fn recover_channel(
-    State(state): State<ConsoleState>,
-    Extension(principal): Extension<ConsolePrincipal>,
-    Path(id): Path<Uuid>,
-    Json(input): Json<ChannelRecoverInput>,
-) -> Result<Json<MutationResponse>, ConsoleError> {
-    mutate(
-        &state,
-        principal,
-        ControlPlaneMutation::RecoverChannel {
-            id,
-            expected_updated_at: input.updated_at,
-        },
-    )
-    .await
-}
-
-async fn list_rules(
-    State(state): State<ConsoleState>,
-) -> Result<Json<serde_json::Value>, ConsoleError> {
-    Ok(Json(
-        serde_json::to_value(state.coordinator.lists().await?.model_rules)
-            .expect("Console model-rule DTO serializes"),
-    ))
-}
-
 async fn create_rule(
     State(state): State<ConsoleState>,
     Extension(principal): Extension<ConsolePrincipal>,
     Json(input): Json<ModelRuleCreateInput>,
 ) -> Result<(StatusCode, Json<MutationResponse>), ConsoleError> {
     mutate_created(&state, principal, ControlPlaneMutation::CreateRule(input)).await
-}
-
-async fn get_rule(
-    State(state): State<ConsoleState>,
-    Path(id): Path<Uuid>,
-) -> Result<Response, ConsoleError> {
-    get_resource(state, id, Resource::Rule).await
-}
-
-async fn create_protocol_rule(
-    State(state): State<ConsoleState>,
-    Extension(principal): Extension<ConsolePrincipal>,
-    Path(id): Path<Uuid>,
-    Json(input): Json<ModelProtocolRuleCreateInput>,
-) -> Result<(StatusCode, Json<MutationResponse>), ConsoleError> {
-    mutate_created(
-        &state,
-        principal,
-        ControlPlaneMutation::CreateProtocolRule {
-            model_rule_id: id,
-            input,
-        },
-    )
-    .await
-}
-
-async fn get_protocol_rule(
-    State(state): State<ConsoleState>,
-    Path((id, protocol_id)): Path<(Uuid, Uuid)>,
-) -> Result<Response, ConsoleError> {
-    let protocol = state
-        .coordinator
-        .lists()
-        .await?
-        .model_rules
-        .into_iter()
-        .find(|rule| rule.id == id)
-        .and_then(|rule| {
-            rule.protocol_rules
-                .into_iter()
-                .find(|protocol| protocol.id == protocol_id)
-        })
-        .ok_or(ConsoleError::NotFound)?;
-    resource_response(to_json(protocol))
-}
-
-async fn update_protocol_rule(
-    State(state): State<ConsoleState>,
-    Extension(principal): Extension<ConsolePrincipal>,
-    Path((id, protocol_id)): Path<(Uuid, Uuid)>,
-    headers: HeaderMap,
-    Json(input): Json<ModelProtocolRuleInput>,
-) -> Result<Json<MutationResponse>, ConsoleError> {
-    mutate(
-        &state,
-        principal,
-        ControlPlaneMutation::UpdateProtocolRule {
-            model_rule_id: id,
-            id: protocol_id,
-            input,
-            expected_updated_at: if_match(&headers)?,
-        },
-    )
-    .await
 }
 
 async fn list_proxies(
@@ -2474,8 +2750,6 @@ enum Resource {
     ApiKeyPolicy,
     Model,
     ApiKey,
-    Group,
-    Rule,
     Proxy,
 }
 
@@ -2508,16 +2782,6 @@ async fn get_resource(
             .map(to_json),
         Resource::ApiKey => lists
             .api_keys
-            .into_iter()
-            .find(|item| item.id == id)
-            .map(to_json),
-        Resource::Group => lists
-            .channel_groups
-            .into_iter()
-            .find(|item| item.id == id)
-            .map(to_json),
-        Resource::Rule => lists
-            .model_rules
             .into_iter()
             .find(|item| item.id == id)
             .map(to_json),
@@ -2875,10 +3139,10 @@ fn repository_error_message(error: &crate::persistence::RepositoryError) -> &'st
         crate::persistence::RepositoryError::RoutingDependencyInvalid => {
             "routing_dependency_invalid"
         }
-        crate::persistence::RepositoryError::DeletionImpactChanged => "deletion_impact_changed",
         crate::persistence::RepositoryError::ProviderManagedResource => "provider_managed_resource",
         crate::persistence::RepositoryError::ProtectedUserGroup => "protected_user_group",
         crate::persistence::RepositoryError::ProxyInUse => "proxy_in_use",
+        crate::persistence::RepositoryError::CredentialInUse => "credential_in_use",
         crate::persistence::RepositoryError::CannotDeleteSelf => "cannot_delete_self",
         crate::persistence::RepositoryError::LastAdministrator => "last_administrator",
         crate::persistence::RepositoryError::CannotDisableSelf => "cannot_disable_self",
@@ -2903,10 +3167,10 @@ fn repository_status(error: &crate::persistence::RepositoryError) -> StatusCode 
         crate::persistence::RepositoryError::SharingCredentialInUse => StatusCode::CONFLICT,
         crate::persistence::RepositoryError::NotFound => StatusCode::NOT_FOUND,
         crate::persistence::RepositoryError::Conflict
-        | crate::persistence::RepositoryError::DeletionImpactChanged
         | crate::persistence::RepositoryError::ProviderManagedResource
         | crate::persistence::RepositoryError::ProtectedUserGroup
         | crate::persistence::RepositoryError::ProxyInUse
+        | crate::persistence::RepositoryError::CredentialInUse
         | crate::persistence::RepositoryError::CannotDeleteSelf
         | crate::persistence::RepositoryError::LastAdministrator
         | crate::persistence::RepositoryError::CannotDisableSelf

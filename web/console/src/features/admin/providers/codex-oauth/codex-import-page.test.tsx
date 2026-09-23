@@ -10,32 +10,29 @@ import { http, HttpResponse } from "msw";
 import { BrowserRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
-  ChannelGroupView,
+  RoutingGroupView,
   CodexCredentialImportInput,
   ProxyCreateInput,
   ProxyInput,
 } from "@/api/types";
 import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
-import { CHANNEL_GROUP, PROXY } from "@/test/fixtures";
+import { ROUTING_GROUP, PROXY } from "@/test/fixtures";
 import { seedAuthenticatedSession, server } from "@/test/msw";
 
 const GROUP_ID = "00000000-0000-0000-0000-00000000d001";
 const NEW_PROXY_ID = "00000000-0000-0000-0000-00000000d002";
-const CODEX_GROUP: ChannelGroupView = {
-  ...CHANNEL_GROUP,
+const CODEX_GROUP: RoutingGroupView = {
+  ...ROUTING_GROUP,
   id: GROUP_ID,
   name: "Portable Codex",
-  api_format: "open_ai_responses",
-  connector_kind: "codex_oauth",
-  connector_pool_id: GROUP_ID,
 };
 
 function renderPage() {
   window.history.replaceState(
     {},
     "",
-    `/admin/providers/codex-oauth/${GROUP_ID}/import`,
+    "/admin/routing/upstream-credentials/codex/import",
   );
   render(
     <AppProviders>
@@ -55,13 +52,13 @@ describe("CodexImportPage", () => {
     seedAuthenticatedSession();
     let submitted: CodexCredentialImportInput | undefined;
     server.use(
-      http.get("/console/v1/routing/channel-groups/:id", () =>
+      http.get("/console/v1/routing/groups/:id", () =>
         HttpResponse.json(CODEX_GROUP, {
           headers: { ETag: `"${CODEX_GROUP.updated_at}"` },
         }),
       ),
       http.post(
-        "/console/v1/providers/codex-oauth/channel-groups/:id/credentials",
+        "/console/v1/routing/upstream-credentials/codex",
         async ({ request }) => {
           submitted = (await request.json()) as CodexCredentialImportInput;
           return HttpResponse.json(
@@ -122,7 +119,10 @@ describe("CodexImportPage", () => {
       }),
     );
     expect(submitted).not.toHaveProperty("weight");
-    expect(await screen.findByText("Imported")).toBeInTheDocument();
+    expect(await screen.findByText("Imported", { selector: "[data-slot=badge]" })).toBeInTheDocument();
+    await user.click(screen.getByRole("link", { name: "Back to credentials" }));
+    await waitFor(() => expect(window.location.pathname).toBe("/admin/routing/upstream-credentials"));
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   });
 
   it("uploads a Sub2API bundle, reviews its proxy, creates it, and assigns it before import", async () => {
@@ -130,7 +130,7 @@ describe("CodexImportPage", () => {
     let proxyInput: ProxyCreateInput | undefined;
     let credentialInput: CodexCredentialImportInput | undefined;
     server.use(
-      http.get("/console/v1/routing/channel-groups/:id", () =>
+      http.get("/console/v1/routing/groups/:id", () =>
         HttpResponse.json(CODEX_GROUP, {
           headers: { ETag: `"${CODEX_GROUP.updated_at}"` },
         }),
@@ -147,7 +147,7 @@ describe("CodexImportPage", () => {
         );
       }),
       http.post(
-        "/console/v1/providers/codex-oauth/channel-groups/:id/credentials",
+        "/console/v1/routing/upstream-credentials/codex",
         async ({ request }) => {
           credentialInput =
             (await request.json()) as CodexCredentialImportInput;
@@ -253,7 +253,7 @@ describe("CodexImportPage", () => {
     let updateIfMatch = "";
     let deleteIfMatch = "";
     server.use(
-      http.get("/console/v1/routing/channel-groups/:id", () =>
+      http.get("/console/v1/routing/groups/:id", () =>
         HttpResponse.json(CODEX_GROUP, {
           headers: { ETag: `"${CODEX_GROUP.updated_at}"` },
         }),

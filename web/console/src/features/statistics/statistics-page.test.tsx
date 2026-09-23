@@ -9,6 +9,9 @@ import { seedAuthenticatedSession, seedUserSession, server } from "@/test/msw";
 import {
   CHANNEL,
   CHANNEL_GROUP,
+  ROUTING_GROUP,
+  LOGICAL_CHANNEL,
+  CHANNEL_CAPABILITY,
   COST_STATISTICS_REPORT,
   MODEL,
 } from "@/test/fixtures";
@@ -65,7 +68,7 @@ describe("StatisticsPage", () => {
     expect(
       screen.getByLabelText("8 requests on Jul 25, 2026"),
     ).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Price sync" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Model configuration" })).toHaveAttribute("href", "/admin/models");
     expect(screen.getByRole("link", { name: "System load" })).toHaveAttribute(
       "href",
       "/admin/system-load",
@@ -173,7 +176,7 @@ describe("StatisticsPage", () => {
       "href",
       "/leaderboard",
     );
-    expect(screen.queryByRole("link", { name: "Price sync" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Model configuration" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "System load" })).not.toBeInTheDocument();
     expect(
       screen.queryByRole("link", { name: "Cost statistics" }),
@@ -241,12 +244,12 @@ describe("StatisticsPage", () => {
     await user.click(channelSelect);
     await user.click(
       await screen.findByRole("option", {
-        name: `${CHANNEL_GROUP.name} · ${CHANNEL.name}`,
+        name: `${ROUTING_GROUP.name} · ${LOGICAL_CHANNEL.name} · ${CHANNEL_CAPABILITY.settings.operation}`,
       }),
     );
     await user.click(screen.getByRole("button", { name: "Apply" }));
     await waitFor(() => {
-      expect(queries.at(-1)?.get("channel_id")).toBe(CHANNEL.id);
+      expect(queries.at(-1)?.get("channel_id")).toBe(CHANNEL_CAPABILITY.id);
     });
 
     const todayStart = new Date(queries.at(-1)?.get("started_after") ?? "");
@@ -284,7 +287,7 @@ describe("StatisticsPage", () => {
             id: credentialId,
             name: "Codex Plus",
             api_format: "open_ai_responses",
-            connector_kind: "codex_oauth",
+            connector_kind: "codex",
             provider_managed: true,
           },
           {
@@ -292,7 +295,7 @@ describe("StatisticsPage", () => {
             id: "00000000-0000-0000-0000-00000000d002",
             name: "Codex Plus",
             api_format: "open_ai_images",
-            connector_kind: "codex_oauth",
+            connector_kind: "codex",
             provider_managed: true,
           },
         ]),

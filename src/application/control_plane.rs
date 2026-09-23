@@ -9,11 +9,11 @@ use uuid::Uuid;
 use crate::{
     domain::AutomaticDisableTrigger,
     persistence::{
-        ApiHostsView, ChannelBatchUpdateInput, ChannelDeletionImpact, CodexCredentialBatchInput,
-        CodexCredentialCreate, CodexCredentialUpdateInput, ConsoleApiKey, ConsoleAuditLog,
-        ControlPlaneChannelDetail, ControlPlaneConfigTemplateDetail, ControlPlaneLists,
-        ControlPlaneMutation, ControlPlaneRepository, MutationResult, PreparedControlPlaneChange,
-        RepositoryError, SelfApiKeyCreate, SelfApiKeyOptions, SelfApiKeyUpdate, SyncedModelInput,
+        ApiHostsView, ChannelBatchUpdateInput, CodexCredentialBatchInput, CodexCredentialCreate,
+        CodexCredentialUpdateInput, ConsoleApiKey, ConsoleAuditLog,
+        ControlPlaneConfigTemplateDetail, ControlPlaneLists, ControlPlaneMutation,
+        ControlPlaneRepository, MutationResult, PreparedControlPlaneChange, RepositoryError,
+        SelfApiKeyCreate, SelfApiKeyOptions, SelfApiKeyUpdate, SyncedModelInput,
         SystemSettingsView, UserBatchUpdateInput, UserSettingsInput, UserSettingsView,
     },
     routing::{
@@ -42,6 +42,34 @@ struct UpstreamClientCleanup {
 }
 
 impl ControlPlaneCoordinator {
+    pub async fn routing_profiles(
+        &self,
+    ) -> Result<
+        Vec<crate::persistence::upstream_topology::profiles::RoutingProfileView>,
+        ControlPlaneError,
+    > {
+        Ok(self.repository.routing_profiles().await?)
+    }
+
+    pub async fn topology(
+        &self,
+    ) -> Result<crate::persistence::UpstreamTopologyRecords, ControlPlaneError> {
+        Ok(self.repository.topology().await?)
+    }
+
+    pub async fn upstream_credentials(
+        &self,
+    ) -> Result<Vec<crate::persistence::UpstreamCredentialView>, ControlPlaneError> {
+        Ok(self.repository.upstream_credentials().await?)
+    }
+
+    pub async fn upstream_credential_detail(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<crate::persistence::UpstreamCredentialDetail>, ControlPlaneError> {
+        Ok(self.repository.upstream_credential_detail(id).await?)
+    }
+
     #[must_use]
     pub fn new(
         repository: ControlPlaneRepository,
@@ -127,27 +155,6 @@ impl ControlPlaneCoordinator {
 
     pub async fn lists(&self) -> Result<ControlPlaneLists, ControlPlaneError> {
         Ok(self.repository.control_plane_lists().await?)
-    }
-
-    pub async fn channel_detail(
-        &self,
-        id: Uuid,
-    ) -> Result<Option<ControlPlaneChannelDetail>, ControlPlaneError> {
-        Ok(self.repository.control_plane_channel_detail(id).await?)
-    }
-
-    pub async fn channel_group_deletion_impact(
-        &self,
-        id: Uuid,
-    ) -> Result<ChannelDeletionImpact, ControlPlaneError> {
-        Ok(self.repository.channel_group_deletion_impact(id).await?)
-    }
-
-    pub async fn channel_deletion_impact(
-        &self,
-        id: Uuid,
-    ) -> Result<ChannelDeletionImpact, ControlPlaneError> {
-        Ok(self.repository.channel_deletion_impact(id).await?)
     }
 
     pub async fn config_template_detail(
@@ -240,8 +247,8 @@ impl ControlPlaneCoordinator {
         let (mutations, correlation_id) = self.commit_change(change).await?;
         tracing::info!(
             %correlation_id,
-            channel_count = mutations.len(),
-            "channel batch update committed"
+            capability_count = mutations.len(),
+            "capability batch update committed"
         );
         Ok(ChannelBatchUpdateResult {
             updated_ids: mutations.into_iter().map(|mutation| mutation.id).collect(),
@@ -295,13 +302,12 @@ impl ControlPlaneCoordinator {
     pub async fn update_codex_credentials_batch(
         &self,
         actor: Uuid,
-        channel_group_id: Uuid,
         input: CodexCredentialBatchInput,
     ) -> Result<CodexCredentialBatchResult, ControlPlaneError> {
         let _guard = self.serial.lock().await;
         let change = self
             .repository
-            .prepare_codex_credentials_batch(actor, channel_group_id, input)
+            .prepare_codex_credentials_batch(actor, input)
             .await?;
         let (mutations, correlation_id) = self.commit_change(change).await?;
         Ok(CodexCredentialBatchResult {

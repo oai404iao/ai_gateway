@@ -16,6 +16,12 @@ const COMMIT_BARRIERS: &[i64] = &[34, 46];
 #[derive(Debug, Error)]
 pub enum MigrationRunError {
     #[error(transparent)]
+    CapabilityCutover(#[from] super::capability_cutover::io::CapabilityCutoverIoError),
+    #[error(
+        "channel {channel_id} has invalid legacy authentication or credential scope; repair or delete it before upgrading"
+    )]
+    LegacyCredential { channel_id: uuid::Uuid },
+    #[error(transparent)]
     Database(#[from] sqlx::Error),
     #[error(transparent)]
     Migration(#[from] MigrateError),
@@ -69,15 +75,14 @@ async fn run_locked_migrations(connection: &mut PgConnection) -> Result<(), Migr
 async fn apply_next_migration_batch(
     transaction: &mut Transaction<'_, Postgres>,
 ) -> Result<bool, MigrationRunError> {
-    let connection = &mut **transaction;
-    connection
+    (**transaction)
         .ensure_migrations_table("_sqlx_migrations")
         .await?;
-    if let Some(version) = connection.dirty_version("_sqlx_migrations").await? {
+    if let Some(version) = (**transaction).dirty_version("_sqlx_migrations").await? {
         return Err(MigrateError::Dirty(version).into());
     }
 
-    let applied = connection
+    let applied = (**transaction)
         .list_applied_migrations("_sqlx_migrations")
         .await?;
     validate_applied_migrations(&applied)?;
@@ -106,7 +111,39 @@ async fn apply_next_migration_batch(
         .map_or(pending.len(), |index| index + 1);
     let has_more = batch_len < pending.len();
     for migration in pending.into_iter().take(batch_len) {
-        connection.apply("_sqlx_migrations", migration).await?;
+        if migration.version == 64 {
+            let rows = sqlx::query_as::<_, (uuid::Uuid, String, String, String, Option<String>, Option<String>)>(
+                "SELECT c.id,c.name,c.base_url,c.upstream_auth_kind,c.upstream_auth_header_name,c.upstream_api_key
+                 FROM channels c JOIN channel_groups g ON g.id=c.channel_group_id
+                 WHERE c.deleted_at IS NULL AND g.connector_kind='openai_compatible' ORDER BY c.id")
+                .fetch_all(&mut **transaction).await?;
+            for (channel_id, name, target, kind, header, secret) in rows {
+                if !super::upstream_credentials::validate_legacy_auth(
+                    &name,
+                    &target,
+                    &kind,
+                    header.as_deref(),
+                    secret.as_deref(),
+                ) {
+                    return Err(MigrationRunError::LegacyCredential { channel_id });
+                }
+            }
+        }
+        if migration.version == 66 {
+            super::capability_cutover::operation_split::storage::pg_prepare(transaction).await?;
+        }
+        (**transaction).apply("_sqlx_migrations", migration).await?;
+        if migration.version == 65 {
+            super::capability_cutover::activation::postgres(transaction).await?;
+        }
+        if migration.version == 66 {
+            super::capability_cutover::operation_split::storage::pg_validate(transaction).await?;
+        }
+        if migration.version == 68 {
+            super::upstream_topology::pg_load_control_plane(transaction)
+                .await
+                .map_err(super::capability_cutover::io::CapabilityCutoverIoError::from)?;
+        }
     }
     Ok(has_more)
 }

@@ -232,7 +232,7 @@ export function ChannelGroupStatusPanel() {
       </Card>
 
       {data?.groups.map((group) => (
-        <Card key={group.id}>
+        <Card key={`${group.id}:${group.api_format}`}>
           <CardHeader>
             <CardTitle className="flex flex-wrap items-center gap-2">
               <span>{group.name}</span>
