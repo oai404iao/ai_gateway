@@ -76,6 +76,8 @@ mod metering_fixtures;
 mod persistence_contracts;
 #[path = "contracts/interfaces.rs"]
 mod persistence_interfaces;
+#[path = "support/plugins.rs"]
+mod plugins;
 #[cfg(all(feature = "sqlite-backend", target_os = "linux"))]
 #[path = "contracts/sqlite_parity.rs"]
 mod sqlite_parity;
@@ -3075,6 +3077,7 @@ async fn codex_sharing_pins_credentials_and_settles_money_across_api_keys() {
         coordinator.clone(),
         runtime.clone(),
         clients.clone(),
+        plugins::codex_plugins(),
     )
     .await
     .unwrap();
@@ -5035,6 +5038,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         coordinator,
         Arc::clone(&runtime),
         Arc::clone(&upstream_clients),
+        plugins::codex_plugins(),
     )
     .await
     .unwrap();
@@ -7116,6 +7120,7 @@ async fn admin_app_with_models_dev(
         coordinator.clone(),
         Arc::clone(&runtime),
         Arc::clone(&upstream_clients),
+        plugins::codex_plugins(),
     )
     .await
     .unwrap();

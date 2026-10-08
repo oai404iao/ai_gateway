@@ -24,7 +24,7 @@ use tokio_tungstenite::tungstenite::{
 use uuid::Uuid;
 
 use crate::domain::{
-    CompiledChannel, CompiledChannelUpstreamPolicy, CompiledRuntimeConfig,
+    CompiledChannel, CompiledChannelUpstreamPolicy, CompiledRuntimeConfig, ConnectorKind,
     OutboundNetworkPolicyFingerprint, ResponsesWebSocketSettings,
 };
 
@@ -68,6 +68,7 @@ pub(crate) struct UpstreamWebSocketKey {
     api_key_id: Uuid,
     client_identity: WebSocketClientIdentity,
     channel_id: Uuid,
+    connector_kind: ConnectorKind,
     upstream_model: Arc<str>,
     connectivity_fingerprint: Arc<str>,
     outbound_network_policy_fingerprint: OutboundNetworkPolicyFingerprint,
@@ -94,6 +95,7 @@ impl UpstreamWebSocketKey {
             api_key_id,
             client_identity,
             channel_id: channel.id(),
+            connector_kind: channel.connector_kind(),
             upstream_model: Arc::from(upstream_model),
             connectivity_fingerprint: Arc::clone(channel.connectivity_fingerprint()),
             outbound_network_policy_fingerprint: channel
@@ -123,6 +125,7 @@ impl fmt::Debug for UpstreamWebSocketKey {
             .field("api_key_id", &self.api_key_id)
             .field("client_identity", &self.client_identity)
             .field("channel_id", &self.channel_id)
+            .field("connector_kind", &self.connector_kind)
             .field("target", &"<redacted>")
             .field("headers", &"<redacted>")
             .field("max_message_bytes", &self.max_message_bytes)
@@ -146,23 +149,42 @@ fn hash_headers(hasher: &mut Sha256, headers: &HeaderMap) {
 #[cfg(test)]
 mod credential_tests {
     use super::*;
-    use crate::domain::{ApiFormat, ApiOperation, ChannelIdentity, UpstreamAuth};
+    use crate::domain::{
+        ApiFormat, ApiOperation, ChannelIdentity, RequestCompression, UpstreamAuth,
+    };
 
     fn key(credential: Uuid, revision: Uuid) -> UpstreamWebSocketKey {
-        let channel = CompiledChannel::new(
+        key_with_connector(ConnectorKind::OpenAiCompatible, Some(credential), revision)
+    }
+
+    fn key_with_connector(
+        connector: ConnectorKind,
+        credential: Option<Uuid>,
+        revision: Uuid,
+    ) -> UpstreamWebSocketKey {
+        let channel = CompiledChannel::new_with_connector_policy_automation_and_billing(
             Uuid::from_u128(1),
             Uuid::from_u128(2),
             ApiFormat::OpenAiResponses,
+            connector,
+            RequestCompression::Default,
             Url::parse("https://upstream.test").unwrap(),
+            rust_decimal::Decimal::ONE,
             UpstreamAuth::Bearer(Arc::from("same-test-secret")),
             HashSet::new(),
+            true,
+            false,
+            false,
+            false,
+            None,
+            CompiledChannelUpstreamPolicy::transparent(ApiFormat::OpenAiResponses),
         )
         .with_channel_identity(ChannelIdentity {
             logical_channel_id: Uuid::from_u128(1),
             access_id: Uuid::from_u128(2),
             api_operation: ApiOperation::ResponsesWebSocket,
-            credential_id: Some(credential),
-            credential_revision: Some(revision),
+            credential_id: credential,
+            credential_revision: credential.map(|_| revision),
             binding_revision: Uuid::nil(),
             access_revision: Uuid::nil(),
             capability_revision: Uuid::nil(),
@@ -185,6 +207,42 @@ mod credential_tests {
         assert_ne!(original, key(Uuid::from_u128(4), Uuid::from_u128(7)));
     }
 
+    #[test]
+    fn connector_identity_isolates_even_legacy_channels_with_identical_auth_and_target() {
+        let first = key_with_connector(
+            ConnectorKind::parse("plugin-first").unwrap(),
+            None,
+            Uuid::nil(),
+        );
+        let second = key_with_connector(
+            ConnectorKind::parse("plugin-second").unwrap(),
+            None,
+            Uuid::nil(),
+        );
+        assert_eq!(
+            first.connectivity_fingerprint,
+            second.connectivity_fingerprint
+        );
+        assert_eq!(first.header_fingerprint, second.header_fingerprint);
+        assert_eq!(first.target, second.target);
+        assert_ne!(first, second);
+        let state = PoolState {
+            idle: VecDeque::new(),
+            settings: ResponsesWebSocketSettings::default(),
+            active_api_keys: HashSet::from([second.api_key_id]),
+            active_channels: Some(HashMap::from([(
+                second.channel_id,
+                (
+                    second.connector_kind,
+                    Arc::clone(&second.connectivity_fingerprint),
+                    second.outbound_network_policy_fingerprint,
+                ),
+            )])),
+        };
+        assert!(state.permits(&second));
+        assert!(!state.permits(&first));
+    }
+
     #[tokio::test]
     async fn a_connection_returned_after_credential_invalidation_is_discarded() {
         let pool = UpstreamWebSocketPool::new();
@@ -202,6 +260,7 @@ mod credential_tests {
             state.active_channels = Some(HashMap::from([(
                 current.channel_id,
                 (
+                    current.connector_kind,
                     Arc::clone(&current.connectivity_fingerprint),
                     current.outbound_network_policy_fingerprint,
                 ),
@@ -439,10 +498,12 @@ struct PoolInner {
     discarded_total: AtomicU64,
 }
 
+type ActiveChannelIdentity = (ConnectorKind, Arc<str>, OutboundNetworkPolicyFingerprint);
+
 struct PoolState {
     idle: VecDeque<IdleWebSocket>,
     settings: ResponsesWebSocketSettings,
-    active_channels: Option<HashMap<Uuid, (Arc<str>, OutboundNetworkPolicyFingerprint)>>,
+    active_channels: Option<HashMap<Uuid, ActiveChannelIdentity>>,
     active_api_keys: HashSet<Uuid>,
 }
 
@@ -452,8 +513,9 @@ impl PoolState {
             self.active_api_keys.contains(&key.api_key_id)
                 && channels
                     .get(&key.channel_id)
-                    .is_some_and(|(identity, network)| {
-                        identity == &key.connectivity_fingerprint
+                    .is_some_and(|(connector, identity, network)| {
+                        connector == &key.connector_kind
+                            && identity == &key.connectivity_fingerprint
                             && network == &key.outbound_network_policy_fingerprint
                     })
         })
@@ -623,6 +685,7 @@ impl UpstreamWebSocketPool {
                         (
                             *id,
                             (
+                                channel.connector_kind(),
                                 Arc::clone(channel.connectivity_fingerprint()),
                                 channel
                                     .upstream_policy()
@@ -643,6 +706,7 @@ impl UpstreamWebSocketPool {
                     .channel(entry.key.channel_id)
                     .is_some_and(|channel| {
                         channel.supports_websocket()
+                            && channel.connector_kind() == entry.key.connector_kind
                             && channel.connectivity_fingerprint()
                                 == &entry.key.connectivity_fingerprint
                             && channel

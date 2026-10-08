@@ -9,6 +9,12 @@
 #   openssl rand -hex 32 > ./config/postgres-password
 #   chmod 600 ./config/postgres-password
 
+# Install plugins separately and mount their directory read-only into the container.
+# [[plugins]]
+# id = "codex"
+# path = "/opt/ai-gateway/plugins/codex/libai_gateway_connector_codex.so"
+# sha256 = "<64 lowercase hexadecimal characters>"
+
 [server]
 # The container must listen on all container interfaces. Host exposure remains
 # loopback-only by default in docker-compose.prd.yaml.

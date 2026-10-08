@@ -2,6 +2,7 @@ import { http, HttpResponse, passthrough } from "msw";
 import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll } from "vitest";
 import {
+  CONNECTOR_PLUGINS,
   ADMIN_ACCESS_TOKEN,
   ADMIN_API_KEY,
   ADMIN_LOGIN_RESPONSE,
@@ -58,6 +59,7 @@ import { clearSession, setSession } from "@/api/session-store";
  * secrets or change state.
  */
 export const handlers = [
+  http.get("/console/v1/system/connectors", () => HttpResponse.json(CONNECTOR_PLUGINS)),
   http.post("/console/v1/auth/refresh", () =>
     HttpResponse.json(ADMIN_LOGIN_RESPONSE, { headers: { "Set-Cookie": "refresh=rotated" } }),
   ),

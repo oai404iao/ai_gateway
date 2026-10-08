@@ -359,6 +359,7 @@ pub fn router(state: ConsoleState) -> Router {
             get(get_system_cost_statistics),
         )
         .route("/console/v1/system/load", get(get_system_load))
+        .route("/console/v1/system/connectors", get(list_connector_plugins))
         .route("/console/v1/system/reload", post(reload))
         .route_layer(middleware::from_fn(require_admin));
 
@@ -2681,6 +2682,10 @@ async fn list_audit_logs(
     ))
 }
 
+async fn list_connector_plugins(State(state): State<ConsoleState>) -> Json<serde_json::Value> {
+    Json(to_json(state.coordinator.connector_plugins()))
+}
+
 async fn get_system_settings(State(state): State<ConsoleState>) -> Result<Response, ConsoleError> {
     let settings = state.coordinator.system_settings().await?;
     let updated_at = settings.updated_at;
@@ -3094,6 +3099,7 @@ fn codex_error_response(error: &CodexConnectorError) -> (StatusCode, &'static st
         | CodexConnectorError::CredentialDisabled
         | CodexConnectorError::CredentialReauthenticationRequired
         | CodexConnectorError::RefreshTokenInvalid => StatusCode::UNPROCESSABLE_ENTITY,
+        CodexConnectorError::PluginUnavailable => StatusCode::SERVICE_UNAVAILABLE,
         CodexConnectorError::UpstreamTimeout => StatusCode::GATEWAY_TIMEOUT,
         CodexConnectorError::UpstreamClient(_)
         | CodexConnectorError::InvalidEndpoint

@@ -22,10 +22,12 @@ import {
 import { useI18n } from "@/app/i18n";
 import { usePageOrigin, useReturnPath, withReturnTo } from "@/lib/page-navigation";
 import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
+import { useConnectorPlugins } from "@/features/admin/connectors/api";
 
 const schema = z.object({
   name: z.string().trim().min(1).max(100),
   kind: z.enum(["bearer", "header"]),
+  connector_kind: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/),
   header_name: z.string(),
   secret: z.string(),
   allowed_base_urls: z.array(z.string().url()).min(1),
@@ -36,7 +38,7 @@ const schema = z.object({
   }
 });
 type FormValues = z.infer<typeof schema>;
-const defaults: FormValues = { name: "", kind: "bearer", header_name: "", secret: "", allowed_base_urls: [], enabled: true };
+const defaults: FormValues = { name: "", kind: "bearer", connector_kind: "general", header_name: "", secret: "", allowed_base_urls: [], enabled: true };
 
 export function CredentialDetailPage() {
   const { id = "" } = useParams();
@@ -45,12 +47,14 @@ export function CredentialDetailPage() {
   const { t } = useI18n();
   const query = useUpstreamCredential(id);
   const channels = useLogicalChannels();
+  const connectors = useConnectorPlugins();
   const create = useCreateUpstreamCredential();
   const update = useUpdateUpstreamCredential(id);
   const remove = useDeleteUpstreamCredential(id);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const form = useForm<FormValues>({ resolver: zodResolver(schema), defaultValues: defaults });
   const credential = query.data?.data;
+  const connector = connectors.data?.find((item) => item.id === form.watch("connector_kind") && item.id !== "codex");
   const managed = credential?.provider_managed ?? false;
   const returnTo = useReturnPath(managed
     ? "/admin/routing/upstream-credentials?connector=codex" : "/admin/routing/upstream-credentials");
@@ -60,6 +64,7 @@ export function CredentialDetailPage() {
     if (credential && !credential.provider_managed) {
       form.reset({
         name: credential.name, kind: credential.kind as "bearer" | "header",
+        connector_kind: credential.connector_kind,
         header_name: credential.header_name ?? "", secret: "",
         allowed_base_urls: credential.allowed_base_urls, enabled: credential.enabled,
       });
@@ -81,6 +86,7 @@ export function CredentialDetailPage() {
     }
     const input = {
       name: values.name, kind: values.kind,
+      connector_kind: values.connector_kind,
       header_name: values.kind === "header" ? values.header_name.trim() : null,
       allowed_base_urls: values.allowed_base_urls, enabled: values.enabled,
     };
@@ -127,6 +133,22 @@ export function CredentialDetailPage() {
               <Input id="credential-name" {...form.register("name")} aria-invalid={Boolean(form.formState.errors.name)} />
               <FieldError errors={[form.formState.errors.name]} />
             </Field>
+            <Field data-disabled={!isNew}>
+              <FieldLabel htmlFor="credential-connector">{t("Connector")}</FieldLabel>
+              <Select value={form.watch("connector_kind")} disabled={!isNew}
+                onValueChange={(value) => {
+                  if (value !== null) form.setValue("connector_kind", value, { shouldDirty: true });
+                }}>
+                <SelectTrigger id="credential-connector"><SelectValue /></SelectTrigger>
+                <SelectContent><SelectGroup>
+                  {connectors.data?.filter((item) => item.id !== "codex").map((item) =>
+                    <SelectItem key={item.id} value={item.id}>{item.id === "general" ? t("General") : item.id}</SelectItem>)}
+                </SelectGroup></SelectContent>
+              </Select>
+              <FieldDescription>{connector
+                ? `${connector.id} · ${connector.version} · ${connector.built_in ? t("Built in") : t("Native plugin")}`
+                : t("Connector registry unavailable.")}</FieldDescription>
+            </Field>
             <Field>
               <FieldLabel htmlFor="credential-kind">{t("Authentication type")}</FieldLabel>
               <Select value={form.watch("kind")} disabled={!isNew}
@@ -158,7 +180,7 @@ export function CredentialDetailPage() {
                 onCheckedChange={(value) => form.setValue("enabled", value, { shouldDirty: true })} />
             </Field>
           </FieldGroup>
-          <Button type="submit" disabled={busy}>{t("Save credential")}</Button>
+          <Button type="submit" disabled={busy || !connector}>{t("Save credential")}</Button>
         </form>
       </CardContent>
     </Card> : null}

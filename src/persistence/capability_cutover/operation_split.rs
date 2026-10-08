@@ -253,14 +253,17 @@ pub fn plan(input: &UpstreamTopologyRecords) -> Result<Plan, SplitError> {
     let mut plan = Plan {
         accesses: accesses
             .values()
-            .map(|access| Access {
-                id: access.id,
-                connector: match access.connector_kind {
-                    ConnectorKind::OpenAiCompatible => Connector::General,
-                    ConnectorKind::CodexOauth => Connector::Codex,
-                },
+            .map(|access| {
+                Ok(Access {
+                    id: access.id,
+                    connector: match access.connector_kind {
+                        ConnectorKind::OpenAiCompatible => Connector::General,
+                        ConnectorKind::CodexOauth => Connector::Codex,
+                        ConnectorKind::Plugin(_) => return Err(SplitError::Capability),
+                    },
+                })
             })
-            .collect(),
+            .collect::<Result<_, _>>()?,
         capabilities: Vec::new(),
         rules: Vec::new(),
         tiers: Vec::new(),

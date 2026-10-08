@@ -17,6 +17,7 @@ use ai_gateway::{
         ProxyTestService, RequestLogSink, SystemMetricsService, UpstreamConnectorRegistry,
         hash_console_password,
     },
+    connector_plugins::ConnectorPlugins,
     http,
     models_dev::ModelsDevClient,
     observability,
@@ -27,7 +28,9 @@ use ai_gateway::{
         SystemWebSocketSettingsInput,
     },
     routing::{PassiveHealthPolicy, RoutingRuntime},
-    runtime_config::{AppConfig, BootstrapConfig, RuntimeConfig, compile_runtime_config},
+    runtime_config::{
+        AppConfig, BootstrapConfig, RuntimeConfig, compile_runtime_config_with_plugins,
+    },
     upstream::UpstreamClientRegistry,
     workers::{
         ChannelProbeWorker, CodexCredentialWorker, ControlPlaneReloader, DurableRequestLogWorker,
@@ -137,12 +140,20 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
     let gateway_started = Instant::now();
     let config = AppConfig::load(&config_path)?.validate()?;
     let _log_guard = observability::init(&config.observability.filter);
+    let plugins = ConnectorPlugins::load(&config.plugins)?;
     let database = Database::open(
         &config.database,
         Some(config.request_logging.database_max_connections),
     )
     .await?;
-    let result = serve_connected(config, &database, gateway_started_at, gateway_started).await;
+    let result = serve_connected(
+        config,
+        &database,
+        plugins,
+        gateway_started_at,
+        gateway_started,
+    )
+    .await;
     database.close().await;
     result
 }
@@ -150,6 +161,7 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
 async fn serve_connected(
     config: BootstrapConfig,
     database: &Database,
+    plugins: ConnectorPlugins,
     gateway_started_at: chrono::DateTime<Utc>,
     gateway_started: Instant,
 ) -> Result<(), Box<dyn Error>> {
@@ -200,9 +212,9 @@ async fn serve_connected(
         })
         .await?;
     let system_probe_identity = repository.ensure_system_probe_identity().await?;
-    let initial = compile_runtime_config(repository.load_runtime().await?)?;
+    let initial = compile_runtime_config_with_plugins(repository.load_runtime().await?, &plugins)?;
     let initial_passive_health = initial.system_settings().passive_health();
-    let runtime = Arc::new(RuntimeConfig::new(initial));
+    let runtime = Arc::new(RuntimeConfig::new_with_plugins(initial, plugins.clone()));
     let sharing = if config.codex_sharing.enabled {
         ai_gateway::codex_sharing::SharingRuntime::open(
             config.request_logging.spool_directory.join("codex-sharing"),
@@ -272,10 +284,13 @@ async fn serve_connected(
         coordinator.clone(),
         Arc::clone(&runtime),
         Arc::clone(&upstream_clients),
+        plugins.clone(),
     )
     .await?;
     let codex_credential_worker = CodexCredentialWorker::start(codex_connector.clone());
-    let connectors = UpstreamConnectorRegistry::default().with_codex(codex_connector.clone());
+    let connectors = UpstreamConnectorRegistry::default()
+        .with_plugins(plugins)
+        .with_codex(codex_connector.clone());
     let proxy = ProxyService::with_dependencies_and_registry_and_automation(
         Arc::clone(&runtime),
         &config.request_limits,

@@ -9,6 +9,7 @@
 3. [生产配置与容量调优](production-configuration.md)：单节点基线、PostgreSQL、存储和观测。
 4. [Docker Compose 生产部署](production-deployment.md)：密钥、启动、升级和回滚边界。
 5. [SQLite 单实例部署与恢复](sqlite.md)：Linux 文件后端、管理员 CLI、停机成对备份及恢复。
+6. [连接器插件安装](connector-plugins.md)：独立安装 Codex、启动校验、容器挂载与升级。
 
 ## API 使用者
 

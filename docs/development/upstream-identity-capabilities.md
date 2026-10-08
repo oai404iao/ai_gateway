@@ -452,8 +452,10 @@ PostgreSQL `0067` / SQLite `0007` 追加新授权表，按旧授权能力的所�
 
 - `routing_groups → upstream_channels → upstream_credentials` 是所有连接器共用的组织模型。
   接入、凭证和能力均显式配置；凭证不属于组或 pool，导入不创建拓扑。
-- `upstream_credentials.connector_kind` 从认证子类型生成，保持 `general` / `codex`
-  与认证材料一致。通用与 Codex 绑定均校验精确目标范围；多个渠道复用凭证不共享授权。
+- `upstream_credentials.connector_kind` 是显式、不可变的连接器 ID，与认证类型独立；
+  静态凭证默认 `general`，也可显式归属已注册的原生插件。`codex_oauth` 只能归属
+  `codex`，其他认证类型不能冒充 Codex。绑定必须同时满足连接器 ID 相同和精确目标
+  范围；多个渠道复用凭证不共享授权。无认证仍使用空凭证引用，不创建占位身份。
 - OAuth 扩展直接保存维护代理和账号模型目录；导入、重授权、启停或改名不修改渠道接入、
   能力目录及其管理开关。凭证必须先解除全部活动渠道引用才可删除。
 - `codex_sharing_groups.channel_id` 选择逻辑渠道；原凭证 UUID 和 provider identity
@@ -467,6 +469,14 @@ PostgreSQL `0067` / SQLite `0007` 追加新授权表，按旧授权能力的所�
 - PostgreSQL `0069` / SQLite `0009` 新增不可变凭证归属侧表。journal v8 捕获所选快照
   的凭证 UUID 或明确无认证；旧 v2–7 归属未知，查询才回退冻结注册表。
   侧表与事实同事务提交，重复归属冲突不覆盖；改绑不能迁移历史或在途请求费用。
+- PostgreSQL `0070` / SQLite `0010` 将生成的凭证连接器列改为显式 ID，并将接入的
+  两值限制改为有界 ID 语法。升级保留既有 `general` / `codex`、凭证 UUID、revision、
+  时间戳、金融状态及所有生命周期保护。SQLite 在原迁移事务内重建表并恢复索引、
+  触发器和视图，提交前检查外键；不修改已发布迁移。
+- [原生连接器](connector-plugins.md) 的注册表属于进程运行时实例，不是全局可变状态。
+  启动与控制面提交前校验全部未删除接入、凭证和能力，包括停用、未绑定草稿：
+  未注册 ID、未声明操作或缺少操作所需命令均拒绝发布。加载插件不创建接入、凭证、
+  渠道、能力、路由或授权；操作仍限制为上述六种，拼车仍仅支持 Codex。
 - Console “上游凭证”按连接器管理；拼车表单和本人 Key 选项选择逻辑渠道，不暴露
   provider identity。独立 quota 可见性仍经用户组授权的渠道组限定，并对账号去重。
 - 桌面表格在容器内滚动，窄屏模型列表和路由详情切换；操作选择和价格文本使用可读对比度。

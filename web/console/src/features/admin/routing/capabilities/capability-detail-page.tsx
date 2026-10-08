@@ -56,6 +56,7 @@ import type {
 } from "@/api/types";
 import { usePageOrigin, useReturnPath, withReturnTo } from "@/lib/page-navigation";
 import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
+import { useConnectorPlugins } from "@/features/admin/connectors/api";
 
 const NONE = "__none__";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -125,6 +126,7 @@ export function CapabilityDetailPage({ capabilityId, channelId, embedded = false
   const query = useChannelCapability(id);
   const channels = useLogicalChannels();
   const accesses = useUpstreamAccesses();
+  const connectors = useConnectorPlugins();
   const discover = useDiscoverChannelModels();
   const [pickingModels, setPickingModels] = useState(false);
   const templates = useConfigTemplates();
@@ -141,6 +143,8 @@ export function CapabilityDetailPage({ capabilityId, channelId, embedded = false
   const capability = query.data?.data;
   const selectedChannel = channels.data?.find((channel) => channel.id === form.watch("channel_id"));
   const selectedAccess = accesses.data?.find((access) => access.id === selectedChannel?.access_id);
+  const connector = connectors.data?.find((item) => item.id === selectedAccess?.connector_kind);
+  const operationSupported = connector?.operations.includes(form.watch("operation")) ?? false;
   const busy = create.isPending || update.isPending || remove.isPending || recover.isPending;
   const draft = useConfigurationDraft(busy, form.formState.isDirty);
   const parentId = channelId ?? capability?.channel_id ?? params.get("channel");
@@ -363,7 +367,7 @@ export function CapabilityDetailPage({ capabilityId, channelId, embedded = false
                       </SelectTrigger>
                       <SelectContent>
                         <SelectGroup>
-                          {API_OPERATIONS.map((operation) => (
+                          {API_OPERATIONS.filter((operation) => connector?.operations.includes(operation)).map((operation) => (
                             <SelectItem key={operation} value={operation}>
                               {apiOperationLabel(operation)}
                             </SelectItem>
@@ -371,6 +375,7 @@ export function CapabilityDetailPage({ capabilityId, channelId, embedded = false
                         </SelectGroup>
                       </SelectContent>
                     </Select>
+                    {!operationSupported && <FieldDescription>{t("The connector does not support this operation.")}</FieldDescription>}
                   </Field>
                   <StringListField
                     id="capability-models"
@@ -381,7 +386,7 @@ export function CapabilityDetailPage({ capabilityId, channelId, embedded = false
                       form.setValue("available_models", value, { shouldDirty: true })
                     }
                   />
-                  {selectedAccess && (
+                  {selectedAccess && ["general", "codex"].includes(selectedAccess.connector_kind) && (
                     <Button type="button" variant="outline" disabled={discover.isPending}
                       onClick={() => void discoverModels()}>
                       {t("Fetch models")}
@@ -533,7 +538,7 @@ export function CapabilityDetailPage({ capabilityId, channelId, embedded = false
                     <FieldError errors={[form.formState.errors.test_pricing_model_id]} />
                   </Field>
                 </FieldGroup>
-                <Button type="submit" disabled={busy}>
+                <Button type="submit" disabled={busy || !operationSupported}>
                   {t("Save capability")}
                 </Button>
               </form>

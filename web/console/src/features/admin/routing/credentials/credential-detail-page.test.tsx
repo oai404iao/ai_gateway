@@ -6,7 +6,7 @@ import { http, HttpResponse } from "msw";
 import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
 import { server, seedAuthenticatedSession } from "@/test/msw";
-import { UPSTREAM_CREDENTIAL, UPSTREAM_CREDENTIAL_DETAIL } from "@/test/fixtures";
+import { CONNECTOR_PLUGINS, UPSTREAM_CREDENTIAL, UPSTREAM_CREDENTIAL_DETAIL } from "@/test/fixtures";
 import type { UpstreamCredentialInput } from "@/api/types";
 
 function renderAt(id: string) {
@@ -16,6 +16,30 @@ function renderAt(id: string) {
 }
 
 describe("upstream credential management", () => {
+  it("assigns a static credential to a registered plugin without offering Codex impersonation", async () => {
+    let submitted: UpstreamCredentialInput | undefined;
+    server.use(
+      http.get("/console/v1/system/connectors", () => HttpResponse.json([
+        ...CONNECTOR_PLUGINS,
+        { id: "acme", version: "1.0.0", abi_version: 1, built_in: false, operations: ["responses"] },
+      ])),
+      http.post("/console/v1/routing/upstream-credentials", async ({ request }) => {
+        submitted = await request.json() as UpstreamCredentialInput;
+        return HttpResponse.json({ id: UPSTREAM_CREDENTIAL.id }, { status: 201 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAt("new");
+    await user.type(await screen.findByLabelText("Name"), "Plugin credential");
+    await user.type(screen.getByLabelText("Credential secret"), "test-secret");
+    await user.type(screen.getByLabelText("Allowed Base URLs"), "https://api.example.test");
+    await user.click(screen.getByRole("combobox", { name: "Connector" }));
+    expect(screen.queryByRole("option", { name: "Codex" })).not.toBeInTheDocument();
+    await user.click(await screen.findByRole("option", { name: "acme" }));
+    await user.click(screen.getByRole("button", { name: "Save credential" }));
+    await waitFor(() => expect(submitted?.connector_kind).toBe("acme"));
+    expect(submitted?.kind).toBe("bearer");
+  });
   it("creates a scoped credential without reselecting the default authentication type", async () => {
     let submitted: UpstreamCredentialInput | undefined;
     server.use(http.post("/console/v1/routing/upstream-credentials", async ({ request }) => {
@@ -29,7 +53,7 @@ describe("upstream credential management", () => {
     await user.type(screen.getByLabelText("Allowed Base URLs"), "https://api.example.test");
     await user.click(screen.getByRole("button", { name: "Save credential" }));
     await waitFor(() => expect(submitted).toEqual({
-      name: "Reusable identity", kind: "bearer", header_name: null,
+      name: "Reusable identity", kind: "bearer", connector_kind: "general", header_name: null,
       secret: "test-new-secret", allowed_base_urls: ["https://api.example.test"], enabled: true,
     }));
   });

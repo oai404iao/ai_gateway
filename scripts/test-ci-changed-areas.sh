@@ -38,6 +38,9 @@ assert_areas \
     ".agents/skills/example/SKILL.md" \
     ".gitignore"
 assert_areas "Rust source" "$rust_only" "src/main.rs"
+assert_areas "Connector SDK source" "$rust_only" "crates/connector-sdk/src/lib.rs"
+assert_areas "Connector SDK manifest" "$rust_only" "crates/connector-sdk/Cargo.toml"
+assert_areas "Connector ABI fixture" "$rust_only" "crates/connector-sdk/tests/fixture.c"
 assert_areas "Rust image recipe" "$rust_and_image" "Cargo.lock"
 assert_areas "Console source" "$console_only" "web/console/src/main.tsx"
 assert_areas \

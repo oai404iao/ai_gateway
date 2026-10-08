@@ -9,6 +9,10 @@ Chat Completions、Responses、Codex standalone web search、非流式 JSON Imag
 与 multipart Images edit API，
 根据 PostgreSQL 或 Linux SQLite 控制面完成路由，并将请求转发到已配置的上游提供商。
 
+`general` 连接器内置；Codex 是独立安装的可信 C ABI 插件，由
+[ai-gateway-connectors](https://github.com/oai404iao/ai-gateway-connectors) 仓库维护。
+网关镜像与发行包不包含 Codex 库，升级前请阅读[插件安装与升级](docs/user/connector-plugins.md)。
+
 下方快速启动沿用默认 PostgreSQL。单实例本地文件部署见
 [SQLite 配置与停机恢复](docs/user/sqlite.md)；源码构建需加 `sqlite-backend` feature，
 官方容器/发行构建包含该功能。

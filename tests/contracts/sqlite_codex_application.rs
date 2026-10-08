@@ -137,6 +137,7 @@ async fn local_validation_precedes_intent_and_cancelled_http_remains_fenced() {
             issuer: base.parse().unwrap(),
             responses_base_url: format!("{base}/backend-api/codex").parse().unwrap(),
         },
+        crate::connector_plugins::test_plugins(),
     )
     .await
     .unwrap();
@@ -300,6 +301,7 @@ async fn model_discovery_fetches_supported_codex_models_for_the_credential() {
             issuer: base.parse().unwrap(),
             responses_base_url: format!("{base}/backend-api/codex").parse().unwrap(),
         },
+        crate::connector_plugins::test_plugins(),
     )
     .await
     .unwrap();

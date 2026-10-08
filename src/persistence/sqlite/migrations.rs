@@ -212,7 +212,10 @@ pub(super) async fn run(
     let credential_ownership = migrations.iter().any(|migration| {
         migration.version == 8 && migration.description == "channel owned credentials and sharing"
     });
-    if capability_cutover || operation_split || credential_ownership {
+    let connector_ids = migrations.iter().any(|migration| {
+        migration.version == 10 && migration.description == "native connector identities"
+    });
+    if capability_cutover || operation_split || credential_ownership || connector_ids {
         sqlx::query("PRAGMA foreign_keys=OFF")
             .execute(&mut *connection)
             .await?;
@@ -264,6 +267,9 @@ pub(super) async fn run(
             )
             .await?;
         }
+        if connector_ids && migration.version == 10 {
+            super::connector_ids::prepare(&mut transaction).await?;
+        }
         sqlx::Executor::execute(
             &mut *transaction,
             sqlx::AssertSqlSafe(migration.sql.to_owned()),
@@ -303,7 +309,7 @@ pub(super) async fn run(
     if check_identity(&mut transaction).await? != Some(database_id) {
         return Err(SqliteOpenError::ForeignDatabase.into());
     }
-    if (capability_cutover || operation_split || credential_ownership)
+    if (capability_cutover || operation_split || credential_ownership || connector_ids)
         && sqlx::query("PRAGMA foreign_key_check")
             .fetch_optional(&mut *transaction)
             .await?

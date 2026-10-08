@@ -20,7 +20,7 @@ use crate::{
         PassiveHealthPolicy, RoutingRuntime, SessionAffinityCacheClearResult,
         SessionAffinityCacheSnapshot,
     },
-    runtime_config::{ConfigError, RuntimeConfig, compile_runtime_config},
+    runtime_config::{ConfigError, RuntimeConfig},
     upstream::{UpstreamClientError, UpstreamClientRegistry, validate_snapshot_upstream_policies},
 };
 
@@ -41,7 +41,50 @@ struct UpstreamClientCleanup {
     registry: Arc<UpstreamClientRegistry>,
 }
 
+#[derive(serde::Serialize)]
+pub struct ConnectorPluginView {
+    pub id: String,
+    pub version: String,
+    pub abi_version: u32,
+    pub built_in: bool,
+    pub operations: Vec<String>,
+}
+
 impl ControlPlaneCoordinator {
+    pub fn connector_plugins(&self) -> Vec<ConnectorPluginView> {
+        let mut connectors = vec![ConnectorPluginView {
+            id: "general".into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+            abi_version: ai_gateway_connector_sdk::ABI_VERSION,
+            built_in: true,
+            operations: [
+                "chat_completion",
+                "responses",
+                "responses-ws",
+                "web_search",
+                "images_edit",
+                "images_generation",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        }];
+        connectors.extend(
+            self.runtime
+                .plugins()
+                .manifests()
+                .into_iter()
+                .map(|manifest| ConnectorPluginView {
+                    id: manifest.id.clone(),
+                    version: manifest.version.clone(),
+                    abi_version: ai_gateway_connector_sdk::ABI_VERSION,
+                    built_in: false,
+                    operations: manifest.operations.clone(),
+                }),
+        );
+        connectors
+    }
+
     pub async fn routing_profiles(
         &self,
     ) -> Result<
@@ -138,9 +181,10 @@ impl ControlPlaneCoordinator {
 
     pub async fn reload(&self) -> Result<(), ControlPlaneError> {
         let _guard = self.serial.lock().await;
-        let next = Arc::new(compile_runtime_config(
-            self.repository.load_runtime().await?,
-        )?);
+        let next = Arc::new(
+            self.runtime
+                .compile(self.repository.load_runtime().await?)?,
+        );
         self.validate_candidate(&next)?;
         self.publish(next);
         Ok(())
@@ -552,7 +596,7 @@ impl ControlPlaneCoordinator {
         &self,
         mut change: PreparedControlPlaneChange<'_>,
     ) -> Result<(Vec<MutationResult>, Uuid), ControlPlaneError> {
-        let candidate = Arc::new(compile_runtime_config(change.runtime_records().await?)?);
+        let candidate = Arc::new(self.runtime.compile(change.runtime_records().await?)?);
         self.validate_candidate(&candidate)?;
         let result = change.commit().await?;
         self.publish(candidate);

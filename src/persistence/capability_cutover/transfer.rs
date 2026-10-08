@@ -273,6 +273,9 @@ pub fn transfer(
         let connector = group.connector_kind;
         let canonical_group = canonical_group(group, &responses_by_pool)?;
         let logical_id = match connector {
+            ConnectorKind::Plugin(_) => {
+                return Err(CapabilityCutoverTransferError::InvalidTopology);
+            }
             ConnectorKind::OpenAiCompatible => channel.id,
             ConnectorKind::CodexOauth => {
                 let credential_id = validate_projection(&projections, channel)?;
@@ -314,6 +317,9 @@ pub fn transfer(
         let first = group_members[0];
         let connector = first.connector;
         let (identity, network, deleted) = match connector {
+            ConnectorKind::Plugin(_) => {
+                return Err(CapabilityCutoverTransferError::InvalidTopology);
+            }
             ConnectorKind::OpenAiCompatible => {
                 (first.channel, first.channel, first.channel.deleted_at)
             }
@@ -405,12 +411,18 @@ pub fn transfer(
                 None
             } else {
                 match connector {
+                    ConnectorKind::Plugin(_) => {
+                        return Err(CapabilityCutoverTransferError::InvalidTopology);
+                    }
                     ConnectorKind::OpenAiCompatible => identity.credential_id,
                     ConnectorKind::CodexOauth => Some(*logical_id),
                 }
             },
             name: identity.name.clone(),
             enabled: match connector {
+                ConnectorKind::Plugin(_) => {
+                    return Err(CapabilityCutoverTransferError::InvalidTopology);
+                }
                 ConnectorKind::OpenAiCompatible => identity.enabled,
                 // Codex enablement is expressed per capability so the group and
                 // credential gates never collapse into the logical channel.
@@ -432,6 +444,9 @@ pub fn transfer(
         for (operation, capability_id) in &channel.capabilities {
             let deleted = channel.channel.deleted_at.or(logical_deleted_at);
             let enabled = match channel.connector {
+                ConnectorKind::Plugin(_) => {
+                    return Err(CapabilityCutoverTransferError::InvalidTopology);
+                }
                 ConnectorKind::OpenAiCompatible => true,
                 ConnectorKind::CodexOauth => channel.channel.enabled && channel.group.enabled,
             } && deleted.is_none();
@@ -755,6 +770,7 @@ fn canonical_group(
     responses_by_pool: &HashMap<Uuid, Uuid>,
 ) -> Result<Uuid, CapabilityCutoverTransferError> {
     match group.connector_kind {
+        ConnectorKind::Plugin(_) => Err(CapabilityCutoverTransferError::InvalidTopology),
         ConnectorKind::OpenAiCompatible => Ok(group.id),
         ConnectorKind::CodexOauth => {
             let pool = group
@@ -787,6 +803,7 @@ fn build_routing_groups(
         .map(|(id, group)| {
             let deleted = group.deleted_at;
             let enabled = match group.connector_kind {
+                ConnectorKind::Plugin(_) => false,
                 ConnectorKind::OpenAiCompatible => group.enabled,
                 // The Codex pair's group gate moves down to each capability.
                 ConnectorKind::CodexOauth => true,
@@ -908,6 +925,7 @@ fn capability_transports(
         }
         ApiOperation::Responses => {
             let mut transports = match connector {
+                ConnectorKind::Plugin(_) => Vec::new(),
                 ConnectorKind::OpenAiCompatible => {
                     vec![CapabilityTransport::HttpJson, CapabilityTransport::HttpSse]
                 }
@@ -1170,6 +1188,7 @@ mod tests {
             id: id(10),
             name: "retired".into(),
             kind: "codex_oauth".into(),
+            connector_kind: crate::domain::ConnectorKind::CodexOauth,
             header_name: None,
             secret: None,
             allowed_base_urls: vec![],

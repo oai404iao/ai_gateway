@@ -176,3 +176,4 @@ tar -tzf "$tmp/package/output/ai-gateway-v${version}-x86_64-unknown-linux-gnu.ta
     | grep -Fx "ai-gateway-v${version}-x86_64-unknown-linux-gnu/ai-gateway" >/dev/null
 
 echo "release automation tests passed"
+python3 scripts/test-third-party-notices.py

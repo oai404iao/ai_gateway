@@ -4,7 +4,10 @@
 
 ## 系统定位
 
-`ai-gateway` 是 Rust 2024 单二进制服务。生产运行时由 Axum/Tokio、reqwest、PostgreSQL/SQLx 和 `ArcSwap` 组成；Console Web UI 可在构建时嵌入二进制，生产环境不需要常驻 Node 服务。
+`ai-gateway` 是 Rust 2024 服务，`general` 连接器可仅凭网关二进制运行。外部连接器通过
+启动时校验的 C ABI 动态库加载；Codex 需要管理员独立安装插件。
+生产运行时由 Axum/Tokio、reqwest、PostgreSQL/SQLx 和 `ArcSwap` 组成；
+Console Web UI 可在构建时嵌入二进制，生产环境不需要常驻 Node 服务。
 
 系统支持三种数据面格式：
 
@@ -167,17 +170,24 @@ OpenAI-compatible edit 直接回放，或在模型别名存在时使用原 bound
 凭证 revision 与渠道 binding revision 共同参与 WebSocket 连接身份，池归还路径也验证
 最新有效范围，避免在轮换或改绑期间借出的旧连接重新入池。
 
-`src/application/connector.rs` 是静态链接的 Connector registry。代理主循环只调用统一的
+`src/application/connector.rs` 统一分派内置 `general` 和通过 C ABI 加载的外部连接器。
+`src/connector_plugins.rs` 负责摘要、ABI、权限和生命周期检查，
+公开 SDK 位于 `crates/connector-sdk`。代理主循环只调用统一的
 prepare、body adaptation、URL、Header injection、pre-header retry capability 和 response
 observation 接口，不包含 provider 的 OAuth claim、路径或 Header 细节。
 
 - `OpenAiCompatible` attempt 是无状态路径：保留现有请求字节、API 路径和
   `UpstreamAuth` 注入。
-- `CodexOauth` attempt 的实现位于 `src/application/codex/attempt.rs`：读取独立凭证快照，
+- `CodexOauth` 的宿主 attempt 位于 `src/application/codex/attempt.rs`：读取独立凭证快照，
   按操作分派 Responses HTTP SSE、Responses WebSocket、standalone web search、Images generation 或 Images edit
-  约束，改写目标并注入 OAuth/account 与协议专用 Header。
-- `ConnectorKind` 编译进 group/channel 快照。新增 provider 时扩展 registry 和独立 provider
-  模块，不能在标准 Chat Completions/Responses/Images 逻辑中再建一套路由器。
+  约束；具体目标、body 和协议 Header 由独立 Codex 插件构造，宿主复核凭证及安全约束。
+- `ConnectorKind` 是有界连接器 ID，编译进不可变快照。外部连接器通过 manifest 声明现有
+  操作上限，不在标准 Chat Completions/Responses/Images 逻辑中另建路由器。
+
+Codex OAuth、Token、配额和模型协议解析也由外部插件执行；宿主保留网络、事务、维护锁、
+generation、外部操作 intent 和金额恢复。插件不拥有数据库或 socket。
+未安装/不兼容插件不得回退为 `general`，二进制升级需要重启。
+详细边界见[连接器插件](connector-plugins.md)，安装见[用户指南](../user/connector-plugins.md)。
 
 Codex 与通用凭证统一使用 `upstream_credentials`，OAuth 扩展独立保存 Token、quota、
 维护代理和账号目录，不属于渠道组或 pool。逻辑渠道通过凭证 UUID 显式绑定身份，并单独引用接入。

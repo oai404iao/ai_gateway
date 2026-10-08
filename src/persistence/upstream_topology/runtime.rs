@@ -419,7 +419,7 @@ fn resolve_credential(
         return Ok(true);
     };
     let provider_managed = credential.kind == "codex_oauth";
-    if managed != provider_managed {
+    if managed != provider_managed || access.connector_kind != credential.connector_kind {
         return Err(CanonicalGraphError::CredentialKindMismatch);
     }
     if credential.deleted_at.is_some() {
@@ -791,6 +791,11 @@ mod tests {
             id: Uuid::from_u128(id),
             name: format!("credential-{id}"),
             kind: kind.into(),
+            connector_kind: if codex {
+                ConnectorKind::CodexOauth
+            } else {
+                ConnectorKind::OpenAiCompatible
+            },
             header_name: None,
             secret: (!codex).then(|| "secret".into()),
             allowed_base_urls: allowed.iter().map(|value| (*value).to_owned()).collect(),
@@ -800,6 +805,36 @@ mod tests {
             updated_at: at(),
             deleted_at: deleted.then_some(at()),
         }
+    }
+
+    #[test]
+    fn plugin_credentials_require_exact_connector_and_target_without_codex_privileges() {
+        let access = access(
+            2,
+            ConnectorKind::parse("acme").unwrap(),
+            "https://example.test",
+        );
+        let mut credential = credential(3, "bearer", &["https://example.test"], false);
+        assert_eq!(
+            resolve_credential(&access, Some(&credential), &Uuid::nil()),
+            Err(CanonicalGraphError::CredentialKindMismatch)
+        );
+        credential.connector_kind = access.connector_kind;
+        assert_eq!(
+            resolve_credential(&access, Some(&credential), &Uuid::nil()),
+            Ok(true)
+        );
+        assert_eq!(resolve_credential(&access, None, &Uuid::nil()), Ok(true));
+        credential.allowed_base_urls = vec!["https://other.test".into()];
+        assert!(matches!(
+            resolve_credential(&access, Some(&credential), &Uuid::nil()),
+            Err(CanonicalGraphError::CredentialScope { .. })
+        ));
+        credential.kind = "codex_oauth".into();
+        assert_eq!(
+            resolve_credential(&access, Some(&credential), &Uuid::nil()),
+            Err(CanonicalGraphError::CredentialKindMismatch)
+        );
     }
 
     fn api_key(id: u128, formats: &[&str]) -> ApiKeyRecord {

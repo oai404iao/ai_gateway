@@ -13,6 +13,7 @@ import shutil
 import signal
 import socket
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -22,6 +23,7 @@ from collections import Counter
 from decimal import Decimal
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, ProxyHandler, build_opener
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -65,7 +67,11 @@ def request(base, path, method="GET", body=None, token=None, etag=None):
         # Bodies can contain keys or echoed requests; only retain the error code.
         try:
             payload = json.loads(error.read(16384))
-            code = payload.get("error", {}).get("code", "unknown")
+            value = payload.get("error", {})
+            code = value if isinstance(value, str) else value.get("code", "unknown")
+            if (not isinstance(code, str) or len(code) > 64
+                    or not code or any(c not in "abcdefghijklmnopqrstuvwxyz0123456789_" for c in code)):
+                code = "unknown"
         except (ValueError, AttributeError):
             code = "unknown"
         finally:
@@ -86,6 +92,60 @@ def redact(text, values):
     for value in sorted(filter(None, values), key=len, reverse=True):
         text = text.replace(value, "[redacted]")
     return re.sub(r"(?i)Bearer\s+\S+", "Bearer [redacted]", text)
+
+
+def load_plugin_fixture(value):
+    check(value, "set AI_GATEWAY_TEST_CODEX_PLUGIN=$(scripts/prepare-connector-tests.sh)")
+    path = Path(value)
+    check(path.is_absolute(), "Codex plugin fixture path must be absolute")
+    check(path.resolve(strict=True) == path, "Codex plugin fixture must not use symlinks")
+    metadata = path.stat()
+    check(stat.S_ISREG(metadata.st_mode) and metadata.st_mode & 0o222 == 0,
+          "Codex plugin fixture must be a readonly regular file")
+    check(metadata.st_uid in (0, os.geteuid()), "Codex plugin fixture has an unsafe owner")
+    check(0 < metadata.st_size <= 256 * 1024 * 1024, "Codex plugin fixture size is invalid")
+    with path.open("rb") as library:
+        digest = hashlib.file_digest(library, "sha256").hexdigest()
+    return {"id": "codex", "path": str(path), "sha256": digest}
+
+
+def plugin_toml(plugin):
+    return "\n[[plugins]]\n" + "".join(
+        f"{name} = {json.dumps(plugin[name])}\n" for name in ("id", "path", "sha256"))
+
+
+def verify_oauth_plan(value):
+    url = urlsplit(value["authorization_url"])
+    query = parse_qs(url.query)
+    check(url.scheme == "https" and url.hostname == "auth.openai.com"
+          and url.path == "/oauth/authorize", "Codex plugin authorization target mismatch")
+    check(query.get("response_type") == ["code"]
+          and query.get("code_challenge_method") == ["S256"]
+          and query.get("redirect_uri") == ["http://localhost:1455/auth/callback"],
+          "Codex plugin authorization shape mismatch")
+    check(len(query.get("state", [""])[0]) >= 32
+          and len(query.get("code_challenge", [""])[0]) == 43,
+          "Codex OAuth state or PKCE challenge missing")
+    check(value.get("flow_id") and value.get("expires_at"), "Codex OAuth flow was not persisted")
+
+
+def exercise_codex_oauth(data):
+    path = "/console/v1/routing/upstream-credentials/codex/oauth/flows"
+    flow, _ = request(data["console"], path, "POST", {"label": "System E2E plugin"},
+                      token=data["token"])
+    verify_oauth_plan(flow)
+    callback = "http://localhost:1455/auth/callback?" + urlencode({
+        "code": "synthetic-never-dispatched", "state": "incorrect-synthetic-state",
+    })
+    try:
+        request(data["console"], path + "/" + flow["flow_id"] + "/complete", "POST",
+                {"callback_url": callback}, token=data["token"])
+    except RuntimeError as error:
+        check("codex_oauth_state_mismatch" in str(error),
+              f"OAuth callback failed for the wrong reason: {error}")
+    else:
+        raise RuntimeError("OAuth callback accepted an incorrect state")
+    return {"id": "codex-plugin-oauth-plan", "status": "passed", "provider_requests": 0}
 
 
 class Resources:
@@ -261,6 +321,7 @@ def configure(resources, binary, database_url, public_port, console_port):
     config = resources.directory / "gateway.toml"
     quote = json.dumps
     config.write_text(f"""
+{plugin_toml(resources.plugin)}
 [server]
 host = "127.0.0.1"
 port = {public_port}
@@ -579,6 +640,8 @@ def main():
             check(args.binary.is_file(), "build embedded-console-ui binary first")
             check(args.codex is not None, "install the pinned Codex CLI")
             check(args.pi is not None, "install the pinned Pi CLI")
+            resources.plugin = load_plugin_fixture(os.environ.get("AI_GATEWAY_TEST_CODEX_PLUGIN"))
+            report["codex_plugin_sha256"] = resources.plugin["sha256"]
             for command in ("node", "openssl", "cc", *(("docker",) if args.backend == "postgres" else ())):
                 check(shutil.which(command), f"{command} is required")
             report["source_commit"] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT).decode().strip()
@@ -609,6 +672,8 @@ def main():
                 data = seed(console, password, upstream.url)
                 secret_values.extend([data["token"], data["api_key"], data["upstream_secret"], data["upstream_rotated_secret"]])
                 data["public"] = f"http://127.0.0.1:{public_port}"
+                report["stage"] = "codex-plugin-oauth"
+                report["scenarios"].append(exercise_codex_oauth(data))
                 report["stage"] = "browser"
                 browser_env = {
                     **resources.env,

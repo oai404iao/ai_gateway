@@ -707,8 +707,53 @@ pub(crate) fn client_header_explicitly_ignored(name: &HeaderName) -> bool {
     contains_sorted(&contract().client_headers.ignore, name.as_str())
 }
 
-pub(crate) fn strip_explicitly_ignored_client_headers(headers: &mut HeaderMap) {
-    for name in &contract().client_headers.ignore {
+pub(crate) fn header_is_hop_by_hop(name: &str) -> bool {
+    matches!(
+        name,
+        "connection"
+            | "keep-alive"
+            | "proxy-authenticate"
+            | "proxy-authorization"
+            | "proxy-connection"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
+            | "upgrade"
+    )
+}
+
+pub(crate) fn request_header_is_protected(name: &str) -> bool {
+    header_is_hop_by_hop(name)
+        || matches!(
+            name,
+            "host"
+                | "content-length"
+                | "content-encoding"
+                | "authorization"
+                | "cookie"
+                | "accept-encoding"
+        )
+}
+
+pub(crate) fn connector_header_is_forbidden(name: &HeaderName) -> bool {
+    (name != axum::http::header::AUTHORIZATION && request_header_is_protected(name.as_str()))
+        || name.as_str().starts_with("sec-websocket-")
+        || client_header_explicitly_ignored(name)
+}
+
+/// Run after connector authentication, before host compression or handshake headers.
+pub(crate) fn sanitize_outbound_request_headers(headers: &mut HeaderMap) {
+    let connection_names = connection_header_names(headers);
+    let removed = headers
+        .keys()
+        .filter(|name| {
+            // Ingress, transforms and plugins cannot supply Cookie; explicit host credentials can.
+            (**name != axum::http::header::COOKIE && connector_header_is_forbidden(name))
+                || (**name != axum::http::header::AUTHORIZATION && connection_names.contains(*name))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    for name in removed {
         headers.remove(name);
     }
 }
@@ -1780,7 +1825,7 @@ mod tests {
             "x-forwarded-custom",
             HeaderValue::from_static("preserve-transform-header"),
         );
-        strip_explicitly_ignored_client_headers(&mut headers);
+        sanitize_outbound_request_headers(&mut headers);
         assert!(headers.get("forwarded").is_none());
         assert!(headers.get("x-forwarded-for").is_none());
         assert!(headers.get("cf-connecting-ip").is_none());
@@ -1791,6 +1836,64 @@ mod tests {
         assert!(!client_header_explicitly_ignored(&HeaderName::from_static(
             "x-forwarded-custom"
         )));
+    }
+
+    #[test]
+    fn final_connector_cleanup_preserves_auth_but_not_transport_or_connection_headers() {
+        let mut headers = HeaderMap::new();
+        for name in [
+            "host",
+            "content-length",
+            "content-encoding",
+            "accept-encoding",
+            "keep-alive",
+            "proxy-authenticate",
+            "proxy-authorization",
+            "proxy-connection",
+            "te",
+            "trailer",
+            "transfer-encoding",
+            "upgrade",
+            "sec-websocket-key",
+            "sec-websocket-extensions",
+            "forwarded",
+            "x-forwarded-for",
+        ] {
+            let name = HeaderName::from_static(name);
+            assert!(connector_header_is_forbidden(&name));
+            headers.insert(name, HeaderValue::from_static("discard"));
+        }
+        headers.append(
+            CONNECTION,
+            HeaderValue::from_static("x-private-hop, Authorization"),
+        );
+        assert!(connector_header_is_forbidden(&HeaderName::from_static(
+            "cookie"
+        )));
+        headers.insert("cookie", HeaderValue::from_static("host-credential"));
+        headers.append(CONNECTION, HeaderValue::from_static("X-Other-Hop"));
+        for name in ["x-private-hop", "x-other-hop"] {
+            headers.insert(name, HeaderValue::from_static("discard"));
+        }
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer upstream-secret"),
+        );
+        headers.insert("x-api-key", HeaderValue::from_static("upstream-secret"));
+        headers.insert("content-type", HeaderValue::from_static("application/json"));
+        sanitize_outbound_request_headers(&mut headers);
+        assert_eq!(headers.len(), 4);
+        assert_eq!(headers["cookie"], "host-credential");
+        assert_eq!(headers["authorization"], "Bearer upstream-secret");
+        assert_eq!(headers["x-api-key"], "upstream-secret");
+        assert_eq!(headers["content-type"], "application/json");
+        assert!(!connector_header_is_forbidden(&HeaderName::from_static(
+            "authorization"
+        )));
+        assert!(request_header_is_protected("authorization"));
+        headers.insert(CONNECTION, HeaderValue::from_static("cookie"));
+        sanitize_outbound_request_headers(&mut headers);
+        assert!(!headers.contains_key("cookie"));
     }
 
     #[test]

@@ -24,6 +24,7 @@ pub(crate) struct CredentialRecord {
     pub id: Uuid,
     pub name: String,
     pub kind: String,
+    pub connector_kind: ConnectorKind,
     pub header_name: Option<String>,
     pub secret: Option<String>,
     pub allowed_base_urls: Vec<String>,
@@ -49,6 +50,8 @@ impl fmt::Debug for CredentialRecord {
 pub struct UpstreamCredentialInput {
     pub name: String,
     pub kind: String,
+    #[serde(default)]
+    pub connector_kind: ConnectorKind,
     pub header_name: Option<String>,
     #[serde(default, deserialize_with = "present_secret")]
     pub secret: Option<String>,
@@ -108,6 +111,9 @@ impl CredentialRecord {
         if self.name.trim().is_empty() || self.name.chars().count() > 100 {
             return Err(RepositoryError::Validation);
         }
+        if (self.kind == "codex_oauth") != (self.connector_kind == ConnectorKind::CodexOauth) {
+            return Err(RepositoryError::Validation);
+        }
         if self.kind == "codex_oauth" {
             if self.secret.is_some() || self.header_name.is_some() {
                 return Err(RepositoryError::Validation);
@@ -161,11 +167,7 @@ impl CredentialRecord {
             id: self.id,
             name: self.name.clone(),
             kind: self.kind.clone(),
-            connector_kind: if self.kind == "codex_oauth" {
-                ConnectorKind::CodexOauth
-            } else {
-                ConnectorKind::OpenAiCompatible
-            },
+            connector_kind: self.connector_kind,
             header_name: self.header_name.clone(),
             allowed_base_urls: self.allowed_base_urls.clone(),
             enabled: self.enabled,
@@ -179,6 +181,7 @@ impl CredentialRecord {
     pub(crate) fn audit(&self) -> Value {
         json!({
             "id": self.id, "name": self.name, "kind": self.kind,
+            "connector_kind": self.connector_kind,
             "header_name": self.header_name, "enabled": self.enabled,
             "credential_configured": self.secret.is_some(),
             "target_count": self.allowed_base_urls.len(),
@@ -200,7 +203,10 @@ pub(crate) fn prepare_record(
         if Some(previous.updated_at) != expected {
             return Err(RepositoryError::Conflict);
         }
-        if previous.kind != input.kind || previous.kind == "codex_oauth" {
+        if previous.kind != input.kind
+            || previous.connector_kind != input.connector_kind
+            || previous.kind == "codex_oauth"
+        {
             return Err(RepositoryError::Validation);
         }
     }
@@ -212,6 +218,7 @@ pub(crate) fn prepare_record(
         id,
         name: input.name,
         kind: input.kind,
+        connector_kind: input.connector_kind,
         header_name: input.header_name.map(|name| name.to_ascii_lowercase()),
         secret: input
             .secret
@@ -312,10 +319,11 @@ pub(crate) async fn pg_save(
         .ok_or(RepositoryError::Conflict)?
     } else {
         sqlx::query_scalar(
-            "INSERT INTO upstream_credentials(id,name,kind,header_name,secret,allowed_base_urls,enabled,revision)
-             VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING updated_at")
+            "INSERT INTO upstream_credentials(id,name,kind,header_name,secret,allowed_base_urls,enabled,revision,connector_kind)
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING updated_at")
             .bind(id).bind(&record.name).bind(&record.kind).bind(&record.header_name).bind(&record.secret)
             .bind(json!(record.allowed_base_urls)).bind(record.enabled).bind(record.revision)
+            .bind(record.connector_kind.as_str())
             .fetch_one(&mut **transaction).await?
     };
     Ok(MutationResult {
@@ -432,5 +440,36 @@ pub(crate) fn deletion_result(
         reason: None,
         updated_at,
         correlation_id: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn static_authentication_does_not_infer_external_connector_identity() {
+        let input = |connector: &str, kind: &str| {
+            serde_json::from_value::<UpstreamCredentialInput>(json!({
+                "name": "test", "kind": kind, "connector_kind": connector,
+                "secret": "secret", "allowed_base_urls": ["https://example.test"], "enabled": true,
+            }))
+            .unwrap()
+        };
+        let record = prepare_record(Uuid::new_v4(), input("acme", "bearer"), None, None).unwrap();
+        assert_eq!(record.connector_kind.as_str(), "acme");
+        assert_eq!(record.view(&[]).connector_kind.as_str(), "acme");
+        assert!(!record.view(&[]).provider_managed);
+        assert!(
+            prepare_record(
+                record.id,
+                input("general", "bearer"),
+                Some(&record),
+                Some(record.updated_at)
+            )
+            .is_err()
+        );
+        assert!(prepare_record(Uuid::new_v4(), input("codex", "bearer"), None, None).is_err());
+        assert!(prepare_record(Uuid::new_v4(), input("acme", "codex_oauth"), None, None).is_err());
     }
 }

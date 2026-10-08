@@ -1,5 +1,5 @@
 import type { Page, Route } from "@playwright/test";
-import { SYSTEM_SETTINGS, SHARING_GROUP, SHARING_USAGE, OWN_SHARING } from "../src/test/fixtures";
+import { CONNECTOR_PLUGINS, SYSTEM_SETTINGS, SHARING_GROUP, SHARING_USAGE, OWN_SHARING } from "../src/test/fixtures";
 import type { SharingGroupInput } from "../src/api/types";
 
 /**
@@ -1149,6 +1149,12 @@ export async function mockConsoleApi(page: Page): Promise<void> {
     }
     if (path === "/console/v1/routing/accesses" && method === "GET") {
       return route.fulfill({ status: 200, json: [{
+        id: E2E_LOGICAL_CHANNELS[0].access_id, name: "General access", connector_kind: "general",
+        base_url: "https://upstream.test", proxy_id: null, enabled: true,
+        connect_timeout_ms: null, response_header_timeout_ms: null, stream_idle_timeout_ms: null,
+        revision: "00000000-0000-0000-0000-0000000000a3",
+        created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-02T00:00:00Z", deleted_at: null,
+      }, {
         id: E2E_CODEX_GROUP_ID, name: "Codex access", connector_kind: "codex",
         base_url: "https://codex.test", proxy_id: null, enabled: true,
         connect_timeout_ms: null, response_header_timeout_ms: null, stream_idle_timeout_ms: null,
@@ -1311,6 +1317,9 @@ export async function mockConsoleApi(page: Page): Promise<void> {
       });
     }
     // Default: empty 200 so unknown reads do not break the shell.
+    if (path === "/console/v1/system/connectors" && method === "GET") {
+      return route.fulfill({ json: CONNECTOR_PLUGINS });
+    }
     if (path === "/console/v1/system/settings") {
       if (method === "GET") {
         return route.fulfill({

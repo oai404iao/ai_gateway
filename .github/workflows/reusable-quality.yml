@@ -67,6 +67,10 @@ jobs:
           shared-key: stable
           save-if: ${{ inputs.save_cache }}
       - run: cargo fmt --check
+      - name: Prepare pinned external Codex test plugin
+        run: |
+          plugin="$(scripts/prepare-connector-tests.sh)"
+          printf 'AI_GATEWAY_TEST_CODEX_PLUGIN=%s\n' "$plugin" >> "$GITHUB_ENV"
       - run: cargo clippy --locked --workspace --all-targets
       - run: cargo test --locked --workspace
       - run: cargo clippy --locked --workspace --all-targets --features sqlite-backend
@@ -104,7 +108,7 @@ jobs:
       - run: pnpm --dir web/console generate:api:check
       - run: pnpm --dir web/console typecheck
       - run: pnpm --dir web/console lint
-      - run: pnpm --dir web/console test
+      - run: pnpm --dir web/console test --maxWorkers=2
       - run: pnpm --dir web/console build
       - name: Save pnpm store
         if: ${{ inputs.save_cache && steps.pnpm_cache.outputs.cache-hit != 'true' }}
@@ -198,6 +202,10 @@ jobs:
         run: |
           python3 -m venv target/e2e-venv
           target/e2e-venv/bin/pip install --require-hashes -r e2e/requirements.txt
+      - name: Prepare pinned external Codex test plugin
+        run: |
+          plugin="$(scripts/prepare-connector-tests.sh)"
+          printf 'AI_GATEWAY_TEST_CODEX_PLUGIN=%s\n' "$plugin" >> "$GITHUB_ENV"
       - run: target/e2e-venv/bin/python -m unittest discover -s e2e -p 'test_*.py'
       - run: node --test e2e/browser-checks.test.mjs
       - run: pnpm --dir web/console build

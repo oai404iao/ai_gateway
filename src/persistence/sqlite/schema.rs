@@ -50,4 +50,9 @@ pub(crate) const MIGRATIONS: &[SqliteMigration<'static>] = &[
         description: "immutable request credential attribution",
         sql: include_str!("../../../migrations/sqlite/0009_request_credential_attribution.sql"),
     },
+    SqliteMigration {
+        version: 10,
+        description: "native connector identities",
+        sql: include_str!("../../../migrations/sqlite/0010_native_connector_ids.sql"),
+    },
 ];

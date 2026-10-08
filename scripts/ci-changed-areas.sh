@@ -41,7 +41,7 @@ while IFS= read -r path; do
             rust=true
             console=true
             ;;
-        src/* | tests/* | migrations/* | tools/*)
+        src/* | tests/* | migrations/* | tools/* | crates/*)
             rust=true
             ;;
         Cargo.toml | Cargo.lock | rust-toolchain.toml)

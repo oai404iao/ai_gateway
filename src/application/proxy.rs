@@ -46,7 +46,7 @@ use crate::{
     },
     request_policy::{
         RequestInterface, RequestPolicyError, RequestPolicyLayer, client_header_explicitly_ignored,
-        filter_client_headers, strip_explicitly_ignored_client_headers,
+        filter_client_headers, sanitize_outbound_request_headers,
     },
     routing::{
         ChannelLease, RoutingRuntime, SelectionResult, SessionAffinityMatch,
@@ -675,6 +675,7 @@ impl ProxyService {
                 completion.finish_with_proxy_error(RequestOutcome::UpstreamUnavailable, &error);
                 return Err(error);
             }
+            sanitize_outbound_request_headers(&mut headers);
             if request_body_encoded {
                 headers.insert(CONTENT_ENCODING, HeaderValue::from_static("zstd"));
                 headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
@@ -689,7 +690,6 @@ impl ProxyService {
                     HeaderValue::from_static(UPSTREAM_ACCEPT_ENCODING)
                 },
             );
-            strip_explicitly_ignored_client_headers(&mut headers);
             let upstream_policy = match ResolvedUpstreamPolicy::try_resolve_for_operation(
                 api_operation,
                 &snapshot.system_settings().upstream_timeouts(),
@@ -2105,18 +2105,7 @@ fn connection_header_names(headers: &HeaderMap) -> HashSet<HeaderName> {
 }
 
 fn is_hop_by_hop(name: &HeaderName, connection_names: &HashSet<HeaderName>) -> bool {
-    connection_names.contains(name)
-        || matches!(
-            name.as_str(),
-            "connection"
-                | "keep-alive"
-                | "proxy-authenticate"
-                | "proxy-authorization"
-                | "te"
-                | "trailer"
-                | "transfer-encoding"
-                | "upgrade"
-        )
+    connection_names.contains(name) || crate::request_policy::header_is_hop_by_hop(name.as_str())
 }
 
 fn response_from_upstream(
@@ -3413,6 +3402,39 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn client_cookie_is_removed_before_explicit_upstream_cookie_authentication() {
+        let mut incoming = HeaderMap::new();
+        incoming.insert("cookie", HeaderValue::from_static("client-secret"));
+        incoming.insert(CONNECTION, HeaderValue::from_static("cookie"));
+        let filtered = crate::request_policy::filter_client_headers(
+            crate::request_policy::RequestInterface::ResponsesHttp,
+            &incoming,
+        )
+        .unwrap();
+        let mut forwarded = forward_request_headers(&filtered);
+        assert!(!forwarded.contains_key("cookie"));
+        let channel = crate::domain::CompiledChannel::new(
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4(),
+            ApiFormat::OpenAiResponses,
+            reqwest::Url::parse("https://example.test").unwrap(),
+            crate::domain::UpstreamAuth::compile(
+                "header",
+                Some("Cookie"),
+                Some("upstream-session=secret"),
+            )
+            .unwrap(),
+            std::collections::HashSet::new(),
+        );
+        crate::application::connector::inject_standard_auth(&mut forwarded, &channel).unwrap();
+        crate::request_policy::sanitize_outbound_request_headers(&mut forwarded);
+        assert_eq!(forwarded["cookie"], "upstream-session=secret");
+        assert!(crate::request_policy::connector_header_is_forbidden(
+            &HeaderName::from_static("cookie")
+        ));
     }
 
     #[test]

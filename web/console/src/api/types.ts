@@ -27,6 +27,7 @@ export type ApiFormat = S["ApiFormat"];
 export type ApiOperation = S["ApiOperation"];
 export type SelectionStrategy = S["SelectionStrategy"];
 export type ConnectorKind = S["ConnectorKind"];
+export type ConnectorPluginView = S["ConnectorPluginView"];
 export type RequestCompression = S["RequestCompression"];
 export type UpstreamCredentialView = S["UpstreamCredentialView"];
 export type UpstreamAccessView = S["UpstreamAccessView"];

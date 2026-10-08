@@ -160,6 +160,12 @@ impl SqliteControlPlaneRepository {
             system_settings,
             sharing,
             sharing_only_channels,
+            connector_ids: sqlx::query_scalar(
+                "SELECT connector_kind FROM upstream_accesses WHERE deleted_at IS NULL
+                 UNION SELECT connector_kind FROM upstream_credentials WHERE deleted_at IS NULL",
+            )
+            .fetch_all(&mut **transaction)
+            .await?,
         })
     }
 

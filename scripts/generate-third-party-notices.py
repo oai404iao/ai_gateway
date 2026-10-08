@@ -53,12 +53,16 @@ def license_files(directory: Path) -> list[Path]:
 
 
 def copy_materials(
-    output: Path, ecosystem: str, name: str, version: str, source: Path
+    output: Path, ecosystem: str, name: str, version: str, source: Path,
+    fallback_license: Path | None = None,
 ) -> list[str]:
     destination = output / "LICENSES" / ecosystem / safe_name(f"{name}@{version}")
     destination.mkdir(parents=True, exist_ok=True)
     copied = []
-    for material in license_files(source):
+    materials = license_files(source)
+    if not materials and fallback_license is not None:
+        materials = [fallback_license]
+    for material in materials:
         target = destination / material.name
         shutil.copyfile(material, target)
         copied.append(target.relative_to(output).as_posix())
@@ -118,7 +122,11 @@ def cargo_packages() -> list[tuple[str, str, str | None, Path, list[str]]]:
                 package.get("license"),
                 source,
                 copy_materials(
-                    OUTPUT, "cargo", package["name"], package["version"], source
+                    OUTPUT, "cargo", package["name"], package["version"], source,
+                    ROOT / "LICENSE"
+                    if package_id in metadata["workspace_members"]
+                    and package.get("license") == packages[root_id].get("license")
+                    else None,
                 ),
             )
         )

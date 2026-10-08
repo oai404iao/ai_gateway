@@ -1975,31 +1975,11 @@ fn checked_header(raw: &str, scope: HeaderScope) -> Result<HeaderName, Transform
 }
 
 fn is_protected_header(name: &str, scope: HeaderScope) -> bool {
-    const HOP_BY_HOP: &[&str] = &[
-        "connection",
-        "keep-alive",
-        "proxy-authenticate",
-        "proxy-authorization",
-        "proxy-connection",
-        "te",
-        "trailer",
-        "transfer-encoding",
-        "upgrade",
-    ];
-    if HOP_BY_HOP.contains(&name) {
+    if crate::request_policy::header_is_hop_by_hop(name) {
         return true;
     }
     match scope {
-        HeaderScope::Request => matches!(
-            name,
-            "host"
-                | "content-length"
-                | "content-encoding"
-                | "authorization"
-                | "proxy-authorization"
-                | "cookie"
-                | "accept-encoding"
-        ),
+        HeaderScope::Request => crate::request_policy::request_header_is_protected(name),
         HeaderScope::Response => {
             matches!(
                 name,

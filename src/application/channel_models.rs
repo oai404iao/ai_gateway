@@ -18,7 +18,7 @@ use uuid::Uuid;
 use crate::{
     domain::{CompiledChannel, CredentialTarget, UpstreamAuth},
     persistence::{ChannelRecord, UpstreamCredentialDetail},
-    request_policy::strip_explicitly_ignored_client_headers,
+    request_policy::sanitize_outbound_request_headers,
     runtime_config::{RuntimeConfig, compile_channel_discovery_target},
     transforms::apply_header_plan,
     upstream::{ResolvedUpstreamPolicy, UpstreamClientRegistry},
@@ -75,7 +75,7 @@ impl ChannelModelDiscoveryService {
         .map_err(|_| ChannelModelDiscoveryError::InvalidConfiguration)?;
         inject_upstream_auth(&mut headers, &channel)
             .map_err(|_| ChannelModelDiscoveryError::InvalidConfiguration)?;
-        strip_explicitly_ignored_client_headers(&mut headers);
+        sanitize_outbound_request_headers(&mut headers);
 
         let response = timeout(
             policy.timeouts().response_header(),

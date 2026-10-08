@@ -46,7 +46,8 @@ impl UpstreamAuth {
                         | "trailer"
                         | "upgrade"
                         | "proxy-connection"
-                ) || client_header_explicitly_ignored(&name)
+                ) || name.as_str().starts_with("sec-websocket-")
+                    || client_header_explicitly_ignored(&name)
                 {
                     return Err(UpstreamCredentialError::UnsafeHeader);
                 }
@@ -151,6 +152,21 @@ pub enum UpstreamCredentialError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credential_headers_preserve_cookie_auth_but_reject_websocket_transport_fields() {
+        assert!(UpstreamAuth::compile("header", Some("Cookie"), Some("session=secret")).is_ok());
+        for name in [
+            "Sec-WebSocket-Protocol",
+            "sec-websocket-key",
+            "SEC-WEBSOCKET-Accept",
+        ] {
+            assert!(matches!(
+                UpstreamAuth::compile("header", Some(name), Some("secret")),
+                Err(UpstreamCredentialError::UnsafeHeader)
+            ));
+        }
+    }
 
     #[test]
     fn equivalent_targets_follow_endpoint_url_semantics() {

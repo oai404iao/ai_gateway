@@ -32,6 +32,11 @@ Tokio, SQLx, and PostgreSQL (or SQLite on Linux). It keeps routing on an immutab
 snapshot, streams responses without whole-body buffering, and provides a
 separate management Console for users and administrators.
 
+The `general` connector is built in. Codex is a separately installed, trusted
+C ABI plugin maintained in [ai-gateway-connectors](https://github.com/oai404iao/ai-gateway-connectors);
+see [plugin installation and upgrade](docs/user/connector-plugins.md).
+Gateway images and archives do not bundle the Codex library.
+
 PostgreSQL remains the default. For single-instance local-file deployment,
 see [SQLite setup and offline recovery](docs/user/sqlite.md); source builds require
 `--features sqlite-backend`, while official container/release builds include it.

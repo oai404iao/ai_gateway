@@ -22,6 +22,22 @@ function renderAt(path: string) {
 }
 
 describe("channel capabilities", () => {
+  it("limits operation choices to the selected provider manifest", async () => {
+    server.use(
+      http.get("/console/v1/system/connectors", () => HttpResponse.json([
+        { id: "acme", version: "1.0.0", abi_version: 1, built_in: false, operations: ["responses"] },
+      ])),
+      http.get("/console/v1/routing/accesses", () =>
+        HttpResponse.json([{ ...UPSTREAM_ACCESS, connector_kind: "acme" }])),
+    );
+    const user = userEvent.setup();
+    renderAt(`/admin/routing/logical-channels/${LOGICAL_CHANNEL.id}?view=capabilities&capability=new`);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save capability" })).toBeEnabled());
+    await user.click(screen.getByRole("combobox", { name: "Operation" }));
+    expect(await screen.findByRole("option", { name: "Responses" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Responses WebSocket" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Images generation" })).not.toBeInTheDocument();
+  });
   it("creates a capability inside its channel without changing the binding", async () => {
     let submitted: ChannelCapabilityInput | undefined;
     server.use(http.post("/console/v1/routing/capabilities", async ({ request }) => {
