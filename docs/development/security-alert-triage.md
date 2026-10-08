@@ -72,11 +72,14 @@ PR #186 在 `e5a741fa71080d07ed1e2c34dc42a83f5fed3d8f` 的 Rust 扫描报告
 独立审查确认宏内 `static DESCRIPTOR: OnceLock<PluginDescriptor>` 在进程生命周期内持有对象，
 `get_or_init` 返回其引用，闭包只复制 raw pointer；manifest 字节由 `Box::leak` 持有。
 没有栈对象返回、提前释放或动态卸载；解引用前的非空 `assert!` 排除了初始化失败的空指针。
-因此该生命周期报告按 `false positive` 逐条处置，不排除 FFI 或测试查询。
+SARIF analysis `1914524326` 的 source 实际是宏的 `null()` fallback，
+而不是已经释放的分配；数据流遗漏了上述非空断言这一屏障。
+因此按 `false positive` 逐条处置，不排除 FFI 或测试查询。
 
 [#53](https://github.com/oai404iao/ai_gateway/security/code-scanning/53) 指向 SDK Responses
 示例的同类指针。虽然存储同样为 static，示例此前未检查入口约定的 null-on-panic 返回。
-已补充显式非空断言，由后续扫描判断是否修复；不将缺少检查直接按误报关闭。
+两个测试最终都用 `as_ref().expect(...)` 将入口的 nullable pointer 显式转换为有效引用，
+由后续扫描判断 #53 是否修复；不将原来缺少检查直接按误报关闭。
 以后若描述符改为实例分配、支持卸载、移除断言或改变入口失败契约，必须重新评估。
 
 - 测试日志改动运行 Rust 格式、Clippy、完整测试和 CodeQL；不修改生产转发路径，

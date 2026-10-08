@@ -364,9 +364,9 @@ mod tests {
 
     #[test]
     fn export_macro_accepts_dispatch_named_function() {
-        let descriptor = ai_gateway_connector_entry_v1();
-        assert!(!descriptor.is_null());
-        assert_eq!(unsafe { (*descriptor).abi_version }, ABI_VERSION);
+        let descriptor = unsafe { ai_gateway_connector_entry_v1().as_ref() }
+            .expect("plugin descriptor initialization failed");
+        assert_eq!(descriptor.abi_version, ABI_VERSION);
     }
 
     fn call<F>(metadata: &[u8], dispatch: F) -> (u32, CallOutput)
