@@ -3,6 +3,10 @@ import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll } from "vitest";
 import {
   CONNECTOR_PLUGINS,
+  PLUGIN,
+  BUILT_IN_PLUGIN,
+  PLUGIN_SETTINGS,
+  PLUGIN_JOB,
   ADMIN_ACCESS_TOKEN,
   ADMIN_API_KEY,
   ADMIN_LOGIN_RESPONSE,
@@ -59,6 +63,13 @@ import { clearSession, setSession } from "@/api/session-store";
  * secrets or change state.
  */
 export const handlers = [
+  http.get("/console/v1/plugins", () => HttpResponse.json([BUILT_IN_PLUGIN, PLUGIN])),
+  http.get("/console/v1/plugins/:id/settings", () => HttpResponse.json(PLUGIN_SETTINGS, { headers: { ETag: '"plugin-3"' } })),
+  http.get("/console/v1/plugins/:id", ({ params }) => HttpResponse.json(
+    params.id === "general" ? BUILT_IN_PLUGIN : PLUGIN, { headers: { ETag: '"plugin-3"' } },
+  )),
+  http.post("/console/v1/plugins/reauth", () => HttpResponse.json({ token: "plugin-test-authorization", expires_at: "2099-01-01T00:00:00Z" })),
+  http.get("/console/v1/plugins/jobs/:id", () => HttpResponse.json(PLUGIN_JOB)),
   http.get("/console/v1/system/connectors", () => HttpResponse.json(CONNECTOR_PLUGINS)),
   http.post("/console/v1/auth/refresh", () =>
     HttpResponse.json(ADMIN_LOGIN_RESPONSE, { headers: { "Set-Cookie": "refresh=rotated" } }),

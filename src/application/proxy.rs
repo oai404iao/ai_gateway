@@ -496,7 +496,7 @@ impl ProxyService {
                 session_affinity
                     .as_ref()
                     .map(SessionAffinityMatch::session_hash),
-                snapshot.system_settings().codex(),
+                snapshot.plugins(),
             ) {
                 Ok(attempt) => attempt,
                 Err(error) => {
@@ -1469,7 +1469,6 @@ impl ProxyError {
                 retry_after: None,
             },
             ConnectorAttemptError::RequestBody(error) => Self::image_edit_body(error),
-            ConnectorAttemptError::RequestPolicy(error) => Self::request_policy(error),
             ConnectorAttemptError::InvalidTarget => Self {
                 status: StatusCode::BAD_GATEWAY,
                 message: "The selected upstream channel has an invalid target URL.".to_owned(),

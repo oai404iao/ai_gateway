@@ -7,15 +7,7 @@ use serde_json::{Value, json};
 use std::sync::{Arc, OnceLock};
 
 use crate::connector_plugins::{ConnectorPlugins, Plugin};
-use crate::domain::{
-    ApiOperation, CodexRequestMetadataSettings, CompiledChannel, ConnectorKind, RequestProtocol,
-    UpstreamAuth,
-};
-use crate::request_policy::{
-    CodexRequestMetadata, RequestInterface, RequestPolicyError, RequestPolicyLayer,
-    apply_json_body_policy, filter_codex_headers, normalize_codex_fingerprints_in_headers,
-    normalize_codex_fingerprints_in_json,
-};
+use crate::domain::{ApiOperation, CompiledChannel, ConnectorKind, RequestProtocol, UpstreamAuth};
 
 use super::codex::{
     CodexAttemptError, CodexConnectorService, CodexCredentialUnavailable, PreparedCodexAttempt,
@@ -25,16 +17,9 @@ use super::request_body::{ImageEditBodyError, PreparedRequestBody, ReplayableReq
 #[derive(Clone, Default)]
 pub struct UpstreamConnectorRegistry {
     codex: Option<CodexConnectorService>,
-    plugins: ConnectorPlugins,
 }
 
 impl UpstreamConnectorRegistry {
-    #[must_use]
-    pub fn with_plugins(mut self, plugins: ConnectorPlugins) -> Self {
-        self.plugins = plugins;
-        self
-    }
-
     #[must_use]
     pub fn with_codex(mut self, service: CodexConnectorService) -> Self {
         self.codex = Some(service);
@@ -48,7 +33,7 @@ impl UpstreamConnectorRegistry {
         affinity_cache_hit: bool,
         client_headers: &HeaderMap,
         affinity_hash: Option<[u8; 32]>,
-        codex_settings: &CodexRequestMetadataSettings,
+        plugins: &ConnectorPlugins,
     ) -> Result<PreparedUpstreamAttempt, ConnectorUnavailable> {
         match channel.connector_kind() {
             ConnectorKind::OpenAiCompatible => Ok(PreparedUpstreamAttempt::OpenAiCompatible),
@@ -59,25 +44,21 @@ impl UpstreamConnectorRegistry {
                     .ok_or(ConnectorUnavailable::Missing)?;
                 let attempt = PreparedCodexAttempt::prepare(
                     &service.runtime(),
-                    service.plugin().ok_or(ConnectorUnavailable::Missing)?,
+                    plugins.get("codex").ok_or(ConnectorUnavailable::Missing)?,
                     credential_id,
                     api_operation,
                     affinity_cache_hit,
                     client_headers,
                     affinity_hash,
-                    codex_settings.outbound_identity().clone(),
                 )
                 .map_err(ConnectorUnavailable::Codex)?;
-                let request_metadata = attempt.request_metadata(codex_settings).map(Box::new);
                 Ok(PreparedUpstreamAttempt::Codex {
                     attempt: Box::new(attempt),
-                    request_metadata,
                     service: service.clone(),
                 })
             }
             ConnectorKind::Plugin(id) => {
-                let plugin = self
-                    .plugins
+                let plugin = plugins
                     .get(id.as_str())
                     .ok_or(ConnectorUnavailable::Missing)?;
                 if !plugin
@@ -110,18 +91,22 @@ impl UpstreamConnectorRegistry {
     }
 
     #[must_use]
-    pub(crate) fn can_attempt_responses_websocket(&self, channel: &CompiledChannel) -> bool {
+    pub(crate) fn can_attempt_responses_websocket(
+        &self,
+        channel: &CompiledChannel,
+        plugins: &ConnectorPlugins,
+    ) -> bool {
         match channel.connector_kind() {
             ConnectorKind::OpenAiCompatible => true,
             ConnectorKind::CodexOauth => self.codex.as_ref().is_some_and(|service| {
                 // The model and request-specific affinity are unavailable during
                 // Upgrade, so draining credentials remain potential candidates.
-                service.plugin().is_some()
+                plugins.get("codex").is_some()
                     && channel
                         .credential_id()
                         .is_some_and(|id| service.runtime().credential(id, true).is_ok())
             }),
-            ConnectorKind::Plugin(id) => self.plugins.get(id.as_str()).is_some_and(|p| {
+            ConnectorKind::Plugin(id) => plugins.get(id.as_str()).is_some_and(|p| {
                 p.manifest()
                     .operations
                     .iter()
@@ -141,12 +126,19 @@ pub(crate) enum PreparedUpstreamAttempt {
     },
     Codex {
         attempt: Box<PreparedCodexAttempt>,
-        request_metadata: Option<Box<CodexRequestMetadata>>,
         service: CodexConnectorService,
     },
 }
 
 impl PreparedUpstreamAttempt {
+    pub(crate) fn plugin_generation_id(&self) -> Option<&str> {
+        match self {
+            Self::OpenAiCompatible => None,
+            Self::External { plugin, .. } => Some(plugin.generation_id()),
+            Self::Codex { attempt, .. } => Some(attempt.plugin().generation_id()),
+        }
+    }
+
     pub(crate) async fn adapt_body(
         &self,
         body: PreparedRequestBody,
@@ -180,22 +172,16 @@ impl PreparedUpstreamAttempt {
                 PreparedRequestBody::Json(body) => self
                     .adapt_json_body(body, request_protocol)
                     .map(ReplayableRequestBody::Memory),
-                PreparedRequestBody::ImageEdit(body) if attempt.is_image_edit() => {
-                    let (body, _) = PreparedRequestBody::ImageEdit(body)
-                        .apply_policy(RequestPolicyLayer::CodexOauth, RequestInterface::ImagesEdit)
-                        .map_err(ConnectorAttemptError::RequestPolicy)?;
-                    body.image_edit()
-                        .expect("Codex Images edit policy preserves the body kind")
-                        .to_plugin_body(attempt.plugin())
-                        .await
-                        .map_err(ConnectorAttemptError::RequestBody)
-                        .and_then(|(body, content_type)| {
-                            if content_type != "application/json" {
-                                return Err(ConnectorAttemptError::InvalidTarget);
-                            }
-                            Ok(body)
-                        })
-                }
+                PreparedRequestBody::ImageEdit(body) if attempt.is_image_edit() => body
+                    .to_plugin_body(attempt.plugin())
+                    .await
+                    .map_err(ConnectorAttemptError::RequestBody)
+                    .and_then(|(body, content_type)| {
+                        if content_type != "application/json" {
+                            return Err(ConnectorAttemptError::InvalidTarget);
+                        }
+                        Ok(body)
+                    }),
                 PreparedRequestBody::ImageEdit(_) => Err(ConnectorAttemptError::from(
                     CodexAttemptError::UnsupportedOperation,
                 )),
@@ -223,39 +209,12 @@ impl PreparedUpstreamAttempt {
                 validate_plugin_body(&body, &output.body)?;
                 Ok(Bytes::from(output.body))
             }
-            Self::Codex {
-                attempt,
-                request_metadata,
-                ..
-            } => {
-                let interface = attempt
-                    .request_interface(request_protocol)
-                    .map_err(ConnectorAttemptError::from)?;
-                let body = apply_json_body_policy(RequestPolicyLayer::CodexOauth, interface, body)
-                    .map_err(ConnectorAttemptError::RequestPolicy)?
-                    .body;
-                let body = if let Some(metadata) = request_metadata {
-                    normalize_codex_fingerprints_in_json(interface, body, metadata)
-                        .map_err(ConnectorAttemptError::RequestPolicy)?
-                        .body
-                } else {
-                    body
-                };
+            Self::Codex { attempt, .. } => {
                 let adapted = attempt
                     .adapt_body(body.clone(), request_protocol)
                     .map_err(ConnectorAttemptError::from)?;
                 validate_plugin_body(&body, &adapted)?;
-                let adapted =
-                    apply_json_body_policy(RequestPolicyLayer::CodexOauth, interface, adapted)
-                        .map_err(ConnectorAttemptError::RequestPolicy)?
-                        .body;
-                if let Some(metadata) = request_metadata {
-                    normalize_codex_fingerprints_in_json(interface, adapted, metadata)
-                        .map(|out| out.body)
-                        .map_err(ConnectorAttemptError::RequestPolicy)
-                } else {
-                    Ok(adapted)
-                }
+                Ok(adapted)
             }
         }
     }
@@ -311,23 +270,9 @@ impl PreparedUpstreamAttempt {
                 headers.remove(AUTHORIZATION);
                 inject_standard_auth(headers, channel)
             }
-            Self::Codex {
-                attempt,
-                request_metadata,
-                ..
-            } => {
-                let interface = attempt
-                    .request_interface(request_protocol)
-                    .map_err(ConnectorAttemptError::from)?;
-                *headers = filter_codex_headers(interface, headers)
-                    .map_err(ConnectorAttemptError::RequestPolicy)?;
-                if let Some(metadata) = request_metadata {
-                    normalize_codex_fingerprints_in_headers(interface, headers, metadata);
-                }
-                attempt
-                    .inject_headers(headers, request_protocol)
-                    .map_err(ConnectorAttemptError::from)
-            }
+            Self::Codex { attempt, .. } => attempt
+                .inject_headers(headers, request_protocol)
+                .map_err(ConnectorAttemptError::from),
         }
     }
 
@@ -510,7 +455,6 @@ pub(crate) enum ConnectorAttemptError {
         code: &'static str,
     },
     RequestBody(ImageEditBodyError),
-    RequestPolicy(RequestPolicyError),
     InvalidTarget,
     InvalidCredentials,
 }
@@ -541,6 +485,11 @@ impl From<CodexAttemptError> for ConnectorAttemptError {
             },
             CodexAttemptError::InvalidTarget => Self::InvalidTarget,
             CodexAttemptError::InvalidCredentials => Self::InvalidCredentials,
+            CodexAttemptError::PolicyRejected { code, param } => Self::ClientRequest {
+                message: "The selected connector rejected an unsupported request field or value.",
+                param,
+                code,
+            },
         }
     }
 }
@@ -697,7 +646,8 @@ pub(crate) mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn generic_external_connector_cannot_add_authorization_to_other_auth_modes() {
-        let registry = UpstreamConnectorRegistry::default().with_plugins(fixture(false).unwrap());
+        let plugins = fixture(false).unwrap();
+        let registry = UpstreamConnectorRegistry::default();
         for auth in [
             UpstreamAuth::None,
             UpstreamAuth::Header {
@@ -730,7 +680,7 @@ pub(crate) mod tests {
                     false,
                     &HeaderMap::new(),
                     None,
-                    &CodexRequestMetadataSettings::default(),
+                    &plugins,
                 )
                 .unwrap();
             let mut headers = HeaderMap::new();
@@ -753,7 +703,7 @@ pub(crate) mod tests {
     #[test]
     fn generic_external_connector_dispatches_through_native_abi_with_host_auth() {
         let plugins = fixture(false).unwrap();
-        let registry = UpstreamConnectorRegistry::default().with_plugins(plugins);
+        let registry = UpstreamConnectorRegistry::default();
         let channel = CompiledChannel::new_with_connector_policy_automation_and_billing(
             Uuid::new_v4(),
             Uuid::new_v4(),
@@ -778,7 +728,7 @@ pub(crate) mod tests {
                 false,
                 &HeaderMap::new(),
                 None,
-                &CodexRequestMetadataSettings::default(),
+                &plugins,
             )
             .unwrap();
         let body = Bytes::from_static(br#"{ "model":"selected","input":"hello","stream":true }"#);
@@ -805,7 +755,7 @@ pub(crate) mod tests {
         assert!(!headers.contains_key("x-remove"));
         assert!(attempt.successful_response_is_sse());
         assert!(!attempt.allows_automatic_retry());
-        assert!(registry.can_attempt_responses_websocket(&channel));
+        assert!(registry.can_attempt_responses_websocket(&channel, &plugins));
         let image_attempt = registry
             .prepare(
                 &channel,
@@ -813,7 +763,7 @@ pub(crate) mod tests {
                 false,
                 &HeaderMap::new(),
                 None,
-                &CodexRequestMetadataSettings::default(),
+                &plugins,
             )
             .unwrap();
         let PreparedUpstreamAttempt::External {
@@ -842,7 +792,7 @@ pub(crate) mod tests {
                     false,
                     &HeaderMap::new(),
                     None,
-                    &CodexRequestMetadataSettings::default()
+                    &plugins
                 )
                 .is_err()
         );
@@ -895,7 +845,10 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(headers.get("x-api-key").unwrap(), "upstream-secret");
         assert!(attempt.allows_automatic_retry());
-        assert!(UpstreamConnectorRegistry::default().can_attempt_responses_websocket(&channel));
+        assert!(
+            UpstreamConnectorRegistry::default()
+                .can_attempt_responses_websocket(&channel, &ConnectorPlugins::default())
+        );
     }
 
     #[test]
@@ -918,6 +871,9 @@ pub(crate) mod tests {
             CompiledChannelUpstreamPolicy::transparent(ApiFormat::OpenAiResponses),
         );
 
-        assert!(!UpstreamConnectorRegistry::default().can_attempt_responses_websocket(&channel));
+        assert!(
+            !UpstreamConnectorRegistry::default()
+                .can_attempt_responses_websocket(&channel, &ConnectorPlugins::default())
+        );
     }
 }

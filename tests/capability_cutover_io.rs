@@ -998,8 +998,7 @@ async fn exercise_capability_batch_and_recovery(
                      "stream_idle_timeout_seconds": 60},
         "passive_health": {"connection_failure_threshold": 3, "cooldown_seconds": 60},
         "automatic_disable": {"enabled": true, "error_status_codes": [429]},
-        "session_affinity": {"enabled": false, "max_entries": 100000, "default_ttl_seconds": 3600, "rules": []},
-        "codex": {"originator": "codex_cli_rs", "client_version": "0.1.0", "user_agent": "codex_cli_rs/0.1.0"}
+        "session_affinity": {"enabled": false, "max_entries": 100000, "default_ttl_seconds": 3600, "rules": []}
     })).unwrap()).await.unwrap();
     let before = repository.topology().await.unwrap();
     let capability = before
@@ -2714,7 +2713,7 @@ mod sqlite_backend {
             &ai_gateway::persistence::capability_cutover::credential_ownership::upgrade(&projected),
         );
         transaction.commit().await.unwrap();
-        assert_eq!(database.install_schema().await.unwrap(), 4);
+        assert_eq!(database.install_schema().await.unwrap(), 5);
         let mut transaction = database.begin_write().await.unwrap();
         assert_topology(
             &expected,

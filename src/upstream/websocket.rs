@@ -69,6 +69,7 @@ pub(crate) struct UpstreamWebSocketKey {
     client_identity: WebSocketClientIdentity,
     channel_id: Uuid,
     connector_kind: ConnectorKind,
+    plugin_generation: Option<Arc<str>>,
     upstream_model: Arc<str>,
     connectivity_fingerprint: Arc<str>,
     outbound_network_policy_fingerprint: OutboundNetworkPolicyFingerprint,
@@ -96,6 +97,7 @@ impl UpstreamWebSocketKey {
             client_identity,
             channel_id: channel.id(),
             connector_kind: channel.connector_kind(),
+            plugin_generation: None,
             upstream_model: Arc::from(upstream_model),
             connectivity_fingerprint: Arc::clone(channel.connectivity_fingerprint()),
             outbound_network_policy_fingerprint: channel
@@ -105,6 +107,12 @@ impl UpstreamWebSocketKey {
             header_fingerprint: hasher.finalize().into(),
             max_message_bytes,
         }
+    }
+
+    #[must_use]
+    pub(crate) fn with_plugin_generation(mut self, generation: Option<&str>) -> Self {
+        self.plugin_generation = generation.map(Arc::from);
+        self
     }
 
     #[must_use]
@@ -236,6 +244,7 @@ mod credential_tests {
                     second.connector_kind,
                     Arc::clone(&second.connectivity_fingerprint),
                     second.outbound_network_policy_fingerprint,
+                    second.plugin_generation.clone(),
                 ),
             )])),
         };
@@ -263,6 +272,7 @@ mod credential_tests {
                     current.connector_kind,
                     Arc::clone(&current.connectivity_fingerprint),
                     current.outbound_network_policy_fingerprint,
+                    current.plugin_generation.clone(),
                 ),
             )]));
         }
@@ -498,7 +508,12 @@ struct PoolInner {
     discarded_total: AtomicU64,
 }
 
-type ActiveChannelIdentity = (ConnectorKind, Arc<str>, OutboundNetworkPolicyFingerprint);
+type ActiveChannelIdentity = (
+    ConnectorKind,
+    Arc<str>,
+    OutboundNetworkPolicyFingerprint,
+    Option<Arc<str>>,
+);
 
 struct PoolState {
     idle: VecDeque<IdleWebSocket>,
@@ -511,13 +526,14 @@ impl PoolState {
     fn permits(&self, key: &UpstreamWebSocketKey) -> bool {
         self.active_channels.as_ref().is_none_or(|channels| {
             self.active_api_keys.contains(&key.api_key_id)
-                && channels
-                    .get(&key.channel_id)
-                    .is_some_and(|(connector, identity, network)| {
+                && channels.get(&key.channel_id).is_some_and(
+                    |(connector, identity, network, generation)| {
                         connector == &key.connector_kind
                             && identity == &key.connectivity_fingerprint
                             && network == &key.outbound_network_policy_fingerprint
-                    })
+                            && generation == &key.plugin_generation
+                    },
+                )
         })
     }
 }
@@ -690,6 +706,10 @@ impl UpstreamWebSocketPool {
                                 channel
                                     .upstream_policy()
                                     .outbound_network_policy_fingerprint(),
+                                snapshot
+                                    .plugins()
+                                    .get(channel.connector_kind().as_str())
+                                    .map(|plugin| Arc::from(plugin.generation_id())),
                             ),
                         )
                     })
@@ -707,6 +727,11 @@ impl UpstreamWebSocketPool {
                     .is_some_and(|channel| {
                         channel.supports_websocket()
                             && channel.connector_kind() == entry.key.connector_kind
+                            && snapshot
+                                .plugins()
+                                .get(channel.connector_kind().as_str())
+                                .map(|plugin| Arc::<str>::from(plugin.generation_id()))
+                                == entry.key.plugin_generation
                             && channel.connectivity_fingerprint()
                                 == &entry.key.connectivity_fingerprint
                             && channel

@@ -90,7 +90,7 @@ fn rejects_mismatched_pin_identity_and_abi() {
 }
 
 #[test]
-fn snapshot_compilation_requires_registered_ids_and_declared_operations() {
+fn snapshot_compilation_excludes_unavailable_plugin_channels() {
     use ai_gateway::{
         domain::ApiOperation,
         persistence::{
@@ -157,6 +157,7 @@ fn snapshot_compilation_requires_registered_ids_and_declared_operations() {
             });
         }
         RuntimeConfigRecords {
+            plugin_records: Default::default(),
             control_plane,
             connector_ids: vec![connector.into()],
             sharing: vec![],
@@ -181,13 +182,12 @@ fn snapshot_compilation_requires_registered_ids_and_declared_operations() {
         )
         .is_ok()
     );
-    assert!(
-        compile_runtime_config_with_plugins(
-            records("fixture", Some(ApiOperation::ChatCompletions)),
-            &plugins
-        )
-        .is_err()
-    );
+    let unavailable = compile_runtime_config_with_plugins(
+        records("fixture", Some(ApiOperation::ChatCompletions)),
+        &plugins,
+    )
+    .unwrap();
+    assert_eq!(unavailable.channels().count(), 0);
     let (_directory, path, sha256) = fixture_with_flags(1, &["-DFIXTURE_OMIT_HEADERS"]);
     let incomplete = ConnectorPlugins::load(&[PluginConfig {
         id: "fixture".into(),
@@ -195,14 +195,13 @@ fn snapshot_compilation_requires_registered_ids_and_declared_operations() {
         sha256,
     }])
     .unwrap();
-    assert!(
-        compile_runtime_config_with_plugins(
-            records("fixture", Some(ApiOperation::Responses)),
-            &incomplete
-        )
-        .is_err()
-    );
+    let unavailable = compile_runtime_config_with_plugins(
+        records("fixture", Some(ApiOperation::Responses)),
+        &incomplete,
+    )
+    .unwrap();
+    assert_eq!(unavailable.channels().count(), 0);
     for id in ["unknown", "codex"] {
-        assert!(compile_runtime_config_with_plugins(records(id, None), &plugins).is_err());
+        assert!(compile_runtime_config_with_plugins(records(id, None), &plugins).is_ok());
     }
 }

@@ -5,7 +5,7 @@
 ## 系统定位
 
 `ai-gateway` 是 Rust 2024 服务，`general` 连接器可仅凭网关二进制运行。外部连接器通过
-启动时校验的 C ABI 动态库加载；Codex 需要管理员独立安装插件。
+目录管理的 C ABI 动态库加载；Codex 需要管理员独立安装并启用插件。
 生产运行时由 Axum/Tokio、reqwest、PostgreSQL/SQLx 和 `ArcSwap` 组成；
 Console Web UI 可在构建时嵌入二进制，生产环境不需要常驻 Node 服务。
 
@@ -186,7 +186,9 @@ observation 接口，不包含 provider 的 OAuth claim、路径或 Header 细�
 
 Codex OAuth、Token、配额和模型协议解析也由外部插件执行；宿主保留网络、事务、维护锁、
 generation、外部操作 intent 和金额恢复。插件不拥有数据库或 socket。
-未安装/不兼容插件不得回退为 `general`，二进制升级需要重启。
+未安装/不兼容插件不得回退为 `general`。兼容升级通过不可变代际热切换，
+在途请求固定旧代际，已加载库保留到进程退出。插件定义自己的设置和隐私策略，
+宿主提供通用配置管理、审计及传输约束。
 详细边界见[连接器插件](connector-plugins.md)，安装见[用户指南](../user/connector-plugins.md)。
 
 Codex 与通用凭证统一使用 `upstream_credentials`，OAuth 扩展独立保存 Token、quota、

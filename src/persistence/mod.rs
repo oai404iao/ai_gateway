@@ -14,6 +14,7 @@ mod control_plane_write;
 mod health;
 mod metering;
 mod migrations;
+mod plugins;
 mod postgres_control_plane;
 #[cfg(feature = "sqlite-backend")]
 pub mod sqlite;
@@ -45,6 +46,11 @@ pub use codex::{
 pub use health::DatabaseHealth;
 pub use metering::{MeteringReconciliationCounts, MeteringWriteOutcome};
 pub use migrations::{MIGRATOR, MigrationRunError, run_migrations};
+pub use plugins::{
+    PluginArtifactInput, PluginArtifactRecord, PluginInstallJob, PluginJobCompletion,
+    PluginRuntimeRecords, PluginSaveInput, PluginSettingsInput, PluginSettingsRecord,
+    PluginStateRecord,
+};
 pub use postgres_control_plane::*;
 pub use storage_error::{StorageError, StorageFailureKind};
 pub use upstream_credentials::{

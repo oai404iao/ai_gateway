@@ -1539,13 +1539,179 @@ export interface paths {
         };
         /**
          * @description Administrator-only. Lists the built-in general connector and the native
-         *     plugins loaded by this process. Installation and binary upgrades are
-         *     offline administrator operations; this endpoint never downloads code.
+         *     plugins available for new requests. Native lifecycle management uses
+         *     the separate /plugins endpoints.
          */
         get: operations["listConnectorPlugins"];
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/plugins": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Administrator-only installed plugin inventory, including read-only general. */
+        get: operations["listPlugins"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/plugins/reauth": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * @description Re-verifies the active administrator password. The resulting token is
+         *     bound to the user and Console session, is single-use, expires after five minutes,
+         *     and must remain in browser memory only.
+         */
+        post: operations["authorizePluginManagement"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/plugins/install": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * @description Administrator-only raw tar.gz upload. Installs an immutable artifact
+         *     without automatically enabling it. Native code has gateway process
+         *     privileges; upload only administrator-reviewed trusted packages.
+         */
+        post: operations["installPlugin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/plugins/discover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Administrator-only scan of the configured incoming directory; never auto-enables new artifacts. */
+        post: operations["discoverPlugins"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/plugins/jobs/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Administrator-only bounded install/discovery progress; error codes never include package contents. */
+        get: operations["getPluginJob"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/plugins/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Administrator-only plugin detail. ETag binds the revision and selected artifact. */
+        get: operations["getPlugin"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/plugins/{id}/state": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * @description Administrator-only enable, disable or version switch. Publishes one
+         *     validated generation; existing operations remain pinned to their
+         *     generation. Disabling does not physically unload native code.
+         */
+        put: operations["updatePluginState"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/plugins/{id}/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Administrator-only descriptor and non-secret scalar settings. No provider-specific fields are defined by the host. */
+        get: operations["getPluginSettings"];
+        /** @description Administrator-only complete settings replacement, validated by the selected plugin before atomic publication. */
+        put: operations["updatePluginSettings"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/plugins/{id}/artifacts/{digest}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** @description Administrator-only deletion of an inactive artifact with no recovery dependencies. Never physically unloads native code. */
+        delete: operations["deletePluginArtifact"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1639,6 +1805,98 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        PluginDigest: string;
+        PluginArtifact: {
+            digest: components["schemas"]["PluginDigest"];
+            version: string;
+        };
+        PluginView: {
+            id: components["schemas"]["ConnectorKind"];
+            built_in: boolean;
+            enabled: boolean;
+            /** Format: int64 */
+            revision: number;
+            artifact_digest: string | null;
+            version: string | null;
+            /** @enum {string} */
+            status: "active" | "disabled" | "unavailable" | "not_installed";
+            artifacts: components["schemas"]["PluginArtifact"][];
+            error_code: string | null;
+        };
+        PluginStateInput: {
+            enabled: boolean;
+            artifact_digest: string | null;
+        };
+        PluginAuthorization: {
+            token: string;
+            expires_at: components["schemas"]["DateTime"];
+        };
+        PluginJob: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            readonly actor_user_id: string;
+            /** @enum {string} */
+            operation: "install" | "discover";
+            /** @enum {string} */
+            status: "queued" | "running" | "succeeded" | "failed";
+            plugin_id: string | null;
+            artifact_digest: string | null;
+            error_code: string | null;
+            created_at: components["schemas"]["DateTime"];
+            updated_at: components["schemas"]["DateTime"];
+        };
+        PluginLocalizedText: {
+            [key: string]: string;
+        };
+        PluginSettingScalar: string | number | boolean;
+        PluginSettingsValues: {
+            [key: string]: components["schemas"]["PluginSettingScalar"];
+        };
+        PluginSettingField: {
+            key: string;
+            label: components["schemas"]["PluginLocalizedText"];
+            description?: components["schemas"]["PluginLocalizedText"];
+            required: boolean;
+        } & ({
+            /** @constant */
+            type: "string";
+            max_length: number;
+        } | {
+            /** @constant */
+            type: "boolean";
+        } | {
+            /** @constant */
+            type: "integer";
+            minimum: number;
+            maximum: number;
+        } | {
+            /** @constant */
+            type: "enum";
+            options: {
+                value: string;
+                label: components["schemas"]["PluginLocalizedText"];
+            }[];
+        });
+        PluginSettingsDescriptor: {
+            schema_version: number;
+            title: components["schemas"]["PluginLocalizedText"];
+            fields: components["schemas"]["PluginSettingField"][];
+            defaults: components["schemas"]["PluginSettingsValues"];
+        };
+        PluginSettingsInput: {
+            schema_version: number;
+            values: components["schemas"]["PluginSettingsValues"];
+        };
+        PluginSettingsView: {
+            plugin_id: components["schemas"]["ConnectorKind"];
+            artifact_digest: components["schemas"]["PluginDigest"];
+            schema_version: number;
+            /** Format: int64 */
+            revision: number;
+            descriptor: components["schemas"]["PluginSettingsDescriptor"];
+            values: components["schemas"]["PluginSettingsValues"];
+        };
         ErrorBody: {
             error: string;
         };
@@ -2011,34 +2269,6 @@ export interface components {
              */
             max_connection_age_seconds: number;
         };
-        SystemCodexSettings: {
-            /**
-             * @description Synthetic absolute workspace path that replaces every client-reported Codex workspace path.
-             * @default /workspace
-             */
-            workspace_path: string;
-            /**
-             * Format: uri
-             * @description Synthetic HTTPS origin remote written to workspaces[workspace_path].associated_remote_urls.origin.
-             * @default https://github.com/oai404iao/ai_gateway
-             */
-            git_remote_url: string;
-            /**
-             * @description Connector-owned originator used for Codex forwarding and the OAuth authorization URL.
-             * @default codex_cli_rs
-             */
-            originator: string;
-            /**
-             * @description Connector-owned Codex version sent in the version Header and models client_version query parameter.
-             * @default 0.146.0
-             */
-            client_version: string;
-            /**
-             * @description Connector-owned User-Agent for managed Codex backend requests. Set a matching native CLI value, including its platform and terminal suffix, when required.
-             * @default codex_cli_rs/0.146.0
-             */
-            user_agent: string;
-        };
         SystemSettingsInput: {
             /** @description User-visible HTTP(S) base URLs for the OpenAI-compatible data plane. */
             api_hosts: string[];
@@ -2049,7 +2279,6 @@ export interface components {
             scheduled_testing: components["schemas"]["SystemScheduledTestingSettings"];
             session_affinity: components["schemas"]["SystemSessionAffinitySettings"];
             websocket: components["schemas"]["SystemWebSocketSettings"];
-            codex: components["schemas"]["SystemCodexSettings"];
         };
         SystemSettings: components["schemas"]["SystemSettingsInput"] & {
             updated_at: components["schemas"]["DateTime"];
@@ -3724,6 +3953,9 @@ export interface components {
         };
     };
     parameters: {
+        PluginId: components["schemas"]["ConnectorKind"];
+        /** @description Single-use session-bound token issued by /plugins/reauth; expires in five minutes and must never persist in browser storage. */
+        PluginAuthorization: string;
         PathId: string;
         /** @description ETag from the preceding GET; stale values yield `409`. */
         IfMatch: string;
@@ -7509,6 +7741,303 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+        };
+    };
+    listPlugins: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Installed plugins and their effective runtime state. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PluginView"][];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    authorizePluginManagement: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: password */
+                    password: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Short-lived native plugin management authorization. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PluginAuthorization"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    installPlugin: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Single-use session-bound token issued by /plugins/reauth; expires in five minutes and must never persist in browser storage. */
+                "X-Plugin-Authorization": components["parameters"]["PluginAuthorization"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/octet-stream": string;
+            };
+        };
+        responses: {
+            /** @description Installation queued. Poll the returned job ID. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PluginJob"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description Upload exceeds the artifact size limit. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    discoverPlugins: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Single-use session-bound token issued by /plugins/reauth; expires in five minutes and must never persist in browser storage. */
+                "X-Plugin-Authorization": components["parameters"]["PluginAuthorization"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Discovery queued. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PluginJob"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    getPluginJob: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current job state. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PluginJob"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    getPlugin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["PluginId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Plugin detail. */
+            200: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PluginView"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    updatePluginState: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag from the preceding GET; stale values yield `409`. */
+                "If-Match": components["parameters"]["IfMatch"];
+                /** @description Single-use session-bound token issued by /plugins/reauth; expires in five minutes and must never persist in browser storage. */
+                "X-Plugin-Authorization": components["parameters"]["PluginAuthorization"];
+            };
+            path: {
+                id: components["parameters"]["PluginId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PluginStateInput"];
+            };
+        };
+        responses: {
+            /** @description Plugin state committed and runtime published. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    getPluginSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["PluginId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Settings and descriptor. ETag binds revision, selected artifact and settings schema. */
+            200: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PluginSettingsView"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    updatePluginSettings: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag from the preceding GET; stale values yield `409`. */
+                "If-Match": components["parameters"]["IfMatch"];
+                /** @description Single-use session-bound token issued by /plugins/reauth; expires in five minutes and must never persist in browser storage. */
+                "X-Plugin-Authorization": components["parameters"]["PluginAuthorization"];
+            };
+            path: {
+                id: components["parameters"]["PluginId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PluginSettingsInput"];
+            };
+        };
+        responses: {
+            /** @description Settings saved and applied. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    deletePluginArtifact: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag from the preceding GET; stale values yield `409`. */
+                "If-Match": components["parameters"]["IfMatch"];
+                /** @description Single-use session-bound token issued by /plugins/reauth; expires in five minutes and must never persist in browser storage. */
+                "X-Plugin-Authorization": components["parameters"]["PluginAuthorization"];
+            };
+            path: {
+                id: components["parameters"]["PluginId"];
+                digest: components["schemas"]["PluginDigest"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Unreferenced artifact removed. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
         };
     };
     getSystemLoad: {

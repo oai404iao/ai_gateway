@@ -120,7 +120,7 @@ mod tests {
             sqlx::query_as("SELECT id,connector_kind,revision,updated_at FROM upstream_credentials ORDER BY id")
                 .fetch_all(&mut *reader).await.unwrap()
         };
-        assert_eq!(database.install_schema().await.unwrap(), 1);
+        assert_eq!(database.install_schema().await.unwrap(), 2);
         {
             let mut reader = database.acquire_read().await.unwrap();
             let after: Vec<(String, String, String, String)> =

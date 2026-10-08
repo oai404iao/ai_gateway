@@ -58,6 +58,18 @@ pub struct ConsoleAuthService {
     repository: AuthRepository,
     tokens: Arc<TokenCodec>,
     failures: Arc<Mutex<AuthFailureLimiter>>,
+    plugin_authorizations: Arc<Mutex<HashMap<Vec<u8>, PluginAuthorization>>>,
+}
+
+struct PluginAuthorization {
+    principal: ConsolePrincipal,
+    expires: Instant,
+}
+
+#[derive(Serialize)]
+pub struct PluginReauthorization {
+    pub token: String,
+    pub expires_at: DateTime<Utc>,
 }
 
 impl ConsoleAuthService {
@@ -66,6 +78,7 @@ impl ConsoleAuthService {
             repository,
             tokens: Arc::new(TokenCodec::from_config(config)?),
             failures: Arc::new(Mutex::new(AuthFailureLimiter::default())),
+            plugin_authorizations: Default::default(),
         })
     }
 
@@ -86,6 +99,7 @@ impl ConsoleAuthService {
                 verification_key_pem,
             )?),
             failures: Arc::new(Mutex::new(AuthFailureLimiter::default())),
+            plugin_authorizations: Default::default(),
         })
     }
 
@@ -94,6 +108,77 @@ impl ConsoleAuthService {
         user_id: Uuid,
     ) -> Result<Option<crate::persistence::ConsoleProfile>, AuthError> {
         Ok(self.repository.profile(user_id).await?)
+    }
+
+    pub async fn authorize_plugin_management(
+        &self,
+        principal: ConsolePrincipal,
+        password: String,
+    ) -> Result<PluginReauthorization, AuthError> {
+        if !principal.role().is_admin()
+            || principal.session_purpose() != ConsoleSessionPurpose::Normal
+        {
+            return Err(AuthError::InvalidCredentials);
+        }
+        validate_password(&password)?;
+        let limiter_key = format!("plugin-management:{}", principal.user_id());
+        self.ensure_attempt_allowed(&limiter_key).await?;
+        let user = self
+            .repository
+            .password_user(principal.user_id())
+            .await?
+            .ok_or(AuthError::InvalidCredentials)?;
+        if user.status != "active"
+            || user.role != "admin"
+            || user.auth_version != principal.auth_version()
+            || user.password_change_required
+            || !verify_password(password, user.password_hash).await?
+        {
+            self.record_failed_attempt(&limiter_key).await;
+            return Err(AuthError::InvalidCredentials);
+        }
+        self.clear_failed_attempts(&limiter_key).await;
+        let now = Instant::now();
+        let mut authorizations = self.plugin_authorizations.lock().await;
+        authorizations.retain(|_, authorization| {
+            authorization.expires > now
+                && authorization.principal.session_id() != principal.session_id()
+        });
+        if authorizations.len() >= 1_024 {
+            return Err(AuthError::RateLimited);
+        }
+        let token = new_opaque_token(Uuid::new_v4());
+        authorizations.insert(
+            token_hash(&token),
+            PluginAuthorization {
+                principal,
+                expires: now + Duration::from_secs(300),
+            },
+        );
+        Ok(PluginReauthorization {
+            token,
+            expires_at: Utc::now() + chrono::Duration::seconds(300),
+        })
+    }
+
+    pub async fn consume_plugin_authorization(
+        &self,
+        principal: ConsolePrincipal,
+        token: &str,
+    ) -> Result<(), AuthError> {
+        if token.len() > 256 {
+            return Err(AuthError::InvalidCredentials);
+        }
+        let authorization = self
+            .plugin_authorizations
+            .lock()
+            .await
+            .remove(&token_hash(token))
+            .ok_or(AuthError::InvalidCredentials)?;
+        if authorization.principal != principal || authorization.expires <= Instant::now() {
+            return Err(AuthError::InvalidCredentials);
+        }
+        Ok(())
     }
 
     pub async fn update_display_name(

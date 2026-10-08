@@ -9,11 +9,10 @@
 #   openssl rand -hex 32 > ./config/postgres-password
 #   chmod 600 ./config/postgres-password
 
-# Install plugins separately and mount their directory read-only into the container.
-# [[plugins]]
-# id = "codex"
-# path = "/opt/ai-gateway/plugins/codex/libai_gateway_connector_codex.so"
-# sha256 = "<64 lowercase hexadecimal characters>"
+# The managed volume holds immutable native artifacts and installation staging.
+# Installation and activation require administrator password confirmation.
+[plugins]
+directory = "/var/lib/ai-gateway/plugins"
 
 [server]
 # The container must listen on all container interfaces. Host exposure remains

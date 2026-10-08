@@ -93,7 +93,6 @@ fn system_settings() -> SystemSettingsInput {
         scheduled_testing: Default::default(),
         session_affinity: Default::default(),
         websocket: Default::default(),
-        codex: Default::default(),
     }
 }
 

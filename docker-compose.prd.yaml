@@ -153,6 +153,7 @@ services:
         read_only: true
       - gateway-spool:/var/lib/ai-gateway/request-log-spool
       - gateway-image-edit-spool:/var/lib/ai-gateway/image-edit-spool
+      - gateway-plugins:/var/lib/ai-gateway/plugins
     secrets:
       - postgres_password
       - console_jwt_private
@@ -199,3 +200,4 @@ volumes:
   postgres-data:
   gateway-spool:
   gateway-image-edit-spool:
+  gateway-plugins:

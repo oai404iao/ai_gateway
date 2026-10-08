@@ -806,6 +806,115 @@
       "updated_at": "timestamptz"
     }
   },
+  "plugin_artifacts": {
+    "checks": [
+      "plugin_artifacts_digest_check",
+      "plugin_artifacts_manifest_check",
+      "plugin_artifacts_plugin_id_check"
+    ],
+    "columns": [
+      "plugin_id",
+      "digest",
+      "version",
+      "manifest",
+      "created_at",
+      "deleted_at"
+    ],
+    "constraints": [
+      "plugin_artifacts_pkey"
+    ],
+    "types": {
+      "created_at": "timestamptz",
+      "deleted_at": "timestamptz",
+      "digest": "text",
+      "manifest": "jsonb",
+      "plugin_id": "text",
+      "version": "text"
+    }
+  },
+  "plugin_install_jobs": {
+    "checks": [
+      "plugin_install_jobs_check",
+      "plugin_install_jobs_operation_check",
+      "plugin_install_jobs_status_check"
+    ],
+    "columns": [
+      "id",
+      "actor_user_id",
+      "operation",
+      "status",
+      "plugin_id",
+      "artifact_digest",
+      "error_code",
+      "created_at",
+      "updated_at"
+    ],
+    "constraints": [
+      "plugin_install_jobs_actor_user_id_fkey",
+      "plugin_install_jobs_pkey"
+    ],
+    "types": {
+      "actor_user_id": "uuid",
+      "artifact_digest": "text",
+      "created_at": "timestamptz",
+      "error_code": "text",
+      "id": "uuid",
+      "operation": "text",
+      "plugin_id": "text",
+      "status": "text",
+      "updated_at": "timestamptz"
+    }
+  },
+  "plugin_settings": {
+    "checks": [
+      "plugin_settings_plugin_id_check",
+      "plugin_settings_revision_check",
+      "plugin_settings_schema_version_check",
+      "plugin_settings_settings_value_check"
+    ],
+    "columns": [
+      "plugin_id",
+      "schema_version",
+      "settings_value",
+      "revision",
+      "updated_at"
+    ],
+    "constraints": [
+      "plugin_settings_pkey"
+    ],
+    "types": {
+      "plugin_id": "text",
+      "revision": "int8",
+      "schema_version": "int4",
+      "settings_value": "jsonb",
+      "updated_at": "timestamptz"
+    }
+  },
+  "plugin_states": {
+    "checks": [
+      "plugin_states_check",
+      "plugin_states_plugin_id_check",
+      "plugin_states_revision_check"
+    ],
+    "columns": [
+      "plugin_id",
+      "enabled",
+      "artifact_digest",
+      "revision",
+      "updated_at"
+    ],
+    "constraints": [
+      "plugin_states_pkey",
+      "plugin_states_plugin_id_artifact_digest_fkey"
+    ],
+    "types": {
+      "artifact_digest": "text",
+      "enabled": "bool",
+      "plugin_id": "text",
+      "revision": "int8",
+      "updated_at": "timestamptz"
+    }
+  },
   "proxies": {
     "checks": [
       "proxies_proxy_url_check"

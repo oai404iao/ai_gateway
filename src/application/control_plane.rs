@@ -1,5 +1,8 @@
 //! Serialized control-plane publication for reloads and management writes.
 
+mod plugins;
+pub use plugins::{ManagedPluginSettingsView, ManagedPluginView, plugin_etag};
+
 use std::sync::Arc;
 
 use thiserror::Error;
@@ -52,6 +55,7 @@ pub struct ConnectorPluginView {
 
 impl ControlPlaneCoordinator {
     pub fn connector_plugins(&self) -> Vec<ConnectorPluginView> {
+        let plugins = self.runtime.plugins();
         let mut connectors = vec![ConnectorPluginView {
             id: "general".into(),
             version: env!("CARGO_PKG_VERSION").into(),
@@ -70,8 +74,7 @@ impl ControlPlaneCoordinator {
             .collect(),
         }];
         connectors.extend(
-            self.runtime
-                .plugins()
+            plugins
                 .manifests()
                 .into_iter()
                 .map(|manifest| ConnectorPluginView {

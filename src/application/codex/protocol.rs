@@ -2,7 +2,6 @@
 use super::CodexConnectorError;
 use crate::{
     connector_plugins::Plugin,
-    domain::CodexOutboundIdentity,
     persistence::{CodexQuotaResetOutcome, CodexQuotaUpdate},
 };
 use base64::Engine;
@@ -25,6 +24,10 @@ const MAX_MODELS_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_QUOTA_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_QUOTA_RESET_RESPONSE_BYTES: usize = 1024 * 1024;
 const CONTROL_PLANE_COMMANDS: &[&str] = &[
+    "settings.describe/v1",
+    "settings.validate/v1",
+    "settings.compile/v1",
+    "attempt.context",
     "endpoints",
     "authorize_url",
     "parse_callback",
@@ -152,9 +155,6 @@ fn decode<T: serde::de::DeserializeOwned>(
     serde_json::from_value(call(plugin, command, metadata, body)?.metadata)
         .map_err(|_| CodexConnectorError::PluginUnavailable)
 }
-fn identity_metadata(identity: &CodexOutboundIdentity) -> Value {
-    json!({"originator":identity.originator(),"client_version":identity.client_version(),"user_agent":identity.user_agent()})
-}
 #[derive(Clone, Deserialize)]
 pub struct PkceCodes {
     pub verifier: String,
@@ -212,11 +212,16 @@ pub fn generate_oauth_state() -> String {
     rand::rng().fill_bytes(&mut bytes);
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
-pub fn state_hash(state: &str) -> [u8; 32] {
-    Sha256::digest(state.as_bytes()).into()
+pub fn state_hash(generation: &str, state: &str) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(b"ai-gateway/oauth-generation/v1\0");
+    hash.update((generation.len() as u64).to_be_bytes());
+    hash.update(generation.as_bytes());
+    hash.update(state.as_bytes());
+    hash.finalize().into()
 }
-pub fn state_matches(expected_hash: &[u8], state: &str) -> bool {
-    let actual = state_hash(state);
+pub fn state_matches(expected_hash: &[u8], generation: &str, state: &str) -> bool {
+    let actual = state_hash(generation, state);
     expected_hash.len() == actual.len() && expected_hash.ct_eq(&actual).into()
 }
 async fn read_body(
@@ -252,12 +257,11 @@ pub fn build_authorize_url(
     endpoints: &CodexEndpoints,
     pkce: &PkceCodes,
     state: &str,
-    identity: &CodexOutboundIdentity,
 ) -> Result<String, CodexConnectorError> {
     let url: String = decode(
         plugin,
         "authorize_url",
-        &json!({"endpoints":endpoints.metadata(),"challenge":pkce.challenge,"state":state,"identity":identity_metadata(identity)}),
+        &json!({"endpoints":endpoints.metadata(),"challenge":pkce.challenge,"state":state}),
         &[],
     )?;
     let parsed = parse_url(&json!({"url":url}), "url")?;
@@ -429,19 +433,17 @@ pub async fn refresh_tokens(
 }
 fn backend_metadata(
     endpoints: &CodexEndpoints,
-    identity: &CodexOutboundIdentity,
     access_token: &str,
     account_id: Option<&str>,
     is_fedramp: bool,
 ) -> Value {
-    json!({"endpoints":endpoints.metadata(),"identity":identity_metadata(identity),"access_token":access_token,"account_id":account_id,"is_fedramp":is_fedramp})
+    json!({"endpoints":endpoints.metadata(),"access_token":access_token,"account_id":account_id,"is_fedramp":is_fedramp})
 }
 #[allow(clippy::too_many_arguments)]
 pub async fn fetch_models(
     plugin: &Plugin,
     client: &Client,
     endpoints: &CodexEndpoints,
-    identity: &CodexOutboundIdentity,
     access_token: &str,
     account_id: Option<&str>,
     is_fedramp: bool,
@@ -452,7 +454,7 @@ pub async fn fetch_models(
         client,
         plugin,
         "models_plan",
-        &backend_metadata(endpoints, identity, access_token, account_id, is_fedramp),
+        &backend_metadata(endpoints, access_token, account_id, is_fedramp),
         &endpoints.responses_base_url,
         "GET",
         Some(access_token),
@@ -487,7 +489,6 @@ pub async fn fetch_quota(
     plugin: &Plugin,
     client: &Client,
     endpoints: &CodexEndpoints,
-    identity: &CodexOutboundIdentity,
     access_token: &str,
     account_id: Option<&str>,
     is_fedramp: bool,
@@ -499,7 +500,7 @@ pub async fn fetch_quota(
         client,
         plugin,
         "quota_plan",
-        &backend_metadata(endpoints, identity, access_token, account_id, is_fedramp),
+        &backend_metadata(endpoints, access_token, account_id, is_fedramp),
         &endpoints.responses_base_url,
         "GET",
         Some(access_token),
@@ -534,13 +535,12 @@ pub fn prepare_quota_reset_request(
     plugin: &Plugin,
     client: &Client,
     endpoints: &CodexEndpoints,
-    identity: &CodexOutboundIdentity,
     access_token: &str,
     account_id: Option<&str>,
     is_fedramp: bool,
     redeem_request_id: &str,
 ) -> Result<reqwest::Request, CodexConnectorError> {
-    let mut metadata = backend_metadata(endpoints, identity, access_token, account_id, is_fedramp);
+    let mut metadata = backend_metadata(endpoints, access_token, account_id, is_fedramp);
     metadata["redeem_request_id"] = json!(redeem_request_id);
     prepare(
         client,
@@ -656,10 +656,12 @@ mod tests {
     }
     #[test]
     fn oauth_state_comparison_accepts_only_the_original_value() {
-        let hash = state_hash("original");
-        assert!(state_matches(&hash, "original"));
-        assert!(!state_matches(&hash, "different"));
-        assert!(!state_matches(&hash[..16], "original"));
+        let hash = state_hash("artifact:1", "original");
+        assert!(state_matches(&hash, "artifact:1", "original"));
+        assert!(!state_matches(&hash, "artifact:1", "different"));
+        assert!(!state_matches(&hash, "artifact:2", "original"));
+        assert!(!state_matches(&hash, "upgraded-artifact:1", "original"));
+        assert!(!state_matches(&hash[..16], "artifact:1", "original"));
     }
 
     async fn mock_models(headers: AxumHeaderMap) -> Result<Json<Value>, AxumStatusCode> {
@@ -715,10 +717,14 @@ mod tests {
             Some("Bearer personal-access-token") => (None, None),
             _ => return Err(AxumStatusCode::UNAUTHORIZED),
         };
-        let identity = CodexOutboundIdentity::default();
+        let identity = test_plugin()
+            .call("settings.describe/v1", &json!({}), &[])
+            .unwrap()
+            .metadata["defaults"]
+            .clone();
         let common = [
-            ("originator", identity.originator()),
-            ("version", identity.client_version()),
+            ("originator", identity["originator"].as_str().unwrap()),
+            ("version", identity["client_version"].as_str().unwrap()),
         ];
         if common.iter().any(|(name, value)| {
             headers.get(*name).and_then(|header| header.to_str().ok()) != Some(*value)
@@ -733,7 +739,7 @@ mod tests {
             || headers
                 .get(USER_AGENT)
                 .and_then(|header| header.to_str().ok())
-                != Some(identity.user_agent())
+                != identity["user_agent"].as_str()
         {
             return Err(AxumStatusCode::UNAUTHORIZED);
         }
@@ -760,12 +766,10 @@ mod tests {
             responses_base_url: Url::parse(&format!("http://{address}/backend-api/codex")).unwrap(),
         };
         let client = Client::new();
-        let identity = CodexOutboundIdentity::default();
         let models = fetch_models(
             &plugin,
             &client,
             &endpoints,
-            &identity,
             "access-token",
             Some("account-123"),
             true,
@@ -780,7 +784,6 @@ mod tests {
                 &plugin,
                 &client,
                 &endpoints,
-                &identity,
                 "personal-access-token",
                 None,
                 false,
@@ -796,7 +799,6 @@ mod tests {
             &plugin,
             &client,
             &endpoints,
-            &identity,
             "access-token",
             Some("account-123"),
             true,
@@ -819,7 +821,6 @@ mod tests {
                 &plugin,
                 &client,
                 &endpoints,
-                &identity,
                 "personal-access-token",
                 None,
                 false,
@@ -835,7 +836,6 @@ mod tests {
             &plugin,
             &client,
             &endpoints,
-            &identity,
             "access-token",
             Some("account-123"),
             true,
@@ -902,8 +902,7 @@ mod tests {
         let plugin = test_plugin();
         let endpoints = CodexEndpoints::from_plugin(&plugin).unwrap();
         let client = Client::new();
-        let identity = CodexOutboundIdentity::default();
-        let metadata = backend_metadata(&endpoints, &identity, "access", None, false);
+        let metadata = backend_metadata(&endpoints, "access", None, false);
         assert!(matches!(
             prepare(
                 &client,

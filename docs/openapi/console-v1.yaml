@@ -2826,8 +2826,8 @@ paths:
       operationId: listConnectorPlugins
       description: |
         Administrator-only. Lists the built-in general connector and the native
-        plugins loaded by this process. Installation and binary upgrades are
-        offline administrator operations; this endpoint never downloads code.
+        plugins available for new requests. Native lifecycle management uses
+        the separate /plugins endpoints.
       security: [{ bearerAuth: [] }]
       responses:
         "200":
@@ -2839,6 +2839,229 @@ paths:
                 items: { $ref: "#/components/schemas/ConnectorPluginView" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+
+  /plugins:
+    get:
+      tags: [System]
+      operationId: listPlugins
+      description: Administrator-only installed plugin inventory, including read-only general.
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Installed plugins and their effective runtime state.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/PluginView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /plugins/reauth:
+    post:
+      tags: [System]
+      operationId: authorizePluginManagement
+      description: |
+        Re-verifies the active administrator password. The resulting token is
+        bound to the user and Console session, is single-use, expires after five minutes,
+        and must remain in browser memory only.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [password]
+              properties:
+                password: { type: string, format: password, writeOnly: true }
+      responses:
+        "200":
+          description: Short-lived native plugin management authorization.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PluginAuthorization" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /plugins/install:
+    post:
+      tags: [System]
+      operationId: installPlugin
+      description: |
+        Administrator-only raw tar.gz upload. Installs an immutable artifact
+        without automatically enabling it. Native code has gateway process
+        privileges; upload only administrator-reviewed trusted packages.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PluginAuthorization"
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        "202":
+          description: Installation queued. Poll the returned job ID.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PluginJob" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "413":
+          description: Upload exceeds the artifact size limit.
+        "422": { $ref: "#/components/responses/Unprocessable" }
+  /plugins/discover:
+    post:
+      tags: [System]
+      operationId: discoverPlugins
+      description: Administrator-only scan of the configured incoming directory; never auto-enables new artifacts.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PluginAuthorization"
+      responses:
+        "202":
+          description: Discovery queued.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PluginJob" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /plugins/jobs/{id}:
+    get:
+      tags: [System]
+      operationId: getPluginJob
+      description: Administrator-only bounded install/discovery progress; error codes never include package contents.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Current job state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PluginJob" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /plugins/{id}:
+    get:
+      tags: [System]
+      operationId: getPlugin
+      description: Administrator-only plugin detail. ETag binds the revision and selected artifact.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PluginId"
+      responses:
+        "200":
+          description: Plugin detail.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PluginView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /plugins/{id}/state:
+    put:
+      tags: [System]
+      operationId: updatePluginState
+      description: |
+        Administrator-only enable, disable or version switch. Publishes one
+        validated generation; existing operations remain pinned to their
+        generation. Disabling does not physically unload native code.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PluginId"
+        - $ref: "#/components/parameters/IfMatch"
+        - $ref: "#/components/parameters/PluginAuthorization"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PluginStateInput" }
+      responses:
+        "200":
+          description: Plugin state committed and runtime published.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+  /plugins/{id}/settings:
+    get:
+      tags: [System]
+      operationId: getPluginSettings
+      description: Administrator-only descriptor and non-secret scalar settings. No provider-specific fields are defined by the host.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PluginId"
+      responses:
+        "200":
+          description: Settings and descriptor. ETag binds revision, selected artifact and settings schema.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PluginSettingsView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+    put:
+      tags: [System]
+      operationId: updatePluginSettings
+      description: Administrator-only complete settings replacement, validated by the selected plugin before atomic publication.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PluginId"
+        - $ref: "#/components/parameters/IfMatch"
+        - $ref: "#/components/parameters/PluginAuthorization"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PluginSettingsInput" }
+      responses:
+        "200":
+          description: Settings saved and applied.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+  /plugins/{id}/artifacts/{digest}:
+    delete:
+      tags: [System]
+      operationId: deletePluginArtifact
+      description: Administrator-only deletion of an inactive artifact with no recovery dependencies. Never physically unloads native code.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PluginId"
+        - name: digest
+          in: path
+          required: true
+          schema: { $ref: "#/components/schemas/PluginDigest" }
+        - $ref: "#/components/parameters/IfMatch"
+        - $ref: "#/components/parameters/PluginAuthorization"
+      responses:
+        "200":
+          description: Unreferenced artifact removed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
 
   /system/load:
     get:
@@ -2960,6 +3183,17 @@ components:
       bearerFormat: JWT
 
   parameters:
+    PluginId:
+      name: id
+      in: path
+      required: true
+      schema: { $ref: "#/components/schemas/ConnectorKind" }
+    PluginAuthorization:
+      name: X-Plugin-Authorization
+      in: header
+      required: true
+      schema: { type: string }
+      description: Single-use session-bound token issued by /plugins/reauth; expires in five minutes and must never persist in browser storage.
     PathId:
       name: id
       in: path
@@ -3144,6 +3378,133 @@ components:
           schema: { $ref: "#/components/schemas/ErrorBody" }
 
   schemas:
+    PluginDigest:
+      type: string
+      pattern: '^[a-f0-9]{64}$'
+    PluginArtifact:
+      type: object
+      required: [digest, version]
+      properties:
+        digest: { $ref: "#/components/schemas/PluginDigest" }
+        version: { type: string }
+    PluginView:
+      type: object
+      required: [id, built_in, enabled, revision, artifact_digest, version, status, artifacts, error_code]
+      properties:
+        id: { $ref: "#/components/schemas/ConnectorKind" }
+        built_in: { type: boolean }
+        enabled: { type: boolean }
+        revision: { type: integer, format: int64, minimum: 0 }
+        artifact_digest: { type: [string, "null"] }
+        version: { type: [string, "null"] }
+        status: { type: string, enum: [active, disabled, unavailable, not_installed] }
+        artifacts:
+          type: array
+          items: { $ref: "#/components/schemas/PluginArtifact" }
+        error_code: { type: [string, "null"] }
+    PluginStateInput:
+      type: object
+      additionalProperties: false
+      required: [enabled, artifact_digest]
+      properties:
+        enabled: { type: boolean }
+        artifact_digest: { type: [string, "null"] }
+    PluginAuthorization:
+      type: object
+      required: [token, expires_at]
+      properties:
+        token: { type: string }
+        expires_at: { $ref: "#/components/schemas/DateTime" }
+    PluginJob:
+      type: object
+      required: [id, actor_user_id, operation, status, plugin_id, artifact_digest, error_code, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        actor_user_id: { type: string, format: uuid, readOnly: true }
+        operation: { type: string, enum: [install, discover] }
+        status: { type: string, enum: [queued, running, succeeded, failed] }
+        plugin_id: { type: [string, "null"] }
+        artifact_digest: { type: [string, "null"] }
+        error_code: { type: [string, "null"] }
+        created_at: { $ref: "#/components/schemas/DateTime" }
+        updated_at: { $ref: "#/components/schemas/DateTime" }
+    PluginLocalizedText:
+      type: object
+      additionalProperties: { type: string }
+    PluginSettingScalar:
+      oneOf:
+        - { type: string }
+        - { type: integer, minimum: -9007199254740991, maximum: 9007199254740991 }
+        - { type: boolean }
+    PluginSettingsValues:
+      type: object
+      maxProperties: 64
+      additionalProperties: { $ref: "#/components/schemas/PluginSettingScalar" }
+    PluginSettingField:
+      allOf:
+        - type: object
+          required: [key, label, required]
+          properties:
+            key: { type: string }
+            label: { $ref: "#/components/schemas/PluginLocalizedText" }
+            description: { $ref: "#/components/schemas/PluginLocalizedText" }
+            required: { type: boolean }
+        - oneOf:
+            - type: object
+              required: [type, max_length]
+              properties:
+                type: { type: string, const: string }
+                max_length: { type: integer, minimum: 1, maximum: 4096 }
+            - type: object
+              required: [type]
+              properties:
+                type: { type: string, const: boolean }
+            - type: object
+              required: [type, minimum, maximum]
+              properties:
+                type: { type: string, const: integer }
+                minimum: { type: integer, minimum: -9007199254740991, maximum: 9007199254740991 }
+                maximum: { type: integer, minimum: -9007199254740991, maximum: 9007199254740991 }
+            - type: object
+              required: [type, options]
+              properties:
+                type: { type: string, const: enum }
+                options:
+                  type: array
+                  items:
+                    type: object
+                    required: [value, label]
+                    properties:
+                      value: { type: string }
+                      label: { $ref: "#/components/schemas/PluginLocalizedText" }
+    PluginSettingsDescriptor:
+      type: object
+      required: [schema_version, title, fields, defaults]
+      properties:
+        schema_version: { type: integer, minimum: 1 }
+        title: { $ref: "#/components/schemas/PluginLocalizedText" }
+        fields:
+          type: array
+          maxItems: 64
+          items: { $ref: "#/components/schemas/PluginSettingField" }
+        defaults: { $ref: "#/components/schemas/PluginSettingsValues" }
+    PluginSettingsInput:
+      type: object
+      additionalProperties: false
+      required: [schema_version, values]
+      properties:
+        schema_version: { type: integer, minimum: 1 }
+        values: { $ref: "#/components/schemas/PluginSettingsValues" }
+    PluginSettingsView:
+      type: object
+      required: [plugin_id, artifact_digest, schema_version, revision, descriptor, values]
+      properties:
+        plugin_id: { $ref: "#/components/schemas/ConnectorKind" }
+        artifact_digest: { $ref: "#/components/schemas/PluginDigest" }
+        schema_version: { type: integer, minimum: 1 }
+        revision: { type: integer, format: int64, minimum: 0 }
+        descriptor: { $ref: "#/components/schemas/PluginSettingsDescriptor" }
+        values: { $ref: "#/components/schemas/PluginSettingsValues" }
     ErrorBody:
       type: object
       required: [error]
@@ -3701,49 +4062,11 @@ components:
           default: 3300
           description: Must be greater than idle_timeout_seconds.
 
-    SystemCodexSettings:
-      type: object
-      required: [workspace_path, git_remote_url, originator, client_version, user_agent]
-      properties:
-        workspace_path:
-          type: string
-          minLength: 1
-          maxLength: 1024
-          pattern: ^/
-          default: /workspace
-          description: Synthetic absolute workspace path that replaces every client-reported Codex workspace path.
-        git_remote_url:
-          type: string
-          format: uri
-          minLength: 1
-          maxLength: 2048
-          pattern: ^https://
-          default: https://github.com/oai404iao/ai_gateway
-          description: Synthetic HTTPS origin remote written to workspaces[workspace_path].associated_remote_urls.origin.
-        originator:
-          type: string
-          minLength: 1
-          maxLength: 256
-          default: codex_cli_rs
-          description: Connector-owned originator used for Codex forwarding and the OAuth authorization URL.
-        client_version:
-          type: string
-          minLength: 1
-          maxLength: 128
-          default: 0.146.0
-          description: Connector-owned Codex version sent in the version Header and models client_version query parameter.
-        user_agent:
-          type: string
-          minLength: 1
-          maxLength: 1024
-          default: codex_cli_rs/0.146.0
-          description: Connector-owned User-Agent for managed Codex backend requests. Set a matching native CLI value, including its platform and terminal suffix, when required.
-
     SystemSettingsInput:
       type: object
       required:
         [api_hosts, upstream, request_retry, passive_health, automatic_disable, scheduled_testing,
-         session_affinity, websocket, codex]
+         session_affinity, websocket]
       properties:
         api_hosts:
           type: array
@@ -3760,7 +4083,6 @@ components:
         scheduled_testing: { $ref: "#/components/schemas/SystemScheduledTestingSettings" }
         session_affinity: { $ref: "#/components/schemas/SystemSessionAffinitySettings" }
         websocket: { $ref: "#/components/schemas/SystemWebSocketSettings" }
-        codex: { $ref: "#/components/schemas/SystemCodexSettings" }
 
     SystemSettings:
       allOf:

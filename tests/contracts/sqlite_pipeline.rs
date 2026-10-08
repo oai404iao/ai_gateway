@@ -60,7 +60,7 @@ struct Pipeline {
 impl Pipeline {
     async fn new() -> Self {
         let (directory, database) = database().await;
-        assert_eq!(database.install_schema().await.unwrap(), 10);
+        assert_eq!(database.install_schema().await.unwrap(), 11);
         let database = Arc::new(database);
         let logs = SqliteRequestLogRepository::new(Arc::clone(&database));
         Self {

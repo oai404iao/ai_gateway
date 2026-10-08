@@ -41,7 +41,8 @@ pub use connector::UpstreamConnectorRegistry;
 pub(crate) use connector::{ConnectorAttemptError, ConnectorUnavailable};
 pub use control_plane::{
     ChannelBatchUpdateResult, CodexCredentialBatchResult, ControlPlaneCoordinator,
-    ControlPlaneError, ModelSyncResult, UserBatchUpdateResult,
+    ControlPlaneError, ManagedPluginSettingsView, ManagedPluginView, ModelSyncResult,
+    UserBatchUpdateResult, plugin_etag,
 };
 pub use model_sync::{
     ModelImportRequest, ModelSyncError, ModelSyncPreview, ModelSyncPreviewRequest,

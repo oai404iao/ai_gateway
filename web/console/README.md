@@ -90,6 +90,20 @@ Regression coverage lives beside these pages and in `e2e/routing-topology.spec.t
 
 ## API contract
 
+Administrator **Plugins** pages (`/admin/plugins` and `/admin/plugins/:id`)
+manage native package installation, directory discovery, version activation,
+disablement, inactive artifact deletion, and plugin-defined settings.
+Settings forms render bounded scalar descriptors; no provider-specific fields,
+plugin JavaScript, or credential storage are embedded in the form renderer.
+System settings no longer contain a Codex category.
+
+Every plugin mutation prompts for administrator password verification. The
+single-use authorization token stays in the current operation's memory, never
+browser storage. Install uploads use raw `application/octet-stream` tar.gz
+bytes. Install/discovery jobs are polled and their IDs remain in the page URL
+so progress can be reopened after refresh. Version and settings updates use
+server-issued ETags; conflicts reload the current resource.
+
 `/codex-sharing` and `/admin/codex-sharing/:id` expose private member usage and
 ordinary-channel coexistence. The Codex channel-group editor also exposes
 pool-wide sharing-only access without enabling Images. Sharing pages provide

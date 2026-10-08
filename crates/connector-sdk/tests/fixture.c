@@ -8,6 +8,9 @@
 #ifndef FIXTURE_BODY_MODE
 #define FIXTURE_BODY_MODE 0
 #endif
+#ifndef FIXTURE_VERSION
+#define FIXTURE_VERSION "1.0.0"
+#endif
 
 static AiGatewayOwnedBuffer copy(const void *bytes, uint64_t length) {
     AiGatewayOwnedBuffer result = {NULL, 0};
@@ -111,7 +114,7 @@ static uint32_t dispatch(
 }
 
 static const char manifest[] =
-    "{\"id\":\"fixture\",\"version\":\"1.0.0\","
+    "{\"id\":\"fixture\",\"version\":\"" FIXTURE_VERSION "\","
 #ifdef FIXTURE_SETTINGS
     "\"protocol_version\":2,"
 #endif

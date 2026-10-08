@@ -51,4 +51,9 @@ done
 cc -shared -fPIC -Wall -Wextra -Werror -DFIXTURE_EMPTY_COMMANDS \
   "$repo_root/crates/connector-sdk/tests/fixture.c" -o "$task_dir/fixture-empty.so"
 install -m 0444 "$task_dir/fixture-empty.so" "$destination/fixture-empty.so"
+cc -shared -fPIC -Wall -Wextra -Werror -DFIXTURE_SETTINGS \
+  "$repo_root/crates/connector-sdk/tests/fixture.c" -o "$task_dir/fixture-settings.so"
+install -m 0444 "$task_dir/fixture-settings.so" "$destination/fixture-settings.so"
+python3 "$repo_root/scripts/package-test-plugin.py" \
+  "$destination/libai_gateway_connector_codex.so" "$source_root" "$destination"
 printf '%s\n' "$destination/libai_gateway_connector_codex.so"

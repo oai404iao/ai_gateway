@@ -37,22 +37,15 @@
 
 ## 目标
 
-数据面请求使用两层独立白名单和一层 Codex 隐私归一化/安全补全：
+网关拥有公共客户端 Header、顶层 body 白名单和与服务商无关的出站 Header 安全约束。
+选中外部连接器后，渠道特有的出站白名单、协议补全、安装标识和隐私处理全部由插件执行。
+Codex 实现及其独立机器契约位于
+[ai-gateway-connectors](https://github.com/oai404iao/ai-gateway-connectors) 的
+`codex/src/request-allowlists.json`，不再嵌入网关契约。
 
-1. **客户端入口策略**：在路由和 Transform 前约束客户端提供的请求 Header 与顶层 body 字段；
-2. **Codex 出口策略**：选中 `connector_kind = codex_oauth` 后，在普通 Transform 之后再次约束
-   发往 Codex 后端的 Header 与顶层 body 字段；
-3. **Codex 隐私归一化/安全补全**：改写已知的安装与工作区指纹；当 Codex Connect 请求缺少
-   可安全推导的身份元数据时补齐，不伪造 beta、subagent、attestation、turn-state、residency、
-   sandbox 或 request kind。
-
-普通 `general` Connector 不执行第二层 provider 白名单，但仍受客户端入口策略、
-hop-by-hop 清理和上游鉴权覆盖约束。
-
-当前白名单只校验 JSON 对象或 multipart 表单的**顶层字段名**。`messages`、`input`、`tools`、
-`metadata` 等已允许字段内部的嵌套结构仍由目标上游解释；网关不会递归实现完整 OpenAI schema。
-唯一的嵌套例外是机器契约中的 `codex_fingerprint_normalization`：它定位
-`client_metadata` 与 `x-codex-turn-metadata` 中的安装 ID、请求身份和 `workspaces`。
+网关只校验 JSON 对象或 multipart 表单的**顶层字段名**。
+`messages`、`input`、`tools`、`metadata` 等允许字段内部的嵌套结构由插件或目标上游解释；
+普通 `general` Connector 不执行 Codex 隐私处理。
 
 ## 动作语义
 
@@ -63,8 +56,7 @@ hop-by-hop 清理和上游鉴权覆盖约束。
 | `allow` | 保留字段；若没有其他 Transform，JSON 原始字节保持不变。 |
 | `ignore` | 删除字段后继续；body 的 `accepted_values` 存在时，仅这些等价值可以被删除。 |
 | `reject` | 返回客户端 `400`，不联系上游。 |
-| 隐私归一化/安全补全 | 替换已知 Codex 安装/工作区值，并补齐契约声明的缺失字段；不改变字段的 allow/ignore/reject 分类。 |
-| 未列出字段 | 客户端或 Codex body 默认 `reject`；Header 默认 `ignore`。 |
+| 未列出字段 | 公共客户端 body 默认 `reject`；Header 默认 `ignore`。 |
 
 `ignore` 只能用于以下情况：
 
@@ -72,8 +64,7 @@ hop-by-hop 清理和上游鉴权覆盖约束。
 - 空值、默认值或明确的 no-op；
 - 已记录的兼容行为，例如 Codex Responses 忽略 `max_output_tokens`。
 
-会改变生成内容、状态管理、输出格式或成本语义，而 Codex wire type 无法表达的非默认值必须
-`reject`，不能静默丢弃。
+插件必须自行拒绝无法等价表达的服务商字段；网关不会替插件维护另一份出站字段规则。
 
 ## 客户端入口策略
 
@@ -139,134 +130,19 @@ Images edit 额外兼容部分通用表单会提交、但当前公开 edit 类�
 `moderation=auto`：该默认值在客户端入口层被删除；`moderation=low` 或其他值返回错误。
 `output_format` 是公开 edit 字段，因此入口层保留，并由选中的 provider 决定后续动作。
 
-## Codex 出口策略
-
-每个支持 Codex 的接口在 `codex_oauth` 下维护：
-
-- `headers`：允许从客户端或 Header Transform 进入 Codex 请求的 Header；
-- `headers.generated`：Connector、HTTP/WebSocket transport 最终生成的 Header，供审计和维护；
-- `body`：发往 Codex 的顶层 body 字段动作；
-- `body_overrides`：Connector 强制写入的字段；
-- `generated_body_fields`：adapter 生成而不是直接来自客户端的字段。
-
-Responses HTTP 与 WebSocket 明确允许
-`x-codex-beta-features`、`x-codex-routing-hint`、`x-codex-turn-state` 和
-`x-openai-internal-codex-responses-lite`、`x-responsesapi-include-timing-metrics`
-从客户端或 Header Transform 透传。这五个 Header
-不在 `headers.generated` 中：Gateway 不伪造 beta 开关、路由提示、sticky turn-state 或 lite
-模型标记，也不主动请求 timing metrics；它只保留已经通过客户端入口与 Codex 出口策略的值。
-
-**Gateway 的会话身份规则**：Codex Connect 的 Responses、独立 Search、Images generation/edit
-共用 session/thread 传递逻辑。`session-id`、`thread-id` 从入口捕获并在出口策略之后按原身份写回，
-不因为操作类型改变而删除或重新随机生成，Header Transform 也不能替换这两个入口身份。
-两者只缺其一时使用已存在的值补齐；两者均缺失时才沿用 Responses 的安全补全规则。
-`x-client-request-id`、`x-codex-window-id` 和 turn metadata 通过出口策略保留，缺失时补齐。
-这里的 `headers.generated` 表示 Connector 最终写入 Header，**不表示覆盖客户端已有身份**。
-这是 Gateway 的跨接口身份策略，不要求上游原生独立工具主动发送所有这些 Header；Images
-仍不启用 Session affinity，Search/Images body 也不增加 Responses 专用字段。
-
-根级 `codex_fingerprint_normalization` 另行维护以下固定行为：
-
-- `client_metadata["x-codex-installation-id"]` 和 turn metadata 中的
-  `installation_id` 被替换为按 Codex 凭证稳定派生的 opaque UUID。同一逻辑凭证的 Responses 与
-  Images projection 使用同一值，不同凭证使用不同值；客户端原始 installation ID 不发往上游。
-- turn metadata 的 `workspaces` 始终替换为数据库系统设置 `forwarding_policy.codex` 定义的
-  单一合成工作区。默认值为
-  `workspaces["/workspace"].associated_remote_urls.origin =
-  "https://github.com/oai404iao/ai_gateway"`；不会发送客户端路径、workspace 数量、commit 或
-  dirty 状态。
-- Responses HTTP/WebSocket 在缺少时创建 `client_metadata`，补齐 installation、session、
-  thread、turn、window、JSON 字符串形式的 turn metadata，以及顶层 `prompt_cache_key`。已有
-  非空身份值保留；installation 与 workspaces 始终使用平台值。
-- Responses HTTP/WebSocket、Standalone Search 和 Images generation/edit 在缺少时补
-  `x-codex-window-id` 和
-  `x-codex-turn-metadata` Header；WebSocket 的合成握手 metadata 不新增 turn ID，使同一
-  Session 的上游连接池 key 保持稳定。Search/Images 同样保留已有 session/thread/turn/window，
-  只归一化安装 ID 与工作区；不会把 Header metadata 塞进其独立 body。
-- 无法解析为 JSON 对象的 `x-codex-turn-metadata` 不会作为 opaque 值继续转发，而是用安全合成
-  metadata 替换。其他已有字段与 W3C `traceparent`、`tracestate`、`baggage` 保留。
-
-### Responses HTTP
-
-- 只允许 Codex `ResponsesApiRequest` 声明的字段；
-- 保留 Codex 客户端生成的 `client_metadata`；缺失时由 Connector 创建并补齐安全身份字段，
-  安装 ID 与工作区按上面的隐私规则强制归一化；
-- `metadata`、`user`、`safety_identifier` 与 `max_output_tokens` 被忽略；
-- `previous_response_id` 仅允许 `null` 或空字符串后删除，非空值返回错误；
-- provider 未支持的状态、采样、prompt template、moderation 和缓存选项仅接受契约列出的
-  空值/no-op，其他值返回错误；
-- 最终强制 `stream=true`、`store=false`。
-- Responses 渠道组可选 `request_compression = zstd`；启用后，通用代理层在 Codex body
-  适配和白名单之后使用 Zstandard level 3 编码，并生成
-  `Content-Encoding: zstd` 与 `Content-Type: application/json`。默认 `default` 不压缩；
-  该设置只用于 Responses HTTP，不用于 WebSocket、standalone search 或 Images。
-
-### Responses WebSocket
-
-- 只允许 Codex `ResponseCreateWsRequest` 声明的字段，以及客户端事件 `type`；
-- Gateway 扩展字段 `generate`、`client_metadata` 明确列入客户端与 Codex 白名单；缺失的
-  `client_metadata`、`prompt_cache_key` 与安全身份字段会补齐，安装 ID 和工作区强制归一化；
-- 保留 `previous_response_id`；
-- `max_output_tokens`、纯遥测字段按契约忽略，其他 provider 不支持的非默认值返回错误；
-- 最终强制 `type=response.create`、`stream=true`、`store=false`。
-
-### Standalone web search
-
-- 会话身份 Header 沿用上述 Responses 保留/缺失补全规则，不再删除 session/thread；
-- 允许 `id`、`model`、`reasoning`、`input`、`commands`、`settings` 和
-  `max_output_tokens`；
-- Gateway 只检查顶层字段；Search command、settings 和 result DTO 的嵌套结构由 Codex
-  上游解释；
-- 客户端 `originator` 和 `User-Agent` 不作为上游身份保留，发送前统一覆盖为数据库系统设置中的
-  Codex Connector 身份；合法的 `x-codex-turn-metadata` 保留，缺失时安全合成，
-  安装 ID 与工作区信息在发送前归一化；
-- 固定使用非流式 JSON，不添加 body override；
-- 当前不支持 Request JSON Transform；支持该操作的渠道若组合出非空 Request JSON
-  Transform，控制面编译会失败。
-
-### Images generation
-
-- generation/edit 的会话身份 Header 同样沿用 Responses 保留/缺失补全规则；turn metadata
-  在保留已有会话信息的同时执行相同的安装 ID / 工作区隐私归一化；
-- `x-codex-image-turn-id` 是调用关联信息，不是鉴权信息：保留客户端或 Header Transform 提供的
-  有效值；缺失、空白、无法读取或去除首尾空白后超过 512 bytes 时才补充本次 attempt 的随机
-  UUID。generation/edit 共用此规则；Responses/Search 的 Codex 出口不允许该 Header。
-- 发往 Codex 的字段只保留 `prompt`、`background`、`model`、`n`、`quality`、`size`；
-- `output_format=png`、`moderation=auto`、`response_format=b64_json`、`stream=false` 和
-  `partial_images=0` 可作为等价值删除；
-- JPEG/WebP、降低 moderation、输出压缩、非空 style 等无法表达的语义返回错误。
-
-### Images edit
-
-- multipart 输入图片由 adapter 转为生成字段 `images[].image_url`；
-- 文本字段只保留 `prompt`、`background`、`model`、`n`、`quality`、`size`；
-- `output_format=png`、`response_format=b64_json`、`stream=false`、
-  `partial_images=0` 和遥测 `user` 可删除；
-- `mask`、`input_fidelity`、`output_compression` 以及其他不等价值返回错误；
-- `moderation=auto` 已在客户端入口层删除，但 Codex 契约仍显式记录其兼容动作，防止调用路径绕过
-  第一层时产生不一致。
-
-Codex 出口 Header 从普通 Header Transform 结果中再次过滤。未知 Header 被删除；随后 Connector
-才注入 Bearer、可选 account/FedRAMP、Codex 版本、Session，或按需补充 image-turn Header。
-鉴权和 Connector 身份始终覆盖客户端同名值；image-turn 则遵循上述保留/补全规则。
-
 ## 执行顺序
 
 ```text
 raw request
   -> API Key / framing / body size checks
-  -> client Header allowlist
   -> client top-level body allowlist
+  -> user-group Fast filtering
+  -> client Header allowlist
   -> model routing and alias
   -> configured JSON/Header Transform
-  -> Codex top-level body allowlist (Codex only)
-  -> Codex body privacy normalization and safe enrichment (Codex only)
-  -> common hop-by-hop and explicit client Header ignore cleanup
-  -> Codex Header allowlist (Codex only)
-  -> Codex Header privacy normalization and safe enrichment (Codex only)
-  -> connector auth/protocol headers
-  -> final explicit client Header ignore guard
-  -> transport framing headers
+  -> connector-owned protocol/body/Header policy and privacy processing
+  -> host common Header safety and credential-binding checks
+  -> transport framing/compression/handshake
 ```
 
 客户端策略删除字段、模型别名、JSON Transform 或 Connector policy 改变 body 时，网关会移除原始
@@ -275,28 +151,17 @@ part，不把图片整体读回内存。
 
 ## 维护流程
 
-新增或修改请求字段时：
+新增或修改公共请求字段时：
 
-1. 先核对 OpenAI 官方请求类型、涉及的第三方官方兼容文档与本机
-   `/home/u/dev/research/codex` 的当前 wire type；
-2. 首先编辑 `request-allowlists.json`，更新 `verified_at` 和 source commit；
-3. 对每个字段明确选择 `allow`、`ignore` 或 `reject`，并在涉及已知安装/工作区指纹时同步
-   `codex_fingerprint_normalization`；不得依赖未列出字段的默认动作表达已知 provider 差异；
-4. 常见反向代理/CDN 转发 Header 必须放入 `client_headers.ignore`，不得在代理转发模块另建
-   一份运行时名单；
-5. 更新本说明及相关接口文档；
-6. 添加客户端入口、普通 upstream、Codex HTTP/WebSocket/Images 的确定性测试；
-7. 运行 Rust、文档和真实上游验证。
+1. 核对官方请求类型及相关兼容文档；
+2. 编辑 `request-allowlists.json`，更新核对日期与来源提交；
+3. 明确选择 `allow`、`ignore` 或 `reject`；
+4. 反向代理/CDN 转发 Header 必须放入 `client_headers.ignore`，不能另建运行时名单；
+5. 更新本说明、公共接口测试并运行 Rust、文档和真实上游验证。
 
-Rust 单元测试会拒绝以下契约漂移：
+服务商出站字段或隐私规则变更应修改插件仓库的契约与测试，不修改网关公共契约。
+插件适配在可配置 Transform 之后执行；网关最后仍拒绝受保护 Header、错误凭证绑定、
+被改变的选定模型和重新引入的 Fast 计费字段。
 
-- 缺少六个公共接口之一；
-- 未知客户端/Codex body 不再默认拒绝；
-- 未知 Header 不再默认忽略；
-- Header 的精确 `allow`/`ignore` 动作重叠；
-- Codex 生成 Header 与客户端显式 `ignore` 动作冲突；
-- 一个字段同时出现在多个动作集合；
-- 客户端已知字段在对应 Codex policy 中没有显式动作；
-- Codex 安装 ID 不再按凭证作用域归一化，`workspaces` 不再由系统设置提供单一合成投影，或
-  Responses/Search 缺失字段不再按契约补齐；
-- Header 名、排序、重复项、source commit 或日期格式无效。
+Rust 单元测试校验公共契约的六个接口、未知字段默认拒绝、未知 Header 默认忽略、
+字段分类互斥、Header 名合法性、排序、重复项、来源提交及核对日期格式。

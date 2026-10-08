@@ -11,6 +11,8 @@ let refreshPromise: Promise<string | null> | null = null;
 interface RequestOptions {
   method?: string;
   body?: unknown;
+  binaryBody?: Blob;
+  pluginAuthorization?: string;
   /** ETag captured from the GET detail response, sent as If-Match on a mutation. */
   ifMatch?: string;
   /** Suppresses the automatic 401 refresh+retry path (used by refresh itself). */
@@ -21,6 +23,8 @@ interface RequestOptions {
 function buildHeaders(options: RequestOptions): HeadersInit {
   const headers: Record<string, string> = {};
   if (options.body !== undefined) headers["Content-Type"] = "application/json";
+  if (options.binaryBody !== undefined) headers["Content-Type"] = "application/octet-stream";
+  if (options.pluginAuthorization) headers["X-Plugin-Authorization"] = options.pluginAuthorization;
   const token = getAccessToken();
   if (token) headers.Authorization = `Bearer ${token}`;
   if (options.ifMatch) headers["If-Match"] = options.ifMatch;
@@ -49,6 +53,7 @@ export async function consoleFetch(
     signal: options.signal,
   };
   if (options.body !== undefined) init.body = JSON.stringify(options.body);
+  if (options.binaryBody !== undefined) init.body = options.binaryBody;
 
   let response: Response;
   try {

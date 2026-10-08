@@ -985,7 +985,7 @@ async fn repository_facades_dispatch_ordinary_operations_to_sqlite() {
     use uuid::Uuid;
 
     let (_directory, database) = database().await;
-    assert_eq!(database.install_schema().await.unwrap(), 10);
+    assert_eq!(database.install_schema().await.unwrap(), 11);
     let database = Arc::new(database);
 
     let auth = AuthRepository::from_sqlite(Arc::clone(&database));
@@ -1034,7 +1034,7 @@ async fn s4_pipeline_and_query_facades_share_one_sqlite_database() {
     };
 
     let (_directory, database) = database().await;
-    assert_eq!(database.install_schema().await.unwrap(), 10);
+    assert_eq!(database.install_schema().await.unwrap(), 11);
     let database = Arc::new(database);
 
     let repository = RequestLogRepository::from_sqlite(Arc::clone(&database));
@@ -1115,11 +1115,6 @@ fn system_settings() -> ai_gateway::persistence::SystemSettingsInput {
         "passive_health": {"connection_failure_threshold": 3, "cooldown_seconds": 60},
         "session_affinity": {
             "enabled": false, "max_entries": 100000, "default_ttl_seconds": 3600, "rules": []
-        },
-        "codex": {
-            "originator": "codex_cli_rs",
-            "client_version": "0.1.0",
-            "user_agent": "codex_cli_rs/0.1.0"
         }
     }))
     .unwrap()

@@ -53,7 +53,7 @@ repo/
 |   |-- runtime_config/         # TOML deserialization and ArcSwap configuration snapshots; [console].ui_enabled validation
 |   |-- observability/          # tracing-subscriber initialization
 |   |-- application/            # Proxy, Console auth, control-plane publication, request-log sink
-|   |-- request_policy.rs       # Embedded client/Codex Header and top-level body allowlist compiler/enforcer
+|   |-- request_policy.rs       # Public client Header/body policy and generic outbound guards
 |   |-- request_log_journal.rs  # Versioned safe request-log payload encoding
 |   |-- request_log_spool.rs    # CRC-protected local append log and checkpoints
 |   |-- routing/                # Priority/weight selection and passive health state
@@ -78,7 +78,7 @@ repo/
 |   |-- user/                    # Current usage, production configuration, and deployment
 |   |-- development/             # Current architecture, design records, testing, performance, and releases
 |   |-- reference/               # External OpenAI semantics and gateway compatibility boundaries
-|   |   `-- request-allowlists.json # Machine-readable public/Codex request policy source of truth
+|   |   `-- request-allowlists.json # Machine-readable public client request policy source of truth
 |   |-- archive/                 # Historical MVP plans; never current behavior
 |   `-- openapi/console-v1.yaml  # Authoritative Console API spec; drives generated TS types
 |-- .github/                    # SHA-pinned path-aware CI, reusable quality, security, release workflows, and Dependabot updates
@@ -192,9 +192,14 @@ performance run.** Building the tool or running
 ## Configuration Rules
 
 - `general` is built in; Codex requires an administrator-installed C ABI plugin
-  from the separate `ai-gateway-connectors` repository. `[[plugins]]` pins an
-  absolute read-only library path and its SHA-256. Never add a built-in Codex
-  fallback, automatic download, hot unload, or plugin-owned transport/database.
+  from the separate `ai-gateway-connectors` repository. `[plugins].directory`
+  selects the private managed artifact directory; database state selects enabled
+  artifacts and independent settings. Installation does not auto-enable code.
+  Compatible generations switch at runtime; libraries are retained until exit.
+  Never add a built-in Codex fallback, automatic download, hot unload, or
+  plugin-owned transport/database. Plugin settings, installation identity and
+  provider-specific privacy/body/Header policies belong to the plugin, not
+  system settings or host privacy projections.
   See [plugin design](docs/development/connector-plugins.md) and
   [installation](docs/user/connector-plugins.md). Tests load the actual library:
   `export AI_GATEWAY_TEST_CODEX_PLUGIN="$(./scripts/prepare-connector-tests.sh)"`.
@@ -285,7 +290,8 @@ Axum HTTP
   `test_pricing_model_id`; both must be set or null. Do not infer probe pricing by matching the wire
   model string.
 - Treat `docs/reference/request-allowlists.json` as the source of truth for accepted and explicitly
-  stripped client Headers, public top-level body fields, and Codex outbound Header/body actions.
+  stripped client Headers and public top-level body fields. Codex outbound
+  Header/body actions and privacy rules live in the external plugin repository.
   Common reverse-proxy/CDN forwarding metadata must remain explicit client Header `ignore` entries
   and every transform-capable outbound path must consume that same policy again immediately before
   dispatch. Custom upstream authentication and Connector-generated Headers must not conflict with
@@ -303,9 +309,9 @@ Axum HTTP
   to streamed base64 data URLs and rejects masks or non-equivalent provider fields.
 - Keep the fixed request order: client body allowlist → user-group Fast
   filtering → client Header allowlist → template defaults → channel overrides
-  → Codex body allowlist (Codex only) → shared
-  hop-by-hop/explicit-ignore Header cleanup → Codex Header allowlist (Codex
-  only) → upstream authentication → final explicit-ignore guard → transport
+  → plugin protocol/body/Header/privacy preparation → shared
+  hop-by-hop/explicit-ignore Header cleanup → upstream authentication
+  → final explicit-ignore guard → transport
   dispatch. Configurable transforms must not alter protected or hop-by-hop
   headers and cannot bypass the client forwarding-metadata block or the Codex
   outbound policy.
@@ -316,14 +322,18 @@ Axum HTTP
   `request_compression = zstd`; encode only the final HTTP Responses JSON body
   after Connector adaptation at Zstandard level 3. Do not apply that outbound
   encoding to Responses WebSocket, standalone search, or Images.
-- Codex request privacy normalization is a security boundary. Replace
-  client-local installation IDs with a credential-stable opaque UUID, replace
-  turn metadata workspaces with the single database-configured synthetic Git
-  workspace, and safely fill only the documented missing identity/cache
+- Codex plugin request privacy normalization is a security boundary. The plugin replaces
+  client-local installation IDs with a credential-stable opaque UUID, replaces
+  turn metadata workspaces with its independently configured synthetic Git
+  workspace, and safely fills only the documented missing identity/cache
   metadata. Apply the same policy to Responses HTTP, Responses WebSocket,
   standalone search Headers, and paired Images projections; never forward
   client workspace paths, Git remotes, commits, dirty state, or raw
-  installation fingerprints.
+  installation fingerprints. The host supplies stable credential identity and
+  immutable plugin settings, but must not interpret or duplicate those provider
+  rules. Run plugin preparation after administrator transforms; failures abort
+  dispatch. Financial admission, transport and generic outbound constraints
+  remain host-owned.
 - A Codex OAuth logical credential belongs to one `connector_pools` record and projects through
   `codex_oauth_credential_channels` to separate Responses and Images managed channels. Preserve the
   legacy Responses channel/credential ID, share token/quota/proxy state, keep format health and
@@ -417,9 +427,11 @@ First decide which configuration layer owns the value:
 
 ### Change request forwarding
 
-1. If accepted client/Codex Headers or top-level fields change, edit
+1. If accepted public client Headers or top-level fields change, edit
    `docs/reference/request-allowlists.json` first, update its verification metadata, and synchronize
    `docs/reference/request-allowlists.md`.
+   Provider-only policies and privacy rules must instead change in the plugin
+   repository, with deterministic plugin and gateway-boundary regression tests.
 2. Add or update deterministic local and PostgreSQL tests as appropriate.
 3. Run `cargo fmt --check`, `cargo clippy --all-targets`, and `cargo test`.
 4. Run `./scripts/run-real-upstream-smoke.sh` before considering the change complete. It requires the ignored `.env.real-upstream` file and always makes paid Chat Completions and Responses calls. Optional paired WebSocket settings can select a separate Responses WebSocket URL/key; complete `REAL_UPSTREAM_SEARCH_*` and `REAL_UPSTREAM_IMAGES_*` setting groups additionally enable paid standalone web-search and Images generation/edit calls. Search and Images changes still require deterministic proxy integration coverage.
@@ -482,8 +494,8 @@ pool isolation, transforms, and configured outbound proxies.
 20. **Request allowlists are machine-readable contracts.** Do not add one-off field or blocked
     Header arrays in `proxy.rs`, Codex attempts, or multipart adapters. Classify each known field in
     `docs/reference/request-allowlists.json` as allow/ignore/reject, keep every public interface and
-    Codex projection explicit, and use `src/request_policy.rs` for ingress and shared outbound
-    enforcement.
+    public interface explicit, and use `src/request_policy.rs` for ingress and shared outbound
+    enforcement. Provider projections belong to the external plugin's contract.
 21. **Codex sharing is single-instance and fail closed.** Keep pre-dispatch durable
 reservations, UUID-idempotent settlement, fixed seats, complete provider
 window observations, and credential projection isolation together. Never
@@ -557,7 +569,7 @@ changing its WAL, window epochs, configuration, or recovery behavior.
 | Superseded product/design history | `docs/archive/` |
 | Supported client formats | `src/domain/api_format.rs` |
 | Public data-plane route registry | `src/http/mod.rs` |
-| Client/Codex request Header and body policy | `docs/reference/request-allowlists.json`, `docs/reference/request-allowlists.md`, and `src/request_policy.rs` |
+| Public client Header/body policy and generic outbound guards | `docs/reference/request-allowlists.json`, `docs/reference/request-allowlists.md`, and `src/request_policy.rs`; provider policy lives in the external plugin repository |
 | Images multipart capture/replay and Codex edit adaptation | `src/application/request_body.rs` |
 | Responses WebSocket proxy and pooling | `src/application/proxy/websocket.rs` and `src/upstream/websocket.rs` |
 | Console API route registry | `src/http/console.rs` |

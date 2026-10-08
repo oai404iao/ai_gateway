@@ -14,15 +14,24 @@ Versioning.
   supported existing operations and use explicitly scoped static credentials.
 - Publish Codex protocol implementation from the independent
   `ai-gateway-connectors` repository, with its own native-library release pipeline.
+- Add directory-managed native artifacts, asynchronous installation jobs,
+  password-confirmed plugin management, generic plugin settings forms and
+  immutable runtime generations for enable/disable and compatible hot upgrades.
 
 ### Changed
 
-- **Breaking:** Codex now requires a separately installed compatible plugin and
-  an explicit `[[plugins]]` configuration. Gateway images and archives do not
+- **Breaking:** Codex now requires a separately installed compatible protocol-2
+  plugin and a `[plugins].directory` configuration. Gateway images and archives do not
   bundle it; there is no built-in Codex fallback. `general` remains built in.
 - Preserve credential and financial identities while migrating connector IDs
   and static credential ownership in PostgreSQL 0070 / SQLite 0010.
   Prepare the plugin before upgrading existing Codex installations.
+- Move all five Codex settings out of system settings through PostgreSQL 0071 /
+  SQLite 0011; the plugin owns defaults, validation, installation identities and
+  privacy/body/Header policy. Existing values migrate without changing credentials
+  or financial state; installation and activation remain explicit administrator actions.
+- Isolate WebSocket pools and OAuth state by plugin generation. Retain loaded
+  native libraries until process exit rather than attempting unsafe hot unload.
 - Reject `sec-websocket-*` custom authentication headers at configuration time
   because the host owns handshake fields. Explicit Cookie credentials remain
   supported; client/plugin Cookies remain blocked.

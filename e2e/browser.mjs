@@ -32,6 +32,62 @@ try {
   const storage = await page.evaluate(() => Object.entries(localStorage));
   assert.ok(storage.every(([key]) => !/token|session|auth/i.test(key)), "auth must not persist in localStorage");
 
+  const pluginUrl = `${data.console}/console/v1/plugins/codex`;
+  const pluginSettingsUrl = `${pluginUrl}/settings`;
+  await page.getByRole("link", { name: "Plugins", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Plugins", exact: true })).toBeVisible();
+  await page.getByLabel("Plugin package", { exact: true }).setInputFiles(data.plugin_archive);
+  await page.getByRole("button", { name: "Install plugin", exact: true }).click();
+  const pluginInstalled = await confirmPluginWrite("Install plugin", `${data.console}/console/v1/plugins/install`, "POST");
+  assert.equal(pluginInstalled.request().headers()["content-type"], "application/octet-stream");
+  await expect(page.getByText("succeeded", { exact: true })).toBeVisible();
+  const settingsLoaded = page.waitForResponse((response) =>
+    response.url() === pluginSettingsUrl && response.request().method() === "GET",
+  );
+  await page.getByRole("table").getByRole("link", { name: "codex", exact: true }).click();
+  const settingsEtag = (await settingsLoaded).headers().etag;
+  assert.ok(settingsEtag, "plugin settings GET must provide ETag");
+  const clientVersion = page.locator("#plugin-setting-client_version");
+  await expect(clientVersion).toHaveValue("0.146.0-e2e");
+  await clientVersion.fill("0.146.0-browser");
+
+  async function confirmPluginWrite(operation, url, method = "PUT") {
+    const dialog = page.getByRole("dialog", { name: "Authorize plugin operation" });
+    await dialog.getByLabel("Current password", { exact: true }).fill(data.password);
+    const saving = page.waitForResponse((response) =>
+      response.url() === url && response.request().method() === method,
+    );
+    await dialog.getByRole("button", { name: operation, exact: true }).click();
+    const saved = await saving;
+    assert.equal(saved.status(), method === "POST" ? 202 : 200, "real native plugin mutation");
+    assert.ok(saved.request().headers()["x-plugin-authorization"], "native mutation requires reauthorization");
+    await expect(dialog).toBeHidden();
+    return saved;
+  }
+
+  await page.getByRole("button", { name: "Save plugin settings", exact: true }).click();
+  const pluginSaved = await confirmPluginWrite("Save plugin settings", pluginSettingsUrl);
+  assert.equal(pluginSaved.request().headers()["if-match"], settingsEtag);
+  await page.reload();
+  await expect(clientVersion).toHaveValue("0.146.0-browser");
+  await page.getByRole("button", { name: "Disable plugin", exact: true }).click();
+  await confirmPluginWrite("Disable plugin", `${pluginUrl}/state`);
+  await expect(page.getByText("disabled", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Disable plugin", exact: true })).toBeDisabled();
+  await page.getByRole("button", { name: "Enable selected version", exact: true }).click();
+  await confirmPluginWrite("Enable selected version", `${pluginUrl}/state`);
+  await expect(page.getByText("active", { exact: true })).toBeVisible();
+  await page.reload();
+  await expect(clientVersion).toHaveValue("0.146.0-browser");
+  const systemSettings = await context.request.get(`${data.console}/console/v1/system/settings`, {
+    headers: { Authorization: `Bearer ${data.token}` },
+  });
+  assert.equal(systemSettings.status(), 200);
+  assert.ok(!Object.hasOwn(await systemSettings.json(), "codex"), "provider settings must be independent");
+  const pluginStorage = await page.evaluate(() => Object.entries({ ...localStorage, ...sessionStorage }));
+  assert.ok(pluginStorage.every(([key]) => !/token|session|auth|password/i.test(key)),
+    "native authorization must not persist in browser storage");
+
   const credentialUrl = `${data.console}/console/v1/routing/upstream-credentials/${data.upstream_credential_id}`;
   const credentialLoaded = page.waitForResponse((response) => response.url() === credentialUrl && response.request().method() === "GET");
   await page.goto(`${data.console}/admin/routing/upstream-credentials/${data.upstream_credential_id}`);
@@ -98,6 +154,7 @@ try {
     id: "console-route-to-settlement", status: "passed",
     browser: browser.version(), refresh_rotated: true, etag_checked: true,
     shared_upstream_credential_rotated: true,
+    plugin_uploaded: true, plugin_settings_etag_checked: true, plugin_disabled_and_reenabled: true,
   }));
 } finally {
   await browser.close();

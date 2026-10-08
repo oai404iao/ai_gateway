@@ -55,4 +55,9 @@ pub(crate) const MIGRATIONS: &[SqliteMigration<'static>] = &[
         description: "native connector identities",
         sql: include_str!("../../../migrations/sqlite/0010_native_connector_ids.sql"),
     },
+    SqliteMigration {
+        version: 11,
+        description: "plugin lifecycle and independent settings",
+        sql: include_str!("../../../migrations/sqlite/0011_plugin_lifecycle.sql"),
+    },
 ];

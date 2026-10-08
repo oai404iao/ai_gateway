@@ -108,7 +108,8 @@ impl ProxyService {
         if !self
             .routing
             .has_available_websocket_route(&snapshot, &api_key, |channel| {
-                self.connectors.can_attempt_responses_websocket(channel)
+                self.connectors
+                    .can_attempt_responses_websocket(channel, snapshot.plugins())
             })
         {
             return Err(ProxyError::websocket_unavailable());
@@ -561,7 +562,7 @@ impl ResponsesWebSocketSession {
                 connector_affinity_hit,
                 &self.request_headers,
                 Some(connector_seed),
-                snapshot.system_settings().codex(),
+                snapshot.plugins(),
             ) {
                 Ok(connector) => connector,
                 Err(error) => {
@@ -956,7 +957,8 @@ impl ResponsesWebSocketSession {
             &target,
             &headers,
             MAX_UPSTREAM_MESSAGE_BYTES,
-        );
+        )
+        .with_plugin_generation(connector.plugin_generation_id());
         Ok(PreparedWebSocketAttempt {
             body,
             headers,

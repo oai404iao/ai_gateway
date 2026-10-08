@@ -5,7 +5,6 @@ export const SETTINGS_SECTIONS = [
   { id: "testing", label: "Scheduled channel tests" },
   { id: "affinity", label: "Session affinity" },
   { id: "websocket", label: "Responses WebSocket" },
-  { id: "codex", label: "Codex" },
   { id: "maintenance", label: "Runtime maintenance" },
 ] as const;
 

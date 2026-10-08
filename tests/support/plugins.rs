@@ -15,12 +15,18 @@ pub fn codex_plugins() -> ConnectorPlugins {
                 .iter()
                 .map(|byte| format!("{byte:02x}"))
                 .collect();
-            ConnectorPlugins::load(&[PluginConfig {
+            let plugins = ConnectorPlugins::load(&[PluginConfig {
                 id: "codex".into(),
                 path,
                 sha256,
             }])
-            .expect("the test Codex plugin must satisfy the production loader contract")
+            .expect("the test Codex plugin must satisfy the production loader contract");
+            let plugin = plugins.get("codex").unwrap();
+            let descriptor = plugin.settings_descriptor().unwrap().unwrap();
+            ConnectorPlugins::from_plugins([plugin
+                .configured(&descriptor.default_document(), 1)
+                .unwrap()])
+            .unwrap()
         })
         .clone()
 }

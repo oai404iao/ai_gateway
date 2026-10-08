@@ -498,23 +498,23 @@ test.describe("Console SPA smoke", () => {
     await page.getByRole("button", { name: "Save system settings" }).click();
     const request = await saved;
     expect(request.postDataJSON().upstream.connect_timeout_seconds).toBe(12);
-    expect(request.postDataJSON().codex.originator).toBe("codex_cli_rs");
+    expect(request.postDataJSON()).not.toHaveProperty("codex");
     expect(request.headers()["if-match"]).toBe('"2026-01-02T00:00:00.000Z"');
     expect(request.postDataJSON()).not.toHaveProperty("mcp");
 
     await menu.click();
-    await expect(page.getByRole("link", { name: "Codex", exact: true })).toBeHidden();
+    await expect(page.getByRole("link", { name: "General settings", exact: true })).toBeHidden();
     await menu.click();
-    await page.getByRole("link", { name: "Codex", exact: true }).click();
-    await expect(page.getByLabel("Codex originator")).toBeVisible();
+    await page.getByRole("link", { name: "General settings", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "System settings · General settings" })).toBeVisible();
     await expect(page.getByLabel("Connect timeout (seconds)")).toHaveCount(0);
     await page.reload();
     await expect(menu).toHaveAttribute("aria-expanded", "true");
-    await expect(page.getByRole("link", { name: "Codex", exact: true })).toHaveAttribute("aria-current", "page");
+    await expect(page.getByRole("link", { name: "General settings", exact: true })).toHaveAttribute("aria-current", "page");
 
     await page.getByRole("button", { name: "Toggle Sidebar" }).click();
     await menu.click();
-    await expect(page.getByRole("link", { name: "Codex", exact: true })).toBeVisible();
+    await expect(page.getByRole("link", { name: "General settings", exact: true })).toBeVisible();
 
     await page.setViewportSize({ width: 390, height: 844 });
     await page.getByRole("button", { name: "Toggle Sidebar" }).click();

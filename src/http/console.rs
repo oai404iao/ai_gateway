@@ -1,6 +1,7 @@
 //! JWT-authenticated Console API for self-service and role-gated control-plane work.
 
 mod codex_sharing;
+mod plugins;
 
 use axum::{
     Json, Router,
@@ -361,6 +362,7 @@ pub fn router(state: ConsoleState) -> Router {
         .route("/console/v1/system/load", get(get_system_load))
         .route("/console/v1/system/connectors", get(list_connector_plugins))
         .route("/console/v1/system/reload", post(reload))
+        .merge(plugins::routes())
         .route_layer(middleware::from_fn(require_admin));
 
     let password_change_routes = Router::new()
@@ -386,6 +388,12 @@ pub fn router(state: ConsoleState) -> Router {
     Router::new()
         .merge(auth_routes)
         .merge(authenticated)
+        .merge(
+            plugins::upload_routes()
+                .route_layer(middleware::from_fn(require_admin))
+                .route_layer(middleware::from_fn(require_full_session))
+                .route_layer(middleware::from_fn_with_state(state.clone(), authenticate)),
+        )
         .layer(middleware::from_fn(no_store))
         .layer(cors_layer(&state.allowed_origins))
         .with_state(state)
@@ -459,6 +467,7 @@ fn cors_layer(origins: &[String]) -> CorsLayer {
             header::AUTHORIZATION,
             header::CONTENT_TYPE,
             header::IF_MATCH,
+            axum::http::HeaderName::from_static("x-plugin-authorization"),
         ])
         .expose_headers([header::ETAG]);
     if origins.is_empty() {

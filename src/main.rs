@@ -17,7 +17,7 @@ use ai_gateway::{
         ProxyTestService, RequestLogSink, SystemMetricsService, UpstreamConnectorRegistry,
         hash_console_password,
     },
-    connector_plugins::ConnectorPlugins,
+    connector_plugins::DirectoryPluginCatalog,
     http,
     models_dev::ModelsDevClient,
     observability,
@@ -29,7 +29,7 @@ use ai_gateway::{
     },
     routing::{PassiveHealthPolicy, RoutingRuntime},
     runtime_config::{
-        AppConfig, BootstrapConfig, RuntimeConfig, compile_runtime_config_with_plugins,
+        AppConfig, BootstrapConfig, RuntimeConfig, compile_runtime_config_with_catalog,
     },
     upstream::UpstreamClientRegistry,
     workers::{
@@ -140,7 +140,9 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
     let gateway_started = Instant::now();
     let config = AppConfig::load(&config_path)?.validate()?;
     let _log_guard = observability::init(&config.observability.filter);
-    let plugins = ConnectorPlugins::load(&config.plugins)?;
+    let plugins = Arc::new(DirectoryPluginCatalog::open(
+        config.plugins.directory.clone(),
+    )?);
     let database = Database::open(
         &config.database,
         Some(config.request_logging.database_max_connections),
@@ -161,7 +163,7 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
 async fn serve_connected(
     config: BootstrapConfig,
     database: &Database,
-    plugins: ConnectorPlugins,
+    plugins: Arc<DirectoryPluginCatalog>,
     gateway_started_at: chrono::DateTime<Utc>,
     gateway_started: Instant,
 ) -> Result<(), Box<dyn Error>> {
@@ -208,13 +210,13 @@ async fn serve_connected(
                 rules: config.session_affinity.rules,
             },
             websocket: SystemWebSocketSettingsInput::default(),
-            codex: Default::default(),
         })
         .await?;
     let system_probe_identity = repository.ensure_system_probe_identity().await?;
-    let initial = compile_runtime_config_with_plugins(repository.load_runtime().await?, &plugins)?;
+    repository.interrupt_plugin_install_jobs().await?;
+    let initial = compile_runtime_config_with_catalog(repository.load_runtime().await?, &plugins)?;
     let initial_passive_health = initial.system_settings().passive_health();
-    let runtime = Arc::new(RuntimeConfig::new_with_plugins(initial, plugins.clone()));
+    let runtime = Arc::new(RuntimeConfig::new_with_plugin_catalog(initial, plugins));
     let sharing = if config.codex_sharing.enabled {
         ai_gateway::codex_sharing::SharingRuntime::open(
             config.request_logging.spool_directory.join("codex-sharing"),
@@ -277,6 +279,18 @@ async fn serve_connected(
         Arc::clone(&upstream_clients),
     )?
     .with_sharing_runtime(sharing.clone());
+    coordinator.discover_plugin_directory().await?;
+    coordinator.reload().await?;
+    let plugin_coordinator = coordinator.clone();
+    background_tasks.spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(10));
+        loop {
+            interval.tick().await;
+            if let Err(error) = plugin_coordinator.discover_plugin_directory().await {
+                tracing::warn!(%error, "plugin directory reconciliation failed");
+            }
+        }
+    });
     let (automatic_disable_service, automatic_disable_worker) =
         AutomaticDisableWorker::start(coordinator.clone());
     let codex_connector = CodexConnectorService::new(
@@ -284,13 +298,11 @@ async fn serve_connected(
         coordinator.clone(),
         Arc::clone(&runtime),
         Arc::clone(&upstream_clients),
-        plugins.clone(),
+        runtime.plugins(),
     )
     .await?;
     let codex_credential_worker = CodexCredentialWorker::start(codex_connector.clone());
-    let connectors = UpstreamConnectorRegistry::default()
-        .with_plugins(plugins)
-        .with_codex(codex_connector.clone());
+    let connectors = UpstreamConnectorRegistry::default().with_codex(codex_connector.clone());
     let proxy = ProxyService::with_dependencies_and_registry_and_automation(
         Arc::clone(&runtime),
         &config.request_limits,

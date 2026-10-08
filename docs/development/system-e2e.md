@@ -161,7 +161,10 @@ debug 模式仍依赖 `web/console/dist`。`--output` 只接受 `target/system-e
 
 ## CI
 
-系统配置显式加入经过摘要验证的只读 Codex 测试插件；缺少
+系统配置使用本轮私有插件目录，通过真实 Console API 上传测试插件包、
+确认管理员密码、启用、修改设置、验证过期 ETag，再停用和重新启用。
+真实浏览器也覆盖上传任务、插件生成的表单、密码确认及刷新后的持久化。
+缺少
 `AI_GATEWAY_TEST_CODEX_PLUGIN` 是基础设施失败，不跳过插件验收。
 `codex-plugin-oauth-plan` 场景验证 Console OAuth 授权 URL、PKCE 及错误 state 拒绝。
 此场景不访问真实 provider，也不声称覆盖成功的 OAuth 兑换；

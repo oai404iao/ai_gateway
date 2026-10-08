@@ -36,6 +36,28 @@ enum Backend {
     Sqlite(SqliteControlPlaneRepository),
 }
 
+macro_rules! plugin_job_write {
+    ($name:ident, $operation:ident, $result:ty $(, $argument:ident: $argument_type:ty)*) => {
+        pub async fn $name(&self, $($argument: $argument_type),*) -> Result<$result, RepositoryError> {
+            match &self.backend {
+                Backend::Postgres(repository) => {
+                    let mut transaction = repository.begin_serializable().await?;
+                    let result = super::plugins::postgres::$operation(&mut transaction, $($argument),*).await?;
+                    transaction.commit().await?;
+                    Ok(result)
+                }
+                #[cfg(feature = "sqlite-backend")]
+                Backend::Sqlite(repository) => {
+                    let mut transaction = repository.write().await?;
+                    let result = super::plugins::sqlite::$operation(&mut transaction, $($argument),*).await?;
+                    transaction.commit().await?;
+                    Ok(result)
+                }
+            }
+        }
+    };
+}
+
 impl Clone for Backend {
     fn clone(&self) -> Self {
         match self {
@@ -224,6 +246,71 @@ impl ControlPlaneRepository {
             Backend::Sqlite(repository) => repository.system_settings().await,
         }
     }
+
+    pub async fn plugin_records(&self) -> Result<super::PluginRuntimeRecords, RepositoryError> {
+        match &self.backend {
+            Backend::Postgres(repository) => {
+                let mut transaction = repository.pool.begin().await?;
+                sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+                    .execute(&mut *transaction)
+                    .await?;
+                let records = super::plugins::postgres::load(&mut transaction).await?;
+                transaction.commit().await?;
+                Ok(records)
+            }
+            #[cfg(feature = "sqlite-backend")]
+            Backend::Sqlite(repository) => {
+                use sqlx::Connection;
+                let mut connection = repository.read().await?;
+                let mut transaction = connection.begin().await?;
+                let records = super::plugins::sqlite::load(&mut transaction).await?;
+                transaction.commit().await?;
+                Ok(records)
+            }
+        }
+    }
+
+    pub async fn plugin_settings(
+        &self,
+        id: &str,
+    ) -> Result<Option<super::PluginSettingsRecord>, RepositoryError> {
+        Ok(self
+            .plugin_records()
+            .await?
+            .settings
+            .into_iter()
+            .find(|s| s.plugin_id == id))
+    }
+
+    pub async fn plugin_artifacts(
+        &self,
+    ) -> Result<Vec<super::PluginArtifactRecord>, RepositoryError> {
+        Ok(self.plugin_records().await?.artifacts)
+    }
+
+    pub async fn plugin_install_job(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<super::PluginInstallJob>, RepositoryError> {
+        match &self.backend {
+            Backend::Postgres(repository) => {
+                let mut connection = repository.pool.acquire().await?;
+                super::plugins::postgres::get_job(&mut connection, id).await
+            }
+            #[cfg(feature = "sqlite-backend")]
+            Backend::Sqlite(repository) => {
+                let mut connection = repository.read().await?;
+                super::plugins::sqlite::get_job(&mut connection, id).await
+            }
+        }
+    }
+
+    plugin_job_write!(register_discovered_plugin, discover, (), input: super::PluginArtifactInput);
+    plugin_job_write!(create_plugin_install_job, create_job, super::PluginInstallJob, actor: Uuid, id: Uuid, operation: &str);
+    plugin_job_write!(claim_plugin_install_job, claim_job, super::PluginInstallJob, actor: Uuid, id: Uuid);
+    plugin_job_write!(finish_plugin_install_job, finish_job, super::PluginInstallJob, actor: Uuid, id: Uuid, result: super::PluginJobCompletion);
+    plugin_job_write!(interrupt_plugin_install_jobs, interrupt_jobs, u64);
+    plugin_job_write!(fail_plugin_install_job, fail_job, super::PluginInstallJob, id: Uuid, code: &str);
 
     pub async fn user_settings(
         &self,

@@ -19,14 +19,13 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 use crate::{
-    connector_plugins::PluginConfig,
+    connector_plugins::{ConnectorPlugins, DirectoryPluginCatalog},
     domain::{
         AdvancedBilling, ApiFormat, ApiKeyHash, ApiKeyPermission, ApiOperation,
         AuthorizationProfile, AutomaticDisableSettings, ChannelIdentity, ChannelTimeoutPolicy,
-        CodexOutboundIdentity, CodexRequestMetadataSettings, CompiledApiKey, CompiledCandidate,
-        CompiledChannel, CompiledChannelGroup, CompiledChannelUpstreamPolicy,
-        CompiledConfigTemplate, CompiledModelRule, CompiledProxy, CompiledRouteTier,
-        CompiledRuntimeConfig, CompiledScheduledTestModel, ConnectorKind,
+        CompiledApiKey, CompiledCandidate, CompiledChannel, CompiledChannelGroup,
+        CompiledChannelUpstreamPolicy, CompiledConfigTemplate, CompiledModelRule, CompiledProxy,
+        CompiledRouteTier, CompiledRuntimeConfig, CompiledScheduledTestModel, ConnectorKind,
         DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS,
         DEFAULT_STANDALONE_WEB_SEARCH_RESPONSE_HEADER_TIMEOUT_SECONDS, MAX_REQUEST_RETRIES,
         ModelPriceSnapshot, ModelRouteKey, NoProxyHost, PassiveHealthSettings, RequestCompression,
@@ -37,9 +36,9 @@ use crate::{
     persistence::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ConfigTemplateRecord, ControlPlaneRecords,
         FORWARDING_SETTINGS_KEY, ModelRecord, ModelRuleRecord, ProxyRecord, RuntimeConfigRecords,
-        SystemCodexSettingsInput, SystemSessionAffinityKeySourceInput,
-        SystemSessionAffinityRuleInput, SystemSessionAffinitySettingsInput, SystemSettingsInput,
-        SystemSettingsRecord, valid_api_hosts, valid_codex_settings_input,
+        SystemSessionAffinityKeySourceInput, SystemSessionAffinityRuleInput,
+        SystemSessionAffinitySettingsInput, SystemSettingsInput, SystemSettingsRecord,
+        valid_api_hosts,
     },
     request_policy::client_header_allowed,
     transforms::{TransformCompileError, TransformPlan, compile_document, declared_api_format},
@@ -49,7 +48,7 @@ use crate::{
 #[serde(deny_unknown_fields)]
 pub struct AppConfig {
     #[serde(default)]
-    pub plugins: Vec<PluginConfig>,
+    pub plugins: PluginsConfig,
     pub server: ServerConfig,
     pub database: DatabaseConfig,
     pub upstream: UpstreamConfig,
@@ -101,6 +100,18 @@ impl AppConfig {
         })
     }
     pub fn validate(self) -> Result<BootstrapConfig, ConfigError> {
+        if !self.plugins.directory.is_absolute()
+            || self.plugins.directory.components().any(|part| {
+                matches!(
+                    part,
+                    std::path::Component::ParentDir | std::path::Component::CurDir
+                )
+            })
+        {
+            return Err(ConfigError::Compile(
+                "plugins.directory must be an absolute normalized directory".into(),
+            ));
+        }
         validate_server(&self.server)?;
         validate_database(&self.database)?;
         validate_upstream(&self.upstream)?;
@@ -175,7 +186,7 @@ impl AppConfig {
 }
 
 pub struct BootstrapConfig {
-    pub plugins: Vec<PluginConfig>,
+    pub plugins: PluginsConfig,
     pub codex_sharing: CodexSharingConfig,
     pub server: ServerConfig,
     pub database: DatabaseConfig,
@@ -191,6 +202,19 @@ pub struct BootstrapConfig {
     pub request_limits: RequestLimitsConfig,
     pub console: Option<ConsoleListenerConfig>,
     pub observability: ObservabilityConfig,
+}
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginsConfig {
+    pub directory: PathBuf,
+}
+
+impl Default for PluginsConfig {
+    fn default() -> Self {
+        Self {
+            directory: PathBuf::from("/var/lib/ai-gateway/plugins"),
+        }
+    }
 }
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -746,7 +770,8 @@ const fn default_models_sync_max_selections() -> usize {
 
 pub struct RuntimeConfig {
     current: ArcSwap<CompiledRuntimeConfig>,
-    plugins: crate::connector_plugins::ConnectorPlugins,
+    plugins: ConnectorPlugins,
+    plugin_catalog: Option<Arc<DirectoryPluginCatalog>>,
     enforce_plugins: bool,
 }
 impl RuntimeConfig {
@@ -756,6 +781,7 @@ impl RuntimeConfig {
         Self {
             current: ArcSwap::from(initial),
             plugins: Default::default(),
+            plugin_catalog: None,
             enforce_plugins: false,
         }
     }
@@ -764,19 +790,38 @@ impl RuntimeConfig {
         plugins: crate::connector_plugins::ConnectorPlugins,
     ) -> Self {
         Self {
-            current: ArcSwap::from(Arc::new(initial)),
+            current: ArcSwap::from(Arc::new(initial.with_plugins(plugins.clone()))),
             plugins,
+            plugin_catalog: None,
             enforce_plugins: true,
         }
     }
-    pub fn plugins(&self) -> &crate::connector_plugins::ConnectorPlugins {
-        &self.plugins
+    pub fn new_with_plugin_catalog(
+        initial: CompiledRuntimeConfig,
+        catalog: Arc<DirectoryPluginCatalog>,
+    ) -> Self {
+        Self {
+            current: ArcSwap::from(Arc::new(initial)),
+            plugins: Default::default(),
+            plugin_catalog: Some(catalog),
+            enforce_plugins: true,
+        }
+    }
+
+    pub fn plugin_catalog(&self) -> Option<&Arc<DirectoryPluginCatalog>> {
+        self.plugin_catalog.as_ref()
+    }
+
+    pub fn plugins(&self) -> ConnectorPlugins {
+        self.snapshot().plugins().clone()
     }
     pub fn compile(
         &self,
         records: RuntimeConfigRecords,
     ) -> Result<CompiledRuntimeConfig, ConfigError> {
-        if self.enforce_plugins {
+        if let Some(catalog) = &self.plugin_catalog {
+            compile_runtime_config_with_catalog(records, catalog)
+        } else if self.enforce_plugins {
             compile_runtime_config_with_plugins(records, &self.plugins)
         } else {
             compile_runtime_config(records)
@@ -813,18 +858,13 @@ pub fn compile_runtime_config(
 }
 
 pub fn compile_runtime_config_with_plugins(
-    records: RuntimeConfigRecords,
+    mut records: RuntimeConfigRecords,
     plugins: &crate::connector_plugins::ConnectorPlugins,
 ) -> Result<CompiledRuntimeConfig, ConfigError> {
     for id in &records.connector_ids {
-        let connector = parse_connector_kind(id)?;
-        if connector != ConnectorKind::OpenAiCompatible && plugins.get(id).is_none() {
-            return Err(ConfigError::Compile(format!(
-                "connector {id} is not registered"
-            )));
-        }
+        parse_connector_kind(id)?;
     }
-    for channel in &records.control_plane.channels {
+    for channel in &mut records.control_plane.channels {
         let group = records
             .control_plane
             .groups
@@ -838,10 +878,13 @@ pub fn compile_runtime_config_with_plugins(
         let operation = channel_api_operation(channel)?;
         let implemented = plugins.get(connector.as_str()).is_some_and(|plugin| {
             let manifest = plugin.manifest();
-            manifest
-                .operations
-                .iter()
-                .any(|value| value == operation.as_str())
+            (connector != ConnectorKind::CodexOauth
+                || crate::application::CodexConnectorService::validate_plugin_manifest(manifest)
+                    .is_ok())
+                && manifest
+                    .operations
+                    .iter()
+                    .any(|value| value == operation.as_str())
                 && [
                     "attempt.body",
                     "attempt.target",
@@ -858,13 +901,78 @@ pub fn compile_runtime_config_with_plugins(
                         }))
         });
         if !implemented {
-            return Err(ConfigError::Compile(format!(
-                "connector {} does not implement the configured operation",
-                connector.as_str()
-            )));
+            channel.enabled = false;
         }
     }
-    compile_runtime_config(records)
+    Ok(compile_runtime_config(records)?.with_plugins(plugins.clone()))
+}
+
+pub fn compile_runtime_config_with_catalog(
+    records: RuntimeConfigRecords,
+    catalog: &DirectoryPluginCatalog,
+) -> Result<CompiledRuntimeConfig, ConfigError> {
+    let mut configured = Vec::new();
+    let mut errors = HashMap::new();
+    for state in &records.plugin_records.states {
+        if !state.enabled {
+            continue;
+        }
+        let result =
+            (|| {
+                let digest = state.artifact_digest.as_deref().ok_or("artifact_missing")?;
+                if !records.plugin_records.artifacts.iter().any(|artifact| {
+                    artifact.plugin_id == state.plugin_id && artifact.digest == digest
+                }) {
+                    return Err("artifact_missing");
+                }
+                let artifact = catalog
+                    .resolve(&state.plugin_id, digest)
+                    .map_err(|_| "artifact_unavailable")?;
+                let plugin = catalog.load(&artifact).map_err(|_| "plugin_load_failed")?;
+                if artifact.id == "codex" {
+                    crate::application::CodexConnectorService::validate_plugin_manifest(
+                        plugin.manifest(),
+                    )
+                    .map_err(|_| "incomplete_plugin_contract")?;
+                }
+                let descriptor = plugin
+                    .settings_descriptor()
+                    .map_err(|_| "invalid_settings_schema")?;
+                if descriptor.is_none() {
+                    return Ok(plugin.with_revision(
+                        state.revision.try_into().map_err(|_| "invalid_revision")?,
+                    ));
+                }
+                let settings = records
+                    .plugin_records
+                    .settings
+                    .iter()
+                    .find(|settings| settings.plugin_id == state.plugin_id)
+                    .ok_or("settings_missing")?;
+                let document = ai_gateway_connector_sdk::PluginSettingsDocument {
+                    schema_version: settings
+                        .schema_version
+                        .try_into()
+                        .map_err(|_| "invalid_settings")?,
+                    values: settings.values.clone(),
+                };
+                plugin
+                    .configured(
+                        &document,
+                        state.revision.try_into().map_err(|_| "invalid_revision")?,
+                    )
+                    .map_err(|_| "invalid_settings")
+            })();
+        match result {
+            Ok(plugin) => configured.push(plugin),
+            Err(code) => {
+                errors.insert(state.plugin_id.clone(), code);
+            }
+        }
+    }
+    let plugins = ConnectorPlugins::from_plugins(configured)
+        .map_err(|_| ConfigError::Compile("invalid plugin registry".into()))?;
+    Ok(compile_runtime_config_with_plugins(records, &plugins)?.with_plugin_errors(errors))
 }
 
 /// Compiles control-plane resources with an already validated system policy.
@@ -1080,7 +1188,6 @@ pub fn compile_system_settings_input(
     let scheduled_testing = &input.scheduled_testing;
     let session_affinity = compile_session_affinity_settings(&input.session_affinity)?;
     let websocket = &input.websocket;
-    let codex = compile_codex_request_metadata_settings(&input.codex)?;
     if !valid_api_hosts(&input.api_hosts)
         || upstream.connect_timeout_seconds == 0
         || upstream.response_header_timeout_seconds <= upstream.connect_timeout_seconds
@@ -1174,24 +1281,6 @@ pub fn compile_system_settings_input(
             websocket.max_idle_connections,
             std::time::Duration::from_secs(websocket.idle_timeout_seconds),
             std::time::Duration::from_secs(websocket.max_connection_age_seconds),
-        ),
-    )
-    .with_codex(codex))
-}
-
-fn compile_codex_request_metadata_settings(
-    input: &SystemCodexSettingsInput,
-) -> Result<CodexRequestMetadataSettings, ConfigError> {
-    if !valid_codex_settings_input(input) {
-        return Err(ConfigError::Compile("invalid system settings".into()));
-    }
-    Ok(CodexRequestMetadataSettings::new(
-        Arc::from(input.workspace_path.as_str()),
-        Arc::from(input.git_remote_url.as_str()),
-        CodexOutboundIdentity::new(
-            Arc::from(input.originator.as_str()),
-            Arc::from(input.client_version.as_str()),
-            Arc::from(input.user_agent.as_str()),
         ),
     ))
 }
@@ -3298,21 +3387,34 @@ mod tests {
     }
 
     #[test]
-    fn native_plugins_are_explicit_and_do_not_load_during_config_parsing() {
+    fn plugin_directory_does_not_load_code_during_config_parsing() {
         let example = include_str!("../../config.example.toml");
-        let file: AppConfig = toml::from_str(example).unwrap();
-        assert!(file.plugins.is_empty());
-        let document = format!(
-            "{example}\n[[plugins]]\nid = \"codex\"\npath = \"/nonexistent/codex.so\"\nsha256 = \"{}\"\n",
-            "a".repeat(64)
-        );
-        let config = toml::from_str::<AppConfig>(&document)
+        let mut document: toml::Value = toml::from_str(example).unwrap();
+        document["plugins"] = toml::Value::Table(toml::map::Map::from_iter([(
+            "directory".into(),
+            toml::Value::String("/nonexistent/plugins".into()),
+        )]));
+        let config = document
+            .clone()
+            .try_into::<AppConfig>()
             .unwrap()
             .validate()
             .unwrap();
-        assert_eq!(config.plugins.len(), 1);
-        assert_eq!(config.plugins[0].id, "codex");
-        assert!(toml::from_str::<AppConfig>(&format!("{document}unexpected = true\n")).is_err());
+        assert_eq!(
+            config.plugins.directory,
+            PathBuf::from("/nonexistent/plugins")
+        );
+        document["plugins"]["directory"] = toml::Value::String("../plugins".into());
+        assert!(
+            document
+                .try_into::<AppConfig>()
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+        let legacy =
+            format!("{example}\n[[plugins]]\nid=\"codex\"\npath=\"/a.so\"\nsha256=\"a\"\n");
+        assert!(toml::from_str::<AppConfig>(&legacy).is_err());
     }
 
     #[test]
@@ -3351,6 +3453,7 @@ mod tests {
     #[test]
     fn compiler_uses_database_backed_forwarding_settings() {
         let records = RuntimeConfigRecords {
+            plugin_records: Default::default(),
             connector_ids: Vec::new(),
             sharing_only_channels: Vec::new(),
             sharing: Vec::new(),
@@ -3388,13 +3491,6 @@ mod tests {
                     },
                     session_affinity: Default::default(),
                     websocket: Default::default(),
-                    codex: SystemCodexSettingsInput {
-                        workspace_path: "/synthetic/project".into(),
-                        git_remote_url: "https://github.com/example/synthetic-project".into(),
-                        originator: "codex_gateway".into(),
-                        client_version: "9.8.7".into(),
-                        user_agent: "codex_gateway/9.8.7 (Linux 6.8.0; x86_64) ai-gateway".into(),
-                    },
                 })
                 .unwrap(),
                 updated_at: chrono::Utc::now(),
@@ -3436,23 +3532,6 @@ mod tests {
         assert_eq!(
             settings.scheduled_testing().interval(),
             std::time::Duration::from_secs(7 * 60)
-        );
-        assert_eq!(settings.codex().workspace_path(), "/synthetic/project");
-        assert_eq!(
-            settings.codex().git_remote_url(),
-            "https://github.com/example/synthetic-project"
-        );
-        assert_eq!(
-            settings.codex().outbound_identity().originator(),
-            "codex_gateway"
-        );
-        assert_eq!(
-            settings.codex().outbound_identity().client_version(),
-            "9.8.7"
-        );
-        assert_eq!(
-            settings.codex().outbound_identity().user_agent(),
-            "codex_gateway/9.8.7 (Linux 6.8.0; x86_64) ai-gateway"
         );
     }
 
@@ -3499,7 +3578,6 @@ mod tests {
                 }],
             },
             websocket: Default::default(),
-            codex: Default::default(),
         })
         .unwrap();
 
