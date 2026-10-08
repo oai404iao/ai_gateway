@@ -747,7 +747,8 @@ pub(crate) fn sanitize_outbound_request_headers(headers: &mut HeaderMap) {
     let removed = headers
         .keys()
         .filter(|name| {
-            connector_header_is_forbidden(name)
+            // Ingress, transforms and plugins cannot supply Cookie; explicit host credentials can.
+            (**name != axum::http::header::COOKIE && connector_header_is_forbidden(name))
                 || (**name != axum::http::header::AUTHORIZATION && connection_names.contains(*name))
         })
         .cloned()
@@ -1845,7 +1846,6 @@ mod tests {
             "content-length",
             "content-encoding",
             "accept-encoding",
-            "cookie",
             "keep-alive",
             "proxy-authenticate",
             "proxy-authorization",
@@ -1867,6 +1867,10 @@ mod tests {
             CONNECTION,
             HeaderValue::from_static("x-private-hop, Authorization"),
         );
+        assert!(connector_header_is_forbidden(&HeaderName::from_static(
+            "cookie"
+        )));
+        headers.insert("cookie", HeaderValue::from_static("host-credential"));
         headers.append(CONNECTION, HeaderValue::from_static("X-Other-Hop"));
         for name in ["x-private-hop", "x-other-hop"] {
             headers.insert(name, HeaderValue::from_static("discard"));
@@ -1878,7 +1882,8 @@ mod tests {
         headers.insert("x-api-key", HeaderValue::from_static("upstream-secret"));
         headers.insert("content-type", HeaderValue::from_static("application/json"));
         sanitize_outbound_request_headers(&mut headers);
-        assert_eq!(headers.len(), 3);
+        assert_eq!(headers.len(), 4);
+        assert_eq!(headers["cookie"], "host-credential");
         assert_eq!(headers["authorization"], "Bearer upstream-secret");
         assert_eq!(headers["x-api-key"], "upstream-secret");
         assert_eq!(headers["content-type"], "application/json");
@@ -1886,6 +1891,9 @@ mod tests {
             "authorization"
         )));
         assert!(request_header_is_protected("authorization"));
+        headers.insert(CONNECTION, HeaderValue::from_static("cookie"));
+        sanitize_outbound_request_headers(&mut headers);
+        assert!(!headers.contains_key("cookie"));
     }
 
     #[test]

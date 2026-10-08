@@ -3405,6 +3405,39 @@ mod tests {
     }
 
     #[test]
+    fn client_cookie_is_removed_before_explicit_upstream_cookie_authentication() {
+        let mut incoming = HeaderMap::new();
+        incoming.insert("cookie", HeaderValue::from_static("client-secret"));
+        incoming.insert(CONNECTION, HeaderValue::from_static("cookie"));
+        let filtered = crate::request_policy::filter_client_headers(
+            crate::request_policy::RequestInterface::ResponsesHttp,
+            &incoming,
+        )
+        .unwrap();
+        let mut forwarded = forward_request_headers(&filtered);
+        assert!(!forwarded.contains_key("cookie"));
+        let channel = crate::domain::CompiledChannel::new(
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4(),
+            ApiFormat::OpenAiResponses,
+            reqwest::Url::parse("https://example.test").unwrap(),
+            crate::domain::UpstreamAuth::compile(
+                "header",
+                Some("Cookie"),
+                Some("upstream-session=secret"),
+            )
+            .unwrap(),
+            std::collections::HashSet::new(),
+        );
+        crate::application::connector::inject_standard_auth(&mut forwarded, &channel).unwrap();
+        crate::request_policy::sanitize_outbound_request_headers(&mut forwarded);
+        assert_eq!(forwarded["cookie"], "upstream-session=secret");
+        assert!(crate::request_policy::connector_header_is_forbidden(
+            &HeaderName::from_static("cookie")
+        ));
+    }
+
+    #[test]
     fn removes_static_and_connection_declared_hop_by_hop_request_headers() {
         let mut headers = HeaderMap::new();
         headers.insert(

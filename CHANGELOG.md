@@ -23,6 +23,9 @@ Versioning.
 - Preserve credential and financial identities while migrating connector IDs
   and static credential ownership in PostgreSQL 0070 / SQLite 0010.
   Prepare the plugin before upgrading existing Codex installations.
+- Reject `sec-websocket-*` custom authentication headers at configuration time
+  because the host owns handshake fields. Explicit Cookie credentials remain
+  supported; client/plugin Cookies remain blocked.
 
 ## [0.12.0] - 2026-09-23
 

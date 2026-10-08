@@ -20,7 +20,7 @@ pnpm --dir web/console install --frozen-lockfile
 pnpm --dir web/console generate:api:check
 pnpm --dir web/console typecheck
 pnpm --dir web/console lint
-pnpm --dir web/console test
+pnpm --dir web/console test --maxWorkers=2
 pnpm --dir web/console build
 
 cargo clippy --locked --all-targets --features embedded-console-ui,sqlite-backend

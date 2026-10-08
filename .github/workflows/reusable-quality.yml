@@ -108,7 +108,7 @@ jobs:
       - run: pnpm --dir web/console generate:api:check
       - run: pnpm --dir web/console typecheck
       - run: pnpm --dir web/console lint
-      - run: pnpm --dir web/console test
+      - run: pnpm --dir web/console test --maxWorkers=2
       - run: pnpm --dir web/console build
       - name: Save pnpm store
         if: ${{ inputs.save_cache && steps.pnpm_cache.outputs.cache-hit != 'true' }}
