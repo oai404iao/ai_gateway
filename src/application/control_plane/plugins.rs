@@ -452,14 +452,14 @@ impl ControlPlaneCoordinator {
                     ControlPlaneMutation::RegisterPluginArtifact(artifact_input(&artifact)),
                 )
                 .await?;
+                result.plugin_id = Some(artifact.id);
+                result.artifact_digest = Some(artifact.digest);
             } else {
                 self.verify_active_admin(actor).await?;
                 self.repository
                     .register_discovered_plugin(artifact_input(&artifact))
                     .await?;
             }
-            result.plugin_id = Some(artifact.id);
-            result.artifact_digest = Some(artifact.digest);
         }
         self.repository
             .finish_plugin_install_job(actor, id, result)

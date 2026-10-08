@@ -18,7 +18,7 @@ async fn grant(app: &App) -> String {
         app,
         "POST",
         "/console/v1/plugins/reauth",
-        json!({"password":TEST_PASSWORD}),
+        json!({"password":test_password()}),
         &[],
     )
     .await;
@@ -254,6 +254,54 @@ fn hex_digest(bytes: &[u8]) -> String {
         .collect()
 }
 
+#[tokio::test]
+async fn plugin_console_discovery_preserves_an_inventory_with_only_a_deleted_artifact() {
+    let database = TestDatabase::new().await;
+    let directory = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let catalog = Arc::new(DirectoryPluginCatalog::open(directory.path().join("plugins")).unwrap());
+    let app = app_with_options(database.pool.clone(), None, Some(catalog)).await;
+    let (archive, digest) = package(directory.path());
+    let uploaded = upload(&app, &grant(&app).await, archive).await;
+    assert_eq!(uploaded.status(), StatusCode::ACCEPTED);
+    let job = body_json(uploaded).await;
+    let installed = wait_job(&app, job["id"].as_str().unwrap()).await;
+    assert_eq!(installed["status"], "succeeded");
+    assert_eq!(installed["plugin_id"], "fixture");
+    assert_eq!(installed["artifact_digest"], digest);
+    let detail = request(&app, "GET", "/console/v1/plugins/fixture", json!({}), &[]).await;
+    let etag = response_etag(&detail);
+    let token = grant(&app).await;
+    let deleted = request(
+        &app,
+        "DELETE",
+        &format!("/console/v1/plugins/fixture/artifacts/{digest}"),
+        json!({}),
+        &[("if-match", &etag), ("x-plugin-authorization", &token)],
+    )
+    .await;
+    assert_eq!(deleted.status(), StatusCode::OK);
+    let token = grant(&app).await;
+    let response = request(
+        &app,
+        "POST",
+        "/console/v1/plugins/discover",
+        json!({}),
+        &[("x-plugin-authorization", &token)],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let job = body_json(response).await;
+    let completed = wait_job(&app, job["id"].as_str().unwrap()).await;
+    assert_eq!(completed["status"], "succeeded", "{completed}");
+    assert!(completed["plugin_id"].is_null());
+    assert!(completed["artifact_digest"].is_null());
+    let detail =
+        body_json(request(&app, "GET", "/console/v1/plugins/fixture", json!({}), &[]).await).await;
+    assert!(detail["artifacts"].as_array().unwrap().is_empty());
+    assert_eq!(detail["status"], "not_installed");
+    database.cleanup().await;
+}
+
 async fn upload(app: &App, token: &str, bytes: Vec<u8>) -> axum::response::Response {
     app.router
         .clone()
@@ -298,7 +346,7 @@ async fn plugin_console_reauthorization_is_admin_only_single_use_and_session_bou
         .auth
         .login_with_user_agent(
             format!("spec-user-{}@example.test", app.user_id),
-            TEST_PASSWORD.into(),
+            test_password().into(),
             Some("Second session".into()),
         )
         .await
@@ -358,12 +406,12 @@ async fn plugin_console_reauthorization_is_admin_only_single_use_and_session_bou
 
     let user = Uuid::new_v4();
     let email = format!("{user}@example.test");
-    let password = hash_console_password(TEST_PASSWORD.into()).await.unwrap();
+    let password = hash_console_password(test_password().into()).await.unwrap();
     sqlx::query("INSERT INTO users(id,email,display_name,role,status,password_hash) VALUES ($1,$2,$2,'user','active',$3)")
         .bind(user).bind(&email).bind(password).execute(&database.pool).await.unwrap();
     let session = app
         .auth
-        .login_with_user_agent(email, TEST_PASSWORD.into(), None)
+        .login_with_user_agent(email, test_password().into(), None)
         .await
         .unwrap();
     for (method, path, body) in [
@@ -371,7 +419,7 @@ async fn plugin_console_reauthorization_is_admin_only_single_use_and_session_bou
         (
             "POST",
             "/console/v1/plugins/reauth",
-            json!({"password":TEST_PASSWORD}),
+            json!({"password":test_password()}),
         ),
         ("POST", "/console/v1/plugins/discover", json!({})),
         ("POST", "/console/v1/plugins/install", json!({})),

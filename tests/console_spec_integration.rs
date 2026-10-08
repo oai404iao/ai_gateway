@@ -49,7 +49,11 @@ mod metering_fixtures;
 
 const DEFAULT_ADMIN_URL: &str = "postgres://ai_gateway:ai_gateway@127.0.0.1:5432/postgres";
 const PASSWORD_FILE_ADMIN_URL: &str = "postgres://ai_gateway@127.0.0.1:5432/postgres";
-const TEST_PASSWORD: &str = "test-password-with-enough-length";
+fn test_password() -> &'static str {
+    static PASSWORD: std::sync::LazyLock<String> =
+        std::sync::LazyLock::new(|| format!("spec-{}", Uuid::new_v4()));
+    PASSWORD.as_str()
+}
 const TEST_ED25519_PRIVATE_KEY: &[u8] = br#"-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIMrLMWiLkvZoPg8iIZRZC0qNdQQPyJV5dCAWdo0l6YBu
 -----END PRIVATE KEY-----
@@ -297,7 +301,7 @@ async fn app_with_options(
     catalog: Option<Arc<ai_gateway::connector_plugins::DirectoryPluginCatalog>>,
 ) -> App {
     let user_id = Uuid::new_v4();
-    let password_hash = hash_console_password(TEST_PASSWORD.to_owned())
+    let password_hash = hash_console_password(test_password().to_owned())
         .await
         .unwrap();
     sqlx::query(
@@ -351,7 +355,11 @@ async fn app_with_options(
     .unwrap();
     let email = format!("spec-user-{user_id}@example.test");
     let session = auth
-        .login_with_user_agent(email, TEST_PASSWORD.into(), Some("Spec Browser/1.0".into()))
+        .login_with_user_agent(
+            email,
+            test_password().into(),
+            Some("Spec Browser/1.0".into()),
+        )
         .await
         .unwrap();
     // Sanity: the freshly issued token must round-trip through the same
@@ -1045,7 +1053,7 @@ async fn administrator_temporary_password_forces_and_completes_password_change()
         &app,
         "POST",
         &format!("/console/v1/users/{}/temporary-password", app.user_id),
-        serde_json::json!({"current_password":TEST_PASSWORD}),
+        serde_json::json!({"current_password":test_password()}),
         &[],
     )
     .await;
@@ -1070,7 +1078,7 @@ async fn administrator_temporary_password_forces_and_completes_password_change()
         &app,
         "POST",
         &format!("/console/v1/users/{target_user_id}/temporary-password"),
-        serde_json::json!({"current_password":TEST_PASSWORD}),
+        serde_json::json!({"current_password":test_password()}),
         &[],
     )
     .await;
@@ -1110,7 +1118,7 @@ async fn administrator_temporary_password_forces_and_completes_password_change()
         &app,
         "POST",
         &format!("/console/v1/users/{target_user_id}/temporary-password"),
-        serde_json::json!({"current_password":TEST_PASSWORD}),
+        serde_json::json!({"current_password":test_password()}),
         &[],
     )
     .await;
@@ -1309,7 +1317,7 @@ async fn expired_temporary_password_rejects_login_refresh_and_completion() {
         &app,
         "POST",
         &format!("/console/v1/users/{target_user_id}/temporary-password"),
-        serde_json::json!({"current_password":TEST_PASSWORD}),
+        serde_json::json!({"current_password":test_password()}),
         &[],
     )
     .await;
@@ -1397,7 +1405,7 @@ async fn concurrent_temporary_password_completion_allows_only_one_winner() {
         &app,
         "POST",
         &format!("/console/v1/users/{target_user_id}/temporary-password"),
-        serde_json::json!({"current_password":TEST_PASSWORD}),
+        serde_json::json!({"current_password":test_password()}),
         &[],
     )
     .await;
@@ -2339,7 +2347,7 @@ async fn sharing_contract_is_versioned_scoped_and_never_exposes_provider_identit
     .unwrap();
     let session = app
         .auth
-        .login_with_user_agent(email, TEST_PASSWORD.into(), None)
+        .login_with_user_agent(email, test_password().into(), None)
         .await
         .unwrap();
     assert_eq!(
@@ -2471,7 +2479,7 @@ async fn login_response_shape_matches_spec() {
         "/console/v1/auth/login",
         serde_json::json!({
             "email": format!("spec-user-{}@example.test", app.user_id),
-            "password": TEST_PASSWORD,
+            "password": test_password(),
         }),
         &[("user-agent", "Spec Login Browser/2.0")],
     )
@@ -2500,7 +2508,7 @@ async fn session_management_identifies_clients_and_revokes_selected_scopes() {
         "/console/v1/auth/login",
         serde_json::json!({
             "email": email,
-            "password": TEST_PASSWORD,
+            "password": test_password(),
         }),
         &[(
             "user-agent",
@@ -2713,7 +2721,7 @@ async fn reusable_invitation_code_registers_an_active_user_and_enforces_usage_li
             "invitation_code": invitation_code,
             "email": email,
             "display_name": "Self Registered",
-            "password": TEST_PASSWORD,
+            "password": test_password(),
         }),
     )
     .await;
@@ -2754,7 +2762,7 @@ async fn reusable_invitation_code_registers_an_active_user_and_enforces_usage_li
             "invitation_code": invitation_code,
             "email": format!("second-{code_id}@example.test"),
             "display_name": "Second User",
-            "password": TEST_PASSWORD,
+            "password": test_password(),
         }),
     )
     .await;
@@ -2878,7 +2886,7 @@ async fn registration_invitation_code_settings_are_versioned_and_adjustable() {
             "invitation_code": invitation_code,
             "email": format!("disabled-{code_id}@example.test"),
             "display_name": "Disabled Code",
-            "password": TEST_PASSWORD,
+            "password": test_password(),
         }),
     )
     .await;
@@ -2910,7 +2918,7 @@ async fn registration_invitation_code_settings_are_versioned_and_adjustable() {
             "invitation_code": invitation_code,
             "email": email,
             "display_name": "Adjusted User",
-            "password": TEST_PASSWORD,
+            "password": test_password(),
         }),
     )
     .await;
@@ -2932,7 +2940,7 @@ async fn registration_invitation_code_settings_are_versioned_and_adjustable() {
             "invitation_code": invitation_code,
             "email": email,
             "display_name": "Duplicate Email",
-            "password": TEST_PASSWORD,
+            "password": test_password(),
         }),
     )
     .await;
@@ -8028,7 +8036,7 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     let regular_api_key_id = Uuid::new_v4();
     let regular_email = format!("statistics-user-{regular_user_id}@example.test");
     let regular_display_name = format!("statistics-user-{regular_user_id}");
-    let regular_password_hash = hash_console_password(TEST_PASSWORD.to_owned())
+    let regular_password_hash = hash_console_password(test_password().to_owned())
         .await
         .unwrap();
     sqlx::query(
@@ -8080,7 +8088,7 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     metering_fixtures::copy_log_fixtures(&database.pool).await;
     let regular_session = app
         .auth
-        .login(regular_email.clone(), TEST_PASSWORD.to_owned())
+        .login(regular_email.clone(), test_password().to_owned())
         .await
         .unwrap();
 

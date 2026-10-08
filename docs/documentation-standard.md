@@ -57,8 +57,9 @@
 ## 4. 来源与重复规则
 
 - Console API 形状：只在 `docs/openapi/console-v1.yaml` 定义。
-- 数据面客户端/Codex Header、顶层 body 字段动作与 Codex 隐私归一化/安全补全：只在
-  `docs/reference/request-allowlists.json` 定义；Markdown 只解释动作和维护流程。
+- 数据面公共客户端 Header、顶层 body 字段动作与通用出站约束：只在
+  `docs/reference/request-allowlists.json` 定义。Codex 专有策略、隐私归一化和安全补全
+  由独立插件仓库维护；Markdown 只解释各自的动作和维护流程。
 - TOML 字段和默认值：以 `src/runtime_config/mod.rs` 为实现来源，`config.example.toml` 和容器模板必须同步。
 - 数据库结构：以 `migrations/` 为准；设计文档用于解释，不替代 migration。
 - 前端 API 类型：由 OpenAPI 生成，禁止手工编辑。
