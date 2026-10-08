@@ -1,6 +1,6 @@
 # 原生连接器插件
 
-> 状态：当前实现。真实上游验收尚未全部通过，不表示已完成发布验收。
+> 状态：当前实现。本轮实现验收已通过，尚未合并或发布。
 
 ## 范围与仓库
 
@@ -165,6 +165,7 @@ SDK 使用不可变版本/提交。主项目 CI 使用固定插件测试版本�
 本次本地验收通过双后端 Rust 回归、无新增警告的 Clippy、230 项 Console 组件测试、
 40 项浏览器测试、两种后端的真实浏览器/CLI 系统 E2E，以及 Docker canonical entrypoint
 以 UID 10001 加载外部插件。外部插件 15 项测试、发行包校验和初始双架构 CI 通过。
-付费 smoke 的 Chat/Images 四项通过；Responses HTTP/WS 和搜索四项收到
-`no_healthy_channel` / `websocket_unavailable`，该上游可用性验收仍未通过，
-未修改现有上游实例的渠道配置以绕过失败。
+此前付费 smoke 的 Responses HTTP/WS 和搜索因已停用模型未通过。
+使用更新后的受保护 smoke 配置重新执行完整脚本，8 项全部通过、无跳过：
+Chat 非流式/SSE、Responses SSE/WebSocket/非流式边界、独立搜索及 Images 生成/编辑。
+本次复测未修改现有上游实例的渠道或模型配置，也未运行性能压测。
