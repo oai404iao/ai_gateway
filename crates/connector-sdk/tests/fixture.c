@@ -36,6 +36,34 @@ static uint32_t dispatch(
     AiGatewayCallOutput *output
 ) {
     memset(output, 0, sizeof(*output));
+#ifdef FIXTURE_SETTINGS
+    if (equals(command, "settings.describe/v1")) {
+        const char value[] = "{\"schema_version\":1,\"title\":{\"en\":\"Generic fixture\"},\"fields\":[{\"key\":\"mode\",\"label\":{\"en\":\"Mode\"},\"required\":true,\"type\":\"string\",\"max_length\":32}],\"defaults\":{\"mode\":\"default\"}}";
+        output->metadata = copy(value, sizeof(value) - 1);
+        return AI_GATEWAY_CONNECTOR_OK;
+    }
+    if (equals(command, "settings.validate/v1")) {
+        const char value[] = "{\"valid\":true,\"errors\":[]}";
+        output->metadata = copy(value, sizeof(value) - 1);
+        return AI_GATEWAY_CONNECTOR_OK;
+    }
+    if (equals(command, "settings.compile/v1")) {
+        char *input = malloc((size_t)metadata.len + 1);
+        if (input == NULL) abort();
+        memcpy(input, metadata.ptr, (size_t)metadata.len);
+        input[metadata.len] = '\0';
+        const char *value = strstr(input, "alternate") != NULL
+            ? "{\"config\":{\"mode\":\"alternate\"}}" : "{\"config\":{\"mode\":\"default\"}}";
+        output->metadata = copy(value, strlen(value));
+        free(input);
+        return AI_GATEWAY_CONNECTOR_OK;
+    }
+    if (equals(command, "settings.migrate/v1")) {
+        const char value[] = "{\"schema_version\":1,\"values\":{\"mode\":\"default\"}}";
+        output->metadata = copy(value, sizeof(value) - 1);
+        return AI_GATEWAY_CONNECTOR_OK;
+    }
+#endif
     if (command.len == 5 && memcmp(command.ptr, "error", 5) == 0) {
         const char error[] = "{\"code\":\"fixture_error\",\"message\":\"secret\"}";
         output->metadata = copy(error, sizeof(error) - 1);
@@ -84,11 +112,17 @@ static uint32_t dispatch(
 
 static const char manifest[] =
     "{\"id\":\"fixture\",\"version\":\"1.0.0\","
+#ifdef FIXTURE_SETTINGS
+    "\"protocol_version\":2,"
+#endif
     "\"operations\":[\"responses\",\"responses-ws\",\"images_edit\"],"
 #ifdef FIXTURE_EMPTY_COMMANDS
     "\"commands\":[]}";
 #else
     "\"commands\":[\"echo\",\"error\",\"malformed\","
+#ifdef FIXTURE_SETTINGS
+    "\"settings.describe/v1\",\"settings.validate/v1\",\"settings.compile/v1\",\"settings.migrate/v1\","
+#endif
     "\"attempt.body\",\"attempt.target\","
 #ifndef FIXTURE_OMIT_HEADERS
     "\"attempt.headers\","

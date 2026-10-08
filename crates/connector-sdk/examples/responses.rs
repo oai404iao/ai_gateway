@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 
 fn manifest() -> PluginManifest {
     PluginManifest {
+        protocol_version: 1,
         id: "example-responses".into(),
         version: env!("CARGO_PKG_VERSION").into(),
         operations: vec!["responses".into()],

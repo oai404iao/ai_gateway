@@ -26,8 +26,8 @@ cargo test --locked -p ai-gateway-connector-sdk --example responses
 ```
 
 On Linux the built example is `target/debug/examples/libresponses.so`.
-Install a protected mode-`0444` copy and configure `[[plugins]]` with
-`id = "example-responses"` and its SHA-256 as described below. Then create a
+Package a protected mode-`0444` copy with its manifest, build information,
+checksums and licenses under the configured plugin directory. Then create a
 matching upstream access/capability with operation `responses` and normal
 gateway-managed credentials. The example appends `/v1/responses` to the
 configured base URL (including any base path); for example,
@@ -106,15 +106,19 @@ malformed foreign pointer, or native plugin misbehavior can bypass cleanup.
 Limits are 64 KiB for manifests, 1 MiB for metadata, 512 MiB for bodies,
 128 bytes for a command, and 256 MiB for a library image. Manifest fields
 `id`, `version`, `operations`, and `commands` are required; unknown fields fail
-closed. IDs match `[a-z][a-z0-9_-]{0,63}`; `general` is reserved. Version is
+closed. SDK 0.2 adds `protocol_version`: omission is legacy protocol 1, while
+settings-capable plugins and Codex require protocol 2. Protocol 2 manifests
+are deliberately rejected by older hosts; the C ABI remains version 1.
+IDs match `[a-z][a-z0-9_-]{0,63}`; `general` is reserved. Version is
 nonempty printable ASCII (at most 128 bytes). Operations and commands must be
 nonempty unique strings using ASCII letters, digits, `_`, `-`, `.`, `/`;
 there may be at most 64 operations and 256 commands.
 
 ## Installation and trust
 
-Linux is the initial supported host. Configure an absolute normalized path,
-expected ID, and a 64-digit SHA-256 digest. Libraries must be regular files
+Linux is the initial supported host. `[plugins].directory` selects an absolute
+normalized artifact store; active IDs, digests and settings are managed
+separately from process TOML. Libraries must be regular files
 owned by root or the gateway effective user with **no write permission bits**
 (for example mode `0444`). Ancestor directories must be root/gateway-owned,
 not group/other writable, and not symlinks. A symlink library is rejected.
@@ -131,9 +135,29 @@ loading scheme. The pin covers the plugin image, not its transitive native
 dependencies; avoid provider-specific dynamic dependencies where practical.
 
 Libraries and their image file descriptors remain loaded until process exit,
-including after descriptor validation fails. There is no hot reload or
-`dlclose`; installation, replacement, removal, and upgrades require restart.
-Missing plugins are not downloaded automatically.
+including after descriptor validation fails. Hot activation uses immutable
+configured generations, not `dlclose` or in-place file replacement. Each
+request pins one generation. A process retains at most 64 attempted native
+images totaling at most 1 GiB; failed native loads count, and reaching the
+ceiling requires a maintenance restart before further native images can load.
+Configuration-only generations reuse the same library. Missing plugins are not
+downloaded automatically.
+
+Packages use a single top-level directory in a bounded `.tar.gz` archive:
+`manifest.json` contains `PluginManifest`, and `build-info.json` identifies
+`schema_version: 1`, `connector_abi: 1`, `connector_version`, `target`, the
+basename `library`, and its `library_sha256`. `SHA256SUMS` covers every regular
+file other than itself. Project `LICENSE`, `THIRD_PARTY_NOTICES.md`, and
+dependency license files under `LICENSES/` accompany the package. Extra
+build-provenance properties are allowed in build information.
+
+Installation rejects links, devices, sparse files, duplicate/noncanonical
+paths, incomplete checksums and mismatched platform metadata. Archives and
+expanded data are limited to 512 MiB, each member to 256 MiB, and the entry
+count to 10,000. Installation does not execute the discovered library or
+activate it. Successful packages are atomically installed below
+`artifacts/<plugin-id>/<library-sha256>/`; explicit activation checks the
+exported manifest against the package manifest.
 
 **This is a trust boundary, not a sandbox.** Loading executes native constructors
 before the descriptor can be inspected. A pinned plugin has the gateway's

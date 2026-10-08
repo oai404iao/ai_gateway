@@ -1,16 +1,19 @@
 # Gateway connector commands
 
-> Status: Current SDK 0.1 command contract, native ABI v1.
+> Status: Current SDK 0.2 command contract, native ABI v1.
 
 The [native ABI](../README.md) describes loading and memory ownership. This
 document describes the **additional gateway adapter contract**. A library can
 pass ABI loading and still be unusable for routing if its commands or operations
 do not satisfy this contract.
 
-There is no independent command-schema negotiation field in ABI v1. Command
-names, metadata fields, and semantics must match the gateway version used with
-the pinned SDK/provider release. Changing them incompatibly requires coordinated
-gateway and plugin releases even if the C structure layout stays unchanged.
+Manifest `protocol_version` negotiates metadata semantics independently of the
+C ABI. Omission means legacy protocol 1. Protocol 2 provides configured
+invocations and plugin-owned Codex request identity/privacy; Codex and plugins
+declaring settings commands must declare 2. Generic stateless protocol-1
+plugins remain supported. Older gateways reject the new manifest field rather
+than silently interpreting incompatible metadata. Settings commands additionally
+carry their own `/v1` suffix. Unknown protocol versions fail before dispatch.
 
 ## Names and common rules
 
@@ -49,6 +52,68 @@ and output raw bodies are empty. Do not wrap common command outputs in
 `{"result":...}`: that envelope belongs only to the Codex control adapter.
 Unknown metadata fields may contain host extensions; do not echo secrets back
 unnecessarily.
+
+## Declarative settings
+
+A configurable plugin declares all three commands `settings.describe/v1`,
+`settings.validate/v1`, and `settings.compile/v1`. A plugin without settings
+declares none. Partial declarations are invalid; `settings.migrate/v1` is
+optional only for a configurable plugin.
+
+`settings.describe/v1` receives `{}` and returns a descriptor directly:
+
+```json
+{
+  "schema_version": 1,
+  "title": {"en": "Example settings"},
+  "fields": [
+    {
+      "key": "mode",
+      "label": {"en": "Mode"},
+      "required": true,
+      "type": "enum",
+      "options": [{"value": "safe", "label": {"en": "Safe"}}]
+    }
+  ],
+  "defaults": {"mode": "safe"}
+}
+```
+
+Field types are `string` (required `max_length`), `boolean`, `integer`
+(required `minimum` and `maximum`), and `enum` (required `options`).
+Each option has a string `value` and localized `label`. Fields may include a
+localized `description`. Localization is a bounded language-tag-to-plain-text
+map, not HTML. Unknown attributes and values are rejected. Nested values,
+secrets, executable expressions, and plugin JavaScript are not supported.
+
+The SDK bounds descriptions/documents to 64 KiB, 64 fields, 4096 characters per
+text, eight locales, and JavaScript-safe integer ranges. Defaults must satisfy
+the descriptor. The host materializes defaults when explicitly initializing
+settings; changing plugin defaults must not silently change existing settings.
+
+`settings.validate/v1` receives `{"schema_version":1,"values":{"mode":"safe"}}`
+and returns `{"valid":true,"errors":[]}` or a nonempty error list with
+`{"field":"mode","code":"invalid_value"}` entries. Fields must exist in the
+descriptor; codes use bounded lowercase ASCII letters, digits, and underscores.
+Validation is deterministic and does not mutate input or perform I/O.
+
+`settings.compile/v1` receives the same document after successful validation
+and returns `{"config":{...}}`. The config is opaque to the host and consumed
+only by the plugin. Every non-settings command on the configured instance
+receives this immutable object in reserved metadata member `settings`.
+Callers cannot supply or override that member. Input/output bodies of settings
+commands are empty.
+
+`settings.migrate/v1` receives
+`{"from_schema_version":0,"values":{...}}` and returns
+`{"schema_version":1,"values":{...}}`. The host revalidates the result before
+saving. Migration must reject unsupported upgrades/downgrades rather than
+silently discarding unknown data. It does not update database state itself.
+
+An invocation instance binds a library artifact digest and settings revision.
+Each logical request or maintenance operation pins one instance throughout its
+execution. New publications cannot change an in-flight instance, and native
+libraries remain resident for the process lifetime even after deactivation.
 
 ## `attempt.capabilities`
 
@@ -155,12 +220,18 @@ it absent, and custom-header authentication sets only its configured header.
 Shared outbound policy remains
 in force immediately before transport dispatch.
 
-The Codex adapter adds credential/identity metadata to its body/header calls:
-`access_token`, nullable `account_id`, `is_fedramp`, `user_agent`, `originator`,
-`client_version`, `session_id`, `thread_id`, and `turn_id`. These are private
-host-derived values, not arbitrary client input. Its header plan must retain
-the expected bearer authorization and configured identity; Codex-specific
-privacy normalization and allowlists remain host-enforced.
+The Codex adapter first invokes `attempt.context` with `operation`,
+`credential_id`, a per-logical-request `request_id`, nullable `affinity_hash`
+(32 integer bytes), and client `headers`. The returned object is opaque to the
+host and supplied as `request_context` on body/header calls. The plugin owns
+installation-ID derivation, request identity, and privacy normalization.
+
+Codex body/header calls also receive the selected credential's `access_token`,
+nullable `account_id`, and `is_fedramp`; header calls include the current
+`headers`. These credentials are host-selected, not client input. Its plan must retain
+the expected bearer authorization. Configured provider identity and privacy
+normalization belong to the plugin; the host does not interpret provider
+settings or map them into a host privacy schema.
 
 ## Images edit planning
 

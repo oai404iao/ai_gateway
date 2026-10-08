@@ -26,6 +26,7 @@ bytes = "1.10"
 chrono = { version = "0.4", features = ["serde"] }
 crc32fast = "1.4"
 fs2 = "0.4"
+flate2 = "1"
 futures-util = "0.3"
 hyper = { version = "1", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server-auto", "server-graceful", "service", "tokio"] }
@@ -53,6 +54,7 @@ sha2 = "0.11"
 sqlx = { version = "=0.9.0", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls-ring", "migrate", "chrono", "uuid", "json", "rust_decimal", "macros"] }
 subtle = "2.6"
 tempfile = "3.20"
+tar = "0.4"
 thiserror = "2.0"
 time = "=0.3.54"
 tokio = { version = "1.43", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
