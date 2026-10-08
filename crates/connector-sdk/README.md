@@ -4,8 +4,10 @@
 
 This development-only SDK defines the boundary between ai-gateway and
 administrator-installed native connector libraries. The built-in `general`
-connector needs no library. Provider-specific command schemas belong to the
-provider, not the loader.
+connector needs no library. The loader validates the native ABI; the gateway
+adapter additionally requires the [common command contract](docs/commands.md).
+Implementing an arbitrary command is not enough to create a routable connector.
+Provider-specific control commands must match their corresponding host adapter.
 
 ## Rust implementation
 
@@ -13,32 +15,24 @@ Build a separate crate with `[lib] crate-type = ["cdylib"]` and dependencies on
 `ai-gateway-connector-sdk` and `serde_json`. The SDK requires neither an HTTP
 client nor an asynchronous runtime.
 
-```rust
-use ai_gateway_connector_sdk::{
-    PluginManifest, PluginOutput, PluginCallError, export_plugin,
-};
-use serde_json::Value;
+The [Responses example](examples/responses.rs) is a complete generic connector:
+it declares and implements all four required `attempt.*` commands, preserves
+raw JSON request bytes, and leaves credential injection to the gateway.
 
-fn manifest() -> PluginManifest {
-    PluginManifest {
-        id: "example".into(),
-        version: "1.0.0".into(),
-        operations: vec!["responses".into()],
-        commands: vec!["prepare".into()],
-    }
-}
-
-fn dispatch(command: &str, metadata: Value, body: &[u8])
-    -> Result<PluginOutput, PluginCallError>
-{
-    match command {
-        "prepare" => Ok(PluginOutput { metadata, body: body.to_vec() }),
-        _ => Err(PluginCallError::new("unsupported_command", "Unknown command")),
-    }
-}
-
-export_plugin!(manifest, dispatch);
+```sh
+# From the gateway repository root:
+cargo build --locked -p ai-gateway-connector-sdk --example responses
+cargo test --locked -p ai-gateway-connector-sdk --example responses
 ```
+
+On Linux the built example is `target/debug/examples/libresponses.so`.
+Install a protected mode-`0444` copy and configure `[[plugins]]` with
+`id = "example-responses"` and its SHA-256 as described below. Then create a
+matching upstream access/capability with operation `responses` and normal
+gateway-managed credentials. The example appends `/v1/responses` to the
+configured base URL (including any base path); for example,
+`https://upstream.example` becomes `https://upstream.example/v1/responses`.
+It supports `non_stream` and `sse`, not WebSocket or Images.
 
 The host may call dispatch concurrently. Implementations must be thread-safe,
 must not retain borrowed host memory, and must finish synchronous calls promptly.
