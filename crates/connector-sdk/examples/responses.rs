@@ -138,7 +138,12 @@ mod tests {
 
     #[test]
     fn exported_descriptor_and_dispatch_match_the_manifest() {
-        let descriptor = unsafe { &*ai_gateway_connector_entry_v1() };
+        let pointer = ai_gateway_connector_entry_v1();
+        assert!(
+            !pointer.is_null(),
+            "plugin descriptor initialization failed"
+        );
+        let descriptor = unsafe { &*pointer };
         assert_eq!(descriptor.abi_version, ABI_VERSION);
         let bytes = unsafe {
             std::slice::from_raw_parts(descriptor.manifest.ptr, descriptor.manifest.len as usize)
