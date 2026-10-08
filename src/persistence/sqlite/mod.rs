@@ -4,6 +4,7 @@
 mod aggregate;
 mod auth;
 mod codex;
+mod connector_ids;
 mod control_plane;
 mod decimal;
 mod functions;

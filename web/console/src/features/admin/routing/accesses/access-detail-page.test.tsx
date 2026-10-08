@@ -6,7 +6,7 @@ import { http, HttpResponse } from "msw";
 import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
 import { server, seedAuthenticatedSession } from "@/test/msw";
-import { UPSTREAM_ACCESS } from "@/test/fixtures";
+import { CONNECTOR_PLUGINS, UPSTREAM_ACCESS } from "@/test/fixtures";
 import type { UpstreamAccessInput } from "@/api/types";
 
 function renderAt(id: string) {
@@ -16,6 +16,29 @@ function renderAt(id: string) {
 }
 
 describe("upstream accesses", () => {
+  it("selects a registered external provider without changing authentication or topology", async () => {
+    let submitted: UpstreamAccessInput | undefined;
+    server.use(
+      http.get("/console/v1/system/connectors", () => HttpResponse.json([
+        ...CONNECTOR_PLUGINS,
+        { id: "acme", version: "2.0.0", abi_version: 1, built_in: false, operations: ["responses"] },
+      ])),
+      http.post("/console/v1/routing/accesses", async ({ request }) => {
+        submitted = await request.json() as UpstreamAccessInput;
+        return HttpResponse.json({ id: UPSTREAM_ACCESS.id }, { status: 201 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAt("new");
+    await user.type(await screen.findByLabelText("Name"), "External access");
+    await user.type(screen.getByLabelText("Base URL"), "https://api.example.test");
+    await user.click(screen.getByRole("combobox", { name: "Connector" }));
+    await user.click(await screen.findByRole("option", { name: "acme" }));
+    expect(screen.getByText("acme · 2.0.0 · Native plugin")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Save access" }));
+    await waitFor(() => expect(submitted?.connector_kind).toBe("acme"));
+    expect(submitted?.enabled).toBe(false);
+  });
   it("creates a disabled access without reselecting seeded selects or adding credentials", async () => {
     let submitted: UpstreamAccessInput | undefined;
     server.use(http.post("/console/v1/routing/accesses", async ({ request }) => {

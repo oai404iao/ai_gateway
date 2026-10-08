@@ -1530,6 +1530,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/system/connectors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * @description Administrator-only. Lists the built-in general connector and the native
+         *     plugins loaded by this process. Installation and binary upgrades are
+         *     offline administrator operations; this endpoint never downloads code.
+         */
+        get: operations["listConnectorPlugins"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/system/load": {
         parameters: {
             query?: never;
@@ -1629,8 +1650,15 @@ export interface components {
         ApiOperation: "chat_completion" | "responses" | "responses-ws" | "web_search" | "images_edit" | "images_generation";
         /** @enum {string} */
         SelectionStrategy: "weighted_random" | "weighted_round_robin";
-        /** @enum {string} */
-        ConnectorKind: "general" | "codex";
+        /** @description Registered connector ID. general is built in; other IDs require a configured native plugin. */
+        ConnectorKind: string;
+        ConnectorPluginView: {
+            id: components["schemas"]["ConnectorKind"];
+            version: string;
+            abi_version: number;
+            built_in: boolean;
+            operations: components["schemas"]["ApiOperation"][];
+        };
         /**
          * @description Upstream request-body compression for Responses HTTP requests. `default` sends identity JSON; `zstd` uses Zstandard level 3.
          * @enum {string}
@@ -2563,6 +2591,11 @@ export interface components {
             name: string;
             /** @enum {string} */
             kind: "bearer" | "header";
+            /**
+             * @description Immutable connector identity, independent of authentication material. codex requires its dedicated OAuth workflow.
+             * @default general
+             */
+            connector_kind: components["schemas"]["ConnectorKind"];
             header_name?: string | null;
             /** @description Omit to preserve the existing secret. Null and blank secrets are rejected. */
             secret?: string;
@@ -7450,6 +7483,28 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AuditLogView"][];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    listConnectorPlugins: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Available connector implementations and operation ceilings. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectorPluginView"][];
                 };
             };
             401: components["responses"]["Unauthorized"];

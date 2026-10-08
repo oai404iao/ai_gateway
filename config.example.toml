@@ -8,6 +8,13 @@
 #   openssl rand -hex 32 > ./config/postgres-password
 #   chmod 600 ./config/postgres-password
 
+# Native plugins are trusted code, installed separately and loaded only at startup.
+# Use the SHA-256 of the installed library, not its release archive.
+# [[plugins]]
+# id = "codex"
+# path = "/opt/ai-gateway/plugins/codex/libai_gateway_connector_codex.so"
+# sha256 = "<64 lowercase hexadecimal characters>"
+
 [server]
 # Secure default for a same-host reverse proxy. Change to "0.0.0.0" only when
 # the data-plane listener is protected by the intended firewall/load balancer.

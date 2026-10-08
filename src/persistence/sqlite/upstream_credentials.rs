@@ -17,7 +17,7 @@ pub(crate) async fn records(
     connection: &mut SqliteConnection,
 ) -> Result<Vec<CredentialRecord>, RepositoryError> {
     let rows = sqlx::query_scalar::<_, String>(
-        "SELECT json_object('id',id,'name',name,'kind',kind,'header_name',header_name,'secret',secret,
+        "SELECT json_object('id',id,'name',name,'kind',kind,'connector_kind',connector_kind,'header_name',header_name,'secret',secret,
          'allowed_base_urls',json(allowed_base_urls),'enabled',json(CASE enabled WHEN 1 THEN 'true' ELSE 'false' END),
          'revision',revision,'created_at',created_at,'updated_at',updated_at,'deleted_at',deleted_at)
          FROM upstream_credentials ORDER BY id")
@@ -98,11 +98,12 @@ pub(super) async fn save(
             .fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?.0
     } else {
         sqlx::query_scalar::<_, SqliteTimestamp>(
-            "INSERT INTO upstream_credentials(id,name,kind,header_name,secret,allowed_base_urls,enabled,revision)
-             VALUES(?,?,?,?,?,?,?,?) RETURNING updated_at")
+            "INSERT INTO upstream_credentials(id,name,kind,header_name,secret,allowed_base_urls,enabled,revision,connector_kind)
+             VALUES(?,?,?,?,?,?,?,?,?) RETURNING updated_at")
             .bind(SqliteUuid(id)).bind(&record.name).bind(&record.kind).bind(&record.header_name)
             .bind(&record.secret).bind(json!(record.allowed_base_urls).to_string()).bind(record.enabled)
-            .bind(SqliteUuid(record.revision)).fetch_one(&mut **transaction).await?.0
+            .bind(SqliteUuid(record.revision)).bind(record.connector_kind.as_str())
+            .fetch_one(&mut **transaction).await?.0
     };
     Ok(MutationResult {
         id,

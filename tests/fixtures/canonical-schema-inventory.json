@@ -1390,6 +1390,7 @@
   "upstream_credentials": {
     "checks": [
       "upstream_credentials_auth_check",
+      "upstream_credentials_connector_kind_check",
       "upstream_credentials_kind_check",
       "upstream_credentials_name_check",
       "upstream_credentials_scope_check"

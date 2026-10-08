@@ -14,7 +14,7 @@ use std::{
 use axum::{
     body::{Body, Bytes},
     http::{
-        HeaderMap,
+        HeaderMap, HeaderValue,
         header::{CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE},
     },
 };
@@ -48,8 +48,6 @@ const MAX_MULTIPART_FIELD_NAME_BYTES: usize = 128;
 const MAX_MULTIPART_FILE_NAME_BYTES: usize = 255;
 const MAX_IMAGE_EDIT_IMAGES: usize = 16;
 const MAX_IMAGE_EDIT_MASKS: usize = 1;
-const MAX_CODEX_EDIT_IMAGES: usize = 5;
-const MAX_CODEX_IMAGE_MIME_BYTES: usize = 128;
 const REBUILT_BODY_OVERHEAD_BYTES: usize = 64 * 1_024;
 // One request can temporarily retain the captured multipart plus a rebuilt
 // multipart or base64-expanded Codex JSON body.
@@ -174,6 +172,7 @@ impl ImageEditBodyPolicy {
         Ok(ImageEditRequestBody {
             body,
             boundary: boundary.into(),
+            content_type: headers[CONTENT_TYPE].clone(),
             text_fields: inspection.text_fields.into(),
             ignored_part_fields: Arc::from([]),
             wire_model: Arc::clone(&model),
@@ -306,6 +305,7 @@ impl PreparedRequestBody {
 pub(crate) struct ImageEditRequestBody {
     body: ReplayableRequestBody,
     boundary: Arc<str>,
+    content_type: HeaderValue,
     text_fields: Arc<[MultipartTextField]>,
     ignored_part_fields: Arc<[String]>,
     wire_model: Arc<str>,
@@ -501,21 +501,57 @@ impl ImageEditRequestBody {
         writer.finish().await
     }
 
-    pub(crate) async fn to_codex_json(&self) -> Result<ReplayableRequestBody, ImageEditBodyError> {
-        if self.image_count > MAX_CODEX_EDIT_IMAGES {
-            return Err(ImageEditBodyError::CodexTooManyImages);
-        }
-        if self.mask_count > 0 {
-            let error = body_field_disposition(
-                RequestPolicyLayer::CodexOauth,
-                RequestInterface::ImagesEdit,
-                "mask",
-                None,
+    pub(crate) async fn to_plugin_body(
+        &self,
+        plugin: &crate::connector_plugins::Plugin,
+    ) -> Result<(ReplayableRequestBody, HeaderValue), ImageEditBodyError> {
+        let fields = self
+            .text_fields
+            .iter()
+            .map(|field| {
+                let value = std::str::from_utf8(&field.value)
+                    .map_err(|_| ImageEditBodyError::CodexInvalidField)?;
+                Ok(serde_json::json!({"name":field.name,"value":value}))
+            })
+            .collect::<Result<Vec<_>, ImageEditBodyError>>()?;
+        let fields = serde_json::to_vec(&fields).map_err(|_| ImageEditBodyError::InvalidJson)?;
+        let plan = plugin
+            .call(
+                "attempt.image_edit_plan",
+                &serde_json::json!({
+                    "image_count":self.image_count, "mask_count":self.mask_count,
+                }),
+                &fields,
             )
-            .expect_err("validated Codex Images edit policy must reject mask");
-            return Err(ImageEditBodyError::RequestPolicy(error));
+            .map_err(image_plugin_error)?;
+        match plan.metadata["body_mode"].as_str() {
+            Some("replay_multipart") => {
+                if !plan.body.is_empty() {
+                    return Err(ImageEditBodyError::InvalidJson);
+                }
+                let content_type = self.content_type.clone();
+                return self
+                    .clone()
+                    .into_openai_replayable()
+                    .await
+                    .map(|body| (body, content_type));
+            }
+            Some("json_base64") if self.mask_count == 0 => {}
+            _ => return Err(ImageEditBodyError::InvalidJson),
         }
-        let fields = CodexEditFields::parse(&self.text_fields)?;
+        let prefix_bytes = plan.metadata["prefix_bytes"]
+            .as_u64()
+            .and_then(|v| usize::try_from(v).ok())
+            .ok_or(ImageEditBodyError::InvalidJson)?;
+        if prefix_bytes > plan.body.len()
+            || plan.body.len()
+                > MAX_MULTIPART_TEXT_BYTES
+                    .saturating_mul(6)
+                    .saturating_add(REBUILT_BODY_OVERHEAD_BYTES)
+        {
+            return Err(ImageEditBodyError::InvalidJson);
+        }
+        let (prefix, suffix) = plan.body.split_at(prefix_bytes);
         let text_bytes = self.text_fields.iter().fold(0_usize, |total, field| {
             total.saturating_add(field.value.len())
         });
@@ -527,7 +563,8 @@ impl ImageEditRequestBody {
             self.policy.memory_bytes,
             max_bytes,
         );
-        writer.write(br#"{"images":["#).await?;
+        writer.write(prefix).await?;
+        let mut skeleton = prefix.to_vec();
         let mut multipart = trusted_multipart(&self.body, &self.boundary).await?;
         let mut image_index = 0_usize;
         while let Some(mut field) = multipart
@@ -550,17 +587,28 @@ impl ImageEditRequestBody {
                 continue;
             }
             if name.as_deref().is_some_and(is_image_field) {
-                if image_index > 0 {
-                    writer.write(b",").await?;
-                }
-                let mime = image_mime(&field)?;
-                writer.write(br#"{"image_url":"data:"#).await?;
-                writer.write(mime.as_bytes()).await?;
-                writer.write(b";base64,").await?;
+                let part_plan = plugin
+                    .call(
+                        "attempt.image_part_plan",
+                        &serde_json::json!({
+                            "content_type":field.content_type().map(|mime| mime.essence_str()),
+                            "file_name":field.file_name(),
+                            "index":image_index,
+                        }),
+                        &[],
+                    )
+                    .map_err(image_plugin_error)?
+                    .metadata;
+                write_plan_literal(&mut writer, &part_plan, "prefix").await?;
+                skeleton.extend_from_slice(plan_literal(&part_plan, "prefix")?);
                 write_base64_field(&mut field, &mut writer, self.policy.max_file_bytes).await?;
-                writer.write(br#""}"#).await?;
+                write_plan_literal(&mut writer, &part_plan, "suffix").await?;
+                skeleton.extend_from_slice(plan_literal(&part_plan, "suffix")?);
                 image_index = image_index.saturating_add(1);
             } else {
+                if field.file_name().is_some() {
+                    return Err(ImageEditBodyError::InvalidJson);
+                }
                 while field
                     .chunk()
                     .await
@@ -572,10 +620,59 @@ impl ImageEditRequestBody {
         if image_index != self.image_count {
             return Err(ImageEditBodyError::MalformedMultipart);
         }
-        writer.write(b"]").await?;
-        fields.write_json_fields(&mut writer).await?;
-        writer.write(b"}").await?;
-        writer.finish().await
+        writer.write(suffix).await?;
+        skeleton.extend_from_slice(suffix);
+        validate_projected_image_body(&skeleton, self.model())?;
+        writer
+            .finish()
+            .await
+            .map(|body| (body, HeaderValue::from_static("application/json")))
+    }
+}
+
+fn validate_projected_image_body(skeleton: &[u8], model: &str) -> Result<(), ImageEditBodyError> {
+    let projected: Value =
+        serde_json::from_slice(skeleton).map_err(|_| ImageEditBodyError::InvalidJson)?;
+    if projected["model"].as_str() != Some(model) || projected.get("service_tier").is_some() {
+        return Err(ImageEditBodyError::InvalidJson);
+    }
+    Ok(())
+}
+
+async fn write_plan_literal(
+    writer: &mut ReplayableBodyWriter,
+    plan: &Value,
+    name: &str,
+) -> Result<(), ImageEditBodyError> {
+    writer.write(plan_literal(plan, name)?).await
+}
+
+fn plan_literal<'a>(plan: &'a Value, name: &str) -> Result<&'a [u8], ImageEditBodyError> {
+    let value = plan[name].as_str().ok_or(ImageEditBodyError::InvalidJson)?;
+    if value.len() > REBUILT_BODY_OVERHEAD_BYTES {
+        return Err(ImageEditBodyError::BodyTooLarge);
+    }
+    Ok(value.as_bytes())
+}
+
+fn image_plugin_error(error: crate::connector_plugins::PluginError) -> ImageEditBodyError {
+    match error.code() {
+        Some("too_many_images") => ImageEditBodyError::CodexTooManyImages,
+        Some("missing_field") => ImageEditBodyError::CodexMissingField,
+        Some("duplicate_field") => ImageEditBodyError::CodexDuplicateField,
+        Some("invalid_field") => ImageEditBodyError::CodexInvalidField,
+        Some("image_content_type") => ImageEditBodyError::CodexImageContentType,
+        Some("image_streaming_unsupported") => ImageEditBodyError::StreamingUnsupported,
+        Some("mask_unsupported") => body_field_disposition(
+            RequestPolicyLayer::CodexOauth,
+            RequestInterface::ImagesEdit,
+            "mask",
+            None,
+        )
+        .err()
+        .map(ImageEditBodyError::RequestPolicy)
+        .unwrap_or(ImageEditBodyError::CodexInvalidField),
+        _ => ImageEditBodyError::InvalidJson,
     }
 }
 
@@ -940,149 +1037,6 @@ impl BytePatternMatcher {
 
 fn invalid_multipart_structure() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "invalid multipart structure")
-}
-
-struct CodexEditFields {
-    prompt: String,
-    background: Option<String>,
-    model: String,
-    n: Option<u64>,
-    quality: Option<String>,
-    size: Option<String>,
-}
-
-impl CodexEditFields {
-    fn parse(fields: &[MultipartTextField]) -> Result<Self, ImageEditBodyError> {
-        let prompt = required_text_field(fields, "prompt")?;
-        let model = required_text_field(fields, "model")?;
-        let background = validated_optional_text_field(
-            fields,
-            "background",
-            &["transparent", "opaque", "auto"],
-        )?;
-        let quality =
-            validated_optional_text_field(fields, "quality", &["low", "medium", "high", "auto"])?;
-        let size = optional_text_field(fields, "size")?;
-        let n = optional_text_field(fields, "n")?
-            .map(|value| {
-                value
-                    .trim()
-                    .parse::<u64>()
-                    .map_err(|_| ImageEditBodyError::CodexInvalidField)
-            })
-            .transpose()?;
-        if let Some(stream) = optional_text_field(fields, "stream")?
-            && !(stream.trim().eq_ignore_ascii_case("false") || stream.trim() == "0")
-        {
-            return Err(ImageEditBodyError::StreamingUnsupported);
-        }
-        Ok(Self {
-            prompt,
-            background,
-            model,
-            n,
-            quality,
-            size,
-        })
-    }
-
-    async fn write_json_fields(
-        &self,
-        writer: &mut ReplayableBodyWriter,
-    ) -> Result<(), ImageEditBodyError> {
-        write_json_field(writer, "prompt", &Value::String(self.prompt.clone())).await?;
-        if let Some(background) = &self.background {
-            write_json_field(writer, "background", &Value::String(background.clone())).await?;
-        }
-        write_json_field(writer, "model", &Value::String(self.model.clone())).await?;
-        if let Some(n) = self.n {
-            write_json_field(writer, "n", &Value::Number(Number::from(n))).await?;
-        }
-        if let Some(quality) = &self.quality {
-            write_json_field(writer, "quality", &Value::String(quality.clone())).await?;
-        }
-        if let Some(size) = &self.size {
-            write_json_field(writer, "size", &Value::String(size.clone())).await?;
-        }
-        Ok(())
-    }
-}
-
-fn required_text_field(
-    fields: &[MultipartTextField],
-    name: &'static str,
-) -> Result<String, ImageEditBodyError> {
-    optional_text_field(fields, name)?.ok_or(ImageEditBodyError::CodexMissingField)
-}
-
-fn validated_optional_text_field(
-    fields: &[MultipartTextField],
-    name: &'static str,
-    allowed: &[&str],
-) -> Result<Option<String>, ImageEditBodyError> {
-    let value = optional_text_field(fields, name)?;
-    if value
-        .as_deref()
-        .is_some_and(|value| !allowed.contains(&value))
-    {
-        return Err(ImageEditBodyError::CodexInvalidField);
-    }
-    Ok(value)
-}
-
-fn optional_text_field(
-    fields: &[MultipartTextField],
-    name: &'static str,
-) -> Result<Option<String>, ImageEditBodyError> {
-    let mut matches = fields.iter().filter(|field| field.name == name);
-    let Some(field) = matches.next() else {
-        return Ok(None);
-    };
-    if matches.next().is_some() {
-        return Err(ImageEditBodyError::CodexDuplicateField);
-    }
-    std::str::from_utf8(&field.value)
-        .map(str::to_owned)
-        .map(Some)
-        .map_err(|_| ImageEditBodyError::CodexInvalidField)
-}
-
-async fn write_json_field(
-    writer: &mut ReplayableBodyWriter,
-    name: &'static str,
-    value: &Value,
-) -> Result<(), ImageEditBodyError> {
-    writer.write(b",\"").await?;
-    writer.write(name.as_bytes()).await?;
-    writer.write(b"\":").await?;
-    let encoded = serde_json::to_vec(value).map_err(|_| ImageEditBodyError::InvalidJson)?;
-    writer.write(&encoded).await
-}
-
-fn image_mime(field: &multer::Field<'_>) -> Result<String, ImageEditBodyError> {
-    if let Some(content_type) = field.content_type() {
-        let mime = content_type.essence_str();
-        if mime.starts_with("image/") && mime.len() <= MAX_CODEX_IMAGE_MIME_BYTES {
-            return Ok(mime.to_owned());
-        }
-        return Err(ImageEditBodyError::CodexImageContentType);
-    }
-    let file_name = field
-        .file_name()
-        .map(str::to_ascii_lowercase)
-        .ok_or(ImageEditBodyError::CodexImageContentType)?;
-    let mime = if file_name.ends_with(".png") {
-        "image/png"
-    } else if file_name.ends_with(".jpg") || file_name.ends_with(".jpeg") {
-        "image/jpeg"
-    } else if file_name.ends_with(".webp") {
-        "image/webp"
-    } else if file_name.ends_with(".gif") {
-        "image/gif"
-    } else {
-        return Err(ImageEditBodyError::CodexImageContentType);
-    };
-    Ok(mime.to_owned())
 }
 
 async fn write_base64_field(
@@ -1527,6 +1481,42 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn plugin_image_plan_cannot_replace_model_or_restore_billing_fields() {
+        assert!(
+            validate_projected_image_body(br#"{"model":"selected","images":[]}"#, "selected")
+                .is_ok()
+        );
+        for body in [
+            br#"{"model":"other","images":[]}"#.as_slice(),
+            br#"{"model":"selected","service_tier":"priority"}"#,
+            br#"{"model":"selected","service_tier":null}"#,
+            br#"{"images":[]}"#,
+            br#"{"model":"selected""#,
+        ] {
+            assert_eq!(
+                validate_projected_image_body(body, "selected"),
+                Err(ImageEditBodyError::InvalidJson)
+            );
+        }
+        assert_eq!(
+            plan_literal(
+                &serde_json::json!({"prefix":"x".repeat(REBUILT_BODY_OVERHEAD_BYTES + 1)}),
+                "prefix"
+            ),
+            Err(ImageEditBodyError::BodyTooLarge)
+        );
+    }
+
+    async fn plugin_json(
+        body: &ImageEditRequestBody,
+    ) -> Result<ReplayableRequestBody, ImageEditBodyError> {
+        let plugin = crate::connector_plugins::test_plugins()
+            .get("codex")
+            .unwrap();
+        body.to_plugin_body(&plugin).await.map(|(body, _)| body)
+    }
+
     fn multipart_body(
         boundary: &str,
         model: &str,
@@ -1645,6 +1635,102 @@ mod tests {
         assert_eq!(edit.mask_count, 0);
         assert!(matches!(edit.body, ReplayableRequestBody::Memory(_)));
         assert_eq!(replay(&edit.body).await, bytes);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn external_image_plan_replays_masks_and_rejects_lossy_modes() {
+        let boundary = "plugin-replay-boundary";
+        let bytes = multipart_body(
+            boundary,
+            "client-model",
+            &[("prompt", "edit")],
+            &[("image/png", b"image-payload")],
+            Some(b"mask-payload"),
+        );
+        let (_directory, policy) = policy(64, 128 * 1_024);
+        let edit = policy
+            .capture(&headers(boundary, bytes.len()), Body::from(bytes.clone()))
+            .await
+            .unwrap();
+        let plugin = crate::application::connector::tests::fixture_with_mode(false, 0)
+            .unwrap()
+            .get("fixture")
+            .unwrap();
+        let (body, content_type) = edit.to_plugin_body(&plugin).await.unwrap();
+        assert_eq!(replay(&body).await, bytes);
+        assert_eq!(
+            content_type,
+            format!("multipart/form-data; boundary={boundary}")
+        );
+
+        let rewritten = edit.clone().rewrite_model("selected-model").unwrap();
+        let (body, _) = rewritten.to_plugin_body(&plugin).await.unwrap();
+        let bytes = replay(&body).await;
+        let text = std::str::from_utf8(&bytes).unwrap();
+        assert!(text.contains("selected-model"));
+        assert!(!text.contains("client-model"));
+        assert!(text.contains("image-payload"));
+        assert!(text.contains("mask-payload"));
+        for mode in [1, 2] {
+            let plugin = crate::application::connector::tests::fixture_with_mode(false, mode)
+                .unwrap()
+                .get("fixture")
+                .unwrap();
+            assert!(matches!(
+                edit.to_plugin_body(&plugin).await,
+                Err(ImageEditBodyError::InvalidJson)
+            ));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn external_multipart_replay_preserves_quoted_boundary_content_type() {
+        let plugin = crate::application::connector::tests::fixture_with_mode(false, 0)
+            .unwrap()
+            .get("fixture")
+            .unwrap();
+        for boundary in ["part:123", "part 123"] {
+            let bytes = multipart_body(
+                boundary,
+                "client-model",
+                &[("prompt", "edit")],
+                &[("image/png", b"image-payload")],
+                Some(b"mask-payload"),
+            );
+            let original_content_type =
+                HeaderValue::from_str(&format!("multipart/form-data; boundary=\"{boundary}\""))
+                    .unwrap();
+            let mut request_headers = headers(boundary, bytes.len());
+            request_headers.insert(CONTENT_TYPE, original_content_type.clone());
+            let (_directory, policy) = policy(64, 128 * 1_024);
+            let edit = policy
+                .capture(&request_headers, Body::from(bytes.clone()))
+                .await
+                .unwrap();
+            let (body, content_type) = edit.to_plugin_body(&plugin).await.unwrap();
+            assert_eq!(content_type, original_content_type);
+            assert_eq!(
+                multer::parse_boundary(content_type.to_str().unwrap()).unwrap(),
+                boundary
+            );
+            assert_eq!(replay(&body).await, bytes);
+
+            let rewritten = edit.rewrite_model("selected-model").unwrap();
+            let (body, content_type) = rewritten.to_plugin_body(&plugin).await.unwrap();
+            assert_eq!(content_type, original_content_type);
+            let rebuilt = replay(&body).await;
+            let mut rebuilt_headers = headers(boundary, rebuilt.len());
+            rebuilt_headers.insert(CONTENT_TYPE, content_type);
+            let captured = policy
+                .capture(&rebuilt_headers, Body::from(rebuilt))
+                .await
+                .unwrap();
+            assert_eq!(captured.model(), "selected-model");
+            assert_eq!(captured.image_count, 1);
+            assert_eq!(captured.mask_count, 1);
+        }
     }
 
     #[tokio::test]
@@ -1935,7 +2021,7 @@ mod tests {
         assert_eq!(inspection.model, "upstream-image");
         assert_eq!(inspection.image_count, 1);
         let adapted: Value =
-            serde_json::from_slice(&replay(&edit.to_codex_json().await.unwrap()).await).unwrap();
+            serde_json::from_slice(&replay(&plugin_json(&edit).await.unwrap()).await).unwrap();
         assert_eq!(adapted["model"], "upstream-image");
     }
 
@@ -1960,7 +2046,7 @@ mod tests {
             .capture(&headers(boundary, bytes.len()), Body::from(bytes))
             .await
             .unwrap();
-        let adapted = edit.to_codex_json().await.unwrap();
+        let adapted = plugin_json(&edit).await.unwrap();
         let value: Value = serde_json::from_slice(&replay(&adapted).await).unwrap();
 
         assert_eq!(value["model"], "gpt-image-2");
@@ -2017,7 +2103,7 @@ mod tests {
             .apply_policy(RequestPolicyLayer::CodexOauth, RequestInterface::ImagesEdit)
             .unwrap();
         assert!(codex_changed);
-        let adapted = body.image_edit().unwrap().to_codex_json().await.unwrap();
+        let adapted = plugin_json(body.image_edit().unwrap()).await.unwrap();
         let value: Value = serde_json::from_slice(&replay(&adapted).await).unwrap();
 
         assert_eq!(value["model"], "gpt-image-2");
@@ -2044,7 +2130,7 @@ mod tests {
             .capture(&headers(boundary, bytes.len()), Body::from(bytes))
             .await
             .unwrap();
-        let adapted = edit.to_codex_json().await.unwrap();
+        let adapted = plugin_json(&edit).await.unwrap();
         let value: Value = serde_json::from_slice(&replay(&adapted).await).unwrap();
 
         assert_eq!(value["prompt"], prompt);
@@ -2069,7 +2155,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            edit.to_codex_json().await.unwrap_err(),
+            plugin_json(&edit).await.unwrap_err(),
             ImageEditBodyError::CodexTooManyImages
         );
 
@@ -2084,7 +2170,7 @@ mod tests {
             .capture(&headers(boundary, bytes.len()), Body::from(bytes))
             .await
             .unwrap();
-        let error = edit.to_codex_json().await.unwrap_err();
+        let error = plugin_json(&edit).await.unwrap_err();
         let ImageEditBodyError::RequestPolicy(error) = error else {
             panic!("Codex mask rejection must use the shared request policy");
         };
@@ -2102,7 +2188,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            edit.to_codex_json().await.unwrap_err(),
+            plugin_json(&edit).await.unwrap_err(),
             ImageEditBodyError::CodexImageContentType
         );
 
@@ -2118,7 +2204,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            edit.to_codex_json().await.unwrap_err(),
+            plugin_json(&edit).await.unwrap_err(),
             ImageEditBodyError::CodexInvalidField
         );
     }

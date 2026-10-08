@@ -7,6 +7,23 @@ Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Add a versioned C ABI connector SDK, SHA-pinned Linux plugin loader and
+  administrator connector inventory. Third-party connectors can declare
+  supported existing operations and use explicitly scoped static credentials.
+- Publish Codex protocol implementation from the independent
+  `ai-gateway-connectors` repository, with its own native-library release pipeline.
+
+### Changed
+
+- **Breaking:** Codex now requires a separately installed compatible plugin and
+  an explicit `[[plugins]]` configuration. Gateway images and archives do not
+  bundle it; there is no built-in Codex fallback. `general` remains built in.
+- Preserve credential and financial identities while migrating connector IDs
+  and static credential ownership in PostgreSQL 0070 / SQLite 0010.
+  Prepare the plugin before upgrading existing Codex installations.
+
 ## [0.12.0] - 2026-09-23
 
 ### Added

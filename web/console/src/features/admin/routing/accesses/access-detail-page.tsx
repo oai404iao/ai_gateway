@@ -16,12 +16,13 @@ import { useCreateUpstreamAccess, useProxies, useUpdateUpstreamAccess, useUpstre
 import { useI18n } from "@/app/i18n";
 import { useReturnPath, withReturnTo } from "@/lib/page-navigation";
 import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
+import { useConnectorPlugins } from "@/features/admin/connectors/api";
 
 const timeout = z.string().regex(/^(?:[1-9][0-9]*)?$/)
   .refine((value) => value === "" || Number(value) <= 2147483647);
 const schema = z.object({
   name: z.string().trim().min(1).max(100),
-  connector_kind: z.enum(["general", "codex"]),
+  connector_kind: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/),
   base_url: z.string().trim().url(),
   proxy_id: z.string(),
   connect_timeout_ms: timeout,
@@ -49,10 +50,12 @@ export function AccessDetailPage() {
   const { t } = useI18n();
   const query = useUpstreamAccess(id);
   const proxies = useProxies();
+  const connectors = useConnectorPlugins();
   const create = useCreateUpstreamAccess();
   const update = useUpdateUpstreamAccess(id);
   const form = useForm<FormValues>({ resolver: zodResolver(schema), defaultValues: defaults });
   const access = query.data?.data;
+  const connector = connectors.data?.find((item) => item.id === form.watch("connector_kind"));
   const busy = create.isPending || update.isPending;
   const { navigate, navigationGuard, markSaved } = useConfigurationDraft(busy, form.formState.isDirty);
   useEffect(() => {
@@ -118,10 +121,14 @@ export function AccessDetailPage() {
                 onValueChange={(value) => form.setValue("connector_kind", value as FormValues["connector_kind"], { shouldDirty: true })}>
                 <SelectTrigger id="access-connector"><SelectValue /></SelectTrigger>
                 <SelectContent><SelectGroup>
-                  <SelectItem value="general">{t("General")}</SelectItem>
-                  <SelectItem value="codex">Codex</SelectItem>
+                  {connectors.data?.map((item) => <SelectItem key={item.id} value={item.id}>
+                    {item.id === "general" ? t("General") : item.id === "codex" ? "Codex" : item.id}
+                  </SelectItem>)}
                 </SelectGroup></SelectContent>
               </Select>
+              <FieldDescription>{connector
+                ? `${connector.id} · ${connector.version} · ${connector.built_in ? t("Built in") : t("Native plugin")}`
+                : t("Connector registry unavailable.")}</FieldDescription>
             </Field>
             <Field data-invalid={Boolean(form.formState.errors.base_url)}>
               <FieldLabel htmlFor="access-url">Base URL</FieldLabel>
@@ -153,7 +160,7 @@ export function AccessDetailPage() {
                 onCheckedChange={(value) => form.setValue("enabled", value, { shouldDirty: true })} />
             </Field>
           </FieldGroup>
-          <Button type="submit" disabled={busy}>{t("Save access")}</Button>
+          <Button type="submit" disabled={busy || !connector}>{t("Save access")}</Button>
         </form>
       </CardContent>
     </Card>}

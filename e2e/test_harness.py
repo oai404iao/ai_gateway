@@ -1,15 +1,22 @@
 """Offline contract and lifecycle tests; never start Docker or paid upstreams."""
 
 import json
+import io
+import hashlib
 import os
 from pathlib import Path
 import signal
 import sys
 import tempfile
+import tomllib
 import unittest
 from unittest.mock import patch
+from urllib.error import HTTPError
 
-from run import Resources, redact, verify_settlement
+from run import (
+    Resources, exercise_codex_oauth, load_plugin_fixture, plugin_toml, redact,
+    verify_oauth_plan, verify_settlement,
+)
 from mock.upstream import CONTRACT, MAX_REQUESTS, Scenario, Upstream
 from run import request
 
@@ -86,6 +93,70 @@ class ScenarioTests(unittest.TestCase):
 
 
 class HarnessTests(unittest.TestCase):
+    def test_http_error_codes_accept_console_and_data_plane_shapes_without_echoing(self):
+        for body in (
+            {"error": "codex_oauth_state_mismatch"},
+            {"error": {"code": "codex_oauth_state_mismatch"}},
+        ):
+            error = HTTPError("http://localhost", 422, "rejected", {},
+                              io.BytesIO(json.dumps(body).encode()))
+            with patch("run.HTTP.open", side_effect=error):
+                with self.assertRaisesRegex(RuntimeError, "codex_oauth_state_mismatch"):
+                    request("http://localhost", "/test")
+        error = HTTPError("http://localhost", 422, "rejected", {},
+                          io.BytesIO(b'{"error":"echoed private request"}'))
+        with patch("run.HTTP.open", side_effect=error):
+            with self.assertRaisesRegex(RuntimeError, r"\(unknown\)"):
+                request("http://localhost", "/test")
+
+    def test_plugin_fixture_is_explicit_readonly_and_sha_pinned_in_toml(self):
+        with self.assertRaisesRegex(RuntimeError, "AI_GATEWAY_TEST_CODEX_PLUGIN"):
+            load_plugin_fixture(None)
+        with self.assertRaisesRegex(RuntimeError, "absolute"):
+            load_plugin_fixture("relative.so")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'fixture"quoted.so'
+            path.write_bytes(b"synthetic native fixture")
+            with self.assertRaisesRegex(RuntimeError, "readonly"):
+                load_plugin_fixture(str(path))
+            path.chmod(0o444)
+            plugin = load_plugin_fixture(str(path))
+            self.assertEqual(plugin["sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
+            self.assertEqual(tomllib.loads(plugin_toml(plugin)), {"plugins": [plugin]})
+            link = Path(directory) / "linked.so"
+            link.symlink_to(path)
+            with self.assertRaisesRegex(RuntimeError, "symlinks"):
+                load_plugin_fixture(str(link))
+
+    def test_codex_oauth_requires_provider_plan_and_rejects_state_without_exchange(self):
+        flow = {
+            "flow_id": "synthetic-flow",
+            "expires_at": "2026-09-16T00:15:00Z",
+            "authorization_url": "https://auth.openai.com/oauth/authorize?"
+            "response_type=code&code_challenge_method=S256&"
+            "redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&"
+            f"state={'s' * 43}&code_challenge={'c' * 43}",
+        }
+        verify_oauth_plan(flow)
+        for url in (
+            flow["authorization_url"].replace("auth.openai.com", "unexpected.test"),
+            flow["authorization_url"].replace("S256", "plain"),
+            flow["authorization_url"].replace("code_challenge=", "missing="),
+        ):
+            with self.assertRaises(RuntimeError):
+                verify_oauth_plan({**flow, "authorization_url": url})
+        data = {"console": "http://localhost", "token": "synthetic"}
+        with patch("run.request", side_effect=[
+            (flow, {}), RuntimeError("HTTP 422 (codex_oauth_state_mismatch)"),
+        ]) as api:
+            self.assertEqual(exercise_codex_oauth(data)["status"], "passed")
+            self.assertEqual(api.call_count, 2)
+            self.assertIn("incorrect-synthetic-state", api.call_args.args[3]["callback_url"])
+        for completion in (({}, {}), RuntimeError("HTTP 502 (codex_upstream_unavailable)")):
+            with patch("run.request", side_effect=[(flow, {}), completion]):
+                with self.assertRaises(RuntimeError):
+                    exercise_codex_oauth(data)
+
     def test_child_temp_directory_does_not_enclose_client_homes(self):
         with tempfile.TemporaryDirectory() as directory:
             resources = Resources(Path(directory))

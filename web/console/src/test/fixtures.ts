@@ -3,6 +3,7 @@
 // assert on stable ids/timestamps.
 
 import type {
+  ConnectorPluginView,
   CodexSharingGroup,
   CodexSharingUsage,
   SelfCodexSharingView,
@@ -40,6 +41,13 @@ import type {
   ChannelCapabilityView,
   OperationRuleView,
 } from "@/api/types";
+
+export const CONNECTOR_PLUGINS: ConnectorPluginView[] = [
+  { id: "general", version: "builtin", abi_version: 1, built_in: true,
+    operations: ["chat_completion", "responses", "responses-ws", "web_search", "images_generation", "images_edit"] },
+  { id: "codex", version: "1.0.0", abi_version: 1, built_in: false,
+    operations: ["responses", "responses-ws", "web_search", "images_generation", "images_edit"] },
+];
 
 export const UPSTREAM_ACCESS: UpstreamAccessView = {
   id: "00000000-0000-0000-0000-000000001401",

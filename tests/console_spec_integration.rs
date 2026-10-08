@@ -59,6 +59,8 @@ MCowBQYDK2VwAyEAQvs1EKtSBUS0aGjOVZhD2kqVMSiXHugcTiZTZyZxWiQ=
 -----END PUBLIC KEY-----
 "#;
 
+#[path = "support/plugins.rs"]
+mod plugins;
 #[path = "support/upstream_credentials.rs"]
 mod upstream_credentials;
 
@@ -304,8 +306,9 @@ async fn app_with_proxy_test_endpoint(
         .ensure_system_settings(bootstrap_system_settings())
         .await
         .unwrap();
-    let runtime = Arc::new(RuntimeConfig::new(
+    let runtime = Arc::new(RuntimeConfig::new_with_plugins(
         compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap(),
+        plugins::codex_plugins(),
     ));
     let coordinator = ControlPlaneCoordinator::new(
         repository.clone(),
@@ -318,6 +321,7 @@ async fn app_with_proxy_test_endpoint(
         coordinator.clone(),
         Arc::clone(&runtime),
         Arc::clone(&upstream_clients),
+        plugins::codex_plugins(),
     )
     .await
     .unwrap();
@@ -5605,6 +5609,35 @@ async fn system_load_reports_current_instance_pressure_shape() {
     database.cleanup().await;
 }
 
+#[tokio::test]
+async fn connector_registry_reports_loaded_implementations_without_install_paths() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let response = request(
+        &app,
+        "GET",
+        "/console/v1/system/connectors",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    let connectors = body.as_array().unwrap();
+    assert_eq!(connectors.len(), 2);
+    assert_eq!(connectors[0]["id"], "general");
+    assert_eq!(connectors[0]["built_in"], true);
+    assert_eq!(connectors[1]["id"], "codex");
+    assert_eq!(connectors[1]["built_in"], false);
+    for connector in connectors {
+        assert_eq!(connector["abi_version"], 1);
+        assert!(connector["version"].is_string());
+        assert!(!connector["operations"].as_array().unwrap().is_empty());
+        assert_eq!(connector.as_object().unwrap().len(), 5);
+    }
+    database.cleanup().await;
+}
+
 /// The singleton system-settings resource follows the same ETag convention as
 /// other mutable Console resources and publishes its database-backed policy.
 #[tokio::test]
@@ -8320,6 +8353,7 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     .await;
     assert_eq!(user_system_load.status(), StatusCode::FORBIDDEN);
     for (method, path) in [
+        ("GET", "/console/v1/system/connectors"),
         ("GET", "/console/v1/routing/upstream-credentials"),
         ("POST", "/console/v1/routing/upstream-credentials"),
         (

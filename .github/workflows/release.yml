@@ -92,6 +92,10 @@ jobs:
 
       - run: pnpm --dir web/console install --frozen-lockfile
       - run: pnpm --dir web/console build
+      - name: Prepare pinned external Codex test plugin
+        run: |
+          plugin="$(scripts/prepare-connector-tests.sh)"
+          printf 'AI_GATEWAY_TEST_CODEX_PLUGIN=%s\n' "$plugin" >> "$GITHUB_ENV"
       - run: cargo clippy --locked --all-targets --features embedded-console-ui,sqlite-backend
       - run: cargo test --locked --features embedded-console-ui,sqlite-backend --lib console_ui
 

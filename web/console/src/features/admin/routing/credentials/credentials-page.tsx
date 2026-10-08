@@ -7,14 +7,16 @@ import { useI18n } from "@/app/i18n";
 import { PageHeader } from "@/components/shared/page-header";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useConnectorPlugins } from "@/features/admin/connectors/api";
 
 const CodexCredentials = lazy(() => import("@/features/admin/providers/codex-oauth/codex-oauth-page"));
 
 export function CredentialsPage() {
   const [params, setParams] = useSearchParams();
   const query = useUpstreamCredentials();
+  const connectors = useConnectorPlugins();
   const { t } = useI18n();
-  const connector = params.get("connector") === "codex" ? "codex" : "general";
+  const connector = params.get("connector") ?? "general";
   return <div className="flex min-w-0 flex-col gap-6">
     <PageHeader title={t("Upstream credentials")}
       description={t("Reusable upstream identities. Rotating a credential updates every referencing channel.")} />
@@ -25,15 +27,17 @@ export function CredentialsPage() {
       return next;
     })} className="min-w-0">
       <TabsList aria-label={t("Connector")}>
-        <TabsTrigger value="general">{t("General")}</TabsTrigger>
-        <TabsTrigger value="codex">Codex</TabsTrigger>
+        {connectors.data?.map((item) => <TabsTrigger key={item.id} value={item.id}>
+          {item.id === "general" ? t("General") : item.id === "codex" ? "Codex" : item.id}
+        </TabsTrigger>)}
       </TabsList>
-      <TabsContent value="general" className="min-w-0">
+      {connectors.data?.filter((item) => item.id !== "codex").map((item) =>
+      <TabsContent key={item.id} value={item.id} className="min-w-0">
         <AdminListPage
     embedded
-    title={t("General credentials")}
+    title={item.id === "general" ? t("General credentials") : `${item.id} · ${t("Upstream credentials")}`}
     description={t("Bearer tokens and custom authentication headers for compatible upstream accesses.")}
-    query={{ ...query, data: query.data?.filter((credential) => credential.connector_kind === "general") }}
+    query={{ ...query, data: query.data?.filter((credential) => credential.connector_kind === item.id) }}
     rowKey={(credential) => credential.id}
     detailPath={(credential) => `/admin/routing/upstream-credentials/${credential.id}`}
     createLabel={t("New credential")}
@@ -45,7 +49,7 @@ export function CredentialsPage() {
       { key: "enabled", header: t("Enabled"), render: (credential) => <StatusBadge value={credential.enabled} /> },
     ]}
   />
-      </TabsContent>
+      </TabsContent>)}
       <TabsContent value="codex" className="min-w-0">
         <Suspense fallback={<Skeleton className="h-40 w-full" />}><CodexCredentials /></Suspense>
       </TabsContent>

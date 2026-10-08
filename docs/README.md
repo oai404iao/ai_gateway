@@ -33,6 +33,9 @@ PostgreSQL/SQLite 全量回归及真实系统验收已通过。升级要求停�
 
 ## 来源优先级
 
+原生连接器拆分的实现契约见[连接器插件设计](development/connector-plugins.md)；
+其状态标记及验收结果决定是否可用于部署，不以设计文本替代实现验证。
+
 项目级验收入口见[系统 E2E](development/system-e2e.md)；
 工程对比背景见 [Monoize 源码研究](reference/monoize-engineering-study.md)。
 第二阶段设计见[持久化边界与独立计量事实](development/persistence-boundaries.md)；

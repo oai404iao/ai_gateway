@@ -238,7 +238,7 @@ export function LogicalChannelDetailPage() {
                           <SelectItem value={NONE}>{t("Choose an access")}</SelectItem>
                           {accesses.data?.map((access) => (
                             <SelectItem key={access.id} value={access.id}>
-                              {access.name} ({access.connector_kind === "codex" ? "Codex" : t("General")})
+                              {access.name} ({access.connector_kind === "general" ? t("General") : access.connector_kind})
                               {!access.enabled ? ` · ${t("Disabled")}` : ""}
                             </SelectItem>
                           ))}

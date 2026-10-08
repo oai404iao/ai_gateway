@@ -120,6 +120,7 @@ pnpm --dir web/console install --frozen-lockfile
 pnpm --dir web/console exec playwright install --with-deps chromium
 pnpm --dir web/console build
 cargo build --locked --features embedded-console-ui,sqlite-backend
+export AI_GATEWAY_TEST_CODEX_PLUGIN="$(./scripts/prepare-connector-tests.sh)"
 
 # 在自己的工具目录安装固定客户端，不使用个人登录状态
 npm install --prefix target/system-e2e-client --ignore-scripts --no-audit --no-fund @openai/codex@0.154.0
@@ -159,6 +160,12 @@ debug 模式仍依赖 `web/console/dist`。`--output` 只接受 `target/system-e
 共享协议样本不意味着复用所有服务端实现；性能 Mock 不需要承担工具客户端状态机。
 
 ## CI
+
+系统配置显式加入经过摘要验证的只读 Codex 测试插件；缺少
+`AI_GATEWAY_TEST_CODEX_PLUGIN` 是基础设施失败，不跳过插件验收。
+`codex-plugin-oauth-plan` 场景验证 Console OAuth 授权 URL、PKCE 及错误 state 拒绝。
+此场景不访问真实 provider，也不声称覆盖成功的 OAuth 兑换；
+完整刷新、配额和 Codex 数据面由加载同一外部库的 Rust 确定性测试覆盖。
 
 `reusable-quality.yml` 的 `system-e2e` 在 Rust 或现有浏览器门禁被选中时以 PG/SQLite matrix 运行，
 构建嵌入式二进制并执行离线测试和完整系统链路，纳入 `quality-gate`/`ci-gate`。

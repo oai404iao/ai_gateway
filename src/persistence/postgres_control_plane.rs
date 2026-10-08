@@ -66,6 +66,7 @@ pub struct RuntimeConfigRecords {
     pub system_settings: SystemSettingsRecord,
     pub sharing: Vec<crate::domain::codex_sharing::SharingRecord>,
     pub sharing_only_channels: Vec<Uuid>,
+    pub connector_ids: Vec<String>,
 }
 
 #[derive(Debug, FromRow)]
@@ -4543,6 +4544,12 @@ impl PostgresControlPlaneRepository {
             system_settings: Self::load_system_settings_transaction(transaction).await?,
             sharing: Self::load_sharing_transaction(transaction).await?,
             sharing_only_channels: Self::load_sharing_only_channels(transaction).await?,
+            connector_ids: sqlx::query_scalar(
+                "SELECT connector_kind FROM upstream_accesses WHERE deleted_at IS NULL
+                 UNION SELECT connector_kind FROM upstream_credentials WHERE deleted_at IS NULL",
+            )
+            .fetch_all(&mut **transaction)
+            .await?,
         })
     }
 

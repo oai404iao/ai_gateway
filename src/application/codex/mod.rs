@@ -16,6 +16,7 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::{
+    connector_plugins::{ConnectorPlugins, Plugin},
     domain::{
         ApiFormat, ChannelTimeoutPolicy, CodexOutboundIdentity, CompiledChannelUpstreamPolicy,
     },
@@ -80,7 +81,8 @@ pub struct CodexConnectorService {
     runtime_config: Arc<RuntimeConfig>,
     upstream_clients: Arc<UpstreamClientRegistry>,
     credentials: CodexCredentialRuntime,
-    endpoints: Arc<CodexEndpoints>,
+    endpoints: Option<Arc<CodexEndpoints>>,
+    plugin: Option<Arc<Plugin>>,
     refresh_locks: CredentialRefreshLocks,
     quota_locks: CredentialQuotaLocks,
 }
@@ -91,37 +93,84 @@ impl CodexConnectorService {
         coordinator: ControlPlaneCoordinator,
         runtime_config: Arc<RuntimeConfig>,
         upstream_clients: Arc<UpstreamClientRegistry>,
+        plugins: ConnectorPlugins,
     ) -> Result<Self, CodexConnectorError> {
-        Self::new_with_endpoints(
+        let endpoints = plugins
+            .get("codex")
+            .map(|plugin| CodexEndpoints::from_plugin(&plugin))
+            .transpose()?;
+        Self::initialize(
             repository,
             coordinator,
             runtime_config,
             upstream_clients,
-            CodexEndpoints::default(),
+            endpoints,
+            plugins,
         )
         .await
     }
 
+    #[cfg(all(test, feature = "sqlite-backend", target_os = "linux"))]
     pub(crate) async fn new_with_endpoints(
         repository: ControlPlaneRepository,
         coordinator: ControlPlaneCoordinator,
         runtime_config: Arc<RuntimeConfig>,
         upstream_clients: Arc<UpstreamClientRegistry>,
         endpoints: CodexEndpoints,
+        plugins: ConnectorPlugins,
     ) -> Result<Self, CodexConnectorError> {
+        Self::initialize(
+            repository,
+            coordinator,
+            runtime_config,
+            upstream_clients,
+            Some(endpoints),
+            plugins,
+        )
+        .await
+    }
+
+    async fn initialize(
+        repository: ControlPlaneRepository,
+        coordinator: ControlPlaneCoordinator,
+        runtime_config: Arc<RuntimeConfig>,
+        upstream_clients: Arc<UpstreamClientRegistry>,
+        endpoints: Option<CodexEndpoints>,
+        plugins: ConnectorPlugins,
+    ) -> Result<Self, CodexConnectorError> {
+        if let Some(plugin) = plugins.get("codex") {
+            protocol::validate_plugin_manifest(plugin.manifest())?;
+        }
         let service = Self {
             repository,
             coordinator,
             runtime_config,
             upstream_clients,
             credentials: CodexCredentialRuntime::new(),
-            endpoints: Arc::new(endpoints),
+            endpoints: endpoints.map(Arc::new),
+            plugin: plugins.get("codex"),
             refresh_locks: Arc::new(Mutex::new(HashMap::new())),
             quota_locks: Arc::new(Mutex::new(HashMap::new())),
         };
         service.backfill_missing_user_ids().await?;
         service.reload_runtime().await?;
         Ok(service)
+    }
+
+    pub(crate) fn plugin(&self) -> Option<Arc<Plugin>> {
+        self.plugin.clone()
+    }
+
+    fn require_plugin(&self) -> Result<&Plugin, CodexConnectorError> {
+        self.plugin
+            .as_deref()
+            .ok_or(CodexConnectorError::PluginUnavailable)
+    }
+
+    fn endpoints(&self) -> Result<&CodexEndpoints, CodexConnectorError> {
+        self.endpoints
+            .as_deref()
+            .ok_or(CodexConnectorError::PluginUnavailable)
     }
 
     #[must_use]
@@ -207,15 +256,20 @@ impl CodexConnectorService {
         let pkce = generate_pkce();
         let state = generate_oauth_state();
         let outbound_identity = self.outbound_identity();
-        let authorization_url =
-            build_authorize_url(&self.endpoints, &pkce, &state, &outbound_identity)?;
+        let authorization_url = build_authorize_url(
+            self.require_plugin()?,
+            self.endpoints()?,
+            &pkce,
+            &state,
+            &outbound_identity,
+        )?;
         let expires_at = Utc::now() + OAUTH_FLOW_TTL;
         let flow = self
             .repository
             .create_codex_oauth_flow(
                 actor,
                 input,
-                protocol::CODEX_OAUTH_REDIRECT_URI.to_owned(),
+                protocol::redirect_uri(self.require_plugin()?)?,
                 state_hash(&state).to_vec(),
                 pkce.verifier,
                 expires_at,
@@ -241,14 +295,15 @@ impl CodexConnectorService {
             .codex_oauth_flow(flow_id, actor)
             .await?
             .ok_or(CodexConnectorError::OauthFlowExpired)?;
-        let callback = parse_callback_url(&input.callback_url)?;
+        let callback = parse_callback_url(self.require_plugin()?, &input.callback_url)?;
         if !state_matches(&flow.state_hash, &callback.state) {
             return Err(CodexConnectorError::OauthStateMismatch);
         }
         let (client, policy) = self.client_for_proxy(flow.proxy_id)?;
         let tokens = exchange_code(
+            self.require_plugin()?,
             &client,
-            &self.endpoints,
+            self.endpoints()?,
             &callback.code,
             &flow.code_verifier,
             policy.timeouts().response_header(),
@@ -397,8 +452,9 @@ impl CodexConnectorService {
         }
         let (client, policy) = self.client_for_proxy(record.proxy_id)?;
         fetch_models(
+            self.require_plugin()?,
             &client,
-            &self.endpoints,
+            self.endpoints()?,
             &self.outbound_identity(),
             &record.access_token,
             record.account_id.as_deref(),
@@ -428,8 +484,9 @@ impl CodexConnectorService {
         let requested_at = Utc::now();
         let redeem_request_id = Uuid::new_v4();
         let request = prepare_quota_reset_request(
+            self.require_plugin()?,
             &client,
-            &self.endpoints,
+            self.endpoints()?,
             &outbound_identity,
             &record.access_token,
             record.account_id.as_deref(),
@@ -438,6 +495,7 @@ impl CodexConnectorService {
         )?;
         reset_operation.prepare_dispatch().await?;
         let reset = consume_quota_reset_credit(
+            self.require_plugin()?,
             &client,
             request,
             policy.timeouts().response_header(),
@@ -563,16 +621,20 @@ impl CodexConnectorService {
         if access_token.is_empty() || refresh_token.is_empty() {
             return Err(CodexConnectorError::InvalidCredential);
         }
-        let identity = parse_identity(id_token.as_deref().unwrap_or(&access_token))?;
+        let identity = parse_identity(
+            self.require_plugin()?,
+            id_token.as_deref().unwrap_or(&access_token),
+        )?;
         let account_id = resolve_account_id(identity.account_id, supplied_account_id)?;
         let user_id = resolve_user_id(identity.user_id, supplied_user_id)?;
         if account_id.is_none() && user_id.is_none() {
             return Err(CodexConnectorError::InvalidCredential);
         }
-        let access_token_expires_at = parse_jwt_expiration(&access_token)?;
+        let access_token_expires_at = parse_jwt_expiration(self.require_plugin()?, &access_token)?;
         let models = fetch_models(
+            self.require_plugin()?,
             client,
-            &self.endpoints,
+            self.endpoints()?,
             outbound_identity,
             &access_token,
             account_id.as_deref(),
@@ -582,8 +644,9 @@ impl CodexConnectorService {
         )
         .await?;
         let quota = match fetch_quota(
+            self.require_plugin()?,
             client,
-            &self.endpoints,
+            self.endpoints()?,
             outbound_identity,
             &access_token,
             account_id.as_deref(),
@@ -607,7 +670,7 @@ impl CodexConnectorService {
             enabled,
             proxy_id,
             quota_threshold_percent,
-            base_url: self.endpoints.responses_base_url.to_string(),
+            base_url: self.endpoints()?.responses_base_url.to_string(),
             email: identity.email,
             account_id,
             user_id,
@@ -660,9 +723,15 @@ impl CodexConnectorService {
             return Err(CodexConnectorError::CredentialReauthenticationRequired);
         }
         let (client, policy) = self.client_for_proxy(record.proxy_id)?;
-        let request = prepare_refresh_request(&client, &self.endpoints, &record.refresh_token)?;
+        let request = prepare_refresh_request(
+            self.require_plugin()?,
+            &client,
+            self.endpoints()?,
+            &record.refresh_token,
+        )?;
         refresh.prepare_dispatch().await?;
         let refreshed = match refresh_tokens(
+            self.require_plugin()?,
             &client,
             request,
             policy.timeouts().response_header(),
@@ -681,7 +750,7 @@ impl CodexConnectorService {
         let identity = match refreshed
             .id_token
             .as_deref()
-            .map(parse_identity)
+            .map(|token| parse_identity(self.require_plugin()?, token))
             .transpose()
         {
             Ok(identity) => identity,
@@ -706,13 +775,15 @@ impl CodexConnectorService {
             return Err(error);
         }
         let access_token_expires_at = match refreshed.access_token.as_deref() {
-            Some(access_token) => match parse_jwt_expiration(access_token) {
-                Ok(expires_at) => expires_at,
-                Err(error) => {
-                    self.commit_refresh_failure(refresh, true, &error).await?;
-                    return Err(error);
+            Some(access_token) => {
+                match parse_jwt_expiration(self.require_plugin()?, access_token) {
+                    Ok(expires_at) => expires_at,
+                    Err(error) => {
+                        self.commit_refresh_failure(refresh, true, &error).await?;
+                        return Err(error);
+                    }
                 }
-            },
+            }
             None => record.access_token_expires_at,
         };
         refresh
@@ -799,8 +870,9 @@ impl CodexConnectorService {
         loop {
             let (client, policy) = self.client_for_proxy(record.proxy_id)?;
             match fetch_quota(
+                self.require_plugin()?,
                 &client,
-                &self.endpoints,
+                self.endpoints()?,
                 outbound_identity,
                 &record.access_token,
                 record.account_id.as_deref(),
@@ -893,7 +965,11 @@ impl CodexConnectorService {
             }
             let user_id = [&record.id_token, &record.access_token]
                 .into_iter()
-                .filter_map(|token| parse_identity(token).ok())
+                .filter_map(|token| {
+                    self.plugin
+                        .as_deref()
+                        .and_then(|plugin| parse_identity(plugin, token).ok())
+                })
                 .filter(|identity| {
                     identity
                         .account_id
@@ -911,6 +987,31 @@ impl CodexConnectorService {
         }
         Ok(())
     }
+}
+
+fn credential_headers_match(
+    headers: &axum::http::HeaderMap,
+    access_token: Option<&str>,
+    account_id: Option<&str>,
+    is_fedramp: bool,
+) -> bool {
+    let mut authorization = headers.get_all(axum::http::header::AUTHORIZATION).iter();
+    let actual_token = authorization
+        .next()
+        .map(|value| value.as_bytes().strip_prefix(b"Bearer "));
+    let authorization_matches = match (access_token, actual_token) {
+        (Some(expected), Some(Some(actual))) => actual == expected.as_bytes(),
+        (None, None) => true,
+        _ => false,
+    };
+    let single_value_matches = |name: &'static str, expected: Option<&[u8]>| {
+        let mut values = headers.get_all(name).iter();
+        values.next().map(|value| value.as_bytes()) == expected && values.next().is_none()
+    };
+    authorization_matches
+        && authorization.next().is_none()
+        && single_value_matches("chatgpt-account-id", account_id.map(str::as_bytes))
+        && single_value_matches("x-openai-fedramp", is_fedramp.then_some(b"true".as_slice()))
 }
 
 fn resolve_account_id(
@@ -978,6 +1079,8 @@ fn validate_usable_credential(record: &CodexCredentialRecord) -> Result<(), Code
 
 #[derive(Debug, Error)]
 pub enum CodexConnectorError {
+    #[error("Codex connector plugin is unavailable")]
+    PluginUnavailable,
     #[error("Codex persistence operation failed")]
     Repository(#[from] RepositoryError),
     #[error("Codex control-plane operation failed")]
@@ -1034,6 +1137,7 @@ impl CodexConnectorError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
+            Self::PluginUnavailable => "connector_plugin_unavailable",
             Self::Repository(_) | Self::ControlPlane(_) => "codex_persistence_failed",
             Self::UpstreamClient(_) | Self::InvalidProxy => "codex_network_policy_invalid",
             Self::InvalidEndpoint => "codex_endpoint_invalid",

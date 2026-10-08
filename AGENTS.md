@@ -191,6 +191,14 @@ performance run.** Building the tool or running
 
 ## Configuration Rules
 
+- `general` is built in; Codex requires an administrator-installed C ABI plugin
+  from the separate `ai-gateway-connectors` repository. `[[plugins]]` pins an
+  absolute read-only library path and its SHA-256. Never add a built-in Codex
+  fallback, automatic download, hot unload, or plugin-owned transport/database.
+  See [plugin design](docs/development/connector-plugins.md) and
+  [installation](docs/user/connector-plugins.md). Tests load the actual library:
+  `export AI_GATEWAY_TEST_CODEX_PLUGIN="$(./scripts/prepare-connector-tests.sh)"`.
+  The environment variable is test-only, not a production configuration source.
 - `sqlite-backend` enables the complete SQLite backend on Linux. Official Docker/release builds
   include it alongside `embedded-console-ui`; Cargo's default remains PostgreSQL-only.
   `database.url = "sqlite:///absolute/private/gateway.sqlite"` requires a dedicated owned 0700

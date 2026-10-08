@@ -5,6 +5,7 @@
 ## 当前架构与设计
 
 - [当前架构](architecture.md)：运行拓扑、请求链路、模块边界和来源优先级。
+- [原生连接器插件](connector-plugins.md)：C ABI、宿主/插件职责、外部 Codex 与发布验收。
 - [Codex OAuth Connector 设计记录](codex-oauth-connector.md)：进程内 Connector、
   managed channel、凭证快照、quota 与粘性边界。
 - [OpenAI Images 转发设计与分阶段实施](openai-images.md)：格式/操作拆分、generation/edit

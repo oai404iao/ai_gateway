@@ -72,6 +72,7 @@ pub fn connector_name(connector: ConnectorKind) -> &'static str {
     match connector {
         ConnectorKind::OpenAiCompatible => "openai_compatible",
         ConnectorKind::CodexOauth => "codex_oauth",
+        ConnectorKind::Plugin(_) => "invalid_legacy_connector",
     }
 }
 
@@ -140,6 +141,7 @@ impl CapabilitySettings {
             return Err(CapabilityError::Operation);
         }
         let supported: &[T] = match (connector, self.operation) {
+            (ConnectorKind::Plugin(_), _) => return Err(CapabilityError::Operation),
             (_, O::ResponsesWebSocket) => return Err(CapabilityError::Operation),
             (_, O::ChatCompletions) => &[T::HttpJson, T::HttpSse],
             (ConnectorKind::OpenAiCompatible, O::Responses) => {

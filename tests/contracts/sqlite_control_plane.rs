@@ -36,7 +36,7 @@ async fn repository() -> (
     SqliteControlPlaneRepository,
 ) {
     let (directory, database) = database().await;
-    assert_eq!(database.install_schema().await.unwrap(), 9);
+    assert_eq!(database.install_schema().await.unwrap(), 10);
     let database = Arc::new(database);
     let repository = SqliteControlPlaneRepository::new(Arc::clone(&database));
     (directory, database, repository)

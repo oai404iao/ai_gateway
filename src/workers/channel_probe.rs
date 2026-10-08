@@ -30,7 +30,7 @@ use crate::{
         ScheduledTestingMode, UpstreamAuth,
     },
     persistence::SystemProbeIdentity,
-    request_policy::strip_explicitly_ignored_client_headers,
+    request_policy::sanitize_outbound_request_headers,
     runtime_config::RuntimeConfig,
     transforms::{apply_header_plan, apply_json_patch_plan},
     upstream::{ResolvedUpstreamPolicy, UpstreamClientRegistry},
@@ -277,7 +277,7 @@ async fn probe_channel(
             None,
         );
     }
-    strip_explicitly_ignored_client_headers(&mut headers);
+    sanitize_outbound_request_headers(&mut headers);
     if channel.request_compression() == RequestCompression::Zstd {
         headers.insert(CONTENT_ENCODING, HeaderValue::from_static("zstd"));
     } else {

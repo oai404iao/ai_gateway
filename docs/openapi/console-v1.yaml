@@ -2820,6 +2820,26 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /system/connectors:
+    get:
+      tags: [System]
+      operationId: listConnectorPlugins
+      description: |
+        Administrator-only. Lists the built-in general connector and the native
+        plugins loaded by this process. Installation and binary upgrades are
+        offline administrator operations; this endpoint never downloads code.
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Available connector implementations and operation ceilings.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ConnectorPluginView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
   /system/load:
     get:
       tags: [System]
@@ -3144,7 +3164,22 @@ components:
       enum: [weighted_random, weighted_round_robin]
     ConnectorKind:
       type: string
-      enum: [general, codex]
+      minLength: 1
+      maxLength: 64
+      pattern: '^[a-z][a-z0-9_-]{0,63}$'
+      description: Registered connector ID. general is built in; other IDs require a configured native plugin.
+    ConnectorPluginView:
+      type: object
+      additionalProperties: false
+      required: [id, version, abi_version, built_in, operations]
+      properties:
+        id: { $ref: "#/components/schemas/ConnectorKind" }
+        version: { type: string }
+        abi_version: { type: integer, minimum: 1 }
+        built_in: { type: boolean }
+        operations:
+          type: array
+          items: { $ref: "#/components/schemas/ApiOperation" }
     RequestCompression:
       type: string
       enum: [default, zstd]
@@ -4451,6 +4486,11 @@ components:
       properties:
         name: { type: string, minLength: 1, maxLength: 100 }
         kind: { type: string, enum: [bearer, header] }
+        connector_kind:
+          allOf:
+            - $ref: "#/components/schemas/ConnectorKind"
+          default: general
+          description: Immutable connector identity, independent of authentication material. codex requires its dedicated OAuth workflow.
         header_name: { type: string, nullable: true }
         secret:
           type: string

@@ -149,7 +149,10 @@ The host validates header names/values, rejects forbidden generated headers
 (including transport/hop-by-hop, blocked forwarding metadata, cookies, and
 WebSocket handshake headers), and applies the plan atomically. Generic
 connector credential injection runs **after** this plan; do not manufacture
-gateway-managed bearer/custom-header secrets. Shared outbound policy remains
+gateway-managed bearer/custom-header secrets. Plugin-provided `Authorization`
+is removed before the selected host authentication is applied: no-auth leaves
+it absent, and custom-header authentication sets only its configured header.
+Shared outbound policy remains
 in force immediately before transport dispatch.
 
 The Codex adapter adds credential/identity metadata to its body/header calls:

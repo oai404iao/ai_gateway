@@ -19,6 +19,7 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 use crate::{
+    connector_plugins::PluginConfig,
     domain::{
         AdvancedBilling, ApiFormat, ApiKeyHash, ApiKeyPermission, ApiOperation,
         AuthorizationProfile, AutomaticDisableSettings, ChannelIdentity, ChannelTimeoutPolicy,
@@ -47,6 +48,8 @@ use crate::{
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AppConfig {
+    #[serde(default)]
+    pub plugins: Vec<PluginConfig>,
     pub server: ServerConfig,
     pub database: DatabaseConfig,
     pub upstream: UpstreamConfig,
@@ -151,6 +154,7 @@ impl AppConfig {
         validate_session_affinity_config(&self.session_affinity)?;
         require("observability filter", &self.observability.filter)?;
         Ok(BootstrapConfig {
+            plugins: self.plugins,
             server: self.server,
             database: self.database,
             upstream: self.upstream,
@@ -171,6 +175,7 @@ impl AppConfig {
 }
 
 pub struct BootstrapConfig {
+    pub plugins: Vec<PluginConfig>,
     pub codex_sharing: CodexSharingConfig,
     pub server: ServerConfig,
     pub database: DatabaseConfig,
@@ -741,6 +746,8 @@ const fn default_models_sync_max_selections() -> usize {
 
 pub struct RuntimeConfig {
     current: ArcSwap<CompiledRuntimeConfig>,
+    plugins: crate::connector_plugins::ConnectorPlugins,
+    enforce_plugins: bool,
 }
 impl RuntimeConfig {
     #[must_use]
@@ -748,6 +755,31 @@ impl RuntimeConfig {
         let initial = Arc::new(initial);
         Self {
             current: ArcSwap::from(initial),
+            plugins: Default::default(),
+            enforce_plugins: false,
+        }
+    }
+    pub fn new_with_plugins(
+        initial: CompiledRuntimeConfig,
+        plugins: crate::connector_plugins::ConnectorPlugins,
+    ) -> Self {
+        Self {
+            current: ArcSwap::from(Arc::new(initial)),
+            plugins,
+            enforce_plugins: true,
+        }
+    }
+    pub fn plugins(&self) -> &crate::connector_plugins::ConnectorPlugins {
+        &self.plugins
+    }
+    pub fn compile(
+        &self,
+        records: RuntimeConfigRecords,
+    ) -> Result<CompiledRuntimeConfig, ConfigError> {
+        if self.enforce_plugins {
+            compile_runtime_config_with_plugins(records, &self.plugins)
+        } else {
+            compile_runtime_config(records)
         }
     }
     #[must_use]
@@ -778,6 +810,61 @@ pub fn compile_runtime_config(
         .map_err(|message| ConfigError::Compile(message.into()))?;
     sharing.protect_channels(records.sharing_only_channels);
     compile_with_sharing(records.control_plane, system_settings, sharing)
+}
+
+pub fn compile_runtime_config_with_plugins(
+    records: RuntimeConfigRecords,
+    plugins: &crate::connector_plugins::ConnectorPlugins,
+) -> Result<CompiledRuntimeConfig, ConfigError> {
+    for id in &records.connector_ids {
+        let connector = parse_connector_kind(id)?;
+        if connector != ConnectorKind::OpenAiCompatible && plugins.get(id).is_none() {
+            return Err(ConfigError::Compile(format!(
+                "connector {id} is not registered"
+            )));
+        }
+    }
+    for channel in &records.control_plane.channels {
+        let group = records
+            .control_plane
+            .groups
+            .iter()
+            .find(|group| group.id == channel.channel_group_id)
+            .ok_or_else(|| ConfigError::Compile("channel references an unknown group".into()))?;
+        let connector = channel_connector_kind(channel, group)?;
+        if connector == ConnectorKind::OpenAiCompatible {
+            continue;
+        }
+        let operation = channel_api_operation(channel)?;
+        let implemented = plugins.get(connector.as_str()).is_some_and(|plugin| {
+            let manifest = plugin.manifest();
+            manifest
+                .operations
+                .iter()
+                .any(|value| value == operation.as_str())
+                && [
+                    "attempt.body",
+                    "attempt.target",
+                    "attempt.headers",
+                    "attempt.capabilities",
+                ]
+                .iter()
+                .all(|required| manifest.commands.iter().any(|command| command == required))
+                && (operation != ApiOperation::ImagesEdit
+                    || ["attempt.image_edit_plan", "attempt.image_part_plan"]
+                        .iter()
+                        .all(|required| {
+                            manifest.commands.iter().any(|command| command == required)
+                        }))
+        });
+        if !implemented {
+            return Err(ConfigError::Compile(format!(
+                "connector {} does not implement the configured operation",
+                connector.as_str()
+            )));
+        }
+    }
+    compile_runtime_config(records)
 }
 
 /// Compiles control-plane resources with an already validated system policy.
@@ -3211,6 +3298,24 @@ mod tests {
     }
 
     #[test]
+    fn native_plugins_are_explicit_and_do_not_load_during_config_parsing() {
+        let example = include_str!("../../config.example.toml");
+        let file: AppConfig = toml::from_str(example).unwrap();
+        assert!(file.plugins.is_empty());
+        let document = format!(
+            "{example}\n[[plugins]]\nid = \"codex\"\npath = \"/nonexistent/codex.so\"\nsha256 = \"{}\"\n",
+            "a".repeat(64)
+        );
+        let config = toml::from_str::<AppConfig>(&document)
+            .unwrap()
+            .validate()
+            .unwrap();
+        assert_eq!(config.plugins.len(), 1);
+        assert_eq!(config.plugins[0].id, "codex");
+        assert!(toml::from_str::<AppConfig>(&format!("{document}unexpected = true\n")).is_err());
+    }
+
+    #[test]
     fn container_example_configuration_matches_the_embedded_image_contract() {
         let example = include_str!("../../deploy/compose/config.example.toml");
         assert!(example.contains(r#"name = "session-id""#));
@@ -3246,6 +3351,7 @@ mod tests {
     #[test]
     fn compiler_uses_database_backed_forwarding_settings() {
         let records = RuntimeConfigRecords {
+            connector_ids: Vec::new(),
             sharing_only_channels: Vec::new(),
             sharing: Vec::new(),
             control_plane: route_records(0, "weighted_random", 1, "weighted_random", false),
@@ -3294,7 +3400,7 @@ mod tests {
                 updated_at: chrono::Utc::now(),
             },
         };
-        let snapshot = compile_runtime_config(records).unwrap();
+        let snapshot = compile_runtime_config_with_plugins(records, &Default::default()).unwrap();
         let settings = snapshot.system_settings();
         assert_eq!(
             settings.upstream_timeouts().connect(),

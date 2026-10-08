@@ -146,6 +146,10 @@ async fn apply_operations_pg(transaction: &mut sqlx::Transaction<'_, sqlx::Postg
     .execute(&mut **transaction)
     .await
     .unwrap();
+    sqlx::raw_sql(include_str!("../migrations/0070_native_connector_ids.sql"))
+        .execute(&mut **transaction)
+        .await
+        .unwrap();
     ai_gateway::persistence::upstream_topology::pg_load_control_plane(transaction)
         .await
         .unwrap();
@@ -2710,7 +2714,7 @@ mod sqlite_backend {
             &ai_gateway::persistence::capability_cutover::credential_ownership::upgrade(&projected),
         );
         transaction.commit().await.unwrap();
-        assert_eq!(database.install_schema().await.unwrap(), 3);
+        assert_eq!(database.install_schema().await.unwrap(), 4);
         let mut transaction = database.begin_write().await.unwrap();
         assert_topology(
             &expected,

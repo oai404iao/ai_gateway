@@ -71,7 +71,7 @@ impl Backend {
                 .install_schema()
                 .await
                 .expect("infrastructure: SQLite schema must install"),
-            9
+            10
         );
         Self::Sqlite {
             directory,
@@ -2750,6 +2750,7 @@ async fn reusable_upstream_identity_contract(repositories: Repositories) {
     let mut input = UpstreamCredentialInput {
         name: "shared identity".into(),
         kind: "bearer".into(),
+        connector_kind: Default::default(),
         header_name: None,
         secret: Some("identity-first-secret".into()),
         enabled: true,
@@ -3107,6 +3108,7 @@ async fn channel_lifecycle_contract(repositories: Repositories) {
             ai_gateway::persistence::UpstreamCredentialInput {
                 name: "Reusable channel identity".into(),
                 kind: "bearer".into(),
+                connector_kind: Default::default(),
                 header_name: None,
                 secret: Some("upstream-secret".into()),
                 allowed_base_urls: vec![

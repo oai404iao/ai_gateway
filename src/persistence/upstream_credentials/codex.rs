@@ -19,8 +19,8 @@ pub(crate) async fn pg_create(
     let target =
         CredentialTarget::parse(input.base_url).map_err(|_| RepositoryError::Validation)?;
     sqlx::query(
-        "INSERT INTO upstream_credentials(id,name,kind,enabled,allowed_base_urls)
-         VALUES ($1,$2,'codex_oauth',$3,$4)",
+        "INSERT INTO upstream_credentials(id,name,kind,enabled,allowed_base_urls,connector_kind)
+         VALUES ($1,$2,'codex_oauth',$3,$4,'codex')",
     )
     .bind(input.credential_id)
     .bind(input.label.trim())
@@ -40,8 +40,8 @@ pub(crate) async fn sqlite_create(
     let target =
         CredentialTarget::parse(input.base_url).map_err(|_| RepositoryError::Validation)?;
     sqlx::query(
-        "INSERT INTO upstream_credentials(id,name,kind,enabled,allowed_base_urls)
-         VALUES (?,?,'codex_oauth',?,?)",
+        "INSERT INTO upstream_credentials(id,name,kind,enabled,allowed_base_urls,connector_kind)
+         VALUES (?,?,'codex_oauth',?,?,'codex')",
     )
     .bind(SqliteUuid(input.credential_id))
     .bind(input.label.trim())
