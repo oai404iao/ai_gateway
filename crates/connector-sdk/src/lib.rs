@@ -5,7 +5,9 @@ use serde_json::Value;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use zeroize::{Zeroize, Zeroizing};
 
+mod response;
 mod settings;
+pub use response::*;
 pub use settings::*;
 
 thread_local! {

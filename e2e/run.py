@@ -96,7 +96,7 @@ def redact(text, values):
     return re.sub(r"(?i)Bearer\s+\S+", "Bearer [redacted]", text)
 
 
-def load_plugin_fixture(value):
+def load_plugin_fixture(value, fixture_id="codex"):
     check(value, "set AI_GATEWAY_TEST_CODEX_PLUGIN=$(scripts/prepare-connector-tests.sh)")
     path = Path(value)
     check(path.is_absolute(), "Codex plugin fixture path must be absolute")
@@ -108,7 +108,7 @@ def load_plugin_fixture(value):
     check(0 < metadata.st_size <= 256 * 1024 * 1024, "Codex plugin fixture size is invalid")
     with path.open("rb") as library:
         digest = hashlib.file_digest(library, "sha256").hexdigest()
-    return {"id": "codex", "path": str(path), "sha256": digest}
+    return {"id": fixture_id, "path": str(path), "sha256": digest}
 
 
 def plugin_toml(directory):
@@ -696,6 +696,9 @@ def main():
             check(args.pi is not None, "install the pinned Pi CLI")
             resources.plugin = load_plugin_fixture(os.environ.get("AI_GATEWAY_TEST_CODEX_PLUGIN"))
             report["codex_plugin_sha256"] = resources.plugin["sha256"]
+            from response_adapter import prepare_fixture, exercise_response_adapter
+            response_fixture = prepare_fixture(resources)
+            report["response_adapter_sha256"] = response_fixture["sha256"]
             for command in ("node", "openssl", "cc", *(("docker",) if args.backend == "postgres" else ())):
                 check(shutil.which(command), f"{command} is required")
             report["source_commit"] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT).decode().strip()
@@ -789,6 +792,11 @@ def main():
                 report["stage"] = "sqlite-backup-restore"
                 from sqlite_recovery import exercise_backup
                 report["scenarios"].extend(exercise_backup(resources, args.binary.resolve(), data, settlement["logs"], warmups))
+            report["stage"] = "response-adapter"
+            scenarios, adapter_settlement = exercise_response_adapter(resources, data, response_fixture)
+            report["scenarios"].extend(scenarios)
+            report["response_adapter_settlement"] = adapter_settlement
+            report["verified_durable_logs"] = settlement["logs"] + adapter_settlement["logs"]
             report["status"] = "passed"
         except Exception as error:
             interrupted = isinstance(error, (InterruptedError, KeyboardInterrupt))

@@ -59,6 +59,12 @@ SDK 0.2 增加 manifest `protocol_version`，与 C ABI 版本分别管理。
 无设置的旧通用插件可以继续使用协议 1。
 详细契约见 [SDK 命令](../../crates/connector-sdk/docs/commands.md)。
 
+协议 3 为通用插件增加显式 operation/protocol 能力描述和可选同格式 HTTP
+JSON/SSE 响应归一化。宿主在配置发布前验证能力，并按不可变设置代际缓存；
+编译后的渠道 transport 只能收窄，不能扩展原授权。Codex 继续使用协议 2。
+响应适配的有界状态、usage/终态保护及验收边界见
+[响应适配 SDK](connector-response-adapters.md)；原生 ABI 仍为 1。
+
 ## 独立设置
 
 插件通过 `settings.describe/v1` 定义字段、默认值和 schema 版本。

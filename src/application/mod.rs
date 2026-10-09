@@ -12,6 +12,7 @@ mod proxy;
 mod proxy_test;
 mod request_body;
 mod request_log;
+mod response_adapter;
 mod system_metrics;
 mod usage;
 

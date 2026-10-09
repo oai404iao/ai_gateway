@@ -60,6 +60,11 @@ Compose 使用 `gateway-plugins` 持久卷，entrypoint 在降低权限前准备
 升级可能使已有 Responses WebSocket continuation 或未完成 OAuth 授权失效，
 客户端需要重新建立上下文或重新授权。
 
+通用协议 3 插件明确声明支持的请求 transport；不支持的 transport 不参与选路，
+不会自动改用另一协议。显式启用的同格式 HTTP JSON/SSE 响应归一化由宿主验证
+usage、终态和标识字段；无效输出失败关闭，不回退透传。JSON 适配限 8 MiB，
+不启用适配的普通响应仍使用原有流式透传。Codex 协议 2 行为保持不变。
+
 已加载库不在运行中物理卸载；多次版本升级达到进程保留额度后需要维护重启。
 删除当前或已加载制品会被拒绝，必要时先取消选择并重启。
 

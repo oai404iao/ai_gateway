@@ -661,6 +661,7 @@ struct TransformDocuments {
     responses_search_supported: bool,
     responses_transports: Vec<ai_gateway::domain::CapabilityTransport>,
     responses_request_compression: &'static str,
+    responses_plugin: Option<ai_gateway::connector_plugins::ConnectorPlugins>,
     images_override: Value,
     upstream_auth_kind: &'static str,
     upstream_auth_header_name: Option<&'static str>,
@@ -685,6 +686,7 @@ impl Default for TransformDocuments {
             responses_search_supported: true,
             responses_transports: Vec::new(),
             responses_request_compression: "default",
+            responses_plugin: None,
             images_override: serde_json::json!({}),
             upstream_auth_kind: "bearer",
             upstream_auth_header_name: None,
@@ -793,7 +795,13 @@ fn configured_proxy_with_policy_and_transforms(
         id,
         name: id.to_string(),
         api_format: api_format.to_owned(),
-        connector_kind: "general".into(),
+        connector_kind: if api_format == "open_ai_responses"
+            && transforms.responses_plugin.is_some()
+        {
+            "fixture".into()
+        } else {
+            "general".into()
+        },
         sharing_only: false,
         request_compression: if api_format == "open_ai_responses" {
             transforms.responses_request_compression.into()
@@ -1123,6 +1131,7 @@ fn configured_proxy_with_policy_and_transforms(
     client_key.quota_limit_amount = quota_limit_amount;
     client_key.quota_used_amount = quota_used_amount;
     let client_key_id = client_key.id;
+    let plugins = transforms.responses_plugin.unwrap_or_default();
     let runtime = Arc::new(RuntimeConfig::new(
         compile_control_plane_with_system_settings(
             records,
@@ -1141,7 +1150,8 @@ fn configured_proxy_with_policy_and_transforms(
                 PassiveHealthSettings::default(),
             ),
         )
-        .unwrap(),
+        .unwrap()
+        .with_plugins(plugins),
     ));
     let proxy =
         ProxyService::with_log_sink(Arc::clone(&runtime), 1_048_576, Arc::new(logs)).unwrap();
@@ -3291,6 +3301,297 @@ async fn responses_nonstream_usage_is_collected_without_buffering_the_response()
             output_tokens: 3,
             reasoning_tokens: 1,
         })
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn response_fixture_plugin(
+    target: &str,
+    result_mode: u8,
+) -> ai_gateway::connector_plugins::ConnectorPlugins {
+    use ai_gateway::connector_plugins::{ConnectorPlugins, PluginConfig};
+    use sha2::{Digest, Sha256};
+    use std::{os::unix::fs::PermissionsExt, path::PathBuf, process::Command};
+
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let directory = tempfile::tempdir_in(&root).unwrap();
+    let path = directory.path().join("response-fixture.so");
+    let output = Command::new("cc")
+        .args(["-shared", "-fPIC", "-Wall", "-Wextra", "-Werror"])
+        .arg("-DFIXTURE_PROTOCOL3")
+        .arg(format!("-DFIXTURE_TARGET_URL=\"{target}\""))
+        .arg(format!("-DFIXTURE_RESPONSE_RESULT_MODE={result_mode}"))
+        .arg(root.join("crates/connector-sdk/tests/fixture.c"))
+        .arg("-o")
+        .arg(&path)
+        .output()
+        .expect("C compiler required for native connector response tests");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+    let sha256 = Sha256::digest(std::fs::read(&path).unwrap())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let plugins = ConnectorPlugins::load(&[PluginConfig {
+        id: "fixture".into(),
+        path,
+        sha256,
+    }])
+    .unwrap();
+    plugins
+        .get("fixture")
+        .unwrap()
+        .validate_attempt_contract()
+        .unwrap();
+    plugins
+}
+
+#[cfg(target_os = "linux")]
+async fn response_adapter_harness(
+    result_mode: u8,
+    status: StatusCode,
+    content_type: &'static str,
+    body: Vec<u8>,
+) -> Harness {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&requests);
+    let body = Arc::new(body);
+    let upstream = start_server(Router::new().route(
+        "/v1/responses",
+        post(move |request: Request| {
+            let captured = Arc::clone(&captured);
+            let body = Arc::clone(&body);
+            async move {
+                let (parts, request_body) = request.into_parts();
+                let request_body = to_bytes(request_body, usize::MAX).await.unwrap().to_vec();
+                captured.lock().unwrap().push(CapturedRequest {
+                    headers: parts.headers,
+                    body: request_body,
+                });
+                Response::builder()
+                    .status(status)
+                    .header("content-type", content_type)
+                    .header("content-length", body.len())
+                    .header("etag", "\"raw-etag\"")
+                    .header("content-md5", "raw-md5")
+                    .header("digest", "sha-256=:cmF3:")
+                    .header("content-digest", "sha-256=:cmF3:")
+                    .header("repr-digest", "sha-256=:cmF3:")
+                    .header("x-upstream", "response-fixture")
+                    .body(Body::from(body.as_ref().clone()))
+                    .unwrap()
+            }
+        }),
+    ))
+    .await;
+    let target = format!("http://{}/v1/responses", upstream.address);
+    let plugins = response_fixture_plugin(&target, result_mode);
+    let logs = RecordingRequestLogSink::default();
+    let configured = configured_proxy_with_policy_and_transforms(
+        &format!("http://{}", upstream.address),
+        logs.clone(),
+        None,
+        None,
+        None,
+        Default::default(),
+        None,
+        UpstreamConfig {
+            connect_timeout_seconds: 1,
+            response_header_timeout_seconds: 2,
+            images_response_header_timeout_seconds: 2,
+            standalone_web_search_response_header_timeout_seconds: 2,
+            stream_idle_timeout_seconds: 1,
+        },
+        TransformDocuments {
+            responses_plugin: Some(plugins),
+            ..Default::default()
+        },
+        OutboundTestPolicy::default(),
+        true,
+    );
+    let gateway = start_server(http::router(configured.proxy)).await;
+    Harness {
+        gateway,
+        _upstream: upstream,
+        requests,
+        logs,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn response_adapter_upstream_body() -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "id":"resp_fixture","object":"response",
+        "output":[{"type":"message","role":"assistant",
+                   "content":[{"type":"output_text","text":"raw-text"}]}],
+        "usage":{"input_tokens":9,"output_tokens":3,
+                 "input_tokens_details":{"cached_tokens":2},
+                 "output_tokens_details":{"reasoning_tokens":1}}
+    }))
+    .unwrap()
+}
+
+#[cfg(target_os = "linux")]
+async fn post_adapter_response(harness: &Harness) -> reqwest::Response {
+    authorized_post(
+        &client(),
+        harness.url("/v1/responses"),
+        CLIENT_KEY,
+        br#"{"model":"responses-model","input":"hello"}"#.to_vec(),
+    )
+    .header("accept-encoding", "identity")
+    .send()
+    .await
+    .unwrap()
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn plugin_json_response_adaptation_strips_entity_headers_and_preserves_usage() {
+    let harness = response_adapter_harness(
+        3,
+        StatusCode::OK,
+        "application/json; charset=utf-8",
+        response_adapter_upstream_body(),
+    )
+    .await;
+    let response = post_adapter_response(&harness).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["x-upstream"], "response-fixture");
+    for header in [
+        "etag",
+        "content-md5",
+        "digest",
+        "content-digest",
+        "repr-digest",
+    ] {
+        assert!(!response.headers().contains_key(header), "{header}");
+    }
+    let adapted: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    assert_eq!(adapted["output"][0]["content"][0]["text"], "normalized");
+    let mut original: Value = serde_json::from_slice(&response_adapter_upstream_body()).unwrap();
+    original["output"][0]["content"][0]["text"] = "normalized".into();
+    assert_eq!(adapted, original);
+    let requests = harness.upstream_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].headers["authorization"], "Bearer upstream-key");
+    let logs = harness.logs();
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0].response_status_code, Some(200));
+    assert_eq!(
+        logs[0].billing.as_ref().unwrap().usage,
+        Some(ai_gateway::domain::RequestUsage {
+            input_tokens: 9,
+            cached_input_tokens: 2,
+            cache_write_tokens: 0,
+            output_tokens: 3,
+            reasoning_tokens: 1,
+        })
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn plugin_json_response_failures_never_fall_back_or_retry() {
+    for result_mode in [1, 2] {
+        let harness = response_adapter_harness(
+            result_mode,
+            StatusCode::OK,
+            "application/json",
+            response_adapter_upstream_body(),
+        )
+        .await;
+        let response = post_adapter_response(&harness).await;
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(body["error"]["code"], "response_transform_failed");
+        assert!(!body.to_string().contains("raw-text"));
+        assert_eq!(harness.upstream_requests().len(), 1);
+        let logs = harness.logs();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(
+            logs[0].error_code.as_deref(),
+            Some("response_transform_failed")
+        );
+        assert_eq!(
+            logs[0]
+                .billing
+                .as_ref()
+                .unwrap()
+                .usage
+                .unwrap()
+                .input_tokens,
+            9
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn plugin_json_response_rejects_upstream_framing_and_content_type_mismatches() {
+    for content_type in [
+        "text/event-stream",
+        "text/plain",
+        "application/octet-stream",
+    ] {
+        let harness = response_adapter_harness(
+            0,
+            StatusCode::OK,
+            content_type,
+            response_adapter_upstream_body(),
+        )
+        .await;
+        let response = post_adapter_response(&harness).await;
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(body["error"]["code"], "response_transform_failed");
+        assert_eq!(harness.upstream_requests().len(), 1);
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn plugin_json_response_http_errors_bypass_adaptation() {
+    let upstream_body =
+        br#"{"error":{"code":"rate_limited","message":"upstream failure"}}"#.to_vec();
+    let harness = response_adapter_harness(
+        1,
+        StatusCode::TOO_MANY_REQUESTS,
+        "application/json",
+        upstream_body.clone(),
+    )
+    .await;
+    let response = post_adapter_response(&harness).await;
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(response.headers()["etag"], "\"raw-etag\"");
+    assert_eq!(response.bytes().await.unwrap().as_ref(), upstream_body);
+    assert_eq!(harness.upstream_requests().len(), 1);
+    assert_eq!(harness.logs()[0].response_status_code, Some(429));
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn plugin_json_response_rejects_oversized_upstream_without_raw_fallback() {
+    let upstream_body = serde_json::to_vec(&serde_json::json!({
+        "id":"resp_fixture","object":"response",
+        "output_text":"x".repeat(ai_gateway_connector_sdk::MAX_RESPONSE_JSON_BYTES)
+    }))
+    .unwrap();
+    let harness =
+        response_adapter_harness(0, StatusCode::OK, "application/json", upstream_body).await;
+    let response = post_adapter_response(&harness).await;
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    assert_eq!(body["error"]["code"], "response_transform_failed");
+    assert!(body.to_string().len() < 1024);
+    assert_eq!(harness.upstream_requests().len(), 1);
+    assert_eq!(
+        harness.logs()[0].error_code.as_deref(),
+        Some("response_transform_failed")
     );
 }
 

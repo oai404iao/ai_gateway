@@ -20,6 +20,14 @@ target/e2e-venv/bin/python e2e/run.py --backend sqlite
 The runner requires a built embedded-Console binary, installed Console
 dependencies/Chromium, Docker (PostgreSQL only), OpenSSL, a C compiler, Node, Python 3.11+, Linux,
 and the exact client versions in `clients.json`. It does not install dependencies or build implicitly.
+The sole fixture-build exception is the trusted local SDK `response_adapter`
+example: preflight builds it in `target/response-adapter-tests-build`, packages
+it under `target/response-adapter-tests/<digest>`, and validates its identity
+and digest before uploading through the real Console plugin API. Set
+`AI_GATEWAY_TEST_RESPONSE_PLUGIN` to an absolute readonly library path with its
+companion `example-response-adapter-test.tar.gz` to reuse an explicitly built
+fixture from `bash scripts/prepare-response-adapter-tests.sh`. Missing or invalid
+fixtures fail, rather than silently skipping scenarios.
 It never reads local gateway configuration or real-upstream credentials.
 Build with `--features sqlite-backend,embedded-console-ui` for the two-backend matrix.
 The external Codex test plugin is pinned by `tests/fixtures/codex-plugin.json`.
@@ -34,6 +42,22 @@ The `codex-plugin-oauth-plan` scenario checks provider authorization planning an
 host callback-state rejection without contacting the provider. Successful OAuth
 exchange, refresh/quota and Codex-channel forwarding remain deterministic Rust
 integration coverage; the real CLI tool-cycle scenarios use ordinary channels.
+
+The `plugin-response-*` scenarios run after the original durability and SQLite
+backup checks, using an independent synthetic API key and a balance baseline.
+They cover same-format Chat and Responses JSON/SSE text adaptation,
+raw usage and settlement, unsupported-protocol rejection before dispatch,
+interleaved request-local SSE state, in-flight settings pinning, malformed
+JSON/SSE and metering tamper rejection, and truncated SSE without a synthesized
+terminal. Responses SSE preserves completed, incomplete and cancelled terminals
+without synthesizing `response.completed` or `[DONE]`; incomplete/cancelled
+requests retain raw 5/2 usage and log `upstream_sse_error`, not an adapter failure.
+Failed requests retain available raw usage but follow the ordinary
+zero-cost failure policy. Reports count these thirteen dispatched durable requests
+separately from the existing settlement results; the protocol-denied request
+uses another key and must neither dispatch nor consume quota.
+Adapter coverage does not include WebSocket adaptation, cross-format conversion,
+or an adapter-inclusive SQLite backup.
 
 Do not replace the fast mocked UI suite under `web/console/e2e/`, backend
 integration tests, paid opt-in smoke, or performance tooling with this suite.

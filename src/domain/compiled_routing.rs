@@ -755,6 +755,18 @@ impl CompiledChannel {
         self
     }
 
+    pub(crate) fn restrict_transports(mut self, transports: &[super::CapabilityTransport]) -> Self {
+        self.transport_mask &= transports
+            .iter()
+            .fold(0, |mask, transport| mask | transport_bit(*transport));
+        self.supports_websocket = self.permits_transport(super::CapabilityTransport::Websocket);
+        self.connectivity_fingerprint = Arc::from(format!(
+            "{}#restricted-transport={}",
+            self.connectivity_fingerprint, self.transport_mask
+        ));
+        self
+    }
+
     #[must_use]
     pub fn permits_transport(&self, transport: super::CapabilityTransport) -> bool {
         self.transport_mask & transport_bit(transport) != 0

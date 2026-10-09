@@ -24,3 +24,13 @@ Console MSW/Playwright handlers and the performance Mock remain separate.
 Future adapters should share scenario contracts where useful, not become one
 universal server. Scenario oracles include wrong call IDs, missing tool output,
 wrong continuation, errors and missing terminals. See [system E2E](../docs/development/system-e2e.md).
+
+`response_adapter.py` is a separate bounded loopback fixture for native response
+adapter acceptance. It emits Chat and Responses JSON/SSE with raw 5/2 usage;
+Chat SSE can deliberately omit `[DONE]`, interleave two requests at content-event
+boundaries, or hold a dispatched request while Console settings change. Responses
+SSE emits completed, incomplete or cancelled terminal events with matching status,
+raw usage, and no explicit error fields. It never
+adapts the content itself: independent harness oracles require the installed
+plugin to modify text while preserving usage and terminal semantics. It does
+not emulate WebSocket or cross-format conversion.

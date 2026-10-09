@@ -48,6 +48,21 @@
 - 只启用 read 工具，通过 JSON 事件核验成功工具执行、call ID、随机 marker、
   最终 assistant stop 及 agent_end；同时核验上游收到的工具结果。
 
+协议 3 响应插件场景在原有故障及备份验收之后独立执行：
+
+- 从当前 worktree 构建可信 SDK 示例，通过 Console 安装、启用和编辑设置。
+- 验证 Chat/Responses JSON/SSE 文本归一化、原始 usage 和一次结算。
+- Responses incomplete/cancelled 必须保留真实失败终态，不能生成 completed 或 `[DONE]`。
+- 并发交错 SSE 请求的计数状态不串用；设置修改时在途 JSON 请求仍使用旧代际。
+- 不支持的 transport 零上游派发；畸形输出、usage 篡改和无终止符的截断流
+  不得透传原内容或伪造成功。
+- 使用独立 Key 和余额基线验证新增日志、费用和额度，保留失败请求零费用政策。
+
+构建及包摘要校验失败属于基础设施失败，不跳过。可用
+`AI_GATEWAY_TEST_RESPONSE_PLUGIN` 指定由
+`scripts/prepare-response-adapter-tests.sh` 构建的本地可信制品。
+这组场景不覆盖 WebSocket 适配、跨协议转换或新增插件日志的备份恢复。
+
 输入/输出 usage 为 5/2，每百万价格为 1/2，每次正常生成费用为 `0.000009`；
 最终费用按实际已验证的正常请求数计算，warmup 单独核验零 usage/费用。
 检查最终日志、账户余额和 Key 额度，不是仅检查 ingress 接收数。

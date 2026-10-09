@@ -595,8 +595,13 @@ fn observe_sse_frame(frame: &[u8], api_format: ApiFormat) -> SseFrameObservation
         || event_type == Some("error")
         || error_envelope
         || (api_format == ApiFormat::OpenAiResponses
-            && (event == Some(b"response.failed".as_slice())
-                || event_type == Some("response.failed")));
+            && (matches!(
+                event,
+                Some(b"response.failed" | b"response.incomplete" | b"response.cancelled")
+            ) || matches!(
+                event_type,
+                Some("response.failed" | "response.incomplete" | "response.cancelled")
+            )));
     let completed = data.as_slice() == b"[DONE]"
         || (api_format == ApiFormat::OpenAiResponses
             && (event == Some(b"response.completed".as_slice())
@@ -1241,5 +1246,28 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":11
             ResponseUsage::from_value(ApiFormat::OpenAiResponses, &value),
             None
         );
+    }
+
+    #[test]
+    fn incomplete_and_cancelled_responses_are_failed_terminals_with_usage() {
+        for kind in ["response.incomplete", "response.cancelled"] {
+            for include_type in [false, true] {
+                let mut value = serde_json::json!({
+                    "response":{"status":"incomplete","usage":{"input_tokens":5,"output_tokens":2}}
+                });
+                if include_type {
+                    value["type"] = serde_json::json!(kind);
+                }
+                let bytes = Bytes::from(format!("event: {kind}\ndata: {value}\n\n"));
+                let mut collector = UsageCollector::new(ApiFormat::OpenAiResponses, true);
+                collector.observe(&bytes);
+                assert_eq!(
+                    collector.sse_terminal_outcome(),
+                    Some(SseTerminalOutcome::Failed)
+                );
+                let usage = collector.latest().unwrap();
+                assert_eq!((usage.input_tokens, usage.output_tokens), (5, 2));
+            }
+        }
     }
 }

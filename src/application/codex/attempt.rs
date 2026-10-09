@@ -53,14 +53,10 @@ impl PreparedCodexAttempt {
         affinity_hash: Option<[u8; 32]>,
     ) -> Result<Self, CodexCredentialUnavailable> {
         let capabilities = plugin
-            .call("attempt.capabilities", &json!({"operation":operation}), &[])
+            .attempt_descriptor(operation.as_str())
             .map_err(|_| CodexCredentialUnavailable::Unavailable)?
-            .metadata;
-        let capability = |name: &str| {
-            capabilities[name]
-                .as_bool()
-                .ok_or(CodexCredentialUnavailable::Unavailable)
-        };
+            .capabilities
+            .clone();
         let request_context = plugin.call("attempt.context", &json!({
             "operation":operation,"credential_id":credential_id,"request_id":Uuid::new_v4(),
             "affinity_hash":affinity_hash,"headers":super::super::connector::plugin_header_metadata(client_headers),
@@ -70,9 +66,9 @@ impl PreparedCodexAttempt {
             plugin,
             operation,
             request_context,
-            preserves_affinity_on_failure: capability("preserves_affinity_on_failure")?,
-            successful_response_is_sse: capability("successful_response_is_sse")?,
-            changes_request_body: capability("changes_request_body")?,
+            preserves_affinity_on_failure: capabilities.preserves_affinity_on_failure,
+            successful_response_is_sse: capabilities.successful_response_is_sse,
+            changes_request_body: capabilities.changes_request_body,
         })
     }
 
