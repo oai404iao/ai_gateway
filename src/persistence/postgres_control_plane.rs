@@ -9,7 +9,7 @@ use std::{
 
 use chrono::{DateTime, Datelike, NaiveDate, Timelike, Utc, Weekday};
 use regex::Regex;
-use reqwest::header::{HeaderName, HeaderValue};
+use reqwest::header::HeaderName;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{FromRow, PgPool, Postgres, QueryBuilder, Transaction};
@@ -18,8 +18,7 @@ use uuid::Uuid;
 
 use crate::{
     domain::{
-        ApiFormat, ApiOperation, AutomaticDisableTrigger, DEFAULT_CODEX_CLIENT_VERSION,
-        DEFAULT_CODEX_ORIGINATOR, DEFAULT_CODEX_USER_AGENT,
+        ApiFormat, ApiOperation, AutomaticDisableTrigger,
         DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS,
         DEFAULT_STANDALONE_WEB_SEARCH_RESPONSE_HEADER_TIMEOUT_SECONDS, MAX_REQUEST_RETRIES,
         RequestLogEvent,
@@ -67,6 +66,7 @@ pub struct RuntimeConfigRecords {
     pub sharing: Vec<crate::domain::codex_sharing::SharingRecord>,
     pub sharing_only_channels: Vec<Uuid>,
     pub connector_ids: Vec<String>,
+    pub plugin_records: super::PluginRuntimeRecords,
 }
 
 #[derive(Debug, FromRow)]
@@ -94,8 +94,6 @@ pub struct SystemSettingsInput {
     pub session_affinity: SystemSessionAffinitySettingsInput,
     #[serde(default)]
     pub websocket: SystemWebSocketSettingsInput,
-    #[serde(default)]
-    pub codex: SystemCodexSettingsInput,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -219,30 +217,6 @@ impl Default for SystemWebSocketSettingsInput {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct SystemCodexSettingsInput {
-    #[serde(default = "default_codex_workspace_path")]
-    pub workspace_path: String,
-    #[serde(default = "default_codex_git_remote_url")]
-    pub git_remote_url: String,
-    pub originator: String,
-    pub client_version: String,
-    pub user_agent: String,
-}
-
-impl Default for SystemCodexSettingsInput {
-    fn default() -> Self {
-        Self {
-            workspace_path: default_codex_workspace_path(),
-            git_remote_url: default_codex_git_remote_url(),
-            originator: default_codex_originator(),
-            client_version: default_codex_client_version(),
-            user_agent: default_codex_user_agent(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SystemSessionAffinityRuleInput {
     pub name: String,
     pub enabled: bool,
@@ -301,26 +275,6 @@ const fn default_websocket_idle_timeout_seconds() -> u64 {
 
 const fn default_websocket_max_connection_age_seconds() -> u64 {
     55 * 60
-}
-
-fn default_codex_workspace_path() -> String {
-    crate::domain::DEFAULT_CODEX_WORKSPACE_PATH.into()
-}
-
-fn default_codex_git_remote_url() -> String {
-    crate::domain::DEFAULT_CODEX_GIT_REMOTE_URL.into()
-}
-
-fn default_codex_originator() -> String {
-    DEFAULT_CODEX_ORIGINATOR.into()
-}
-
-fn default_codex_client_version() -> String {
-    DEFAULT_CODEX_CLIENT_VERSION.into()
-}
-
-fn default_codex_user_agent() -> String {
-    DEFAULT_CODEX_USER_AGENT.into()
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1011,6 +965,17 @@ impl From<ConfigTemplateInput> for ConfigTemplateMutationInput {
 }
 
 pub enum ControlPlaneMutation {
+    RegisterPluginArtifact(super::PluginArtifactInput),
+    SavePlugin {
+        plugin_id: String,
+        input: super::PluginSaveInput,
+        expected_revision: i64,
+    },
+    DeletePluginArtifact {
+        plugin_id: String,
+        digest: String,
+        expected_revision: i64,
+    },
     CreateUpstreamAccess(super::UpstreamAccessInput),
     UpdateUpstreamAccess {
         id: Uuid,
@@ -4416,9 +4381,8 @@ impl PostgresControlPlaneRepository {
 
     /// Inserts the first database-backed system policy from bootstrap TOML.
     ///
-    /// Existing fields are never overwritten. Sections introduced after the
-    /// original row are filled once from bootstrap values; all later runtime
-    /// reads use the database as the sole source of truth.
+    /// Existing rows are never overwritten; later runtime reads use the
+    /// database as the sole source of truth.
     pub async fn ensure_system_settings(
         &self,
         input: SystemSettingsInput,
@@ -4445,71 +4409,6 @@ impl PostgresControlPlaneRepository {
             .bind(system_settings_audit_value(&value))
             .execute(&mut *transaction)
             .await?;
-        } else {
-            let before = sqlx::query_scalar::<_, Value>(
-                "SELECT value FROM system_settings WHERE setting_key=$1 FOR UPDATE",
-            )
-            .bind(FORWARDING_SETTINGS_KEY)
-            .fetch_optional(&mut *transaction)
-            .await?
-            .ok_or(RepositoryError::NotFound)?;
-            let mut after = before.clone();
-            let after_object = after.as_object_mut().ok_or(RepositoryError::Validation)?;
-            let mut changed = false;
-            for (key, value) in [(
-                "codex",
-                serde_json::to_value(&input.codex).expect("Codex settings serialize"),
-            )] {
-                if !after_object.contains_key(key) {
-                    after_object.insert(key.into(), value);
-                    changed = true;
-                }
-            }
-            if let Some(codex) = after_object
-                .get_mut("codex")
-                .and_then(serde_json::Value::as_object_mut)
-            {
-                for (key, value) in [
-                    (
-                        "originator",
-                        serde_json::Value::String(input.codex.originator.clone()),
-                    ),
-                    (
-                        "client_version",
-                        serde_json::Value::String(input.codex.client_version.clone()),
-                    ),
-                    (
-                        "user_agent",
-                        serde_json::Value::String(input.codex.user_agent.clone()),
-                    ),
-                ] {
-                    if !codex.contains_key(key) {
-                        codex.insert(key.into(), value);
-                        changed = true;
-                    }
-                }
-            }
-            if changed {
-                let settings: SystemSettingsInput = serde_json::from_value(after.clone())
-                    .map_err(|_| RepositoryError::Validation)?;
-                validate_system_settings_input(&settings)?;
-                sqlx::query("UPDATE system_settings SET value=$2 WHERE setting_key=$1")
-                    .bind(FORWARDING_SETTINGS_KEY)
-                    .bind(&after)
-                    .execute(&mut *transaction)
-                    .await?;
-                sqlx::query(
-                    "INSERT INTO audit_logs \
-                     (id,actor_type,action,object_type,object_id,before_redacted,after_redacted) \
-                     VALUES ($1,'system','initialize','system_settings',$2,$3,$4)",
-                )
-                .bind(Uuid::new_v4())
-                .bind(forwarding_settings_object_id())
-                .bind(system_settings_audit_value(&before))
-                .bind(system_settings_audit_value(&after))
-                .execute(&mut *transaction)
-                .await?;
-            }
         }
         transaction.commit().await?;
         Ok(())
@@ -4540,6 +4439,7 @@ impl PostgresControlPlaneRepository {
         transaction: &mut Transaction<'_, Postgres>,
     ) -> Result<RuntimeConfigRecords, RepositoryError> {
         Ok(RuntimeConfigRecords {
+            plugin_records: super::plugins::postgres::load(transaction).await?,
             control_plane: Self::load_transaction(transaction).await?,
             system_settings: Self::load_system_settings_transaction(transaction).await?,
             sharing: Self::load_sharing_transaction(transaction).await?,
@@ -5353,6 +5253,30 @@ impl PostgresControlPlaneRepository {
         mutation: ControlPlaneMutation,
     ) -> Result<MutationResult, RepositoryError> {
         match mutation {
+            ControlPlaneMutation::RegisterPluginArtifact(input) => {
+                super::plugins::postgres::register(transaction, input).await
+            }
+            ControlPlaneMutation::SavePlugin {
+                plugin_id,
+                input,
+                expected_revision,
+            } => {
+                super::plugins::postgres::save(transaction, &plugin_id, input, expected_revision)
+                    .await
+            }
+            ControlPlaneMutation::DeletePluginArtifact {
+                plugin_id,
+                digest,
+                expected_revision,
+            } => {
+                super::plugins::postgres::delete_artifact(
+                    transaction,
+                    &plugin_id,
+                    &digest,
+                    expected_revision,
+                )
+                .await
+            }
             ControlPlaneMutation::CreateUpstreamAccess(input) => {
                 super::upstream_topology::accesses::pg_save(
                     transaction,
@@ -7601,7 +7525,6 @@ pub(crate) fn validate_system_settings_input(
     let scheduled_testing = &input.scheduled_testing;
     let session_affinity = &input.session_affinity;
     let websocket = &input.websocket;
-    let codex = &input.codex;
     if !valid_api_hosts(api_hosts)
         || upstream.connect_timeout_seconds == 0
         || upstream.response_header_timeout_seconds <= upstream.connect_timeout_seconds
@@ -7633,7 +7556,6 @@ pub(crate) fn validate_system_settings_input(
         || websocket.max_connection_age_seconds < 60
         || websocket.max_connection_age_seconds > 3_600
         || websocket.idle_timeout_seconds >= websocket.max_connection_age_seconds
-        || !valid_codex_settings_input(codex)
     {
         return Err(RepositoryError::Validation);
     }
@@ -7644,45 +7566,6 @@ fn valid_retryable_status_codes(statuses: &[u16]) -> bool {
     statuses.len() <= 100
         && statuses.iter().all(|status| (400..=599).contains(status))
         && statuses.iter().collect::<HashSet<_>>().len() == statuses.len()
-}
-
-pub fn valid_codex_settings_input(input: &SystemCodexSettingsInput) -> bool {
-    let workspace_path = input.workspace_path.as_str();
-    if workspace_path.trim() != workspace_path
-        || workspace_path.is_empty()
-        || workspace_path.chars().count() > 1_024
-        || !workspace_path.starts_with('/')
-        || workspace_path.chars().any(char::is_control)
-    {
-        return false;
-    }
-    let git_remote_url = input.git_remote_url.as_str();
-    if git_remote_url.trim() != git_remote_url
-        || git_remote_url.is_empty()
-        || git_remote_url.chars().count() > 2_048
-    {
-        return false;
-    }
-    let Ok(url) = reqwest::Url::parse(git_remote_url) else {
-        return false;
-    };
-    url.scheme() == "https"
-        && url.host_str().is_some()
-        && url.path() != "/"
-        && url.username().is_empty()
-        && url.password().is_none()
-        && url.query().is_none()
-        && url.fragment().is_none()
-        && valid_codex_identity_header_value(&input.originator, 256)
-        && valid_codex_identity_header_value(&input.client_version, 128)
-        && valid_codex_identity_header_value(&input.user_agent, 1_024)
-}
-
-fn valid_codex_identity_header_value(value: &str, maximum_characters: usize) -> bool {
-    value.trim() == value
-        && !value.is_empty()
-        && value.chars().count() <= maximum_characters
-        && HeaderValue::from_str(value).is_ok()
 }
 
 pub fn valid_api_hosts(api_hosts: &[String]) -> bool {

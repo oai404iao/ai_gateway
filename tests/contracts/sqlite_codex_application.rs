@@ -55,7 +55,6 @@ async fn local_validation_precedes_intent_and_cancelled_http_remains_fenced() {
         scheduled_testing: Default::default(),
         session_affinity: Default::default(),
         websocket: Default::default(),
-        codex: Default::default(),
     })
     .await
     .unwrap();
@@ -86,8 +85,9 @@ async fn local_validation_precedes_intent_and_cancelled_http_remains_fenced() {
         .unwrap()
         .0[0]
         .id;
-    let runtime = Arc::new(RuntimeConfig::new(
+    let runtime = Arc::new(RuntimeConfig::new_with_plugins(
         compile_runtime_config(repo.load_runtime().await.unwrap()).unwrap(),
+        crate::connector_plugins::test_plugins(),
     ));
     let coordinator = ControlPlaneCoordinator::new(
         repo.clone(),
@@ -218,7 +218,6 @@ async fn model_discovery_fetches_supported_codex_models_for_the_credential() {
         scheduled_testing: Default::default(),
         session_affinity: Default::default(),
         websocket: Default::default(),
-        codex: Default::default(),
     })
     .await
     .unwrap();
@@ -260,42 +259,49 @@ async fn model_discovery_fetches_supported_codex_models_for_the_credential() {
         Arc::clone(&runtime),
         RoutingRuntime::new(PassiveHealthPolicy::default()),
     );
+    let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
     let models = Router::new().route(
         "/backend-api/codex/models",
-        get(|headers: HeaderMap, uri: Uri| async move {
-            assert_eq!(
-                headers
-                    .get("authorization")
-                    .and_then(|value| value.to_str().ok()),
-                Some("Bearer valid-fixture-access")
-            );
-            assert_eq!(
-                headers
-                    .get("chatgpt-account-id")
-                    .and_then(|value| value.to_str().ok()),
-                Some("account")
-            );
-            assert!(
-                uri.query()
-                    .is_some_and(|query| query.contains("client_version=")),
-                "models request must carry the configured client version"
-            );
-            Json(serde_json::json!({
-                "models": [
-                    {"slug": "gpt-5-codex"},
-                    {"slug": "gpt-5", "supported_in_api": false},
-                    {"slug": "gpt-5-codex"}
-                ]
-            }))
+        get(move |headers: HeaderMap, uri: Uri| {
+            let observed = observed.clone();
+            async move {
+                assert_eq!(
+                    headers
+                        .get("authorization")
+                        .and_then(|value| value.to_str().ok()),
+                    Some("Bearer valid-fixture-access")
+                );
+                assert_eq!(
+                    headers
+                        .get("chatgpt-account-id")
+                        .and_then(|value| value.to_str().ok()),
+                    Some("account")
+                );
+                assert!(
+                    uri.query()
+                        .is_some_and(|query| query.contains("client_version=")),
+                    "models request must carry the configured client version"
+                );
+                observed
+                    .send(headers["version"].to_str().unwrap().to_owned())
+                    .unwrap();
+                Json(serde_json::json!({
+                    "models": [
+                        {"slug": "gpt-5-codex"},
+                        {"slug": "gpt-5", "supported_in_api": false},
+                        {"slug": "gpt-5-codex"}
+                    ]
+                }))
+            }
         }),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let server = tokio::spawn(async move { serve(listener, models).await.unwrap() });
     let service = CodexConnectorService::new_with_endpoints(
-        repo,
+        repo.clone(),
         coordinator,
-        runtime,
+        Arc::clone(&runtime),
         Arc::new(UpstreamClientRegistry::new()),
         CodexEndpoints {
             issuer: base.parse().unwrap(),
@@ -306,9 +312,73 @@ async fn model_discovery_fetches_supported_codex_models_for_the_credential() {
     .await
     .unwrap();
 
+    assert!(matches!(
+        service.discover_models(credential_id).await,
+        Err(CodexConnectorError::PluginUnavailable)
+    ));
+    let plugins = crate::connector_plugins::test_plugins();
+    runtime.replace_snapshot(Arc::new(
+        compile_runtime_config(repo.load_runtime().await.unwrap())
+            .unwrap()
+            .with_plugins(plugins),
+    ));
+    let pinned = service.pin().unwrap();
+    let old_generation = pinned.require_plugin().unwrap().generation_id().to_owned();
+    let descriptor = pinned
+        .require_plugin()
+        .unwrap()
+        .settings_descriptor()
+        .unwrap()
+        .unwrap();
+    let original_version = descriptor.defaults["client_version"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     assert_eq!(
         service.discover_models(credential_id).await.unwrap(),
         vec!["gpt-5-codex".to_owned()]
+    );
+    assert_eq!(observations.recv().await.unwrap(), original_version);
+    let mut next_settings = descriptor.default_document();
+    next_settings.values["client_version"] = serde_json::json!("9.8.7");
+    let upgraded = pinned
+        .require_plugin()
+        .unwrap()
+        .configured(&next_settings, 2)
+        .unwrap();
+    runtime.replace_snapshot(Arc::new(
+        compile_runtime_config(repo.load_runtime().await.unwrap())
+            .unwrap()
+            .with_plugins(ConnectorPlugins::from_plugins([upgraded]).unwrap()),
+    ));
+    assert_ne!(
+        service
+            .pin()
+            .unwrap()
+            .require_plugin()
+            .unwrap()
+            .generation_id(),
+        old_generation
+    );
+    assert_eq!(
+        pinned.require_plugin().unwrap().generation_id(),
+        old_generation
+    );
+    service.discover_models(credential_id).await.unwrap();
+    assert_eq!(observations.recv().await.unwrap(), "9.8.7");
+    pinned.discover_models(credential_id).await.unwrap();
+    assert_eq!(observations.recv().await.unwrap(), original_version);
+    runtime.replace_snapshot(Arc::new(
+        compile_runtime_config(repo.load_runtime().await.unwrap()).unwrap(),
+    ));
+    assert!(matches!(
+        service.discover_models(credential_id).await,
+        Err(CodexConnectorError::PluginUnavailable)
+    ));
+    assert!(observations.try_recv().is_err());
+    assert_eq!(
+        pinned.require_plugin().unwrap().generation_id(),
+        old_generation
     );
     server.abort();
     database.close().await;

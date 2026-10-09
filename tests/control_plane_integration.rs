@@ -310,7 +310,6 @@ fn system_settings() -> SystemSettingsInput {
         scheduled_testing: Default::default(),
         session_affinity: Default::default(),
         websocket: Default::default(),
-        codex: Default::default(),
     }
 }
 
@@ -2745,8 +2744,9 @@ async fn codex_sharing_pins_credentials_and_settles_money_across_api_keys() {
         .await
         .unwrap();
     let repository = ControlPlaneRepository::new(database.pool.clone());
-    let runtime = Arc::new(RuntimeConfig::new(
+    let runtime = Arc::new(RuntimeConfig::new_with_plugins(
         compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap(),
+        plugins::codex_plugins(),
     ));
     let routing = RoutingRuntime::new(PassiveHealthPolicy::default());
     let clients = Arc::new(UpstreamClientRegistry::new());
@@ -4787,9 +4787,28 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     let codex_originator = "codex_gateway";
     let codex_client_version = "9.8.7";
     let codex_user_agent = "codex_gateway/9.8.7 (Linux 6.8.0; x86_64) ai-gateway";
-    settings.codex.originator = codex_originator.into();
-    settings.codex.client_version = codex_client_version.into();
-    settings.codex.user_agent = codex_user_agent.into();
+    let synthetic_workspace_path = "/synthetic/project";
+    let synthetic_git_remote = "https://github.com/example/synthetic-project";
+    let plugin_values = serde_json::json!({
+        "originator":codex_originator,
+        "client_version":codex_client_version,
+        "user_agent":codex_user_agent,
+        "workspace_path":synthetic_workspace_path,
+        "git_remote_url":synthetic_git_remote,
+    });
+    let codex_plugins =
+        ai_gateway::connector_plugins::ConnectorPlugins::from_plugins([plugins::codex_plugins()
+            .get("codex")
+            .unwrap()
+            .configured(
+                &ai_gateway_connector_sdk::PluginSettingsDocument {
+                    schema_version: 1,
+                    values: plugin_values.clone(),
+                },
+                2,
+            )
+            .unwrap()])
+        .unwrap();
     settings.session_affinity = SystemSessionAffinitySettingsInput {
         enabled: true,
         max_entries: 100,
@@ -4820,8 +4839,9 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         .unwrap();
 
     let repository = ControlPlaneRepository::new(database.pool.clone());
-    let runtime = Arc::new(RuntimeConfig::new(
+    let runtime = Arc::new(RuntimeConfig::new_with_plugins(
         compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap(),
+        codex_plugins.clone(),
     ));
     let routing = RoutingRuntime::new(PassiveHealthPolicy::default());
     let upstream_clients = Arc::new(UpstreamClientRegistry::new());
@@ -4917,8 +4937,6 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         .unwrap();
     sqlx::query("UPDATE channel_capabilities SET enabled=true,available_models=ARRAY['gpt-image-2'] WHERE id=ANY($1)")
         .bind(vec![images_channel, images_edit_channel]).execute(&database.pool).await.unwrap();
-    let synthetic_workspace_path = "/synthetic/project";
-    let synthetic_git_remote = "https://github.com/example/synthetic-project";
     let client_model = format!("codex-client-{}", Uuid::new_v4());
     let responses_rule = Uuid::new_v4();
     insert_model_rule_fixture(
@@ -5019,15 +5037,10 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     .await
     .unwrap();
     sqlx::query(
-        "UPDATE system_settings \
-         SET value=jsonb_set( \
-             jsonb_set(value,'{codex,workspace_path}',to_jsonb($1::text),true), \
-             '{codex,git_remote_url}',to_jsonb($2::text),true \
-         ) \
-         WHERE setting_key='forwarding_policy'",
+        "INSERT INTO plugin_settings (plugin_id,schema_version,settings_value) VALUES ('codex',1,$1)
+         ON CONFLICT (plugin_id) DO UPDATE SET settings_value=excluded.settings_value,revision=plugin_settings.revision+1",
     )
-    .bind(synthetic_workspace_path)
-    .bind(synthetic_git_remote)
+    .bind(plugin_values)
     .execute(&database.pool)
     .await
     .unwrap();
@@ -5038,7 +5051,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         coordinator,
         Arc::clone(&runtime),
         Arc::clone(&upstream_clients),
-        plugins::codex_plugins(),
+        codex_plugins,
     )
     .await
     .unwrap();
@@ -7106,8 +7119,9 @@ async fn admin_app_with_models_dev(
     models_dev: ModelsDevClient,
 ) -> (ConsoleTestApp, Arc<RuntimeConfig>) {
     let repository = ControlPlaneRepository::new(pool.clone());
-    let runtime = Arc::new(RuntimeConfig::new(
+    let runtime = Arc::new(RuntimeConfig::new_with_plugins(
         compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap(),
+        plugins::codex_plugins(),
     ));
     let coordinator = ControlPlaneCoordinator::new(
         repository.clone(),

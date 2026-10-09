@@ -121,11 +121,11 @@ impl SqliteControlPlaneRepository {
         Self { database }
     }
 
-    async fn read(&self) -> Result<PoolConnection<Sqlite>, RepositoryError> {
+    pub(crate) async fn read(&self) -> Result<PoolConnection<Sqlite>, RepositoryError> {
         self.database.acquire_read().await.map_err(open_failure)
     }
 
-    async fn write(&self) -> Result<Transaction<'static, Sqlite>, RepositoryError> {
+    pub(crate) async fn write(&self) -> Result<Transaction<'static, Sqlite>, RepositoryError> {
         self.database.begin_write().await.map_err(open_failure)
     }
 
@@ -156,6 +156,7 @@ impl SqliteControlPlaneRepository {
         let sharing = load_sharing_transaction(&mut *transaction).await?;
         let sharing_only_channels = load_sharing_only_channels(&mut *transaction).await?;
         Ok(RuntimeConfigRecords {
+            plugin_records: crate::persistence::plugins::sqlite::load(transaction).await?,
             control_plane,
             system_settings,
             sharing,
@@ -2777,6 +2778,35 @@ async fn apply_control_plane_mutation(
     mutation: ControlPlaneMutation,
 ) -> Result<MutationResult, RepositoryError> {
     match mutation {
+        ControlPlaneMutation::RegisterPluginArtifact(input) => {
+            crate::persistence::plugins::sqlite::register(transaction, input).await
+        }
+        ControlPlaneMutation::SavePlugin {
+            plugin_id,
+            input,
+            expected_revision,
+        } => {
+            crate::persistence::plugins::sqlite::save(
+                transaction,
+                &plugin_id,
+                input,
+                expected_revision,
+            )
+            .await
+        }
+        ControlPlaneMutation::DeletePluginArtifact {
+            plugin_id,
+            digest,
+            expected_revision,
+        } => {
+            crate::persistence::plugins::sqlite::delete_artifact(
+                transaction,
+                &plugin_id,
+                &digest,
+                expected_revision,
+            )
+            .await
+        }
         ControlPlaneMutation::CreateUpstreamAccess(input) => {
             crate::persistence::upstream_topology::accesses::sqlite_save(
                 transaction,
@@ -4586,8 +4616,7 @@ impl SqliteControlPlaneRepository {
     }
 
     /// Inserts the first database-backed system policy from bootstrap TOML.
-    /// Existing fields are never overwritten; sections introduced after the
-    /// original row are filled once from bootstrap values.
+    /// Existing rows are never overwritten.
     pub async fn ensure_system_settings(
         &self,
         input: SystemSettingsInput,
@@ -4614,75 +4643,6 @@ impl SqliteControlPlaneRepository {
             .bind(value_to_text(&system_settings_audit_value(&value))?)
             .execute(&mut *transaction)
             .await?;
-        } else {
-            let before = sqlx::query_as::<_, SystemSettingsRow>(
-                "SELECT setting_key,value,updated_at FROM system_settings WHERE setting_key=?",
-            )
-            .bind(FORWARDING_SETTINGS_KEY)
-            .fetch_optional(&mut *transaction)
-            .await?
-            .ok_or(RepositoryError::NotFound)?
-            .into_record()?
-            .value;
-            let mut after = before.clone();
-            let after_object = after.as_object_mut().ok_or(RepositoryError::Validation)?;
-            let mut changed = false;
-            for (key, value) in [(
-                "codex",
-                serde_json::to_value(&input.codex).expect("Codex settings serialize"),
-            )] {
-                if !after_object.contains_key(key) {
-                    after_object.insert(key.into(), value);
-                    changed = true;
-                }
-            }
-            if let Some(codex) = after_object
-                .get_mut("codex")
-                .and_then(serde_json::Value::as_object_mut)
-            {
-                for (key, value) in [
-                    (
-                        "originator",
-                        serde_json::Value::String(input.codex.originator.clone()),
-                    ),
-                    (
-                        "client_version",
-                        serde_json::Value::String(input.codex.client_version.clone()),
-                    ),
-                    (
-                        "user_agent",
-                        serde_json::Value::String(input.codex.user_agent.clone()),
-                    ),
-                ] {
-                    if !codex.contains_key(key) {
-                        codex.insert(key.into(), value);
-                        changed = true;
-                    }
-                }
-            }
-            if changed {
-                let settings: SystemSettingsInput = serde_json::from_value(after.clone())
-                    .map_err(|_| RepositoryError::Validation)?;
-                validate_system_settings_input(&settings)?;
-                sqlx::query(
-                    "UPDATE system_settings SET value=?,updated_at=ag_now() WHERE setting_key=?",
-                )
-                .bind(value_to_text(&after)?)
-                .bind(FORWARDING_SETTINGS_KEY)
-                .execute(&mut *transaction)
-                .await?;
-                sqlx::query(
-                    "INSERT INTO audit_logs \
-                     (id,actor_type,action,object_type,object_id,before_redacted,after_redacted) \
-                     VALUES (?,'system','initialize','system_settings',?,?,?)",
-                )
-                .bind(SqliteUuid(Uuid::new_v4()))
-                .bind(SqliteUuid(forwarding_settings_object_id()))
-                .bind(value_to_text(&system_settings_audit_value(&before))?)
-                .bind(value_to_text(&system_settings_audit_value(&after))?)
-                .execute(&mut *transaction)
-                .await?;
-            }
         }
         transaction.commit().await?;
         Ok(())

@@ -663,15 +663,18 @@ fn image_plugin_error(error: crate::connector_plugins::PluginError) -> ImageEdit
         Some("invalid_field") => ImageEditBodyError::CodexInvalidField,
         Some("image_content_type") => ImageEditBodyError::CodexImageContentType,
         Some("image_streaming_unsupported") => ImageEditBodyError::StreamingUnsupported,
-        Some("mask_unsupported") => body_field_disposition(
-            RequestPolicyLayer::CodexOauth,
-            RequestInterface::ImagesEdit,
-            "mask",
-            None,
-        )
-        .err()
-        .map(ImageEditBodyError::RequestPolicy)
-        .unwrap_or(ImageEditBodyError::CodexInvalidField),
+        Some("mask_unsupported" | "codex_request_body_field_unsupported") => {
+            ImageEditBodyError::RequestPolicy(RequestPolicyError::connector_body_rejection(
+                RequestInterface::ImagesEdit,
+                "codex_request_body_field_unsupported",
+            ))
+        }
+        Some("codex_request_body_field_value_unsupported") => {
+            ImageEditBodyError::RequestPolicy(RequestPolicyError::connector_body_rejection(
+                RequestInterface::ImagesEdit,
+                "codex_request_body_field_value_unsupported",
+            ))
+        }
         _ => ImageEditBodyError::InvalidJson,
     }
 }
@@ -2099,10 +2102,6 @@ mod tests {
         assert!(!standard_text.contains("name=\"moderation\""));
         assert!(standard_text.contains("name=\"output_format\""));
 
-        let (body, codex_changed) = body
-            .apply_policy(RequestPolicyLayer::CodexOauth, RequestInterface::ImagesEdit)
-            .unwrap();
-        assert!(codex_changed);
         let adapted = plugin_json(body.image_edit().unwrap()).await.unwrap();
         let value: Value = serde_json::from_slice(&replay(&adapted).await).unwrap();
 

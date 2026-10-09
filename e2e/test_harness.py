@@ -14,7 +14,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 
 from run import (
-    Resources, exercise_codex_oauth, load_plugin_fixture, plugin_toml, redact,
+    Resources, exercise_codex_oauth, exercise_plugin_lifecycle, load_plugin_fixture, plugin_toml, redact,
     verify_oauth_plan, verify_settlement,
 )
 from mock.upstream import CONTRACT, MAX_REQUESTS, Scenario, Upstream
@@ -109,7 +109,7 @@ class HarnessTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, r"\(unknown\)"):
                 request("http://localhost", "/test")
 
-    def test_plugin_fixture_is_explicit_readonly_and_sha_pinned_in_toml(self):
+    def test_plugin_fixture_is_readonly_and_directory_configuration_is_explicit(self):
         with self.assertRaisesRegex(RuntimeError, "AI_GATEWAY_TEST_CODEX_PLUGIN"):
             load_plugin_fixture(None)
         with self.assertRaisesRegex(RuntimeError, "absolute"):
@@ -122,7 +122,9 @@ class HarnessTests(unittest.TestCase):
             path.chmod(0o444)
             plugin = load_plugin_fixture(str(path))
             self.assertEqual(plugin["sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
-            self.assertEqual(tomllib.loads(plugin_toml(plugin)), {"plugins": [plugin]})
+            plugin_directory = Path(directory) / 'plugins"quoted'
+            self.assertEqual(tomllib.loads(plugin_toml(plugin_directory)),
+                             {"plugins": {"directory": str(plugin_directory)}})
             link = Path(directory) / "linked.so"
             link.symlink_to(path)
             with self.assertRaisesRegex(RuntimeError, "symlinks"):
@@ -156,6 +158,58 @@ class HarnessTests(unittest.TestCase):
             with patch("run.request", side_effect=[(flow, {}), completion]):
                 with self.assertRaises(RuntimeError):
                     exercise_codex_oauth(data)
+
+    def test_plugin_lifecycle_oracle_rejects_automatic_enable_stale_writes_and_settings_loss(self):
+        for fault in (None, "auto_enable", "stale_write", "reset_settings", "host_settings"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory:
+                (Path(directory) / "codex-test.tar.gz").write_bytes(b"synthetic-package")
+                plugin = {"path": str(Path(directory) / "fixture.so"), "sha256": "a" * 64}
+                state = {"enabled": False, "revision": 0, "values": {"client_version": "original"}}
+                authorization = None
+
+                def api(_base, path, method="GET", body=None, token=None, etag=None,
+                        plugin_authorization=None):
+                    nonlocal authorization
+                    headers = {"ETag": f'"{state["revision"]}"'}
+                    if path.endswith("/reauth"):
+                        authorization = object()
+                        return {"token": authorization}, {}
+                    if method != "GET":
+                        self.assertIs(plugin_authorization, authorization)
+                        self.assertIsNotNone(authorization)
+                        authorization = None
+                    if path.endswith("/install"):
+                        self.assertEqual(body, b"synthetic-package")
+                        state["enabled"] = fault == "auto_enable"
+                        return {"id": "install-job"}, {}
+                    if "/jobs/" in path:
+                        return {"status": "succeeded"}, {}
+                    if path.endswith("/system/connectors"):
+                        return ([{"id": "codex"}] if state["enabled"] else []), {}
+                    if path.endswith("/system/settings"):
+                        return ({"codex": {}} if fault == "host_settings" else {}), {}
+                    if method == "PUT":
+                        if etag != headers["ETag"] and fault != "stale_write":
+                            raise RuntimeError("HTTP 409 (conflict)")
+                        if path.endswith("/state"):
+                            state["enabled"] = body["enabled"]
+                            if fault == "reset_settings" and state["revision"] > 1 and body["enabled"]:
+                                state["values"] = {"client_version": "original"}
+                        else:
+                            state["values"] = dict(body["values"])
+                        state["revision"] += 1
+                        return {}, {}
+                    if path.endswith("/settings"):
+                        return {"schema_version": 1, "values": dict(state["values"])}, headers
+                    return {"enabled": state["enabled"], "artifacts": [{"digest": plugin["sha256"]}]}, headers
+
+                data = {"console": "http://localhost", "token": "synthetic", "password": "synthetic"}
+                with patch("run.request", side_effect=api):
+                    if fault is None:
+                        self.assertEqual(exercise_plugin_lifecycle(data, plugin)["status"], "passed")
+                    else:
+                        with self.assertRaises(RuntimeError):
+                            exercise_plugin_lifecycle(data, plugin)
 
     def test_child_temp_directory_does_not_enclose_client_homes(self):
         with tempfile.TemporaryDirectory() as directory:

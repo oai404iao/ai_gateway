@@ -56,7 +56,7 @@ struct Queries {
 impl Queries {
     async fn new() -> Self {
         let (directory, database) = database().await;
-        assert_eq!(database.install_schema().await.unwrap(), 10);
+        assert_eq!(database.install_schema().await.unwrap(), 11);
         let database = Arc::new(database);
         let request_logs =
             ai_gateway::persistence::sqlite::SqliteRequestLogQueries::new(Arc::clone(&database));

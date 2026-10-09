@@ -8,6 +8,7 @@ config_target="$runtime_dir/config.toml"
 spool_dir=/var/lib/ai-gateway/request-log-spool
 image_edit_spool_dir=/var/lib/ai-gateway/image-edit-spool
 sqlite_dir=/var/lib/ai-gateway/sqlite
+plugin_dir=/var/lib/ai-gateway/plugins
 
 case "${1:-}" in
     --version|-V)
@@ -18,6 +19,7 @@ esac
 install -d -m 0700 -o ai-gateway -g ai-gateway "$runtime_dir" "$secret_dir"
 install -d -m 0750 -o ai-gateway -g ai-gateway "$spool_dir"
 install -d -m 0700 -o ai-gateway -g ai-gateway "$image_edit_spool_dir"
+install -d -m 0700 -o ai-gateway -g ai-gateway "$plugin_dir"
 if [ -d "$sqlite_dir" ]; then
     install -d -m 0700 -o ai-gateway -g ai-gateway "$sqlite_dir"
 fi

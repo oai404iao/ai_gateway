@@ -372,7 +372,7 @@ Responses HTTP/WebSocket 会透传已经显式允许的 `x-codex-beta-features`�
 为 Console“系统设置”中的单一合成 Git 工作区。默认 path 为 `/workspace`，默认
 `associated_remote_urls.origin` 为 `https://github.com/oai404iao/ai_gateway`；本地路径、真实
 Git remote、workspace 数量、commit 和 dirty 状态不会发送给订阅后端。
-管理员可在 Console“系统设置”的 Codex 区修改全局 `originator`、`client_version` 和
+管理员可在 Console“插件管理”的 Codex 设置中修改 `originator`、`client_version` 和
 `User-Agent`。默认值分别为 `codex_cli_rs`、`0.146.0` 和
 `codex_cli_rs/0.146.0`；需要精确模拟原生 CLI 时，可把带操作系统、架构与终端后缀的完整
 User-Agent 写入该设置。`client_version` 同时用于 `version` Header 和 Models 查询参数，因此
@@ -396,7 +396,7 @@ Codex standalone web search 使用独立 Search 能力和同一凭证，公共�
 `POST /v1/alpha/search`，Connector 将上游目标改为 managed base URL 下的 `/alpha/search`。
 该请求固定为非流式 JSON；保留合法的 `x-codex-turn-metadata`，缺失时由 Connector 安全补齐，
 并对其应用相同 installation/workspace 归一化；客户端 `originator` 和 `User-Agent` 始终替换为
-系统设置中的 Codex Connector 身份。随后注入共享 Bearer、可选 account/FedRAMP 和版本，
+插件设置中的 Codex Connector 身份。随后注入共享 Bearer、可选 account/FedRAMP 和版本，
 并按 Responses 相同规则保留会话身份 Header、仅补全缺失值。发送前不可用且未命中 affinity 时可以重选凭证；命中
 affinity 后 fail closed；请求发送后不重试。上游没有返回可识别 usage 时，日志不估算 token
 或费用。

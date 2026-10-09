@@ -32,18 +32,18 @@ describe("SystemPage", () => {
     expect(screen.queryByLabelText("Connect timeout (seconds)")).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "MCP Servers" })).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("link", { name: "Codex" }));
-    const originator = await screen.findByLabelText("Codex originator");
-    await user.clear(originator);
-    await user.type(originator, "unsaved-draft");
     await user.click(screen.getByRole("link", { name: "Upstream timeouts" }));
+    const timeout = await screen.findByLabelText("Connect timeout (seconds)");
+    await user.clear(timeout);
+    await user.type(timeout, "12");
+    await user.click(screen.getByRole("link", { name: "General settings" }));
     expect(await screen.findByRole("alertdialog", { name: "Discard unsaved changes?" })).toBeInTheDocument();
-    expect(originator).toHaveValue("unsaved-draft");
+    expect(timeout).toHaveValue(12);
     await user.click(screen.getByRole("button", { name: "Discard changes" }));
-    expect(await screen.findByLabelText("Connect timeout (seconds)")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Codex originator")).not.toBeInTheDocument();
-    await user.click(screen.getByRole("link", { name: "Codex" }));
-    expect(await screen.findByLabelText("Codex originator")).toHaveValue(SYSTEM_SETTINGS.codex.originator);
+    expect(await screen.findByRole("heading", { name: "System settings · General settings" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Codex" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("link", { name: "Upstream timeouts" }));
+    expect(await screen.findByLabelText("Connect timeout (seconds)")).toHaveValue(SYSTEM_SETTINGS.upstream.connect_timeout_seconds);
   });
 
   it("reloads the complete settings and ETag after an edit conflict", async () => {
@@ -207,21 +207,12 @@ describe("SystemPage", () => {
     );
   });
 
-  it("requires a synthetic HTTPS Codex Git remote", async () => {
+  it("redirects the removed provider settings category to general settings", async () => {
     seedAuthenticatedSession();
-    const user = userEvent.setup();
     renderApp("codex");
-
-    const gitRemote = await screen.findByLabelText("Synthetic Git origin");
-    await user.clear(gitRemote);
-    await user.type(gitRemote, "http://github.com/private/repo");
-    await user.click(screen.getByRole("button", { name: /save system settings/i }));
-
-    expect(
-      await screen.findByText(
-        "Enter a valid HTTPS repository URL without credentials, query, or fragment.",
-      ),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "System settings · General settings" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/admin/system/general");
+    expect(screen.queryByLabelText("Synthetic Git origin")).not.toBeInTheDocument();
   });
 
   it("shows valid affinity cache counts and clears one rule", async () => {

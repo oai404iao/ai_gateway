@@ -36,7 +36,7 @@ async fn repository() -> (
     SqliteControlPlaneRepository,
 ) {
     let (directory, database) = database().await;
-    assert_eq!(database.install_schema().await.unwrap(), 10);
+    assert_eq!(database.install_schema().await.unwrap(), 11);
     let database = Arc::new(database);
     let repository = SqliteControlPlaneRepository::new(Arc::clone(&database));
     (directory, database, repository)
@@ -191,12 +191,7 @@ fn settings() -> SystemSettingsInput {
             "stream_idle_timeout_seconds": 60
         },
         "passive_health": {"connection_failure_threshold": 3, "cooldown_seconds": 60},
-        "session_affinity": {"enabled": false, "max_entries": 100000, "default_ttl_seconds": 3600, "rules": []},
-        "codex": {
-            "originator": "codex_cli_rs",
-            "client_version": "0.1.0",
-            "user_agent": "codex_cli_rs/0.1.0"
-        }
+        "session_affinity": {"enabled": false, "max_entries": 100000, "default_ttl_seconds": 3600, "rules": []}
     }))
     .unwrap()
 }
@@ -1069,8 +1064,7 @@ async fn channel_auto_disable_and_recovery_follow_persisted_settings() {
         },
         "passive_health": {"connection_failure_threshold": 3, "cooldown_seconds": 60},
         "automatic_disable": {"enabled": true, "error_status_codes": [503]},
-        "session_affinity": {"enabled": false, "max_entries": 100000, "default_ttl_seconds": 3600, "rules": []},
-        "codex": {"originator": "codex_cli_rs", "client_version": "0.1.0", "user_agent": "codex_cli_rs/0.1.0"}
+        "session_affinity": {"enabled": false, "max_entries": 100000, "default_ttl_seconds": 3600, "rules": []}
     });
     settings_value["api_hosts"] = json!([]);
     let input: SystemSettingsInput = serde_json::from_value(settings_value).unwrap();

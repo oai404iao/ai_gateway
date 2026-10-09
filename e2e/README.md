@@ -23,8 +23,13 @@ and the exact client versions in `clients.json`. It does not install dependencie
 It never reads local gateway configuration or real-upstream credentials.
 Build with `--features sqlite-backend,embedded-console-ui` for the two-backend matrix.
 The external Codex test plugin is pinned by `tests/fixtures/codex-plugin.json`.
-The harness requires its explicit readonly path, hashes it into the generated
-`[[plugins]]` TOML, and records the digest. Missing fixtures fail preflight.
+The harness requires its explicit readonly path and companion `codex-test.tar.gz`
+package, configures a private `[plugins].directory`, and records the digest.
+Missing fixtures fail preflight. The lifecycle scenario uploads the package,
+reauthenticates each write, enables it, changes independent settings, rejects
+stale settings writes, and disables/re-enables without resetting settings.
+The embedded browser repeats package upload, edits the plugin-generated form
+with its real ETag, and verifies persisted settings and enable/disable controls.
 The `codex-plugin-oauth-plan` scenario checks provider authorization planning and
 host callback-state rejection without contacting the provider. Successful OAuth
 exchange, refresh/quota and Codex-channel forwarding remain deterministic Rust

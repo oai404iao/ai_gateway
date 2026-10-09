@@ -40,8 +40,7 @@ mod sqlite {
             "api_hosts": ["https://gateway.example.test"],
             "upstream": {"connect_timeout_seconds":10,"response_header_timeout_seconds":30,"stream_idle_timeout_seconds":60},
             "passive_health": {"connection_failure_threshold":3,"cooldown_seconds":60},
-            "session_affinity": {"enabled":false,"max_entries":100000,"default_ttl_seconds":3600,"rules":[]},
-            "codex": {"originator":"codex_cli_rs","client_version":"0.1.0","user_agent":"codex_cli_rs/0.1.0"}
+            "session_affinity": {"enabled":false,"max_entries":100000,"default_ttl_seconds":3600,"rules":[]}
         })).unwrap()).await.unwrap();
         (directory, database, repository)
     }

@@ -12,7 +12,7 @@
 | [开发文档](development/README.md) | 后端、前端、测试和发布维护者 | 当前架构、设计约束、测试、性能和发布流程 |
 | [外部参考](reference/README.md) | 兼容性开发者、上游接入人员 | OpenAI 接口语义、网关兼容边界和权威外部链接 |
 | [OpenAPI 契约](openapi/console-v1.yaml) | Console 后端与前端开发者 | Console API 请求/响应的机器可读权威规范 |
-| [请求白名单契约](reference/request-allowlists.json) | 数据面与 Connector 维护者 | 客户端/Codex Header、顶层 body 字段动作和 Codex 隐私归一化/安全补全 |
+| [请求白名单契约](reference/request-allowlists.json) | 数据面与 Connector 维护者 | 公共客户端 Header、顶层 body 动作和通用出站约束；渠道特有策略与隐私由插件维护 |
 | [历史归档](archive/README.md) | 追溯历史决策的维护者 | 已完成 MVP 清单和已被替代的早期蓝图/实施计划；不能作为当前行为依据 |
 
 仓库根目录的 [`AGENTS.md`](../AGENTS.md) 是编码 Agent 的操作手册，不是用户文档或架构文档。

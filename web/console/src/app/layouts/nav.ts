@@ -16,6 +16,7 @@ import {
   Settings2,
   Boxes,
   Route,
+  Puzzle,
   type LucideIcon,
 } from "lucide-react";
 import type { UserRole } from "@/api/types";
@@ -99,6 +100,7 @@ export const NAV_SECTIONS: NavSection[] = [
       },
       { label: "Audit Logs", path: "/admin/audit-logs", icon: ShieldCheck },
       { label: "System load", path: "/admin/system-load", icon: Gauge },
+      { label: "Plugins", path: "/admin/plugins", icon: Puzzle },
       {
         label: "System settings",
         path: "/admin/system",

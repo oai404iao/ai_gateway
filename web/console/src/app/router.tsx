@@ -227,6 +227,12 @@ const SystemLoadPage = lazy(() =>
 const SystemPage = lazy(() =>
   import("@/features/admin/system/system-page").then((m) => ({ default: m.SystemPage })),
 );
+const PluginsPage = lazy(() =>
+  import("@/features/admin/plugins/plugins-page").then((m) => ({ default: m.PluginsPage })),
+);
+const PluginDetailPage = lazy(() =>
+  import("@/features/admin/plugins/plugin-detail-page").then((m) => ({ default: m.PluginDetailPage })),
+);
 
 function RequireAuth() {
   const { isAuthenticated } = useSession();
@@ -410,6 +416,8 @@ function appRouteElements() {
               <Route path="/admin/audit-logs" element={<AuditLogsPage />} />
               <Route path="/admin/system-load" element={<SystemLoadPage />} />
               <Route path="/admin/system" element={<SystemPage />} />
+              <Route path="/admin/plugins" element={<PluginsPage />} />
+              <Route path="/admin/plugins/:id" element={<PluginDetailPage />} />
               <Route path="/admin/system/:section" element={<SystemPage />} />
             </Route>
 

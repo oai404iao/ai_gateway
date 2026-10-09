@@ -5,6 +5,9 @@ use serde_json::Value;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use zeroize::{Zeroize, Zeroizing};
 
+mod settings;
+pub use settings::*;
+
 thread_local! {
     static ABI_PANIC_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
@@ -60,8 +63,21 @@ pub const STATUS_INVALID: u32 = 3;
 pub struct PluginManifest {
     pub id: String,
     pub version: String,
+    #[serde(
+        default = "legacy_protocol_version",
+        skip_serializing_if = "is_legacy_protocol"
+    )]
+    pub protocol_version: u32,
     pub operations: Vec<String>,
     pub commands: Vec<String>,
+}
+
+const fn legacy_protocol_version() -> u32 {
+    1
+}
+
+fn is_legacy_protocol(version: &u32) -> bool {
+    *version == 1
 }
 
 #[derive(Clone)]
@@ -346,6 +362,7 @@ mod tests {
 
     fn manifest() -> PluginManifest {
         PluginManifest {
+            protocol_version: 1,
             id: "fixture".into(),
             version: "1".into(),
             operations: vec!["responses".into()],

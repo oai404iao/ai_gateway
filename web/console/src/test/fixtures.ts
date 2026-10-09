@@ -4,6 +4,9 @@
 
 import type {
   ConnectorPluginView,
+  PluginView,
+  PluginSettingsView,
+  PluginJob,
   CodexSharingGroup,
   CodexSharingUsage,
   SelfCodexSharingView,
@@ -48,6 +51,51 @@ export const CONNECTOR_PLUGINS: ConnectorPluginView[] = [
   { id: "codex", version: "1.0.0", abi_version: 1, built_in: false,
     operations: ["responses", "responses-ws", "web_search", "images_generation", "images_edit"] },
 ];
+
+export const PLUGIN: PluginView = {
+  id: "example",
+  built_in: false,
+  enabled: true,
+  revision: 3,
+  artifact_digest: "a".repeat(64),
+  version: "1.0.0",
+  status: "active",
+  artifacts: [
+    { digest: "a".repeat(64), version: "1.0.0" },
+    { digest: "b".repeat(64), version: "1.1.0" },
+  ],
+  error_code: null,
+};
+
+export const BUILT_IN_PLUGIN: PluginView = {
+  id: "general", built_in: true, enabled: true, revision: 0,
+  artifact_digest: null, version: "builtin", status: "active", artifacts: [], error_code: null,
+};
+
+export const PLUGIN_SETTINGS: PluginSettingsView = {
+  plugin_id: PLUGIN.id, artifact_digest: PLUGIN.artifact_digest!,
+  schema_version: 1, revision: PLUGIN.revision,
+  descriptor: {
+    schema_version: 1, title: { en: "Example connector settings", "zh-CN": "示例连接器设置" },
+    fields: [
+      { key: "client_label", type: "string", required: true, max_length: 40, label: { en: "Client label", "zh-CN": "客户端标签" } },
+      { key: "attempts", type: "integer", required: true, minimum: 1, maximum: 5, label: { en: "Attempt limit", "zh-CN": "尝试次数上限" } },
+      { key: "compact", type: "boolean", required: true, label: { en: "Compact payload", "zh-CN": "紧凑请求体" } },
+      { key: "mode", type: "enum", required: true, label: { en: "Protocol mode", "zh-CN": "协议模式" },
+        options: [{ value: "standard", label: { en: "Standard" } }, { value: "extended", label: { en: "Extended" } }] },
+    ],
+    defaults: { client_label: "example-client", attempts: 2, compact: false, mode: "standard" },
+  },
+  values: { client_label: "configured-client", attempts: 3, compact: false, mode: "extended" },
+};
+
+export const PLUGIN_JOB: PluginJob = {
+  id: "00000000-0000-0000-0000-000000002001",
+  actor_user_id: "00000000-0000-0000-0000-000000000001",
+  operation: "install", status: "succeeded", plugin_id: PLUGIN.id,
+  artifact_digest: PLUGIN.artifact_digest, error_code: null,
+  created_at: "2026-01-02T00:00:00.000Z", updated_at: "2026-01-02T00:00:01.000Z",
+};
 
 export const UPSTREAM_ACCESS: UpstreamAccessView = {
   id: "00000000-0000-0000-0000-000000001401",
@@ -519,13 +567,6 @@ export const SYSTEM_SETTINGS: SystemSettings = {
     max_idle_connections: 128,
     idle_timeout_seconds: 300,
     max_connection_age_seconds: 3_300,
-  },
-  codex: {
-    workspace_path: "/workspace",
-    git_remote_url: "https://github.com/oai404iao/ai_gateway",
-    originator: "codex_cli_rs",
-    client_version: "0.146.0",
-    user_agent: "codex_cli_rs/0.146.0",
   },
   updated_at: "2026-01-02T00:00:00.000Z",
 };

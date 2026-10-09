@@ -69,27 +69,6 @@ function retryStatusCodesAreValid(value: string): boolean {
   );
 }
 
-function isHttpsRepositoryUrl(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return (
-      url.protocol === "https:" &&
-      Boolean(url.hostname) &&
-      !url.username &&
-      !url.password &&
-      url.pathname !== "/" &&
-      !url.search &&
-      !url.hash
-    );
-  } catch {
-    return false;
-  }
-}
-
-function isPrintableHttpHeaderValue(value: string): boolean {
-  return /^[\x20-\x7e]+$/.test(value);
-}
-
 const systemSettingsSchema = z
   .object({
     api_hosts: z
@@ -256,41 +235,6 @@ const systemSettingsSchema = z
         .min(60, "Maximum WebSocket age must be between 60 and 3600 seconds.")
         .max(3600, "Maximum WebSocket age must be between 60 and 3600 seconds."),
     }),
-    codex: z.object({
-      workspace_path: z
-        .string()
-        .trim()
-        .min(1, "Codex workspace path is required.")
-        .max(1024, "Codex workspace path must be at most 1024 characters.")
-        .startsWith("/", "Codex workspace path must be absolute."),
-      git_remote_url: z
-        .string()
-        .trim()
-        .min(1, "Codex Git remote URL is required.")
-        .max(2048, "Codex Git remote URL must be at most 2048 characters.")
-        .refine(
-          isHttpsRepositoryUrl,
-          "Enter a valid HTTPS repository URL without credentials, query, or fragment.",
-        ),
-      originator: z
-        .string()
-        .trim()
-        .min(1, "Codex originator is required.")
-        .max(256, "Codex originator must be at most 256 characters.")
-        .refine(isPrintableHttpHeaderValue, "Use printable ASCII HTTP header characters."),
-      client_version: z
-        .string()
-        .trim()
-        .min(1, "Codex client version is required.")
-        .max(128, "Codex client version must be at most 128 characters.")
-        .refine(isPrintableHttpHeaderValue, "Use printable ASCII HTTP header characters."),
-      user_agent: z
-        .string()
-        .trim()
-        .min(1, "Codex User-Agent is required.")
-        .max(1024, "Codex User-Agent must be at most 1024 characters.")
-        .refine(isPrintableHttpHeaderValue, "Use printable ASCII HTTP header characters."),
-    }),
   })
   .superRefine((value, context) => {
     if (value.upstream.response_header_timeout_seconds <= value.upstream.connect_timeout_seconds) {
@@ -375,13 +319,6 @@ const defaultValues: SystemSettingsValues = {
     idle_timeout_seconds: 300,
     max_connection_age_seconds: 3300,
   },
-  codex: {
-    workspace_path: "/workspace",
-    git_remote_url: "https://github.com/oai404iao/ai_gateway",
-    originator: "codex_cli_rs",
-    client_version: "0.146.0",
-    user_agent: "codex_cli_rs/0.146.0",
-  },
 };
 
 export function SystemPage() {
@@ -423,7 +360,6 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
         scheduled_testing: settings.data.data.scheduled_testing,
         session_affinity: settings.data.data.session_affinity,
         websocket: settings.data.data.websocket,
-        codex: settings.data.data.codex,
       });
     }
   }, [form, settings.data]);
@@ -452,7 +388,6 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
         scheduled_testing: values.scheduled_testing,
         session_affinity: values.session_affinity,
         websocket: values.websocket,
-        codex: values.codex,
       };
       const result = await updateSettings.mutateAsync({
         input,
@@ -532,125 +467,6 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
                     )}
                     error={errorMessage(form.formState.errors.api_hosts?.message)}
                   />
-                </FieldGroup>
-              </CardContent>
-            </Card>
-            ) : null}
-
-            {section === "codex" ? (
-            <Card>
-              <CardHeader>
-                <CardTitle>{t("Codex privacy and outbound identity")}</CardTitle>
-                <CardDescription>
-                  {t(
-                    "Codex Connect replaces every client-reported workspace with this synthetic Git workspace, fills safe request metadata when it is missing, and applies this global identity to managed Codex backend requests.",
-                  )}
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <FieldGroup>
-                  <Field data-invalid={Boolean(form.formState.errors.codex?.workspace_path)}>
-                    <FieldLabel htmlFor="codex_workspace_path">
-                      {t("Synthetic workspace path")}
-                    </FieldLabel>
-                    <Input
-                      id="codex_workspace_path"
-                      placeholder="/workspace"
-                      aria-invalid={Boolean(form.formState.errors.codex?.workspace_path)}
-                      {...form.register("codex.workspace_path")}
-                    />
-                    <FieldDescription>
-                      {t(
-                        "An absolute synthetic path. Real client paths and workspace counts are never forwarded through Codex Connect.",
-                      )}
-                    </FieldDescription>
-                    {form.formState.errors.codex?.workspace_path ? (
-                      <FieldError>
-                        {errorMessage(form.formState.errors.codex.workspace_path.message)}
-                      </FieldError>
-                    ) : null}
-                  </Field>
-                  <Field data-invalid={Boolean(form.formState.errors.codex?.git_remote_url)}>
-                    <FieldLabel htmlFor="codex_git_remote_url">
-                      {t("Synthetic Git origin")}
-                    </FieldLabel>
-                    <Input
-                      id="codex_git_remote_url"
-                      type="url"
-                      placeholder="https://github.com/example/project"
-                      aria-invalid={Boolean(form.formState.errors.codex?.git_remote_url)}
-                      {...form.register("codex.git_remote_url")}
-                    />
-                    <FieldDescription>
-                      {t(
-                        "Written as associated_remote_urls.origin for the synthetic workspace. Commit hashes and dirty state are omitted.",
-                      )}
-                    </FieldDescription>
-                    {form.formState.errors.codex?.git_remote_url ? (
-                      <FieldError>
-                        {errorMessage(form.formState.errors.codex.git_remote_url.message)}
-                      </FieldError>
-                    ) : null}
-                  </Field>
-                  <Field data-invalid={Boolean(form.formState.errors.codex?.originator)}>
-                    <FieldLabel htmlFor="codex_originator">{t("Codex originator")}</FieldLabel>
-                    <Input
-                      id="codex_originator"
-                      placeholder="codex_cli_rs"
-                      aria-invalid={Boolean(form.formState.errors.codex?.originator)}
-                      {...form.register("codex.originator")}
-                    />
-                    <FieldDescription>
-                      {t(
-                        "Replaces client-supplied originator values for managed Codex requests and OAuth authorization.",
-                      )}
-                    </FieldDescription>
-                    {form.formState.errors.codex?.originator ? (
-                      <FieldError>
-                        {errorMessage(form.formState.errors.codex.originator.message)}
-                      </FieldError>
-                    ) : null}
-                  </Field>
-                  <Field data-invalid={Boolean(form.formState.errors.codex?.client_version)}>
-                    <FieldLabel htmlFor="codex_client_version">
-                      {t("Codex client version")}
-                    </FieldLabel>
-                    <Input
-                      id="codex_client_version"
-                      placeholder="0.146.0"
-                      aria-invalid={Boolean(form.formState.errors.codex?.client_version)}
-                      {...form.register("codex.client_version")}
-                    />
-                    <FieldDescription>
-                      {t(
-                        "Used for the Codex version Header and Models client_version query. Update it when the upstream raises its minimum version.",
-                      )}
-                    </FieldDescription>
-                    {form.formState.errors.codex?.client_version ? (
-                      <FieldError>
-                        {errorMessage(form.formState.errors.codex.client_version.message)}
-                      </FieldError>
-                    ) : null}
-                  </Field>
-                  <Field data-invalid={Boolean(form.formState.errors.codex?.user_agent)}>
-                    <FieldLabel htmlFor="codex_user_agent">{t("Codex User-Agent")}</FieldLabel>
-                    <Input
-                      id="codex_user_agent"
-                      placeholder="codex_cli_rs/0.146.0 (Linux 6.8.0; x86_64) terminal"
-                      aria-invalid={Boolean(form.formState.errors.codex?.user_agent)}
-                      {...form.register("codex.user_agent")}
-                    />
-                    <FieldDescription>
-                      {t(
-                        "Used exactly as the Codex User-Agent. Set a matching native CLI value, including its platform and terminal suffix, when required.",
-                      )}
-                    </FieldDescription>
-                    {form.formState.errors.codex?.user_agent ? (
-                      <FieldError>
-                        {errorMessage(form.formState.errors.codex.user_agent.message)}
-                      </FieldError>
-                    ) : null}
-                  </Field>
                 </FieldGroup>
               </CardContent>
             </Card>

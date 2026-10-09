@@ -117,7 +117,7 @@ metadata 与 `prompt_cache_key` 会补齐；其余已有 metadata 保留。
 Codex OAuth standalone web search 使用同一 Responses managed channel、模型规则、API Key 权限
 和凭证。Connector 把公共 `/v1/alpha/search` 改写为 managed base URL 下的 `/alpha/search`，
 保留合法的 `x-codex-turn-metadata`，缺失时安全补齐，并把客户端 `originator` 与
-`User-Agent` 覆盖为系统设置中的 Codex Connector 身份。会话身份 Header 与 Responses 共用
+`User-Agent` 由插件覆盖为其设置中的 Codex Connector 身份。会话身份 Header 与 Responses 共用
 保留/缺失补全规则，不删除 session/thread，响应按普通 JSON 处理。Turn metadata 使用与 Responses 相同的
 installation/workspace 归一化；`results` 中未知 DTO 和字段透明转发；没有 usage 时不估算
 token 或费用。

@@ -1,4 +1,8 @@
-//! Startup-only, SHA-pinned loading of trusted native connector modules.
+//! SHA-pinned native artifacts and immutable configured plugin generations.
+
+mod catalog;
+mod settings;
+pub use catalog::{DirectoryPluginCatalog, PluginArtifact};
 
 use std::{
     collections::{HashMap, HashSet},
@@ -68,6 +72,9 @@ pub struct Plugin {
     manifest: PluginManifest,
     dispatch: DispatchFn,
     free_buffer: FreeFn,
+    artifact_digest: String,
+    generation_id: String,
+    settings: Option<Arc<settings::CompiledSettings>>,
 }
 
 impl std::fmt::Debug for Plugin {
@@ -101,6 +108,25 @@ impl Plugin {
         &self.manifest
     }
 
+    pub fn artifact_digest(&self) -> &str {
+        &self.artifact_digest
+    }
+
+    pub fn generation_id(&self) -> &str {
+        &self.generation_id
+    }
+
+    pub fn with_revision(&self, revision: u64) -> Arc<Self> {
+        Arc::new(Self {
+            manifest: self.manifest.clone(),
+            dispatch: self.dispatch,
+            free_buffer: self.free_buffer,
+            artifact_digest: self.artifact_digest.clone(),
+            generation_id: format!("{}:{revision}", self.artifact_digest),
+            settings: self.settings.clone(),
+        })
+    }
+
     pub fn call(
         &self,
         command: &str,
@@ -113,13 +139,23 @@ impl Plugin {
         if !metadata.is_object() || body.len() > MAX_BODY_BYTES {
             return Err(PluginError::InvalidInput);
         }
-        let metadata =
-            Zeroizing::new(serde_json::to_vec(metadata).map_err(|_| PluginError::InvalidInput)?);
+        if metadata.get("settings").is_some() {
+            return Err(PluginError::InvalidInput);
+        }
+        let mut prepared = metadata.clone();
+        if !command.starts_with("settings.")
+            && let Some(settings) = &self.settings
+        {
+            prepared["settings"] = settings.0.clone();
+        }
+        let encoded = serde_json::to_vec(&prepared);
+        ai_gateway_connector_sdk::zeroize_json(&mut prepared);
+        let metadata = Zeroizing::new(encoded.map_err(|_| PluginError::InvalidInput)?);
         if metadata.len() > MAX_METADATA_BYTES {
             return Err(PluginError::InvalidInput);
         }
         let mut output = CallOutput::default();
-        // Only startup-verified administrator-trusted modules can supply this pointer.
+        // Only verified administrator-trusted modules can supply this pointer.
         let status = unsafe {
             (self.dispatch)(
                 ByteSlice::new(command.as_bytes()),
@@ -174,6 +210,21 @@ pub struct ConnectorPlugins {
 }
 
 impl ConnectorPlugins {
+    pub fn from_plugins(
+        plugins: impl IntoIterator<Item = Arc<Plugin>>,
+    ) -> Result<Self, PluginError> {
+        let mut registry = HashMap::new();
+        for plugin in plugins {
+            if registry
+                .insert(plugin.manifest.id.clone(), plugin)
+                .is_some()
+            {
+                return Err(PluginError::Configuration("duplicate plugin ID"));
+            }
+        }
+        Ok(Self { plugins: registry })
+    }
+
     pub fn load(configs: &[PluginConfig]) -> Result<Self, PluginError> {
         let mut ids = HashSet::new();
         for config in configs {
@@ -230,12 +281,21 @@ pub(crate) fn test_plugins() -> ConnectorPlugins {
                 .iter()
                 .map(|byte| format!("{byte:02x}"))
                 .collect();
-            ConnectorPlugins::load(&[PluginConfig {
+            let loaded = ConnectorPlugins::load(&[PluginConfig {
                 id: "codex".into(),
                 path,
                 sha256,
             }])
-            .expect("the test Codex plugin must satisfy the production loader contract")
+            .expect("the test Codex plugin must satisfy the production loader contract");
+            let plugin = loaded.get("codex").unwrap();
+            let descriptor = plugin
+                .settings_descriptor()
+                .expect("test settings descriptor")
+                .expect("Codex owns settings");
+            ConnectorPlugins::from_plugins([plugin
+                .configured(&descriptor.default_document(), 1)
+                .expect("test plugin defaults compile")])
+            .unwrap()
         })
         .clone()
 }
@@ -265,6 +325,13 @@ fn validate_hash(hash: &str) -> Result<(), PluginError> {
 
 fn validate_manifest(manifest: &PluginManifest, expected_id: &str) -> Result<(), PluginError> {
     if manifest.id != expected_id
+        || !matches!(manifest.protocol_version, 1 | 2)
+        || (manifest.id == "codex" && manifest.protocol_version != 2)
+        || (manifest
+            .commands
+            .iter()
+            .any(|command| command.starts_with("settings."))
+            && manifest.protocol_version != 2)
         || manifest.version.is_empty()
         || manifest.version.len() > 128
         || !manifest.version.is_ascii()
@@ -357,13 +424,69 @@ mod linux {
     };
 
     const MAX_LIBRARY_BYTES: u64 = 256 * 1024 * 1024;
+    const MAX_RETAINED_LIBRARIES: usize = 64;
+    const MAX_RETAINED_BYTES: u64 = 1024 * 1024 * 1024;
+
+    #[derive(Default)]
+    struct RetainedLibraries {
+        loaded: HashMap<String, Arc<Plugin>>,
+        attempted: HashSet<String>,
+        bytes: u64,
+    }
+
+    impl RetainedLibraries {
+        fn reserve(&mut self, digest: String, size: u64) -> Result<(), PluginError> {
+            if self.attempted.contains(&digest) {
+                return Err(PluginError::Load);
+            }
+            if self.attempted.len() >= MAX_RETAINED_LIBRARIES
+                || self.bytes.saturating_add(size) > MAX_RETAINED_BYTES
+            {
+                return Err(PluginError::Configuration(
+                    "native library retention limit reached; restart required",
+                ));
+            }
+            self.attempted.insert(digest);
+            self.bytes += size;
+            Ok(())
+        }
+    }
 
     pub(super) fn load(
         path: &Path,
         expected_sha256: &str,
         expected_id: &str,
     ) -> Result<Arc<Plugin>, PluginError> {
+        use std::sync::{Mutex, OnceLock};
+        static RETAINED: OnceLock<Mutex<RetainedLibraries>> = OnceLock::new();
+        let mut retained = RETAINED
+            .get_or_init(Default::default)
+            .lock()
+            .map_err(|_| PluginError::Load)?;
+        let digest = expected_sha256.to_ascii_lowercase();
+        if let Some(plugin) = retained.loaded.get(&digest) {
+            return if plugin.manifest.id == expected_id {
+                Ok(Arc::clone(plugin))
+            } else {
+                Err(PluginError::Manifest)
+            };
+        }
+        if retained.attempted.contains(&digest) {
+            return Err(PluginError::Load);
+        }
         let image = verified_image(path, expected_sha256)?;
+        let size = image.metadata()?.len();
+        retained.reserve(digest.clone(), size)?;
+        let plugin = load_image(image, expected_sha256)?;
+        // A caller's ID mismatch must not negative-cache an otherwise valid image.
+        retained.loaded.insert(digest, Arc::clone(&plugin));
+        if plugin.manifest.id != expected_id {
+            return Err(PluginError::Manifest);
+        }
+        Ok(plugin)
+    }
+
+    fn load_image(image: File, expected_sha256: &str) -> Result<Arc<Plugin>, PluginError> {
         let library_path = format!("/proc/self/fd/{}", image.as_raw_fd());
         // Keep both the descriptor's code and its unique /proc fd name alive even
         // after failed initialization: plugin constructors may have spawned threads.
@@ -400,11 +523,15 @@ mod linux {
         let bytes = unsafe { std::slice::from_raw_parts(descriptor.manifest.ptr, len) };
         let manifest: PluginManifest =
             serde_json::from_slice(bytes).map_err(|_| PluginError::Manifest)?;
-        validate_manifest(&manifest, expected_id)?;
+        validate_id(&manifest.id)?;
+        validate_manifest(&manifest, &manifest.id)?;
         Ok(Arc::new(Plugin {
             manifest,
             dispatch,
             free_buffer,
+            artifact_digest: expected_sha256.to_ascii_lowercase(),
+            generation_id: format!("{}:unconfigured", expected_sha256.to_ascii_lowercase()),
+            settings: None,
         }))
     }
 
@@ -488,6 +615,59 @@ mod linux {
         use std::os::unix::fs::PermissionsExt;
 
         #[test]
+        fn wrong_requested_id_does_not_poison_a_valid_native_image() {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+            let directory = tempfile::tempdir_in(root).unwrap();
+            let path = directory.path().join("fixture.so");
+            let prepared = PathBuf::from(
+                std::env::var_os("AI_GATEWAY_TEST_CODEX_PLUGIN")
+                    .expect("run scripts/prepare-connector-tests.sh before native tests"),
+            );
+            std::fs::copy(prepared.parent().unwrap().join("fixture-0.so"), &path)
+                .expect("prepare-connector-tests.sh creates the generic fixture");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap()
+                .write_all(uuid::Uuid::new_v4().as_bytes())
+                .unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+            let digest: String = Sha256::digest(std::fs::read(&path).unwrap())
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            assert!(matches!(
+                load(&path, &digest, "other"),
+                Err(PluginError::Manifest)
+            ));
+            let plugin = load(&path, &digest, "fixture").unwrap();
+            assert_eq!(plugin.manifest().id, "fixture");
+            assert!(plugin.call("echo", &serde_json::json!({}), &[]).is_ok());
+            assert!(matches!(
+                load(&path, &digest, "other"),
+                Err(PluginError::Manifest)
+            ));
+        }
+
+        #[test]
+        fn failed_native_attempts_exhaust_count_and_byte_budgets_without_refunds() {
+            let mut retained = RetainedLibraries::default();
+            for index in 0..MAX_RETAINED_LIBRARIES {
+                retained.reserve(index.to_string(), 1).unwrap();
+            }
+            assert!(retained.loaded.is_empty());
+            assert!(retained.reserve("extra".into(), 1).is_err());
+            assert!(retained.reserve("0".into(), 1).is_err());
+            assert_eq!(retained.bytes, MAX_RETAINED_LIBRARIES as u64);
+            let mut retained = RetainedLibraries::default();
+            retained
+                .reserve("large".into(), MAX_RETAINED_BYTES)
+                .unwrap();
+            assert!(retained.reserve("next".into(), 1).is_err());
+        }
+
+        #[test]
         fn hash_and_permissions_are_checked_before_dynamic_loading() {
             // The repository is under an owned, non-world-writable ancestor chain.
             let directory = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
@@ -555,6 +735,25 @@ mod tests {
     fn empty_registry_preserves_builtin_only_operation() {
         assert!(ConnectorPlugins::load(&[]).unwrap().get("codex").is_none());
         assert!(ConnectorPlugins::default().manifests().is_empty());
+    }
+
+    #[test]
+    fn command_protocol_versions_fail_closed_without_breaking_stateless_plugins() {
+        let mut manifest: PluginManifest = serde_json::from_value(serde_json::json!({
+            "id":"fixture","version":"1","operations":["responses"],"commands":["echo"],
+        }))
+        .unwrap();
+        assert!(validate_manifest(&manifest, "fixture").is_ok());
+        manifest.protocol_version = 3;
+        assert!(validate_manifest(&manifest, "fixture").is_err());
+        manifest.protocol_version = 1;
+        manifest.commands.push("settings.describe/v1".into());
+        assert!(validate_manifest(&manifest, "fixture").is_err());
+        manifest.protocol_version = 2;
+        assert!(validate_manifest(&manifest, "fixture").is_ok());
+        manifest.id = "codex".into();
+        manifest.protocol_version = 1;
+        assert!(validate_manifest(&manifest, "codex").is_err());
     }
 
     #[test]

@@ -48,16 +48,18 @@ def free_port():
         return listener.getsockname()[1]
 
 
-def request(base, path, method="GET", body=None, token=None, etag=None):
+def request(base, path, method="GET", body=None, token=None, etag=None, plugin_authorization=None):
     headers = {}
     if token:
         headers["Authorization"] = f"Bearer {token}"
     if etag:
         headers["If-Match"] = etag
+    if plugin_authorization:
+        headers["X-Plugin-Authorization"] = plugin_authorization
     if body is not None:
-        headers["Content-Type"] = "application/json"
+        headers["Content-Type"] = "application/octet-stream" if isinstance(body, bytes) else "application/json"
     req = Request(base + path, method=method, headers=headers,
-                  data=json.dumps(body).encode() if body is not None else None)
+                  data=body if isinstance(body, bytes) else json.dumps(body).encode() if body is not None else None)
     try:
         with HTTP.open(req, timeout=10) as response:
             payload = response.read(MAX_LOG + 1)
@@ -109,9 +111,61 @@ def load_plugin_fixture(value):
     return {"id": "codex", "path": str(path), "sha256": digest}
 
 
-def plugin_toml(plugin):
-    return "\n[[plugins]]\n" + "".join(
-        f"{name} = {json.dumps(plugin[name])}\n" for name in ("id", "path", "sha256"))
+def plugin_toml(directory):
+    return f"\n[plugins]\ndirectory = {json.dumps(str(directory))}\n"
+
+
+def exercise_plugin_lifecycle(data, plugin):
+    console, token = data["console"], data["token"]
+
+    def write(path, method, body=None, etag=None):
+        auth, _ = request(console, "/console/v1/plugins/reauth", "POST",
+                          {"password": data["password"]}, token)
+        return request(console, path, method, body, token, etag, auth["token"])
+
+    archive = Path(plugin["path"]).parent / "codex-test.tar.gz"
+    check(archive.is_file(), "Codex plugin fixture package is missing")
+    job, _ = write("/console/v1/plugins/install", "POST", archive.read_bytes())
+
+    def complete():
+        result, _ = request(console, f"/console/v1/plugins/jobs/{job['id']}", token=token)
+        check(result["status"] != "failed", "plugin installation failed")
+        return result["status"] == "succeeded"
+
+    wait_until(complete)
+    path = "/console/v1/plugins/codex"
+    detail, headers = request(console, path, token=token)
+    check(not detail["enabled"], "installation unexpectedly enabled a plugin")
+    check(any(item["digest"] == plugin["sha256"] for item in detail["artifacts"]),
+          "installed plugin digest mismatch")
+    selected = {"enabled": True, "artifact_digest": plugin["sha256"]}
+    write(path + "/state", "PUT", selected, headers["ETag"])
+    settings, headers = request(console, path + "/settings", token=token)
+    stale = headers["ETag"]
+    values = dict(settings["values"])
+    values["client_version"] = "0.146.0-e2e"
+    body = {"schema_version": settings["schema_version"], "values": values}
+    write(path + "/settings", "PUT", body, stale)
+    changed, headers = request(console, path + "/settings", token=token)
+    check(changed["values"] == values and headers["ETag"] != stale,
+          "plugin settings did not persist independently")
+    try:
+        write(path + "/settings", "PUT", body, stale)
+    except RuntimeError as error:
+        check("HTTP 409" in str(error), "stale plugin settings failed for the wrong reason")
+    else:
+        raise RuntimeError("stale plugin settings were accepted")
+    write(path + "/state", "PUT", {**selected, "enabled": False}, headers["ETag"])
+    connectors, _ = request(console, "/console/v1/system/connectors", token=token)
+    check(not any(item["id"] == "codex" for item in connectors), "disabled plugin remains dispatchable")
+    detail, headers = request(console, path, token=token)
+    write(path + "/state", "PUT", selected, headers["ETag"])
+    restored, _ = request(console, path + "/settings", token=token)
+    check(restored["values"] == values, "re-enabling reset plugin settings")
+    system, _ = request(console, "/console/v1/system/settings", token=token)
+    check("codex" not in system, "provider settings remain in system settings")
+    return {"id": "plugin-install-settings-disable-enable", "status": "passed",
+            "artifact_sha256": plugin["sha256"]}
 
 
 def verify_oauth_plan(value):
@@ -321,7 +375,7 @@ def configure(resources, binary, database_url, public_port, console_port):
     config = resources.directory / "gateway.toml"
     quote = json.dumps
     config.write_text(f"""
-{plugin_toml(resources.plugin)}
+{plugin_toml(resources.directory / "plugins")}
 [server]
 host = "127.0.0.1"
 port = {public_port}
@@ -672,9 +726,12 @@ def main():
                 data = seed(console, password, upstream.url)
                 secret_values.extend([data["token"], data["api_key"], data["upstream_secret"], data["upstream_rotated_secret"]])
                 data["public"] = f"http://127.0.0.1:{public_port}"
+                report["stage"] = "plugin-lifecycle"
+                report["scenarios"].append(exercise_plugin_lifecycle(data, resources.plugin))
                 report["stage"] = "codex-plugin-oauth"
                 report["scenarios"].append(exercise_codex_oauth(data))
                 report["stage"] = "browser"
+                data["plugin_archive"] = str(Path(resources.plugin["path"]).parent / "codex-test.tar.gz")
                 browser_env = {
                     **resources.env,
                     "PLAYWRIGHT_BROWSERS_PATH": os.environ.get(

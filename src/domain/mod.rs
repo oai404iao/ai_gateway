@@ -37,9 +37,7 @@ pub use request_log::{
     RequestLogSource, RequestPriceSnapshot, RequestProtocol, RequestUsage,
 };
 pub use system_settings::{
-    AutomaticDisableSettings, AutomaticDisableTrigger, CodexOutboundIdentity,
-    CodexRequestMetadataSettings, DEFAULT_CODEX_CLIENT_VERSION, DEFAULT_CODEX_GIT_REMOTE_URL,
-    DEFAULT_CODEX_ORIGINATOR, DEFAULT_CODEX_USER_AGENT, DEFAULT_CODEX_WORKSPACE_PATH,
+    AutomaticDisableSettings, AutomaticDisableTrigger,
     DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS,
     DEFAULT_STANDALONE_WEB_SEARCH_RESPONSE_HEADER_TIMEOUT_SECONDS, MAX_REQUEST_RETRIES,
     PassiveHealthSettings, RequestRetrySettings, ResponsesWebSocketSettings, ScheduledTestingMode,

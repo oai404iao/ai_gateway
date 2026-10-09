@@ -49,7 +49,11 @@ mod metering_fixtures;
 
 const DEFAULT_ADMIN_URL: &str = "postgres://ai_gateway:ai_gateway@127.0.0.1:5432/postgres";
 const PASSWORD_FILE_ADMIN_URL: &str = "postgres://ai_gateway@127.0.0.1:5432/postgres";
-const TEST_PASSWORD: &str = "test-password-with-enough-length";
+fn test_password() -> &'static str {
+    static PASSWORD: std::sync::LazyLock<String> =
+        std::sync::LazyLock::new(|| format!("spec-{}", Uuid::new_v4()));
+    PASSWORD.as_str()
+}
 const TEST_ED25519_PRIVATE_KEY: &[u8] = br#"-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIMrLMWiLkvZoPg8iIZRZC0qNdQQPyJV5dCAWdo0l6YBu
 -----END PRIVATE KEY-----
@@ -59,6 +63,10 @@ MCowBQYDK2VwAyEAQvs1EKtSBUS0aGjOVZhD2kqVMSiXHugcTiZTZyZxWiQ=
 -----END PUBLIC KEY-----
 "#;
 
+#[path = "contracts/plugin_console.rs"]
+mod plugin_console;
+#[path = "contracts/plugin_storage.rs"]
+mod plugin_storage;
 #[path = "support/plugins.rs"]
 mod plugins;
 #[path = "support/upstream_credentials.rs"]
@@ -265,7 +273,6 @@ fn bootstrap_system_settings() -> SystemSettingsInput {
         scheduled_testing: Default::default(),
         session_affinity: Default::default(),
         websocket: Default::default(),
-        codex: Default::default(),
     }
 }
 
@@ -285,8 +292,16 @@ async fn app_with_proxy_test_endpoint(
     pool: PgPool,
     proxy_test_endpoint: Option<reqwest::Url>,
 ) -> App {
+    app_with_options(pool, proxy_test_endpoint, None).await
+}
+
+async fn app_with_options(
+    pool: PgPool,
+    proxy_test_endpoint: Option<reqwest::Url>,
+    catalog: Option<Arc<ai_gateway::connector_plugins::DirectoryPluginCatalog>>,
+) -> App {
     let user_id = Uuid::new_v4();
-    let password_hash = hash_console_password(TEST_PASSWORD.to_owned())
+    let password_hash = hash_console_password(test_password().to_owned())
         .await
         .unwrap();
     sqlx::query(
@@ -306,10 +321,11 @@ async fn app_with_proxy_test_endpoint(
         .ensure_system_settings(bootstrap_system_settings())
         .await
         .unwrap();
-    let runtime = Arc::new(RuntimeConfig::new_with_plugins(
-        compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap(),
-        plugins::codex_plugins(),
-    ));
+    let initial = compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap();
+    let runtime = Arc::new(match catalog {
+        Some(catalog) => RuntimeConfig::new_with_plugin_catalog(initial, catalog),
+        None => RuntimeConfig::new_with_plugins(initial, plugins::codex_plugins()),
+    });
     let coordinator = ControlPlaneCoordinator::new(
         repository.clone(),
         Arc::clone(&runtime),
@@ -321,7 +337,7 @@ async fn app_with_proxy_test_endpoint(
         coordinator.clone(),
         Arc::clone(&runtime),
         Arc::clone(&upstream_clients),
-        plugins::codex_plugins(),
+        runtime.plugins(),
     )
     .await
     .unwrap();
@@ -339,7 +355,11 @@ async fn app_with_proxy_test_endpoint(
     .unwrap();
     let email = format!("spec-user-{user_id}@example.test");
     let session = auth
-        .login_with_user_agent(email, TEST_PASSWORD.into(), Some("Spec Browser/1.0".into()))
+        .login_with_user_agent(
+            email,
+            test_password().into(),
+            Some("Spec Browser/1.0".into()),
+        )
         .await
         .unwrap();
     // Sanity: the freshly issued token must round-trip through the same
@@ -743,7 +763,6 @@ async fn system_settings_bootstrap_initializes_once_without_overwriting_database
         scheduled_testing: Default::default(),
         session_affinity: Default::default(),
         websocket: Default::default(),
-        codex: Default::default(),
     };
 
     repository
@@ -789,92 +808,72 @@ async fn system_settings_bootstrap_initializes_once_without_overwriting_database
 }
 
 #[tokio::test]
-async fn system_settings_bootstrap_backfills_late_sections_once_for_upgraded_databases() {
+async fn plugin_settings_migration_preserves_values_and_bootstrap_does_not_reintroduce_codex() {
     let database = TestDatabase::new().await;
     let repository = ControlPlaneRepository::new(database.pool.clone());
     repository
         .ensure_system_settings(bootstrap_system_settings())
         .await
         .unwrap();
-    sqlx::query(
-        "UPDATE system_settings SET value=value-'codex' WHERE setting_key='forwarding_policy'",
+    sqlx::raw_sql(
+        "DROP TABLE plugin_install_jobs,plugin_settings,plugin_states,plugin_artifacts;
+         DELETE FROM _sqlx_migrations WHERE version=71;",
     )
     .execute(&database.pool)
     .await
     .unwrap();
-
-    let mut bootstrap = bootstrap_system_settings();
-    bootstrap.codex.workspace_path = "/synthetic/project".into();
-    bootstrap.codex.git_remote_url = "https://github.com/example/synthetic-project".into();
-    bootstrap.codex.originator = "codex_gateway".into();
-    bootstrap.codex.client_version = "9.8.7".into();
-    bootstrap.codex.user_agent = "codex_gateway/9.8.7 (Linux 6.8.0; x86_64) ai-gateway".into();
+    let legacy = serde_json::json!({
+        "workspace_path":"/synthetic/project",
+        "git_remote_url":"https://github.com/example/synthetic-project",
+        "originator":"codex_gateway",
+        "client_version":"9.8.7",
+        "user_agent":"codex_gateway/9.8.7 (Linux 6.8.0; x86_64) ai-gateway"
+    });
+    sqlx::query("UPDATE system_settings SET value=jsonb_set(value,'{codex}',$1) WHERE setting_key='forwarding_policy'")
+        .bind(&legacy).execute(&database.pool).await.unwrap();
+    sqlx::query("INSERT INTO users(id,email,display_name,role,status,balance_amount) VALUES ($1,'plugin-migration@example.test','Migration fixture','user','active',123.45678)")
+        .bind(Uuid::new_v4()).execute(&database.pool).await.unwrap();
+    let balances_before: serde_json::Value =
+        sqlx::query_scalar("SELECT coalesce(jsonb_agg(to_jsonb(u) ORDER BY id),'[]') FROM users u")
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    run_migrations(&database.pool).await.unwrap();
+    let migrated = repository.plugin_settings("codex").await.unwrap().unwrap();
+    assert_eq!(migrated.values, legacy);
+    assert_eq!(migrated.schema_version, 1);
+    assert_eq!(migrated.revision, 1);
+    let records = repository.plugin_records().await.unwrap();
+    assert!(records.artifacts.is_empty());
+    assert!(!records.states[0].enabled);
+    assert!(records.states[0].artifact_digest.is_none());
     repository
-        .ensure_system_settings(bootstrap.clone())
+        .ensure_system_settings(bootstrap_system_settings())
         .await
         .unwrap();
-
-    let stored = repository.system_settings().await.unwrap();
-    assert_eq!(stored.settings.codex.workspace_path, "/synthetic/project");
+    run_migrations(&database.pool).await.unwrap();
     assert_eq!(
-        stored.settings.codex.git_remote_url,
-        "https://github.com/example/synthetic-project"
+        repository
+            .plugin_settings("codex")
+            .await
+            .unwrap()
+            .unwrap()
+            .values,
+        legacy
     );
-    assert_eq!(stored.settings.codex.originator, "codex_gateway");
-    assert_eq!(stored.settings.codex.client_version, "9.8.7");
-    assert_eq!(
-        stored.settings.codex.user_agent,
-        "codex_gateway/9.8.7 (Linux 6.8.0; x86_64) ai-gateway"
-    );
-
-    sqlx::query(
-        "UPDATE system_settings \
-         SET value=jsonb_set( \
-             value, \
-             '{codex}', \
-             (value->'codex')-'originator'-'client_version'-'user_agent', \
-             false \
-         ) \
-         WHERE setting_key='forwarding_policy'",
+    let stored: serde_json::Value = sqlx::query_scalar(
+        "SELECT value FROM system_settings WHERE setting_key='forwarding_policy'",
     )
-    .execute(&database.pool)
+    .fetch_one(&database.pool)
     .await
     .unwrap();
-    repository
-        .ensure_system_settings(bootstrap.clone())
-        .await
-        .unwrap();
-    let stored = repository.system_settings().await.unwrap();
-    assert_eq!(stored.settings.codex.originator, "codex_gateway");
-    assert_eq!(stored.settings.codex.client_version, "9.8.7");
-    assert_eq!(
-        stored.settings.codex.user_agent,
-        "codex_gateway/9.8.7 (Linux 6.8.0; x86_64) ai-gateway"
-    );
-
-    let mut replacement = bootstrap_system_settings();
-    replacement.codex.workspace_path = "/replacement".into();
-    replacement.codex.git_remote_url = "https://github.com/example/replacement".into();
-    replacement.codex.originator = "replacement-originator".into();
-    replacement.codex.client_version = "1.2.3".into();
-    replacement.codex.user_agent = "replacement/1.2.3".into();
-    repository
-        .ensure_system_settings(replacement)
-        .await
-        .unwrap();
-
-    let stored = repository.system_settings().await.unwrap();
-    assert_eq!(stored.settings.codex.workspace_path, "/synthetic/project");
-    assert_eq!(
-        stored.settings.codex.git_remote_url,
-        "https://github.com/example/synthetic-project"
-    );
-    assert_eq!(stored.settings.codex.originator, "codex_gateway");
-    assert_eq!(stored.settings.codex.client_version, "9.8.7");
-    assert_eq!(
-        stored.settings.codex.user_agent,
-        "codex_gateway/9.8.7 (Linux 6.8.0; x86_64) ai-gateway"
-    );
+    assert!(stored.get("codex").is_none());
+    let balances_after: serde_json::Value =
+        sqlx::query_scalar("SELECT coalesce(jsonb_agg(to_jsonb(u) ORDER BY id),'[]') FROM users u")
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(balances_after, balances_before);
     database.cleanup().await;
 }
 
@@ -1054,7 +1053,7 @@ async fn administrator_temporary_password_forces_and_completes_password_change()
         &app,
         "POST",
         &format!("/console/v1/users/{}/temporary-password", app.user_id),
-        serde_json::json!({"current_password":TEST_PASSWORD}),
+        serde_json::json!({"current_password":test_password()}),
         &[],
     )
     .await;
@@ -1079,7 +1078,7 @@ async fn administrator_temporary_password_forces_and_completes_password_change()
         &app,
         "POST",
         &format!("/console/v1/users/{target_user_id}/temporary-password"),
-        serde_json::json!({"current_password":TEST_PASSWORD}),
+        serde_json::json!({"current_password":test_password()}),
         &[],
     )
     .await;
@@ -1119,7 +1118,7 @@ async fn administrator_temporary_password_forces_and_completes_password_change()
         &app,
         "POST",
         &format!("/console/v1/users/{target_user_id}/temporary-password"),
-        serde_json::json!({"current_password":TEST_PASSWORD}),
+        serde_json::json!({"current_password":test_password()}),
         &[],
     )
     .await;
@@ -1318,7 +1317,7 @@ async fn expired_temporary_password_rejects_login_refresh_and_completion() {
         &app,
         "POST",
         &format!("/console/v1/users/{target_user_id}/temporary-password"),
-        serde_json::json!({"current_password":TEST_PASSWORD}),
+        serde_json::json!({"current_password":test_password()}),
         &[],
     )
     .await;
@@ -1406,7 +1405,7 @@ async fn concurrent_temporary_password_completion_allows_only_one_winner() {
         &app,
         "POST",
         &format!("/console/v1/users/{target_user_id}/temporary-password"),
-        serde_json::json!({"current_password":TEST_PASSWORD}),
+        serde_json::json!({"current_password":test_password()}),
         &[],
     )
     .await;
@@ -2348,7 +2347,7 @@ async fn sharing_contract_is_versioned_scoped_and_never_exposes_provider_identit
     .unwrap();
     let session = app
         .auth
-        .login_with_user_agent(email, TEST_PASSWORD.into(), None)
+        .login_with_user_agent(email, test_password().into(), None)
         .await
         .unwrap();
     assert_eq!(
@@ -2480,7 +2479,7 @@ async fn login_response_shape_matches_spec() {
         "/console/v1/auth/login",
         serde_json::json!({
             "email": format!("spec-user-{}@example.test", app.user_id),
-            "password": TEST_PASSWORD,
+            "password": test_password(),
         }),
         &[("user-agent", "Spec Login Browser/2.0")],
     )
@@ -2509,7 +2508,7 @@ async fn session_management_identifies_clients_and_revokes_selected_scopes() {
         "/console/v1/auth/login",
         serde_json::json!({
             "email": email,
-            "password": TEST_PASSWORD,
+            "password": test_password(),
         }),
         &[(
             "user-agent",
@@ -2722,7 +2721,7 @@ async fn reusable_invitation_code_registers_an_active_user_and_enforces_usage_li
             "invitation_code": invitation_code,
             "email": email,
             "display_name": "Self Registered",
-            "password": TEST_PASSWORD,
+            "password": test_password(),
         }),
     )
     .await;
@@ -2763,7 +2762,7 @@ async fn reusable_invitation_code_registers_an_active_user_and_enforces_usage_li
             "invitation_code": invitation_code,
             "email": format!("second-{code_id}@example.test"),
             "display_name": "Second User",
-            "password": TEST_PASSWORD,
+            "password": test_password(),
         }),
     )
     .await;
@@ -2887,7 +2886,7 @@ async fn registration_invitation_code_settings_are_versioned_and_adjustable() {
             "invitation_code": invitation_code,
             "email": format!("disabled-{code_id}@example.test"),
             "display_name": "Disabled Code",
-            "password": TEST_PASSWORD,
+            "password": test_password(),
         }),
     )
     .await;
@@ -2919,7 +2918,7 @@ async fn registration_invitation_code_settings_are_versioned_and_adjustable() {
             "invitation_code": invitation_code,
             "email": email,
             "display_name": "Adjusted User",
-            "password": TEST_PASSWORD,
+            "password": test_password(),
         }),
     )
     .await;
@@ -2941,7 +2940,7 @@ async fn registration_invitation_code_settings_are_versioned_and_adjustable() {
             "invitation_code": invitation_code,
             "email": email,
             "display_name": "Duplicate Email",
-            "password": TEST_PASSWORD,
+            "password": test_password(),
         }),
     )
     .await;
@@ -5705,13 +5704,7 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
         "idle_timeout_seconds": 120,
         "max_connection_age_seconds": 3300,
     });
-    input["codex"] = serde_json::json!({
-        "workspace_path": "/synthetic/project",
-        "git_remote_url": "https://github.com/example/synthetic-project",
-        "originator": "codex_gateway",
-        "client_version": "9.8.7",
-        "user_agent": "codex_gateway/9.8.7 (Linux 6.8.0; x86_64) ai-gateway",
-    });
+    assert!(input.get("codex").is_none());
     input.as_object_mut().unwrap().remove("updated_at");
 
     let mut invalid_retry = input.clone();
@@ -5775,42 +5768,13 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
     .await;
     assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
-    let mut invalid_codex_remote = input.clone();
-    invalid_codex_remote["codex"]["git_remote_url"] =
-        serde_json::json!("git@github.com:private/repo.git");
+    let mut legacy_codex_settings = input.clone();
+    legacy_codex_settings["codex"] = serde_json::json!({"client_version":"9.8.7"});
     let invalid = request(
         &app,
         "PUT",
         "/console/v1/system/settings",
-        invalid_codex_remote,
-        &[("if-match", &etag)],
-    )
-    .await;
-    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
-
-    let mut invalid_codex_identity = input.clone();
-    invalid_codex_identity["codex"]["user_agent"] =
-        serde_json::json!("codex_gateway/9.8.7\r\ninjected");
-    let invalid = request(
-        &app,
-        "PUT",
-        "/console/v1/system/settings",
-        invalid_codex_identity,
-        &[("if-match", &etag)],
-    )
-    .await;
-    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
-
-    let mut missing_codex_identity = input.clone();
-    missing_codex_identity["codex"]
-        .as_object_mut()
-        .unwrap()
-        .remove("client_version");
-    let invalid = request(
-        &app,
-        "PUT",
-        "/console/v1/system/settings",
-        missing_codex_identity,
+        legacy_codex_settings,
         &[("if-match", &etag)],
     )
     .await;
@@ -5884,23 +5848,6 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
     assert_eq!(
         published.websocket().idle_timeout(),
         std::time::Duration::from_secs(120)
-    );
-    assert_eq!(published.codex().workspace_path(), "/synthetic/project");
-    assert_eq!(
-        published.codex().git_remote_url(),
-        "https://github.com/example/synthetic-project"
-    );
-    assert_eq!(
-        published.codex().outbound_identity().originator(),
-        "codex_gateway"
-    );
-    assert_eq!(
-        published.codex().outbound_identity().client_version(),
-        "9.8.7"
-    );
-    assert_eq!(
-        published.codex().outbound_identity().user_agent(),
-        "codex_gateway/9.8.7 (Linux 6.8.0; x86_64) ai-gateway"
     );
 
     let audit: serde_json::Value = sqlx::query_scalar(
@@ -8089,7 +8036,7 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     let regular_api_key_id = Uuid::new_v4();
     let regular_email = format!("statistics-user-{regular_user_id}@example.test");
     let regular_display_name = format!("statistics-user-{regular_user_id}");
-    let regular_password_hash = hash_console_password(TEST_PASSWORD.to_owned())
+    let regular_password_hash = hash_console_password(test_password().to_owned())
         .await
         .unwrap();
     sqlx::query(
@@ -8141,7 +8088,7 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     metering_fixtures::copy_log_fixtures(&database.pool).await;
     let regular_session = app
         .auth
-        .login(regular_email.clone(), TEST_PASSWORD.to_owned())
+        .login(regular_email.clone(), test_password().to_owned())
         .await
         .unwrap();
 

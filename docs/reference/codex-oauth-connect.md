@@ -139,7 +139,7 @@ Token claim 不同，网关拒绝导入。
 - Responses 请求的 `session-id`、`thread-id` 与 `x-client-request-id`。
 
 Standalone web search 额外保留 `x-codex-turn-metadata`，但发送前会把客户端
-`originator` 和 `User-Agent` 统一覆盖为系统设置中的 Codex Connector 身份。请求顶层
+`originator` 和 `User-Agent` 由插件统一覆盖为插件设置中的 Codex Connector 身份。请求顶层
 字段为 `id`、`model` 以及可选 `reasoning`、`input`、`commands`、`settings`、
 `max_output_tokens`。响应为非流式 JSON，`output` 是最终文本，`encrypted_output` 和
 `results` 为可选 opaque 数据。
@@ -174,7 +174,7 @@ Models 响应是带 `models` 数组的 envelope；网关只保留非空且未显
 认证，并建议 reset 后重新读取 rate limits。
 
 Models 查询参数 `client_version` 和请求 Header `version` 由原生 Codex 报告自身版本。Gateway
-默认使用当前核对的 `0.146.0`，但把它作为全局系统设置；Codex 后端会根据客户端版本过滤模型，
+默认使用当前核对的 `0.146.0`，但把它作为独立插件设置；Codex 后端会根据客户端版本过滤模型，
 因此上游提高最低版本时管理员可更新该值而无需重新发布 Gateway。该版本独立于
 `ai-gateway` 自身版本；误用较小值可能得到成功但为空的 `models` 数组。
 
@@ -247,7 +247,7 @@ Standalone web search 路径：
 5. 按 Responses 相同规则保留 session/thread/request/window 和 `x-codex-turn-metadata`；
    仅缺失时补全。缺失或无效的 turn metadata
    会安全合成，installation/workspace 指纹按同一凭证/系统设置规则归一化；客户端
-   `originator` 和 `User-Agent` 覆盖为系统设置中的 Codex Connector 身份，再注入
+   `originator` 和 `User-Agent` 由插件覆盖为插件设置中的 Codex Connector 身份，再注入
    Bearer/可选 account/FedRAMP 和版本，不再删除会话身份 Header；
 6. `results` DTO 透明转发；没有 usage 时不估算 token 或费用。
 
