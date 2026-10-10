@@ -9,8 +9,10 @@ do not satisfy this contract.
 
 Manifest `protocol_version` negotiates metadata semantics independently of the
 C ABI. Omission means legacy protocol 1. Protocol 2 provides configured
-invocations and plugin-owned Codex request identity/privacy; Codex and plugins
-declaring settings commands must declare 2. Generic stateless protocol-1
+invocations and plugin-owned Codex request identity/privacy; Codex and
+configurable generic plugins may declare 2 or 3. Protocol 3 adds bounded
+response adaptation with explicit transport capabilities and optional upstream
+usage normalization. Generic stateless protocol-1
 plugins remain supported. Older gateways reject the new manifest field rather
 than silently interpreting incompatible metadata. Settings commands additionally
 carry their own `/v1` suffix. Unknown protocol versions fail before dispatch.
@@ -40,6 +42,12 @@ attempt.body
 attempt.target
 attempt.headers
 ```
+
+Protocol 3 additionally requires `attempt.describe/v1`; protocol 1/2 retain
+their existing common command contract and response pass-through behavior.
+`response.json/v1` and `response.event/v1` are required only when explicitly
+selected by a protocol-3 descriptor. `usage.parse/v1` is required only when
+that descriptor selects a plugin usage parser.
 
 Images edit has the additional contract below. Calls are synchronous and may
 occur concurrently; do not rely on a particular previous call, mutable
@@ -144,6 +152,221 @@ adaptation as potentially modifying bytes, does not preserve failed-request
 affinity, and never automatically retries a dispatched plugin request. The
 Codex adapter additionally uses the other two flags. A plugin cannot use these
 fields to acquire retry privileges or bypass admission.
+
+## `attempt.describe/v1` (protocol 3)
+
+Input is `{"operation":"chat_completion"}` with an empty raw body. Return an
+`AttemptDescriptor` directly and an empty raw body:
+
+```json
+{
+  "capabilities": {
+    "preserves_affinity_on_failure": false,
+    "successful_response_is_sse": false,
+    "changes_request_body": false
+  },
+  "protocols": [
+    {"protocol":"non_stream","response":"json"},
+    {"protocol":"sse","response":"sse"}
+  ]
+}
+```
+
+All flags are required booleans with the same meanings as
+`attempt.capabilities`. Protocol entries are unique and nonempty and must match
+the operation's protocol values above. `response` is `passthrough`, `json`, or
+`sse`. `json` requires `non_stream`, and `sse` requires `sse`; only
+`chat_completion` and `responses` may opt into adaptation. WebSocket, standalone
+search, and Images support `passthrough` only. Omission is not an implicit
+transport grant. The host intersects these declarations with configured
+capabilities before routing; it does not add a database transport or rewrite
+the client's API format. `successful_response_is_sse:true` cannot be combined
+with a `json` response entry.
+Codex protocol 3 may select usage normalization, but its response entries must
+remain `passthrough`: the Codex host adapter does not dispatch response-adapter
+commands.
+
+Descriptors are deterministic for the pinned configured generation, including
+its settings; the host may cache them. New settings do not modify in-flight
+requests. Invalid descriptors fail closed, without transport dispatch.
+
+## Usage normalization
+
+An optional `AttemptDescriptor.usage` selects the actual upstream usage
+interface for the pinned connector and operation. This selection does not
+change the client format, persisted financial counters, billing formulas, or
+historical facts. It does not require response-adapter commands:
+
+```json
+{"parser":"general","format":"anthropic_messages"}
+```
+
+The supported `UsageFormat` values are `open_ai_chat_completions`,
+`open_ai_responses`, `open_ai_images`, and `anthropic_messages`. Missing or null
+`usage` retains the host's existing connector/operation default. The host must
+not infer an interface from similarly named usage fields or select one merely
+because of the client's API format.
+
+`parse_general_usage(format, &usage_object)` consumes a usage JSON object, not
+an entire response. OpenAI input/output totals remain inclusive: cache and
+reasoning counters are subsets, not additional totals. Chat preserves
+`prompt_cache_hit_tokens` precedence over nested `cached_tokens`; input detail
+`cache_write_tokens` precedes `cache_creation_tokens`. DeepSeek cache misses
+never replace the authoritative `prompt_tokens` total.
+
+Anthropic normalization adds `input_tokens`, `cache_read_input_tokens`, and
+`cache_creation_input_tokens` with checked arithmetic. Missing optional
+cache/detail counters default to zero. Missing mandatory totals, malformed
+present counters, negative values, overflow, or counters exceeding their
+respective totals return unknown usage (`None`). No cache-based guessing or
+subtraction repairs invalid counters.
+
+The external counter semantics were verified on 2026-10-10:
+[OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching)
+describes cache-read/write subsets of input;
+[DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/)
+defines prompt totals as cache hits plus misses; and
+[Anthropic prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
+defines its input count as excluding cache reads and writes. Those provider
+definitions are distinct from the gateway's canonical counters and billing.
+
+### `usage.parse/v1`
+
+For a provider-specific parser, declare the command and select:
+
+```json
+{"parser":"plugin","interface":"vendor.messages/v1"}
+```
+
+`interface` is a nonempty identifier of at most 64 ASCII bytes, beginning with
+a lowercase letter and containing lowercase letters, digits, `_`, `-`, `.`,
+or `/`. It identifies an upstream interface, not a filesystem path or URL.
+Input metadata is `UsageParseInput`:
+
+```json
+{"operation":"responses","interface":"vendor.messages/v1"}
+```
+
+The raw body is one usage JSON object of at most `MAX_USAGE_BYTES` (64 KiB).
+The host owns bounded usage extraction, stream aggregation, and terminal
+state. Parsing is synchronous and pure: no I/O, request-global state,
+credentials, monetary calculations, or settlement side effects.
+An immutable configured generation is pinned throughout the request.
+
+Return `UsageParseOutput` metadata with an empty raw body:
+
+```json
+{
+  "usage": {
+    "input_tokens": 102,
+    "cached_input_tokens": 90,
+    "cache_write_tokens": 10,
+    "output_tokens": 4,
+    "reasoning_tokens": 0
+  }
+}
+```
+
+Return `{"usage":null}` for unknown usage. All five `CanonicalUsage` counters
+are required nonnegative `i64` integers. Input totals include cached-input and
+cache-write counters; output totals include reasoning. Cached input and cache
+write must each be at most input, and reasoning at most output, preserving
+the existing canonical validation contract. Invalid custom output is unknown,
+not a raw-usage fallback or a new financial interpretation.
+The SDK exposes `CanonicalUsage::validate`, `UsageDescriptor::validate_bounds`,
+`UsageParseInput::validate_bounds`, and `UsageParseOutput::validate_bounds`.
+The host independently checks output body emptiness and never accepts monetary
+fields in the counter-only result.
+
+## Bounded response adaptation (protocol 3)
+
+These commands are synchronous, pure, and bounded. Do not perform I/O, retain
+response content, or use per-request global state. The host owns status,
+headers, framing, authentication, route selection, usage collection and billing.
+No adapter grants retry permission after upstream dispatch.
+
+### `response.json/v1`
+
+Input metadata:
+
+```json
+{"operation":"chat_completion","protocol":"non_stream","status":200}
+```
+
+The raw input body is the complete bounded upstream JSON response. Return
+metadata `{}` and the adapted JSON in the separate raw output body. Both input
+and output must be JSON objects no larger than `MAX_RESPONSE_JSON_BYTES`
+(8 MiB). The host buffers only an explicitly opted-in JSON response; pass-through
+and streaming paths remain streaming. The operation and client-visible format
+must stay unchanged.
+
+### `response.event/v1`
+
+Input metadata:
+
+```json
+{
+  "operation":"chat_completion","protocol":"sse","status":200,
+  "event":null,"id":null,"sequence":0,"state":{},"phase":"event"
+}
+```
+
+The raw body is one decoded SSE **data payload**, not a network chunk or SSE
+framing. Multiple `data:` lines are joined by the host with newlines. The host
+owns parsing, line framing and transport backpressure. Comment-only or
+data-less frames do not become arbitrary response events.
+
+Return `ResponseEventOutput` metadata and an empty raw body:
+
+```json
+{
+  "state":{"text_events":1},
+  "events":[{"event":null,"data":"{\"choices\":[]}","id":null}]
+}
+```
+
+`event` and `id` are nullable strings and cannot contain CR, LF or NUL. `data`
+is a UTF-8 string; the host encodes embedded newlines as multiple SSE data
+lines. Use explicit nulls when no event name/ID is supplied. The sequence is a
+host-owned monotonically increasing event index; the state starts at `{}` for
+each request and the returned object is passed to the next call on the same
+pinned generation. It is ephemeral, never stored in the database or shared
+between requests.
+
+The host also invokes phase `finish` with an empty raw body before yielding
+an actual terminal event. Finish must return `events:[]`; it cannot synthesize
+a successful terminal, duplicate a terminal, or repair a truncated stream.
+EOF without a terminal may invoke finish before failing, but is never success.
+A successful Chat stream needs its actual `[DONE]`; a Responses stream needs
+an actual terminal event. EOF alone is not success.
+
+Hard limits:
+
+| SDK constant | Limit |
+| --- | --- |
+| `MAX_RESPONSE_JSON_BYTES` | 8 MiB input/output JSON |
+| `MAX_RESPONSE_EVENT_BYTES` | 1 MiB per input data payload/output event data |
+| `MAX_RESPONSE_STATE_BYTES` | 64 KiB serialized JSON object state |
+| `MAX_RESPONSE_OUTPUT_EVENTS` | 16 events per call |
+
+The ABI's 1 MiB serialized metadata ceiling additionally bounds the aggregate
+event result (JSON escaping counts toward that ceiling). SDK
+`validate_bounds()` helpers check these shape/size constraints; they do not
+replace host validation of raw-body emptiness or protected semantics.
+
+Adapters may modify content text, not metering or completion semantics.
+The host compares independently observed upstream and adapted protected
+semantics. Recursive `usage`, `id`, `model`, `type`, `status`, `error`,
+`finish_reason`, `index`, `call_id`, `name`, `namespace`, and `role` fields cannot
+be added, removed or changed. Inputs containing usage, terminal, sequence-number
+or tool-call semantics must produce one corresponding output, not fan-out or
+dropping. Content-only
+events without those constraints may fan out within the output limits.
+The original upstream response remains the financial source. JSON adaptation
+failures produce sanitized HTTP errors. Streaming adaptation failures abort the
+body; an error before headers flush can close the connection without an HTTP
+status. Neither path retries or changes candidates. Native plugins remain
+administrator-trusted code, not a sandbox.
 
 ## `attempt.body`
 
@@ -333,3 +556,6 @@ secret wrappers when their owned contents are no longer needed.
 - [Codex control adapter](../../../src/application/codex/protocol.rs)
 - [Multipart host adapter](../../../src/application/request_body.rs)
 - [Runnable Responses example](../examples/responses.rs)
+- [Runnable response adapter example](../examples/response_adapter.rs)
+- [Runnable usage parser example](../examples/usage_parser.rs)
+- [Response adapter host design](../../../docs/development/connector-response-adapters.md)

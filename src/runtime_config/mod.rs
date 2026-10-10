@@ -850,17 +850,36 @@ pub fn compile_control_plane(
 pub fn compile_runtime_config(
     records: RuntimeConfigRecords,
 ) -> Result<CompiledRuntimeConfig, ConfigError> {
+    compile_runtime_config_for_plugins(records, None)
+}
+
+fn compile_runtime_config_for_plugins(
+    records: RuntimeConfigRecords,
+    plugins: Option<&ConnectorPlugins>,
+) -> Result<CompiledRuntimeConfig, ConfigError> {
     let system_settings = compile_system_settings(records.system_settings)?;
     let mut sharing = crate::domain::codex_sharing::SharingRegistry::compile(records.sharing)
         .map_err(|message| ConfigError::Compile(message.into()))?;
     sharing.protect_channels(records.sharing_only_channels);
-    compile_with_sharing(records.control_plane, system_settings, sharing)
+    compile_with_sharing(records.control_plane, system_settings, sharing, plugins)
 }
 
 pub fn compile_runtime_config_with_plugins(
     mut records: RuntimeConfigRecords,
     plugins: &crate::connector_plugins::ConnectorPlugins,
 ) -> Result<CompiledRuntimeConfig, ConfigError> {
+    let mut valid_plugins = Vec::new();
+    let mut errors = HashMap::new();
+    for manifest in plugins.manifests() {
+        let plugin = plugins.get(&manifest.id).expect("registered plugin");
+        if plugin.validate_attempt_contract().is_ok() {
+            valid_plugins.push(plugin);
+        } else {
+            errors.insert(manifest.id.clone(), "invalid_capabilities");
+        }
+    }
+    let plugins = ConnectorPlugins::from_plugins(valid_plugins)
+        .map_err(|_| ConfigError::Compile("invalid plugin registry".into()))?;
     for id in &records.connector_ids {
         parse_connector_kind(id)?;
     }
@@ -885,26 +904,15 @@ pub fn compile_runtime_config_with_plugins(
                     .operations
                     .iter()
                     .any(|value| value == operation.as_str())
-                && [
-                    "attempt.body",
-                    "attempt.target",
-                    "attempt.headers",
-                    "attempt.capabilities",
-                ]
-                .iter()
-                .all(|required| manifest.commands.iter().any(|command| command == required))
-                && (operation != ApiOperation::ImagesEdit
-                    || ["attempt.image_edit_plan", "attempt.image_part_plan"]
-                        .iter()
-                        .all(|required| {
-                            manifest.commands.iter().any(|command| command == required)
-                        }))
+                && plugin.attempt_descriptor(operation.as_str()).is_ok()
         });
         if !implemented {
             channel.enabled = false;
         }
     }
-    Ok(compile_runtime_config(records)?.with_plugins(plugins.clone()))
+    Ok(compile_runtime_config_for_plugins(records, Some(&plugins))?
+        .with_plugins(plugins)
+        .with_plugin_errors(errors))
 }
 
 pub fn compile_runtime_config_with_catalog(
@@ -962,7 +970,13 @@ pub fn compile_runtime_config_with_catalog(
                         state.revision.try_into().map_err(|_| "invalid_revision")?,
                     )
                     .map_err(|_| "invalid_settings")
-            })();
+            })()
+            .and_then(|plugin| {
+                plugin
+                    .validate_attempt_contract()
+                    .map_err(|_| "invalid_capabilities")?;
+                Ok(plugin)
+            });
         match result {
             Ok(plugin) => configured.push(plugin),
             Err(code) => {
@@ -983,13 +997,14 @@ pub fn compile_control_plane_with_system_settings(
     records: ControlPlaneRecords,
     system_settings: SystemRuntimeSettings,
 ) -> Result<CompiledRuntimeConfig, ConfigError> {
-    compile_with_sharing(records, system_settings, Default::default())
+    compile_with_sharing(records, system_settings, Default::default(), None)
 }
 
 fn compile_with_sharing(
     records: ControlPlaneRecords,
     system_settings: SystemRuntimeSettings,
     mut sharing: crate::domain::codex_sharing::SharingRegistry,
+    plugins: Option<&ConnectorPlugins>,
 ) -> Result<CompiledRuntimeConfig, ConfigError> {
     let sharing_only_groups = records
         .groups
@@ -1097,31 +1112,63 @@ fn compile_with_sharing(
             let connector_kind = channel_connector_kind(&channel, group)?;
             let request_compression = channel_request_compression(&channel, group)?;
             let identity = compiled_channel_identity(&channel)?;
-            let compiled = Arc::new(
-                CompiledChannel::new_with_connector_policy_automation_and_billing(
-                    channel.id,
-                    channel.channel_group_id,
-                    api_format,
-                    connector_kind,
-                    request_compression,
-                    parse_url(channel.id, &channel.base_url)?,
-                    channel.billing_multiplier,
-                    auth,
-                    channel
-                        .available_models
-                        .iter()
-                        .map(|model| Arc::<str>::from(model.as_str()))
-                        .collect(),
-                    channel.supports_websocket,
-                    channel.supports_standalone_web_search,
-                    channel.auto_disable_allowed,
-                    channel.auto_disabled,
-                    channel.test_model.as_deref().map(Arc::<str>::from),
-                    upstream_policy,
-                )
-                .with_channel_identity(identity)
-                .with_transports(&channel.transports),
-            );
+            let transports = plugins
+                .and_then(|plugins| plugins.get(connector_kind.as_str()))
+                .filter(|plugin| plugin.manifest().protocol_version == 3)
+                .and_then(|plugin| {
+                    plugin
+                        .attempt_descriptor(identity.api_operation.as_str())
+                        .ok()
+                        .map(|descriptor| {
+                            descriptor
+                                .protocols
+                                .iter()
+                                .map(|entry| match entry.protocol {
+                                    ai_gateway_connector_sdk::ConnectorProtocol::NonStream
+                                        if identity.api_operation == ApiOperation::ImagesEdit =>
+                                    {
+                                        crate::domain::CapabilityTransport::Multipart
+                                    }
+                                    ai_gateway_connector_sdk::ConnectorProtocol::NonStream => {
+                                        crate::domain::CapabilityTransport::HttpJson
+                                    }
+                                    ai_gateway_connector_sdk::ConnectorProtocol::Sse => {
+                                        crate::domain::CapabilityTransport::HttpSse
+                                    }
+                                    ai_gateway_connector_sdk::ConnectorProtocol::Websocket => {
+                                        crate::domain::CapabilityTransport::Websocket
+                                    }
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                });
+            let mut compiled = CompiledChannel::new_with_connector_policy_automation_and_billing(
+                channel.id,
+                channel.channel_group_id,
+                api_format,
+                connector_kind,
+                request_compression,
+                parse_url(channel.id, &channel.base_url)?,
+                channel.billing_multiplier,
+                auth,
+                channel
+                    .available_models
+                    .iter()
+                    .map(|model| Arc::<str>::from(model.as_str()))
+                    .collect(),
+                channel.supports_websocket,
+                channel.supports_standalone_web_search,
+                channel.auto_disable_allowed,
+                channel.auto_disabled,
+                channel.test_model.as_deref().map(Arc::<str>::from),
+                upstream_policy,
+            )
+            .with_channel_identity(identity)
+            .with_transports(&channel.transports);
+            if let Some(transports) = transports {
+                compiled = compiled.restrict_transports(&transports);
+            }
+            let compiled = Arc::new(compiled);
             probe_channels.insert(channel.id, Arc::clone(&compiled));
             if !channel.auto_disabled && all_groups[&channel.channel_group_id].enabled {
                 channels.insert(channel.id, compiled);

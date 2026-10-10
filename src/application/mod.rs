@@ -12,6 +12,7 @@ mod proxy;
 mod proxy_test;
 mod request_body;
 mod request_log;
+mod response_adapter;
 mod system_metrics;
 mod usage;
 
@@ -56,4 +57,4 @@ pub use request_log::{
     RequestLogAdmissionError, RequestLogIntent, RequestLogPipelineMonitor, RequestLogSink,
 };
 pub use system_metrics::{SystemLoadReport, SystemMetricsService};
-pub(crate) use usage::{ResponseErrorDetails, ResponseUsage, UsageCollector};
+pub(crate) use usage::{ResponseErrorDetails, ResponseUsage, UsageCollector, UsageParserConfig};

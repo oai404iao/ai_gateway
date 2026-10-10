@@ -164,6 +164,41 @@ mod tests {
     }
 
     #[test]
+    fn inclusive_and_exclusive_upstream_inputs_have_identical_canonical_billing() {
+        use ai_gateway_connector_sdk::{UsageFormat, parse_general_usage};
+        let openai = parse_general_usage(
+            UsageFormat::OpenAiResponses,
+            &serde_json::json!({
+                "input_tokens":5,"input_tokens_details":{"cached_tokens":3,"cache_write_tokens":1},
+                "output_tokens":2,
+            }),
+        )
+        .unwrap();
+        let anthropic = parse_general_usage(
+            UsageFormat::AnthropicMessages,
+            &serde_json::json!({
+                "input_tokens":1,"cache_read_input_tokens":3,"cache_creation_input_tokens":1,
+                "output_tokens":2,
+            }),
+        )
+        .unwrap();
+        assert_eq!(openai, anthropic);
+        let usage = RequestUsage {
+            input_tokens: openai.input_tokens,
+            cached_input_tokens: openai.cached_input_tokens,
+            cache_write_tokens: openai.cache_write_tokens,
+            output_tokens: openai.output_tokens,
+            reasoning_tokens: openai.reasoning_tokens,
+        };
+        let mut price = price();
+        price.input_unit_price = Decimal::ONE;
+        price.cached_input_unit_price = Decimal::ZERO;
+        price.cache_write_unit_price = Decimal::new(25, 2);
+        price.output_unit_price = Decimal::new(2, 0);
+        assert_eq!(calculate_cost(&usage, &price), Decimal::new(625, 2));
+    }
+
+    #[test]
     fn effective_prices_round_midpoints_to_even_at_twelve_places() {
         for (coefficient, expected) in [(5, 2), (15, 8), (25, 12), (35, 18)] {
             assert_eq!(

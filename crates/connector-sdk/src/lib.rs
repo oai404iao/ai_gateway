@@ -5,8 +5,12 @@ use serde_json::Value;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use zeroize::{Zeroize, Zeroizing};
 
+mod response;
 mod settings;
+mod usage;
+pub use response::*;
 pub use settings::*;
+pub use usage::*;
 
 thread_local! {
     static ABI_PANIC_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };

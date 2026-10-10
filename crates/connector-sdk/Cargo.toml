@@ -15,3 +15,13 @@ zeroize = "1.8"
 name = "responses"
 crate-type = ["cdylib"]
 test = true
+
+[[example]]
+name = "response_adapter"
+crate-type = ["cdylib"]
+test = true
+
+[[example]]
+name = "usage_parser"
+crate-type = ["cdylib"]
+test = true

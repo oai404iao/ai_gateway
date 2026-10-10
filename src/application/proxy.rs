@@ -1,7 +1,7 @@
 mod websocket;
 
 use std::{
-    collections::{BTreeSet, HashSet},
+    collections::{BTreeSet, HashSet, VecDeque},
     error::Error,
     io,
     pin::Pin,
@@ -9,6 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use ai_gateway_connector_sdk::{MAX_RESPONSE_JSON_BYTES, ResponseMode};
 use axum::{
     Json,
     body::{Body, Bytes, to_bytes},
@@ -70,7 +71,8 @@ use super::{
         ImageBodySpoolSnapshot, ImageEditBodyError, ImageEditBodyPolicy, PreparedRequestBody,
         ProxyRequestBodyLimits, ReplayableRequestBody,
     },
-    usage::{ResponseErrorDetails, SseTerminalOutcome, UsageCollector},
+    response_adapter::{ResponseAdapterConfig, SseResponseAdapter},
+    usage::{ResponseErrorDetails, SseTerminalOutcome, UsageCollector, UsageParserConfig},
 };
 
 /// Data-plane use case backed by a single immutable configuration snapshot per
@@ -563,6 +565,7 @@ impl ProxyService {
             };
             completion
                 .set_preserve_affinity_on_failure(prepared_attempt.preserves_affinity_on_failure());
+            completion.set_usage_parser(prepared_attempt.usage_parser(api_operation));
             let transforms = current_channel.upstream_policy().effective_transforms();
             if api_operation == ApiOperation::StandaloneWebSearch
                 && !transforms.request_json().is_empty()
@@ -911,7 +914,9 @@ impl ProxyService {
                 connector_success_response_is_sse,
                 transforms.response_headers(),
                 transforms.sse_event_patches().clone(),
-            );
+                prepared_attempt.response_adapter(parsed.request_protocol),
+            )
+            .await;
         }
     }
 
@@ -2107,13 +2112,14 @@ fn is_hop_by_hop(name: &HeaderName, connection_names: &HashSet<HeaderName>) -> b
     connection_names.contains(name) || crate::request_policy::header_is_hop_by_hop(name.as_str())
 }
 
-fn response_from_upstream(
+async fn response_from_upstream(
     upstream_response: reqwest::Response,
     stream_idle_timeout: Duration,
     mut completion: CompletionGuard,
     connector_success_response_is_sse: bool,
     response_headers: &crate::transforms::HeaderPlan,
     sse_event_patches: SseEventPatchPlan,
+    response_adapter: Option<ResponseAdapterConfig>,
 ) -> Result<AxumResponse, ProxyError> {
     let upstream_status = upstream_response.status();
     let status = StatusCode::from_u16(upstream_status.as_u16())
@@ -2137,6 +2143,24 @@ fn response_from_upstream(
     };
     let response_is_sse = is_sse_response(original_upstream_headers)
         || (connector_success_response_is_sse && upstream_status.is_success());
+    let response_adapter = response_adapter.filter(|_| upstream_status.is_success());
+    if response_adapter.as_ref().is_some_and(|adapter| {
+        response_is_sse != (adapter.mode == ResponseMode::Sse)
+            || (adapter.mode == ResponseMode::Json
+                && !original_upstream_headers
+                    .get(CONTENT_TYPE)
+                    .and_then(|value| value.to_str().ok())
+                    .is_some_and(|value| {
+                        value.split(';').next().is_some_and(|mime| {
+                            mime.trim().eq_ignore_ascii_case("application/json")
+                        })
+                    }))
+    }) {
+        let error = ProxyError::response_transform_failed();
+        completion.set_client_visible_status(StatusCode::BAD_GATEWAY.as_u16());
+        completion.finish_with_proxy_error(RequestOutcome::ResponseTransformFailed, &error);
+        return Err(error);
+    }
     let transform_sse = sse_event_patches.has_operations() && response_is_sse;
     let capture_error_body = !response_is_sse
         && !upstream_status.is_success()
@@ -2160,12 +2184,13 @@ fn response_from_upstream(
         remove_decoded_entity_headers(&mut upstream_headers);
     }
     let mut headers = forward_response_headers(&upstream_headers);
-    if transform_sse {
+    if transform_sse || response_adapter.is_some() {
         remove_transformed_entity_headers(&mut headers);
     }
-    let expected_body_bytes = (!transform_sse && !content_codings.is_encoded())
-        .then(|| upstream_response.content_length())
-        .flatten();
+    let expected_body_bytes =
+        (!transform_sse && response_adapter.is_none() && !content_codings.is_encoded())
+            .then(|| upstream_response.content_length())
+            .flatten();
     if response_has_no_body(status) || expected_body_bytes == Some(0) {
         completion.finish(if upstream_status.is_success() {
             RequestOutcome::Succeeded
@@ -2177,13 +2202,91 @@ fn response_from_upstream(
         *response.headers_mut() = headers;
         return Ok(response);
     }
+    if let Some(adapter) = response_adapter
+        .as_ref()
+        .filter(|adapter| adapter.mode == ResponseMode::Json)
+    {
+        let mut upstream = Box::pin(decode_response_body(upstream_response, &content_codings));
+        let mut body = Vec::new();
+        loop {
+            let next = match timeout(stream_idle_timeout, upstream.next()).await {
+                Ok(next) => next,
+                Err(_) => {
+                    let error = ProxyError::response_transform_failed();
+                    completion.set_client_visible_status(StatusCode::BAD_GATEWAY.as_u16());
+                    completion
+                        .finish_with_proxy_error(RequestOutcome::ResponseTransformFailed, &error);
+                    return Err(error);
+                }
+            };
+            match next {
+                Some(Ok(bytes)) => {
+                    completion.observe_upstream_error_body(&bytes);
+                    completion.observe_usage(&bytes);
+                    if body.len().saturating_add(bytes.len()) > MAX_RESPONSE_JSON_BYTES {
+                        let error = ProxyError::response_transform_failed();
+                        completion.set_client_visible_status(StatusCode::BAD_GATEWAY.as_u16());
+                        completion.finish_with_proxy_error(
+                            RequestOutcome::ResponseTransformFailed,
+                            &error,
+                        );
+                        return Err(error);
+                    }
+                    body.extend_from_slice(&bytes);
+                }
+                Some(Err(_)) => {
+                    let error = ProxyError::response_transform_failed();
+                    completion.set_client_visible_status(StatusCode::BAD_GATEWAY.as_u16());
+                    completion
+                        .finish_with_proxy_error(RequestOutcome::ResponseTransformFailed, &error);
+                    return Err(error);
+                }
+                None => break,
+            }
+        }
+        let adapted = match adapter.adapt_json(status.as_u16(), &body) {
+            Ok(body) => body,
+            Err(_) => {
+                let error = ProxyError::response_transform_failed();
+                completion.set_client_visible_status(StatusCode::BAD_GATEWAY.as_u16());
+                completion.finish_with_proxy_error(RequestOutcome::ResponseTransformFailed, &error);
+                return Err(error);
+            }
+        };
+        completion.record_first_byte();
+        completion.finalize_usage();
+        completion.finish(RequestOutcome::Succeeded);
+        let mut response = Response::new(Body::from(adapted));
+        *response.status_mut() = status;
+        *response.headers_mut() = headers;
+        return Ok(response);
+    }
+    let adapter_format = response_adapter
+        .as_ref()
+        .map(|adapter| adapter.operation.api_format());
+    let adapter = response_adapter.map(|adapter| {
+        SseResponseAdapter::new(
+            adapter,
+            status.as_u16(),
+            adapter_format.expect("adapter format"),
+        )
+    });
+    let framer = if adapter.is_some() {
+        Some(SseTransformer::new(SseEventPatchPlan::empty(
+            adapter_format.expect("adapter format"),
+        )))
+    } else {
+        transform_sse.then(|| SseTransformer::new(sse_event_patches.clone()))
+    };
     let stream = timed_upstream_stream(
         decode_response_body(upstream_response, &content_codings),
         stream_idle_timeout,
         completion,
         upstream_status.is_success(),
         expected_body_bytes,
-        transform_sse.then(|| SseTransformer::new(sse_event_patches)),
+        framer,
+        adapter,
+        sse_event_patches,
     );
     let mut response = Response::new(Body::from_stream(stream));
     *response.status_mut() = status;
@@ -2266,9 +2369,14 @@ struct StreamState {
     upstream_succeeded: bool,
     remaining_bytes: Option<u64>,
     sse_transformer: Option<SseTransformer>,
+    response_adapter: Option<SseResponseAdapter>,
+    adapter_patches: SseEventPatchPlan,
+    adapted_frames: VecDeque<Bytes>,
+    adapted_terminal: Option<SseTerminalOutcome>,
     yield_after_sse_frame: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn timed_upstream_stream(
     upstream: impl Stream<Item = Result<Bytes, DecodedBodyError>> + Send + 'static,
     idle_timeout: Duration,
@@ -2276,6 +2384,8 @@ fn timed_upstream_stream(
     upstream_succeeded: bool,
     remaining_bytes: Option<u64>,
     sse_transformer: Option<SseTransformer>,
+    response_adapter: Option<SseResponseAdapter>,
+    adapter_patches: SseEventPatchPlan,
 ) -> impl Stream<Item = Result<Bytes, BodyStreamError>> + Send {
     stream::unfold(
         StreamState {
@@ -2285,6 +2395,10 @@ fn timed_upstream_stream(
             upstream_succeeded,
             remaining_bytes,
             sse_transformer,
+            response_adapter,
+            adapter_patches,
+            adapted_frames: VecDeque::new(),
+            adapted_terminal: None,
             yield_after_sse_frame: false,
         },
         |mut state| async move {
@@ -2293,9 +2407,28 @@ fn timed_upstream_stream(
                 tokio::task::yield_now().await;
             }
             loop {
+                if let Some(frame) = state.adapted_frames.pop_front() {
+                    state.completion.record_first_byte();
+                    if state.adapted_frames.is_empty()
+                        && let Some(terminal) = state.adapted_terminal.take()
+                    {
+                        state.completion.finish(sse_terminal_request_outcome(
+                            terminal,
+                            state.upstream_succeeded,
+                        ));
+                    }
+                    state.yield_after_sse_frame = true;
+                    return Some((Ok(frame), state));
+                }
                 if let Some(transformer) = &mut state.sse_transformer {
                     match transformer.next_frame() {
                         Ok(Some(frame)) => {
+                            if state.response_adapter.is_some() {
+                                if adapt_stream_frame(&mut state, &frame).is_err() {
+                                    return Some((Err(fail_response_adapter(&mut state)), state));
+                                }
+                                continue;
+                            }
                             record_stream_bytes(&mut state, &frame);
                             state.yield_after_sse_frame = true;
                             return Some((Ok(frame), state));
@@ -2304,6 +2437,7 @@ fn timed_upstream_stream(
                         Err(source) => {
                             state.upstream.take();
                             state.sse_transformer = None;
+                            state.response_adapter = None;
                             let error = ProxyError::response_transform_failed();
                             state.completion.finish_with_error_details(
                                 RequestOutcome::ResponseTransformFailed,
@@ -2316,7 +2450,14 @@ fn timed_upstream_stream(
                 }
                 let next = match state.upstream.as_mut() {
                     Some(upstream) => timeout(state.idle_timeout, upstream.next()).await,
-                    None => return None,
+                    None => {
+                        if let Some(adapter) = &mut state.response_adapter
+                            && adapter.finish().is_err()
+                        {
+                            return Some((Err(fail_response_adapter(&mut state)), state));
+                        }
+                        return None;
+                    }
                 };
 
                 match next {
@@ -2330,6 +2471,7 @@ fn timed_upstream_stream(
                     }
                     Ok(Some(Err(error))) => {
                         state.upstream.take();
+                        state.response_adapter = None;
                         state.completion.finish_with_message(
                             RequestOutcome::UpstreamBodyError,
                             Some("upstream_body_error"),
@@ -2343,6 +2485,12 @@ fn timed_upstream_stream(
                         if let Some(transformer) = &mut state.sse_transformer
                             && let Some(residual) = transformer.finish()
                         {
+                            if state.response_adapter.is_some() {
+                                if adapt_stream_frame(&mut state, &residual).is_err() {
+                                    return Some((Err(fail_response_adapter(&mut state)), state));
+                                }
+                                continue;
+                            }
                             record_stream_bytes(&mut state, &residual);
                             let outcome = state
                                 .completion
@@ -2353,6 +2501,11 @@ fn timed_upstream_stream(
                                 .unwrap_or(default_outcome);
                             state.completion.finish(outcome);
                             return Some((Ok(residual), state));
+                        }
+                        if let Some(adapter) = &mut state.response_adapter
+                            && adapter.finish().is_err()
+                        {
+                            return Some((Err(fail_response_adapter(&mut state)), state));
                         }
                         let outcome = state
                             .completion
@@ -2366,6 +2519,7 @@ fn timed_upstream_stream(
                     }
                     Err(_) => {
                         state.upstream.take();
+                        state.response_adapter = None;
                         state.completion.finish_with_message(
                             RequestOutcome::StreamIdleTimeout,
                             Some("stream_idle_timeout"),
@@ -2382,6 +2536,38 @@ fn timed_upstream_stream(
         },
     )
     .fuse()
+}
+
+fn adapt_stream_frame(
+    state: &mut StreamState,
+    frame: &Bytes,
+) -> Result<(), super::response_adapter::ResponseAdaptationError> {
+    state.completion.observe_upstream_error_body(frame);
+    let terminal = state
+        .completion
+        .observe_usage(frame)
+        .or_else(|| state.completion.finalize_usage());
+    let adapter = state.response_adapter.as_mut().expect("response adapter");
+    let frames = adapter.adapt_frame(frame)?;
+    for frame in frames {
+        let frame = crate::transforms::transform_sse_frame(frame, &state.adapter_patches)
+            .map_err(|_| super::response_adapter::ResponseAdaptationError)?;
+        state.adapted_frames.push_back(frame);
+    }
+    state.adapted_terminal = terminal;
+    Ok(())
+}
+
+fn fail_response_adapter(state: &mut StreamState) -> BodyStreamError {
+    state.upstream.take();
+    state.sse_transformer = None;
+    state.response_adapter = None;
+    state.adapted_frames.clear();
+    let error = ProxyError::response_transform_failed();
+    state
+        .completion
+        .finish_with_proxy_error(RequestOutcome::ResponseTransformFailed, &error);
+    Box::new(super::response_adapter::ResponseAdaptationError)
 }
 
 fn record_stream_bytes(state: &mut StreamState, bytes: &Bytes) {
@@ -2969,9 +3155,15 @@ impl CompletionGuard {
         }
     }
 
+    fn set_usage_parser(&mut self, parser: UsageParserConfig) {
+        if let Some(context) = &mut self.context {
+            context.usage.set_parser(parser);
+        }
+    }
+
     fn configure_usage_collector(&mut self, sse: bool, capture_error_body: bool) {
         if let Some(context) = &mut self.context {
-            context.usage = UsageCollector::new(context.api_format, sse);
+            context.usage.reset(sse);
             if capture_error_body {
                 context.usage.capture_error_body();
             }
@@ -3233,6 +3425,91 @@ mod tests {
         },
     };
     use serde_json::json;
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn response_adapter_errors_end_the_body_stream_on_the_next_poll() {
+        use super::{BodyStreamError, CompletionGuard, timed_upstream_stream};
+        use crate::{
+            application::response_adapter::{ResponseAdapterConfig, SseResponseAdapter},
+            connector_plugins::Plugin,
+            transforms::{SseEventPatchPlan, SseTransformer},
+        };
+        use futures_util::{StreamExt, stream};
+        use sha2::{Digest, Sha256};
+        use std::{os::unix::fs::PermissionsExt, path::PathBuf, process::Command};
+
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let directory = tempfile::tempdir_in(&root).unwrap();
+        let path = directory.path().join("stream-fixture.so");
+        assert!(
+            Command::new("cc")
+                .args([
+                    "-shared",
+                    "-fPIC",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    "-DFIXTURE_PROTOCOL3",
+                    "-DFIXTURE_DESCRIPTOR_MODE=6",
+                ])
+                .arg(root.join("crates/connector-sdk/tests/fixture.c"))
+                .arg("-o")
+                .arg(&path)
+                .status()
+                .unwrap()
+                .success()
+        );
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        let digest: String = Sha256::digest(std::fs::read(&path).unwrap())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let plugin = Plugin::load(&path, &digest, "fixture").unwrap();
+        let sources: Vec<super::UpstreamByteStream> = vec![
+            stream::iter([Ok(Bytes::from_static(b"data: {\"choices\":[]}\n\n"))]).boxed(),
+            stream::empty().boxed(),
+            stream::iter([Err(
+                Box::new(std::io::Error::other("synthetic")) as BodyStreamError
+            )])
+            .boxed(),
+            stream::pending().boxed(),
+        ];
+        for upstream in sources {
+            let config = ResponseAdapterConfig {
+                plugin: Arc::clone(&plugin),
+                operation: ApiOperation::Responses,
+                mode: ai_gateway_connector_sdk::ResponseMode::Sse,
+            };
+            let completion = CompletionGuard {
+                sharing: None,
+                context: None,
+                lease: None,
+                _admission: None,
+                automatic_disable: None,
+            };
+            let body = timed_upstream_stream(
+                upstream,
+                Duration::from_millis(10),
+                completion,
+                true,
+                None,
+                Some(SseTransformer::new(SseEventPatchPlan::empty(
+                    ApiFormat::OpenAiResponses,
+                ))),
+                Some(SseResponseAdapter::new(
+                    config,
+                    200,
+                    ApiFormat::OpenAiResponses,
+                )),
+                SseEventPatchPlan::empty(ApiFormat::OpenAiResponses),
+            );
+            let mut body = Box::pin(body);
+            assert!(body.next().await.unwrap().is_err());
+            assert!(body.next().await.is_none());
+            assert!(body.next().await.is_none());
+        }
+    }
 
     fn affinity_settings(sources: Vec<SessionAffinityKeySource>) -> SessionAffinitySettings {
         SessionAffinitySettings::new(

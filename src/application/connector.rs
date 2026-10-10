@@ -1,5 +1,6 @@
 //! Built-in general connector and external connector attempt dispatch.
 
+use ai_gateway_connector_sdk::{ConnectorProtocol, ResponseMode};
 use axum::http::{HeaderMap, HeaderValue, Uri, header::AUTHORIZATION};
 use bytes::Bytes;
 use reqwest::{StatusCode, Url};
@@ -13,6 +14,8 @@ use super::codex::{
     CodexAttemptError, CodexConnectorService, CodexCredentialUnavailable, PreparedCodexAttempt,
 };
 use super::request_body::{ImageEditBodyError, PreparedRequestBody, ReplayableRequestBody};
+use super::response_adapter::ResponseAdapterConfig;
+use super::usage::UsageParserConfig;
 
 #[derive(Clone, Default)]
 pub struct UpstreamConnectorRegistry {
@@ -69,17 +72,11 @@ impl UpstreamConnectorRegistry {
                 {
                     return Err(ConnectorUnavailable::Missing);
                 }
-                let capabilities = plugin
-                    .call(
-                        "attempt.capabilities",
-                        &json!({"operation":api_operation}),
-                        &[],
-                    )
-                    .map_err(|_| ConnectorUnavailable::Missing)?;
-                let successful_response_is_sse =
-                    capabilities.metadata["successful_response_is_sse"]
-                        .as_bool()
-                        .ok_or(ConnectorUnavailable::Missing)?;
+                let successful_response_is_sse = plugin
+                    .attempt_descriptor(api_operation.as_str())
+                    .map_err(|_| ConnectorUnavailable::Missing)?
+                    .capabilities
+                    .successful_response_is_sse;
                 Ok(PreparedUpstreamAttempt::External {
                     plugin,
                     operation: api_operation,
@@ -131,6 +128,18 @@ pub(crate) enum PreparedUpstreamAttempt {
 }
 
 impl PreparedUpstreamAttempt {
+    pub(crate) fn usage_parser(&self, operation: ApiOperation) -> UsageParserConfig {
+        match self {
+            Self::OpenAiCompatible => UsageParserConfig::for_operation(operation),
+            Self::External {
+                plugin, operation, ..
+            } => UsageParserConfig::for_plugin(plugin, *operation),
+            Self::Codex { attempt, .. } => {
+                UsageParserConfig::for_plugin(attempt.plugin(), operation)
+            }
+        }
+    }
+
     pub(crate) fn plugin_generation_id(&self) -> Option<&str> {
         match self {
             Self::OpenAiCompatible => None,
@@ -199,6 +208,16 @@ impl PreparedUpstreamAttempt {
             Self::External {
                 plugin, operation, ..
             } => {
+                let descriptor = plugin
+                    .attempt_descriptor(operation.as_str())
+                    .map_err(|_| ConnectorAttemptError::InvalidTarget)?;
+                if !descriptor
+                    .protocols
+                    .iter()
+                    .any(|entry| entry.protocol == connector_protocol(request_protocol))
+                {
+                    return Err(ConnectorAttemptError::InvalidTarget);
+                }
                 let output = plugin
                     .call(
                         "attempt.body",
@@ -330,6 +349,38 @@ impl PreparedUpstreamAttempt {
                     .await;
             });
         }
+    }
+
+    pub(crate) fn response_adapter(
+        &self,
+        protocol: RequestProtocol,
+    ) -> Option<ResponseAdapterConfig> {
+        let Self::External {
+            plugin, operation, ..
+        } = self
+        else {
+            return None;
+        };
+        let mode = plugin
+            .attempt_descriptor(operation.as_str())
+            .ok()?
+            .protocols
+            .iter()
+            .find(|entry| entry.protocol == connector_protocol(protocol))?
+            .response;
+        (mode != ResponseMode::Passthrough).then(|| ResponseAdapterConfig {
+            plugin: Arc::clone(plugin),
+            operation: *operation,
+            mode,
+        })
+    }
+}
+
+fn connector_protocol(protocol: RequestProtocol) -> ConnectorProtocol {
+    match protocol {
+        RequestProtocol::NonStream => ConnectorProtocol::NonStream,
+        RequestProtocol::Sse => ConnectorProtocol::Sse,
+        RequestProtocol::WebSocket => ConnectorProtocol::Websocket,
     }
 }
 

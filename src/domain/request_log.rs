@@ -137,6 +137,7 @@ pub struct RequestBilling {
     pub peak_pricing: bool,
 }
 
+/// Canonical input/output totals include their cache/reasoning subsets.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct RequestUsage {
     pub input_tokens: i64,

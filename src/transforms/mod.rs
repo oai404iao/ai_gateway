@@ -773,7 +773,7 @@ impl fmt::Debug for SseEventPatchPlan {
     }
 }
 impl SseEventPatchPlan {
-    fn empty(api_format: ApiFormat) -> Self {
+    pub(crate) fn empty(api_format: ApiFormat) -> Self {
         match api_format {
             ApiFormat::OpenAiChatCompletions => Self::OpenAiChatCompletions {
                 entries: Arc::default(),
@@ -1000,7 +1000,7 @@ struct SseLine {
     end: usize,
 }
 
-fn transform_sse_frame(
+pub(crate) fn transform_sse_frame(
     frame: Bytes,
     plan: &SseEventPatchPlan,
 ) -> Result<Bytes, TransformApplyError> {

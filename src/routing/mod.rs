@@ -109,8 +109,10 @@ impl ChannelCapability {
             }
             Self::Transport(transport) => channel.permits_transport(transport),
             Self::ResponsesNonStream => {
+                // Explicit contracts cannot inherit Codex's legacy validation-only path.
                 channel.permits_transport(crate::domain::CapabilityTransport::HttpJson)
                     || (channel.connector_kind() == crate::domain::ConnectorKind::CodexOauth
+                        && !channel.has_strict_transport_contract()
                         && channel.permits_transport(crate::domain::CapabilityTransport::HttpSse))
             }
         }
@@ -1006,6 +1008,25 @@ impl RoutingRuntime {
         }
         let affinity = prepare_affinity(&self.inner, key, &rule, affinity);
         let now = self.inner.clock.now();
+        let preserve_inapplicable_affinity = affinity
+            .as_ref()
+            .and_then(|affinity| affinity.preferred_candidate.as_ref())
+            .is_some_and(|preferred| {
+                rule.tiers()
+                    .iter()
+                    .flat_map(|tier| tier.candidates())
+                    .any(|candidate| {
+                        preferred.matches(candidate)
+                            && key.permits_route_candidate(candidate.channel_slot())
+                            && !excluded_candidate_slots.contains(&candidate.candidate_slot())
+                            && !capability.permits(candidate.channel())
+                            && usable(
+                                &self.inner,
+                                &ChannelIdentity::from_channel(candidate.channel()),
+                                now,
+                            )
+                    })
+            });
         for tier in rule.tiers() {
             let mut allow_affinity = true;
             loop {
@@ -1124,12 +1145,15 @@ impl RoutingRuntime {
                     allow_affinity = false;
                     continue;
                 };
-                let affinity_binding = affinity.as_ref().map(|affinity| AffinityBinding {
-                    key: affinity.key,
-                    ttl: affinity.ttl,
-                    candidate: candidate_identity.clone(),
-                    cache_hit,
-                });
+                let affinity_binding = affinity
+                    .as_ref()
+                    .filter(|_| !preserve_inapplicable_affinity)
+                    .map(|affinity| AffinityBinding {
+                        key: affinity.key,
+                        ttl: affinity.ttl,
+                        candidate: candidate_identity.clone(),
+                        cache_hit,
+                    });
                 let affinity_selection =
                     affinity.as_ref().map(|affinity| SessionAffinitySelection {
                         rule_name: Arc::clone(&affinity.rule_name),
@@ -1138,7 +1162,7 @@ impl RoutingRuntime {
                 let stale_affinity = affinity
                     .as_ref()
                     .and_then(|affinity| affinity.preferred_candidate.as_ref())
-                    .filter(|_| !cache_hit);
+                    .filter(|_| !cache_hit && !preserve_inapplicable_affinity);
                 let selected = SelectedRoute {
                     rule,
                     channel,
@@ -1161,7 +1185,9 @@ impl RoutingRuntime {
                 return SelectionResult::Selected(selected);
             }
         }
-        if let Some(affinity) = &affinity
+        // A different transport must not erase or rebind a healthy session.
+        if !preserve_inapplicable_affinity
+            && let Some(affinity) = &affinity
             && let Some(candidate) = affinity.preferred_candidate.as_ref()
         {
             affinity_remove_if_candidate(&self.inner, affinity.key, candidate);
@@ -1954,6 +1980,36 @@ mod tests {
         }
     }
 
+    #[test]
+    fn explicit_codex_transport_contract_does_not_inherit_nonstream_fallback() {
+        use crate::domain::{CapabilityTransport as T, ConnectorKind, RequestProtocol as P};
+        let (mut records, _) = records_with_format(
+            &[(1, "weighted_random")],
+            &[1],
+            None,
+            ApiFormat::OpenAiResponses,
+        );
+        records.channels[0].connector_kind = ConnectorKind::CodexOauth.as_str().into();
+        let config = compile_control_plane(records).unwrap();
+        let legacy = config
+            .channels()
+            .next()
+            .unwrap()
+            .as_ref()
+            .clone()
+            .with_transports(&[T::HttpSse]);
+        let capability =
+            super::ChannelCapability::for_operation(ApiOperation::Responses, P::NonStream);
+        assert!(capability.permits(&legacy));
+        let explicit = legacy.restrict_transports(&[T::HttpSse]);
+        assert!(!capability.permits(&explicit));
+        assert!(
+            super::ChannelCapability::for_operation(ApiOperation::Responses, P::Sse)
+                .permits(&explicit)
+        );
+        assert!(!capability.permits(&explicit.restrict_transports(&[])));
+    }
+
     fn affinity_system_settings(fingerprint: [u8; 32], ttl: Duration) -> SystemRuntimeSettings {
         SystemRuntimeSettings::new_with_all(
             UpstreamTimeoutDefaults::default(),
@@ -2493,6 +2549,72 @@ mod tests {
         };
         assert!(second.session_affinity.as_ref().unwrap().cache_hit());
         assert_eq!(second.channel.id(), first_channel);
+    }
+
+    #[test]
+    fn transport_mismatch_neither_erases_nor_rebinds_healthy_affinity() {
+        use crate::domain::{CapabilityTransport as T, RequestProtocol as P};
+        for alternate in [false, true] {
+            let fingerprint = [7; 32];
+            let ttl = Duration::from_secs(60);
+            let (mut records, secret) = records_with_format(
+                &[(0, "weighted_random"), (0, "weighted_random")],
+                &[1, 1],
+                None,
+                ApiFormat::OpenAiResponses,
+            );
+            records.channels[0].transports = vec![T::HttpSse];
+            records.channels[1].transports = vec![if alternate { T::HttpJson } else { T::HttpSse }];
+            let snapshot = compile_control_plane_with_system_settings(
+                records,
+                affinity_system_settings(fingerprint, ttl),
+            )
+            .unwrap();
+            let runtime = RoutingRuntime::with_seams(
+                PassiveHealthPolicy::default(),
+                Arc::new(TestClock(AtomicU64::new(0))),
+                Arc::new(Tickets(Mutex::new(VecDeque::from([0, 0])))),
+            );
+            runtime.reconcile(&snapshot);
+            let key = snapshot.authenticate(&secret).unwrap();
+            let select = |protocol| {
+                runtime.select_operation_with_affinity(
+                    &snapshot,
+                    &key,
+                    ApiOperation::Responses,
+                    protocol,
+                    "model",
+                    Some(SessionAffinityMatch::new(
+                        Arc::from("test-affinity"),
+                        fingerprint,
+                        [9; 32],
+                        ttl,
+                    )),
+                )
+            };
+            let SelectionResult::Selected(mut first) = select(P::Sse) else {
+                panic!("SSE must select");
+            };
+            let first_channel = first.channel.id();
+            first.lease.request_succeeded();
+            drop(first);
+            match select(P::NonStream) {
+                SelectionResult::Selected(mut other) if alternate => {
+                    assert_ne!(other.channel.id(), first_channel);
+                    assert!(!other.session_affinity.as_ref().unwrap().cache_hit());
+                    other.lease.request_succeeded();
+                }
+                SelectionResult::NoHealthyChannel { .. } if !alternate => {}
+                _ => {
+                    panic!("nonstream must either select the alternate or reject without dispatch")
+                }
+            }
+            let SelectionResult::Selected(again) = select(P::Sse) else {
+                panic!("SSE affinity must remain");
+            };
+            assert!(again.session_affinity.as_ref().unwrap().cache_hit());
+            assert_eq!(again.channel.id(), first_channel);
+        }
     }
 
     #[test]

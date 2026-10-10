@@ -203,6 +203,7 @@ impl Plugin {
             artifact_digest: self.artifact_digest.clone(),
             generation_id: format!("{}:{revision}", self.artifact_digest),
             settings: Some(Arc::new(CompiledSettings(config))),
+            attempt_descriptors: contracts::descriptor_cache(&self.manifest),
         }))
     }
 

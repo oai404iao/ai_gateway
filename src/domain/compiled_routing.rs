@@ -732,6 +732,7 @@ pub struct CompiledChannel {
     supports_websocket: bool,
     supports_standalone_web_search: bool,
     transport_mask: u8,
+    strict_transport_contract: bool,
     billing_multiplier: Decimal,
     upstream_auth: UpstreamAuth,
     available_models: HashSet<Arc<str>>,
@@ -755,9 +756,26 @@ impl CompiledChannel {
         self
     }
 
+    pub(crate) fn restrict_transports(mut self, transports: &[super::CapabilityTransport]) -> Self {
+        self.strict_transport_contract = true;
+        self.transport_mask &= transports
+            .iter()
+            .fold(0, |mask, transport| mask | transport_bit(*transport));
+        self.supports_websocket = self.permits_transport(super::CapabilityTransport::Websocket);
+        self.connectivity_fingerprint = Arc::from(format!(
+            "{}#restricted-transport={}",
+            self.connectivity_fingerprint, self.transport_mask
+        ));
+        self
+    }
+
     #[must_use]
     pub fn permits_transport(&self, transport: super::CapabilityTransport) -> bool {
         self.transport_mask & transport_bit(transport) != 0
+    }
+
+    pub(crate) fn has_strict_transport_contract(&self) -> bool {
+        self.strict_transport_contract
     }
 
     pub(crate) fn with_channel_identity(mut self, identity: ChannelIdentity) -> Self {
@@ -1028,6 +1046,7 @@ impl CompiledChannel {
             supports_websocket,
             supports_standalone_web_search,
             transport_mask,
+            strict_transport_contract: false,
             billing_multiplier,
             upstream_auth,
             available_models,

@@ -1,13 +1,14 @@
 //! SHA-pinned native artifacts and immutable configured plugin generations.
 
 mod catalog;
+mod contracts;
 mod settings;
 pub use catalog::{DirectoryPluginCatalog, PluginArtifact};
 
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 
 use ai_gateway_connector_sdk::{
@@ -53,6 +54,8 @@ pub enum PluginError {
     InvalidInput,
     #[error("connector plugin returned an invalid result")]
     InvalidOutput,
+    #[error("connector plugin attempt capabilities are invalid")]
+    InvalidCapabilities,
     #[error("connector plugin call failed")]
     CallFailed,
     #[error("connector plugin rejected the operation")]
@@ -75,6 +78,8 @@ pub struct Plugin {
     artifact_digest: String,
     generation_id: String,
     settings: Option<Arc<settings::CompiledSettings>>,
+    attempt_descriptors:
+        HashMap<String, OnceLock<Result<ai_gateway_connector_sdk::AttemptDescriptor, ()>>>,
 }
 
 impl std::fmt::Debug for Plugin {
@@ -124,6 +129,7 @@ impl Plugin {
             artifact_digest: self.artifact_digest.clone(),
             generation_id: format!("{}:{revision}", self.artifact_digest),
             settings: self.settings.clone(),
+            attempt_descriptors: contracts::descriptor_cache(&self.manifest),
         })
     }
 
@@ -325,13 +331,18 @@ fn validate_hash(hash: &str) -> Result<(), PluginError> {
 
 fn validate_manifest(manifest: &PluginManifest, expected_id: &str) -> Result<(), PluginError> {
     if manifest.id != expected_id
-        || !matches!(manifest.protocol_version, 1 | 2)
-        || (manifest.id == "codex" && manifest.protocol_version != 2)
+        || !matches!(manifest.protocol_version, 1..=3)
+        || (manifest.id == "codex" && !matches!(manifest.protocol_version, 2 | 3))
+        || (manifest.commands.iter().any(|command| {
+            command == ai_gateway_connector_sdk::ATTEMPT_DESCRIBE
+                || command == ai_gateway_connector_sdk::USAGE_PARSE
+                || command.starts_with("response.")
+        }) && manifest.protocol_version != 3)
         || (manifest
             .commands
             .iter()
             .any(|command| command.starts_with("settings."))
-            && manifest.protocol_version != 2)
+            && manifest.protocol_version < 2)
         || manifest.version.is_empty()
         || manifest.version.len() > 128
         || !manifest.version.is_ascii()
@@ -526,6 +537,7 @@ mod linux {
         validate_id(&manifest.id)?;
         validate_manifest(&manifest, &manifest.id)?;
         Ok(Arc::new(Plugin {
+            attempt_descriptors: contracts::descriptor_cache(&manifest),
             manifest,
             dispatch,
             free_buffer,
@@ -744,12 +756,16 @@ mod tests {
         }))
         .unwrap();
         assert!(validate_manifest(&manifest, "fixture").is_ok());
-        manifest.protocol_version = 3;
+        manifest.protocol_version = 4;
         assert!(validate_manifest(&manifest, "fixture").is_err());
         manifest.protocol_version = 1;
         manifest.commands.push("settings.describe/v1".into());
         assert!(validate_manifest(&manifest, "fixture").is_err());
         manifest.protocol_version = 2;
+        assert!(validate_manifest(&manifest, "fixture").is_ok());
+        manifest.commands.push("response.json/v1".into());
+        assert!(validate_manifest(&manifest, "fixture").is_err());
+        manifest.protocol_version = 3;
         assert!(validate_manifest(&manifest, "fixture").is_ok());
         manifest.id = "codex".into();
         manifest.protocol_version = 1;

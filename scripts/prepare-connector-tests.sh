@@ -29,13 +29,17 @@ else
   test "$(git -C "$source_root" rev-parse HEAD)" = "$revision"
 fi
 
+target="${CARGO_TARGET_DIR:-"$source_root/target"}"
+if [[ "$target" != /* ]]; then
+  target="$source_root/$target"
+fi
 (
   cd "$source_root"
   CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0 TMPDIR="$task_dir" \
-    cargo build --locked --package ai-gateway-connector-codex
+    cargo build --locked --package ai-gateway-connector-codex --target-dir "$target"
 ) >&2
 
-library="$source_root/target/debug/libai_gateway_connector_codex.so"
+library="$target/debug/libai_gateway_connector_codex.so"
 hash="$(sha256sum "$library" | cut -d ' ' -f 1)"
 destination="$repo_root/target/connector-tests/$hash"
 mkdir -p -- "$destination"

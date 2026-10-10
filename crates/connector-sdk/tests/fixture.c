@@ -1,4 +1,5 @@
 #include "../include/ai_gateway_connector.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -10,6 +11,27 @@
 #endif
 #ifndef FIXTURE_VERSION
 #define FIXTURE_VERSION "1.0.0"
+#endif
+#ifndef FIXTURE_PLUGIN_ID
+#define FIXTURE_PLUGIN_ID "fixture"
+#endif
+#ifndef FIXTURE_USAGE_DESCRIPTOR
+#define FIXTURE_USAGE_DESCRIPTOR ""
+#endif
+#ifndef FIXTURE_USAGE_RESULT
+#define FIXTURE_USAGE_RESULT "{\"usage\":{\"input_tokens\":5,\"cached_input_tokens\":3,\"cache_write_tokens\":0,\"output_tokens\":2,\"reasoning_tokens\":0}}"
+#endif
+#ifndef FIXTURE_DESCRIPTOR_MODE
+#define FIXTURE_DESCRIPTOR_MODE 0
+#endif
+#ifndef FIXTURE_RESPONSE_RESULT_MODE
+#define FIXTURE_RESPONSE_RESULT_MODE 0
+#endif
+#ifndef FIXTURE_TARGET_URL
+#define FIXTURE_TARGET_URL "https://upstream.test/base/responses"
+#endif
+#ifdef FIXTURE_COUNT_DESCRIBE
+static unsigned descriptor_calls = 0;
 #endif
 
 static AiGatewayOwnedBuffer copy(const void *bytes, uint64_t length) {
@@ -39,6 +61,24 @@ static uint32_t dispatch(
     AiGatewayCallOutput *output
 ) {
     memset(output, 0, sizeof(*output));
+#ifdef FIXTURE_USAGE_PARSE
+    if (equals(command, "usage.parse/v1")) {
+        if (body.len > 65536) return AI_GATEWAY_CONNECTOR_ERROR;
+        char *input = malloc((size_t)body.len + 1);
+        if (input == NULL) abort();
+        memcpy(input, body.ptr, (size_t)body.len);
+        input[body.len] = '\0';
+        int private_content = strstr(input, "must-not-reach-parser") != NULL;
+        free(input);
+        if (private_content) return AI_GATEWAY_CONNECTOR_ERROR;
+        const char value[] = FIXTURE_USAGE_RESULT;
+        output->metadata = copy(value, sizeof(value) - 1);
+#ifdef FIXTURE_USAGE_OUTPUT_BODY
+        output->body = copy("unexpected", 10);
+#endif
+        return AI_GATEWAY_CONNECTOR_OK;
+    }
+#endif
 #ifdef FIXTURE_SETTINGS
     if (equals(command, "settings.describe/v1")) {
         const char value[] = "{\"schema_version\":1,\"title\":{\"en\":\"Generic fixture\"},\"fields\":[{\"key\":\"mode\",\"label\":{\"en\":\"Mode\"},\"required\":true,\"type\":\"string\",\"max_length\":32}],\"defaults\":{\"mode\":\"default\"}}";
@@ -81,8 +121,65 @@ static uint32_t dispatch(
         output->metadata = copy(value, sizeof(value) - 1);
         return AI_GATEWAY_CONNECTOR_OK;
     }
+#ifdef FIXTURE_PROTOCOL3
+    if (equals(command, "response.json/v1")) {
+        output->metadata = copy("{}", 2);
+#if FIXTURE_RESPONSE_RESULT_MODE == 1
+        output->body = copy("{invalid", 8);
+#elif FIXTURE_RESPONSE_RESULT_MODE == 2
+        const char value[] = "{\"id\":\"resp_fixture\",\"object\":\"response\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"raw-text\"}]}],\"usage\":{\"input_tokens\":999,\"output_tokens\":3,\"input_tokens_details\":{\"cached_tokens\":2},\"output_tokens_details\":{\"reasoning_tokens\":1}}}";
+        output->body = copy(value, sizeof(value) - 1);
+#elif FIXTURE_RESPONSE_RESULT_MODE == 3
+        const char value[] = "{\"id\":\"resp_fixture\",\"object\":\"response\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"normalized\"}]}],\"usage\":{\"input_tokens\":9,\"output_tokens\":3,\"input_tokens_details\":{\"cached_tokens\":2},\"output_tokens_details\":{\"reasoning_tokens\":1}}}";
+        output->body = copy(value, sizeof(value) - 1);
+#else
+        output->body = copy(body.ptr, body.len);
+#endif
+        return AI_GATEWAY_CONNECTOR_OK;
+    }
+    if (equals(command, "attempt.describe/v1")) {
+#ifdef FIXTURE_COUNT_DESCRIBE
+        descriptor_calls++;
+#endif
+#if FIXTURE_DESCRIPTOR_MODE == 1
+        const char value[] = "{\"capabilities\":{\"successful_response_is_sse\":true},\"protocols\":[]}";
+#elif FIXTURE_DESCRIPTOR_MODE == 2
+        const char value[] = "{\"capabilities\":{\"preserves_affinity_on_failure\":false,\"successful_response_is_sse\":false,\"changes_request_body\":false},\"protocols\":[{\"protocol\":\"non_stream\",\"response\":\"json\"},{\"protocol\":\"non_stream\",\"response\":\"json\"}]}";
+#elif FIXTURE_DESCRIPTOR_MODE == 3
+        const char value[] = "{\"capabilities\":{\"preserves_affinity_on_failure\":false,\"successful_response_is_sse\":false,\"changes_request_body\":false},\"protocols\":[{\"protocol\":\"unknown\",\"response\":\"passthrough\"}]}";
+#elif FIXTURE_DESCRIPTOR_MODE == 4
+        const char value[] = "{\"capabilities\":{\"preserves_affinity_on_failure\":false,\"successful_response_is_sse\":false,\"changes_request_body\":false},\"protocols\":[{\"protocol\":\"websocket\",\"response\":\"passthrough\"}]}";
+#elif FIXTURE_DESCRIPTOR_MODE == 5
+        const char value[] = "{\"capabilities\":{\"preserves_affinity_on_failure\":false,\"successful_response_is_sse\":false,\"changes_request_body\":false},\"protocols\":[{\"protocol\":\"sse\",\"response\":\"json\"}]}";
+#elif FIXTURE_DESCRIPTOR_MODE == 6
+        const char value[] = "{\"capabilities\":{\"preserves_affinity_on_failure\":false,\"successful_response_is_sse\":false,\"changes_request_body\":false},\"protocols\":[{\"protocol\":\"sse\",\"response\":\"sse\"}]}";
+#elif FIXTURE_DESCRIPTOR_MODE == 8
+        const char value[] = "{\"capabilities\":{\"preserves_affinity_on_failure\":false,\"successful_response_is_sse\":false,\"changes_request_body\":false},\"protocols\":[{\"protocol\":\"non_stream\",\"response\":\"unknown\"}]}";
+#elif FIXTURE_DESCRIPTOR_MODE == 9
+        const char value[] = "{\"capabilities\":{\"preserves_affinity_on_failure\":false,\"successful_response_is_sse\":false,\"changes_request_body\":false},\"protocols\":[{\"protocol\":\"non_stream\",\"response\":\"json\"},{\"protocol\":\"sse\",\"response\":\"sse\"}]}";
+#elif FIXTURE_DESCRIPTOR_MODE == 10
+        const char value[] = "{\"capabilities\":{\"preserves_affinity_on_failure\":false,\"successful_response_is_sse\":false,\"changes_request_body\":false},\"protocols\":[{\"protocol\":\"non_stream\",\"response\":\"passthrough\"}]" FIXTURE_USAGE_DESCRIPTOR "}";
+#else
+        const char value[] = "{\"capabilities\":{\"preserves_affinity_on_failure\":false,\"successful_response_is_sse\":false,\"changes_request_body\":false},\"protocols\":[{\"protocol\":\"non_stream\",\"response\":\"json\"}]" FIXTURE_USAGE_DESCRIPTOR "}";
+#endif
+        output->metadata = copy(value, sizeof(value) - 1);
+#if FIXTURE_DESCRIPTOR_MODE == 7
+        output->body = copy("secret", 6);
+#endif
+        return AI_GATEWAY_CONNECTOR_OK;
+    }
+#endif
+#ifdef FIXTURE_COUNT_DESCRIBE
+    if (equals(command, "echo")) {
+        char value[64];
+        int length = snprintf(value, sizeof(value), "{\"descriptor_calls\":%u}", descriptor_calls);
+        if (length < 0 || (size_t)length >= sizeof(value)) abort();
+        output->metadata = copy(value, (uint64_t)length);
+        return AI_GATEWAY_CONNECTOR_OK;
+    }
+#endif
     if (equals(command, "attempt.target")) {
-        const char value[] = "{\"url\":\"https://upstream.test/base/responses\"}";
+        const char value[] = "{\"url\":\"" FIXTURE_TARGET_URL "\"}";
         output->metadata = copy(value, sizeof(value) - 1);
         return AI_GATEWAY_CONNECTOR_OK;
     }
@@ -114,15 +211,39 @@ static uint32_t dispatch(
 }
 
 static const char manifest[] =
-    "{\"id\":\"fixture\",\"version\":\"" FIXTURE_VERSION "\","
-#ifdef FIXTURE_SETTINGS
+    "{\"id\":\"" FIXTURE_PLUGIN_ID "\",\"version\":\"" FIXTURE_VERSION "\","
+#ifdef FIXTURE_PROTOCOL3
+    "\"protocol_version\":3,"
+#elif defined(FIXTURE_SETTINGS)
     "\"protocol_version\":2,"
 #endif
+#ifdef FIXTURE_PROTOCOL3
+#ifdef FIXTURE_RESPONSE_OPERATION
+    "\"operations\":[\"" FIXTURE_RESPONSE_OPERATION "\"],"
+#else
+    "\"operations\":[\"responses\"],"
+#endif
+#else
     "\"operations\":[\"responses\",\"responses-ws\",\"images_edit\"],"
+#endif
 #ifdef FIXTURE_EMPTY_COMMANDS
     "\"commands\":[]}";
 #else
     "\"commands\":[\"echo\",\"error\",\"malformed\","
+#ifdef FIXTURE_PROTOCOL3
+#ifdef FIXTURE_USAGE_PARSE
+    "\"usage.parse/v1\","
+#endif
+#ifndef FIXTURE_OMIT_DESCRIBE
+    "\"attempt.describe/v1\","
+#endif
+#ifndef FIXTURE_OMIT_RESPONSE_JSON
+    "\"response.json/v1\","
+#endif
+#ifndef FIXTURE_OMIT_RESPONSE_EVENT
+    "\"response.event/v1\","
+#endif
+#endif
 #ifdef FIXTURE_SETTINGS
     "\"settings.describe/v1\",\"settings.validate/v1\",\"settings.compile/v1\",\"settings.migrate/v1\","
 #endif

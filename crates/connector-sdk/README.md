@@ -34,6 +34,58 @@ configured base URL (including any base path); for example,
 `https://upstream.example` becomes `https://upstream.example/v1/responses`.
 It supports `non_stream` and `sse`, not WebSocket or Images.
 
+The [response adapter example](examples/response_adapter.rs) declares protocol 3
+and explicitly opts into same-format Chat Completions and Responses JSON/SSE
+response adaptation:
+
+```sh
+cargo build --locked -p ai-gateway-connector-sdk --example response_adapter
+cargo test --locked -p ai-gateway-connector-sdk --all-targets
+```
+
+Its Linux library is `target/debug/examples/libresponse_adapter.so`, with ID
+`example-response-adapter`. Declarative schema 1 settings are `label` (string,
+maximum 128 characters, default `adapted:`), `mode` (`normal`, `invalid`, or
+`metering_tamper`, default `normal`), and `supported_protocols` (`both`,
+`non_stream`, or `sse`, default `both`). The negative modes are deliberately
+invalid **test fixtures**, not examples of permissible production adaptation.
+Normal mode modifies content text only, keeps usage/terminal events unchanged,
+and emits no events on finish. JSON uses `label + text`; SSE text deltas use
+`label + request-local text-event count + ":" + text`, starting at 1.
+See the [response contract](docs/commands.md#bounded-response-adaptation-protocol-3)
+and [host design](../../docs/development/connector-response-adapters.md) for
+limits, state isolation, and implementation status.
+
+## Usage normalization
+
+`parse_general_usage(UsageFormat, &usage_object)` is a pure shared parser for
+OpenAI Chat Completions, Responses, Images, and Anthropic Messages usage.
+Its `CanonicalUsage` preserves the gateway's five token counters; it does not
+return prices, balances, settlement instructions, or other financial facts.
+Input totals include cache reads/writes, and output totals include reasoning.
+Invalid or incomplete counters return `None`, not an inferred total.
+
+A protocol-3 `AttemptDescriptor` may select `usage: {"parser":"general",
+"format":"anthropic_messages"}` or a custom `usage.parse/v1` parser. Select the
+actual upstream interface for this connector and operation, not the client's
+requested format. Plugins can reuse the shared general parser instead of
+duplicating provider counter arithmetic. Omission preserves the host's existing
+default. Usage selection is independent of JSON/SSE response adaptation;
+Codex protocol 3 can select usage while retaining response pass-through.
+See [the usage command contract](docs/commands.md#usage-normalization).
+
+The [usage parser example](examples/usage_parser.rs), ID
+`example-usage-parser`, supports both Chat and Responses with response
+pass-through. Its `profile` setting selects `openai`, `anthropic`, `custom`, or
+the deliberately invalid test mode `invalid_custom`; the default is `openai`.
+The custom profile delegates its raw usage object to the general Anthropic
+parser rather than duplicating token arithmetic.
+
+```sh
+cargo build --locked -p ai-gateway-connector-sdk --example usage_parser
+cargo test --locked -p ai-gateway-connector-sdk --example usage_parser
+```
+
 The host may call dispatch concurrently. Implementations must be thread-safe,
 must not retain borrowed host memory, and must finish synchronous calls promptly.
 Dispatch receives a JSON **object** for small control fields and a separate raw
@@ -107,8 +159,13 @@ Limits are 64 KiB for manifests, 1 MiB for metadata, 512 MiB for bodies,
 128 bytes for a command, and 256 MiB for a library image. Manifest fields
 `id`, `version`, `operations`, and `commands` are required; unknown fields fail
 closed. SDK 0.2 adds `protocol_version`: omission is legacy protocol 1, while
-settings-capable plugins and Codex require protocol 2. Protocol 2 manifests
-are deliberately rejected by older hosts; the C ABI remains version 1.
+settings-capable plugins and Codex require protocol 2 or 3.
+Protocol 3 adds explicit per-operation protocol/response descriptors and bounded
+JSON/SSE response commands plus optional upstream usage selection.
+Protocol 1/2 retain response pass-through; Codex also remains pass-through on
+protocol 3.
+Protocol 2/3 manifests are deliberately rejected by incompatible older hosts;
+the C ABI remains version 1 and the SDK package version remains `0.2.0`.
 IDs match `[a-z][a-z0-9_-]{0,63}`; `general` is reserved. Version is
 nonempty printable ASCII (at most 128 bytes). Operations and commands must be
 nonempty unique strings using ASCII letters, digits, `_`, `-`, `.`, `/`;

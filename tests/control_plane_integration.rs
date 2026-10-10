@@ -5276,6 +5276,26 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         "codex"
     );
 
+    let codex_protocol = runtime
+        .snapshot()
+        .plugins()
+        .get("codex")
+        .unwrap()
+        .manifest()
+        .protocol_version;
+    let (expected_status, expected_code, expected_outcome) = match codex_protocol {
+        3 => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no_healthy_channel",
+            RequestLogOutcome::Failed,
+        ),
+        2 => (
+            StatusCode::BAD_REQUEST,
+            "codex_streaming_required",
+            RequestLogOutcome::Failed,
+        ),
+        version => panic!("unexpected Codex test protocol {version}"),
+    };
     let non_streaming = app
         .clone()
         .oneshot(request(
@@ -5288,14 +5308,53 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         ))
         .await
         .unwrap();
-    assert_eq!(non_streaming.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(non_streaming.status(), expected_status);
     let non_streaming_body = non_streaming
         .into_body()
         .collect()
         .await
         .unwrap()
         .to_bytes();
-    assert!(String::from_utf8_lossy(&non_streaming_body).contains("codex_streaming_required"));
+    let non_streaming_body: serde_json::Value =
+        serde_json::from_slice(&non_streaming_body).unwrap();
+    assert_eq!(non_streaming_body["error"]["code"], expected_code);
+    assert_eq!(captured.http_requests.lock().unwrap().len(), 1);
+    let non_streaming_events = logs.events();
+    assert_eq!(non_streaming_events.len(), 2);
+    let non_streaming_event = &non_streaming_events[1];
+    assert_eq!(non_streaming_event.outcome, expected_outcome);
+    assert_eq!(
+        non_streaming_event.response_status_code,
+        Some(expected_status.as_u16())
+    );
+    let expected_log_code = if codex_protocol == 2 {
+        "invalid_request"
+    } else {
+        "no_healthy_channel"
+    };
+    assert_eq!(
+        non_streaming_event.error_code.as_deref(),
+        Some(expected_log_code)
+    );
+    assert_eq!(non_streaming_event.api_operation, ApiOperation::Responses);
+    assert_eq!(
+        non_streaming_event.request_protocol,
+        RequestProtocol::NonStream
+    );
+    assert_eq!(
+        non_streaming_event
+            .billing
+            .as_ref()
+            .and_then(|billing| billing.usage),
+        None
+    );
+    if codex_protocol == 2 {
+        let summary = non_streaming_event.error_summary.as_deref().unwrap();
+        assert!(summary.contains("\"code\": \"codex_streaming_required\""));
+        assert!(summary.contains("\"param\": \"stream\""));
+    } else {
+        assert!(non_streaming_event.billing.is_none());
+    }
 
     let previous = app
         .clone()

@@ -32,10 +32,13 @@ def digest(path):
 
 
 def main():
-    if len(sys.argv) != 4:
-        raise ValueError("usage: package-test-plugin.py LIBRARY PLUGIN_SOURCE OUTPUT")
+    if len(sys.argv) not in (4, 5):
+        raise ValueError("usage: package-test-plugin.py LIBRARY PLUGIN_SOURCE OUTPUT [FIXTURE_ID]")
     os.umask(0o077)
-    library_path, source, output = (Path(value).resolve() for value in sys.argv[1:])
+    library_path, source, output = (Path(value).resolve() for value in sys.argv[1:4])
+    fixture_id = sys.argv[4] if len(sys.argv) == 5 else "codex"
+    if fixture_id not in ("codex", "example-response-adapter", "example-usage-parser"):
+        raise ValueError("unsupported trusted fixture")
     # This is an explicitly built trusted fixture, never an uploaded/discovered package.
     library = ctypes.CDLL(str(library_path))
     entry = library.ai_gateway_connector_entry_v1
@@ -49,18 +52,25 @@ def main():
     if not descriptor.manifest.ptr or not 0 < descriptor.manifest.length <= 65536:
         raise ValueError("invalid fixture manifest")
     manifest = json.loads(ctypes.string_at(descriptor.manifest.ptr, descriptor.manifest.length))
-    if manifest["id"] != "codex":
-        raise ValueError("expected the Codex test fixture")
+    if manifest["id"] != fixture_id:
+        raise ValueError("unexpected trusted fixture identity")
     architecture = {"x86_64": "x86_64", "aarch64": "aarch64"}.get(platform.machine())
     if not architecture or platform.system() != "Linux":
         raise ValueError("unsupported fixture platform")
     sha256 = digest(library_path)
-    directory = output / "plugin-directory" / "artifacts" / "codex" / sha256
+    directory = output / "plugin-directory" / "artifacts" / fixture_id / sha256
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     if not (directory / "SHA256SUMS").exists():
+        partial = list(directory.rglob("*"))
+        if directory.is_symlink() or any(path.is_symlink() for path in partial):
+            raise ValueError("unexpected symlink in partial fixture package")
+        # Restored caches can retain readonly files from an interrupted package.
+        for path in partial:
+            if path.is_file():
+                path.chmod(0o600)
         shutil.copyfile(library_path, directory / library_path.name)
         shutil.copyfile(source / "LICENSE", directory / "LICENSE")
-        (directory / "LICENSES" / "fixture").mkdir(parents=True, mode=0o700)
+        (directory / "LICENSES" / "fixture").mkdir(parents=True, exist_ok=True, mode=0o700)
         shutil.copyfile(source / "LICENSE", directory / "LICENSES" / "fixture" / "LICENSE")
         (directory / "THIRD_PARTY_NOTICES.md").write_text(
             "Synthetic local test package, not a redistributable release.\n"
@@ -82,9 +92,9 @@ def main():
         for path in directory.rglob("*"):
             if path.is_file():
                 path.chmod(0o444)
-    archive = output / "codex-test.tar.gz"
+    archive = output / f"{fixture_id}-test.tar.gz"
     with tarfile.open(archive, "w:gz") as destination:
-        destination.add(directory, arcname="codex-test")
+        destination.add(directory, arcname=f"{fixture_id}-test")
 
 
 if __name__ == "__main__":

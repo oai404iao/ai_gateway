@@ -60,6 +60,12 @@ Compose 使用 `gateway-plugins` 持久卷，entrypoint 在降低权限前准备
 升级可能使已有 Responses WebSocket continuation 或未完成 OAuth 授权失效，
 客户端需要重新建立上下文或重新授权。
 
+通用协议 3 插件明确声明支持的请求 transport；不支持的 transport 不参与选路，
+不会自动改用另一协议。显式启用的同格式 HTTP JSON/SSE 响应归一化由宿主验证
+usage、终态和标识字段；无效输出失败关闭，不回退透传。JSON 适配限 8 MiB，
+不启用适配的普通响应仍使用原有流式透传。新 Codex 插件使用协议 3，但不启用响应适配；
+它按实际 Responses 上游接口复用通用 usage 解析。旧协议 2 仍兼容。
+
 已加载库不在运行中物理卸载；多次版本升级达到进程保留额度后需要维护重启。
 删除当前或已加载制品会被拒绝，必要时先取消选择并重启。
 
@@ -67,7 +73,7 @@ Compose 使用 `gateway-plugins` 持久卷，entrypoint 在降低权限前准备
 
 1. 停机并完成数据库/spool 一致备份，保留旧二进制和原配置。
 2. 将旧 `[[plugins]]` 改为 `[plugins].directory`。
-3. 准备支持 SDK 0.2 协议 2 的 Codex 插件包。
+3. 准备支持 SDK 0.2 协议 3 的 Codex 插件包；已有协议 2 包仍可使用。
 4. 启动网关，让 PG 0071 或 SQLite 0011 迁移旧设置。
 5. 登录管理面，安装并启用新版插件，核对迁移值与所需操作。
 
