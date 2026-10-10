@@ -365,12 +365,17 @@ async fn sqlite_plugin_storage_and_migration_contract() {
         "originator":"custom","client_version":"9.8.7","user_agent":"custom/9.8.7"
     });
     let mut tx = database.begin_write().await.unwrap();
-    sqlx::raw_sql("DROP TABLE plugin_install_jobs; DROP TABLE plugin_settings; DROP TABLE plugin_states; DROP TABLE plugin_artifacts; DELETE FROM _gateway_sqlite_migrations WHERE version=11;")
+    sqlx::raw_sql("DROP TABLE plugin_install_jobs; DROP TABLE plugin_settings; DROP TABLE plugin_states; DROP TABLE plugin_artifacts;")
         .execute(&mut *tx).await.unwrap();
     sqlx::query("UPDATE system_settings SET value=json_set(value,'$.codex',json(?1)),updated_at=ag_now() WHERE setting_key='forwarding_policy'")
         .bind(legacy.to_string()).execute(&mut *tx).await.unwrap();
+    sqlx::raw_sql(include_str!(
+        "../../migrations/sqlite/0011_plugin_lifecycle.sql"
+    ))
+    .execute(&mut *tx)
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
-    database.install_schema().await.unwrap();
     let settings = repository.plugin_settings("codex").await.unwrap().unwrap();
     assert_eq!(settings.values, legacy);
     assert_eq!(settings.schema_version, 1);

@@ -48,7 +48,6 @@ repo/
 |   |   |-- console.rs          # Separate JWT-authenticated Console router (/console/v1/*)
 |   |   `-- console_ui.rs       # Embedded SPA assets + SPA fallback + cache/security headers (embedded-console-ui feature only)
 |   |-- admission/              # Process-local RPM, concurrency, and soft quota admission
-|   |-- codex_sharing.rs        # Single-writer fixed-seat money admission, WAL, and recovery
 |   |-- domain/                 # API formats, compiled routing, credentials, request-log events
 |   |-- runtime_config/         # TOML deserialization and ArcSwap configuration snapshots; [console].ui_enabled validation
 |   |-- observability/          # tracing-subscriber initialization
@@ -227,11 +226,6 @@ performance run.** Building the tool or running
   atomically through `RuntimeConfig::replace_snapshot`. `AppConfig` is the
   TOML bootstrap/process configuration, not the live database snapshot.
 - `[console].ui_enabled = true` mounts the embedded Console UI on the Console listener, but requires building with the `embedded-console-ui` cargo feature (and a built `web/console/dist`). Setting `ui_enabled = true` without the feature compiled in is rejected at startup with a `ConfigError` (`src/runtime_config/mod.rs`). The UI is served only from the Console listener, never from the public `/v1/*` data-plane listener.
-
-Codex sharing requires `[codex_sharing].enabled = true` and a durable
-`request_logging.spool_directory/codex-sharing` directory. The process flag
-does not remove persisted routing restrictions. See
-[`docs/user/codex-sharing.md`](docs/user/codex-sharing.md) before enabling it.
 
 ## Documentation Rules
 
@@ -496,25 +490,6 @@ pool isolation, transforms, and configured outbound proxies.
     `docs/reference/request-allowlists.json` as allow/ignore/reject, keep every public interface and
     public interface explicit, and use `src/request_policy.rs` for ingress and shared outbound
     enforcement. Provider projections belong to the external plugin's contract.
-21. **Codex sharing is single-instance and fail closed.** Keep pre-dispatch durable
-reservations, UUID-idempotent settlement, fixed seats, complete provider
-window observations, and credential projection isolation together. Never
-reset money on page refresh, key rotation, rejoining, or restart, and never
-serve sharing requests through an unmetered operation.
-Failed and cancelled requests currently settle at zero even without usage;
-successful requests with unknown usage remain pending and fail closed.
-Apply sharing admission to the selected credential, not the entire user;
-ordinary authorized routes retain normal billing even when a car is paused or
-unavailable. `channel_groups.sharing_only` is Codex-only and synchronized across
-the pool's projections; toggling it must never remove existing binding protection
-or reset money. Sharing membership comes only from explicit fixed seats, never
-from the user's ordinary group. Self-service API Key authorization may combine
-seat-owned canonical projections with ordinary Policy targets; a missing or
-disabled Policy must not block a sharing-only Key, while protected aliases and
-unseated credentials remain denied. Read
-[`docs/development/codex-sharing.md`](docs/development/codex-sharing.md) before
-changing its WAL, window epochs, configuration, or recovery behavior.
-
 ## Code Style
 
 - Use standard Rust formatting (`cargo fmt`) and linting (`cargo clippy`).
@@ -590,7 +565,6 @@ changing its WAL, window epochs, configuration, or recovery behavior.
 | OpenAI compatibility and external semantics | `docs/reference/` |
 | Images staged design and Codex projection | `docs/development/openai-images.md` |
 | Codex OAuth connector architecture | `docs/development/codex-oauth-connector.md` |
-| Codex sharing policy, ledger, and recovery | `src/codex_sharing.rs`, `src/domain/codex_sharing.rs`, `src/persistence/codex_sharing.rs`, and `docs/development/codex-sharing.md` |
 | Codex Responses WebSocket source study | `docs/reference/codex-responses-websocket.md` |
 | Console spec/implementation drift tests | `tests/console_spec_integration.rs` |
 | Frontend package/scripts | `web/console/package.json` |

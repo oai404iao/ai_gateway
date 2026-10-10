@@ -1,6 +1,6 @@
-//! Explicit backend dispatch for the Console and sharing read surfaces:
+//! Explicit backend dispatch for the Console read surfaces:
 //! request-log views, channel-group status, personal usage, cost statistics,
-//! spend-leaderboard snapshots, and the sharing recovery read.
+//! spend-leaderboard snapshots.
 
 use chrono::NaiveDate;
 use sqlx::PgPool;
@@ -225,18 +225,6 @@ impl MeteringQueries {
             MeteringQueriesBackend::Postgres(queries) => queries.spend_leaderboard(filter).await,
             #[cfg(feature = "sqlite-backend")]
             MeteringQueriesBackend::Sqlite(queries) => queries.spend_leaderboard(filter).await,
-        }
-    }
-
-    /// Recovery read for in-flight Codex sharing reservations.
-    pub async fn sharing_completed_costs(
-        &self,
-        ids: &[Uuid],
-    ) -> Result<Vec<(Uuid, rust_decimal::Decimal)>, RepositoryError> {
-        match &self.backend {
-            MeteringQueriesBackend::Postgres(queries) => queries.sharing_completed_costs(ids).await,
-            #[cfg(feature = "sqlite-backend")]
-            MeteringQueriesBackend::Sqlite(queries) => queries.sharing_completed_costs(ids).await,
         }
     }
 }

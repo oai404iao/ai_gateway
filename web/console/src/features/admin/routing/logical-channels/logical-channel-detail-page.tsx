@@ -8,7 +8,7 @@ import { AdminDetailShell } from "@/features/admin/components/admin-detail-shell
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -46,7 +46,6 @@ const schema = z.object({
   credential_id: z.string().refine((value) => value === NONE || UUID.test(value), "invalid"),
   name: z.string().trim().min(1).max(100),
   enabled: z.boolean(),
-  sharing_only: z.boolean(),
 });
 type FormValues = z.infer<typeof schema>;
 const defaults: FormValues = {
@@ -55,7 +54,6 @@ const defaults: FormValues = {
   credential_id: NONE,
   name: "",
   enabled: true,
-  sharing_only: false,
 };
 
 export function LogicalChannelDetailPage() {
@@ -96,7 +94,6 @@ export function LogicalChannelDetailPage() {
         credential_id: channel.credential_id ?? NONE,
         name: channel.name,
         enabled: channel.enabled,
-        sharing_only: channel.sharing_only,
       });
     }
   }, [channel, form, view]);
@@ -108,7 +105,6 @@ export function LogicalChannelDetailPage() {
       credential_id: values.credential_id === NONE ? null : values.credential_id,
       name: values.name,
       enabled: values.enabled,
-      sharing_only: values.sharing_only,
     };
     try {
       if (isNew) {
@@ -223,8 +219,6 @@ export function LogicalChannelDetailPage() {
                       onValueChange={(value) => {
                         form.setValue("access_id", value === NONE ? "" : value, { shouldDirty: true });
                         form.setValue("credential_id", NONE, { shouldDirty: true });
-                        if (accesses.data?.find((item) => item.id === value)?.connector_kind !== "codex")
-                          form.setValue("sharing_only", false, { shouldDirty: true });
                       }}
                     >
                       <SelectTrigger
@@ -277,12 +271,6 @@ export function LogicalChannelDetailPage() {
                     </Select>
                     <FieldError errors={[form.formState.errors.credential_id]} />
                   </Field>
-                  {access?.connector_kind === "codex" && <Field>
-                    <FieldLabel htmlFor="channel-sharing">{t("Sharing only")}</FieldLabel>
-                    <Switch id="channel-sharing" checked={form.watch("sharing_only")}
-                      onCheckedChange={(value) => form.setValue("sharing_only", value, { shouldDirty: true })} />
-                    <FieldDescription>{t("Only seated sharing members can use this channel. Other channels for the same account cannot bypass sharing protection.")}</FieldDescription>
-                  </Field>}
                   <Field orientation="horizontal">
                     <FieldLabel htmlFor="channel-enabled">{t("Enabled")}</FieldLabel>
                     <Switch

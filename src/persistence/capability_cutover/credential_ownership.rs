@@ -29,11 +29,6 @@ pub fn upgrade(
                 credential_id: channel.credential_id,
                 name: channel.name.clone(),
                 enabled: channel.enabled,
-                sharing_only: channel.deleted_at.is_none()
-                    && old
-                        .routing_groups
-                        .iter()
-                        .any(|group| group.id == channel.group_id && group.sharing_only),
                 binding_revision: channel.binding_revision,
                 created_at: channel.created_at,
                 updated_at: channel.updated_at,

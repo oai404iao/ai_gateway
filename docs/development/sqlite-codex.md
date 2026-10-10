@@ -1,9 +1,9 @@
-# SQLite Codex 与拼车
+# SQLite Codex 仓储
 
 > 状态：当前 S5 实现，验收通过；S6 已接通 Linux `sqlite-backend` 部署。
 
 范围与分阶段门禁见 [SQLite 双后端实施](sqlite-backend.md)。本切片接通全部 Codex
-仓储和拼车所有权；S6 的 serve/CLI、备份恢复与发行构建见[部署指南](../user/sqlite.md)。
+仓储；S6 的 serve/CLI、备份恢复与发行构建见[部署指南](../user/sqlite.md)。
 
 ## 仓储与配额
 
@@ -53,27 +53,9 @@ PG 分支继续使用既有行锁事务，`prepare_dispatch()` 为 no-op，不�
 保留数据库和 provider 证据，不能直接删行后重试兑换。S6 仍保留此边界，
 不新增人工确认兑换的 API，也不允许自动恢复或绕过保护。
 
-进程互斥锁不代替数据库 CAS 或文件独占。操作对象与拼车账本 lease 都持有 S2
+进程互斥锁不代替数据库 CAS 或文件独占。操作对象持有 S2
 逻辑 `DatabaseOwner`，因此数据库 close 等待它们释放；不能在活跃上游调用期间
 关闭/重开库来创建第二组锁。关闭开始后的新数据库访问仍失败，未决 intent 保留。
-
-## 拼车账本与恢复
-
-`SharingLedgerLease` 把 PG 专属连接隐藏在仓储边界内。PG 保持 advisory lock；
-SQLite 在 S2 文件/进程所有权之上取得一个数据库实例共享的进程内 lease，
-短事务保存/核对唯一 ledger UUID，不跨后台保活持有唯一写连接。
-认领时核对持久化 UUID，应用写路径不会更改它；`ping()` 只检查仍持有的数据库文件身份
-及未关闭状态，不借用读写连接，避免连接池拥塞被误判为所有权丢失。
-同库第二个 lease 或不同账本 UUID 均拒绝。
-
-`SaveCodexSharing`、管理员/本人列表和完整运行时配置保持固定席位、不可变绑定、
-身份别名保护、成对投影授权和 8 位金额。审计金额使用与 PG `numeric::text`
-一致的字符串，不通过 JSON 浮点往返。
-
-独立 WAL 仍使用[既有拼车协议](codex-sharing.md)，不创建第二套金额状态机。
-重启恢复相同 ledger UUID、窗口 epoch、使用量和 uncertain pending；从 S4 不可变事实
-查询已知费用进行 UUID 幂等对账。没有日志/账户回执也可对账，未知费用继续冻结，
-不得在刷新、重导凭证、换座或重启时补发金额。
 
 ## 验证入口
 
@@ -85,8 +67,8 @@ cargo clippy --locked --workspace --all-targets --features sqlite-backend
 ```
 
 共享 case 在真实 PostgreSQL 新库和 SQLite 文件库上执行，覆盖 CRUD/去重/导出、
-OAuth 一次性提交、配额窗口、双投影费用/本人授权、批量回滚、固定席位、
-ledger 排他以及 WAL 重启与事实对账。SQLite 专属测试覆盖本地预检无副作用、
+OAuth 一次性提交、配额窗口、双投影费用/本人授权和批量回滚。
+SQLite 专属测试覆盖本地预检无副作用、
 generation/version CAS、其他写者前进、同凭证串行、取消/重开、显式重新授权、
 审计失败原子回滚和 guard 保持文件所有权。
 

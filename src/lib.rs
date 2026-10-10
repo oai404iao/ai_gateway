@@ -2,7 +2,6 @@
 
 pub mod admission;
 pub mod application;
-pub mod codex_sharing;
 pub mod connector_plugins;
 pub mod domain;
 pub mod http;

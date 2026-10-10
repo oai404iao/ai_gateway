@@ -2,7 +2,7 @@
 
 > 状态：当前。第二阶段 P2 的操作边界；S6 已支持 PostgreSQL 和 Linux SQLite，
 > 开发 feature 下的 SQLite 身份/普通控制面见 [S3](sqlite-control-plane.md)，
-> 耐久财务链路与查询见 [S4](sqlite-metering.md)，Codex provider 操作和拼车 lease 见 [S5](sqlite-codex.md)。
+> 耐久财务链路与查询见 [S4](sqlite-metering.md)，Codex provider 操作见 [S5](sqlite-codex.md)。
 
 整体演进见[持久化边界设计](persistence-boundaries.md)，业务不变量和费用路径清单见
 [契约基线](persistence-contracts.md)。P3 已实现[独立计量事实/回执](independent-metering.md)，
@@ -19,7 +19,7 @@
 | `RequestLogRepository` | 终态批次耐久接收、ingress 重试/确认和日志物化 |
 | `MeteringRepository` | 独立事实、pending 工作项与 ingress 可投影标记的原子物化，核对分类 |
 | `RequestLogQueries` | 本人/管理员日志、渠道组状态；不提供结算或 ingress 写入 |
-| `MeteringQueries` | 个人 usage、费用统计、排行榜投影/查询、拼车确定费用读取 |
+| `MeteringQueries` | 个人 usage、费用统计、排行榜投影/查询 |
 | `SettlementRepository` | 原子认领与账户更新、恢复扫描、结算积压 |
 | `DatabaseHealth` | 只读连接池观测，不提供连接获取或事务 |
 

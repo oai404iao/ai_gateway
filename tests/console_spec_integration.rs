@@ -149,7 +149,7 @@ async fn retired_adapter_migration_preserves_usage_and_removes_control_plane_sta
     let user_id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO users (id,email,display_name,role,status) \
-        VALUES ($1,'legacy-sharing-fixture@example.test','Legacy fixture','admin','active')",
+        VALUES ($1,'legacy-fixture@example.test','Legacy fixture','admin','active')",
     )
     .bind(user_id)
     .execute(&database.pool)
@@ -461,13 +461,7 @@ async fn codex_capability_id(pool: &PgPool, credential: Uuid, operation: &str) -
         .bind(credential).bind(operation).fetch_one(pool).await.unwrap()
 }
 
-async fn bind_test_codex_channel(
-    pool: &PgPool,
-    app: &App,
-    group: Uuid,
-    credential: Uuid,
-    sharing_only: bool,
-) -> Uuid {
+async fn bind_test_codex_channel(pool: &PgPool, app: &App, group: Uuid, credential: Uuid) -> Uuid {
     let repository = ControlPlaneRepository::new(pool.clone());
     let identity = repository
         .upstream_credential_detail(credential)
@@ -493,7 +487,7 @@ async fn bind_test_codex_channel(
         "/console/v1/routing/logical-channels",
         serde_json::json!({
             "name":format!("Channel {credential}"),"group_id":group,"access_id":access,
-            "credential_id":credential,"enabled":true,"sharing_only":sharing_only
+            "credential_id":credential,"enabled":true
         }),
     )
     .await;
@@ -580,7 +574,6 @@ async fn seed_test_topology(app: &App, operation: &str) -> TestTopology {
         "/console/v1/routing/logical-channels",
         serde_json::json!({
             "group_id": group, "access_id": access, "credential_id": null,
-            "sharing_only": false,
             "name": "Spec channel", "enabled": true
         }),
     )
@@ -815,13 +808,10 @@ async fn plugin_settings_migration_preserves_values_and_bootstrap_does_not_reint
         .ensure_system_settings(bootstrap_system_settings())
         .await
         .unwrap();
-    sqlx::raw_sql(
-        "DROP TABLE plugin_install_jobs,plugin_settings,plugin_states,plugin_artifacts;
-         DELETE FROM _sqlx_migrations WHERE version=71;",
-    )
-    .execute(&database.pool)
-    .await
-    .unwrap();
+    sqlx::raw_sql("DROP TABLE plugin_install_jobs,plugin_settings,plugin_states,plugin_artifacts;")
+        .execute(&database.pool)
+        .await
+        .unwrap();
     let legacy = serde_json::json!({
         "workspace_path":"/synthetic/project",
         "git_remote_url":"https://github.com/example/synthetic-project",
@@ -838,7 +828,10 @@ async fn plugin_settings_migration_preserves_values_and_bootstrap_does_not_reint
             .fetch_one(&database.pool)
             .await
             .unwrap();
-    run_migrations(&database.pool).await.unwrap();
+    sqlx::raw_sql(include_str!("../migrations/0071_plugin_lifecycle.sql"))
+        .execute(&database.pool)
+        .await
+        .unwrap();
     let migrated = repository.plugin_settings("codex").await.unwrap().unwrap();
     assert_eq!(migrated.values, legacy);
     assert_eq!(migrated.schema_version, 1);
@@ -1482,6 +1475,26 @@ async fn request(
 }
 
 #[tokio::test]
+async fn retired_sharing_routes_are_not_exposed() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let detail = format!("/console/v1/codex-sharing-groups/{}", Uuid::new_v4());
+    let usage = format!("{detail}/usage");
+    for (method, path) in [
+        ("GET", "/console/v1/codex-sharing-groups"),
+        ("POST", "/console/v1/codex-sharing-groups"),
+        ("GET", detail.as_str()),
+        ("PUT", detail.as_str()),
+        ("GET", usage.as_str()),
+        ("GET", "/console/v1/me/codex-sharing"),
+    ] {
+        let response = request(&app, method, path, serde_json::json!({}), &[]).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {path}");
+    }
+    database.cleanup().await;
+}
+
+#[tokio::test]
 async fn upstream_access_contract_is_versioned_and_does_not_create_authority() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
@@ -1676,7 +1689,6 @@ async fn canonical_topology_contract_has_versioned_immutable_capability_identity
     }
     let input = serde_json::json!({
         "group_id": owners[0], "access_id": owners[1], "credential_id": null,
-        "sharing_only": false,
         "name": "Canonical channel", "enabled": true,
     });
     let response = request(
@@ -2008,441 +2020,6 @@ async fn body_json(response: axum::response::Response) -> serde_json::Value {
 async fn body_text(response: axum::response::Response) -> String {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     String::from_utf8(bytes.to_vec()).unwrap()
-}
-
-#[tokio::test]
-async fn sharing_contract_is_versioned_scoped_and_never_exposes_provider_identity() {
-    use ai_gateway::persistence::CodexCredentialCreate;
-    let database = TestDatabase::new().await;
-    let app = app(database.pool.clone()).await;
-    let repository = ControlPlaneRepository::new(database.pool.clone());
-    let coordinator = ControlPlaneCoordinator::new(
-        repository.clone(),
-        app.runtime.clone(),
-        RoutingRuntime::new(PassiveHealthPolicy::default()),
-    );
-    let channel_group = create_resource(
-        &app,
-        "/console/v1/routing/groups",
-        serde_json::json!({
-            "name": "sharing-contract", "enabled": true
-        }),
-    )
-    .await;
-    let credential = coordinator
-        .create_codex_credential(
-            app.user_id,
-            CodexCredentialCreate {
-                label: "Private provider label".into(),
-                enabled: true,
-                proxy_id: None,
-                quota_threshold_percent: 95,
-                base_url: "https://example.test/codex".into(),
-                email: Some("private@example.test".into()),
-                account_id: None,
-                user_id: Some(Uuid::new_v4().to_string()),
-                plan_type: None,
-                is_fedramp: false,
-                id_token: Uuid::new_v4().to_string(),
-                access_token: Uuid::new_v4().to_string(),
-                refresh_token: Uuid::new_v4().to_string(),
-                access_token_expires_at: None,
-                available_models: vec!["sharing-contract-model".into()],
-                quota: None,
-            },
-            None,
-        )
-        .await
-        .unwrap();
-    let channel =
-        bind_test_codex_channel(&database.pool, &app, channel_group, credential.id, false).await;
-    let mut input = serde_json::json!({
-        "channel_id": channel,
-        "name": "Shared development", "enabled": false, "seats": [null, null],
-        "primary_limit_amount": "20", "secondary_limit_amount": "100",
-        "request_reservation_amount": "0.10", "user_requests_per_minute": 30,
-        "group_requests_per_minute": 60, "user_max_concurrent_requests": 1,
-        "group_max_concurrent_requests": 2
-    });
-    let created = request(
-        &app,
-        "POST",
-        "/console/v1/codex-sharing-groups",
-        input.clone(),
-        &[],
-    )
-    .await;
-    assert_eq!(created.status(), StatusCode::CREATED);
-    let created = body_json(created).await;
-    assert!(created["correlation_id"].is_string());
-    let id = created["id"].as_str().unwrap();
-    let path = format!("/console/v1/codex-sharing-groups/{id}");
-    let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
-    assert_eq!(detail.status(), StatusCode::OK);
-    let etag = detail.headers()[header::ETAG].to_str().unwrap().to_owned();
-    let detail = body_json(detail).await;
-    assert_eq!(
-        detail["primary_limit_amount"]
-            .as_str()
-            .unwrap()
-            .parse::<rust_decimal::Decimal>()
-            .unwrap(),
-        rust_decimal::Decimal::from(20)
-    );
-    assert_eq!(detail["seats"], serde_json::json!([null, null]));
-    assert!(detail.get("provider_user_id").is_none());
-    assert!(detail.get("access_token").is_none());
-    assert!(
-        body_json(
-            request(
-                &app,
-                "GET",
-                "/console/v1/me/codex-sharing",
-                serde_json::json!({}),
-                &[],
-            )
-            .await,
-        )
-        .await
-        .is_null()
-    );
-    input["seats"] = serde_json::json!([app.user_id, null]);
-    assert_eq!(
-        request(&app, "PUT", &path, input.clone(), &[("if-match", &etag)])
-            .await
-            .status(),
-        StatusCode::OK
-    );
-    let fresh = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
-    let etag = fresh.headers()[header::ETAG].to_str().unwrap().to_owned();
-    let own = body_json(
-        request(
-            &app,
-            "GET",
-            "/console/v1/me/codex-sharing",
-            serde_json::json!({}),
-            &[],
-        )
-        .await,
-    )
-    .await;
-    assert_eq!(own["id"], id);
-    assert_eq!(own["currency"], "USD");
-    assert_eq!(own["usage"]["seat_number"], 1);
-    assert_eq!(own["usage"]["available"], false);
-    for private in ["credential_id", "seats", "email", "access_token"] {
-        assert!(own.get(private).is_none());
-    }
-    let options = request(
-        &app,
-        "GET",
-        "/console/v1/me/api-key-options",
-        serde_json::json!({}),
-        &[],
-    )
-    .await;
-    assert_eq!(options.status(), StatusCode::OK);
-    let options = body_json(options).await;
-    assert!(options["policy_id"].is_null());
-    assert_eq!(options["policy_enabled"], false);
-    assert_eq!(options["groups"], serde_json::json!([]));
-    assert_eq!(options["channels"], serde_json::json!([]));
-    assert_eq!(
-        options["sharing_channels"][0]["channel_id"],
-        channel.to_string()
-    );
-    assert_eq!(options["sharing_channels"][0]["name"], "Shared development");
-    assert!(
-        options["sharing_channels"][0]
-            .get("credential_id")
-            .is_none()
-    );
-    let sharing_channel_ids = serde_json::json!([channel]);
-    let sharing_key = request(
-        &app,
-        "POST",
-        "/console/v1/me/api-keys",
-        serde_json::json!({
-            "name": "sharing-without-policy",
-            "allowed_group_ids": [],
-            "allowed_channel_ids": sharing_channel_ids.clone(),
-            "requests_per_minute": null,
-            "max_concurrent_requests": null,
-            "quota_limit_amount": null
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(sharing_key.status(), StatusCode::CREATED);
-    let policy_id = create_resource(
-        &app,
-        "/console/v1/api-key-policies",
-        serde_json::json!({
-            "name": "sharing-must-be-explicit", "enabled": true,
-            "allowed_group_ids": [channel_group], "allowed_channel_ids": []
-        }),
-    )
-    .await;
-    sqlx::query("UPDATE users SET default_api_key_policy_id=$2 WHERE id=$1")
-        .bind(app.user_id)
-        .bind(policy_id)
-        .execute(&database.pool)
-        .await
-        .unwrap();
-    let categorized = body_json(
-        request(
-            &app,
-            "GET",
-            "/console/v1/me/api-key-options",
-            serde_json::json!({}),
-            &[],
-        )
-        .await,
-    )
-    .await;
-    assert_eq!(categorized["policy_id"], policy_id.to_string());
-    assert_eq!(categorized["policy_enabled"], true);
-    assert_eq!(categorized["groups"], serde_json::json!([]));
-    assert_eq!(categorized["channels"], serde_json::json!([]));
-    assert_eq!(categorized["sharing_channels"].as_array().unwrap().len(), 1);
-    let implicit_group_key = request(
-        &app,
-        "POST",
-        "/console/v1/me/api-keys",
-        serde_json::json!({
-            "name": "implicit-sharing-group",
-            "allowed_group_ids": [channel_group],
-            "allowed_channel_ids": [],
-            "requests_per_minute": null,
-            "max_concurrent_requests": null,
-            "quota_limit_amount": null
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(
-        implicit_group_key.status(),
-        StatusCode::UNPROCESSABLE_ENTITY
-    );
-    assert_eq!(
-        body_json(implicit_group_key).await,
-        serde_json::json!({"error": "api_key_target_not_allowed"})
-    );
-    let ordinary = seed_test_topology(&app, "chat_completion").await;
-    let ordinary_group = ordinary.group;
-    let ordinary_channel = ordinary.channel;
-    let policy_path = format!("/console/v1/api-key-policies/{policy_id}");
-    let policy = request(&app, "GET", &policy_path, serde_json::json!({}), &[]).await;
-    let policy_etag = policy.headers()[header::ETAG].to_str().unwrap().to_owned();
-    assert_eq!(
-        request(
-            &app,
-            "PUT",
-            &policy_path,
-            serde_json::json!({
-                "name": "sharing-must-be-explicit", "enabled": true,
-                "allowed_group_ids": [channel_group, ordinary_group], "allowed_channel_ids": []
-            }),
-            &[("if-match", &policy_etag)]
-        )
-        .await
-        .status(),
-        StatusCode::OK
-    );
-    let combined_options = body_json(
-        request(
-            &app,
-            "GET",
-            "/console/v1/me/api-key-options",
-            serde_json::json!({}),
-            &[],
-        )
-        .await,
-    )
-    .await;
-    assert_eq!(combined_options["groups"].as_array().unwrap().len(), 1);
-    assert_eq!(
-        combined_options["groups"][0]["id"],
-        ordinary_group.to_string()
-    );
-    assert_eq!(
-        combined_options["channels"][0]["id"],
-        ordinary_channel.to_string()
-    );
-    assert_eq!(
-        combined_options["sharing_channels"][0]["channel_id"],
-        channel.to_string()
-    );
-    let combined_key = request(
-        &app,
-        "POST",
-        "/console/v1/me/api-keys",
-        serde_json::json!({
-            "name": "sharing-and-ordinary",
-            "allowed_group_ids": [ordinary_group],
-            "allowed_channel_ids": sharing_channel_ids.clone(),
-            "requests_per_minute": null,
-            "max_concurrent_requests": null,
-            "quota_limit_amount": null
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(combined_key.status(), StatusCode::CREATED);
-    assert_eq!(
-        request(&app, "PUT", &path, input.clone(), &[])
-            .await
-            .status(),
-        StatusCode::UNPROCESSABLE_ENTITY
-    );
-    input["primary_limit_amount"] = "24".into();
-    assert_eq!(
-        request(&app, "PUT", &path, input.clone(), &[("if-match", &etag)])
-            .await
-            .status(),
-        StatusCode::OK
-    );
-    assert_eq!(
-        request(&app, "PUT", &path, input.clone(), &[("if-match", &etag)])
-            .await
-            .status(),
-        StatusCode::CONFLICT
-    );
-    let fresh = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
-    let etag = fresh.headers()[header::ETAG].to_str().unwrap().to_owned();
-    input["enabled"] = true.into();
-    assert_eq!(
-        request(&app, "PUT", &path, input.clone(), &[("if-match", &etag)])
-            .await
-            .status(),
-        StatusCode::UNPROCESSABLE_ENTITY
-    );
-    input["enabled"] = false.into();
-    input["seats"] = serde_json::json!([app.user_id, app.user_id]);
-    assert_eq!(
-        request(&app, "PUT", &path, input.clone(), &[("if-match", &etag)])
-            .await
-            .status(),
-        StatusCode::UNPROCESSABLE_ENTITY
-    );
-
-    let outsider = Uuid::new_v4();
-    let email = format!("{outsider}@example.test");
-    let outside_group = Uuid::new_v4();
-    sqlx::query("INSERT INTO user_groups (id,name) VALUES ($1,'outside-sharing')")
-        .bind(outside_group)
-        .execute(&database.pool)
-        .await
-        .unwrap();
-    sqlx::query(
-        "INSERT INTO users (id,email,display_name,role,status,password_hash,user_group_id) \
-        SELECT $1,$2,'Outside sharing','user','active',password_hash,$4 FROM users WHERE id=$3",
-    )
-    .bind(outsider)
-    .bind(&email)
-    .bind(app.user_id)
-    .bind(outside_group)
-    .execute(&database.pool)
-    .await
-    .unwrap();
-    let session = app
-        .auth
-        .login_with_user_agent(email, test_password().into(), None)
-        .await
-        .unwrap();
-    assert_eq!(
-        request_with_token(
-            &app,
-            &session.access_token,
-            "GET",
-            "/console/v1/codex-sharing-groups",
-            serde_json::json!({}),
-            &[]
-        )
-        .await
-        .status(),
-        StatusCode::FORBIDDEN
-    );
-    let forged = format!("/console/v1/me/codex-sharing?user_id={}", app.user_id);
-    assert!(
-        body_json(
-            request_with_token(
-                &app,
-                &session.access_token,
-                "GET",
-                &forged,
-                serde_json::json!({}),
-                &[]
-            )
-            .await
-        )
-        .await
-        .is_null()
-    );
-    sqlx::query("UPDATE users SET default_api_key_policy_id=$2 WHERE id=$1")
-        .bind(outsider)
-        .bind(policy_id)
-        .execute(&database.pool)
-        .await
-        .unwrap();
-    let unseated_key = request_with_token(
-        &app,
-        &session.access_token,
-        "POST",
-        "/console/v1/me/api-keys",
-        serde_json::json!({
-            "name": "unseated-sharing-key",
-            "allowed_group_ids": [],
-            "allowed_channel_ids": sharing_channel_ids,
-            "requests_per_minute": null,
-            "max_concurrent_requests": null,
-            "quota_limit_amount": null
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(unseated_key.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(
-        body_json(unseated_key).await,
-        serde_json::json!({"error": "api_key_target_not_allowed"})
-    );
-    let fresh = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
-    let etag = fresh.headers()[header::ETAG].to_str().unwrap().to_owned();
-    input["seats"] = serde_json::json!([app.user_id, outsider]);
-    assert_eq!(
-        request(&app, "PUT", &path, input, &[("if-match", &etag)])
-            .await
-            .status(),
-        StatusCode::OK
-    );
-    let cross_group_own = body_json(
-        request_with_token(
-            &app,
-            &session.access_token,
-            "GET",
-            "/console/v1/me/codex-sharing",
-            serde_json::json!({}),
-            &[],
-        )
-        .await,
-    )
-    .await;
-    assert_eq!(cross_group_own["id"], id);
-    assert_eq!(cross_group_own["usage"]["seat_number"], 2);
-    let own_anonymous = unauthenticated_request(
-        &app,
-        "GET",
-        "/console/v1/me/codex-sharing",
-        serde_json::json!({}),
-    )
-    .await;
-    assert_eq!(own_anonymous.status(), StatusCode::UNAUTHORIZED);
-    let audit: serde_json::Value = sqlx::query_scalar(
-        "SELECT after_redacted FROM audit_logs WHERE object_type='codex_sharing_group' ORDER BY id LIMIT 1",
-    ).fetch_one(&database.pool).await.unwrap();
-    assert!(audit.get("seats").is_some());
-    assert!(audit.get("provider_user_id").is_none());
-    database.cleanup().await;
 }
 
 async fn upstream_models(headers: HeaderMap) -> Result<Json<serde_json::Value>, StatusCode> {
@@ -3753,8 +3330,7 @@ async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
         input.access_token = "private-access-token".into();
         input.refresh_token = "private-refresh-token".into();
         let id = create_test_codex_credential(&database.pool, &app, input).await;
-        logical_channel_ids
-            .push(bind_test_codex_channel(&database.pool, &app, group_id, id, false).await);
+        logical_channel_ids.push(bind_test_codex_channel(&database.pool, &app, group_id, id).await);
         sqlx::query(
             "UPDATE codex_oauth_credentials SET runtime_status='active',quota_allowed=true,
             quota_limit_reached=false,primary_used_percent=$2,primary_window_seconds=10800,
@@ -5014,99 +4590,6 @@ async fn request_compression_is_restricted_to_responses_capabilities() {
             assert_eq!(before, after);
         }
     }
-    database.cleanup().await;
-}
-
-#[tokio::test]
-async fn sharing_only_mode_is_codex_scoped_versioned_and_channel_owned() {
-    let database = TestDatabase::new().await;
-    let app = app(database.pool.clone()).await;
-    let path = "/console/v1/routing/logical-channels";
-    let ordinary = seed_test_topology(&app, "responses").await;
-    let ordinary_path = format!("{path}/{}", ordinary.channel);
-    let detail = request(&app, "GET", &ordinary_path, serde_json::json!({}), &[]).await;
-    let ordinary_etag = detail.headers()[header::ETAG].to_str().unwrap().to_owned();
-    let invalid = request(
-        &app,
-        "PUT",
-        &ordinary_path,
-        serde_json::json!({
-            "name":"invalid-sharing-only", "enabled":true, "sharing_only":true
-            ,"group_id":ordinary.group,"access_id":ordinary.access,"credential_id":null
-        }),
-        &[("if-match", &ordinary_etag)],
-    )
-    .await;
-    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    let group_id = ordinary.group;
-    let credential = create_test_codex_credential(
-        &database.pool,
-        &app,
-        codex_fixture_input(group_id, "sharing-only-member"),
-    )
-    .await;
-    let id = bind_test_codex_channel(&database.pool, &app, group_id, credential, true).await;
-    let images = codex_capability_id(&database.pool, credential, "images_generation").await;
-    let images_enabled: bool =
-        sqlx::query_scalar("SELECT enabled FROM channel_capabilities WHERE id=$1")
-            .bind(images)
-            .fetch_one(&database.pool)
-            .await
-            .unwrap();
-    assert!(!images_enabled);
-    let detail_path = format!("{path}/{id}");
-    let detail = request(&app, "GET", &detail_path, serde_json::json!({}), &[]).await;
-    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
-    let detail = body_json(detail).await;
-    assert_eq!(detail["sharing_only"], true);
-    let mut input = serde_json::json!({
-        "name":"sharing-only-renamed", "enabled":true, "sharing_only":true,
-        "group_id":group_id,"access_id":detail["access_id"],"credential_id":credential
-    });
-    let saved = request(
-        &app,
-        "PUT",
-        &detail_path,
-        input.clone(),
-        &[("if-match", &etag)],
-    )
-    .await;
-    assert_eq!(saved.status(), StatusCode::OK);
-    let detail = request(&app, "GET", &detail_path, serde_json::json!({}), &[]).await;
-    let next_etag = detail.headers()["etag"].to_str().unwrap().to_owned();
-    assert_eq!(body_json(detail).await["sharing_only"], true);
-    input["sharing_only"] = serde_json::json!(false);
-    assert_eq!(
-        request(
-            &app,
-            "PUT",
-            &detail_path,
-            input.clone(),
-            &[("if-match", &etag)]
-        )
-        .await
-        .status(),
-        StatusCode::CONFLICT
-    );
-    assert_eq!(
-        request(
-            &app,
-            "PUT",
-            &detail_path,
-            input,
-            &[("if-match", &next_etag)]
-        )
-        .await
-        .status(),
-        StatusCode::OK
-    );
-    let images: (bool, bool) =
-        sqlx::query_as("SELECT c.enabled,u.sharing_only FROM channel_capabilities c JOIN upstream_channels u ON u.id=c.channel_id WHERE c.id=$1")
-            .bind(images)
-            .fetch_one(&database.pool)
-            .await
-            .unwrap();
-    assert_eq!(images, (false, false));
     database.cleanup().await;
 }
 
@@ -6654,7 +6137,6 @@ async fn channel_and_template_details_return_stored_editable_values() {
     let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
     assert_eq!(request(&app, "PUT", &logical_path, serde_json::json!({
         "group_id": topology.group, "access_id": topology.access, "credential_id": credential_id,
-        "sharing_only": false,
         "name": "Bound channel", "enabled": true
     }), &[("if-match", &etag)]).await.status(), StatusCode::OK);
     let override_document = serde_json::json!({
@@ -7336,6 +6818,7 @@ async fn self_api_key_create_reports_policy_preconditions() {
     .await;
     assert_eq!(options.status(), StatusCode::OK);
     let options = body_json(options).await;
+    assert!(options.get("sharing_channels").is_none());
     assert_eq!(options["policy_id"], policy_id.to_string());
     assert_eq!(options["groups"][0]["id"], group_id);
     assert!(options["groups"][0].get("priority").is_none());
@@ -8502,14 +7985,7 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
         codex_fixture_input(codex_group_id, "statistics-codex"),
     )
     .await;
-    bind_test_codex_channel(
-        &database.pool,
-        &app,
-        codex_group_id,
-        codex_credential_id,
-        false,
-    )
-    .await;
+    bind_test_codex_channel(&database.pool, &app, codex_group_id, codex_credential_id).await;
     let codex_images_channel = (
         codex_capability_id(&database.pool, codex_credential_id, "images_generation").await,
         codex_group_id,

@@ -47,7 +47,7 @@ PostgreSQL `0064` / SQLite `0004` 引入独立凭证；`0065` / `0005` 在启动
 
 - `upstream_credentials` 是静态认证材料与目标范围的唯一来源；Codex Token 仍由专属扩展持有。
 - `upstream_accesses` 拥有连接器、Base URL、代理及超时；`upstream_channels` 绑定接入、
-  nullable 凭证和格式中立的 `routing_groups`，并拥有 `sharing_only`。
+  nullable 凭证和格式中立的 `routing_groups`。
 - `channel_capabilities` 拥有操作、模型目录、独立健康、探测、压缩、变换、倍率和统计开关。
   传输由操作派生。能力所属逻辑渠道与操作不可改绑；所有连接器的能力均显式创建，
   导入 Codex 凭证不创建拓扑，旧 Images 能力的停用状态在迁移中保持不变。
@@ -69,8 +69,6 @@ PostgreSQL `0064` / SQLite `0004` 引入独立凭证；`0065` / `0005` 在启动
   保留旧 UUID/名称及新能力身份，供日志、财务和 spool 重放引用，不参与管理或授权。
 - `0068` / SQLite `0008` 删除 Codex 凭证和 OAuth flow 的组/pool 归属。
   OAuth 扩展的历史 `channel_id` 字段仍为凭证主键，不是逻辑渠道外键。
-  车队的 `channel_id` 是新增的逻辑渠道绑定，原 `credential_id` 及 provider identity
-  保留为不可变金融锚点。同账号最多一辆车；多个渠道复用凭证不扩展车队资格。
 - `0069` / SQLite `0009` 为新日志增加 append-only 凭证归属侧表，与事实同事务写入。
   `request_credential_identities` 视图只对旧的未知归属使用冻结注册表回退；
   明确无认证不回退，渠道改绑不改变已完成或在途请求费用归属。
@@ -154,7 +152,7 @@ Gateway 在持有 SQLx 数据库 advisory lock 期间，把连续待执行 migra
 
 `0061_zero_failed_and_cancelled_costs.sql` 把已有 `failed`/`cancelled` 请求费用统一为零。
 已经写入 `billed_at` 的旧正费用会按原日志用户和 API Key 聚合，退回用户余额并扣回 Key 已用额度；
-成功请求不变。没有价格快照的失败记录也可以用零费用完成幂等结算，供 Codex 拼车恢复旧 pending。
+成功请求不变。没有价格快照的失败记录也可以用零费用完成幂等结算。
 
 ### 历史 migration 0062 扁平路由候选硬切换
 
@@ -199,18 +197,13 @@ terminal RequestLogEvent
 
 ## 修改数据库的流程
 
-`0054_codex_sharing.sql` 新增固定席位车队与单实例账本身份。绑定和上游身份保持不可变。
-`0055_codex_sharing_only_groups.sql` 只增加 Codex 渠道组的整池访问模式与同步触发器，
-不改写这些绑定、席位、配额窗口或账本身份。
-`0056_codex_sharing_direct_seats.sql` 删除车队的 `user_group_id`，成员直接来自原有
-`seats` JSON；同时把旧 Key 经 group target 可达的现有拼车投影回填为显式 channel target，
-不改写席位顺序、金额、窗口、账本身份或在途预占。
 `0057_model_rule_hierarchy.sql` 的停机升级和别名预检见上文；不得绕过预检手工删除旧列。
 `0060_model_soft_deletion.sql` 为模型增加不可恢复墓碑、活动标识部分唯一索引和引用保护；该
 migration 不删除 profile、协议规则或历史外键。
 `0062_flat_model_route_candidates.sql` 是路由图停机硬切换；不得在新旧 Gateway 混跑时应用。
-金额预占不写入余额实体，而由本地耐久 WAL 拥有；后台使用独立计量事实对账。
-详见 [Codex 拼车实现](codex-sharing.md)。
+Codex 拼车移除通过新增有序 migration 完成：先停用原受保护渠道及身份别名，
+再删除专属表、列和约束，保留普通计量与结算历史。旧 migration 不变；
+停机备份和人工重新授权流程见[升级说明](../user/operations.md#codex-拼车移除升级)。
 
 1. 新增有序 migration，不修改已发布 migration。
 2. 同步 `src/persistence/` DTO/查询、领域类型、运行时编译器和 Console mutation。

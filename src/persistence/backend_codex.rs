@@ -1,11 +1,10 @@
-//! Opaque provider operations and sharing ownership; callers cannot access a database transaction.
+//! Opaque provider operations; callers cannot access a database transaction.
 
 use super::codex_write::{PostgresCodexQuotaReset, PostgresCodexRefresh};
 #[cfg(feature = "sqlite-backend")]
 use super::sqlite::SqliteCodexOperation;
 use super::*;
 use chrono::{DateTime, Utc};
-use sqlx::Connection;
 use uuid::Uuid;
 
 pub struct CodexRefresh<'a>(RefreshBackend<'a>);
@@ -96,36 +95,6 @@ impl<'a> CodexQuotaReset<'a> {
                 g.complete_reset(actor, event, requested, outcome, windows)
                     .await
             }
-        }
-    }
-}
-
-pub struct SharingLedgerLease(LedgerBackend);
-enum LedgerBackend {
-    Postgres(sqlx::PgConnection),
-    #[cfg(feature = "sqlite-backend")]
-    Sqlite(super::sqlite::SqliteSharingLease),
-}
-impl SharingLedgerLease {
-    pub(super) fn postgres(connection: sqlx::PgConnection) -> Self {
-        Self(LedgerBackend::Postgres(connection))
-    }
-    #[cfg(feature = "sqlite-backend")]
-    pub(super) fn sqlite(lease: super::sqlite::SqliteSharingLease) -> Self {
-        Self(LedgerBackend::Sqlite(lease))
-    }
-    pub async fn ping(&mut self) -> Result<(), RepositoryError> {
-        match &mut self.0 {
-            LedgerBackend::Postgres(c) => Ok(c.ping().await?),
-            #[cfg(feature = "sqlite-backend")]
-            LedgerBackend::Sqlite(lease) => lease.ping().await,
-        }
-    }
-    pub async fn close(self) -> Result<(), RepositoryError> {
-        match self.0 {
-            LedgerBackend::Postgres(c) => Ok(c.close().await?),
-            #[cfg(feature = "sqlite-backend")]
-            LedgerBackend::Sqlite(_) => Ok(()),
         }
     }
 }

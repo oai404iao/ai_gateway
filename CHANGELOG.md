@@ -36,6 +36,18 @@ Versioning.
   because the host owns handshake fields. Explicit Cookie credentials remain
   supported; client/plugin Cookies remain blocked.
 
+### Removed
+
+- **Breaking:** Remove Codex sharing seats, window allowances, admission/WAL
+  runtime, Console interfaces, and `[codex_sharing]` configuration.
+  Ordered PostgreSQL/SQLite migrations disable previously protected channels
+  and identity aliases before dropping dedicated sharing tables and columns.
+  Ordinary Codex OAuth, quota visibility, credential reuse, metering facts,
+  settlement receipts, and request history remain intact. Back up and stop all
+  old instances before upgrading; review normal authorization before manually
+  re-enabling affected channels. Old on-disk sharing WAL is inert and is not
+  automatically deleted. See the [upgrade guide](docs/user/operations.md#codex-拼车移除升级).
+
 ## [0.12.0] - 2026-09-23
 
 ### Added

@@ -84,7 +84,6 @@ pub struct LogicalChannelRecord {
     pub credential_id: Option<Uuid>,
     pub name: String,
     pub enabled: bool,
-    pub sharing_only: bool,
     pub binding_revision: Uuid,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -252,7 +251,6 @@ pub struct LogicalChannelInput {
     pub credential_id: Option<Uuid>,
     pub name: String,
     pub enabled: bool,
-    pub sharing_only: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -456,16 +454,7 @@ async fn pg_load_version<
         )
         .await?,
         upstream_accesses: pg_decode(connection, PG_UPSTREAM_ACCESSES, legacy).await?,
-        logical_channels: pg_decode(
-            connection,
-            if version == TopologyVersion::Current {
-                "SELECT row_to_json(c)::text FROM upstream_channels c ORDER BY id"
-            } else {
-                PG_LOGICAL_CHANNELS
-            },
-            legacy,
-        )
-        .await?,
+        logical_channels: pg_decode(connection, PG_LOGICAL_CHANNELS, legacy).await?,
         channel_capabilities: pg_decode(connection, PG_CHANNEL_CAPABILITIES, legacy).await?,
         operation_rules: pg_decode(connection, PG_OPERATION_RULES, legacy).await?,
         operation_tiers: pg_decode(connection, PG_OPERATION_TIERS, legacy).await?,
@@ -606,7 +595,6 @@ const SQLITE_CURRENT_ROUTING_GROUPS: &str = "SELECT json_object(
 const SQLITE_CURRENT_LOGICAL_CHANNELS: &str = "SELECT json_object(
     'id',id,'group_id',group_id,'access_id',access_id,'credential_id',credential_id,'name',name,
     'enabled',json(CASE enabled WHEN 1 THEN 'true' ELSE 'false' END),
-    'sharing_only',json(CASE sharing_only WHEN 1 THEN 'true' ELSE 'false' END),
     'binding_revision',binding_revision,'created_at',created_at,'updated_at',updated_at,'deleted_at',deleted_at)
     FROM upstream_channels ORDER BY id";
 #[cfg(feature = "sqlite-backend")]
@@ -932,7 +920,6 @@ mod tests {
             "group_id": group_id,
             "access_id": access_id,
             "name": "channel",
-            "sharing_only": false,
             "enabled": true
         });
         assert!(serde_json::from_value::<LogicalChannelInput>(missing).is_err());
@@ -942,7 +929,6 @@ mod tests {
             "access_id": access_id,
             "credential_id": null,
             "name": "channel",
-            "sharing_only": false,
             "enabled": true
         });
         let input =
@@ -954,7 +940,6 @@ mod tests {
             "access_id": access_id,
             "credential_id": credential_id,
             "name": "channel",
-            "sharing_only": false,
             "enabled": false
         });
         let input = serde_json::from_value::<LogicalChannelInput>(bound).expect("bound credential");
@@ -1082,7 +1067,6 @@ mod tests {
             "credential_id": null,
             "name": "channel",
             "enabled": true,
-            "sharing_only": false,
             "binding_revision": Uuid::new_v4(),
             "created_at": "2026-09-20T15:44:11.123456+00:00",
             "updated_at": "2026-09-20T15:44:11.123456+00:00",

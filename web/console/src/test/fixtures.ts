@@ -7,9 +7,6 @@ import type {
   PluginView,
   PluginSettingsView,
   PluginJob,
-  CodexSharingGroup,
-  CodexSharingUsage,
-  SelfCodexSharingView,
   AdminApiKeyView,
   ApiKeyPolicyView,
   ApiKeyView,
@@ -351,7 +348,7 @@ export const OWN_CODEX_QUOTA_HISTORY: SelfCodexQuotaWindowHistory = {
 export const CHANNEL: LogicalChannelView = {
   id: "00000000-0000-0000-0000-000000000022", group_id: CHANNEL_GROUP.id,
   access_id: UPSTREAM_ACCESS.id, credential_id: "00000000-0000-0000-0000-000000000023",
-  name: "upstream-a", enabled: true, sharing_only: false, deleted_at: null,
+  name: "upstream-a", enabled: true, deleted_at: null,
   binding_revision: "00000000-0000-0000-0000-000000000024",
   created_at: "2026-01-02T00:00:00.000Z", updated_at: "2026-01-02T00:00:00.000Z",
 };
@@ -376,7 +373,6 @@ export const API_KEY_OPTIONS: SelfApiKeyOptions = {
   policy_id: API_KEY_POLICY.id,
   policy_name: API_KEY_POLICY.name,
   policy_enabled: true,
-  sharing_channels: [],
   groups: [
     {
       id: CHANNEL_GROUP.id,
@@ -914,47 +910,6 @@ export const SYSTEM_LOAD_REPORT: SystemLoadReport = {
   },
 };
 
-export const SHARING_GROUP: CodexSharingGroup = {
-  id: "00000000-0000-0000-0000-000000000801",
-  updated_at: "2026-09-09T00:00:00.000000Z",
-  channel_id: CHANNEL.id,
-  name: "Development car",
-  enabled: true,
-  seats: [CONTROL_PLANE_USER.id, null],
-  primary_limit_amount: "20",
-  secondary_limit_amount: "100",
-  request_reservation_amount: "0.10",
-  user_requests_per_minute: 30,
-  group_requests_per_minute: 120,
-  user_max_concurrent_requests: 1,
-  group_max_concurrent_requests: 4,
-};
-
-export const SHARING_USAGE: CodexSharingUsage = {
-  available: true, seat_number: 1, pending_requests: 1, uncertain: false,
-  windows: [{
-    window_id: "00000000-0000-0000-0000-000000000802",
-    window_kind: "primary", reset_at: "2026-09-09T05:00:00Z",
-    limit_amount: "10", used_amount: "3", reserved_amount: "0.10",
-    remaining_amount: "6.90", group_remaining_amount: "16.90",
-    provider_used_percent: 35, checked_at: "2026-09-09T00:00:00Z",
-  }, {
-    window_id: "00000000-0000-0000-0000-000000000803",
-    window_kind: "secondary", reset_at: "2026-09-16T00:00:00Z",
-    limit_amount: "50", used_amount: "15", reserved_amount: "0.10",
-    remaining_amount: "34.90", group_remaining_amount: "84.90",
-    provider_used_percent: 45, checked_at: "2026-09-09T00:00:00Z",
-  }],
-};
-
-export const OWN_SHARING: SelfCodexSharingView = {
-  id: SHARING_GROUP.id, name: SHARING_GROUP.name, enabled: true,
-  seat_count: 2, currency: "USD",
-  request_reservation_amount: "0.10",
-  user_requests_per_minute: 30, user_max_concurrent_requests: 1,
-  usage: SHARING_USAGE,
-};
-
 export const ROUTING_GROUP: RoutingGroupView = {
   id: "00000000-0000-0000-0000-000000001501",
   name: "Primary group",
@@ -971,7 +926,6 @@ export const LOGICAL_CHANNEL: LogicalChannelView = {
   credential_id: UPSTREAM_CREDENTIAL.id,
   name: "Primary channel",
   enabled: true,
-  sharing_only: false,
   binding_revision: "00000000-0000-0000-0000-000000001602",
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-02T00:00:00Z",

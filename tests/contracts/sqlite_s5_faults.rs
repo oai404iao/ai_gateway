@@ -42,44 +42,6 @@ async fn pending(db: &SqliteDatabase) -> i64 {
 }
 
 #[tokio::test]
-async fn sharing_lease_ping_ignores_pool_contention_but_rejects_identity_loss() {
-    let dir = tempfile::Builder::new()
-        .permissions(std::fs::Permissions::from_mode(0o700))
-        .tempdir()
-        .unwrap();
-    let path = dir.path().join("gateway.sqlite");
-    let db = Arc::new(
-        SqliteDatabase::open_with_limits(&path, 2, Duration::from_secs(5))
-            .await
-            .unwrap(),
-    );
-    db.install_schema().await.unwrap();
-    let repository = ControlPlaneRepository::from_sqlite(Arc::clone(&db));
-    let mut lease = repository
-        .claim_sharing_ledger(Uuid::new_v4())
-        .await
-        .unwrap();
-    let reader = db.acquire_read().await.unwrap();
-    let writer = db.begin_write().await.unwrap();
-    tokio::time::timeout(Duration::from_secs(3), lease.ping())
-        .await
-        .expect("ownership heartbeat must not wait for a database connection")
-        .unwrap();
-    drop(reader);
-    writer.rollback().await.unwrap();
-    lease.ping().await.unwrap();
-
-    std::fs::write(
-        dir.path().join("gateway.sqlite.identity"),
-        Uuid::new_v4().to_string(),
-    )
-    .unwrap();
-    assert!(lease.ping().await.is_err());
-    drop(lease);
-    db.close().await;
-}
-
-#[tokio::test]
 async fn preflight_drop_stale_version_and_dispatch_fencing() {
     let backend = database().await;
     let db = sqlite(&backend);
@@ -283,53 +245,38 @@ async fn result_failures_preserve_intent_and_never_retry_reset() {
 }
 
 #[tokio::test]
-async fn operation_and_ledger_guards_keep_database_ownership_until_drop() {
-    for sharing in [false, true] {
-        let backend = database().await;
-        let db = sqlite(&backend);
-        let c = setup(&backend).await;
-        let operation = if sharing {
-            None
-        } else {
-            Some(c.repo.lock_codex_refresh(c.id).await.unwrap().unwrap().1)
-        };
-        let mut lease = if sharing {
-            Some(c.repo.claim_sharing_ledger(Uuid::new_v4()).await.unwrap())
-        } else {
-            None
-        };
-        let closing = Arc::clone(&db);
-        let mut close = tokio::spawn(async move {
-            closing.close().await;
-        });
-        assert!(
-            tokio::time::timeout(Duration::from_millis(30), &mut close)
-                .await
-                .is_err()
-        );
-        let Backend::Sq(dir, _) = &backend else {
-            unreachable!()
-        };
-        assert!(
-            SqliteDatabase::open(&dir.path().join("gateway.sqlite"))
-                .await
-                .is_err()
-        );
-        if let Some(lease) = lease.as_mut() {
-            assert!(lease.ping().await.is_err());
-        }
-        drop(operation);
-        drop(lease);
-        tokio::time::timeout(Duration::from_secs(2), close)
+async fn operation_guards_keep_database_ownership_until_drop() {
+    let backend = database().await;
+    let db = sqlite(&backend);
+    let c = setup(&backend).await;
+    let operation = c.repo.lock_codex_refresh(c.id).await.unwrap().unwrap().1;
+    let closing = Arc::clone(&db);
+    let mut close = tokio::spawn(async move {
+        closing.close().await;
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), &mut close)
             .await
-            .unwrap()
-            .unwrap();
-        let reopened = SqliteDatabase::open(&dir.path().join("gateway.sqlite"))
+            .is_err()
+    );
+    let Backend::Sq(dir, _) = &backend else {
+        unreachable!()
+    };
+    assert!(
+        SqliteDatabase::open(&dir.path().join("gateway.sqlite"))
             .await
-            .unwrap();
-        reopened.close().await;
-        backend.finish().await;
-    }
+            .is_err()
+    );
+    drop(operation);
+    tokio::time::timeout(Duration::from_secs(2), close)
+        .await
+        .unwrap()
+        .unwrap();
+    let reopened = SqliteDatabase::open(&dir.path().join("gateway.sqlite"))
+        .await
+        .unwrap();
+    reopened.close().await;
+    backend.finish().await;
 }
 
 #[tokio::test]
