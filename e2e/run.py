@@ -699,6 +699,9 @@ def main():
             from response_adapter import prepare_fixture, exercise_response_adapter
             response_fixture = prepare_fixture(resources)
             report["response_adapter_sha256"] = response_fixture["sha256"]
+            from usage_normalization import prepare_usage_fixture, exercise_usage_normalization
+            usage_fixture = prepare_usage_fixture(resources)
+            report["usage_parser_sha256"] = usage_fixture["sha256"]
             for command in ("node", "openssl", "cc", *(("docker",) if args.backend == "postgres" else ())):
                 check(shutil.which(command), f"{command} is required")
             report["source_commit"] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT).decode().strip()
@@ -796,7 +799,13 @@ def main():
             scenarios, adapter_settlement = exercise_response_adapter(resources, data, response_fixture)
             report["scenarios"].extend(scenarios)
             report["response_adapter_settlement"] = adapter_settlement
-            report["verified_durable_logs"] = settlement["logs"] + adapter_settlement["logs"]
+            report["stage"] = "usage-normalization"
+            scenarios, usage_settlement = exercise_usage_normalization(resources, data, usage_fixture)
+            report["scenarios"].extend(scenarios)
+            report["usage_settlement"] = usage_settlement
+            report["verified_durable_logs"] = (
+                settlement["logs"] + adapter_settlement["logs"] + usage_settlement["logs"]
+            )
             report["status"] = "passed"
         except Exception as error:
             interrupted = isinstance(error, (InterruptedError, KeyboardInterrupt))

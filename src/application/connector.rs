@@ -15,6 +15,7 @@ use super::codex::{
 };
 use super::request_body::{ImageEditBodyError, PreparedRequestBody, ReplayableRequestBody};
 use super::response_adapter::ResponseAdapterConfig;
+use super::usage::UsageParserConfig;
 
 #[derive(Clone, Default)]
 pub struct UpstreamConnectorRegistry {
@@ -127,6 +128,18 @@ pub(crate) enum PreparedUpstreamAttempt {
 }
 
 impl PreparedUpstreamAttempt {
+    pub(crate) fn usage_parser(&self, operation: ApiOperation) -> UsageParserConfig {
+        match self {
+            Self::OpenAiCompatible => UsageParserConfig::for_operation(operation),
+            Self::External {
+                plugin, operation, ..
+            } => UsageParserConfig::for_plugin(plugin, *operation),
+            Self::Codex { attempt, .. } => {
+                UsageParserConfig::for_plugin(attempt.plugin(), operation)
+            }
+        }
+    }
+
     pub(crate) fn plugin_generation_id(&self) -> Option<&str> {
         match self {
             Self::OpenAiCompatible => None,

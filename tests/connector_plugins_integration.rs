@@ -388,3 +388,60 @@ fn malformed_semantic_descriptors_fail_closed_with_sanitized_cached_errors() {
         );
     }
 }
+
+#[test]
+fn upstream_usage_contracts_require_only_the_selected_parser_command() {
+    use ai_gateway_connector_sdk::{UsageDescriptor, UsageFormat};
+
+    let general = r#"-DFIXTURE_USAGE_DESCRIPTOR=",\"usage\":{\"parser\":\"general\",\"format\":\"anthropic_messages\"}""#;
+    let custom = r#"-DFIXTURE_USAGE_DESCRIPTOR=",\"usage\":{\"parser\":\"plugin\",\"interface\":\"vendor.messages/v1\"}""#;
+    for (usage, command, valid) in [
+        (general, false, true),
+        (custom, false, false),
+        (custom, true, true),
+    ] {
+        let mut flags = vec![
+            "-DFIXTURE_PROTOCOL3",
+            "-DFIXTURE_DESCRIPTOR_MODE=10",
+            "-DFIXTURE_OMIT_RESPONSE_JSON",
+            "-DFIXTURE_OMIT_RESPONSE_EVENT",
+            usage,
+        ];
+        if command {
+            flags.push("-DFIXTURE_USAGE_PARSE");
+        }
+        let (_directory, path, hash) = fixture_with_flags(1, &flags);
+        let plugin = Plugin::load(&path, &hash, "fixture").unwrap();
+        let descriptor = plugin.attempt_descriptor("responses");
+        assert_eq!(descriptor.is_ok(), valid);
+        if usage == general {
+            assert_eq!(
+                descriptor.unwrap().usage,
+                Some(UsageDescriptor::General {
+                    format: UsageFormat::AnthropicMessages,
+                })
+            );
+        }
+    }
+}
+
+#[test]
+fn codex_protocol_three_accepts_usage_profiles_but_not_response_adapters() {
+    let usage = r#"-DFIXTURE_USAGE_DESCRIPTOR=",\"usage\":{\"parser\":\"general\",\"format\":\"open_ai_responses\"}""#;
+    for (mode, valid) in [
+        ("-DFIXTURE_DESCRIPTOR_MODE=10", true),
+        ("-DFIXTURE_DESCRIPTOR_MODE=0", false),
+    ] {
+        let (_directory, path, hash) = fixture_with_flags(
+            1,
+            &[
+                "-DFIXTURE_PROTOCOL3",
+                "-DFIXTURE_PLUGIN_ID=\"codex\"",
+                mode,
+                usage,
+            ],
+        );
+        let plugin = Plugin::load(&path, &hash, "codex").unwrap();
+        assert_eq!(plugin.validate_attempt_contract().is_ok(), valid);
+    }
+}

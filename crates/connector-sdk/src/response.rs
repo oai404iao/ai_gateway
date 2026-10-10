@@ -49,6 +49,8 @@ pub struct AttemptCapabilities {
 pub struct AttemptDescriptor {
     pub capabilities: AttemptCapabilities,
     pub protocols: Vec<ProtocolCapability>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<crate::UsageDescriptor>,
 }
 
 impl AttemptDescriptor {
@@ -61,7 +63,10 @@ impl AttemptDescriptor {
             "web_search" | "images_generation" | "images_edit" => &[ConnectorProtocol::NonStream],
             _ => return false,
         };
-        !self.protocols.is_empty()
+        self.usage
+            .as_ref()
+            .is_none_or(crate::UsageDescriptor::validate_bounds)
+            && !self.protocols.is_empty()
             && self.protocols.len() <= allowed.len()
             && self.protocols.iter().enumerate().all(|(index, entry)| {
                 allowed.contains(&entry.protocol)
@@ -173,7 +178,7 @@ fn valid_state(state: &Value) -> bool {
 
 // Counting through a bounded writer avoids allocating a second, potentially
 // oversized serialized copy merely to decide whether a value is acceptable.
-fn serialized_within(value: &impl Serialize, limit: usize) -> bool {
+pub(crate) fn serialized_within(value: &impl Serialize, limit: usize) -> bool {
     struct Counter(usize);
     impl Write for Counter {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -198,6 +203,7 @@ mod tests {
 
     fn descriptor() -> AttemptDescriptor {
         AttemptDescriptor {
+            usage: None,
             capabilities: AttemptCapabilities {
                 preserves_affinity_on_failure: false,
                 successful_response_is_sse: false,

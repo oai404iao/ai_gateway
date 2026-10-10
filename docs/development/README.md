@@ -8,6 +8,8 @@
 - [原生连接器插件](connector-plugins.md)：C ABI、宿主/插件职责、外部 Codex 与发布验收。
 - [连接器响应适配 SDK](connector-response-adapters.md)：协议 3 能力描述、有界同格式
   JSON/SSE 归一化、请求级状态和独立计量边界。
+- [上游 usage 规范化](usage-normalization.md)：实际上游接口的解析选择、缓存包含/拆分、
+  规范计数及未知 usage 的边界。
 - [Codex OAuth Connector 设计记录](codex-oauth-connector.md)：进程内 Connector、
   managed channel、凭证快照、quota 与粘性边界。
 - [OpenAI Images 转发设计与分阶段实施](openai-images.md)：格式/操作拆分、generation/edit

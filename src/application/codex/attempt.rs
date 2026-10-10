@@ -72,7 +72,7 @@ impl PreparedCodexAttempt {
         })
     }
 
-    pub(crate) fn plugin(&self) -> &Plugin {
+    pub(crate) fn plugin(&self) -> &Arc<Plugin> {
         &self.plugin
     }
 

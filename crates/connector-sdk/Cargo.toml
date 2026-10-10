@@ -20,3 +20,8 @@ test = true
 name = "response_adapter"
 crate-type = ["cdylib"]
 test = true
+
+[[example]]
+name = "usage_parser"
+crate-type = ["cdylib"]
+test = true

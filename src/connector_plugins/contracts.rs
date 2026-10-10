@@ -2,7 +2,7 @@
 
 use ai_gateway_connector_sdk::{
     ATTEMPT_DESCRIBE, AttemptCapabilities, AttemptDescriptor, ConnectorProtocol,
-    ProtocolCapability, RESPONSE_EVENT, RESPONSE_JSON, ResponseMode,
+    ProtocolCapability, RESPONSE_EVENT, RESPONSE_JSON, ResponseMode, USAGE_PARSE, UsageDescriptor,
 };
 use serde_json::json;
 
@@ -84,6 +84,7 @@ impl Plugin {
                 _ => return Err(PluginError::InvalidCapabilities),
             };
             AttemptDescriptor {
+                usage: None,
                 capabilities: AttemptCapabilities {
                     preserves_affinity_on_failure: capability(
                         "preserves_affinity_on_failure",
@@ -105,6 +106,13 @@ impl Plugin {
             }
         };
         if !descriptor.validate_for_operation(operation)
+            || matches!(&descriptor.usage, Some(UsageDescriptor::Plugin { .. }))
+                && !self.has_command(USAGE_PARSE)
+            || self.manifest.id == "codex"
+                && descriptor
+                    .protocols
+                    .iter()
+                    .any(|entry| entry.response != ResponseMode::Passthrough)
             || descriptor
                 .protocols
                 .iter()

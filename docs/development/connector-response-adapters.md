@@ -9,7 +9,9 @@
 The [SDK command contract](../../crates/connector-sdk/docs/commands.md) is the
 authoritative metadata and command reference. Native ABI remains 1 and the SDK
 package remains `0.2.0`; protocol negotiation is independent. Existing
-protocol-1/2 libraries keep their pass-through behavior. Codex stays protocol 2.
+protocol-1/2 libraries keep their pass-through behavior. Codex protocol 3 keeps
+all response modes `passthrough`; its independent usage profile reuses the
+general Responses parser.
 Protocol 3 adds `attempt.describe/v1`, required capability booleans and explicit
 per-operation transport/response entries.
 
@@ -60,7 +62,9 @@ Recursive `usage`, `id`, `model`, `type`, `status`, `error`, `finish_reason`,
 `index`, `call_id`, `name`, `namespace`, and `role` fields must be preserved;
 response text adaptation cannot turn a failure into success,
 remove/add/change known usage, or manufacture completion. Upstream usage is
-the sole financial source. Plugin output is never authoritative metering.
+the sole financial source. Response-adapter output is never authoritative
+metering. The independently selected [usage parser](usage-normalization.md)
+interprets original upstream counts, not the adapted presentation.
 The complete accepted protected projection and tests live in host code, not in
 the SDK's generic size validators.
 

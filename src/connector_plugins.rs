@@ -332,9 +332,10 @@ fn validate_hash(hash: &str) -> Result<(), PluginError> {
 fn validate_manifest(manifest: &PluginManifest, expected_id: &str) -> Result<(), PluginError> {
     if manifest.id != expected_id
         || !matches!(manifest.protocol_version, 1..=3)
-        || (manifest.id == "codex" && manifest.protocol_version != 2)
+        || (manifest.id == "codex" && !matches!(manifest.protocol_version, 2 | 3))
         || (manifest.commands.iter().any(|command| {
             command == ai_gateway_connector_sdk::ATTEMPT_DESCRIBE
+                || command == ai_gateway_connector_sdk::USAGE_PARSE
                 || command.starts_with("response.")
         }) && manifest.protocol_version != 3)
         || (manifest

@@ -37,7 +37,7 @@ def main():
     os.umask(0o077)
     library_path, source, output = (Path(value).resolve() for value in sys.argv[1:4])
     fixture_id = sys.argv[4] if len(sys.argv) == 5 else "codex"
-    if fixture_id not in ("codex", "example-response-adapter"):
+    if fixture_id not in ("codex", "example-response-adapter", "example-usage-parser"):
         raise ValueError("unsupported trusted fixture")
     # This is an explicitly built trusted fixture, never an uploaded/discovered package.
     library = ctypes.CDLL(str(library_path))

@@ -12,6 +12,15 @@
 #ifndef FIXTURE_VERSION
 #define FIXTURE_VERSION "1.0.0"
 #endif
+#ifndef FIXTURE_PLUGIN_ID
+#define FIXTURE_PLUGIN_ID "fixture"
+#endif
+#ifndef FIXTURE_USAGE_DESCRIPTOR
+#define FIXTURE_USAGE_DESCRIPTOR ""
+#endif
+#ifndef FIXTURE_USAGE_RESULT
+#define FIXTURE_USAGE_RESULT "{\"usage\":{\"input_tokens\":5,\"cached_input_tokens\":3,\"cache_write_tokens\":0,\"output_tokens\":2,\"reasoning_tokens\":0}}"
+#endif
 #ifndef FIXTURE_DESCRIPTOR_MODE
 #define FIXTURE_DESCRIPTOR_MODE 0
 #endif
@@ -52,6 +61,24 @@ static uint32_t dispatch(
     AiGatewayCallOutput *output
 ) {
     memset(output, 0, sizeof(*output));
+#ifdef FIXTURE_USAGE_PARSE
+    if (equals(command, "usage.parse/v1")) {
+        if (body.len > 65536) return AI_GATEWAY_CONNECTOR_ERROR;
+        char *input = malloc((size_t)body.len + 1);
+        if (input == NULL) abort();
+        memcpy(input, body.ptr, (size_t)body.len);
+        input[body.len] = '\0';
+        int private_content = strstr(input, "must-not-reach-parser") != NULL;
+        free(input);
+        if (private_content) return AI_GATEWAY_CONNECTOR_ERROR;
+        const char value[] = FIXTURE_USAGE_RESULT;
+        output->metadata = copy(value, sizeof(value) - 1);
+#ifdef FIXTURE_USAGE_OUTPUT_BODY
+        output->body = copy("unexpected", 10);
+#endif
+        return AI_GATEWAY_CONNECTOR_OK;
+    }
+#endif
 #ifdef FIXTURE_SETTINGS
     if (equals(command, "settings.describe/v1")) {
         const char value[] = "{\"schema_version\":1,\"title\":{\"en\":\"Generic fixture\"},\"fields\":[{\"key\":\"mode\",\"label\":{\"en\":\"Mode\"},\"required\":true,\"type\":\"string\",\"max_length\":32}],\"defaults\":{\"mode\":\"default\"}}";
@@ -130,8 +157,10 @@ static uint32_t dispatch(
         const char value[] = "{\"capabilities\":{\"preserves_affinity_on_failure\":false,\"successful_response_is_sse\":false,\"changes_request_body\":false},\"protocols\":[{\"protocol\":\"non_stream\",\"response\":\"unknown\"}]}";
 #elif FIXTURE_DESCRIPTOR_MODE == 9
         const char value[] = "{\"capabilities\":{\"preserves_affinity_on_failure\":false,\"successful_response_is_sse\":false,\"changes_request_body\":false},\"protocols\":[{\"protocol\":\"non_stream\",\"response\":\"json\"},{\"protocol\":\"sse\",\"response\":\"sse\"}]}";
+#elif FIXTURE_DESCRIPTOR_MODE == 10
+        const char value[] = "{\"capabilities\":{\"preserves_affinity_on_failure\":false,\"successful_response_is_sse\":false,\"changes_request_body\":false},\"protocols\":[{\"protocol\":\"non_stream\",\"response\":\"passthrough\"}]" FIXTURE_USAGE_DESCRIPTOR "}";
 #else
-        const char value[] = "{\"capabilities\":{\"preserves_affinity_on_failure\":false,\"successful_response_is_sse\":false,\"changes_request_body\":false},\"protocols\":[{\"protocol\":\"non_stream\",\"response\":\"json\"}]}";
+        const char value[] = "{\"capabilities\":{\"preserves_affinity_on_failure\":false,\"successful_response_is_sse\":false,\"changes_request_body\":false},\"protocols\":[{\"protocol\":\"non_stream\",\"response\":\"json\"}]" FIXTURE_USAGE_DESCRIPTOR "}";
 #endif
         output->metadata = copy(value, sizeof(value) - 1);
 #if FIXTURE_DESCRIPTOR_MODE == 7
@@ -182,7 +211,7 @@ static uint32_t dispatch(
 }
 
 static const char manifest[] =
-    "{\"id\":\"fixture\",\"version\":\"" FIXTURE_VERSION "\","
+    "{\"id\":\"" FIXTURE_PLUGIN_ID "\",\"version\":\"" FIXTURE_VERSION "\","
 #ifdef FIXTURE_PROTOCOL3
     "\"protocol_version\":3,"
 #elif defined(FIXTURE_SETTINGS)
@@ -202,6 +231,9 @@ static const char manifest[] =
 #else
     "\"commands\":[\"echo\",\"error\",\"malformed\","
 #ifdef FIXTURE_PROTOCOL3
+#ifdef FIXTURE_USAGE_PARSE
+    "\"usage.parse/v1\","
+#endif
 #ifndef FIXTURE_OMIT_DESCRIBE
     "\"attempt.describe/v1\","
 #endif

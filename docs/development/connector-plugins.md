@@ -54,14 +54,16 @@ C 函数表仍使用 `ai_gateway_connector_entry_v1`，布局只包含整数、�
 Future 或异步运行时。所有插件步骤须同步、确定性、有界、非阻塞。
 
 SDK 0.2 增加 manifest `protocol_version`，与 C ABI 版本分别管理。
-新版设置上下文和 Codex 使用协议 2。旧宿主因不接受新 manifest 字段而拒绝新版插件，
+新版设置上下文从协议 2 开始支持，新 Codex 插件使用协议 3，旧协议 2 仍兼容。
+旧宿主因不接受新 manifest 字段而拒绝新版插件，
 不能在运行到某次请求时才发现身份参数协议不匹配。
 无设置的旧通用插件可以继续使用协议 1。
 详细契约见 [SDK 命令](../../crates/connector-sdk/docs/commands.md)。
 
 协议 3 为通用插件增加显式 operation/protocol 能力描述和可选同格式 HTTP
 JSON/SSE 响应归一化。宿主在配置发布前验证能力，并按不可变设置代际缓存；
-编译后的渠道 transport 只能收窄，不能扩展原授权。Codex 继续使用协议 2。
+编译后的渠道 transport 只能收窄，不能扩展原授权。Codex 协议 3 的响应保持透传，
+usage 按实际 Responses 上游接口复用通用解析，见 [usage 规范化](usage-normalization.md)。
 响应适配的有界状态、usage/终态保护及验收边界见
 [响应适配 SDK](connector-response-adapters.md)；原生 ABI 仍为 1。
 

@@ -18,6 +18,7 @@ use tokio::{
 };
 use uuid::Uuid;
 
+use crate::application::UsageParserConfig;
 use crate::{
     application::{
         AutomaticDisableService, ControlPlaneCoordinator, ErrorKeywordMatcher,
@@ -131,6 +132,13 @@ async fn run_probe_round(
         let billing_model = snapshot
             .scheduled_test_model(channel.id())
             .expect("runtime compilation validates scheduled test model pricing");
+        let usage_parser = snapshot
+            .plugins()
+            .get(channel.connector_kind().as_str())
+            .map_or_else(
+                || UsageParserConfig::for_operation(channel.api_operation()),
+                |plugin| UsageParserConfig::for_plugin(&plugin, channel.api_operation()),
+            );
         let result = probe_channel(
             &snapshot.system_settings().upstream_timeouts(),
             &channel,
@@ -140,6 +148,7 @@ async fn run_probe_round(
             automatic_disable,
             &automatic_settings,
             identity,
+            usage_parser,
         )
         .await;
         request_log_sink.try_record(result.event);
@@ -188,6 +197,7 @@ async fn probe_channel(
     automatic_disable: &AutomaticDisableService,
     automatic_settings: &crate::domain::AutomaticDisableSettings,
     identity: SystemProbeIdentity,
+    usage_parser: UsageParserConfig,
 ) -> ProbeResult {
     let mut context = ProbeContext {
         channel,
@@ -394,7 +404,11 @@ async fn probe_channel(
     let mut keyword_matcher = (!upstream_succeeded && channel.auto_disable_allowed())
         .then(|| ErrorKeywordMatcher::new(automatic_settings))
         .flatten();
-    let mut usage = UsageCollector::new(channel.api_format(), is_sse_response(response.headers()));
+    let mut usage = UsageCollector::with_parser(
+        channel.api_format(),
+        is_sse_response(response.headers()),
+        usage_parser,
+    );
     if !upstream_succeeded {
         usage.capture_error_body();
     }
@@ -661,7 +675,7 @@ mod tests {
 
     use super::probe_channel;
     use crate::{
-        application::AutomaticDisableService,
+        application::{AutomaticDisableService, UsageParserConfig},
         domain::{
             AdvancedBilling, ApiFormat, AutomaticDisableSettings, AutomaticDisableTrigger,
             BillingWeekday, ChannelTimeoutPolicy, CompiledAdvancedBilling, CompiledChannel,
@@ -861,6 +875,7 @@ mod tests {
                 user_id: Uuid::new_v4(),
                 api_key_id: Uuid::new_v4(),
             },
+            UsageParserConfig::for_operation(channel.api_operation()),
         )
         .await;
 
@@ -938,6 +953,7 @@ mod tests {
                 user_id: Uuid::new_v4(),
                 api_key_id: Uuid::new_v4(),
             },
+            UsageParserConfig::for_operation(channel.api_operation()),
         )
         .await;
 
@@ -1007,6 +1023,7 @@ mod tests {
                 user_id: Uuid::new_v4(),
                 api_key_id: Uuid::new_v4(),
             },
+            UsageParserConfig::for_operation(channel.api_operation()),
         )
         .await;
 

@@ -166,6 +166,7 @@ fn process(command: &str, metadata: &Value, body: &[u8]) -> Result<PluginOutput,
                 serde_json::to_value(AttemptDescriptor {
                     capabilities: capabilities(),
                     protocols,
+                    usage: None,
                 })
                 .map_err(|_| invalid())?,
             ))

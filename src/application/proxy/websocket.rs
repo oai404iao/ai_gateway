@@ -646,6 +646,7 @@ impl ResponsesWebSocketSession {
                 }
             };
             completion.set_preserve_affinity_on_failure(connector.preserves_affinity_on_failure());
+            completion.set_usage_parser(connector.usage_parser(ApiOperation::ResponsesWebSocket));
             let prepared = match self.prepare_upstream_attempt(
                 &original_body,
                 &parsed,

@@ -34,3 +34,10 @@ raw usage, and no explicit error fields. It never
 adapts the content itself: independent harness oracles require the installed
 plugin to modify text while preserving usage and terminal semantics. It does
 not emulate WebSocket or cross-format conversion.
+
+`usage_normalization.py` emits unchanged OpenAI-compatible JSON/SSE envelopes
+with explicit OpenAI inclusive-input or Anthropic exclusive-input usage dialects.
+Both represent canonical `5/3/0/2/0` counters. It bounds bodies and requests,
+records structural evidence only, and performs neither parsing normalization
+nor response adaptation. This synthetic fixture is not an Anthropic transport
+implementation; installed connector settings select the pure parser.

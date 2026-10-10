@@ -72,7 +72,7 @@ use super::{
         ProxyRequestBodyLimits, ReplayableRequestBody,
     },
     response_adapter::{ResponseAdapterConfig, SseResponseAdapter},
-    usage::{ResponseErrorDetails, SseTerminalOutcome, UsageCollector},
+    usage::{ResponseErrorDetails, SseTerminalOutcome, UsageCollector, UsageParserConfig},
 };
 
 /// Data-plane use case backed by a single immutable configuration snapshot per
@@ -565,6 +565,7 @@ impl ProxyService {
             };
             completion
                 .set_preserve_affinity_on_failure(prepared_attempt.preserves_affinity_on_failure());
+            completion.set_usage_parser(prepared_attempt.usage_parser(api_operation));
             let transforms = current_channel.upstream_policy().effective_transforms();
             if api_operation == ApiOperation::StandaloneWebSearch
                 && !transforms.request_json().is_empty()
@@ -3154,9 +3155,15 @@ impl CompletionGuard {
         }
     }
 
+    fn set_usage_parser(&mut self, parser: UsageParserConfig) {
+        if let Some(context) = &mut self.context {
+            context.usage.set_parser(parser);
+        }
+    }
+
     fn configure_usage_collector(&mut self, sse: bool, capture_error_body: bool) {
         if let Some(context) = &mut self.context {
-            context.usage = UsageCollector::new(context.api_format, sse);
+            context.usage.reset(sse);
             if capture_error_body {
                 context.usage.capture_error_body();
             }
