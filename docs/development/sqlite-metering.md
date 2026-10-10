@@ -16,7 +16,7 @@
 
 - `src/persistence/backend_pipeline.rs` / `backend_queries.rs`：公共窄接口分派；
 - `src/persistence/sqlite/pipeline.rs`：ingress、事实、独立日志投影、结算与恢复；
-- `src/persistence/sqlite/queries.rs`：日志、费用、usage、渠道状态和拼车费用读取；
+- `src/persistence/sqlite/queries.rs`：日志、费用、usage 和渠道状态读取；
 - `src/persistence/sqlite/aggregate.rs`：精确 scale-eight 累计与 PG 结果解码边界；
 - `src/persistence/sqlite/leaderboard.rs` / `status.sql`：磁盘 staging 与百分位排序。
 
@@ -55,8 +55,7 @@ SQLite 不模拟 PostgreSQL COPY；使用有界绑定批次的 INSERT，整批�
 恢复只按 `(completed_at,request_id)` 扫描 pending，不扫描全部已结算历史。
 
 `priced`、`zero_by_policy`、`unknown`、`invalid`、`not_applicable` 分类与 PG 保持一致；
-Key 所有者不匹配不扣款，未知费用不记零。拼车费用读取只取合格事实，
-不等待普通账户回执，也不直接更新拼车 WAL；对账消费者见 [S5](sqlite-codex.md)。
+Key 所有者不匹配不扣款，未知费用不记零。
 
 取消到达 COMMIT 之后，结果仍可能不确定；恢复按不可变 UUID 回执核对，而不是重放
 某条余额 UPDATE。SIGKILL 测试覆盖已提交回执保留、未提交账户修改回滚及 pending 恢复，
@@ -64,7 +63,7 @@ Key 所有者不匹配不扣款，未知费用不记零。拼车费用读取只�
 
 ## 查询和精确聚合
 
-费用统计、usage、排行榜和拼车恢复读取事实；渠道成功率/延迟仍读取日志投影。
+费用统计、usage 和排行榜读取事实；渠道成功率/延迟仍读取日志投影。
 本人日志保持原所有权条件和渠道信息脱敏，管理员筛选/分页及 billed 筛选保持原接口。
 
 金额不经过 SQLite `SUM`、浮点 CAST、TEXT 字典序或日志展示 JSON：

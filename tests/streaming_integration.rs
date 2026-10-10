@@ -129,7 +129,6 @@ fn proxy_service_with_network_policy(
             api_format: "open_ai_chat_completions".into(),
             connector_kind: "general".into(),
             request_compression: "default".into(),
-            sharing_only: false,
             enabled: true,
         }],
         channels: vec![ChannelRecord {

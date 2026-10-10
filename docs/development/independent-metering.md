@@ -14,8 +14,7 @@
 | `request_log_ingest` | COPY 耐久接收，计量/日志分别退避；只有事实与日志均持久化后才能 ack |
 | `request_logs` | 诊断/展示投影，保留旧费用/usage 的不可变展示副本，不再拥有结算认领权 |
 
-不在日志表上通过触发器生成事实；费用查询和拼车恢复不回退读取日志副本。
-主/次拼车窗口仍由原 WAL 独立维护，不增加第二次普通账户扣款。
+不在日志表上通过触发器生成事实；费用查询不回退读取日志副本。
 没有新后台日志删除任务，也没有自动补账/冲正接口。
 
 ## 写入与恢复
@@ -26,7 +25,7 @@ intent / terminal slot / spool（第一阶段语义不变）
   -> MeteringRepository 物化事务
        写不可变事实/凭证归属 + 新事实的待结算工作项 + ingress.metered_at
        ├─ 唯一回执 + 余额/Key 额度 + 删除工作项（单事务）
-       ├─ 财务统计 / Codex 窗口成本 / 拼车恢复
+       ├─ 财务统计 / Codex 窗口成本
        └─ 日志投影 -> 确认 ingress
 ```
 
@@ -64,8 +63,7 @@ PG JSON timestamp cast 会舍入亚微秒，而原 SQLx timestamp binding 截断
 | `invalid` | 有费用但缺合法结算需要的模型/价格证据；保留，不阻塞正常费用 |
 
 只有 intent 不构成终态事实，继续按第一阶段保留本地证据。
-scheduled probe 不因 source 被免单。拼车只读取 `priced` / `zero_by_policy` 的费用，
-不等待普通账户回执；未知/异常仍按既有 WAL uncertain 规则处理。
+scheduled probe 不因 source 被免单。
 
 成本统计保留既有“费用非 NULL”的口径，不等于合法扣款金额或提供方账单；
 不得用统计总额代替逐事实结算资格校验。金额与身份、协议格式/操作、usage 范围、
@@ -108,7 +106,7 @@ Console `billed_at` 和筛选继续存在，但现在是 LEFT JOIN 回执的 `se
    已 billed 却不满足新回执资格（例如 Key 归属异常）使整个批次回滚。
 4. 删除日志物理 `billed_at`，旧认领 SQL 失败。ingress 删除触发器同时拒绝无计量标记、
    无事实或无投影的 ack，防止旧 projector 提前删除财务证据；这不是允许混跑的保证。
-5. 使用新版本、原目录、原业务数据库恢复，验证回执、余额/额度增量、积压及日志/拼车恢复后接流量。
+5. 使用新版本、原目录、原业务数据库恢复，验证回执、余额/额度增量、积压及日志恢复后接流量。
 
 迁移失败可留在旧 schema；迁移提交后优先 forward-fix。
 必须恢复备份时停写并恢复同一时点数据库和所有 spool/WAL，核对该时点以后的上游使用；
@@ -119,7 +117,7 @@ Console `billed_at` 和筛选继续存在，但现在是 LEFT JOIN 回执的 `se
 
 `tests/contracts/facts.rs` 覆盖：
 
-- 日志表被锁、展示字段非法时仍结算并提供拼车/统计费用；
+- 日志表被锁、展示字段非法时仍结算并提供统计费用；
 - 财务冲突与展示冲突分别保留，重启后不二次扣款；
 - fact/work item/ready 原子回滚与恢复，旧提前 ack 被拒绝；
 - eligibility、不可变事实/回执、删除展示投影后重放；
@@ -130,5 +128,5 @@ Console `billed_at` 和筛选继续存在，但现在是 LEFT JOIN 回执的 `se
 
 另运行 P1/P2 契约、完整 PG/Console、系统 E2E 与经授权的真实上游 smoke。
 P4 的[成对备份恢复演练](persistence-rehearsal.md)使用部署者确认的小数据量假设，
-验证 PG dump/restore 与 spool/拼车 WAL 整体恢复；不称作性能压测或生产容量认证。
+验证 PG dump/restore 与 spool 整体恢复；不称作性能压测或生产容量认证。
 真实部署的数据量、环境和停机预算不相符时仍须重新演练。

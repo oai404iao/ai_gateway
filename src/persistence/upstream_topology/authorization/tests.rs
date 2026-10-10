@@ -31,7 +31,6 @@ fn fixture() -> (UpstreamTopologyRecords, SelfApiKeyPolicy) {
         credential_id: None,
         name: "Logical channel".into(),
         enabled: true,
-        sharing_only: false,
         binding_revision: Uuid::from_u128(8),
         created_at: now,
         updated_at: now,
@@ -92,14 +91,13 @@ fn fixture() -> (UpstreamTopologyRecords, SelfApiKeyPolicy) {
 #[test]
 fn policy_options_and_issuance_use_fixed_channels_and_current_origin() {
     let (mut topology, policy) = fixture();
-    let sharing = SelfApiKeySharingAccess::default();
-    let plan = resolve(&topology, &[GROUP], &[], Some((Some(&policy), &sharing))).unwrap();
+    let plan = resolve(&topology, &[GROUP], &[], Some(Some(&policy))).unwrap();
     assert_eq!(
         plan.grants.iter().map(|g| g.channel_id).collect::<Vec<_>>(),
         [CHANNEL]
     );
     assert_eq!(plan.formats, all_formats());
-    let (groups, channels) = options(&topology, Some(&policy), &sharing);
+    let (groups, channels) = options(&topology, Some(&policy));
     assert_eq!(
         groups[0].api_formats,
         ["open_ai_images", "open_ai_responses"]
@@ -112,8 +110,8 @@ fn policy_options_and_issuance_use_fixed_channels_and_current_origin() {
     moved_group.id = Uuid::from_u128(9);
     topology.logical_channels[0].group_id = moved_group.id;
     topology.routing_groups.push(moved_group);
-    assert!(resolve(&topology, &[], &[CHANNEL], Some((Some(&policy), &sharing))).is_err());
-    assert!(options(&topology, Some(&policy), &sharing).1.is_empty());
+    assert!(resolve(&topology, &[], &[CHANNEL], Some(Some(&policy))).is_err());
+    assert!(options(&topology, Some(&policy)).1.is_empty());
 }
 
 #[test]
@@ -171,38 +169,15 @@ fn empty_and_deleted_retained_targets_never_implicitly_gain_grants() {
 }
 
 #[test]
-fn sharing_requires_exact_seated_channel_and_never_authorizes_aliases_or_group() {
-    let (topology, mut policy) = fixture();
-    let sharing = SelfApiKeySharingAccess {
-        owned_channels: HashSet::from([CHANNEL]),
-        protected_channels: HashSet::from([CHANNEL]),
-    };
-    policy.enabled = false;
-    for policy in [None, Some(&policy)] {
-        let plan = resolve(&topology, &[], &[CHANNEL], Some((policy, &sharing))).unwrap();
-        assert_eq!(plan.grants.len(), 1);
-        assert_eq!(plan.grants[0].channel_id, CHANNEL);
-        assert!(resolve(&topology, &[GROUP], &[], Some((policy, &sharing))).is_err());
-    }
-    let alias = SelfApiKeySharingAccess {
-        owned_channels: HashSet::new(),
-        ..sharing
-    };
-    policy.enabled = true;
-    assert!(resolve(&topology, &[], &[CHANNEL], Some((Some(&policy), &alias))).is_err());
-}
-
-#[test]
 fn capabilities_are_not_authorization_targets_and_new_group_members_are_not_inherited() {
     let (mut topology, policy) = fixture();
-    let sharing = SelfApiKeySharingAccess::default();
     topology.channel_capabilities.clear();
-    let existing = resolve(&topology, &[GROUP], &[], Some((Some(&policy), &sharing)))
+    let existing = resolve(&topology, &[GROUP], &[], Some(Some(&policy)))
         .unwrap()
         .grants;
     assert_eq!(existing.len(), 1);
     assert_eq!(existing[0].channel_id, CHANNEL);
-    let (groups, channels) = options(&topology, Some(&policy), &sharing);
+    let (groups, channels) = options(&topology, Some(&policy));
     assert_eq!(groups.len(), 1);
     assert_eq!(channels.len(), 1);
     assert!(!channels[0].auto_disabled);
@@ -217,5 +192,23 @@ fn capabilities_are_not_authorization_targets_and_new_group_members_are_not_inhe
     let retained = reconcile(existing.clone(), plan, &before, &[GROUP], &[]).unwrap();
     assert_eq!(retained, existing);
     assert!(retained.iter().all(|grant| grant.channel_id != added.id));
-    assert!(resolve(&topology, &[], &[added.id], Some((Some(&policy), &sharing))).is_err());
+    assert!(resolve(&topology, &[], &[added.id], Some(Some(&policy))).is_err());
+}
+
+#[test]
+fn self_service_requires_an_enabled_policy_for_every_target() {
+    let (topology, mut policy) = fixture();
+    policy.enabled = false;
+    for (groups, channels) in [(&[GROUP][..], &[][..]), (&[][..], &[CHANNEL][..])] {
+        assert!(matches!(
+            resolve(&topology, groups, channels, Some(None)),
+            Err(RepositoryError::DefaultApiKeyPolicyRequired)
+        ));
+        assert!(matches!(
+            resolve(&topology, groups, channels, Some(Some(&policy))),
+            Err(RepositoryError::DefaultApiKeyPolicyDisabled)
+        ));
+    }
+    assert!(options(&topology, None).0.is_empty());
+    assert!(options(&topology, Some(&policy)).1.is_empty());
 }

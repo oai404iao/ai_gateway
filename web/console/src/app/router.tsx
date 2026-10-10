@@ -63,15 +63,6 @@ const CodexQuotasPage = lazy(() =>
     default: m.CodexQuotasPage,
   })),
 );
-const OwnSharingPage = lazy(() =>
-  import("@/features/codex-sharing/own-page").then(m => ({ default: m.OwnSharingPage })),
-);
-const SharingGroupsPage = lazy(() =>
-  import("@/features/codex-sharing/admin-page").then(m => ({ default: m.SharingGroupsPage })),
-);
-const SharingDetailPage = lazy(() =>
-  import("@/features/codex-sharing/detail-page").then(m => ({ default: m.SharingDetailPage })),
-);
 const AdminRequestLogsPage = lazy(() =>
   import("@/features/request-logs/admin-request-logs-page").then((m) => ({
     default: m.AdminRequestLogsPage,
@@ -311,7 +302,6 @@ function appRouteElements() {
             <Route path="/api-keys/:id" element={<ApiKeyDetailPage />} />
             <Route path="/usage/request-logs" element={<OwnRequestLogsPage />} />
             <Route path="/codex-quotas" element={<CodexQuotasPage />} />
-            <Route path="/codex-sharing" element={<OwnSharingPage />} />
             <Route path="/channel-group-status" element={<ChannelGroupStatusPage />} />
             <Route path="/statistics" element={<StatisticsPage />} />
             <Route path="/leaderboard" element={<SpendLeaderboardPage />} />
@@ -320,8 +310,6 @@ function appRouteElements() {
               <Route path="/admin/users" element={<UsersPage />} />
               <Route path="/admin/users/:id" element={<UserDetailPage />} />
               <Route path="/admin/user-groups" element={<UserGroupsPage />} />
-              <Route path="/admin/codex-sharing" element={<SharingGroupsPage />} />
-              <Route path="/admin/codex-sharing/:id" element={<SharingDetailPage />} />
               <Route path="/admin/user-groups/:id" element={<UserGroupDetailPage />} />
               <Route
                 path="/admin/registration-invitation-codes"

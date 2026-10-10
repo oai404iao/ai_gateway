@@ -6,7 +6,6 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::domain::AutomaticDisableTrigger;
-use crate::domain::codex_sharing::SharingGroup;
 
 use super::{
     ChannelBatchUpdateInput, CodexCredentialBatchInput, CodexCredentialCreate,
@@ -931,34 +930,6 @@ impl ControlPlaneRepository {
             Backend::Postgres(r) => r.cleanup_codex_oauth_flows().await,
             #[cfg(feature = "sqlite-backend")]
             Backend::Sqlite(r) => r.cleanup_codex_oauth_flows().await,
-        }
-    }
-
-    pub async fn claim_sharing_ledger(
-        &self,
-        ledger_id: Uuid,
-    ) -> Result<super::SharingLedgerLease, RepositoryError> {
-        match &self.backend {
-            Backend::Postgres(r) => r
-                .claim_sharing_ledger(ledger_id)
-                .await
-                .map(super::SharingLedgerLease::postgres),
-            #[cfg(feature = "sqlite-backend")]
-            Backend::Sqlite(r) => r
-                .claim_sharing_ledger(ledger_id)
-                .await
-                .map(super::SharingLedgerLease::sqlite),
-        }
-    }
-
-    pub async fn sharing_groups(
-        &self,
-        user: Option<Uuid>,
-    ) -> Result<Vec<SharingGroup>, RepositoryError> {
-        match &self.backend {
-            Backend::Postgres(r) => r.sharing_groups(user).await,
-            #[cfg(feature = "sqlite-backend")]
-            Backend::Sqlite(r) => r.sharing_groups(user).await,
         }
     }
 

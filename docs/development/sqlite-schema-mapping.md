@@ -21,7 +21,6 @@
 | 身份 | `users`、`user_groups`、`api_key_policies`、`api_keys`、`user_sessions`、`user_invitations`、`registration_invitation_codes` |
 | 普通控制面 | `proxies`、`config_templates`、`models`、`model_routing_profiles`、`model_rules`、`model_rule_routing_tiers`、`model_rule_routing_candidates`、`channel_groups`、`channels`、`system_settings` |
 | Codex | `connector_pools`、`codex_oauth_credentials`、`codex_oauth_credential_channels`、`codex_oauth_flows`、`codex_quota_window_periods`、`codex_quota_reset_events`、`user_group_codex_quota_visibility` |
-| 拼车 | `codex_sharing_groups`、`codex_sharing_ledger` |
 | 日志与财务 | `request_log_ingest`、`request_logs`、`request_metering_facts`、`request_settlements`、`request_settlement_pending`、`spend_leaderboard_periods`、`spend_leaderboard_entries`、`audit_logs` |
 
 PG 基线有 34 个主键、19 个 UNIQUE constraint 和 55 个非内部 trigger。
@@ -68,7 +67,6 @@ SQLite 表结构、外键列/目标/删除动作，以及默认组 UUID、名称
 | --- | --- | --- |
 | `SqliteAmount` | `numeric(24,8)` | 余额、费用、额度、排行榜和邀请码金额 |
 | `SqliteUnitPrice` | `numeric(24,12)` | 四项单价和渠道倍率 |
-| `SqliteSharingAmount` | `numeric(20,8)` | 拼车三个金额限制 |
 | `SqliteTokenRate` | `numeric(14,4)` | `request_logs.output_tokens_per_second` |
 
 构造、绑定和解码均校验精度，不舍入；解码恢复 PG/SQLx 的列 scale，
@@ -94,8 +92,6 @@ S4 仓储已落实 checked Decimal 更新与精确聚合；S2 没有添加第二
 | 渠道/组/模型墓碑与引用 | 0059 / 0060 | 墓碑不可恢复/改写；子渠道、探测、启用协议和已删除模型引用保护 |
 | Codex pool 一致性及双投影 | 0036 / 0052 | pool/format 检查；数据库派生禁用 Images 组和 credential projections，保留 Responses 身份与 MD5 UUID |
 | Images 同步/墓碑 | 0036 / 0052 | 同步共享字段，不传播独立健康/WS 状态；凭证墓碑禁用 Images |
-| sharing-only | 0055 | 插入须符合 pool 已有标志，更新在两投影传播 |
-| 拼车 binding/identity | 0054 / 0056 | 保护已绑定凭证、provider identity 和已有席位编号 |
 | 请求 operation | 0035 | NOT NULL 与 format 一致性 CHECK；仓储在绑定前归一化 |
 
 SQLite 不支持 PG BEFORE trigger 给 `NEW.column` 赋值。这里不模拟“重发整行
@@ -104,8 +100,7 @@ INSERT/UPDATE，再 `RAISE(IGNORE)`”：这种方案会破坏 `ON CONFLICT`、�
 
 1. 新建 Codex Responses group 前，在同一写事务创建/解析 `connector_pools`；
    显式绑定 pool ID。credential 也绑定一致的 pool ID，不依赖数据库补空值。
-2. 插入同 pool 的投影时显式继承已有 `sharing_only`。数据库仍负责 Images
-   派生与后续共享字段传播；不能自动启用 Images 或扩大授权。
+2. 数据库负责 Images 派生与后续共享字段传播；不能自动启用 Images 或扩大授权。
 3. 请求日志 upsert 显式绑定 operation。沿用已有 `ApiOperation::legacy_default`
    / journal 归一化处理旧事件，不在插入后绕过 NOT NULL 修补。
 4. 更新带 `updated_at` 的表时显式 `SET updated_at=ag_now()`；派生更新触发器也遵守
@@ -141,7 +136,7 @@ BUSY/LOCKED 为 Conflict；约束、类型/长度与 schema 函数拒绝为 Inva
 
 `tests/contracts/sqlite_schema.rs` 覆盖完整安装、重开、真实 baseline 加失败后续版本
 的整批回滚、合法写入与直接 SQL 负向约束、类型边界、幂等 upsert、金融保护、
-路由提交、墓碑、paired projection 和拼车保护。
+路由提交、墓碑和 paired projection。
 `tests/contracts/sqlite_parity.rs` 对照当前 PG schema、seed、枚举顺序、金额显示、
 时间量化及派生 UUID。文件/进程与取消/重启测试见[生命周期验收](sqlite-lifecycle.md)。
 

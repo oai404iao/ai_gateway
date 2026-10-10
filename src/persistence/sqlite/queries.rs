@@ -7,7 +7,6 @@ use std::{collections::BTreeMap, sync::Arc};
 use chrono::{DateTime, Duration as ChronoDuration, NaiveDate, Utc};
 use futures_util::TryStreamExt;
 use rust_decimal::Decimal;
-use serde_json::{Value, json};
 use sqlx::{Connection, FromRow, QueryBuilder, Sqlite};
 use uuid::Uuid;
 
@@ -41,12 +40,6 @@ fn checked_add_count(target: &mut i64, value: i64) -> Result<(), RepositoryError
         .checked_add(value)
         .ok_or(RepositoryError::Validation)?;
     Ok(())
-}
-
-/// `json_each` is SQLite's bounded replacement for a PostgreSQL array
-/// parameter; the carrier is a JSON array of canonical UUID strings.
-fn uuid_array(ids: &[Uuid]) -> String {
-    Value::Array(ids.iter().map(|id| json!(id.to_string())).collect()).to_string()
 }
 
 /// Reads the bounded Console log projection. The `_for_user` variants add the
@@ -595,8 +588,7 @@ fn api_format_rank(value: &str) -> usize {
         .unwrap_or(usize::MAX)
 }
 
-/// Immutable-fact cost aggregation, personal usage, spend-leaderboard snapshots,
-/// and the sharing recovery read.
+/// Immutable-fact cost aggregation, personal usage, and spend-leaderboard snapshots.
 #[derive(Clone)]
 pub struct SqliteMeteringQueries {
     database: Arc<SqliteDatabase>,
@@ -908,33 +900,6 @@ impl SqliteMeteringQueries {
                 })
                 .collect(),
         })
-    }
-
-    /// Reads the exact completed cost of at most 1000 request UUIDs.
-    ///
-    /// Only `priced` and `zero_by_policy` facts carry a settlement cost; the
-    /// sharing WAL consumes this one-way evidence read and never touches the
-    /// ordinary balance.
-    pub async fn sharing_completed_costs(
-        &self,
-        ids: &[Uuid],
-    ) -> Result<Vec<(Uuid, Decimal)>, RepositoryError> {
-        if ids.len() > 1000 {
-            return Err(RepositoryError::Validation);
-        }
-        let mut connection = self.database.acquire_read().await.map_err(open_failure)?;
-        let rows = sqlx::query_as::<_, (SqliteUuid, SqliteAmount)>(
-            "SELECT id, cost_amount FROM request_metering_facts \
-             WHERE id IN (SELECT value FROM json_each(?)) \
-               AND amount_state IN ('priced','zero_by_policy')",
-        )
-        .bind(uuid_array(ids))
-        .fetch_all(&mut *connection)
-        .await?;
-        Ok(rows
-            .into_iter()
-            .map(|(id, cost_amount)| (id.0, cost_amount.0))
-            .collect())
     }
 }
 

@@ -36,7 +36,6 @@ import { AsyncResource } from "@/components/shared/async-resource";
 import { ApiKeyValue } from "@/components/shared/api-key-value";
 import { DecimalField, NullableNumberField } from "@/components/shared/decimal-field";
 import { ResourceTable, type Column } from "@/components/shared/resource-table";
-import { SharingChannelFields } from "@/components/shared/sharing-channel-fields";
 import { StatusBadge } from "@/components/shared/status-badge";
 import {
   useCreateOwnApiKey,
@@ -167,16 +166,6 @@ export function ApiKeysPage() {
   );
   const selectedGroupIds = form.watch("allowed_group_ids");
   const selectedChannelIds = form.watch("allowed_channel_ids");
-  const sharingChannelIds = useMemo(
-    () => new Set(options.data?.sharing_channels.map((item) => item.channel_id) ?? []),
-    [options.data?.sharing_channels],
-  );
-  const selectedSharingChannelIds = selectedChannelIds.filter((id) =>
-    sharingChannelIds.has(id),
-  );
-  const selectedPolicyChannelIds = selectedChannelIds.filter(
-    (id) => !sharingChannelIds.has(id),
-  );
   const targetError =
     form.formState.errors.allowed_group_ids?.message ??
     form.formState.errors.allowed_channel_ids?.message;
@@ -224,15 +213,10 @@ export function ApiKeysPage() {
     {
       key: "channels",
       header: t("Logical channels"),
-      render: (key) => formatList([
-        ...(options.data?.sharing_channels ?? [])
-          .filter((channel) => key.allowed_channel_ids.includes(channel.channel_id))
-          .map((channel) => channel.channel_name),
-        ...key.allowed_channel_ids.filter((id) => !sharingChannelIds.has(id)).map((id) => {
-          const channel = targetChannels.find((channel) => channel.id === id);
-          return channel ? `${channel.name} (${channel.channel_group_name ?? channel.channel_group_id})` : id;
-        }),
-      ]),
+      render: (key) => formatList(key.allowed_channel_ids.map((id) => {
+        const channel = targetChannels.find((channel) => channel.id === id);
+        return channel ? `${channel.name} (${channel.channel_group_name ?? channel.channel_group_id})` : id;
+      })),
     },
     {
       key: "permissions",
@@ -346,7 +330,7 @@ export function ApiKeysPage() {
             <DialogTitle>{t("New API key")}</DialogTitle>
             <DialogDescription>
               {t(
-                "Choose sharing credentials or policy targets, then configure this key's own limits.",
+                "Choose policy targets, then configure this key's own limits.",
               )}
             </DialogDescription>
           </DialogHeader>
@@ -380,23 +364,12 @@ export function ApiKeysPage() {
                   {createErrorMessage(options.error, t)}
                 </FieldError>
               ) : null}
-              <div className="grid items-start gap-4 md:col-span-2 lg:grid-cols-2">
-                <SharingChannelFields
-                  channels={options.data?.sharing_channels ?? []}
-                  selectedChannelIds={selectedSharingChannelIds}
-                  onChange={(channelIds) =>
-                    form.setValue(
-                      "allowed_channel_ids",
-                      [...selectedPolicyChannelIds, ...channelIds],
-                      { shouldDirty: true, shouldValidate: true },
-                    )
-                  }
-                />
+              <div className="md:col-span-2">
                 <RoutingTargetFields
                   groups={targetGroups}
                   channels={targetChannels}
                   selectedGroupIds={selectedGroupIds}
-                  selectedChannelIds={selectedPolicyChannelIds}
+                  selectedChannelIds={selectedChannelIds}
                   onChange={(allowedGroupIds, allowedChannelIds) => {
                     form.setValue("allowed_group_ids", allowedGroupIds, {
                       shouldDirty: true,
@@ -404,14 +377,14 @@ export function ApiKeysPage() {
                     });
                     form.setValue(
                       "allowed_channel_ids",
-                      [...selectedSharingChannelIds, ...allowedChannelIds],
+                      allowedChannelIds,
                       { shouldDirty: true, shouldValidate: true },
                     );
                   }}
                   legend={t("API Key Policy targets")}
                   description={t(options.data?.policy_enabled
                     ? "These ordinary groups and channels come from your enabled API Key Policy."
-                    : "No enabled API Key Policy is assigned. Sharing credentials remain available.")}
+                    : "No enabled API Key Policy is assigned. Ask an administrator to assign one.")}
                   error={targetError ? t(targetError) : undefined}
                 />
               </div>

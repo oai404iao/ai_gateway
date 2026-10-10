@@ -63,8 +63,6 @@ pub struct ControlPlaneRecords {
 pub struct RuntimeConfigRecords {
     pub control_plane: ControlPlaneRecords,
     pub system_settings: SystemSettingsRecord,
-    pub sharing: Vec<crate::domain::codex_sharing::SharingRecord>,
-    pub sharing_only_channels: Vec<Uuid>,
     pub connector_ids: Vec<String>,
     pub plugin_records: super::PluginRuntimeRecords,
 }
@@ -441,7 +439,6 @@ pub struct ChannelGroupRecord {
     pub api_format: String,
     pub connector_kind: String,
     pub request_compression: String,
-    pub sharing_only: bool,
     pub enabled: bool,
 }
 /// One active routing capability.
@@ -1024,11 +1021,6 @@ pub enum ControlPlaneMutation {
         id: Uuid,
         expected_updated_at: DateTime<Utc>,
     },
-    SaveCodexSharing {
-        id: Uuid,
-        input: crate::domain::codex_sharing::SharingGroupInput,
-        expected_updated_at: Option<DateTime<Utc>>,
-    },
     CreateUser(UserInput),
     UpdateUser {
         id: Uuid,
@@ -1216,18 +1208,8 @@ pub struct SelfApiKeyOptions {
     pub policy_id: Option<Uuid>,
     pub policy_name: Option<String>,
     pub policy_enabled: bool,
-    pub sharing_channels: Vec<SelfApiKeySharingChannelOption>,
     pub groups: Vec<SelfApiKeyGroupOption>,
     pub channels: Vec<SelfApiKeyChannelOption>,
-}
-
-#[derive(Clone, Serialize, FromRow)]
-pub struct SelfApiKeySharingChannelOption {
-    pub channel_id: Uuid,
-    pub channel_name: String,
-    pub sharing_group_id: Uuid,
-    pub name: String,
-    pub enabled: bool,
 }
 
 #[derive(Clone, Serialize, FromRow)]
@@ -4442,8 +4424,6 @@ impl PostgresControlPlaneRepository {
             plugin_records: super::plugins::postgres::load(transaction).await?,
             control_plane: Self::load_transaction(transaction).await?,
             system_settings: Self::load_system_settings_transaction(transaction).await?,
-            sharing: Self::load_sharing_transaction(transaction).await?,
-            sharing_only_channels: Self::load_sharing_only_channels(transaction).await?,
             connector_ids: sqlx::query_scalar(
                 "SELECT connector_kind FROM upstream_accesses WHERE deleted_at IS NULL
                  UNION SELECT connector_kind FROM upstream_credentials WHERE deleted_at IS NULL",
@@ -4793,35 +4773,13 @@ impl PostgresControlPlaneRepository {
         .bind(user_id)
         .fetch_optional(&mut *transaction)
         .await?;
-        let sharing_channels = sqlx::query_as::<_, SelfApiKeySharingChannelOption>(
-            "SELECT s.channel_id,c.name AS channel_name,s.id AS sharing_group_id,s.name, \
-                    (s.enabled AND c.enabled AND g.enabled AND a.enabled AND credential.enabled) AS enabled \
-             FROM codex_sharing_groups s \
-             JOIN upstream_channels c ON c.id=s.channel_id AND c.deleted_at IS NULL \
-             JOIN routing_groups g ON g.id=c.group_id \
-             JOIN upstream_accesses a ON a.id=c.access_id \
-             JOIN upstream_credentials credential ON credential.id=c.credential_id \
-             JOIN users u ON u.id=$1 AND u.status='active' AND u.deleted_at IS NULL \
-                              AND NOT u.is_system \
-             WHERE s.seats @> jsonb_build_array($1::uuid) \
-             ORDER BY s.name,s.id",
-        )
-        .bind(user_id)
-        .fetch_all(&mut *transaction)
-        .await?;
-        if sharing_channels.is_empty() {
-            ensure_optional_policy_enabled(policy.as_ref())?;
-        }
-
         let topology = super::upstream_topology::pg_load(&mut transaction).await?;
-        let sharing = load_self_api_key_sharing_access(&mut transaction, user_id).await?;
         let (groups, channels) =
-            super::upstream_topology::authorization::options(&topology, policy.as_ref(), &sharing);
+            super::upstream_topology::authorization::options(&topology, policy.as_ref());
         Ok(SelfApiKeyOptions {
             policy_id: policy.as_ref().map(|p| p.id),
             policy_name: policy.as_ref().map(|p| p.name.clone()),
             policy_enabled: policy.as_ref().is_some_and(|p| p.enabled),
-            sharing_channels,
             groups,
             channels,
         })
@@ -4843,13 +4801,11 @@ impl PostgresControlPlaneRepository {
             false,
         )?;
         let policy = load_optional_self_api_key_policy(transaction, user_id).await?;
-        let sharing = load_self_api_key_sharing_access(transaction, user_id).await?;
         let allowed_api_formats = resolve_self_api_key_targets(
             transaction,
             &input.allowed_group_ids,
             &input.allowed_channel_ids,
             policy.as_ref(),
-            &sharing,
         )
         .await?;
         let id = Uuid::new_v4();
@@ -4934,14 +4890,12 @@ impl PostgresControlPlaneRepository {
         )?;
         let allowed_api_formats = if targets_changed {
             let policy = load_optional_self_api_key_policy(transaction, user_id).await?;
-            let sharing = load_self_api_key_sharing_access(transaction, user_id).await?;
             Some(
                 resolve_self_api_key_targets(
                     transaction,
                     &input.allowed_group_ids,
                     &input.allowed_channel_ids,
                     policy.as_ref(),
-                    &sharing,
                 )
                 .await?,
             )
@@ -5341,19 +5295,6 @@ impl PostgresControlPlaneRepository {
             ControlPlaneMutation::DeleteChannelCapability { id, expected } => {
                 super::upstream_topology::capabilities::pg_delete(transaction, id, expected).await
             }
-            ControlPlaneMutation::SaveCodexSharing {
-                id,
-                input,
-                expected_updated_at,
-            } => {
-                crate::persistence::codex_sharing::save_group(
-                    transaction,
-                    id,
-                    input,
-                    expected_updated_at,
-                )
-                .await
-            }
             ControlPlaneMutation::CreateUser(input) => {
                 user_create(transaction, Uuid::new_v4(), input).await
             }
@@ -5693,12 +5634,6 @@ pub(crate) struct SelfApiKeyCurrent {
     pub(crate) allowed_channel_ids: Vec<Uuid>,
 }
 
-#[derive(Default)]
-pub(crate) struct SelfApiKeySharingAccess {
-    pub(crate) owned_channels: HashSet<Uuid>,
-    pub(crate) protected_channels: HashSet<Uuid>,
-}
-
 async fn load_optional_self_api_key_policy(
     transaction: &mut Transaction<'_, Postgres>,
     user_id: Uuid,
@@ -5725,53 +5660,6 @@ async fn load_optional_self_api_key_policy(
     .fetch_optional(&mut **transaction)
     .await?;
     Ok(policy)
-}
-
-fn ensure_optional_policy_enabled(
-    policy: Option<&SelfApiKeyPolicy>,
-) -> Result<(), RepositoryError> {
-    match policy {
-        Some(policy) if policy.enabled => Ok(()),
-        Some(_) => Err(RepositoryError::DefaultApiKeyPolicyDisabled),
-        None => Err(RepositoryError::DefaultApiKeyPolicyRequired),
-    }
-}
-
-async fn load_self_api_key_sharing_access(
-    transaction: &mut Transaction<'_, Postgres>,
-    user_id: Uuid,
-) -> Result<SelfApiKeySharingAccess, RepositoryError> {
-    let rows = sqlx::query_as::<_, (Uuid, bool)>(
-        "WITH protected AS ( \
-             SELECT credential_id,provider_account_id,provider_user_id FROM codex_sharing_groups \
-             UNION SELECT c.credential_id,COALESCE(identity.account_id,''),identity.user_id \
-             FROM upstream_channels c JOIN codex_oauth_credentials identity ON identity.channel_id=c.credential_id \
-             WHERE c.sharing_only AND c.deleted_at IS NULL AND identity.deleted_at IS NULL \
-         ) SELECT projection.id, \
-                bool_or(EXISTS(SELECT 1 FROM codex_sharing_groups own \
-                    WHERE own.channel_id=projection.id AND own.credential_id=candidate.channel_id \
-                      AND own.seats @> jsonb_build_array($1::uuid))) AS owned \
-         FROM protected s \
-         JOIN codex_oauth_credentials candidate \
-           ON candidate.channel_id=s.credential_id \
-           OR (COALESCE(candidate.account_id,'')=s.provider_account_id \
-               AND candidate.user_id=s.provider_user_id) \
-         JOIN upstream_channels projection \
-           ON projection.credential_id=candidate.channel_id \
-         WHERE candidate.deleted_at IS NULL AND projection.deleted_at IS NULL \
-         GROUP BY projection.id",
-    )
-    .bind(user_id)
-    .fetch_all(&mut **transaction)
-    .await?;
-    let mut access = SelfApiKeySharingAccess::default();
-    for (channel, owned) in rows {
-        access.protected_channels.insert(channel);
-        if owned {
-            access.owned_channels.insert(channel);
-        }
-    }
-    Ok(access)
 }
 
 fn same_uuid_set(left: &[Uuid], right: &[Uuid]) -> bool {
@@ -5870,14 +5758,13 @@ async fn resolve_self_api_key_targets(
     selected_group_ids: &[Uuid],
     selected_channel_ids: &[Uuid],
     policy: Option<&SelfApiKeyPolicy>,
-    sharing: &SelfApiKeySharingAccess,
 ) -> Result<super::upstream_topology::authorization::AuthorizationPlan, RepositoryError> {
     let topology = super::upstream_topology::pg_load(transaction).await?;
     super::upstream_topology::authorization::resolve(
         &topology,
         selected_group_ids,
         selected_channel_ids,
-        Some((policy, sharing)),
+        Some(policy),
     )
 }
 
@@ -7694,8 +7581,6 @@ fn valid_session_affinity_json_pointer(pointer: &str) -> bool {
 pub enum RepositoryError {
     #[error("control-plane actor is not active or authorized")]
     InvalidActor,
-    #[error("credential is bound to a Codex sharing group")]
-    SharingCredentialInUse,
     #[error("control-plane database operation failed")]
     Storage(#[source] StorageError),
     #[error("request log response status is outside the HTTP range")]

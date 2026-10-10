@@ -6,7 +6,7 @@ use super::runtime::{BaseControlPlaneRecords, resolve_runtime};
 use crate::persistence::{ControlPlaneRecords, RepositoryError};
 
 /// The caller must hold a consistent snapshot transaction across this load
-/// and the loading of system settings and sharing state.
+/// and the loading of system settings.
 pub async fn pg_load_control_plane(
     connection: &mut PgConnection,
 ) -> Result<ControlPlaneRecords, RepositoryError> {
@@ -65,7 +65,7 @@ pub async fn pg_load_control_plane(
 
 #[cfg(feature = "sqlite-backend")]
 /// The caller must hold a consistent snapshot transaction across this load
-/// and the loading of system settings and sharing state.
+/// and the loading of system settings.
 pub async fn sqlite_load_control_plane(
     connection: &mut sqlx::SqliteConnection,
 ) -> Result<ControlPlaneRecords, RepositoryError> {

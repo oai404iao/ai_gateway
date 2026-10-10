@@ -217,44 +217,6 @@ async fn serve_connected(
     let initial = compile_runtime_config_with_catalog(repository.load_runtime().await?, &plugins)?;
     let initial_passive_health = initial.system_settings().passive_health();
     let runtime = Arc::new(RuntimeConfig::new_with_plugin_catalog(initial, plugins));
-    let sharing = if config.codex_sharing.enabled {
-        ai_gateway::codex_sharing::SharingRuntime::open(
-            config.request_logging.spool_directory.join("codex-sharing"),
-        )
-        .await?
-    } else {
-        ai_gateway::codex_sharing::SharingRuntime::default()
-    };
-    if let Some(ledger_id) = sharing.ledger_id() {
-        let mut owner = repository.claim_sharing_ledger(ledger_id).await?;
-        let sharing = sharing.clone();
-        let repository = database.logs().queries().metering();
-        background_tasks.spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(5));
-            loop {
-                interval.tick().await;
-                if !matches!(
-                    tokio::time::timeout(Duration::from_secs(3), owner.ping()).await,
-                    Ok(Ok(()))
-                ) {
-                    sharing.poison();
-                    tracing::error!(
-                        "Codex sharing single-writer ownership lost; admission disabled"
-                    );
-                    break;
-                }
-                let pending = sharing.pending().await;
-                if !pending.is_empty()
-                    && let Ok(costs) = repository.sharing_completed_costs(&pending).await
-                {
-                    for (id, cost) in costs {
-                        sharing.finish(id, Some(cost));
-                    }
-                }
-            }
-        });
-    }
-
     let address = format!("{}:{}", config.server.host, config.server.port);
     let admission = AdmissionRuntime::new();
     let spend_leaderboard_repository = database.logs().queries().metering();
@@ -277,8 +239,7 @@ async fn serve_connected(
         Arc::clone(&runtime),
         routing.clone(),
         Arc::clone(&upstream_clients),
-    )?
-    .with_sharing_runtime(sharing.clone());
+    )?;
     coordinator.discover_plugin_directory().await?;
     coordinator.reload().await?;
     let plugin_coordinator = coordinator.clone();
@@ -312,8 +273,7 @@ async fn serve_connected(
         admission.clone(),
         Some(automatic_disable_service.clone()),
     )?
-    .with_connector_registry(connectors)
-    .with_sharing_runtime(sharing.clone());
+    .with_connector_registry(connectors);
     let system_metrics = SystemMetricsService::new_at(
         database.health(),
         config.database.max_connections,
@@ -408,9 +368,7 @@ async fn serve_connected(
         worker.shutdown().await;
     }
     request_log_worker.shutdown().await;
-    let sharing_result = sharing.flush().await;
     background_tasks.shutdown().await;
-    sharing_result?;
     serve_result?;
     Ok(())
 }

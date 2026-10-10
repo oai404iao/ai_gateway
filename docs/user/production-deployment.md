@@ -122,9 +122,8 @@ docker compose \
 
 ## 5. 升级
 
-启用 [Codex 拼车](codex-sharing.md) 时，必须先停止旧实例，不能混跑不识别拼车绑定的
-旧版本。金额账本位于 `gateway-spool` 的 `codex-sharing` 子目录；停机后与数据库、
-请求日志一起做一致性备份，不能用空卷、独立回滚账本或复制实例来重置额度。
+从包含 Codex 拼车的旧版本升级时，先阅读[移除升级说明](operations.md#codex-拼车移除升级)；
+迁移会停用原受保护渠道，必须审核普通授权后才能手动重新启用。
 
 移除 MCP 的版本包含 `0053_remove_mcp.sql`：删除 MCP 实例表、类型和系统设置，将历史
 MCP 日志归入 `client`，保留用量与费用，并兼容旧 spool/ingress 日志回放。升级前备份并停止

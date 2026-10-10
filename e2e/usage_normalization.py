@@ -124,7 +124,7 @@ def exercise_usage_normalization(resources, data, fixture):
             "base_url": upstream.url, "enabled": True})
         channel, _ = api("/routing/logical-channels", "POST", {
             "group_id": group["id"], "access_id": access["id"], "name": "usage-parser",
-            "credential_id": None, "enabled": True, "sharing_only": False})
+            "credential_id": None, "enabled": True})
         capability, _ = api("/routing/capabilities", "POST", {
             "channel_id": channel["id"], "settings": {
                 "operation": "responses", "enabled": True, "available_models": ["usage-wire"],

@@ -502,83 +502,6 @@
       "window_seconds": "int4"
     }
   },
-  "codex_sharing_groups": {
-    "checks": [
-      "codex_sharing_groups_group_max_concurrent_requests_check",
-      "codex_sharing_groups_group_requests_per_minute_check",
-      "codex_sharing_groups_name_check",
-      "codex_sharing_groups_primary_limit_amount_check",
-      "codex_sharing_groups_provider_user_id_check",
-      "codex_sharing_groups_request_reservation_amount_check",
-      "codex_sharing_groups_seats_check",
-      "codex_sharing_groups_secondary_limit_amount_check",
-      "codex_sharing_groups_user_max_concurrent_requests_check",
-      "codex_sharing_groups_user_requests_per_minute_check"
-    ],
-    "columns": [
-      "id",
-      "credential_id",
-      "provider_account_id",
-      "provider_user_id",
-      "name",
-      "enabled",
-      "seats",
-      "primary_limit_amount",
-      "secondary_limit_amount",
-      "request_reservation_amount",
-      "user_requests_per_minute",
-      "group_requests_per_minute",
-      "user_max_concurrent_requests",
-      "group_max_concurrent_requests",
-      "created_at",
-      "updated_at",
-      "channel_id"
-    ],
-    "constraints": [
-      "codex_sharing_channel_unique",
-      "codex_sharing_groups_channel_id_fkey",
-      "codex_sharing_groups_credential_id_fkey",
-      "codex_sharing_groups_credential_id_key",
-      "codex_sharing_groups_pkey",
-      "codex_sharing_groups_provider_account_id_provider_user_id_key"
-    ],
-    "types": {
-      "channel_id": "uuid",
-      "created_at": "timestamptz",
-      "credential_id": "uuid",
-      "enabled": "bool",
-      "group_max_concurrent_requests": "int4",
-      "group_requests_per_minute": "int4",
-      "id": "uuid",
-      "name": "text",
-      "primary_limit_amount": "numeric",
-      "provider_account_id": "text",
-      "provider_user_id": "text",
-      "request_reservation_amount": "numeric",
-      "seats": "jsonb",
-      "secondary_limit_amount": "numeric",
-      "updated_at": "timestamptz",
-      "user_max_concurrent_requests": "int4",
-      "user_requests_per_minute": "int4"
-    }
-  },
-  "codex_sharing_ledger": {
-    "checks": [
-      "codex_sharing_ledger_singleton_check"
-    ],
-    "columns": [
-      "singleton",
-      "ledger_id"
-    ],
-    "constraints": [
-      "codex_sharing_ledger_ledger_id_key",
-      "codex_sharing_ledger_pkey"
-    ],
-    "types": {
-      "ledger_id": "uuid",
-      "singleton": "bool"
-    }
-  },
   "config_templates": {
     "checks": [
       "config_templates_document_check"
@@ -1473,8 +1396,7 @@
       "binding_revision",
       "created_at",
       "updated_at",
-      "deleted_at",
-      "sharing_only"
+      "deleted_at"
     ],
     "constraints": [
       "upstream_channels_access_id_fkey",
@@ -1492,7 +1414,6 @@
       "group_id": "uuid",
       "id": "uuid",
       "name": "varchar",
-      "sharing_only": "bool",
       "updated_at": "timestamptz"
     }
   },

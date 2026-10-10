@@ -60,4 +60,9 @@ pub(crate) const MIGRATIONS: &[SqliteMigration<'static>] = &[
         description: "plugin lifecycle and independent settings",
         sql: include_str!("../../../migrations/sqlite/0011_plugin_lifecycle.sql"),
     },
+    SqliteMigration {
+        version: 12,
+        description: "remove Codex sharing",
+        sql: include_str!("../../../migrations/sqlite/0012_remove_codex_sharing.sql"),
+    },
 ];

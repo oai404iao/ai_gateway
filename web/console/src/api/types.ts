@@ -9,17 +9,9 @@
 // names below so existing `import type { ConsoleUser } from "@/api/types"`
 // callers keep working unchanged.
 
-import type { components, operations } from "@/api/generated/console-v1";
+import type { components } from "@/api/generated/console-v1";
 
 type S = components["schemas"];
-export type CodexSharingGroupInput = S["CodexSharingGroupInput"];
-export type CodexSharingGroup = S["CodexSharingGroup"];
-export type CodexSharingUsage = S["CodexSharingUsage"];
-export type SelfCodexSharingView = S["SelfCodexSharingView"];
-export type CodexSharingGroupsResponse =
-  operations["listCodexSharingGroups"]["responses"][200]["content"]["application/json"];
-export type CodexSharingSeatsResponse =
-  operations["getCodexSharingUsage"]["responses"][200]["content"]["application/json"];
 
 // Enums / scalar aliases
 export type UserRole = S["UserRole"];
@@ -105,7 +97,6 @@ export type ApiKeyView = S["ApiKeyView"];
 export type AdminApiKeyView = S["AdminApiKeyView"];
 export type ApiKeyPolicyView = S["ApiKeyPolicyView"];
 export type SelfApiKeyOptions = S["SelfApiKeyOptions"];
-export type SelfApiKeySharingChannelOption = S["SelfApiKeySharingChannelOption"];
 export type SelfApiKeyGroupOption = S["SelfApiKeyGroupOption"];
 export type SelfApiKeyChannelOption = S["SelfApiKeyChannelOption"];
 export type ApiHostsView = S["ApiHostsView"];

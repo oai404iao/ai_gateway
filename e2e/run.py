@@ -412,8 +412,6 @@ settlement_interval_milliseconds = 100
 shutdown_drain_seconds = 5
 [request_retry]
 enabled = false
-[codex_sharing]
-enabled = true
 [observability]
 filter = "ai_gateway=info,tower_http=warn"
 """)
@@ -471,12 +469,11 @@ def seed(console, password, upstream):
     channel, _ = api("/routing/logical-channels", "POST", {
         "group_id": group["id"], "access_id": access["id"],
         "name": "system-e2e", "enabled": True, "credential_id": credential["id"],
-        "sharing_only": False,
     })
     api("/routing/logical-channels", "POST", {
         "group_id": group["id"], "access_id": access["id"],
         "name": "system-e2e-disabled-reference", "enabled": False,
-        "credential_id": credential["id"], "sharing_only": False,
+        "credential_id": credential["id"],
     })
     key, _ = api("/api-keys", "POST", {
         "user_id": user, "name": "system-e2e",

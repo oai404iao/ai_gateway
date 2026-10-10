@@ -117,7 +117,6 @@ fn snapshot_compilation_excludes_unavailable_plugin_channels() {
                 api_format: String::new(),
                 connector_kind: String::new(),
                 request_compression: String::new(),
-                sharing_only: false,
                 enabled: true,
             });
             control_plane.channels.push(ChannelRecord {
@@ -160,8 +159,6 @@ fn snapshot_compilation_excludes_unavailable_plugin_channels() {
             plugin_records: Default::default(),
             control_plane,
             connector_ids: vec![connector.into()],
-            sharing: vec![],
-            sharing_only_channels: vec![],
             system_settings: SystemSettingsRecord {
                 setting_key: ai_gateway::persistence::FORWARDING_SETTINGS_KEY.into(),
                 value: json!({

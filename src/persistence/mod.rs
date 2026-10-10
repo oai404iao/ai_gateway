@@ -8,7 +8,6 @@ mod backend_pipeline;
 mod backend_queries;
 pub mod capability_cutover;
 mod codex;
-mod codex_sharing;
 mod codex_write;
 mod control_plane_write;
 mod health;
@@ -30,7 +29,7 @@ pub use auth::{
     SessionUser, TemporaryPasswordCreated,
 };
 pub use backend_auth::AuthRepository;
-pub use backend_codex::{CodexQuotaReset, CodexRefresh, SharingLedgerLease};
+pub use backend_codex::{CodexQuotaReset, CodexRefresh};
 pub use backend_control_plane::{ControlPlaneRepository, PreparedControlPlaneChange};
 pub use backend_pipeline::{MeteringRepository, RequestLogRepository, SettlementRepository};
 pub use backend_queries::{MeteringQueries, RequestLogQueries};

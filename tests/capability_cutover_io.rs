@@ -788,7 +788,7 @@ async fn exercise_channel_authority_and_route_withdrawal(
             id: other, expected: None,
             input: serde_json::from_value(serde_json::json!({
                 "group_id": GROUP, "access_id": access, "credential_id": null,
-                "name": "Later group member", "enabled": true, "sharing_only": false
+                "name": "Later group member", "enabled": true
             })).unwrap(),
         },
         create_capability(own_cap, CHANNEL, "responses"),
@@ -1358,7 +1358,6 @@ async fn exercise_self_service_channel_boundary(
             id: channel,
             expected: None,
             input: LogicalChannelInput {
-                sharing_only: false,
                 group_id: group,
                 access_id: access,
                 credential_id: None,
@@ -2713,7 +2712,7 @@ mod sqlite_backend {
             &ai_gateway::persistence::capability_cutover::credential_ownership::upgrade(&projected),
         );
         transaction.commit().await.unwrap();
-        assert_eq!(database.install_schema().await.unwrap(), 5);
+        assert_eq!(database.install_schema().await.unwrap(), 6);
         let mut transaction = database.begin_write().await.unwrap();
         assert_topology(
             &expected,

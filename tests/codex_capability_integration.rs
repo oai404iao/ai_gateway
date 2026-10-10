@@ -15,7 +15,6 @@ use ai_gateway::{
 };
 use chrono::{DateTime, Utc};
 use sqlx::{PgPool, postgres::PgPoolOptions};
-use std::time::Duration;
 use uuid::Uuid;
 
 #[path = "contracts/sqlite_s5_parity.rs"]

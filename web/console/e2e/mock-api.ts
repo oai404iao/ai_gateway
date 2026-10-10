@@ -1,6 +1,5 @@
 import type { Page, Route } from "@playwright/test";
-import { CONNECTOR_PLUGINS, SYSTEM_SETTINGS, SHARING_GROUP, SHARING_USAGE, OWN_SHARING } from "../src/test/fixtures";
-import type { SharingGroupInput } from "../src/api/types";
+import { CONNECTOR_PLUGINS, SYSTEM_SETTINGS } from "../src/test/fixtures";
 
 /**
  * Network-layer Console API mocks for e2e tests. Each handler returns
@@ -239,7 +238,6 @@ export const E2E_CODEX_GROUP = {
   connector_kind: "codex",
   connector_pool_id: E2E_CODEX_GROUP_ID,
   request_compression: "default",
-  sharing_only: false,
   enabled: true,
   status_statistics_enabled: true,
   updated_at: "2026-07-29T12:00:00.000Z",
@@ -252,7 +250,6 @@ const E2E_STANDARD_CHANNEL_GROUPS = Array.from({ length: 5 }, (_, index) => ({
   connector_kind: "general",
   connector_pool_id: null,
   request_compression: "default",
-  sharing_only: false,
   enabled: true,
   status_statistics_enabled: true,
   updated_at: "2026-07-29T12:00:00.000Z",
@@ -289,7 +286,6 @@ const E2E_LOGICAL_CHANNELS = [
     credential_id: null,
     name: "Upstream A",
     enabled: true,
-    sharing_only: false,
     binding_revision: "00000000-0000-0000-0000-0000000000b1",
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-02T00:00:00Z",
@@ -302,7 +298,6 @@ const E2E_LOGICAL_CHANNELS = [
     credential_id: E2E_CODEX_CREDENTIAL_ID,
     name: "Personal Plus",
     enabled: true,
-    sharing_only: false,
     binding_revision: "00000000-0000-0000-0000-0000000000b2",
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-02T00:00:00Z",
@@ -662,10 +657,6 @@ export async function mockConsoleApi(page: Page): Promise<void> {
   let websocketEnabled = false;
   let authenticated = false;
   let session = ADMIN_PROFILE;
-  let sharing = {
-    ...SHARING_GROUP,
-    channel_id: E2E_CODEX_CREDENTIAL_ID, seats: [E2E_USER.id, null],
-  };
   await page.route("**/console/v1/**", (route: Route) => {
     const url = new URL(route.request().url());
     const method = route.request().method();
@@ -680,7 +671,7 @@ export async function mockConsoleApi(page: Page): Promise<void> {
         input.email === TEMPORARY_PASSWORD_PROFILE.user.email
           ? TEMPORARY_PASSWORD_PROFILE
           : input.email === E2E_USER.email
-          ? { user: E2E_USER, access_token: "e2e-sharing-member-token" }
+          ? { user: E2E_USER, access_token: "e2e-user-token" }
           : ADMIN_PROFILE;
       return route.fulfill({ status: 200, json: session });
     }
@@ -709,41 +700,6 @@ export async function mockConsoleApi(page: Page): Promise<void> {
     }
     if (path === "/console/v1/me" && method === "GET") {
       return route.fulfill({ status: 200, json: session.user });
-    }
-    if (path === "/console/v1/me/codex-sharing" && method === "GET") {
-      return route.fulfill({ json: session.user.id === E2E_USER.id ? OWN_SHARING : null });
-    }
-    if (path === "/console/v1/codex-sharing-groups" && method === "GET") {
-      return route.fulfill({ json: { groups: [sharing], runtime_available: true } });
-    }
-    if (path === `/console/v1/codex-sharing-groups/${sharing.id}/usage` && method === "GET") {
-      return route.fulfill({ json: {
-        seats: [
-          { seat_number: 1, user_id: E2E_USER.id, usage: SHARING_USAGE },
-          { seat_number: 2, user_id: null, usage: {
-            ...SHARING_USAGE, seat_number: 2, pending_requests: 0,
-            windows: SHARING_USAGE.windows.map(window => ({
-              ...window, used_amount: "0", reserved_amount: "0", remaining_amount: window.limit_amount,
-            })),
-          } },
-        ],
-      } });
-    }
-    if (path === `/console/v1/codex-sharing-groups/${sharing.id}`) {
-      if (method === "GET") {
-        return route.fulfill({ json: sharing, headers: { ETag: `"${sharing.updated_at}"` } });
-      }
-      if (method === "PUT") {
-        if (route.request().headers()["if-match"] !== `"${sharing.updated_at}"`) {
-          return route.fulfill({ status: 409, json: { error: "conflict" } });
-        }
-        const input = route.request().postDataJSON() as SharingGroupInput;
-        sharing = { ...sharing, ...input, updated_at: "2026-09-09T01:00:00Z" };
-        return route.fulfill({ json: {
-          id: sharing.id, updated_at: sharing.updated_at,
-          correlation_id: "00000000-0000-0000-0000-0000000000f1",
-        } });
-      }
     }
     if (path === "/console/v1/me/settings" && method === "GET") {
       return route.fulfill({
@@ -1258,15 +1214,6 @@ export async function mockConsoleApi(page: Page): Promise<void> {
           policy_id: "00000000-0000-0000-0000-000000000031",
           policy_name: "default",
           policy_enabled: true,
-          sharing_channels: [
-            {
-              channel_id: SHARING_GROUP.channel_id,
-              channel_name: "Personal Plus",
-              sharing_group_id: SHARING_GROUP.id,
-              name: SHARING_GROUP.name,
-              enabled: SHARING_GROUP.enabled,
-            },
-          ],
           groups: [
             {
               id: "00000000-0000-0000-0000-000000000021",

@@ -1547,7 +1547,6 @@ impl CompiledModelRoutes {
 pub struct CompiledRuntimeConfig {
     plugins: crate::connector_plugins::ConnectorPlugins,
     plugin_errors: HashMap<String, &'static str>,
-    sharing: super::codex_sharing::SharingRegistry,
     api_keys: HashMap<ApiKeyHash, Arc<CompiledApiKey>>,
     model_rules: CompiledModelRoutes,
     channels: HashMap<Uuid, Arc<CompiledChannel>>,
@@ -1632,7 +1631,6 @@ impl CompiledRuntimeConfig {
         system_settings: SystemRuntimeSettings,
     ) -> Self {
         Self {
-            sharing: super::codex_sharing::SharingRegistry::default(),
             plugins: Default::default(),
             plugin_errors: Default::default(),
             api_keys,
@@ -1646,15 +1644,6 @@ impl CompiledRuntimeConfig {
             system_settings,
         }
     }
-    pub(crate) fn with_sharing(mut self, sharing: super::codex_sharing::SharingRegistry) -> Self {
-        self.sharing = sharing;
-        self
-    }
-
-    pub fn sharing(&self) -> &super::codex_sharing::SharingRegistry {
-        &self.sharing
-    }
-
     pub fn with_plugins(mut self, plugins: crate::connector_plugins::ConnectorPlugins) -> Self {
         self.plugins = plugins;
         self
