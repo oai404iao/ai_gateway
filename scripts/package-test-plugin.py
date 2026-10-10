@@ -61,9 +61,16 @@ def main():
     directory = output / "plugin-directory" / "artifacts" / fixture_id / sha256
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     if not (directory / "SHA256SUMS").exists():
+        partial = list(directory.rglob("*"))
+        if directory.is_symlink() or any(path.is_symlink() for path in partial):
+            raise ValueError("unexpected symlink in partial fixture package")
+        # Restored caches can retain readonly files from an interrupted package.
+        for path in partial:
+            if path.is_file():
+                path.chmod(0o600)
         shutil.copyfile(library_path, directory / library_path.name)
         shutil.copyfile(source / "LICENSE", directory / "LICENSE")
-        (directory / "LICENSES" / "fixture").mkdir(parents=True, mode=0o700)
+        (directory / "LICENSES" / "fixture").mkdir(parents=True, exist_ok=True, mode=0o700)
         shutil.copyfile(source / "LICENSE", directory / "LICENSES" / "fixture" / "LICENSE")
         (directory / "THIRD_PARTY_NOTICES.md").write_text(
             "Synthetic local test package, not a redistributable release.\n"
