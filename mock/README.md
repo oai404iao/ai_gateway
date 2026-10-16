@@ -1,43 +1,59 @@
 # Shared protocol scenarios
 
-> Status: Current. Loopback Responses fixtures shared across system and Rust tests.
+> Status: Current. Deterministic loopback fixtures for system and Rust tests.
 
-`scenarios/responses.json` owns stable scenario IDs, deterministic usage,
-terminal text and the tool-cycle contract. `scenarios/response-events.json` owns
-wire-event templates consumed by Python HTTP/SSE/WS adapters and
-`tests/websocket_integration.rs`. Variables substitute JSON values, not source code.
-`upstream.py` handles HTTP/SSE; `websocket.py` uses a hash-pinned `websockets`
-dependency from `e2e/requirements.txt`. Neither calls external services.
+Use these fixtures to exercise protocol behavior without external services.
+They share scenario contracts, not one universal OpenAI emulator. The system
+runner owns startup and isolation; see [system E2E](../docs/development/system-e2e.md).
+Existing Rust mocks, Console MSW/Playwright handlers and the performance Mock
+remain separate.
 
-- `responses-text`: one JSON response, used after the browser changes routing.
-- `responses-tool-cycle`: two generations separated by an actual Codex shell
-  or Pi read call. A per-run random marker must return under the emitted call ID.
-- WS keeps previous response IDs connection-local; warmup cannot satisfy tool
-  coverage, and continuation on another socket or without its ID fails.
-- Wrong model aliases, missing/mismatched tool output and extra tool rounds fail.
-- The adapter bounds request bodies, request count and retained error summaries.
-- Artifacts retain structural evidence, not Headers or raw request bodies.
+## Choose the fixture
 
-This is not a complete OpenAI emulator. There are no images or cross-format
-conversion. Existing Rust upstream mocks,
-Console MSW/Playwright handlers and the performance Mock remain separate.
-Future adapters should share scenario contracts where useful, not become one
-universal server. Scenario oracles include wrong call IDs, missing tool output,
-wrong continuation, errors and missing terminals. See [system E2E](../docs/development/system-e2e.md).
+| File | Responsibility |
+| --- | --- |
+| [`scenarios/responses.json`](scenarios/responses.json) | Stable scenario IDs, deterministic usage, terminal text and tool-cycle contract |
+| [`scenarios/response-events.json`](scenarios/response-events.json) | Wire-event templates shared by Python adapters and Rust WebSocket tests |
+| [`upstream.py`](upstream.py) | HTTP JSON/SSE Responses scenarios |
+| [`websocket.py`](websocket.py) | Connection-local Responses WebSocket scenarios; uses the hash-pinned dependency in `e2e/requirements.txt` |
+| [`response_adapter.py`](response_adapter.py) | Raw Chat/Responses JSON/SSE inputs for native adapter acceptance |
+| [`usage_normalization.py`](usage_normalization.py) | Unchanged envelopes with explicitly selected usage dialects |
 
-`response_adapter.py` is a separate bounded loopback fixture for native response
-adapter acceptance. It emits Chat and Responses JSON/SSE with raw 5/2 usage;
-Chat SSE can deliberately omit `[DONE]`, interleave two requests at content-event
-boundaries, or hold a dispatched request while Console settings change. Responses
-SSE emits completed, incomplete or cancelled terminal events with matching status,
-raw usage, and no explicit error fields. It never
-adapts the content itself: independent harness oracles require the installed
-plugin to modify text while preserving usage and terminal semantics. It does
-not emulate WebSocket or cross-format conversion.
+Template variables substitute JSON values, not source code. Keep scenario
+semantics in the shared contracts; do not independently redefine the same
+oracle in each transport adapter.
 
-`usage_normalization.py` emits unchanged OpenAI-compatible JSON/SSE envelopes
-with explicit OpenAI inclusive-input or Anthropic exclusive-input usage dialects.
-Both represent canonical `5/3/0/2/0` counters. It bounds bodies and requests,
-records structural evidence only, and performs neither parsing normalization
-nor response adaptation. This synthetic fixture is not an Anthropic transport
-implementation; installed connector settings select the pure parser.
+## Preserve scenario invariants
+
+- `responses-text` returns one JSON response after the browser changes routing.
+- `responses-tool-cycle` requires two generations separated by an actual Codex
+  shell or Pi read call. A per-run random marker must return under the emitted
+  call ID; warmup cannot satisfy tool coverage.
+- WebSocket continuation IDs are connection-local. A continuation on another
+  socket or without the required ID fails.
+- Wrong aliases, wrong call IDs, missing/mismatched tool output, extra tool
+  rounds, errors and missing terminals must fail their respective oracles.
+- Adapters bound bodies, request counts and retained error summaries. Reports
+  retain structural evidence, not headers or raw request bodies.
+
+## Test response adaptation without doing it in the mock
+
+`response_adapter.py` emits raw 5/2 usage. Chat SSE can omit `[DONE]`, interleave
+requests at content-event boundaries, or hold a dispatched request while
+Console settings change. Responses SSE emits completed, incomplete or cancelled
+terminals with matching status, raw usage and no explicit error fields.
+
+The fixture never adapts content itself. Independent harness oracles require
+the installed plugin to change text without changing usage or terminal meaning.
+There is no WebSocket adaptation or cross-format conversion here.
+
+## Test usage selection without normalizing in the mock
+
+`usage_normalization.py` emits OpenAI-compatible JSON/SSE envelopes with either
+OpenAI inclusive-input or Anthropic exclusive-input usage. Both represent
+canonical `5/3/0/2/0` counters. The fixture bounds requests/bodies and retains
+structural evidence only; it performs neither normalization nor adaptation.
+
+Installed connector settings select the pure parser. The synthetic Anthropic
+usage dialect does not imply an Anthropic HTTP route. Images and a full
+OpenAI emulator are outside this fixture set's scope.

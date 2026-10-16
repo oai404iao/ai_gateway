@@ -1,14 +1,148 @@
 # 请求字段与 Header 白名单
 
-> 类型：外部兼容契约与网关安全边界。
+> 类型：外部兼容参考与网关安全边界。
 >
 > 状态：当前。
 >
-> 最近核对：2026-09-08。
+> 最近核对：2026-09-08。外部来源版本沿用原记录，未因本文重排更新。
 >
-> 机器可读权威契约：
-> [`request-allowlists.json`](request-allowlists.json)。
+> 机器可读权威契约：[request-allowlists.json](request-allowlists.json)。
 >
+> 权威来源：[openai-node 固定请求类型](https://github.com/openai/openai-node/tree/854892a0580980449ce1ed04aa5e3831d3330383)及文末各源码记录。
+
+如果请求在联系上游前返回未知字段错误，先查本页。这里解释策略如何执行，不复制全部字段表；
+新增字段必须修改机器契约及测试，不能只在 Markdown 中声明支持。
+
+## 先判断在哪一层失败
+
+| 例子 | 公共入口 | 后续处理 |
+| --- | --- | --- |
+| Chat 顶层 thinking / enable_thinking | 允许，不解释值 | 目标上游决定是否支持 |
+| Responses 顶层 max_output_tokens | 允许 | 普通上游可保留，Codex 插件可按自己的契约删除 |
+| 未声明顶层字段 | 400 request_body_field_unsupported | 不联系上游 |
+| edit moderation=auto | 删除后继续 | 不发送该 part |
+| edit moderation=low | 400 request_body_field_value_unsupported | 不能把非等价值静默删除 |
+| X-Forwarded-For | 显式忽略 | 变换/插件/鉴权之后仍不得重新引入 |
+| 未知自定义 Header | 入口忽略 | 普通管理员变换可加未受保护 Header，不等于客户端任意透传 |
+
+“入口允许”不是递归 schema 验证，也不证明模型支持。允许字段内部的 messages/input/tools/metadata
+由插件或上游解释；普通 general 不执行 Codex 隐私归一化。
+
+## 目标
+
+宿主拥有公共客户端 Header、顶层 body 和通用出站安全约束。
+服务商协议、字段/隐私策略属于插件：
+[ai-gateway-connectors](https://github.com/oai404iao/ai-gateway-connectors) 的
+`codex/src/request-allowlists.json` 是 Codex 出站规则，**不在本仓库公共 JSON 中**。
+
+这种分层允许公共 Responses 支持的字段在某个插件中被明确拒绝或等价删除，而不是为迁就插件
+缩小所有普通上游的能力。插件不能通过自己的字段处理绕过宿主模型、凭证、Fast 或 Header 边界。
+
+## 动作语义
+
+| 动作 | body | Header |
+| --- | --- | --- |
+| allow | 保留；其他阶段仍可能改写 | 进入后续处理，不保证最终原样出站 |
+| ignore | 删除；accepted_values 存在时只接受声明的等价值 | 删除 |
+| reject | 本地 400，不派发 | 由对应策略处理 |
+| 未列出 | 默认 reject | 默认 ignore |
+
+ignore 只适合遥测、空值/默认值、明确 no-op 或有来源依据的兼容行为，不能用于吞掉会改变生成
+语义的未知字段。JSON 字节保真要求所有后续阶段也未修改 body；模型别名、Fast 过滤和插件适配
+都可能触发重写。
+
+## 客户端入口策略
+
+### Header
+
+六种数据面操作共享 client_headers，允许的完整名称和前缀只在机器契约维护。
+常见类别包括：
+
+- OpenAI 组织/项目、幂等与 HTTP 表示 Header；
+- session-id/thread-id/x-client-request-id/x-codex-window-id/x-session-id；
+- x-codex-image-turn-id 与 Codex turn metadata、beta、routing、turn-state 控制字段；
+- W3C trace/baggage 和官方 SDK x-stainless-*；
+- 旧 session_id/thread_id 仅为兼容既有配置，新配置使用连字符形式。
+
+Authorization 用于 Gateway 鉴权，Host/Content-Length 等用于 framing，
+Accept-Encoding 由 transport 重新协商：这些名称在入口 allow，不代表透传到上游。
+Connection 声明的动态 hop-by-hop 名称暂存至安全清理，防止变换绕过动态保护，最终绝不转发。
+
+Forwarded、Via、常用 X-Forwarded-*、真实 IP、Cloudflare 转发元数据被显式列入 ignore。
+它们在入口删除，管理员变换后清理，插件/认证准备后最终 guard 再检查。
+模型发现、scheduled probe 等会执行 Header Transform 的内部路径也使用相同 guard。
+自定义认证和插件生成 Header 不能与显式 ignore 集冲突。
+
+Session affinity 的 request_header 来源必须在客户端白名单内，否则控制面编译失败。
+未知 Header 的默认入口 ignore 与显式 ignore 的出站禁令不同，不能混为一谈。
+
+Content-Encoding 只有 HTTP Responses 接受 identity/zstd；zstd 在 policy 前解码，
+压缩和解码后大小都受 proxy_body_bytes 限制。其他 JSON 只接受 identity，multipart edit
+拒绝 encoded body。该入口能力与上游是否启用出站压缩是两回事。
+
+### Body
+
+机器接口键为稳定 policy 标识，不应当作 Console 的操作枚举：
+
+| 机器契约键 | 公共入口 | 当前操作名 |
+| --- | --- | --- |
+| chat_completions | POST /v1/chat/completions | chat_completion |
+| responses_http | POST /v1/responses | responses |
+| responses_websocket | WS response.create | responses-ws |
+| standalone_web_search | POST /v1/alpha/search | web_search |
+| images_generation | POST /v1/images/generations | images_generation |
+| images_edit | multipart POST /v1/images/edits | images_edit |
+
+client_body.allow/ignore/reject 决定完整顶层分类。未知字段为
+request_body_field_unsupported；已知 ignore 字段使用非等价值为
+request_body_field_value_unsupported。multipart 使用相同字段分类，额外 framing、文本与文件限制
+见[Images](openai-images.md)。
+
+service_tier 在支持它的公共入口仍为 allow。用户组 filter_fast_mode 在白名单通过后静默删除它，
+不改变机器字段分类；变换、插件、日志、affinity 和请求倍率只观察过滤后的请求，不能重新引入。
+
+edit 的 output_format 在入口保留，由选中上游/插件决定后续动作；
+moderation=auto 的公共 ignore 与 Codex 插件删除 output_format=png 是不同层的规则。
+
+## 执行顺序
+
+```text
+API Key / framing / body size / supported request decoding
+  -> client top-level body allowlist
+  -> user-group Fast filtering
+  -> client Header allowlist
+  -> operation/model routing and top-level model alias
+  -> template defaults, then channel overrides
+  -> plugin protocol/body/Header/privacy preparation
+  -> shared hop-by-hop and explicit-ignore cleanup
+  -> upstream authentication and credential-binding validation
+  -> final explicit-ignore guard
+  -> transport framing / final HTTP compression / handshake
+```
+
+body 变化会清掉原始 Content-MD5、digest、ETag 等失效表示元数据，避免发到上游。
+multipart 用 replayable 流重建删除/替换 part，不把完整图片读回内存。
+插件必须保持选定模型、凭证目标范围和 Fast 过滤结果；失败应终止派发。
+
+## 维护流程
+
+**公共字段/Header 变更**：
+
+1. 查官方请求类型或供应商原始来源，记录实际核对日期和 commit。
+2. 先改本仓库 request-allowlists.json，再同步说明与入口/最终 guard 测试。
+3. 为每个字段明确 allow/ignore/reject；ignore 值写清等价依据。
+4. 反向代理/CDN Header 加入统一 ignore 集，不在代理代码里另建名单。
+5. 运行相应 Rust、文档检查；转发实现变更按[真实 smoke 流程](../development/real-upstream-smoke.md)处理授权。
+
+**服务商字段/隐私变更**：改插件契约和插件测试，同时保留 gateway-boundary 确定性回归；
+不把新 provider 规则投影到宿主 system settings 或公共 JSON。
+
+宿主单元测试检查六接口完整性、分类互斥、未知默认动作、Header 合法性/排序/重复项，以及来源
+commit 和日期格式。这些结构检查不能替代对外部语义的实际核验。
+
+## 外部类型核对来源
+
+下列为原核对记录；Responses 和独立 Images/Search 的源码版本分别保存。
 > 权威来源：
 > [`openai/openai-node@854892a`](https://github.com/openai/openai-node/tree/854892a0580980449ce1ed04aa5e3831d3330383) 的
 > [Chat Completions](https://github.com/openai/openai-node/blob/854892a0580980449ce1ed04aa5e3831d3330383/src/resources/chat/completions/completions.ts)、
@@ -34,134 +168,3 @@
 [Search 请求构造](https://github.com/openai/codex/blob/d6489472f3c15e87d2d7763a5fde033545c530f8/codex-rs/ext/web-search/src/tool.rs)
 与 [Search 可选上下文](https://github.com/openai/codex/blob/d6489472f3c15e87d2d7763a5fde033545c530f8/codex-rs/ext/web-search/src/history.rs)
 核对，记录为 `sources.codex_standalone_commit`；Responses 的核对版本不因此更新。
-
-## 目标
-
-网关拥有公共客户端 Header、顶层 body 白名单和与服务商无关的出站 Header 安全约束。
-选中外部连接器后，渠道特有的出站白名单、协议补全、安装标识和隐私处理全部由插件执行。
-Codex 实现及其独立机器契约位于
-[ai-gateway-connectors](https://github.com/oai404iao/ai-gateway-connectors) 的
-`codex/src/request-allowlists.json`，不再嵌入网关契约。
-
-网关只校验 JSON 对象或 multipart 表单的**顶层字段名**。
-`messages`、`input`、`tools`、`metadata` 等允许字段内部的嵌套结构由插件或目标上游解释；
-普通 `general` Connector 不执行 Codex 隐私处理。
-
-## 动作语义
-
-机器契约为每个字段指定以下动作之一：
-
-| 动作 | 行为 |
-| --- | --- |
-| `allow` | 保留字段；若没有其他 Transform，JSON 原始字节保持不变。 |
-| `ignore` | 删除字段后继续；body 的 `accepted_values` 存在时，仅这些等价值可以被删除。 |
-| `reject` | 返回客户端 `400`，不联系上游。 |
-| 未列出字段 | 公共客户端 body 默认 `reject`；Header 默认 `ignore`。 |
-
-`ignore` 只能用于以下情况：
-
-- 纯客户端遥测字段，对 provider 生成语义没有影响；
-- 空值、默认值或明确的 no-op；
-- 已记录的兼容行为，例如 Codex Responses 忽略 `max_output_tokens`。
-
-插件必须自行拒绝无法等价表达的服务商字段；网关不会替插件维护另一份出站字段规则。
-
-## 客户端入口策略
-
-### Header
-
-所有公开数据面操作共享 `client_headers` 白名单。精确允许/忽略的 Header 名与允许的前缀完整记录在
-[`request-allowlists.json`](request-allowlists.json)：
-
-- OpenAI 与 HTTP 表示相关 Header，例如 `authorization`、`content-type`、
-  `openai-organization`、`openai-project`、`idempotency-key`；
-- Gateway/Codex Session Header，例如 `session-id`、`thread-id`、
-  `x-client-request-id`、`x-codex-window-id`、`x-session-id`；
-- 独立 Images 调用关联 Header `x-codex-image-turn-id`；
-- Codex 请求归因、Search 上下文与 Responses 控制 Header：`originator`、
-  `x-codex-turn-metadata`、`x-codex-beta-features`、`x-codex-routing-hint`、
-  `x-codex-turn-state`、`x-openai-internal-codex-responses-lite` 与
-  `x-responsesapi-include-timing-metrics`；
-- 为兼容 0.9.4 示例配置而保留的 `session_id`、`thread_id`；新配置应使用上面的连字符形式；
-- W3C trace Header；
-- 官方 SDK 使用的 `x-stainless-*` 前缀。
-
-`Content-Encoding` 只在 `POST /v1/responses` 接受 `identity` 或 `zstd`；其他 JSON
-接口只接受 identity，multipart Images edit 继续拒绝编码 body。Responses 的 zstd body 会在
-顶层字段策略前解码，压缩后和解压后的大小都受 `request_limits.proxy_body_bytes` 约束。
-
-`client_headers.ignore` 显式列出 `Forwarded`、`Via`、常用 `X-Forwarded-*`、真实客户端 IP
-Header 与 Cloudflare 转发 Header。这些名称既在客户端入口删除，也在 Header Transform 后由
-共享清理层删除，并在 Connector 鉴权及网关自有 Header 准备完成、交给 transport 前再次检查，
-因此配置、内部 Connector 或自定义上游鉴权都不能重新引入。渠道模型发现和 scheduled probe
-等会应用 Header Transform 的内部请求使用同一个最终 guard。未列出的客户端 Header 仍默认仅在
-入口层忽略；普通 Connector 的 Header Transform 可以添加其他未受保护的自定义 Header。
-
-`Connection` 声明的动态 hop-by-hop 名称会暂时保留到安全清理阶段，以防 Header Transform 绕过
-动态保护，但绝不会转发。Session affinity 的
-`request_header` 来源必须同时位于该客户端 Header 白名单，否则控制面编译失败。
-
-### Body
-
-`interfaces` 下分别维护：
-
-| 契约键 | 公共接口 |
-| --- | --- |
-| `chat_completions` | `POST /v1/chat/completions` |
-| `responses_http` | HTTP/SSE `POST /v1/responses` |
-| `responses_websocket` | WebSocket `response.create` |
-| `standalone_web_search` | 非流式 `POST /v1/alpha/search` |
-| `images_generation` | `POST /v1/images/generations` |
-| `images_edit` | multipart `POST /v1/images/edits` |
-
-各接口的 `client_body.allow` 是当前支持的完整顶层字段白名单。未知顶层字段返回
-`request_body_field_unsupported`。字段已知但值不能按契约忽略时返回
-`request_body_field_value_unsupported`。
-
-Chat Completions 额外允许第三方 OpenAI-compatible 上游常用的顶层扩展字段 `thinking` 和
-`enable_thinking`。网关不解释或校验这两个字段的值，只按普通允许字段保留并转发；具体结构、
-开关语义和模型支持范围由选中的上游决定。
-
-客户端 body 契约仍把 `service_tier` 分类为 `allow`。在该契约通过之后，运行时可以按用户组
-`filter_fast_mode` 策略执行额外的产品级静默过滤：删除顶层 `service_tier` 后继续请求，不改变
-机器契约的字段分类。这样 Connector、请求日志和请求计费倍率都只观察过滤后的请求。
-
-Images edit 额外兼容部分通用表单会提交、但当前公开 edit 类型未声明的
-`moderation=auto`：该默认值在客户端入口层被删除；`moderation=low` 或其他值返回错误。
-`output_format` 是公开 edit 字段，因此入口层保留，并由选中的 provider 决定后续动作。
-
-## 执行顺序
-
-```text
-raw request
-  -> API Key / framing / body size checks
-  -> client top-level body allowlist
-  -> user-group Fast filtering
-  -> client Header allowlist
-  -> model routing and alias
-  -> configured JSON/Header Transform
-  -> connector-owned protocol/body/Header policy and privacy processing
-  -> host common Header safety and credential-binding checks
-  -> transport framing/compression/handshake
-```
-
-客户端策略删除字段、模型别名、JSON Transform 或 Connector policy 改变 body 时，网关会移除原始
-`Content-MD5`、digest、ETag 等表示元数据。multipart edit 通过 replayable 重建删除被忽略的
-part，不把图片整体读回内存。
-
-## 维护流程
-
-新增或修改公共请求字段时：
-
-1. 核对官方请求类型及相关兼容文档；
-2. 编辑 `request-allowlists.json`，更新核对日期与来源提交；
-3. 明确选择 `allow`、`ignore` 或 `reject`；
-4. 反向代理/CDN 转发 Header 必须放入 `client_headers.ignore`，不能另建运行时名单；
-5. 更新本说明、公共接口测试并运行 Rust、文档和真实上游验证。
-
-服务商出站字段或隐私规则变更应修改插件仓库的契约与测试，不修改网关公共契约。
-插件适配在可配置 Transform 之后执行；网关最后仍拒绝受保护 Header、错误凭证绑定、
-被改变的选定模型和重新引入的 Fast 计费字段。
-
-Rust 单元测试校验公共契约的六个接口、未知字段默认拒绝、未知 Header 默认忽略、
-字段分类互斥、Header 名合法性、排序、重复项、来源提交及核对日期格式。

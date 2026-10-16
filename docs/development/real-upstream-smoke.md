@@ -3,13 +3,30 @@
 > Status: current. This is an explicit, paid validation path and is never part
 > of ordinary tests.
 
+Run this suite only with explicit authorization and dedicated, capped test
+credentials. It makes real provider requests; the local-only CLI compatibility
+test below does not. Start by configuring the ignored secrets file, then choose
+the narrowest authorized mode.
+
+## On this page
+
+- [Configure credentials and run](#local-configuration)
+- [Understand what the paid suite verifies](#forwarding-coverage)
+- [Check Codex profile limitations](#codex-target-profile)
+- [Run the separate local CLI fixture](#optional-local-codex-fallback-compatibility)
+- [Review cost and evidence boundaries](#paid-smoke-boundaries)
+
+## Forwarding coverage
+
 `tests/real_upstream/` verifies the gateway against explicitly configured real,
 OpenAI-compatible upstreams. It is deliberately ignored by normal `cargo test`
 runs. The required baseline has separate Chat Completions and Responses tests
 for non-streaming and streaming requests, plus a Responses WebSocket request.
 Responses HTTP/SSE and WebSocket `input` values use explicit message arrays.
 An optional Responses profile allows the target to be another `ai-gateway`
-instance whose selected Responses channel uses `connector_kind = codex_oauth`.
+instance whose selected Responses capability uses the `codex` connector and
+`codex_oauth` credential type. The profile value remains `codex_oauth`; it is a
+test setting, not the current Connector ID.
 
 Responses WebSocket can optionally use a separate channel base URL and API key
 while retaining `REAL_UPSTREAM_RESPONSES_MODEL`. A complete optional Images
@@ -44,7 +61,7 @@ Fill these values in `.env.real-upstream`:
 | `REAL_UPSTREAM_API_KEY` | Required default credential for Chat Completions and Responses HTTP/SSE. |
 | `REAL_UPSTREAM_CHAT_COMPLETIONS_MODEL` | A low-cost model supported by `/v1/chat/completions`. |
 | `REAL_UPSTREAM_RESPONSES_MODEL` | A low-cost model supported by Responses HTTP/SSE and WebSocket. |
-| `REAL_UPSTREAM_RESPONSES_PROFILE` | Optional Responses behavior profile. Defaults to `openai_compatible`; set `codex_oauth` when the URL/key targets an `ai-gateway` instance backed by a Codex managed Responses channel. |
+| `REAL_UPSTREAM_RESPONSES_PROFILE` | Optional test profile: `openai_compatible` (default) or `codex_oauth` for a target Gateway with Codex-backed Responses. See the profile's exact rejection expectation below. |
 | `REAL_UPSTREAM_WEBSOCKET_BASE_URL` | Optional Responses WebSocket channel base URL override. Must be paired with `REAL_UPSTREAM_WEBSOCKET_API_KEY`; otherwise WebSocket uses the default URL/key. |
 | `REAL_UPSTREAM_WEBSOCKET_API_KEY` | Optional Responses WebSocket credential override. Must be paired with `REAL_UPSTREAM_WEBSOCKET_BASE_URL`. |
 | `REAL_UPSTREAM_SEARCH_BASE_URL` | Optional standalone web-search channel base URL. Setting any Search value requires all three Search settings. The Gateway appends `/v1/alpha/search`. |
@@ -55,7 +72,7 @@ Fill these values in `.env.real-upstream`:
 | `REAL_UPSTREAM_IMAGES_MODEL` | Optional low-budget model supporting both `/v1/images/generations` and multipart `/v1/images/edits`. |
 | `REAL_UPSTREAM_TIMEOUT_SECONDS` | Optional per-request limit; defaults to 60 and must be at least 3. |
 
-Run:
+After explicit authorization, run from the repository root:
 
 ```bash
 ./scripts/run-real-upstream-smoke.sh
@@ -86,9 +103,11 @@ REAL_UPSTREAM_ENV_FILE=/secure/path/upstream-smoke.env \
 The script sources only this developer-controlled shell assignment file, never
 prints its values, disables shell tracing, validates the required settings and
 optional setting groups, and then runs the ignored tests with
-`RUN_REAL_UPSTREAM_SMOKE=1`. With no Images settings it passes a test-harness
+`RUN_REAL_UPSTREAM_SMOKE=1`. With no Images settings it passes test-harness
 skip filters for optional modules; partially configured WebSocket, Search, or
 Images overrides or an unknown Responses profile fail before Cargo starts.
+
+## Codex target profile
 
 With `REAL_UPSTREAM_RESPONSES_PROFILE=codex_oauth`, the Responses SSE and
 non-streaming HTTP fixtures additionally send their ordinary client JSON with
@@ -104,6 +123,15 @@ The Responses non-streaming case remains part of the run but succeeds by
 asserting the target gateway's documented HTTP `400`
 `codex_streaming_required` boundary. The SSE and WebSocket cases must still
 complete successfully and retain usage in their terminal request logs.
+
+That `400 codex_streaming_required` assertion is the current smoke fixture's
+expectation, not a guarantee for every plugin generation. Protocol-3 capability
+preflight can instead reject an unsupported non-stream route with
+`503 no_healthy_channel` when there is no eligible ordinary candidate. Such a
+target does not satisfy this fixture's rejection assertion. Report the mismatch
+and target/plugin configuration; do not call it a successful full smoke, change
+credentials to conceal it, or infer that streaming forwarding failed from that
+case alone. See [usage and protocol selection](usage-normalization.md).
 
 ## Safety and scope
 
@@ -171,8 +199,7 @@ deterministic Gateway protocol/authorization/health tests remain part of
   optional `results`, verifies the distinct `standalone_web_search` log
   operation, and prints only elapsed time, output character count, and result
   count. Use a credential with a Search-specific spending cap.
-- Do not run it in ordinary PR checks. CI automation is intentionally not part
-  of this change.
+- Do not run it in ordinary PR checks; the suite remains opt-in and paid.
 - Do not add real credentials to `./config/*`, test source, shell history, or
   logs.
 - The existing local and PostgreSQL integration tests remain the coverage for

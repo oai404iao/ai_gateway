@@ -2,6 +2,26 @@
 
 > 状态：当前。按连接器代际和实际上游接口选择解析器；不改变历史事实、存储字段或计费公式。
 
+usage 规范化把原始上游计数转成统一 token 分量，不改响应、不决定价格，也不接受响应适配器
+生成的财务来源。例如以下两种原始计数都表示总输入 5、缓存命中 3：
+
+```text
+OpenAI:   input=5, cached=3
+Anthropic: input=2, cache_read=3
+规范结果: input_tokens=5, cached_input_tokens=3
+```
+
+选择解析器必须知道实际上游接口，不能只看客户端格式或 URL。本文说明宿主契约；
+供应商语义的外部链接与核对日期保留在[包含与拆分](#包含与拆分)。
+
+## 本页内容
+
+- [查看统一计数与 unknown](#统一计数)
+- [声明 general 或 plugin 解析器](#连接器与实际上游接口)
+- [理解缓存与累计计数](#包含与拆分)
+- [保护终态和结算边界](#宿主边界)
+- [选择验证](#验证)
+
 ## 统一计数
 
 请求日志、计量事实与结算继续使用 `RequestUsage` 的五个字段：
@@ -17,7 +37,7 @@
 计数必须是非负 `i64`，缓存子项不能超过输入总量，reasoning 不能超过输出总量。
 usage 或必要总量缺失、已知字段损坏或溢出时为 unknown，不能伪造全零或估算计数。
 通用 OpenAI 解析对缺失的可选缓存/reasoning 明细保留既有零值缺省。
-本轮没有迁移、重算或重新结算已有事实。
+切换解析配置只影响使用新代际的请求，不迁移、重算或重新结算已有事实。
 
 ## 连接器与实际上游接口
 
@@ -61,8 +81,7 @@ Anthropic 通用解析则使用 checked arithmetic：
                   + cache_creation_input_tokens
 ```
 
-例如 OpenAI `input=5, cached=3` 与 Anthropic `input=2, cache_read=3`
-都得到规范 `input=5, cached=3`，不会遗漏或重复计算缓存部分。
+因此开头的两个示例得到相同规范计数，不会遗漏或重复计算缓存部分。
 上述供应商语义于 2026-10-10 核对：
 [OpenAI 缓存](https://developers.openai.com/api/docs/guides/prompt-caching)、
 [DeepSeek usage](https://api-docs.deepseek.com/api/create-chat-completion/)、
@@ -102,10 +121,13 @@ usage 解析只解释原始上游计数，不能决定路由、响应成败、�
 non-stream 请求在派发前返回 `503 no_healthy_channel`，不破坏已建立的 SSE affinity。
 旧协议 2 的请求验证路径保持兼容。
 
-本轮没有增加 Anthropic 数据面路由、请求转换或跨格式桥接。
+支持 Anthropic usage 方言不等于增加 Anthropic 数据面路由、请求转换或跨格式桥接。
 系统 E2E 使用 OpenAI 兼容响应包络模拟不同 usage 方言，不宣称原生 Anthropic 转发。
 
 ## 验证
+
+先对照 `src/application/usage.rs`、SDK 描述符和插件 manifest，再检查以下层次。
+解析成功不能替代账本持久化和一次结算证据。
 
 - SDK：包含/拆分格式、数值边界、兼容默认、专有命令协商。
 - 宿主：JSON/SSE/WS 原始 usage 隔离、unknown、不回退、累计状态与终态优先级。

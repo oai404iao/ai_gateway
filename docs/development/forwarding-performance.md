@@ -1,9 +1,39 @@
-# 转发性能测试设计与使用说明
+# 手动转发性能测试
 
 > 状态：当前。该 Harness 仅在用户明确要求时手动运行。
 
-本文档定义 `ai-gateway` 的手动端到端转发性能测试方案。性能测试不属于普通
-单元测试或集成测试，默认不会被 `cargo test`、常规开发检查或 CI 执行。
+性能 Harness 在隔离数据库和全新 release Gateway 上，对比直连 Mock 与代理请求。
+它会持续产生并发流量，只能在用户明确要求性能运行后执行；普通 `cargo test`、开发检查和 CI
+不会启动负载。
+
+## 本页内容
+
+- [运行一次测试](#手动执行)
+- [理解数据库隔离](#数据库隔离)
+- [选择 quick 或 standard](#场景配置)
+- [解释持久化率与性能指标](#请求日志完整性)
+- [查找报告与清理资源](#产物)
+- [了解工具边界](#当前边界)
+
+## 手动执行
+
+以下命令从仓库根目录运行。先确认已获性能运行授权，且 PostgreSQL 管理 URL 指向管理数据库，
+不是应用数据库。已有 canonical 开发服务时复用它，避免从多个 worktree 启动固定端口 Compose。
+
+```bash
+docker compose up -d
+./scripts/run-forwarding-perf.sh --profile quick
+```
+
+| 任务 | 命令 |
+| --- | --- |
+| 数分钟的本地对比 | `./scripts/run-forwarding-perf.sh --profile standard` |
+| 使用其他管理数据库 | 在命令后加 `--database-admin-url <administrative-url>` |
+| 保留本轮数据库排查 | 在命令后加 `--keep-database` |
+
+管理 URL 含敏感信息，应通过受控环境/本地配置提供，不把真实密码粘贴到共享命令记录。
+脚本显式执行 `cargo build --release --locked --package ai-gateway` 和
+`cargo build --release --locked --package ai-gateway-perf`，再启动进程；构建不等于性能运行完成。
 
 ## 目标
 
@@ -15,7 +45,7 @@
 4. 高转发吞吐下，异步请求日志是否仍能完整持久化。
 5. 测试客户端或 Mock 上游是否先于 Gateway 成为瓶颈。
 
-它不是生产容量承诺。第一阶段全部组件默认运行在同一台机器上，CPU、网络和
+它不是生产容量承诺。全部组件默认运行在同一台机器上，CPU、网络和
 PostgreSQL 会互相竞争，因此结果主要用于：
 
 - 同一台机器、同一运行参数下的版本对比。
@@ -97,7 +127,7 @@ ai_gateway_perf_<random uuid>
 数据库创建后会：
 
 1. 执行仓库中的全部 SQLx migration。
-2. 写入两个 API 格式对应的渠道组和渠道。
+2. 写入两个 API 格式所需的组、接入、凭证、逻辑渠道和操作能力。
 3. 为每个性能场景创建独立模型和模型规则。
 4. 创建只用于本次测试的客户端 API Key。
 5. 编译一次完整运行时快照，提前发现种子数据与当前 schema 的漂移。
@@ -153,7 +183,7 @@ Mock 不保存每个完整请求，只使用原子计数器记录：
 
 ## 高并发客户端
 
-第一阶段实现固定并发的 closed-model 客户端：
+客户端采用固定并发的 closed model：
 
 ```text
 每个 worker:
@@ -175,7 +205,7 @@ Mock 不保存每个完整请求，只使用原子计数器记录：
 延迟使用固定内存的近似直方图统计。127 微秒以上的桶相对精度约为 1.6%，不会
 因数百万请求而无限增长内存。
 
-## 第一阶段场景
+## 场景配置
 
 ### quick
 
@@ -207,11 +237,13 @@ Mock 不保存每个完整请求，只使用原子计数器记录：
 
 Gateway 当前使用可恢复的多阶段流水线持久化请求日志：
 
-- 请求路径先把终态事件追加到本地 spool，不等待 PostgreSQL。
+- 派发前同步保存 intent 并预留 terminal slot；写失败拒绝派发，不伪造日志或费用。
+- 请求终态同步写入 slot 与本地 spool，不等待 PostgreSQL。
 - 有界队列只负责唤醒后台 Worker；队列满时合并通知，不丢弃 spool 事件。
 - spool 通过 `COPY FROM` 写入低索引 `request_log_ingest`。
-- 单个低优先级投影 Worker 批量写入最终 `request_logs` 宽表。
-- 结算独立扫描最终表，并按用户和 API Key 聚合费用后批量更新。
+- ingress 先产生不可变 `request_metering_facts` 和独立 pending work；日志投影写入
+  `request_logs`，结算不扫描该查询表作为财务来源。
+- 结算消费 pending work，把 receipt、余额/额度变化与 pending 删除原子提交。
 - 关闭超时后未完成事件保留在 spool 或入口表，供下次启动恢复。
 
 因此只报告 RPS 会掩盖日志丢失。性能工具为每个场景使用独立 `client_model`，
@@ -219,56 +251,16 @@ Gateway 当前使用可恢复的多阶段流水线持久化请求日志：
 
 ```text
 expected_request_logs = warmup requests + measured requests
-request_log_persistence_ratio = persisted request_logs / expected_request_logs
+request_log_persistence_ratio = unique(request_logs ∪ request_log_ingest) / expected_request_logs
 ```
 
 报告还会列出 succeeded/failed/rejected/cancelled 各类耐久结果。默认生成配置
 使用 `1024` 个唤醒通知槽位，并将独立 spool 放在本次报告目录中。入口表中的
-记录虽然可能尚未出现在 Console 查询里，但已经不依赖进程内存。
+记录虽然可能尚未出现在 Console 查询里，但已经不依赖进程内存。该比率不包含仅在本地 spool
+中的记录，也不证明结算已经完成；完整金融恢复验收见[系统 E2E](system-e2e.md)，
+管线约束见[独立计量事实](independent-metering.md)。
 
-## 手动执行
-
-先启动开发 PostgreSQL：
-
-```bash
-docker compose up -d
-```
-
-短测试：
-
-```bash
-./scripts/run-forwarding-perf.sh --profile quick
-```
-
-标准测试：
-
-```bash
-./scripts/run-forwarding-perf.sh --profile standard
-```
-
-使用其他管理数据库：
-
-```bash
-./scripts/run-forwarding-perf.sh \
-  --profile quick \
-  --database-admin-url \
-  postgres://user:password@127.0.0.1:5432/postgres
-```
-
-保留临时数据库用于排查：
-
-```bash
-./scripts/run-forwarding-perf.sh --profile quick --keep-database
-```
-
-脚本会显式构建：
-
-```text
-cargo build --release --locked --package ai-gateway
-cargo build --release --locked --package ai-gateway-perf
-```
-
-性能测试不会由任何普通测试命令自动启动。
+## 验证工具而不运行负载
 
 性能工具自身的轻量单元测试不会产生并发流量：
 
@@ -333,7 +325,7 @@ request-log-spool/
 - 子进程启用 kill-on-drop，异常退出时不会故意留下压测进程。
 - 正常报告不保存数据库密码或测试 API Key。
 
-## 第一阶段边界
+## 当前边界
 
 当前已实现：
 
@@ -350,7 +342,7 @@ request-log-spool/
 当前 Harness 不生成 Images 请求；Images generation/edit 由 deterministic proxy integration
 tests 覆盖，不能把本工具的 Chat/Responses 结果外推为图片吞吐、base64 CPU 或磁盘 spool 结论。
 
-后续阶段计划：
+以下能力尚未实现，不应从当前报告推断：
 
 1. Open-model 固定 RPS 调度与 scheduler lag。
 2. 自动并发阶梯和饱和点识别。

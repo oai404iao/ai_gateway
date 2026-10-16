@@ -4,6 +4,19 @@
 > runnable example are implemented. Same-format adaptation has deterministic
 > and PostgreSQL/SQLite system E2E coverage.
 
+Response adapters let an explicitly enabled protocol-3 plugin normalize HTTP
+JSON or SSE text without changing the client format, original usage or terminal
+result. Pass-through remains the default. The host still owns framing,
+transport, errors and financial facts.
+
+## On this page
+
+- [Build the local fixture](#runnable-fixture-and-verification)
+- [Choose supported modes](#scope-and-versioning)
+- [Follow JSON and SSE execution](#host-responsibilities-and-ordering)
+- [Handle protected fields and failures](#metering-terminal-and-failure-boundaries)
+- [Interpret existing acceptance evidence](#acceptance-record-and-exclusions)
+
 ## Scope and versioning
 
 The [SDK command contract](../../crates/connector-sdk/docs/commands.md) is the
@@ -20,6 +33,12 @@ adaptation. This is same-format response normalization, not a cross-protocol
 bridge. WebSocket, standalone search and Images may declare `passthrough` only.
 No implicit protocol grants, client `ApiFormat` changes, or JSON/SSE framing
 changes are permitted.
+
+| Mode | Buffering and execution | Available operations |
+|---|---|---|
+| `passthrough` | Existing streaming path; no new response buffering | All supported operations |
+| `json` | At most 8 MiB before downstream dispatch | HTTP Chat Completions / Responses |
+| `sse` | One bounded logical data payload per synchronous call | HTTP Chat Completions / Responses |
 
 ## Host responsibilities and ordering
 
@@ -114,19 +133,23 @@ terminal preservation and independent request state. Host tests also cover
 transport intersection, zero overlap, protected semantics and error-then-EOF
 stream lifecycle.
 
-The implementation passed the full Rust workspace suite with
+## Acceptance record and exclusions
+
+The implementation's recorded acceptance passed the full Rust workspace suite with
 `embedded-console-ui,sqlite-backend` against isolated PostgreSQL, plus both
 [system E2E backends](system-e2e.md). Those system tests cover Chat/Responses
 JSON/SSE, generation pinning, interleaved state, genuine incomplete/cancelled
 terminals, fail-closed output and independent durable settlement. Failed
 requests retain observed usage but preserve the existing zero-charge policy.
 
-The authorized [real-upstream smoke](real-upstream-smoke.md) passed existing
+The recorded authorized [real-upstream smoke](real-upstream-smoke.md) passed existing
 passthrough compatibility paths, including configured optional Images/search
 checks. Native response adaptation itself uses the deterministic local fixture;
 the smoke does not claim coverage of a production response-adapter plugin.
 WebSocket adaptation, cross-format conversion and adapter-inclusive backup
 recovery are outside this acceptance scope.
+These are historical implementation results, not checks rerun by editing this
+page. New adapter changes need their own host, SDK and relevant system tests.
 
 ## Related documents
 

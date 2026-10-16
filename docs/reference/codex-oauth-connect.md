@@ -1,7 +1,234 @@
 # Codex OAuth 与订阅后端接入参考
 
-> 类型：外部参考
-> 最近核对：2026-08-19
+> 类型：外部参考与插件兼容边界。
+>
+> 最近核对：2026-08-19。各补充源码版本见文末；本次整理未重新核验外部服务。
+>
+> 权威来源：[openai/codex 0.146.0](https://github.com/openai/codex/releases/tag/rust-v0.146.0)及文末各固定提交。
+
+Codex 插件连接 ChatGPT 订阅后端，不是给普通 OpenAI API Key 换一个 base URL。
+`chatgpt.com/backend-api/*` 是核对版本 Codex 客户端使用的后端接口，没有公开 Platform API
+的稳定性承诺。授权条件、接口和账户政策可变化。
+
+## 先选择任务
+
+| 任务 | 入口 |
+| --- | --- |
+| 安装/启用 Codex 插件 | [插件安装](../user/connector-plugins.md) |
+| OAuth、Token 导入、凭证绑定 | [上游凭证管理](../user/upstream-credentials.md) |
+| 迁移 CLIProxyAPI/Sub2API 文件 | [导入格式](codex-credential-portability.md) |
+| 配置公共调用 | [兼容性总览](openai-compatibility.md)、[Responses](responses.md)、[Images](openai-images.md) |
+| 调查 WS 增量与 fallback | [固定版本源码研究](codex-responses-websocket.md) |
+
+管理员先安装并启用插件，再导入/授权凭证，显式创建接入、绑定凭证的逻辑渠道及操作能力，
+最后配置模型操作路由和 Key/Policy 的固定逻辑渠道授权。**导入凭证不自动创建这些资源。**
+
+最小公共请求形状见各协议页；Codex HTTP Responses 必须请求 SSE：
+
+```http
+POST /v1/responses
+Authorization: Bearer <gateway-api-key>
+Content-Type: application/json
+
+{"model":"your-codex-client-model","input":"Reply with OK.","stream":true}
+```
+
+这不是直接向 ChatGPT 发送 access token 的示例。上游 OAuth/身份由插件和宿主准备；实际调用会
+消耗订阅额度，并按网关规则计费。
+
+## OAuth 与 Token
+
+### 核对版本的外部协议
+
+核对的 Codex 使用 Authorization Code + PKCE：
+
+| 项目 | 外部值 |
+| --- | --- |
+| Authorization endpoint | `https://auth.openai.com/oauth/authorize` |
+| Token endpoint | `https://auth.openai.com/oauth/token` |
+| Public client ID | `app_EMoamEEZ73f0CkXaXp7hrann` |
+| Redirect URI | `http://localhost:1455/auth/callback` |
+| Scope | `openid profile email offline_access api.connectors.read api.connectors.invoke` |
+| PKCE | `S256` |
+
+Authorization URL 还带 `id_token_add_organizations=true`、
+`codex_cli_simplified_flow=true`、随机 state 和 originator。code 交换为 form-urlencoded，
+refresh 为 JSON `{client_id, grant_type:"refresh_token", refresh_token}`；
+ID/access/refresh token 可分别轮换。核对版本把 `refresh_token_expired`、
+`refresh_token_reused`、`refresh_token_invalidated` 归为需重新登录的永久失败。
+
+这些端点、参数和错误分类由插件协议实现提供，不是宿主另维护的一套 Codex 常量。
+
+### 身份与有效性
+
+核对的 JWT 元数据包括 email（顶层或 profile namespace）、auth namespace 中的
+`chatgpt_account_id`、`chatgpt_user_id`（兼容 `user_id`）、
+`chatgpt_plan_type`、`chatgpt_account_is_fedramp`，以及 access token 顶层 exp。
+
+解析 payload 只是提取身份和过期时间，不等于本地验证 Token 有效；服务端仍请求 Codex models。
+account ID 是可选 workspace 身份，不按 Free/Pro/Business 推断其必填性；
+同 Business workspace 的多个成员可共享 account ID。导入显式身份与 Token claim 冲突时拒绝，
+不能补造 workspace ID。账号匹配和去重规则见[凭证格式](codex-credential-portability.md)。
+
+## Codex 接口
+
+### 核对版本的路径
+
+Codex base URL 为 `https://chatgpt.com/backend-api/codex`：
+
+| 操作 | 方法与路径 |
+| --- | --- |
+| Responses HTTP / WS | `POST /backend-api/codex/responses` / 同路径 WS Upgrade |
+| Standalone search | `POST /backend-api/codex/alpha/search` |
+| Images generation / edit | `POST /backend-api/codex/images/generations` / `images/edits` |
+| Models | `GET /backend-api/codex/models?client_version=...` |
+| Quota | `GET /backend-api/wham/usage` |
+| 消费 reset credit | `POST /backend-api/wham/rate-limit-reset-credits/consume` |
+
+认证使用 access-token Bearer，有 account ID 时加 `ChatGPT-Account-ID`，FedRAMP 按需加
+`X-OpenAI-Fedramp: true`。核对版本还发送 originator、User-Agent、版本及操作相关身份 Header。
+`codex_cli_rs/0.146.0` 是该研究版本的基础身份，不代表当前安装插件永远固定此值。
+Models 的 client_version 会影响返回目录，不能误用网关软件版本。
+
+### 外部请求与响应形状
+
+| 操作 | 固定版本观察 |
+| --- | --- |
+| HTTP Responses | Responses wire format，流式，`stream=true`、`store=false`；不以 HTTP previous_response_id 恢复连接增量 |
+| WS Responses | `response.create`，可用 previous_response_id、generate、client_metadata |
+| Search | id/model，及可选 reasoning/input/commands/settings/max_output_tokens；非流式 JSON |
+| Images generation | 核对工具使用 gpt-image-2；prompt/background/model，及可选 n/quality/size |
+| Images edit | JSON `images[].image_url` data URL，不是公共 multipart |
+
+核对的 ResponsesApiRequest 不声明 `max_output_tokens`；这不是 OpenAI Responses 全局禁令。
+Search 响应 output 为最终文本，encrypted_output/results 是可选 opaque 数据。
+Images 返回非流式 JSON，大体积 `data[].b64_json` 和顶层 usage 不能迫使代理全量缓冲。
+
+Models 使用 models 数组 envelope；网关保留有效、非空且未显式标记
+`supported_in_api=false` 的 slug。Quota 使用 rate_limit allowed/limit_reached、主次窗口
+used_percent/limit_window_seconds/reset_at，并可含 reset credits available_count。
+
+reset-credit 请求携带唯一 `redeem_request_id`，外部还允许可选 credit_id；
+网关不指定 credit_id，由 OpenAI 选可用 credit。结果 code 为 reset、nothing_to_reset、
+no_credit 或 already_redeemed，附 windows_reset；之后应重新读取 quota。
+
+原生客户端和网关补全不同：核对的原生 Images 最小 Header 不复用 Responses session/thread；
+插件兼容层可保留调用方会话关联并补缺失值。该增强不意味着 Images 支持 affinity。
+HTTP content coding 的固定版本观察见文末来源，不能把网关双向压缩协商写成 Codex 原生保证。
+
+## ai-gateway 兼容行为
+
+### 协议与 Connector 分离
+
+接入连接器为 `codex`，OAuth 凭证子类型仍为 `codex_oauth`。
+凭证独立于渠道组/pool，拥有 Token、quota、维护代理和账号目录；
+一个凭证可被多个允许目标范围内的逻辑渠道显式引用。
+
+逻辑渠道可配置 Responses HTTP、Responses WS、search、generation/edit 独立能力，不支持 Chat。
+各操作自己的目录、变换、模型路由和启停状态不会因凭证导入或重新授权自动创建/恢复。
+维护代理只用于 OAuth/refresh/quota 等维护，不替换数据面接入的转发代理。
+当前身份模型见[凭证管理](../user/upstream-credentials.md)，不要沿用旧自动配对 projection 的配置步骤。
+
+| 宿主拥有 | 插件拥有 |
+| --- | --- |
+| 凭证身份/存储、维护调度、锁和恢复 intent | OAuth URL、请求计划、Token/identity/models/quota 解析 |
+| 公共入口白名单、授权、准入、路由、模型别名 | 服务商 body/Header 策略、协议字段补全和隐私归一化 |
+| 网络/超时/代理、压缩、WS 池、日志和结算 | 后端目标构造、供应商 usage 解析、操作适配 |
+| 通用出站安全 guard、凭证目标范围验证 | originator/version/User-Agent、合成 workspace 等插件设置 |
+
+插件通过独立制品与设置 revision 发布不可变 generation。一次 attempt 或维护操作固定所用
+generation，不受中途设置修改影响。宿主不能复制 provider 规则进 system settings，
+也没有内置 Codex fallback。
+
+### 请求准备
+
+通用顺序为：公共白名单 → Fast 过滤 → 选路/别名 → 管理员变换 → 插件协议与隐私准备
+→ 宿主最终安全 guard/鉴权 → transport。插件失败必须终止派发，不能跳过。
+
+| 操作 | 插件适配与宿主传输边界 |
+| --- | --- |
+| HTTP Responses | 要求客户端 SSE；拒绝非空 previous_response_id；删除契约声明的 max_output_tokens/遥测/no-op，强制 stream=true/store=false |
+| WS Responses | 独立字段策略；保留 previous_response_id/generate/client_metadata；不把 HTTP SSE 专用 Header 放进握手 |
+| Search | 独立 web_search 路由，非流式；不执行请求 JSON Transform；目标为 Codex alpha/search |
+| generation | 按 Images wire type 过滤，等价默认值可删除，注入 image-turn 与凭证身份 |
+| edit | 专用 replayable multipart，流式转 data URL JSON；最多五图，不接受 mask 或无法等价表达字段 |
+
+上述 provider 具体字段动作在[外部插件契约](https://github.com/oai404iao/ai-gateway-connectors)的
+`codex/src/request-allowlists.json`，公共客户端入口字段在本仓库
+[request-allowlists.json](request-allowlists.json)。二者不可混为同一契约。
+
+Responses HTTP 可按操作能力的有效配置将最终适配 body 用 zstd level 3 编码；默认 identity。
+此选项不用于 WS/search/Images。HTTP 成功 SSE 由连接器声明分类并规范客户端 Content-Type，
+即使上游 Header 缺失/错误；逐块解析终态与 usage，下游 SSE 不压缩。
+完成事件后的客户端断开不应把已完成请求覆盖成 client_cancelled。
+
+### 会话身份与隐私
+
+有效客户端 session/thread/request/window 等关联按策略保留，缺失时安全补齐。
+HTTP 缺失 session 身份可用匹配 affinity 的不可逆 hash 派生 opaque UUID，否则用本次请求 UUID；
+WS 使用下游握手身份的稳定 seed。缺失 x-client-request-id 可使用最终 thread-id。
+
+插件将 flat/client_metadata 和 turn metadata 的 installation ID 替换为凭证稳定 opaque UUID，
+workspaces 替换为插件设置的合成 Git 工作区。客户端本地路径、remote、commit、dirty 状态和
+原始安装指纹不能直接发给订阅后端。不可解析 turn metadata 安全替换，其他允许 metadata 保留。
+插件不凭空生成 beta、routing-hint、turn-state、attestation 或 sandbox 声明。
+
+Search body id 表示其 Codex Session。可分别从 Responses prompt_cache_key 和 Search id
+提取各操作的粘性键，但缓存还包含操作规则 ID：即使键值相同，也不会共享凭证绑定。
+多凭证路由可能为两个操作选中不同账号；若业务要求同一账号，须在各操作候选中显式限定
+对应凭证渠道，不能仅依赖 Session affinity。Images 传递会话关联也不启用 Images affinity。
+
+### 凭证运行时与维护
+
+Token 保存在所选数据库，普通 Console 列表/详情不返回 OAuth secret；管理员显式导出是例外，
+返回敏感 Bundle，必须按密钥保护。数据库列未另加静态加密，数据库、备份和浏览器导出边界
+都需要保护。Debug/audit 不得暴露 Token。
+
+独立 ArcSwap 凭证快照供数据面读取，不逐请求查库。维护以有界并发刷新 Token、轮询 quota
+和清理过期授权流；进程互斥、数据库锁及 refresh_generation 协调同凭证操作。
+兑换、rotating refresh 和 reset-credit 有持久 intent/恢复边界，不能以事务回滚或重启为理由
+盲目重新发送。永久失败标记 reauth_required，quota 成功或普通编辑不会自行恢复。
+
+同一可识别账号重新导入更新原凭证，不改现有渠道、能力、目录和路由；多个历史记录含糊匹配时
+拒绝静默合并。Business 不同 member 不是同一个账号。导出当前为 version 3，
+不包含组/渠道归属或 routing weight。
+
+| 凭证状态 | 新请求 | 已有 Responses affinity |
+| --- | --- | --- |
+| active | 可选择 | 可继续 |
+| draining | 排除并在派发前重选 | 可继续 |
+| unavailable / disabled | 不派发 | fail closed，不自动换账号 |
+
+Images 无 affinity，派发前可排除不可用能力候选；发送后不换账号。
+Codex HTTP 一经派发、WS 一经发消息，不自动重试复制请求。
+HTTP/握手 401 和 WS status=401 可触发按 generation 去重的后台 refresh，不代表重放已发送请求。
+
+Quota 主次窗口历史区分自然重置、匹配 Console reset-credit 的 manual 和提前换窗推断的
+openai_official；上游 usage 不提供原因，该标签不是官方补偿的确定证明。
+网关不自动消费 credit。手动消费结果与后续 quota 刷新分别持久化，不以刷新失败撤销已发生消费。
+
+## 差异与限制
+
+- 不实现跨格式转换；HTTP Responses 不支持非流式，也不借用 WS 增量状态。
+- 删除受引用凭证前先解除逻辑渠道引用；删除不调用上游 token revocation，账户侧撤销需另做。
+- models 在授权/导入等操作验证写入，不单独周期轮询；能力目录和路由仍需显式配置。
+- quota threshold 是选路保护，不是账户硬限额或网关费用重置。
+- 多进程凭证快照、WS 池和 affinity 本地存在，数据库变更通过重载收敛；不能假设跨进程共享连接。
+- Images 五图/no-mask 是插件限制，不改变普通 multipart 入口十六图边界。
+- provider 升级应同时修改插件契约与确定性边界测试；仅更新本文日期不能证明兼容。
+
+## 维护检查项
+
+1. 对比 OAuth 参数、Token 编码/轮换与永久失败分类。
+2. 对比后端路径、身份 claim、可选 account/FedRAMP Header、版本过滤和 models/quota schema。
+3. 分别验证 HTTP/WS 字段策略、增量状态、Search opaque 结果、Images 模型/形状/usage。
+4. 验证 installation/workspace 不泄漏，缺失补全与管理员变换不能绕过插件隐私边界。
+5. 验证凭证改绑/轮换隔离、quota/draining、恢复 intent、reset-credit 幂等及 Token 脱敏。
+6. 用确定性插件与 gateway-boundary 测试检查；付费 smoke 按[专用流程](../development/real-upstream-smoke.md)授权执行。
+
+## 核对来源与版本
+
+下列链接保留原研究的各补充 commit；“当前”字样仅指原核对当时，不是本次重新验证。
 > 权威来源：
 > [`openai/codex` 0.146.0 release](https://github.com/openai/codex/releases/tag/rust-v0.146.0)、
 > [OAuth server](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/login/src/server.rs)、
@@ -67,319 +294,4 @@
 > 和
 > [response transport](https://github.com/openai/codex/blob/5af85998c23ddb9cc21c43ef41db44712b481611/codex-rs/http-client/src/transport.rs)。
 > 官方客户端当前不主动发送 `Accept-Encoding`，也没有启用 reqwest 的 HTTP 响应解压 features；
-> 下述双向独立协商是 ai-gateway 的代理增强能力，不是 Codex 客户端保证。
-
-本文记录 `ai-gateway` 的 Codex OAuth Connector 所依赖的外部行为。这里的
-`chatgpt.com/backend-api/*` 是 Codex 客户端使用的 ChatGPT 后端接口，不是公开的
-OpenAI Platform API 稳定性承诺；外部接口、授权条件和账户政策可能随时变化。
-
-## OAuth 与 Token
-
-核对版本使用 OAuth 2.0 Authorization Code + PKCE：
-
-| 项目 | 外部值 |
-| --- | --- |
-| Authorization endpoint | `https://auth.openai.com/oauth/authorize` |
-| Token endpoint | `https://auth.openai.com/oauth/token` |
-| Public client ID | `app_EMoamEEZ73f0CkXaXp7hrann` |
-| Redirect URI | `http://localhost:1455/auth/callback` |
-| Scope | `openid profile email offline_access api.connectors.read api.connectors.invoke` |
-| PKCE | `S256` |
-
-Authorization URL 还包含 `id_token_add_organizations=true`、
-`codex_cli_simplified_flow=true`、随机 `state` 和 `originator`。Gateway 使用系统设置中的
-`originator` 填充该参数。Authorization code
-交换使用 `application/x-www-form-urlencoded`；refresh 使用 JSON
-`{client_id, grant_type:"refresh_token", refresh_token}`。refresh 响应中的
-`id_token`、`access_token` 和 `refresh_token` 都可能独立轮换。
-
-Codex 将 `refresh_token_expired`、`refresh_token_reused` 和
-`refresh_token_invalidated` 视为需要重新登录的永久失败。网关沿用这个分类，不会在
-refresh token 已失效时继续把凭证投入新请求。
-
-ID token / access token 的 JWT payload 中，本接入使用：
-
-- `email` 或 `https://api.openai.com/profile.email`；
-- `https://api.openai.com/auth.chatgpt_account_id`；
-- `https://api.openai.com/auth.chatgpt_user_id`，缺失时兼容同一 namespace 下的 `user_id`；
-- `https://api.openai.com/auth.chatgpt_plan_type`；
-- `https://api.openai.com/auth.chatgpt_account_is_fedramp`；
-- access token 顶层 `exp`。
-
-JWT payload 解析只用于提取元数据和过期时间；真正的凭证有效性由后续 Codex models
-请求验证。`chatgpt_account_id` 在存在时表示所选 workspace，`chatgpt_user_id` 表示用户身份。
-该 account claim 是可选的，并非所有 ChatGPT 认证状态都有 workspace ID；官方当前测试也覆盖
-没有 account ID 的普通 Pro ChatGPT auth，因此不能按 plan 类型推断该字段必然存在。Business
-plan 的多个成员可以共享 account ID。管理员导入凭证时，如果显式 `account_id`/`user_id` 与
-Token claim 不同，网关拒绝导入。
-
-## Codex 接口
-
-核对版本的 ChatGPT Codex base URL 是
-`https://chatgpt.com/backend-api/codex`：
-
-| 操作 | 方法与路径 |
-| --- | --- |
-| Responses | `POST /backend-api/codex/responses` |
-| Responses WebSocket | `GET wss://chatgpt.com/backend-api/codex/responses` Upgrade |
-| Standalone web search | `POST /backend-api/codex/alpha/search` |
-| Images generation | `POST /backend-api/codex/images/generations` |
-| Images edit | `POST /backend-api/codex/images/edits` |
-| Models | `GET /backend-api/codex/models?client_version=...` |
-| Quota / rate limit | `GET /backend-api/wham/usage` |
-| Consume reset credit | `POST /backend-api/wham/rate-limit-reset-credits/consume` |
-
-认证请求使用：
-
-- `Authorization: Bearer <access_token>`；
-- 有 account ID 时发送 `ChatGPT-Account-ID: <account_id>`；没有时省略；
-- FedRAMP 账户附加 `X-OpenAI-Fedramp: true`；
-- `originator: codex_cli_rs`；
-- 以 `codex_cli_rs/0.146.0` 为基础值的 `User-Agent` 和独立的版本标识；
-- Responses 请求的 `session-id`、`thread-id` 与 `x-client-request-id`。
-
-Standalone web search 额外保留 `x-codex-turn-metadata`，但发送前会把客户端
-`originator` 和 `User-Agent` 由插件统一覆盖为插件设置中的 Codex Connector 身份。请求顶层
-字段为 `id`、`model` 以及可选 `reasoning`、`input`、`commands`、`settings`、
-`max_output_tokens`。响应为非流式 JSON，`output` 是最终文本，`encrypted_output` 和
-`results` 为可选 opaque 数据。
-
-Codex 的 image tool 当前对 generation 使用 `gpt-image-2`，请求字段包含
-`prompt`、`background`、`model`、可选 `n`、`quality` 与 `size`。Images 请求额外发送
-`x-codex-image-turn-id`，但不复用 Responses 的 session/thread identity。Images 响应是非流式
-JSON，`data[].b64_json` 可能很大，并可在顶层包含 usage。Codex edit 使用 JSON
-`images[].image_url` data URL，而不是公开 OpenAI API 常见的 multipart 形状；该差异只属于
-provider adapter。
-
-上述是原生工具的最小 Header 构造。Gateway 的 Codex Connect 独立 Images/Search 接口额外
-沿用 Responses 的会话身份传递规则：保留客户端 session/thread/request/window/turn metadata，
-仅缺失时补全，并对 installation/workspaces 执行统一隐私归一化；不会改写为 Responses body
-或开启 Images Session affinity。完整动作见 [请求白名单](request-allowlists.md)。
-
-Codex Responses HTTP 客户端使用 Responses wire format。当前直连接口按流式方式工作，
-请求强制 `stream=true`、`store=false`，且不会用 HTTP
-`previous_response_id` 恢复增量连接状态。核对版本的 `ResponsesApiRequest` 不声明
-`max_output_tokens`。
-
-Models 响应是带 `models` 数组的 envelope；网关只保留非空且未显式声明
-`supported_in_api=false` 的 `slug`。Quota 响应使用 `rate_limit.allowed`、
-`limit_reached`、primary/secondary window 的 `used_percent`、
-`limit_window_seconds` 和 Unix `reset_at`，并可附带
-`rate_limit_reset_credits.available_count`。
-
-官方 reset-credit 请求 JSON 为
-`{"redeem_request_id":"<idempotency key>"}`，也支持可选 `credit_id`。Gateway 当前让 OpenAI
-选择可用 credit，不发送 `credit_id`。响应 `code` 为 `reset`、`nothing_to_reset`、
-`no_credit` 或 `already_redeemed`，并返回 `windows_reset`。Codex app-server 要求 ChatGPT
-认证，并建议 reset 后重新读取 rate limits。
-
-Models 查询参数 `client_version` 和请求 Header `version` 由原生 Codex 报告自身版本。Gateway
-默认使用当前核对的 `0.146.0`，但把它作为独立插件设置；Codex 后端会根据客户端版本过滤模型，
-因此上游提高最低版本时管理员可更新该值而无需重新发布 Gateway。该版本独立于
-`ai-gateway` 自身版本；误用较小值可能得到成功但为空的 `models` 数组。
-
-## ai-gateway 兼容行为
-
-### 协议与 Connector 分离
-
-客户端协议仍是 `api_format = open_ai_responses` 或 `open_ai_images`，特殊上游方式由
-`connector_kind = codex_oauth` 表示。网关没有新增 provider-specific 客户端 API 格式，也不会在
-Chat Completions、Responses 与 Images 之间转换。
-
-每个 Codex OAuth 凭证属于一个共享 Connector pool，并对应独立的 Responses 与 Images
-provider-managed `channels` 记录。因此 API Key 授权、独立 outbound proxy、请求日志和
-Responses Session affinity 继续使用统一路由系统。priority、selection strategy、routing
-weight 和上游 wire model 由顶层计价模型下的具体 Responses/Images 协议规则 target 分别拥有，
-不是 credential/channel 属性，也不会在两个 projection 之间同步。`all` 只展开声明支持其 target
-模型的 projection，`selected` 为每条 projection 分别选择模型。普通 Channel CRUD 和批量编辑
-不能修改这些 managed channels。
-
-### 请求准备
-
-客户端可以调用 `POST /v1/responses`、`POST /v1/alpha/search` 或带 WebSocket Upgrade 的
-`GET /v1/responses`。选中 Codex managed channel 后，HTTP 路径：
-
-1. 要求请求本身为 SSE streaming；
-2. 拒绝非空 `previous_response_id`；
-3. 在普通 Transform 后应用 Codex Responses HTTP body/Header 白名单，删除
-   `max_output_tokens`、纯遥测和契约列出的空值/no-op；其他 provider-unsupported 非默认值报错；
-4. 把 `client_metadata["x-codex-installation-id"]` 和 turn metadata 中的
-   `installation_id` 替换为按逻辑凭证稳定的 opaque UUID；`workspaces` 强制替换为系统设置中的
-   单一合成 Git 工作区；
-5. 缺失时创建 `client_metadata` 并补齐 session/thread/turn/window、turn metadata 与
-   `prompt_cache_key`；不推测 request kind、sandbox、beta、subagent、attestation、turn-state
-   或 residency，其他 metadata 与 W3C trace/baggage 保留；
-6. 强制写入 `stream=true`、`store=false`；
-7. 将目标改为 `/backend-api/codex/responses`；
-8. 若 Responses 渠道组的“请求压缩”选择 `zstd`，最终 JSON body 使用 Zstandard level 3
-   编码，并设置 `Content-Encoding: zstd` 与 `Content-Type: application/json`；默认
-   `default` 保持 identity；
-9. `Accept-Encoding` 由通用代理层独立设置为 `gzip, deflate, br, zstd`，上游响应在终态 SSE
-   与 usage 解析前流式解码；
-10. 最后注入当前凭证的 Bearer、可选 account、FedRAMP 和 Codex 会话 Header；
-11. 成功响应按 SSE 分类，并将客户端可见 `Content-Type` 规范化为
-   `text/event-stream`，即使 Codex 上游缺少或改写了该 Header；
-12. 逐块转发解码后的上游 SSE，不在 Connector 中缓冲整条响应；下游 SSE 保持 identity。
-
-WebSocket 路径：
-
-1. 要求消息 `type = "response.create"` 并取得顶层 `model`；
-2. 在普通 Transform 后应用独立的 Codex Responses WebSocket body/Header 白名单，删除
-   `max_output_tokens` 和契约列出的纯遥测/no-op，未知 body 字段报错；
-3. 强制 `stream=true`、`store=false`，但保留
-   `previous_response_id`、`generate` 和 `client_metadata`；缺失的 `client_metadata` 与
-   `prompt_cache_key` 会补齐，installation/workspace 指纹按 HTTP 相同规则归一化；
-4. 把目标改为 managed channel base URL 下的 `/responses`，再将
-   `http`/`https` 转成 `ws`/`wss`；
-5. 注入 `OpenAI-Beta: responses_websockets=2026-02-06`、Bearer/可选 account、
-   FedRAMP、session/thread、系统设置中的 User-Agent、`originator` 和版本 Header；
-6. 不发送 HTTP SSE 专用的 `Accept`、`Accept-Encoding` 和 `Content-Type`；
-7. 顺序转发事件，并把成功、无残留的连接放回 Session 隔离池，使后续请求可以继续使用
-   connection-local `previous_response_id`。
-
-Standalone web search 路径：
-
-1. 使用现有 `open_ai_responses` 模型规则和 API Key 权限，但只选择
-   `supports_standalone_web_search = true` 的 Responses channel；
-2. 固定为非流式 JSON，在模型别名后应用独立 Search body/Header 白名单；
-3. 不应用 Request JSON Transform；Header 和响应 Header Transform 仍有效；
-4. 将目标改为 managed channel base URL 下的 `/alpha/search`；
-5. 按 Responses 相同规则保留 session/thread/request/window 和 `x-codex-turn-metadata`；
-   仅缺失时补全。缺失或无效的 turn metadata
-   会安全合成，installation/workspace 指纹按同一凭证/系统设置规则归一化；客户端
-   `originator` 和 `User-Agent` 由插件覆盖为插件设置中的 Codex Connector 身份，再注入
-   Bearer/可选 account/FedRAMP 和版本，不再删除会话身份 Header；
-6. `results` DTO 透明转发；没有 usage 时不估算 token 或费用。
-
-客户端也可以调用非流式 JSON `POST /v1/images/generations`。选中 Codex Images projection 后：
-
-1. 在模型别名和受限变换后应用 Codex Images generation body 白名单，只保留 wire type 字段；
-   `output_format=png`、`moderation=auto` 等等价值删除；
-2. 将目标改为 `/backend-api/codex/images/generations`；
-3. 注入共享 credential 的 Bearer/可选 account/FedRAMP，以及 `originator`、版本、User-Agent 和
-   有效客户端值或缺失时补全的 `x-codex-image-turn-id`；
-4. 与 Responses 共用 session/thread/request/window/turn metadata 的保留/缺失补全逻辑，
-   installation/workspaces 继续隐私归一化；
-5. 按普通 JSON 逐块转发响应，并增量提取顶层 usage，不缓冲完整 base64 图片。
-
-客户端还可以调用 multipart `POST /v1/images/edits`。选中相同 Images projection 后：
-
-1. 网关先在专用限制内捕获 replayable multipart，并完成模型路由；
-2. 最多五个 `image`/`image[]` part 被增量 base64 编码为
-   `images[].image_url = data:<mime>;base64,...`；
-3. 客户端 multipart 与 Codex adapter 分别应用入口/出口白名单，只保留
-   `prompt`、`background`、`model`、`n`、`quality` 与 `size`；`moderation=auto` 在入口层
-   删除，`output_format=png` 在 Codex 层删除，mask 和无法等价表达的值在联系上游前拒绝；
-4. 将目标改为 `/backend-api/codex/images/edits`；
-5. 注入与 generation 相同的 credential 和 image-turn Header，并按非流式 JSON 处理响应。
-
-Responses 客户端提供的合法 `session-id` / `thread-id` 会被保留。缺少时，HTTP 请求如果匹配已配置的
-Session affinity 规则，网关从该规则的不可逆 session hash 派生稳定、opaque 的 UUID；
-没有匹配 affinity 的 HTTP 请求使用本次请求 UUID。WebSocket Session 从下游握手身份派生稳定
-seed，使顺序请求和池化重连保持一致的身份。缺失的
-`x-client-request-id` 使用最终 `thread-id`。
-
-Standalone web search 的 body `id` 是同一 Codex Session ID。推荐 affinity 规则同时使用
-Responses `/prompt_cache_key` 和 Search `/id`，使两种 operation 固定到同一个订阅凭证。
-
-Codex 成功响应按 Connector 契约视为 SSE，而不只依赖上游
-`Content-Type`。网关在转发 `response.completed` / `response.failed` 的同时完成
-usage 与请求终态记录；客户端随后立即停止读取时，不会把已经完整结束的请求覆盖成
-`client_cancelled`。
-
-为提高 ChatGPT Codex 后端兼容性，网关默认使用
-`originator: codex_cli_rs`、`client_version`/`version: 0.146.0` 和基础 User-Agent
-`codex_cli_rs/0.146.0`。这三项是 Console 可编辑的全局数据库系统设置：一个已准备的
-HTTP/WebSocket/Search/Images attempt 以及 OAuth、Models、quota 管理操作各自固定取得一个
-运行时快照，客户端和 Header Transform 都不能覆盖它。原生 Codex 还会在 User-Agent 基础值后附加
-操作系统和终端信息；管理员可在系统设置中提供匹配的完整 CLI 值，Gateway 不自行伪造服务进程
-没有的交互式元数据。OAuth 公共 client ID、scope、redirect URI 和后端路径与核对版本保持一致。
-
-原生 Codex 还会通过 flat `client_metadata` 和 JSON 字符串形式的
-`x-codex-turn-metadata` 上报持久 installation ID，以及 workspace 根路径、Git remote、HEAD
-commit 和 dirty 状态。`ai-gateway` 将 installation ID 按稳定 credential ID 派生 opaque UUID，
-同一逻辑凭证跨 Responses HTTP/WebSocket/Search 保持一致；`workspaces` 始终替换为
-`forwarding_policy.codex` 配置的单一合成工作区。默认 path 为 `/workspace`，默认 origin 为
-`https://github.com/oai404iao/ai_gateway`。缺失的 Responses 身份 metadata 与 Search turn
-metadata 会安全补齐；无法解析的 turn metadata 会被替换而不是 opaque 转发。已有
-Session/thread/turn/window、request kind、compaction、sandbox、子 Agent、App Server extra
-metadata 和 W3C trace/baggage 保留。
-
-### 凭证运行时与维护
-
-OAuth/access/refresh token 保存在 PostgreSQL；Console API 永不把 token 返回给浏览器，
-Debug 和 audit 表示也会脱敏。当前 schema 与普通 upstream API key 一样，依赖受保护的
-数据库和备份边界，未额外实施列级静态加密。
-
-数据面通过独立 `ArcSwap` 凭证快照读取 access token，不为每次请求查询数据库，也不因 quota
-轮询重新编译整份控制面快照。进程内 worker 以有界并发执行 token/identity refresh、
-quota polling 和过期 OAuth flow 清理；同一凭证的 refresh 同时使用进程内互斥锁和
-PostgreSQL row lock，并在锁内再次核对 `refresh_generation`，避免同实例或多实例并发重复使用
-rotating refresh token。
-
-永久 refresh 失败会留下持久的重新授权标记，后续 quota 成功或普通设置编辑不会自动恢复凭证。
-在同一 Connector pool 的任一格式 Channel Group 再次 OAuth 或导入相同 workspace/member 身份，
-或相同 accountless personal user ID，会原位更新 Token 和两个 managed channels；同一 Business
-workspace 的不同 `user_id` 会创建独立凭证，不会互相覆盖。
-
-Quota 状态由两个 projection 共享，并映射为：
-
-- `active`：可接收新的 Responses Session、standalone web search 或 Images generation/edit；
-- `draining`：达到管理员阈值，只允许已命中 affinity 的既有 Responses Session；Images
-  projection 在发送前被排除；
-- `unavailable`：quota 不允许、额度耗尽或永久 refresh 失败；
-- `disabled`：管理员关闭。
-
-Gateway 额外保存主/次窗口周期历史。计划边界后的换窗记为自然重置；通过 Console 调用上述
-reset-credit 接口并匹配到的换窗记为手动重置；未匹配手动事件且早于旧计划边界的换窗记为
-`openai_official`。最后一类用于记录 OpenAI 故障补偿等 provider-side 重置，但 usage 响应本身
-没有携带原因字段，因此该标签是 Gateway 根据提前换窗作出的推断。Gateway 不会自动消费
-reset credit，也不会为了检测官方补偿而调用 consume 接口。
-
-首次派发前发现凭证不可用时，非 affinity hit 请求可以排除该 channel 后重新选路；Images 不使用
-affinity，因此只能在发送前排除不可用 projection。已经粘到该
-凭证的 HTTP Session，或已经由下游 WebSocket/空闲池固定到该 channel 的 WebSocket Session，
-持续 fail closed，失败本身不会删除 affinity 或改绑其他账户。HTTP 请求一旦发出，或 WebSocket
-`response.create` 一旦发送，不做跨凭证自动重试。HTTP/握手 `401` 和带 `status = 401` 的
-WebSocket 错误会触发按 refresh generation 去重的后台 token refresh。
-
-## 差异与限制
-
-- Codex Connector 支持 Responses HTTP SSE、Responses WebSocket、非流式 standalone web
-  search、非流式 Images generation 与 multipart Images edit；
-  Responses HTTP 仍拒绝非空 `previous_response_id`，WebSocket 保留该字段并依赖同一条上游连接
-  的增量状态；两种传输都通过独立 allowlist 明确分类已知字段，未知 body 字段不再透明转发。
-- edit adapter 最多接受五张图片，不接受 mask 或无法等价表达的 Codex wire type 外字段；
-  显式默认值/no-op 按契约删除。这些 provider-specific 限制不改变普通 OpenAI-compatible edit
-  的最多 16 张图片边界。
-- Connector 不实现 Chat Completions、Responses 与 Images 之间的转换。
-- Console 删除会清除数据库中的 OAuth Token 并保留两个非敏感 managed-channel tombstone，但
-  不会调用 OpenAI token revocation endpoint；外部撤销仍需在账户侧完成。
-- Models catalog 在首次连接、重新授权或 Token 导入时验证并写入；当前不单独周期轮询 models。
-- Quota threshold 是路由保护，不是计费或账户侧硬额度；已有 affinity Session 在
-  `draining` 时仍可继续使用。
-- 多进程部署的凭证快照、refresh mutex 和 Session affinity 仍是进程本地状态；数据库更新由
-  各实例周期重载最终收敛。
-- ChatGPT Codex 后端不是公开稳定 API。出现 OAuth 参数、JWT claim、models schema、quota
-  schema、Header 或路径变化时，应先更新本参考和本地 deterministic tests，再修改 Connector。
-
-完整字段和 Header 动作的机器可读来源是
-[`request-allowlists.json`](request-allowlists.json)，维护规则见
-[`请求字段与 Header 白名单`](request-allowlists.md)。
-
-## 维护检查项
-
-每次升级或重新核对 Codex 时至少检查：
-
-1. OAuth client ID、scope、redirect URI、PKCE 参数和 token request encoding；
-2. refresh error code 与 token rotation 语义；
-3. ChatGPT Codex base URL、Responses/Images/models/quota 路径；
-4. Bearer/可选 account/FedRAMP/session 与 `x-codex-image-turn-id` Header；
-5. HTTP 与 WebSocket Responses 的 `stream`、`store`、`max_output_tokens`、
-   `previous_response_id`、`generate` 和 `client_metadata` 边界；
-6. models 与 quota JSON shape；
-7. reset-credit available count、consume 路径、请求幂等键、结果 code 与 `windows_reset`；
-8. Images generation/edit JSON shape、当前 image model 和 usage 响应；
-9. User-Agent/originator 变化是否会影响授权或后端兼容性。
-10. `client_metadata` 与 `x-codex-turn-metadata` 中 installation/workspace/identity 字段的位置、
-    类型和保留必要性，以及缺失字段补全和系统合成 workspace 是否仍与上游兼容。
+> 网关的双向独立协商是代理增强能力，不是该版本 Codex 客户端的保证。

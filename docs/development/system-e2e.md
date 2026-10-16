@@ -1,7 +1,19 @@
 # 项目级系统 E2E
 
-> 状态：当前。第一阶段覆盖浏览器、Codex HTTP/WS、Pi、共享事件样本、
-> 隔离故障注入及逐请求同步的生产日志准入；S6 增加 PG/SQLite 矩阵与成对备份恢复。
+> 状态：当前。覆盖浏览器、Codex HTTP/WS、Pi、共享事件样本、隔离故障注入、生产日志准入，
+> 以及 PostgreSQL/SQLite 矩阵和成对备份恢复。
+
+系统 E2E 启动真实 Gateway、浏览器和固定版本 CLI，在合成上游上验证配置到结算的完整链路。
+它不使用个人登录状态、不访问付费模型，也不运行性能负载；与 mock API UI E2E 是不同入口。
+
+## 本页内容
+
+- [准备依赖并运行两个后端](#本地运行)
+- [理解各测试层的职责](#目标与分层)
+- [查看浏览器与工具闭环](#已实现的场景)
+- [定位崩溃和磁盘故障场景](#耐久性与故障场景)
+- [读取报告和清理结果](#隔离证据与清理)
+- [了解 CI 与未覆盖范围](#ci)
 
 ## 目标与分层
 
@@ -121,9 +133,10 @@ SQLite 额外核验：
 - 损坏清单内容、已有目标拒绝恢复；
 - 恢复写入 ENOSPC 时不发布目标，验证 staging 原子发布边界。
 
-要求 Linux、C 编译器、Python 3.11+、Docker daemon、OpenSSL、Node、项目固定 Rust/pnpm，
+要求 Linux、C 编译器、Python 3.11+、OpenSSL、Node、项目固定 Rust/pnpm，
 以及 `e2e/clients.json` 指定的 Codex/Pi CLI。数据库镜像按 digest 固定，
 WS 依赖按版本与 wheel hash 固定；首次运行可能下载依赖。只使用容器内 psql。
+PostgreSQL 后端另需 Docker daemon；SQLite 后端不启动数据库容器。
 Codex 的只读 shell 沙箱要求可用的 bubblewrap；Ubuntu 24.04 还需加载对应的
 AppArmor user-namespace profile，参见 [Codex 官方前置条件](https://developers.openai.com/codex/concepts/sandboxing#prerequisites)。
 CI 安装这些依赖并验证 namespace 创建，不关闭沙箱或全局 user-namespace 限制。
@@ -145,11 +158,17 @@ target/e2e-venv/bin/pip install --require-hashes -r e2e/requirements.txt
 target/e2e-venv/bin/python -m unittest discover -s e2e -p 'test_*.py'
 node --test e2e/browser-checks.test.mjs
 target/e2e-venv/bin/python e2e/run.py \
+  --backend postgres \
+  --codex "$PWD/target/system-e2e-client/node_modules/.bin/codex" \
+  --pi "$PWD/target/system-e2e-client/node_modules/.bin/pi"
+target/e2e-venv/bin/python e2e/run.py \
+  --backend sqlite \
   --codex "$PWD/target/system-e2e-client/node_modules/.bin/codex" \
   --pi "$PWD/target/system-e2e-client/node_modules/.bin/pi"
 ```
 
 PATH 已有匹配版本时可省略两个客户端路径参数。
+省略 `--backend` 只运行默认 PostgreSQL，不能当作双后端通过。
 `--binary` 指向当前 worktree 构建的 embedded-Console 二进制；
 debug 模式仍依赖 `web/console/dist`。`--output` 只接受 `target/system-e2e/` 下的新目录。
 缺少依赖、版本不匹配、空测试和未执行场景不能算通过。
@@ -190,13 +209,12 @@ debug 模式仍依赖 `web/console/dist`。`--output` 只接受 `target/system-e
 根 `e2e/`、`mock/` 可执行文件变更选择 Rust/Console/文档检查；其 Markdown 只选文档。
 PR 不写 Rust cache；系统测试报告保留七天。CI 安装固定客户端，不访问付费模型。
 
-## 第一阶段完成边界
+## 覆盖边界与维护
 
-- [x] WS 工具连续交互与禁止意外 fallback。
-- [x] 第二客户端 Pi，以及协议/工具失败 oracle。
-- [x] Rust/CLI 共享 wire 事件模板，不强制所有 Mock 共用执行器。
-- [x] 真实进程 kill/restart、重复重放以及进程局部 ENOSPC/EACCES/同步 EIO 注入。
-- [x] 根据[日志准入审查](request-log-admission-review.md)完成生产策略决策、独立实现与验证。
+工具闭环、禁止意外 fallback、Pi 第二客户端、共享事件模板、kill/restart、重复重放和
+ENOSPC/EACCES/同步 EIO 都是现有场景，不是待执行里程碑。日志准入决策背景见
+[准入审查](request-log-admission-review.md)；后续 SQLite 工作增加了停机恢复矩阵。
 
-第一阶段增加派发前日志准入和本地恢复语义，未包含 SQLite；S6 已补充双后端与停机恢复矩阵。
-待核对记录的自动核对/补账、所有文件系统故障组合和性能验证不在本轮完成声明中。
+这不构成所有客户端、协议与故障的笛卡尔积覆盖。待核对记录的自动核对/补账、全部文件系统
+部分写/断电组合、生产 TLS/跨域和性能不在本套件保证中。新增场景仍需自己的负向 oracle，
+不能把历史完整运行记录写成当前源码或本次文档修改已通过验收。

@@ -1,61 +1,27 @@
-# Console API、JWT 与角色授权设计记录
+# Console API、JWT 与角色授权
 
-> 状态：已完成设计记录。本文记录将静态管理 Bearer 接口重构为用户登录、JWT 鉴权及角色授权 Console API 的设计与实施清单。
->
-> **后续变更：** migration `0010_api_key_target_selection.sql` 已替换本文最初的 Policy 模板语义；
-> migration `0022_user_groups_and_user_lifecycle.sql` 又加入单一用户组、组策略继承和匿名化删除。
-> migration `0024_registration_invitation_codes.sql` 新增可复用邀请码自助注册；因此下文“账户创建仅
-> 邀请制”的原始决策只保留历史意义。当前自助注册不做邮箱确认，邀请码明文只在创建时返回一次。
-> migration `0037_admin_temporary_password.sql` 又新增管理员辅助密码恢复：临时密码只能签发
-> password-change Session，完成改密前不能访问普通 Console 资源。
-> 当前行为以 `docs/user/operations.md` 和 Console OpenAPI 为准。
+> 状态：当前。描述现有认证与授权边界；末节单独保留静态 Admin API 迁移的设计背景。
 
-## 1. 目标
+Console 使用独立 listener 上的 `/console/v1/*` API，普通用户和管理员通过同一登录机制进入。
+`admin` 是用户角色，不是路径命名空间或静态 Bearer 密钥。公共 `/v1/*` 仍使用客户端 API Key，
+不接收 Console JWT，也不逐请求查询认证数据库。
 
-1. 保持 OpenAI 数据面兼容：`/v1/models`、`/v1/chat/completions`、`/v1/responses` 仍使用用户 API Key，不改为 JWT。
-2. 移除“Admin API”这一产品边界：新增独立监听器上的 **Console API**，统一使用 `/console/v1/*` 路由。
-3. `admin` 仅是 `users.role` 的角色值；普通用户与管理员使用同一登录机制，但能访问的路由不同。
-4. 普通用户只能访问个人资料、安全设置、自己的 API Key、自己的请求日志和用量/费用事实。
-5. 管理员在上述能力之上拥有用户、API Key Policy、模型、路由、渠道、代理、模板、目录同步、全局日志、审计和重载等完整控制面权限。
-6. 将代理、Console 与认证请求的 body 上限分别配置。
+## 本页内容
 
-## 2. 已确认的产品决策
+- [配置与初始化](#配置与初始化)
+- [理解账户创建与密码恢复](#账户创建与密码恢复)
+- [跟踪 Token 与会话](#认证和授权)
+- [限制本人资源和管理员写入](#角色与资源归属)
+- [修改认证数据模型](#数据模型)
+- [检查 API Key 自助服务](#api-key-自助服务规则)
+- [验证安全边界](#验证)
 
-| 主题 | 决策 |
-| --- | --- |
-| 账户创建 | 邀请制；首个管理员通过一次性 Bootstrap CLI 创建 |
-| 会话 | 短期 Ed25519/EdDSA JWT access token + 轮换 opaque refresh token Cookie |
-| Console 部署 | 独立 Console listener，由 HTTPS 反向代理对外暴露 |
-| 请求体上限 | proxy、console、auth 三类独立配置 |
+## 配置与初始化
 
-服务不读取 dotenv。JWT 密钥通过受限文件路径配置，不把私钥写入 TOML。
-
-## 3. 目标拓扑
-
-```text
-OpenAI data plane                         Console API
-------------------                        ------------------------
-/v1/* + API Key                           /console/v1/* + JWT
-server listener                            console listener
-no database query per proxy request       database/session checks allowed
-
-                 PostgreSQL control plane + auth/session state
-```
-
-Console listener 只应部署在 TLS 反向代理后。网关仅允许显式配置的 CORS origins，不允许通配 origin 与 credential 组合。
-
-## 4. 配置设计
+先准备受限权限的 Ed25519 密钥文件，再配置 Console listener 和允许的浏览器来源。
+下面展示字段关系，完整默认值以 [`config.example.toml`](../../config.example.toml) 为准。
 
 ```toml
-[request_limits]
-proxy_body_bytes = 1_048_576
-image_edit_body_bytes = 67_108_864
-image_edit_file_bytes = 52_428_800
-image_edit_memory_bytes = 1_048_576
-image_edit_spool_directory = "./data/image-edit-spool"
-console_body_bytes = 262_144
-auth_body_bytes = 16_384
-
 [console]
 enabled = true
 host = "127.0.0.1"
@@ -72,142 +38,144 @@ signing_key_path = "/run/secrets/ai-gateway-jwt-private.pem"
 verification_key_path = "/run/secrets/ai-gateway-jwt-public.pem"
 ```
 
-## 5. 数据模型
+```bash
+# 从仓库根目录运行；密码仅经 stdin 传入
+cargo run -- bootstrap-admin \
+  --email admin@example.com \
+  --display-name "Initial Admin" \
+  --password-stdin < password.txt
+```
 
-### 5.1 users
+Bootstrap 只用于首个管理员，不是重复创建或提权入口。已有 active 管理员的紧急密码恢复使用
+`reset-admin-password --email … --password-stdin`。密码文件必须由操作者保护，不能提交。
+SQLite 部署还须遵守[离线管理员 CLI 与 owner 锁](../user/sqlite.md)的限制。
 
-保留余额和状态；用户不再拥有币种设置，所有金额统一按 USD 结算。新增或调整：
+Console listener 应部署在 HTTPS 反向代理之后。CORS 只接受显式配置的 origins，不能组合
+通配 origin 和凭据。服务不读取 dotenv，也不接受 TOML 中的 JWT 私钥或固定管理员 token。
 
-- `email`：大小写无关唯一；已有部署允许暂时为 NULL，未设置凭据的遗留用户不能登录。
-- `display_name`：原 `name` 列迁移而来。
-- `role`：`user` 或 `admin`。
-- `password_hash`：Argon2id 哈希，不保存明文密码。
-- `auth_version`：认证状态变更时递增，用于立即作废旧 JWT。
-- `password_changed_at`：可选安全审计字段。
-- `user_group_id`：用户所属的唯一用户组。
-- `default_api_key_policy_id`：可选用户级策略覆盖；为空时继承用户组默认策略。
-- `deleted_at` / `deleted_by`：不可恢复匿名化删除的事实；被删除用户不再出现在管理列表中。
+请求大小分别受 `request_limits.proxy_body_bytes`、`console_body_bytes` 和 `auth_body_bytes`
+约束；multipart Images edit 另有 `image_edit_*` 限制。不能为放宽认证请求而提高数据面上限，
+也不能把插件安装上传塞入普通 Console JSON 上限。
 
-邀请中的用户使用 `status = 'invited'`；接受邀请后变为 `active`。
+## 账户创建与密码恢复
 
-### 5.2 user_sessions
+| 入口 | 当前行为 |
+| --- | --- |
+| Bootstrap CLI | 初始化首个管理员 |
+| 管理员邀请 | 创建一次性、有过期时间的激活 token；外部系统负责发送 |
+| 注册邀请码 | 匿名用户使用管理员维护的可复用码注册，事务检查启用、过期和剩余次数 |
+| 紧急管理员恢复 | CLI 为已有 active 管理员重置密码，必须从 stdin 读取 |
+| 管理员临时密码 | 重新验证管理员当前密码后，为其他 active、已设置密码用户签发 24 小时临时密码 |
 
-存储 refresh token 的哈希、会话状态、过期时间、轮换时间和最长 512 字符的浏览器
-`User-Agent`。refresh token 永不明文入库；每次刷新必须轮换，重放旧 token 将撤销该会话。
-`User-Agent` 在 session 签发和刷新时更新，使用户可以区分登录设备；现有记录允许为空。
+注册成功即创建 active 用户、分配邀请码当前用户组与初始余额，并签发 Console Session；
+不经过邮箱确认。注册邀请码明文只在创建时返回一次，数据库只保存哈希。
+一次性邀请同样只保存 token 哈希；重新邀请适用的未设密码用户时撤销旧邀请并恢复 `invited` 状态。
 
-### 5.3 user_invitations
+临时密码签发替换原哈希、递增 `auth_version`、撤销全部 Console Session 并要求改密，
+但不撤销客户端 API Key。临时密码登录只能得到 `purpose = password_change` 的受限 Session。
+完成改密前，middleware 只允许刷新、退出和完成密码重置；提交的新密码不能等于临时密码。
+完成事务清除临时状态、撤销受限 Session，再签发普通 Session。
 
-管理员创建用户时产生一次性、过期的邀请 token 哈希。token 只在创建响应中返回一次；邮件发送由
-外部系统负责。未设置密码的待激活、暂停或禁用用户可重新签发邀请；重新签发会设置
-`revoked_at` 撤销所有旧邀请，将用户恢复为 `invited`，并返回新的单次可见 token。
+## 认证和授权
 
-### 5.4 api_key_policies
+```text
+login / invitation activation / registration
+  -> Argon2id password or one-time credential validation
+  -> short-lived EdDSA access JWT + rotating refresh Cookie
+  -> JWT verification
+  -> current database user + session + auth_version validation
+  -> route authorization
+  -> owner-scoped query or transaction-level admin recheck
+```
 
-管理员定义普通用户创建或调整 API Key 时可选择的渠道组和单独渠道。Policy 只表达资源选择上界，
-不再保存格式、权限、RPM、并发、额度或最大活动 Key 数。
+Access JWT 包含 `sub`、`sid`、`role`、`auth_version`、`iss`、`aud`、`iat`、`exp`、`jti`，
+经 `Authorization: Bearer` 发送。JWT 验签成功不等于授权成功：middleware 仍检查用户状态、
+当前角色、Session 撤销与认证版本，使禁用、改密、登出和角色降级及时生效。
 
-### 5.5 user_groups
+Refresh token 是高熵 opaque 值，只通过 `HttpOnly; Secure; SameSite=Lax` Cookie 传递；
+每次刷新都轮换，重放旧 token 会撤销该 Session。数据库永不保存明文 refresh token。
+前端 access token 只驻留内存，不写入浏览器存储、URL 或持久 Query Cache。
+登录与密码验证必须限流，密码和 token 不进入日志、audit 或错误摘要。
 
-每个用户组可配置一个默认 API Key Policy。系统预置受保护的默认用户组和默认管理员组；邀请未显式
-指定组时按角色使用对应默认组。自定义组只有在没有成员时才能删除。
-
-## 6. 认证和授权
-
-### 6.1 Token
-
-Access JWT claims：`sub`、`sid`、`role`、`auth_version`、`iss`、`aud`、`iat`、`exp`、`jti`。
-
-- Access JWT 通过 `Authorization: Bearer` 使用。
-- refresh token 是高熵 opaque token，使用 `HttpOnly; Secure; SameSite=Lax` Cookie。
-- JWT 验签后，Console middleware 仍查询用户和 session，验证用户状态、角色、session 撤销状态和 `auth_version`；因此禁用、改密、登出、角色降级可立即生效。
-- 登录及密码验证必须限流，密码字段不得进入日志、审计或错误响应。
-
-### 6.2 角色
-
-| 路由类别 | user | admin |
-| --- | --- | --- |
-| `/console/v1/me/*` | 是 | 是 |
-| `/console/v1/users/*` | 否 | 是 |
-| `/console/v1/api-key-policies/*` | 否 | 是 |
-| 模型、路由、渠道、代理、模板、同步、重载 | 否 | 是 |
-| 全局请求日志和审计 | 否 | 是 |
-
-所有自助查询都以认证主体 ID 作为 SQL 过滤条件，不能信任路径或 body 中的用户 ID。控制面写操作在 `SERIALIZABLE` 事务内再次确认 actor 仍为 active admin，避免 TOCTOU。
-
-## 7. 路由设计
-
-### 公共认证
+### 公共认证与受限会话
 
 ```text
 POST /console/v1/auth/login
+POST /console/v1/auth/register
 POST /console/v1/auth/refresh
 POST /console/v1/auth/logout
 POST /console/v1/auth/activate-invitation
+POST /console/v1/auth/complete-password-reset
 ```
 
-### 本人资源
+这些路径并非都对匿名用户具有相同前置条件；例如完成密码重置要求对应受限 Session。
+请求/响应、Cookie 与错误码以 [Console OpenAPI](../openapi/console-v1.yaml) 为准，不能据此列表
+绕过每个处理器的认证要求。
 
-```text
-GET/PATCH /console/v1/me
-POST      /console/v1/me/password
-GET/DELETE /console/v1/me/sessions
-DELETE     /console/v1/me/sessions/{{id}}
-GET/POST  /console/v1/me/api-keys
-GET/PUT   /console/v1/me/api-keys/{{id}}
-POST      /console/v1/me/api-keys/{{id}}/revoke
-GET       /console/v1/me/request-logs
-GET       /console/v1/me/request-logs/{{id}}
-```
+## 角色与资源归属
 
-### 管理员资源（没有 `/admin` 路径）
+| 资源 | user | admin |
+| --- | --- | --- |
+| 本人资料、安全设置、Session、Key、日志、用量与费用 | 仅本人 | 仅本人入口同样按主体限定 |
+| 本人可见 Codex quota | 按当前用户组查询，只读、去重和最小投影 | 可另用管理员入口 |
+| 用户、用户组、注册邀请码、Key Policy | 否 | 是 |
+| 模型、操作路由、接入、凭证、渠道、代理、模板与插件 | 否 | 是 |
+| 全局请求日志、审计、重载和系统设置 | 否 | 是 |
 
-```text
-/console/v1/users
-/console/v1/user-groups
-/console/v1/api-key-policies
-/console/v1/models
-/console/v1/catalog/*
-/console/v1/routing/channel-groups
-/console/v1/routing/channels
-/console/v1/routing/model-rules
-/console/v1/network/proxies
-/console/v1/transforms/templates
-/console/v1/request-logs
-/console/v1/audit-logs
-/console/v1/system/reload
-```
+本人资源使用 `/console/v1/me/*`。repository SQL 必须以 JWT 主体为过滤条件，不能信任 path
+或 body 中的 `user_id`。Session 撤销也只能作用于本人；批量“退出其他会话”保留当前 Session。
 
-## 8. API Key 自助服务规则
+控制面 mutation 在事务内重新确认 actor 仍为 active admin，不能只依赖页面守卫或先前 JWT。
+PostgreSQL 控制面使用 serializable 事务；SQLite 通过同一操作契约进入 owner/writer 边界。
+管理员插件 mutation 另需短时一次性重新授权，见[插件操作安全](connector-plugins.md)。
 
-普通用户不可传入 `user_id`、API 格式或权限。有效 Policy 按“用户覆盖优先，否则继承用户组默认”
-解析；用户从该 Policy 允许的列表中选择
-`allowed_group_ids` / `allowed_channel_ids`，并可在创建和后续更新时设置该 Key 的 RPM、并发和额度。
-格式由目标自动推导，自助创建权限固定为 `proxy`、`models.read`；Policy 更新不反向改写既有 Key。
+## 数据模型
 
-## 9. 迁移与兼容
+| 表 | 维护约束 |
+| --- | --- |
+| `users` | email 大小写无关唯一，role 为 user/admin；余额统一 USD；密码保存 Argon2id 哈希 |
+| `user_sessions` | refresh 哈希、状态、过期和轮换时间；最长 512 字符 User-Agent 用于设备区分，可为空 |
+| `user_invitations` | 一次性邀请哈希、过期与撤销事实 |
+| `api_key_policies` | 用户可选择的组/逻辑渠道上界，不保存 RPM、并发、额度或权限 |
+| `user_groups` | 每人唯一所属组及默认 Policy；受保护的默认用户组/管理员组不可随意删除 |
 
-1. 添加新 schema，同时允许旧用户缺失 email/password，以便升级不会立即阻断数据面。
-2. 通过 `bootstrap-admin` CLI 创建或迁移首个登录管理员；禁止通过 TOML 固定 token 提权。
-3. `/v1/*` 保持兼容。
-4. `/admin/v1/*` 移除而非保留静态 token 兼容路径；Console API 从 `/console/v1` 开始。
-5. `src/http/admin.rs` 和静态 `AdminState` 已移除；HTTP 使用 Console 语义，控制面 mutation/list DTO 使用 ControlPlane 语义。
+`users.auth_version` 在认证状态改变时递增，`password_changed_at` 保留安全时间信息。
+用户级 `default_api_key_policy_id` 可覆盖组默认值；为空时动态继承所属组。
+遗留用户可暂时缺少 email/password，但不能因此登录。邀请用户为 `invited`，激活后为 `active`。
 
-## 10. 实施阶段
+删除用户是不可恢复匿名化：撤销 Session、邀请和 Key，保留主键及 `deleted_at` / `deleted_by`
+以维护日志和审计引用。自定义用户组仅在无成员时可删除。批量用户修改核验所有版本，任一失败
+回滚整批，不能按部分成功解释。
 
-- [x] P0：写入本设计、拆分 request-limit 配置、删除静态 admin bootstrap 配置模型。
-- [x] P1：数据库迁移：用户登录字段、session、invitation、API Key policy。
-- [x] P2：实现密码、JWT、refresh token、session repository 和 Bootstrap CLI。
-- [x] P3：实现独立 Console listener、CORS、认证 middleware、角色 middleware。
-- [x] P4：实现认证端点和本人资料/会话/API Key/日志端点，确保资源归属过滤。
-- [x] P5：将原有完整控制面路由迁移至 Console 管理员权限边界；transaction 内复核 admin 角色。
-- [x] P6：更新文档、配置、迁移测试、认证/越权/刷新重放/413 测试；运行格式、lint、测试和必要的真实上游 smoke。
+## API Key 自助服务规则
 
-## 11. 验收标准
+有效 Policy 按“用户覆盖，否则组默认”解析。普通用户从上界中选择
+`allowed_group_ids` / `allowed_channel_ids`，可设置自身 Key 的 RPM、并发与额度，但不能传入
+`user_id`、API 格式或权限；自助权限固定为 `proxy`、`models.read`，格式从所选目标推导。
 
-- 普通用户无法读取、更新、撤销其他用户的 Key、日志或会话。
-- 普通用户不能通过 body 参数扩大 API Key 权限。
-- 用户禁用、改密、登出、session 重放和角色降级均使对应 access token 失效。
-- 管理员保有完整控制面能力，但所有操作审计到实际 JWT actor。
-- `/v1/*` 不查询数据库来验证 JWT，继续只依赖 API Key 和配置快照。
-- 三类 body limit 在各自路由返回安全的 413，且互不影响。
+组选择在保存时展开为固定逻辑渠道授权。一个逻辑渠道新增能力共享授权，后来加入组的渠道
+不会自动获权；路由编辑也不创建授权。Policy 更新不反向改写已存在的 Key。
+
+## 验证
+
+认证、ownership、refresh 重放、临时密码与规范漂移由 `tests/console_spec_integration.rs` 等
+集成测试约束；前端用组件/浏览器测试验证刷新和受限会话 UX。
+
+修改这些边界时检查：
+
+- 其他用户的 Key、日志和 Session 均不可读写或撤销。
+- body 不能扩大权限，JWT 旧角色不能绕过事务内管理员复核。
+- 禁用、密码变更、登出、refresh 重放和降权使对应 access token 失效。
+- audit 归属真实 actor，不记录密码、明文邀请或 refresh token。
+- 各路由 body limit 独立返回安全的 `413`。
+- 公共数据面不因 Console 鉴权改为数据库逐请求校验。
+
+## 迁移与兼容
+
+静态 `/admin/v1/*`、`src/http/admin.rs` 与 `AdminState` 已移除，不保留旧 token 兼容通道。
+最初邀请制/JWT/独立 listener 的重构已完成；后续 migration `0010` 调整 Policy，
+`0022` 引入用户组与匿名化，`0024` 增加自助注册，`0037` 增加临时密码。
+这些编号解释设计演进，不是部署时可以选择跳过的阶段。
+
+当前路由注册在 `src/http/console.rs`，认证编排在 `src/application/auth.rs`，
+用户操作见[运维接口](../user/operations.md)，UI 会话约定见[Console UI](console-ui.md)。

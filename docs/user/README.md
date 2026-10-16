@@ -1,38 +1,30 @@
 # 用户文档
 
-> 状态：当前。面向部署者、运维人员和数据面/Console 使用者。
+> 状态：当前。面向部署者、运维人员和 API 使用者。
 
-## 推荐阅读顺序
+用 ai-gateway 将客户端 API Key 路由到受授权的上游能力，并在独立 Console 中管理账号、凭证、模型和费用。第一次使用，从[快速开始](quickstart.md)完成第一条真正可用的路由；已运行的部署按下面的任务找说明。
 
-1. 根目录 [`README.zh-CN.md`](../../README.zh-CN.md) 或 [`README.md`](../../README.md)：项目概览和本地快速启动。
-2. [运行与接口说明](operations.md)：完整运行时边界、公共数据面、Console、日志和结算行为。
-3. [生产配置与容量调优](production-configuration.md)：单节点基线、PostgreSQL、存储和观测。
-4. [Docker Compose 生产部署](production-deployment.md)：密钥、启动、升级和回滚边界。
-5. [SQLite 单实例部署与恢复](sqlite.md)：Linux 文件后端、管理员 CLI、停机成对备份及恢复。
-6. [连接器插件安装](connector-plugins.md)：独立安装 Codex、启动校验、容器挂载与升级。
+## 调用与管理
 
-## API 使用者
+- [调用公共数据面](data-plane.md)：可用接口、请求策略、图片、独立搜索和重试边界。
+- [配置模型与路由](routing.md)：建立接入、渠道、能力、候选及 Key 授权，配置健康测试和 Session 粘性。
+- [使用 Console](console.md)：登录、邀请、注册、账户恢复、用户与管理员 API。
+- [管理上游凭证](upstream-credentials.md)：目标范围、复用、轮换、停用和删除。
+- [接入 Codex](codex.md)：OAuth、导入导出、Token/quota、Responses、搜索与图片；先[安装插件](connector-plugins.md)。
+- [使用 Responses WebSocket](websocket.md)：启用条件、顺序调用与丢失上下文后的恢复。
+- [配置计费与额度](billing.md)：USD 价格、倍率、时间窗口和软额度边界。
 
-普通渠道的密钥复用、轮换、目标范围及 Console 升级见[上游凭证管理](upstream-credentials.md)。
+## 部署与运维
 
-公共数据面只提供：
+- [Docker Compose 生产部署](production-deployment.md)：配置、密钥、持久卷、启动和停止。
+- [配置与容量调优](production-configuration.md)：TOML 与运行时设置、超时、请求体、PostgreSQL 和磁盘预算。
+- [SQLite 单实例部署与恢复](sqlite.md)：Linux 文件后端、进程所有权和离线成对备份。
+- [查看日志、负载与用量](observability.md)：当前实例监控、查询日志、统计延迟和日志故障处理。
+- [升级与回滚](upgrades.md)：停写、备份、迁移边界、授权审核和恢复。
+- [安全运行与账户恢复](security.md)：网络入口、秘密、原生代码和恢复证据。
 
-- `GET /health`
-- `GET /v1/models`
-- `POST /v1/chat/completions`
-- `POST /v1/responses`
-- `POST /v1/alpha/search`
-- 带 WebSocket Upgrade 的 `GET /v1/responses`
-- `POST /v1/images/generations`
-- `POST /v1/images/edits`
+## 查协议与契约
 
-接口兼容范围和与 OpenAI 官方语义的关系见 [外部参考文档](../reference/README.md)。
+公共数据面和 OpenAI 的兼容范围见[外部参考](../reference/README.md)。Console API 形状以 [OpenAPI](../openapi/console-v1.yaml) 为准；公共 Header 与顶层字段动作以[请求白名单契约](../reference/request-allowlists.json)为准。
 
-Console API 的请求/响应形状以 [`docs/openapi/console-v1.yaml`](../openapi/console-v1.yaml) 为准。
-
-## 安全提示
-
-- 不要提交 `./config/config.toml`、数据库密码或 Console JWT 私钥。
-- Console listener 必须部署在 HTTPS 反向代理后。
-- 服务不读取 `.env`；真实上游 smoke test 的忽略文件是唯一例外。
-- 数据库和备份包含客户端与上游凭据，应按敏感数据保护。
+已有链接可继续通过[运行与接口说明](operations.md)定位拆分后的章节。架构、测试和发布维护进入[开发文档](../development/README.md)；完整来源优先级见[文档中心](../README.md)。

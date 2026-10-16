@@ -2,12 +2,27 @@
 
 > Status: Current native ABI v1 contract.
 
-This development-only SDK defines the boundary between ai-gateway and
-administrator-installed native connector libraries. The built-in `general`
-connector needs no library. The loader validates the native ABI; the gateway
-adapter additionally requires the [common command contract](docs/commands.md).
-Implementing an arbitrary command is not enough to create a routable connector.
-Provider-specific control commands must match their corresponding host adapter.
+Build native connector libraries with this SDK, or use its C header to implement
+the same ABI in another language. A connector prepares provider-specific requests;
+the gateway still owns transport, admission, persistence and billing. The built-in
+`general` connector needs no separate library.
+
+Start with a runnable example, then read the ownership and installation rules
+before loading the library. A valid ABI descriptor is necessary but not sufficient:
+a routable connector must also implement the [gateway command contract](docs/commands.md)
+and match any provider-specific host adapter.
+
+| Goal | Start with |
+| --- | --- |
+| Forward Responses without body reserialization | [Responses example](examples/responses.rs) |
+| Adapt same-format Chat/Responses JSON or SSE text | [Response adapter example](examples/response_adapter.rs) |
+| Normalize actual upstream usage without rewriting responses | [Usage parser example](examples/usage_parser.rs) |
+| Implement the native boundary directly | [C ABI and allocation](#c-abi-and-allocation) and [C header](include/ai_gateway_connector.h) |
+| Install and activate a trusted artifact | [Installation and trust](#installation-and-trust) |
+
+Native code runs with gateway privileges. ABI checks, artifact digests and
+settings validation do **not** sandbox it; review the [trust boundary](#installation-and-trust)
+before using third-party libraries.
 
 ## Rust implementation
 
@@ -86,6 +101,8 @@ cargo build --locked -p ai-gateway-connector-sdk --example usage_parser
 cargo test --locked -p ai-gateway-connector-sdk --example usage_parser
 ```
 
+## Dispatch ownership
+
 The host may call dispatch concurrently. Implementations must be thread-safe,
 must not retain borrowed host memory, and must finish synchronous calls promptly.
 Dispatch receives a JSON **object** for small control fields and a separate raw
@@ -155,8 +172,20 @@ serialization growth, JSON clones, HTTP buffers, panic payloads, and transferred
 typed values may create other allocations outside this boundary. An abort,
 malformed foreign pointer, or native plugin misbehavior can bypass cleanup.
 
-Limits are 64 KiB for manifests, 1 MiB for metadata, 512 MiB for bodies,
-128 bytes for a command, and 256 MiB for a library image. Manifest fields
+## Limits and versions
+
+| Boundary | Limit |
+| --- | --- |
+| Manifest | 64 KiB |
+| Input/output metadata | 1 MiB |
+| Raw body | 512 MiB |
+| Command | 128 bytes |
+| Native library image | 256 MiB |
+
+These ABI ceilings do not replace the smaller settings, usage and response
+limits in the [command contract](docs/commands.md).
+
+Manifest fields
 `id`, `version`, `operations`, and `commands` are required; unknown fields fail
 closed. SDK 0.2 adds `protocol_version`: omission is legacy protocol 1, while
 settings-capable plugins and Codex require protocol 2 or 3.

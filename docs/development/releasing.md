@@ -2,8 +2,20 @@
 
 > 状态：当前。
 
-本项目使用 Semantic Versioning 和 `v<version>` Git tag。`Cargo.toml` 是产品
-版本的主来源，但发布门禁要求以下位置保持一致：
+发布以属于 `main` 的 annotated `v<version>` tag 为入口。先通过发布准备 PR 更新版本与
+Changelog、运行本地门禁，再对同一个已合并 SHA 创建 tag；不能用 tag 绕过普通 CI。
+
+## 本页内容
+
+- [同步版本并准备 PR](#发布前准备)
+- [运行本地发布门禁](#本地发布门禁)
+- [创建并推送不可复用的 tag](#创建并发布-tag)
+- [理解 Actions 产物与权限](#github-actions-发布产物)
+- [验证已发布版本](#发布后验证)
+
+## 版本来源
+
+本项目使用 Semantic Versioning，`Cargo.toml` 是产品版本的主来源。门禁要求以下位置一致：
 
 - `Cargo.toml`
 - `Cargo.lock`
@@ -15,10 +27,10 @@
 
 ## 发布前准备
 
-1. 从最新 `main` 创建发布变更。
+1. 从最新 `main` 创建独立的 `release/<version>` 分支与工作树，不在主工作树直接开发。
 2. 更新上方所有版本位置。
 3. 在 `CHANGELOG.md` 将变更归入目标版本，并使用 `YYYY-MM-DD` 日期。
-4. 确认工作树只包含发布相关变更，并通过代码评审。
+4. 确认工作树只包含发布相关变更，运行本地门禁，再以发布准备 PR 走评审和 CI。
 5. 确认 GitHub Actions 已启用。发布工作流使用仓库自动提供的
    `GITHUB_TOKEN` 创建 GitHub Release 并推送 GHCR，不需要额外配置 Registry
    用户名或 PAT。所有外部 Action 都固定到完整 commit SHA，并由
@@ -48,9 +60,9 @@ VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
 
 - Rust format、workspace-wide clippy 与完整测试（包括性能工具的轻量单元测试）。
 - Console API 类型漂移检查、TypeScript、lint、组件测试与生产构建。
-- 启用 `embedded-console-ui` feature 的 Rust lint，并执行定向测试。
+- 启用 `embedded-console-ui,sqlite-backend` 的 Rust lint，并执行 Console serving 定向测试。
 - Production Compose 解析。
-- 完整 Docker 镜像构建与容器内 `--version` smoke test。
+- 完整 Docker 镜像构建、容器内精确版本、AGPL OCI label 和第三方许可证存在性检查。
 
 PostgreSQL 集成测试要求先启动 `docker compose up -d`。性能 Harness 仍然只能在
 用户明确要求时运行；发布门禁不会执行它。只有转发路径发生变化时，才按
@@ -58,7 +70,7 @@ PostgreSQL 集成测试要求先启动 `docker compose up -d`。性能 Harness �
 
 ## 创建并发布 tag
 
-提交发布变更后，确保工作树干净：
+发布准备 PR 合并后回到同步后的 `main`，确认获准发布且工作树干净，再执行：
 
 ```bash
 VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
@@ -70,6 +82,13 @@ push 已有成功的 `ci-gate`，再创建 annotated tag `v${VERSION}`，然后�
 push 同时推送 `main` 与 tag。发布准备阶段已经运行完整本地发布门禁，因此默认
 不会在打 tag 前重复执行；需要人工再次验证时可显式增加 `--verify`。没有
 `--push` 时只创建本地 tag。查询 `ci-gate` 需要已认证的 GitHub CLI。
+
+| 失败 | 处理 |
+| --- | --- |
+| 不在 main、工作树不干净或 HEAD 不等于 origin/main | 返回发布准备流程，不用 reset/强推绕过 |
+| 目标 SHA 没有成功的 main ci-gate | 等待或修复该 SHA 的检查，不借用旧运行结果 |
+| tag 或 GitHub Release 已存在 | 使用新版本；不移动、覆盖或复用旧 tag |
+| 镜像 cache 未预热 | 可以正常冷构建，但耗时增加；不是降低门禁的理由 |
 
 发布准备 PR 合并后，应先观察相同 `main` SHA 的 CI 与 Security 成功。为了稳定
 获得 warm-cache 的发布耗时，还应等待 `Release image cache` 完成再推送 tag。

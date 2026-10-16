@@ -1,107 +1,125 @@
 # 持久化操作接口
 
-> 状态：当前。第二阶段 P2 的操作边界；S6 已支持 PostgreSQL 和 Linux SQLite，
-> 开发 feature 下的 SQLite 身份/普通控制面见 [S3](sqlite-control-plane.md)，
-> 耐久财务链路与查询见 [S4](sqlite-metering.md)，Codex provider 操作见 [S5](sqlite-codex.md)。
+> 状态：当前。公共接口显式分派 PostgreSQL 和 Linux SQLite，应用不接触驱动或 SQL 方言。
 
-整体演进见[持久化边界设计](persistence-boundaries.md)，业务不变量和费用路径清单见
-[契约基线](persistence-contracts.md)。P3 已实现[独立计量事实/回执](independent-metering.md)，
-本页侧重调用边界，不重复迁移与恢复协议。
+应用持有能完成具体业务操作的句柄，而不是数据库连接。
+prepared change 负责提交一个已准备的变更；Codex guard 负责一次维护操作；
+结算句柄独占扣款权。接口分离不意味着为每个职责再建连接池。
 
-## 当前职责
+## 目录
+
+- [接口与实现位置](#接口与实现位置)
+- [控制面事务与发布](#控制面事务与发布)
+- [Codex 外部副作用](#codex-外部副作用)
+- [事件、错误与观测](#事件错误与观测)
+- [验证与限制](#验证与限制)
+
+## 接口与实现位置
 
 | 接口 | 责任 |
 | --- | --- |
-| `ControlPlaneRepository` | 控制面一致性读取、准备业务变更；原始事务方法仅持久化模块可见 |
-| `PreparedControlPlaneChange` | 一个已经执行变更但尚未提交的事务；只允许读取完整候选记录或提交既定变更/审计 |
-| `CodexRefresh` / `CodexQuotaReset` | 对选定凭证持有锁，提交对应刷新/失败/兑换结果；不提供任意 SQL 能力 |
-| `AuthRepository` | 身份与会话事务；HTTP 通过 `ConsoleAuthService` 操作，不再取得 auth repository |
-| `RequestLogRepository` | 终态批次耐久接收、ingress 重试/确认和日志物化 |
-| `MeteringRepository` | 独立事实、pending 工作项与 ingress 可投影标记的原子物化，核对分类 |
-| `RequestLogQueries` | 本人/管理员日志、渠道组状态；不提供结算或 ingress 写入 |
-| `MeteringQueries` | 个人 usage、费用统计、排行榜投影/查询 |
-| `SettlementRepository` | 原子认领与账户更新、恢复扫描、结算积压 |
-| `DatabaseHealth` | 只读连接池观测，不提供连接获取或事务 |
+| ControlPlaneRepository | 一致读取和指定 prepare 操作；原始事务能力只在存储内 |
+| PreparedControlPlaneChange | 读取完整候选记录，提交既定变更/审计；丢弃则回滚 |
+| AuthRepository | 身份/会话事务；HTTP 通过 ConsoleAuthService 使用，不取仓储 |
+| CodexRefresh / CodexQuotaReset | 凭证专属维护 guard，不提供任意 SQL |
+| RequestLogRepository | 耐久接收、ingress 重试/确认和日志投影 |
+| MeteringRepository | fact、归属、首次 pending 和 ready 原子物化及核对分类 |
+| RequestLogQueries | 本人/管理员日志、渠道状态；不提供 ingress 写入或扣款 |
+| MeteringQueries | usage、费用和排行榜 |
+| SettlementRepository | 唯一回执、账户变更、恢复扫描和积压 |
+| DatabaseHealth | 不获取连接的只读池观测 |
 
-这些是基于现有用例的具体接口，不是通用 ORM/CRUD/UoW 框架。
-`RequestLogRepository` 的 `queries()` / `settlements()` 和查询句柄的 `metering()` 只派生共享
-原池的窄句柄，不创建新池；结算 worker 只持有 `SettlementRepository`。
-生产 PG 继续使用原控制面池与日志流水线池，不增加配置。
-SQLite 开发构造器的所有写仓储共享一个 `Arc<SqliteDatabase>` 和唯一写池。
+这是具体用例集合，不是 ORM、通用 CRUD 或事务执行框架。
+queries()/metering()/settlements() 派生共享原池的窄句柄；
+结算 worker 只持有 SettlementRepository。
+PG 保留控制面和日志两池；SQLite 所有仓储共享 Arc<SqliteDatabase>、唯一写池和 owner。
 
-SQL 仍集中在 `src/persistence/`。公共仓储通过 `backend_auth.rs` /
-`backend_control_plane.rs` 显式分派；原 `mod.rs` 中的 PG SQL/行映射和共享 DTO
-位于 `postgres_control_plane.rs`，SQLite 有后端私有行映射。
-Codex credential/window view 的费用聚合仍封装在该专用 PG 查询内部，已读取独立计量事实。
+| 位置 | 内容 |
+| --- | --- |
+| backend_auth.rs / backend_control_plane.rs | 公共仓储和 prepared-change 的封闭后端分派 |
+| backend_codex.rs | 后端中立 Codex guard |
+| backend_pipeline.rs / backend_queries.rs | 财务流水线与查询分派 |
+| postgres_control_plane.rs / auth.rs / control_plane_write.rs / codex_write.rs | PG SQL、行映射及专属事务 |
+| sqlite/ | SQLite 私有映射、文件所有权、单写事务、查询与外部操作协议 |
+| storage_error.rs | 后端错误到稳定语义的翻译 |
+
+SQLx 仍可用于组合根、配置连接选项、migration 和真实后端测试，
+不能从应用通过 downcast 或 Error::source 恢复 SQL 分支。
 
 ## 控制面事务与发布
 
-`src/persistence/control_plane_write.rs` 封装管理员、自助 Key、批量操作、目录同步、
-用户设置、手工 reload 和自动禁用/恢复的 prepare 路径：
-
 ```text
-coordinator 取得现有进程内 serial 门
-  -> prepare_*：内部 SERIALIZABLE、身份/版本/业务检查、变更
-  -> 读取完整 runtime_records
-  -> application 编译并校验候选快照
-  -> prepared.commit：既定审计与修改一起提交
-  -> application 发布完整快照
+coordinator 取得 serial 门
+  → prepare_*：权限/身份/版本检查和业务修改
+  → 同一事务读取完整 runtime_records
+  → application 编译并校验候选
+  → prepared.commit：既定审计和修改一起提交
+  → 发布完整 ArcSwap 快照
 ```
 
-提交前丢弃或取消操作对象由 SQLx 回滚；不允许调用者取得 executor 或追加任意修改。
-审计失败会回滚变更；编译失败不得提交或发布。空自动状态转换仍提交其内部空事务，
-不发布新快照。用户设置保持原先没有新增审计的语义。
+PG 使用 SERIALIZABLE，SQLite 使用 BEGIN IMMEDIATE。
+管理员、自助 Key、批量、目录同步、设置、自动状态和 reload 共用此边界。
+调用者不能追加 SQL；提交前丢弃/取消会回滚。编译或审计失败不提交、不发布。
+空自动状态转换提交空事务但不发布；用户设置保持原本不新增审计的语义。
 
-调用者必须先验证候选再 commit；当前唯一业务发布编排位于 coordinator 的
-`commit_change`。对象自身不引用 application 编译器，不引入持久化层到应用层的依赖。
-数据库提交后进程退出仍靠启动/重载恢复；数据库与 ArcSwap 不是一个分布式原子事务。
+调用者必须先验证候选，唯一业务编排位于 coordinator::commit_change。
+prepared 对象不反向依赖应用编译器。
+提交后退出由启动/重载恢复；数据库与 ArcSwap 不构成分布式事务。
 
-## Codex 锁与外部副作用
+## Codex 外部副作用
 
-`src/persistence/codex_write.rs` 将已锁定记录与专属 guard 一起交给应用：
+公共 guard 绑定最初选定凭证，外部 HTTP 始终由 application/codex 发起。
+不增加 Token 轮换或兑换的自动重试。
 
-- refresh：generation 不符走 `unchanged`；成功走 `complete`；提供方/身份错误走 `fail`。
-- quota reset：锁覆盖外部兑换到结果/审计提交，`complete` 绑定最初选定的凭证和 credit 观测。
-- 丢弃 guard 回滚并释放锁；外部 HTTP 仍在 `application/codex/mod.rs`，不进入 PG 仓储。
-- 保留现有进程锁、行锁、generation 条件和提交后的 credential reload。
-- 不增加事务或外部调用自动重试。token 轮换/兑换成功而数据库提交结果不确定的既有边界未解决。
+| 后端 | 操作协议 |
+| --- | --- |
+| PG | 保留进程互斥、行锁和 generation 检查；事务覆盖外部调用，complete/fail 提交既定状态，丢弃回滚 |
+| SQLite | 每凭证互斥 + 短事务 CAS；完整本地校验后 prepare_dispatch 持久化 attempt intent，再发送 HTTP；结果短事务校验 attempt/generation 并提交 |
 
-缩短持锁网络事务、提供方级幂等和 lease/fencing 属于独立设计，不包含在此次重构中。
-guard 集成测试验证了锁阻塞/释放、失败状态提交、generation 冲突回滚及兑换结果/审计原子性；
-它们不等同于模拟了提供方 token 轮换成功后的 COMMIT 回复丢失。
+PG 的 prepare_dispatch 是 no-op，不表示已有 SQLite 的耐久 intent fencing。
+SQLite 不能在全局写锁下等待 HTTP；取消、未知结果或提交失败保留 intent。
+未知 refresh 需显式重导入；未知 quota-reset 没有确认 API，重导入、超时或重启均不能清除。
+guard 还持有逻辑 owner，close 必须等待释放，见[SQLite Codex](sqlite-codex.md)。
 
-## PG 优化与错误封装
+guard 测试证明锁/取消/generation/审计边界，不等于模拟了提供方 Token 已轮换后
+PG COMMIT 回复丢失。外部服务与数据库没有原子事务。
 
-事件 worker 调用 `accept_batch`，COPY 文本编码、传输和确认都在 PG 实现内部。
-`IngestReceipt` 隐藏 PG sequence 的数值类型，worker 只保存/传回不透明 receipt，
-不计算序号或构造确认范围。journal payload 保留；P3 在 ack 前额外要求计量事实与 ready 标记，
-checkpoint 仍只等待 COPY 耐久接收。
+## 事件、错误与观测
 
-`StorageError` 私有持有 SQLx source，并提供 `StorageFailureKind`：
-冲突、输入拒绝、路由依赖、内部失败。SQLSTATE/constraint 白名单只在
-`src/persistence/storage_error.rs` 分类；HTTP 只映射语义类别，状态码和错误文案不变。
+worker 调用 accept_batch，PG COPY 编码/确认或 SQLite 批量 INSERT 留在后端内部。
+IngestReceipt 是不透明工作标识，调用者不能计算序号或构造范围。
+接收提交才推进 checkpoint；ack 额外要求 fact、ready 和日志都存在。
+journal payload 保留，计量与展示有独立重试，详见[独立事实](independent-metering.md)。
 
-数据库输入拒绝仍不同于原有业务 `RepositoryError::Validation`，
-避免 Auth 对业务错误的特殊包装改变数据库错误响应。
-`Error::source` 仅用于底层诊断和 PG 集成测试；应用不能通过 downcast 重新分支 SQLSTATE。
-分类不构成自动重试授权，也不把不确定提交误报为明确回滚。
+StorageError 私有持有驱动 source，StorageFailureKind 提供冲突、输入拒绝、
+路由依赖、内部失败。SQLSTATE/约束名白名单只在 storage_error.rs；
+SQLite 根据自身错误码分类，不伪装 SQLSTATE。
+HTTP 映射语义类别，保留既有状态码和文案。
 
-应用/HTTP 不再依赖 PG pool/事务/driver error。组合根、配置连接选项、
-持久化实现和 PG 集成测试仍可使用 SQLx。
+数据库输入拒绝与 RepositoryError::Validation 仍有区别，避免改变 Auth 包装行为。
+底层 source 仅供诊断和后端测试；分类不构成重试授权，
+也不能把提交结果未知当成明确回滚。
 
-## 验证与仍有的耦合
+## 验证与限制
 
-`tests/contracts/interfaces.rs` 验证：
+tests/contracts/interfaces.rs 固定：
 
-- application/http 源码没有 SQLx 类型和数据库错误分支；
-- prepared change 取消回滚且释放锁；
-- 审计失败不提交、不发布，恢复后只提交一次审计；
-- PG 错误分类保留既有区别；
-- Codex guard 的锁/generation/失败提交和兑换审计。
+- application/http 无 SQLx 类型或数据库错误分支；
+- prepared change 取消回滚并释放锁；
+- 审计失败无提交/发布，恢复后仅一次审计；
+- 错误分类不合并原有区别；
+- PG Codex guard 的锁、generation、失败状态和兑换审计。
 
-同时保留 P1 金额/事务/重放测试、完整控制面与 Console spec 测试。
-涉及 Codex 请求路径时执行经授权的真实上游 smoke；系统 E2E 验证原耐久流水线。
+双后端控制面、财务和 Codex 契约分别见
+[SQLite 控制面](sqlite-control-plane.md)、[计量](sqlite-metering.md)、[Codex](sqlite-codex.md)。
+P1 金额/幂等和真实 PG COPY/锁测试继续保留；系统 E2E 验证真实服务恢复。
+转发路径变化另需授权上游 smoke。
 
-S6 已增加 Linux SQLite 部署；仍不提供自动补账、事实清理或日志 TTL。
-P3 已移除日志认领权；事实/回执不可删改，日志删除不能删除财务证据。
-原有 Codex 长事务与外部结果不确定边界仍存在。
+接口没有提供自动补账、事实清理或日志 TTL；日志删除不能删除财务证据。
+PG 的持锁外部 HTTP 与其不确定结果边界仍存在，不因接口中立而消失。
+
+## 相关文档
+
+[持久化边界](persistence-boundaries.md)解释设计取舍；
+[行为契约](persistence-contracts.md)列出金额与读写路径；
+[数据库架构](database-architecture.md)提供实体地图。

@@ -2,9 +2,34 @@
 
 > 状态：当前。实现与校验以 `src/transforms/` 为准。
 
-`config_templates.document` 与 `channels.override_document` 使用同一份受限
-JSON 转换 DSL。空对象 `{}` 是显式 no-op。非空文档必须声明 API 格式，并且
-格式必须与所绑定渠道一致。
+Transform DSL 在编译配置时生成有界规则，用于请求 JSON、请求/响应 Header 和受支持的流事件。
+它不是脚本运行时，不读取凭据、环境或网络。模板 `config_templates.document` 与操作能力的
+`override_document` 使用同一语法；旧 `channels.override_document` 已随拓扑切换退役。
+
+最小配置是 `{}`，表示显式 no-op。需要规则时声明版本和 API 格式，例如：
+
+```json
+{
+  "version": 2,
+  "api_format": "open_ai_chat_completions",
+  "request_json": [
+    { "op": "add", "path": "/metadata/gateway", "value": "ai-gateway" }
+  ]
+}
+```
+
+该例要求 `/metadata` 父路径已存在；不存在时整个 body 转换失败，不能据 `add` 推断会自动创建
+任意祖先对象。非空文档的格式必须与所绑定操作能力一致。
+
+## 本页内容
+
+- [选择版本和操作](#版本)
+- [引用当前值](#当前目标值引用)
+- [按目标条件执行](#条件执行)
+- [检查请求顺序和格式限制](#执行顺序与边界)
+- [了解不支持的能力](#仍明确不支持的高级能力)
+
+## 执行顺序与边界
 
 DSL 内部顺序固定：
 
@@ -12,14 +37,26 @@ DSL 内部顺序固定：
 模板默认规则 → 渠道覆写规则
 ```
 
-完整请求顺序为：客户端白名单 → 上述 DSL → Codex body 白名单、隐私归一化与安全补全（如适用）→
-Header 清理 → Codex Header 白名单、隐私归一化与安全补全（如适用）→ 上游鉴权注入。因此
-Transform 可以添加普通 upstream 字段，但不能绕过 Codex provider policy 或恢复客户端原始
-installation/workspace 指纹。
+完整请求顺序为：客户端 body 白名单 → 用户组 Fast 过滤 → 客户端 Header 白名单 →
+模板默认值 → 能力覆写 → 插件协议/body/Header/隐私准备 → 通用 hop-by-hop/显式 ignore 清理
+→ 上游鉴权 → 最终显式 ignore guard → 派发。具体插件调用可分阶段执行，但不能绕过这些边界。
+Transform 可添加普通 upstream 字段，不能绕过插件 provider policy、恢复被过滤的客户端本地
+installation/workspace 指纹，或重新引入被公共 Header policy 禁止的转发元数据。
 
 所有请求体规则都不能修改 `model` 或 `stream`；请求和响应 Header 均有受保护
 名称。请求侧 `content-encoding` 与 `accept-encoding` 由网关拥有，不能通过 DSL 修改；
 响应体规则只作用于受支持的 SSE JSON 事件。
+
+| 操作 | 请求 JSON | Header | 响应事件 |
+| --- | --- | --- | --- |
+| Chat / HTTP Responses | 支持受限规则 | 请求与响应均受保护名称限制 | 受支持的同格式 SSE selector |
+| Responses WebSocket | 每次 create 应用对应规则 | 握手与最终协议 Header 仍受 guard | 复用 Responses selector，不含 SSE envelope |
+| Standalone search | 禁止 | 支持 | 不使用 SSE 规则 |
+| Images generation | 支持 | 支持 | 禁止 SSE 规则 |
+| Multipart Images edit | 禁止，配置后 fail closed | 支持 | 禁止 SSE 规则 |
+
+规则在控制面编译，应用时仍执行 Header 安全检查。请求转换原子失败，不发送部分修改的 body；
+已经开始的响应流遇到事件转换错误只终止当前流，不能切换渠道或重放。
 
 ## 版本
 
@@ -143,3 +180,10 @@ JSON 表示。若需要字面量对象恰好为标记形状，可使用：
 - 任意 HTTP 调用、网络超时覆写或动态鉴权。
 
 后续若需要扩展，应新增显式 DSL 版本和受限操作，不应改变已有版本的语义。
+
+## 验证与实现入口
+
+`src/transforms/mod.rs` 包含编译器、Header guard、JSON 应用及 SSE/WS selector 回归。
+修改语法时同时验证未知字段、跨格式、受保护路径、缺失目标、索引越界、模板组合和错误原子性。
+响应适配插件是[另一条显式 opt-in 边界](connector-response-adapters.md)，不能把其状态或 usage
+语义写入 DSL。转发行为变更还须遵守[真实上游验证要求](real-upstream-smoke.md)。

@@ -1,207 +1,188 @@
-# 统计页面设计
+# Console 统计与聚合口径
 
-> 状态：当前。接口形状以 `docs/openapi/console-v1.yaml` 为准。
+> 状态：当前。请求/响应形状以[Console OpenAPI](../openapi/console-v1.yaml)为准。
 
-## 目标
+统计有三种读源：计量事实提供 usage/费用，日志投影提供延迟和成功率，
+排行榜读取后台生成的快照。费用可能早于日志页面可见；
+“有确定费用”不等于“已经结算”，也不代表提供方账单。
+所有聚合都在 Console/后台执行，不进入每个数据面请求路径。
 
-Console 提供统计页面：
+## 目录
 
-1. **个人使用情况**
-   - 所有已登录用户均可查看，且只能读取当前 JWT 用户自己的数据。
-   - 固定展示截至当前 UTC 日期的连续 365 天请求活动。
-   - 使用类似 GitHub 贡献图的日期网格展示每日客户端请求数。
-   - 同时展示总请求数、活跃天数、当前连续活跃天数和最长连续活跃天数。
-2. **渠道组状态监控**
-   - 所有已登录用户均可查看。
-   - 展示已启用状态监控的渠道组。
-   - 展示上游模型整体和“渠道组 × 上游模型”的 TTFT、TPS、成功率。
-   - 支持最近 24 小时、3 天、7 天三个窗口。
-3. **个人花费统计**
-   - 所有已登录用户都只能查看当前 JWT 用户自己的统计；管理员进入个人页面时行为完全相同。
-   - 支持日期时间区间、API Key 和聚合粒度过滤，不接受用户或渠道过滤。
-   - 支持按小时、按天聚合。
-   - 展示请求数、已计价请求数、总 Token、平均 RPM、平均 TPM、USD 花费、
-     时间趋势和模型明细；响应不包含渠道明细。
-4. **系统花费统计**
-   - 仅管理员可查看，位于 Console“系统”分组。
-   - 支持日期时间区间、用户、API Key、渠道、Codex 凭证和聚合粒度过滤。
-   - Codex 凭证筛选会合并该逻辑凭证的 Responses 与 Images 两个 managed channel；它与单一
-     `channel_id` 筛选互斥。
-   - 展示与个人花费统计相同的汇总、趋势和模型明细，并额外返回渠道明细。
-5. **花费排行榜**
-   - 所有已登录用户均可查看，作为独立的 Console 页面提供。
-   - 固定提供自然日、自然周和自然月榜；不接受任意日志时间范围。
-   - 使用 `Asia/Shanghai` 边界：日榜为当日 00:00 至次日 00:00，周榜为周一至周日，
-     月榜为每月 1 日至月底。
-   - Console 将前三名以领奖台柱状图展示，提供最多 50 名用户的榜单，并可前后浏览已保留的历史周期。
+- [页面、权限与读源](#页面权限与读源)
+- [个人使用情况](#个人使用情况)
+- [渠道组状态监控](#渠道组状态监控)
+- [花费统计](#花费统计)
+- [凭证窗口费用](#凭证窗口费用)
+- [花费排行榜](#花费排行榜)
+- [接口与验证](#接口与验证)
 
-个人使用情况和花费统计从 `request_metering_facts` 聚合；渠道组状态仍从 `request_logs`
-读取延迟/成功率。排行榜由后台 worker 从计量事实聚合，Console 请求只读取快照表。
-费用可能先于日志页面可见；统计仍按原有费用非 NULL 口径，不代表已结算或提供方账单。
-这些查询都不在数据平面请求路径中执行。
+## 页面、权限与读源
 
-## 个人使用情况定义
+| 视图 | 权限 | 读源与用途 |
+| --- | --- | --- |
+| 个人使用情况 | 当前 JWT 用户，管理员也只看自己 | request_metering_facts，365 天客户端活动 |
+| 渠道组状态 | 任意已登录用户 | request_logs，已纳入统计能力的成功率/TTFT/TPS |
+| 个人花费 | 当前 JWT 用户，不接受系统级筛选 | 事实，按时间/Key 聚合；channels 固定空数组 |
+| 系统花费 | 管理员 | 事实，可筛 user/Key/channel/Codex credential，含渠道明细 |
+| 花费排行榜 | 任意已登录用户 | spend_leaderboard_* 快照，上海自然日/周/月 |
 
-- **权限边界**：端点从 JWT 主体读取用户 ID，不接受 `user_id` 参数。管理员查看该页面时也只看到
-  自己的个人使用情况。
-- **日期范围**：固定返回截至当前 UTC 日期的 365 个连续 UTC 自然日，首尾日期均包含在响应中。
-- **请求来源**：统计 `request_source = 'client'`；系统定时渠道测试不进入个人贡献图。
-- **每日请求数**：按 `(started_at AT TIME ZONE 'UTC')::date` 聚合全部终态客户端请求，
-  不区分成功、失败、拒绝或取消。
-- **空日期**：没有请求的日期仍以 `request_count = 0` 返回，因此前端始终获得完整日历。
-- **活跃天数**：窗口内 `request_count > 0` 的日期数。
-- **当前连续活跃**：从窗口最后一天向前连续 `request_count > 0` 的日期数；当前 UTC 日期无请求时为 0。
-- **最长连续活跃**：窗口内最长的连续活跃日期段。
+“统计”页默认个人使用情况，花费在独立标签。
+系统花费位于 Console 系统分组，管理员在个人标签不获得额外字段/筛选。
+系统负载仍是独立管理员 /admin/system-load 页面，不混入个人统计。
 
-Console 的“统计”页面默认打开“个人使用情况”标签；贡献图使用请求数强度分级，并提供每个日期的
-可聚焦提示。个人花费统计保留在同一页面的独立标签中，管理员在该标签内也不会获得额外字段或筛选。
+## 个人使用情况
 
-## 渠道组状态监控开关
+端点从 JWT 取 user ID，不接受 user_id。
+固定返回截至当前 UTC 日期的 365 个连续自然日，包含首尾日期；
+只统计 request_source=client，scheduled_test 不进入贡献图。
 
-`channel_groups.status_statistics_enabled` 是独立的展示开关，默认 `false`：
+每日计数按 started_at 的 UTC 日期归类所有终态，不区分成功、失败、拒绝、取消。
+无请求日期补 0，前端始终得到完整日历：
 
-- `false`：渠道组不进入渠道组状态监控。
-- `true`：渠道组及其成员渠道 `available_models` 的并集进入状态页；即使当前没有请求，
-  也会显示无数据状态。
-- 启用后会聚合该组全部成员渠道的请求，不再支持按单个渠道选择是否纳入。
-- 开关不影响路由、被动健康、日志采集或自动禁用。
+- 总请求数：窗口每日计数之和；
+- 活跃天数：计数大于 0 的日期数；
+- 当前连续活跃：从当前 UTC 日向前连续非零日期，今天无请求即 0；
+- 最长连续活跃：窗口内最长非零日期段。
 
-该字段通过 Channel Group Console API 读写，并进入渠道组审计快照。migration
-`0041_channel_group_status_monitoring.sql` 会在升级时把“任一成员渠道已启用”的旧组迁移为启用，
-随后移除渠道级字段。
+贡献图以请求数分级，每个日期提供可聚焦提示，不将“缺日期”当作无数据实现。
 
-## 指标定义
+## 渠道组状态监控
 
-渠道组状态监控统一以 `COALESCE(request_logs.upstream_model, client_model)` 作为模型标识，
-并保留 `api_format` 维度，避免混合 Chat Completions、Responses 与 Images。
+纳入开关属于 **channel_capabilities.status_statistics_enabled**，默认 false，
+不是旧 channel_groups 的统一开关。
+活动管理组/逻辑渠道中的统计能力提供模型目录与请求范围，
+同一组按 (group_id,api_format) 区分，避免混合格式。
+模型目录来自纳入能力的 available_models 并集；空闲模型也显示无数据。
+开关不影响路由、被动健康、日志采集或自动禁用。
 
-- **TTFT**：成功请求且 `ttft_ms IS NOT NULL` 的 P90。
-- **TPS**：成功请求且 `output_tokens_per_second IS NOT NULL` 的 P50。
-- **成功率**：`outcome = 'succeeded'` 的请求数 / 该维度中
-  `outcome <> 'cancelled'` 的终态请求数。客户端取消不参与分子或分母；
-  若该维度只有客户端取消请求，成功率为 `null`。
-- **无数据**：请求数为 0 时，成功率、TTFT、TPS 均为 `null`。
+历史 request/channel/group identity 映射回当前 canonical 拓扑，
+操作旧名称按协议归一化后匹配能力。
+只纳入当前未删除组/渠道/能力且统计开关开启的记录。
+不能将旧迁移 0041 的渠道组开关语义作为当前设置入口。
 
-时间窗口和状态条桶宽：
+模型标识统一上游优先：COALESCE(upstream_model,client_model)，保留 api_format。
+指标定义：
+
+| 指标 | 口径 |
+| --- | --- |
+| TTFT | succeeded 且 ttft_ms 非 NULL 的 P90 |
+| TPS | succeeded 且 output_tokens_per_second 非 NULL 的 P50 |
+| 成功率 | succeeded 数 / outcome 非 cancelled 的终态数 |
+| 无有效分母 | 只有取消或没有请求时，成功率 NULL |
+| 无延迟/吞吐样本 | 对应 TTFT/TPS 为 NULL，不填 0 |
 
 | 窗口 | 桶宽 | 桶数 |
-|---|---:|---:|
+| --- | ---: | ---: |
 | 24 小时 | 30 分钟 | 48 |
 | 3 天 | 2 小时 | 36 |
 | 7 天 | 4 小时 | 42 |
 
-前端状态条颜色仅用于快速阅读：
+桶使用 UTC。前端状态色：成功率 ≥98% 成功色，≥90% 警告色，低于 90% 失败色，
+没有请求为中性色。颜色不是额外健康/选路状态。
+SQLite 使用相邻秩与 PG 插值公式实现百分位，见[精确查询](sqlite-metering.md)。
 
-- 成功率 `>= 98%`：成功色
-- 成功率 `>= 90%`：警告色
-- 成功率 `< 90%`：失败色
-- 无请求：中性色
+## 花费统计
 
-## 花费统计定义
+### 过滤与时间
 
-- **请求数**：过滤区间内全部终态请求。
-- **已计价请求数**：`cost_amount IS NOT NULL` 的请求。失败和取消请求固定写入零费用，
-  因此也属于费用已确定的请求。
-- **总 Token**：`input_tokens + output_tokens`；缓存 Token 已包含在输入 Token 内，
-  不重复相加。
-- **平均 RPM**：请求数 / 过滤区间分钟数。
-- **平均 TPM**：总 Token / 过滤区间分钟数。
-- **花费**：所有模型价格和请求费用均为 USD，直接对 `cost_amount` 求和，不提供币种选择或换算。
-- **模型维度**：与渠道组状态监控相同，使用上游模型优先的模型标识并保留 API 格式。
-- **渠道维度**：系统花费统计响应按渠道 ID、请求发生时的渠道组 ID 和 API 格式聚合，
-  展示当前渠道/渠道组名称、请求数、成功率、各类 Token 与 USD 花费。
-  个人花费统计响应中的 `channels` 固定为空数组，包括管理员自己的个人页面。
-- **时间趋势**：响应包含所选区间内连续的 UTC 小时/天桶；没有请求的桶也会返回，
-  其请求数、Token 和花费均为零，避免图表只显示有数据的单个时间点。
+查询按 started_at 左闭右开区间，granularity=hour/day：
+小时最多 31 天，天最多 366 天。
+连续 UTC 桶补齐无请求日期/小时，请求数、Token 和花费为 0；
+Console 按浏览器本地时区展示。
 
-Console 提供“今天 / 本周 / 本月”快捷范围。“今天”使用小时粒度，“本周”和“本月”
-使用天粒度；范围边界按浏览器本地时间生成，再转换为 RFC 3339 传给 API。
+个人端点仅接受时间、粒度和 api_key_id，不接受 user/channel 等系统筛选；
+管理员访问个人端点仍只看本人，channels 为空。
+系统端点可按 user_id、api_key_id、channel_id 或 codex_credential_id 限定，
+channel_id 与 codex_credential_id 互斥。
+费用查询不默认排除 scheduled_test，不能把个人贡献图/排行榜的 client-only 过滤搬过来。
 
-Codex 凭证页的主/次窗口历史可直接跳转到系统花费统计。跳转 URL 带上周期起止时间、适合该周期的
-小时/天粒度和 `codex_credential_id`，统计页从 URL 恢复筛选并同时覆盖两个 projection channel。
-当前尚未结束的窗口使用“周期起点到当前时间（不超过计划重置时间）”作为统计区间。
+“今天/本周/本月”快捷范围按浏览器本地时间生成，转 RFC 3339 发送；
+今天用小时，本周/月用天。浏览器快捷边界与服务端 UTC 桶不是同一概念。
 
-Codex 当前额度列表和额度历史还会直接显示各主/次周期的凭证总花费。金额使用相同的
-`request_metering_facts.cost_amount`，按该逻辑凭证的 Responses 与 Images projection 汇总，不按
-Gateway 用户或 API Key 过滤。周期使用左闭右开的时间边界；当前周期结束于
-`min(now(), scheduled_reset_at)`。该金额是 Gateway 价格快照算出的 USD 计价事实，不是 OpenAI
-账单；主、次周期重叠时不能相加。
+### 指标与维度
 
-聚合桶固定使用 UTC 边界；Console 按浏览器本地时区显示时间。
+| 指标 | 定义 |
+| --- | --- |
+| 请求数 | 过滤后的全部终态 |
+| 已计价请求数 | cost_amount 非 NULL；failed/cancelled 的确定零费用也计入 |
+| 总 Token | input_tokens + output_tokens；缓存已包含在输入，不重复相加 |
+| 平均 RPM / TPM | 请求数 / 区间分钟，或总 Token / 区间分钟 |
+| USD 花费 | 确定 cost_amount 的精确和；无币种选择或换算 |
+| 模型 | 上游模型优先，保留 API format |
+| 渠道 | 系统视图按请求历史渠道/组身份与 API format 聚合，并返回请求、成功率、各 Token 和费用 |
 
-为限制单次聚合规模：
+展示渠道/组名称不重写请求时 UUID。个人响应不返回渠道明细。
+费用来源是事实而非日志或回执，不把 amount_state/结算资格过滤偷偷加入统计。
+金额必须精确聚合；SQLite 禁止原生 SUM/浮点，最终报告遵守既有 Decimal 结果边界。
 
-- 小时粒度最大 31 天。
-- 天粒度最大 366 天。
+## 凭证窗口费用
 
-## 花费排行榜定义
+系统花费与 quota 当前/历史窗口通过 request_credential_identities 使用请求时凭证归属。
+新请求不因渠道后来改绑转移费用；旧未知才回退冻结注册表，明确无认证不回退。
+不再仅按固定 Responses/Images 两个 managed channel，也不按当前绑定扫描。
+凭证窗口汇总不按网关 user/Key 过滤，本人可见性另由用户组授权的渠道组限制。
 
-排行榜使用 `request_metering_facts.cost_amount`，不以是否存在结算回执作为额外过滤条件。
-`SpendLeaderboardWorker` 在 Console 启用时随服务启动，立即执行一次聚合，随后每 15 分钟
-重建 `Asia/Shanghai` 自然日、周、月的全量快照。多进程实例通过 PostgreSQL 事务级 advisory
-lock 避免并发刷新；刷新失败会保留上一版快照。API 只读取
-`spend_leaderboard_periods` 与 `spend_leaderboard_entries`，因此排行榜不会在页面请求时扫描
-`request_metering_facts`。
+窗口起点包含、终点不含；历史用实际 ended_at，
+当前用 min(now,scheduled_reset_at)。只有 cost 非 NULL 才贡献金额。
+主/次窗口重叠，不可相加；这是 Gateway 价格快照 USD，不是 OpenAI 账单，
+也不要求已有普通结算回执。
 
-每次刷新会重新计算已保留的所有周期，但仅更新数值或名次实际变化的条目。用户名称和邮箱不复制到
-快照中，响应时再连接当前 `users` 记录，以保持用户匿名化后的显示效果。
+凭证页可跳到系统花费，URL 带周期边界、适合粒度和 codex_credential_id；
+未结束窗口到当前时间但不超过计划 reset。统计页从 URL 恢复筛选。
 
-- **周期边界**：所有边界都使用 `Asia/Shanghai`。`day` 是当日 00:00（含）至次日 00:00（不含）；
-  `week` 是周一 00:00（含）至下周一 00:00（不含），即周一至周日；`month` 是当月 1 日
-  00:00（含）至次月 1 日 00:00（不含），即每月 1 日至月底。`period_start` 与 `period_end`
-  使用当地日期，结束日期为排他边界。
-- **当前周期**：未指定 `period_start` 时返回当前自然日、周或月；即使当前周期没有已定价请求，
-  刷新 worker 也会写入零值元数据，以便 Console 显示当前周期。
-- **历史**：响应返回同一周期类型中最近的前一个和后一个已保留周期起点，Console 用它们浏览历史榜单。
-- **请求来源**：统计 `request_source = 'client'` 的用户请求；系统定时渠道测试不会出现在用户排行榜中。
-- **上榜条件**：用户在所选周期内至少有一个 `cost_amount IS NOT NULL` 的请求。
-- **用户花费**：该用户周期内所有 `cost_amount` 的和，单位固定为 USD。
-- **请求数与总 Token**：展示该用户周期内全部请求的数量，以及
-  `input_tokens + output_tokens`；未定价请求不会使用户上榜，但会计入已上榜用户的这两个指标。
-- **排序**：先按用户花费降序、再按请求数降序和稳定的用户标识排序；响应从 `1` 开始分配连续名次。
-- **总花费**：`total_cost_amount` 覆盖全部上榜用户，不受响应 `limit` 截断影响，前端据此计算每名用户的占比。
+## 花费排行榜
 
-接口最多返回 100 条，Console 固定请求前 50 条。`refreshed_at` 为快照最后成功更新的时间；
-服务首次启动后的首次刷新尚未完成时，它为 `null`，并返回空榜单。
+SpendLeaderboardWorker 在 Console 开启时启动，立即刷新，之后每 15 分钟重建。
+PG 用事务 advisory lock 避免并发刷新；SQLite 用共享非阻塞 guard/单写事务。
+刷新失败保留上一版，取消释放 guard。
+API 只读周期/条目快照，不在页面请求时扫描事实。
 
-## Console API
+每次重新计算保留周期，只更新数值/名次变化的条目。
+名称/email 不复制进快照，响应 JOIN 当前用户，使匿名化继续生效。
 
-Console 端点：
+| 规则 | 定义 |
+| --- | --- |
+| 时区 | Asia/Shanghai；日从 00:00 到次日，周一到下周一，月初到下月初，均左闭右开 |
+| period_start / end | 当地日期，结束为排他边界 |
+| 请求来源 | 仅 client，scheduled_test 不入榜 |
+| 上榜资格 | 所选周期至少一条 cost 非 NULL |
+| 用户花费 | 该用户周期全部 cost 之和，不要求结算回执 |
+| 请求/Token | 已上榜用户周期全部请求与 input+output，包括未计价请求 |
+| 排序 | 费用降序、请求数降序、稳定用户标识；连续名次从 1 开始 |
+| total_cost_amount | 全部上榜用户之和，不受 limit 截断 |
 
-- `GET /console/v1/me/usage`
-  - 任意已登录用户可访问。
-  - 固定返回当前用户截至当前 UTC 日期的连续 365 天客户端请求活动。
-  - 响应包含连续日期、总请求数、活跃天数、当前连续活跃天数和最长连续活跃天数。
-- `GET /console/v1/statistics/channel-group-status?window=24h|3d|7d`
-  - 任意已登录用户可访问。
-- `GET /console/v1/statistics/costs`
-  - 任意已登录用户可访问，且始终限定为当前 JWT 用户，包括管理员。
-  - `started_after`
-  - `started_before`
-  - `granularity=hour|day`
-  - `api_key_id`（可选）
-  - 不接受 `user_id` 或 `channel_id`；传入这些系统级筛选返回 `422`。
-  - `channels` 固定为空数组。
-- `GET /console/v1/system/statistics/costs`
-  - 仅管理员可访问。
-  - `started_after`
-  - `started_before`
-  - `granularity=hour|day`
-  - `user_id`（可选）
-  - `api_key_id`（可选）
-  - `channel_id`（可选）
-  - `codex_credential_id`（可选；与 `channel_id` 互斥）
-  - 可查看全局统计或按用户、API Key、单一渠道或 Codex 逻辑凭证筛选，并返回渠道明细。
-- `GET /console/v1/statistics/spend-leaderboard`
-  - 任意已登录用户可访问。
-  - `period=day|week|month`，默认 `day`。
-  - `period_start=YYYY-MM-DD` 可选；省略时选择当前自然周期。周榜必须传周一，月榜必须传每月 1 日；
-    无效周期、起点或 `limit` 返回 `422`。
-  - `limit=1..100`，默认 50。
-  - 返回周期元数据、最后刷新时间、历史导航起点、全量上榜用户的 USD 总花费以及按花费排序的用户条目。
+省略起点选当前周期，无定价请求也生成零值周期元数据。
+历史导航返回前后已保留周期，不接受任意日志区间。
+周起点必须周一，月起点必须每月 1 日。
+接口 limit=1..100，默认 50，Console 固定前 50，前三名显示领奖台。
+首次刷新未完成时 refreshed_at=NULL 且榜单空；
+它表示最后成功快照，不是实时账本时间。
 
-系统负载仍为管理员专属：`GET /console/v1/system/load`。Console 将全局请求日志、系统花费统计、
-审计日志、系统负载和系统设置统一放在“系统”分组；系统负载仍使用独立的
-`/admin/system-load` 页面，不放在个人“统计”页面内。
+## 接口与验证
 
-响应契约由 `docs/openapi/console-v1.yaml` 定义，前端类型由该规范生成。
+| 端点（/console/v1 前缀） | 主要参数 / 权限 |
+| --- | --- |
+| GET /me/usage | 当前用户固定 365 天，无 user 参数 |
+| GET /statistics/channel-group-status | window=24h/3d/7d，任意登录用户 |
+| GET /statistics/costs | started_after/before、granularity、可选 api_key_id；个人范围 |
+| GET /system/statistics/costs | 管理员；再加 user_id/channel_id/codex_credential_id |
+| GET /statistics/spend-leaderboard | period=day/week/month（默认 day）、可选 period_start、limit |
+| GET /system/load | 管理员，实时单实例指标，不是统计历史 |
+
+无效时间/粒度/周期/limit、个人端点系统筛选或互斥筛选按 OpenAPI 返回 422。
+响应类型由 OpenAPI 生成，不能在前端手改。
+
+维护验证重点：
+
+- 本人/管理员隔离，个人接口拒绝系统参数且 channels 为空；
+- source、NULL/零费用、已结算与统计金额不同口径；
+- UTC 日/小时和上海周/月边界，空桶、闰日/微秒及当前连续活跃；
+- 能力统计开关、同组多格式、历史身份、取消分母和空闲模型；
+- 凭证改绑前后归属、旧未知/明确无认证、quota 重叠窗口；
+- 精确聚合、排行榜并发/取消/保留旧快照、全量总额与 limit；
+- 双后端相同 case、Console spec/generated types 和对应组件/浏览器。
+
+实现入口为 postgres_control_plane.rs 的查询/聚合、sqlite/{queries,aggregate,leaderboard}.rs、
+workers/spend_leaderboard.rs、http/console.rs。
+费用来源约束见[独立计量](independent-metering.md)，前端变更遵循[Console UI](console-ui.md)。

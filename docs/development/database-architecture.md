@@ -1,223 +1,181 @@
 # 数据库与控制面架构
 
-> 状态：当前。数据库结构以 `migrations/` 为唯一权威来源；本文只说明当前持久化边界、
-> 主要实体组和运行时编译关系，不逐列复制 schema。
+> 状态：当前。schema 以两后端的有序 migration 为准，本文说明数据所有权和事务边界。
 
-## 设计边界
+数据库保存配置、身份与会话、Connector 状态、财务事实、查询投影和审计。
+数据面使用不可变运行时快照；请求路径不逐次查库。PostgreSQL 和 Linux SQLite
+实现相同业务契约，但连接、锁、金额编码和备份方式不同。
 
-- PostgreSQL 保存控制面配置、Console 身份与会话、Connector 状态、请求日志、统计投影和审计事实。
-- TOML 只保存进程/bootstrap 配置，以及数据库系统设置缺失时的一次性初始值。
-- 数据面从 `ArcSwap<CompiledRuntimeConfig>` 读取不可变快照，不在每个代理请求中查询数据库。
-- Console 控制面写入在事务中完成候选配置校验和审计；提交成功后立即发布完整新快照，定时重载负责
-  跨进程收敛。
-- schema 只能通过新的有序 migration 演进；不得修改已经部署的 migration 来伪造当前结构。
+## 目录
 
-应用通过 prepared control-plane/Codex 专属操作使用事务，不直接持有 PG 事务或连接池；
-日志写入、日志查询、计量查询与结算已拆为窄句柄。SQLx 错误在存储内部分类，
-提交前校验/审计与提交后发布顺序不变。详见[持久化操作接口](persistence-interfaces.md)。
-费用来源与结算认领已由[独立计量事实和回执](independent-metering.md)拥有，不再依赖日志投影。
+- [存储与运行时](#存储与运行时)
+- [实体与所有权](#实体与所有权)
+- [控制面提交与发布](#控制面提交与发布)
+- [财务事实与查询投影](#财务事实与查询投影)
+- [迁移与升级](#迁移与升级)
+- [修改数据库的流程](#修改数据库的流程)
 
-最初的 11 表方案及其当时的取舍已移入
-[首版数据库设计归档](../archive/initial-database-design.md)。它不能作为当前列名、表数量或功能边界
-的依据。
+## 存储与运行时
 
-## 当前实体组
+| 层 | 所有权与边界 |
+| --- | --- |
+| TOML | 监听器、数据库、spool、秘密文件等进程配置；数据库动态设置缺失时的一次性 bootstrap 值 |
+| 控制面数据库 | 身份、授权、路由、上游拓扑、动态策略及审计 |
+| `ArcSwap<CompiledRuntimeConfig>` | 完整编译后的不可变配置；数据面选路和策略读取来源 |
+| 独立 Codex 凭证状态 | Token、刷新 generation、额度观测及维护生命周期 |
+| 本地 spool / admission | 数据库接收前的事件与未决证据；每进程独占目录 |
+| 数据库财务与投影 | 不可变计量事实、唯一结算回执、可恢复工作项及日志/排行榜投影 |
 
-截至当前 migration，实体可按职责分为以下几组；维护者不应把表数量写成稳定产品契约，
-新增 schema 时应直接阅读全部 migration：
+PostgreSQL 保留控制面池与日志流水线池的资源分隔。SQLite 的所有仓储共享一个
+数据库 owner、一个 writer 和只读池；日志连接数配置不另建写者。
+平台、权限和文件身份要求见[SQLite 生命周期](sqlite-lifecycle.md)。
 
-| 领域 | 主要表 | 责任 |
+应用通过 prepared change 和专属 Codex guard 操作存储，不接触 PG 事务、连接池、
+SQLSTATE 或任意 executor。接口定位见[持久化操作接口](persistence-interfaces.md)。
+
+## 实体与所有权
+
+不把表数量作为产品契约。当前表、列、约束和种子数据直接查看
+`migrations/`、`migrations/sqlite/` 及当前 schema inventory。
+
+| 领域 | 主要实体 | 所有权 |
 | --- | --- | --- |
-| 上游身份 | `upstream_credentials` | 可复用静态认证材料、精确接入范围、连接 revision 与 Codex 公共身份。 |
-| 身份与授权 | `users`、`user_groups`、`user_sessions`、`user_invitations`、`registration_invitation_codes`、`api_key_policies`、`api_keys` | Console 身份、角色、生命周期、注册/邀请、用户可选路由边界和具体 Key 限制。 |
-| 模型与路由 | `models`、`model_routing_profiles`、`model_operation_rules`、`model_capability_tiers`、`model_capability_candidates`、`routing_groups`、`upstream_accesses`、`upstream_channels`、`channel_capabilities`、`api_key_channel_grants`、`api_key_policy_channel_grants`、`proxies`、`config_templates`、`system_settings` | 客户端模型价格、协议规则、候选级上游 wire 模型、路由层级/权重、格式隔离、Connector、网络/变换和数据库动态系统策略。 |
-| Codex Connector | `codex_oauth_credentials`、`codex_oauth_flows`、`codex_quota_window_periods`、`codex_quota_reset_events`、`user_group_codex_quota_visibility` | 独立 OAuth 凭证、维护代理、quota 历史和经引用渠道限定的用户组可见性。 |
-| 日志与统计 | `request_log_ingest`、`request_logs`、`spend_leaderboard_periods`、`spend_leaderboard_entries`、`audit_logs` | 耐久事件入口、日志/排行榜投影和控制面审计。 |
-| 计量与结算 | `request_metering_facts`、`request_credential_attributions`、`request_settlements`、`request_settlement_pending` | 不可变财务事实与凭证归属、唯一结算回执和可索引的未结算工作集合。 |
-
-## 关键当前语义
+| 身份与授权 | `users`、`user_groups`、会话、邀请、注册码、`api_keys`、`api_key_policies` | Console 身份、角色、生命周期、具体 Key 及自助授权范围 |
+| 上游拓扑 | `upstream_credentials`、`upstream_accesses`、`routing_groups`、`upstream_channels`、`channel_capabilities` | 认证、接入、组织、绑定和操作能力分别配置 |
+| 模型路由 | `models`、`model_routing_profiles`、`model_operation_rules`、`model_capability_tiers`、`model_capability_candidates` | 客户端计价身份、操作规则、priority/strategy、显式能力/wire-model/weight |
+| 固定授权 | `api_key_channel_grants`、`api_key_policy_channel_grants` | 保存逻辑渠道及组/直接渠道来源，不随组成员自动扩权 |
+| Codex | `codex_oauth_credentials`、OAuth flow、额度窗口、重置事件、组可见性 | OAuth 材料与提供方状态；不拥有渠道拓扑 |
+| 辅助配置 | `proxies`、`config_templates`、`system_settings`、插件生命周期与设置记录 | 网络、变换、动态通用策略及管理员安装的插件状态 |
+| 财务 | `request_metering_facts`、`request_credential_attributions`、`request_settlements`、`request_settlement_pending` | 不可变终态事实、请求时凭证归属、唯一扣款权及未结算工作 |
+| 查询与审计 | `request_log_ingest`、`request_logs`、排行榜周期/条目、`audit_logs` | 耐久入口、可查询投影、统计快照及控制面审计 |
+| 历史身份 | group/channel/model-rule identity registry | 旧 UUID 与新身份的只读关联，供历史查询和 spool 重放，不参与授权 |
 
 ### 上游身份、能力与固定授权
 
-PostgreSQL `0064` / SQLite `0004` 引入独立凭证；`0065` / `0005` 在启动事务内
-完成能力转存、历史外键迁移、快照校验和旧配置表退役。实现位于
-`src/persistence/capability_cutover/`，运行时仓储只读取新拓扑。
-迁移失败整批回滚，包括非法停用草稿；SQLite 迁移专属连接关闭外键后不回池，
-提交前执行完整 `foreign_key_check`。
+- 静态凭证是认证材料与精确目标范围的唯一来源；OAuth Token 由 Codex 扩展持有。
+  凭证不属于组或 pool，导入凭证不创建接入、渠道、能力或候选。
+- 接入拥有连接器 ID、Base URL、代理与超时；逻辑渠道绑定接入、nullable 凭证和管理组。
+- 能力拥有操作、模型目录、独立健康、变换、压缩、探测、倍率及状态统计开关。
+  六种操作决定传输；能力不能改绑所属渠道或操作。
+- 凭证、接入、渠道绑定和能力各有连接 revision。轮换、禁用、范围变更及
+  A → B → A 改绑均不能恢复旧 WebSocket continuation。
+- `models.source_model_id` 是不可变客户端计价身份，每模型至多一个 profile。
+  操作规则按 `(profile, operation)` 唯一，启用规则必须有非空层。
+  候选显式保存能力/wire-model/weight；同层只禁止完全相同组合，组不参与动态展开路由。
+- Key/Policy 的新增组来源在保存时展开为固定逻辑渠道；保留来源不重新展开。
+  自助选择与 Policy 固定范围相交。已授权渠道的后续能力共享授权，但仍需路由、目录、
+  开关、健康和准入全部满足。`allowed_api_formats` 只是废弃兼容元数据。
+- 删除能力在同一事务撤销其全部候选、清理空层、停用无候选规则并推进相关规则 ETag。
+  删除逻辑渠道要求先退役能力，删除管理组要求先清空成员。
+- 新请求的凭证归属在选路快照中捕获；渠道改绑不改变历史或在途费用。
+  `request_credential_identities` 仅对旧未知归属回退冻结注册表，明确无认证不回退。
 
-- `upstream_credentials` 是静态认证材料与目标范围的唯一来源；Codex Token 仍由专属扩展持有。
-- `upstream_accesses` 拥有连接器、Base URL、代理及超时；`upstream_channels` 绑定接入、
-  nullable 凭证和格式中立的 `routing_groups`。
-- `channel_capabilities` 拥有操作、模型目录、独立健康、探测、压缩、变换、倍率和统计开关。
-  传输由操作派生。能力所属逻辑渠道与操作不可改绑；所有连接器的能力均显式创建，
-  导入 Codex 凭证不创建拓扑，旧 Images 能力的停用状态在迁移中保持不变。
-- 凭证 revision、接入 revision、渠道 binding revision 与能力 revision 纳入连接身份失效；
-  轮换、禁用、范围收窄及 A → B → A 改绑不能恢复旧 WebSocket continuation。
-- `models.source_model_id` 是不可变客户端计价身份；每个模型最多一个 `model_routing_profiles`。
-  `model_operation_rules` 按 `(profile, operation)` 唯一，启用规则必须有非空 tier。
-- `model_capability_tiers` 保存 priority/strategy；`model_capability_candidates` 保存
-  capability/wire-model/weight，同层完全相同组合不得重复，不随组成员变化自动扩展。
-- Key/Policy 保留组/逻辑渠道选择数组，同时在 `api_key_channel_grants` /
-  `api_key_policy_channel_grants` 固定逻辑渠道及来源。只有新增来源才展开组成员，
-  保留来源不重新扩权；自助写入与 Policy 固定渠道范围取交集。已授权渠道的后续能力共享授权。
-  `0067` / SQLite `0007` 按旧授权能力的所属渠道去重投影，不重新遍历当前组成员，
-  原组/渠道来源保持不变；旧直接能力来源转为所属渠道的直接选择，旧能力授权表删除。
-  废弃兼容字段 `allowed_api_formats` 不再是独立授权条件。
-- 删除任意能力在同一控制面事务里删除其全部候选和空层，无候选规则停用，受影响规则的
-  ETag 更新并记入删除审计；失败整体回滚，能力墓碑和财务历史保留。
-- `group_identity_registry`、`channel_identity_registry`、`model_rule_identity_registry`
-  保留旧 UUID/名称及新能力身份，供日志、财务和 spool 重放引用，不参与管理或授权。
-- `0068` / SQLite `0008` 删除 Codex 凭证和 OAuth flow 的组/pool 归属。
-  OAuth 扩展的历史 `channel_id` 字段仍为凭证主键，不是逻辑渠道外键。
-- `0069` / SQLite `0009` 为新日志增加 append-only 凭证归属侧表，与事实同事务写入。
-  `request_credential_identities` 视图只对旧的未知归属使用冻结注册表回退；
-  明确无认证不回退，渠道改绑不改变已完成或在途请求费用归属。
+完整约束与迁移映射见[上游身份、能力与路由](upstream-identity-capabilities.md)。
 
-完整迁移及安全约束见[身份与能力设计](upstream-identity-capabilities.md)，配置步骤见
-[运维接口](../user/operations.md)和[上游凭证管理](../user/upstream-credentials.md)。
+### 墓碑与动态策略
 
-### 用户组与 Fast 过滤
+用户、组、Key、模型及上游资源按各自生命周期保留墓碑。活动读取过滤
+`deleted_at IS NULL`；历史查询和结算仍按原 UUID 读取。自然名称可重用，UUID 不可恢复或复用。
+删除模型会停用操作规则、撤销候选并成对清空探测模型引用，不删除历史事实。
+用户匿名化、组成员迁移和秘密擦除见[控制面软删除](soft-deletion.md)。
 
-`user_groups.filter_fast_mode` 会编译进每个 `CompiledApiKey`。启用时，数据面在客户端白名单之后
-删除顶层 `service_tier`，因此后续日志元数据、请求计费倍率、Session affinity、Transform 和
-Connector 都只观察过滤后的请求。
+`user_groups.filter_fast_mode` 编译到 Key，在客户端 body 白名单之后删除顶层
+`service_tier`；日志、倍率、Session affinity、Transform 和 Connector 只能看见过滤后请求。
 
-### 控制面资源软删除
+`system_settings.forwarding_policy` 保存超时、精确候选重试、被动健康、自动禁用、
+定时测试、Session affinity 和 Responses WebSocket 等通用运行时策略。
+插件设置与提供方隐私策略由插件独立拥有，不作为 host 通用系统设置解释。
+TOML 只在对应设置缺失时初始化，之后以数据库为准。
 
-用户、用户组、API Key 和计价模型使用不可恢复的墓碑式软删除。活动数据查询必须同时过滤
-`deleted_at IS NULL`；请求日志、结算和审计查询仍按原 UUID 读取墓碑。删除用户会匿名化身份并
-软删除其 Key；删除自定义用户组会把成员迁移到按角色选择的内置默认组、禁用关联注册码并移除
-Codex quota 可见性；直接删除 Key 会覆盖其明文 secret。活动记录使用部分唯一索引，因此删除后
-可以用相同邮箱或自然名称创建新 UUID。完整阶段边界见[控制面软删除](soft-deletion.md)。
-
-删除能力会原子撤销引用候选、清理空层，并停用没有候选的规则；逻辑渠道固定授权不变。
-逻辑渠道和组仍按能力、逻辑渠道、组的顺序退役。
-仍在用的接入或凭证不能删除；Codex 只能走专属生命周期。墓碑及历史身份保留，原 UUID
-不可恢复，同名新资源不继承授权。
-
-删除计价模型会停用操作规则、撤销其 tier/candidate、成对清空能力的探测模型引用，然后
-写入墓碑。规则和历史身份保留；撤销操作配置避免不可编辑的墓碑永久阻止能力删除。
-数据库触发器拒绝模型恢复、硬删除及探测/路由重新引用墓碑，双后端行为一致。
-
-### 系统设置
-
-`system_settings` 不是预留表。固定的 `forwarding_policy` 文档保存并热更新以下策略：
-
-- 上游超时、按精确渠道/模型候选排除的请求重试、可重试 HTTP 状态码、被动健康、自动禁用和
-  定时测试；
-- Session affinity 与 Responses WebSocket；
-- Codex 合成 workspace path、HTTPS Git remote 等转发元数据策略。
-
-首次启动只在对应设置不存在时使用 TOML bootstrap 值。之后数据库记录是动态运行时来源。
-
-### 历史 migration 0052 硬切换
-
-`0052_model_rule_routing_tiers.sql` 把旧 `model_rules` group/channel 数组、Channel Group
-priority/strategy 和 Channel weight 回填到上述三张规则级关系表，然后删除这些旧列和不再适用的
-Codex flow weight。
-旧的 group target 回填为 `all`、默认权重 `100`；只有所属 group 未同时被规则整体引用的旧直接
-Channel target 才回填为 `selected`。若规则已经整体引用该 group，重叠的直接 Channel 仍属于
-`all`，其非 `100` 旧权重保存为逐渠道覆盖；其他 group-selected Channel 的非 `100` 旧权重也用
-相同方式保留。
-
-这是不能由新旧二进制同时解释的硬切换。多实例部署必须先停止所有旧 Gateway，再让单个新版本实例
-应用 migration，验证启动和快照编译后才恢复同版本实例与流量，不能滚动混跑。migration 会检查
-禁用或暂时不可用的 latent targets；如果同一 model rule 的同一旧 priority 下存在不同
-selection strategy，会明确中止并要求先在旧 schema 上统一这些 group strategy，不能静默选择
-一种策略。缺失引用和跨格式引用也会 fail closed。
-
-### 历史 migration 0057 模型与协议层级硬切换
-
-`0057_model_rule_hierarchy.sql` 新建 `model_routing_profiles`，把旧 `model_rules` 行保留为
-协议规则，并把旧的 `models.source_model_id` 回填到每个 group/channel target。协议规则 ID
-不变，因此历史 `request_logs.model_rule_id` 外键和观测关联继续有效。migration 同时把
-Channel 定时探测的 wire `test_model` 与 `test_pricing_model_id` 分离。
-
-该 migration 不支持客户端模型别名兼容。如果任一旧规则的 `client_model` 不等于其
-`upstream_model_id` 所指 `models.source_model_id`，migration 会在改表前中止并列出首个冲突；
-管理员必须在旧 schema 上清理该别名后重试。成功后客户端模型身份只来自 profile 绑定的价格模型，
-旧 `model_rules.client_model` 与 `upstream_model_id` 列会被删除。该步骤同样是停机硬切换，
-不能让 0056 及更早版本的进程与新 schema 滚动混跑。migration 还会拒绝无法映射到价格模型的
-旧 `test_model`，以及 Images/provider-managed Channel 上不再支持的定时测试配置，避免迁移后
-第一次快照编译才暴露不兼容数据。
-
-Gateway 在持有 SQLx 数据库 advisory lock 期间，把连续待执行 migration 放入同一个 PostgreSQL
-外层事务。任一步失败会回滚同批先前已经执行的 migration 及其 `_sqlx_migrations` 记录；
-更早批次或启动中已经提交的版本不会被追溯回滚。历史 `0034`、`0046` 使用
-`ALTER TYPE ... ADD VALUE`，PostgreSQL 要求提交新增枚举值后才能由后续 migration 引用，
-因此它们是仅有的既存事务提交屏障；`0053–0063` 属于同一原子批次。禁止新增
-`-- no-transaction` migration；新的提交屏障必须作为显式架构例外审查。
-
-### migration 0061 失败请求零费用
-
-`0061_zero_failed_and_cancelled_costs.sql` 把已有 `failed`/`cancelled` 请求费用统一为零。
-已经写入 `billed_at` 的旧正费用会按原日志用户和 API Key 聚合，退回用户余额并扣回 Key 已用额度；
-成功请求不变。没有价格快照的失败记录也可以用零费用完成幂等结算。
-
-### 历史 migration 0062 扁平路由候选硬切换
-
-`0062_flat_model_route_candidates.sql` 把 group target 与其 Channel 明细合并为
-`model_rule_routing_candidates`。旧 `selected` target 原样迁移每条渠道、模型和权重；旧
-`all` target 在 migration 时一次性展开当前未删除组成员，并保留默认权重或逐渠道覆盖。即使成员
-当时已不再声明该模型，也保留显式候选，使原有 `disconnected` 状态可在能力恢复后重新连通。
-空 `all` target 无法转换为候选，因此删除对应空 tier；规则最终无 tier 时自动停用。
-
-该 migration 删除旧的 `model_rule_routing_groups` 和 `model_rule_routing_channels`，旧二进制无法
-继续写入，必须按停机硬切换部署。迁移后 Channel Group 只保留资源、Connector 和授权语义，不再
-动态决定模型路由成员。
-
-### 请求日志与结算
+## 控制面提交与发布
 
 ```text
-terminal RequestLogEvent
-  -> process-unique local durable spool
-  -> request_log_ingest
-  -> immutable request_metering_facts + pending + ingress readiness
-     -> unique settlement receipt + balance/quota update
-     -> indexed request_logs projection
+取得进程内 serial 门
+  → 存储事务：身份/权限/版本检查、业务变更、读取完整候选记录
+  → 应用编译完整快照并验证策略
+  → 同事务写审计并提交
+  → 发布完整 ArcSwap 快照
 ```
 
-- 本地 spool 覆盖数据库写入前的进程崩溃恢复；入口和最终表都依赖请求 UUID 幂等。
-- `request_logs` 保存最终协议规则 ID、渠道、实际发送的 candidate 上游模型、顶层 profile 的
-  计价模型 ID、usage、有效价格快照、成本、请求开始时是否命中高峰时段，以及有界错误诊断；
-  不保存 prompt、completion、完整 Header、Cookie 或密钥。
-- Codex quota 当前与历史窗口的凭证总花费按逻辑凭证的 Responses/Images projection、周期边界和
-  `cost_amount IS NOT NULL` 从 `request_metering_facts` 聚合；独立渠道/时间索引支撑该查询。
-- 普通 Connector 的 Chat Completions、Responses 和 standalone web search 可按数据库策略重试
-  响应头前传输失败，也可在向客户端发送前按显式 4xx/5xx 状态码切换到未尝试的渠道/模型候选；
-  Images 不自动重试，Codex Connector 与 Responses WebSocket 发送上游请求后也不重试。
-- 当前每个逻辑请求仍只写一条最终 `request_logs` 记录。数据库的旧 `attempts` JSONB 列不承载
-  当前重试详情；尝试次数只进入完成 tracing。
-- 结算插入唯一回执，在同一事务更新余额/额度并删除 pending；Console `billed_at` 由回执派生。
+编译、审计或提交失败不得产生部分配置或新快照。取消/丢弃未提交对象回滚。
+PostgreSQL 使用 SERIALIZABLE；SQLite 使用唯一 writer 的 BEGIN IMMEDIATE。
+定时重载负责其他进程的收敛；数据库与 ArcSwap 不是一个原子事务。
+提交后退出由启动/重载恢复，不宣称多实例同时发布。
 
-`0063_independent_metering_facts.sql` 回填历史费用与已结算回执，不再次扣款；删除日志物理
-`billed_at`，不能与旧 worker 混跑。详见[停机切换与回退](independent-metering.md)。
+## 财务事实与查询投影
 
-完整耐久性和故障边界见[请求日志耐久化流水线](request-log-durability.md)。
+```text
+intent / terminal slot → process-unique spool
+  → durable ingress → immutable fact + attribution + pending + readiness
+     ├─ unique settlement receipt + balance/quota + pending deletion
+     └─ indexed request_logs projection → ingress ack
+```
+
+- PostgreSQL 入口使用 COPY，SQLite 使用整批事务 INSERT；接收提交后才推进 checkpoint。
+- 事实和回执不得外键依赖日志；日志投影失败不阻塞已验证费用的结算。
+- 结算回执、余额、Key 已用额度和 pending 删除同事务，UUID 重放不重复扣款。
+- Console `billed_at` 由回执派生。usage、费用统计、排行榜与 Codex 窗口费用读取事实；
+  成本非 NULL 不等于已结算，也不等于提供方账单。
+- 日志保存请求时模型/渠道身份、最终 wire model、usage、有效价格、费用、Peak 和有界诊断，
+  不保存 prompt、成功响应正文、完整 Header、Cookie 或秘密。
+- 每个逻辑请求只有一条最终日志；旧 `attempts` 列不保存当前重试详情。
+  Images、Codex 与发送后的 WebSocket 仍受各自不可重试规则约束。
+
+金额、资格、未知终态、恢复与保留要求见[独立计量事实](independent-metering.md)；
+本地同步和容量边界见[日志耐久化](request-log-durability.md)。
+
+## 迁移与升级
+
+### 原子批次
+
+PostgreSQL 在 migration advisory lock 下，将连续 pending migration 放入同一外层事务；
+失败回滚该批 DDL、DML 和 `_sqlx_migrations`。历史 `0034`、`0046` 是枚举提交屏障：
+新增枚举值必须先提交才能被后续 SQL 引用。更早已提交批次不追溯回滚。
+禁止新增 `-- no-transaction`；新的提交屏障须显式架构审查。
+
+SQLite 使用独立 manifest/history/checksum，不执行 PG SQL或借用其版本号。
+pending 版本同事务提交；表重建使用专属连接，在提交前检查外键，连接随后关闭而不回池。
+细节见[生命周期](sqlite-lifecycle.md)与[约束映射](sqlite-schema-mapping.md)。
+
+### 需要维护窗口的历史切换
+
+以下是升级约束，不是当前 schema 的旧实体定义。必须停止所有旧写者、备份数据库和全部
+spool，再由新版本迁移与验证；不滚动混跑，也不把新 schema 直接交给旧二进制。
+
+| Migration | 不可省略的预检或转换 |
+| --- | --- |
+| 0052 | 数组路由变为规则层级；同 priority 的 strategy 冲突、缺失/跨格式 latent target 均拒绝；旧 all/selected 与权重覆盖须无损保留 |
+| 0057 | 创建模型 profile；旧 client alias 必须等于计价模型 source ID，不能静默兼容别名；无法映射的探测价格及不支持的探测配置拒绝；保留规则 UUID |
+| 0058–0060 | 身份、渠道与模型墓碑及部分唯一索引；保留 profile、规则和历史引用 |
+| 0061 | failed/cancelled 费用归零；对旧已结算正费用按原 user/Key 退款一次，成功请求不变 |
+| 0062 | all target 一次展开为显式渠道/模型候选，保留断连候选；空层移除，无层规则停用；旧动态 target 表退役 |
+| 0063 | 回填独立事实与已 billed 回执，不再扣款；删除日志物理 billed_at，旧认领权失效 |
+| 0064 / SQLite 0004 | 独立凭证、精确范围；非法停用草稿也必须修复或拒绝，不能丢秘密或默认无认证 |
+| 0065–0070 / SQLite 0005–0010 | 新拓扑、六操作、逻辑渠道授权、无 pool 凭证、请求时归属和原生连接器 ID；保留金融事实、UUID、未决 intent |
+| 0071 / SQLite 0011 | 插件生命周期与独立设置 |
+| 0072 / SQLite 0012 | 移除 Codex 拼车：先隔离原受保护渠道及身份别名，再删除专属状态；普通计量与结算历史保留 |
+
+0052 的 all target 使用默认权重 100；重叠 direct target 不重复增加路由，
+其非默认权重仍保留。0057 分离探测 wire model 与 pricing model。
+0062 不因成员当时未声明模型而丢弃可恢复的断连候选。
+0063 的逐 UUID 校验、容量演练与成对回退见[计量升级](independent-metering.md)；
+拼车移除的人工重新授权见[升级说明](../user/operations.md#codex-拼车移除升级)。
 
 ## 修改数据库的流程
 
-`0057_model_rule_hierarchy.sql` 的停机升级和别名预检见上文；不得绕过预检手工删除旧列。
-`0060_model_soft_deletion.sql` 为模型增加不可恢复墓碑、活动标识部分唯一索引和引用保护；该
-migration 不删除 profile、协议规则或历史外键。
-`0062_flat_model_route_candidates.sql` 是路由图停机硬切换；不得在新旧 Gateway 混跑时应用。
-Codex 拼车移除通过新增有序 migration 完成：先停用原受保护渠道及身份别名，
-再删除专属表、列和约束，保留普通计量与结算历史。旧 migration 不变；
-停机备份和人工重新授权流程见[升级说明](../user/operations.md#codex-拼车移除升级)。
-
-1. 新增有序 migration，不修改已发布 migration。
-2. 同步 `src/persistence/` DTO/查询、领域类型、运行时编译器和 Console mutation。
-3. 若 Console API 形状变化，先改 `docs/openapi/console-v1.yaml`，再生成并提交 TypeScript 类型。
-4. 更新本文件或相应专题设计文档，但不要复制可从 migration 直接读取的完整列清单。
-5. 使用任务专用数据库或隔离 stack 验证 migration；不要把未发布 schema 应用到其他 worktree
-   共用的开发数据库。
-6. 运行 PostgreSQL 相关 Rust 门禁和 Console 契约测试。
+1. 新增有序 migration，双后端分别维护，不改已发布历史。
+2. 同步持久化 DTO/查询、领域校验、完整快照编译器及 mutation。
+3. API 变化先改 OpenAPI，再生成前端类型；数据库结构不在 Markdown 逐列复制。
+4. 在任务专用数据库/文件库验证新建、存量升级、失败整批回滚和直接 SQL 约束；
+   不迁移其他 worktree 共用业务库。
+5. 运行对应 PostgreSQL/SQLite 契约、workspace、Console spec 和系统 E2E。
+   SQLite 生命周期/恢复变化同时验证真实 CLI 与成对备份恢复。
+6. 同步操作说明并运行文档检查。测试通过不替代真实规模的发布前恢复演练。
 
 ## 来源
 
-- schema：`migrations/`
-- 持久化记录与仓储：`src/persistence/`
-- 快照编译：`src/runtime_config/mod.rs`
-- 当前请求链路：[当前架构](architecture.md)
-- Console API：`docs/openapi/console-v1.yaml`
-- 用户可观察行为：[运行与接口说明](../user/operations.md)
+- `src/persistence/`：仓储、错误翻译、migration runner。
+- `src/runtime_config/`：完整候选编译与原子快照。
+- [Console OpenAPI](../openapi/console-v1.yaml)：管理接口权威契约。
+- [当前架构](architecture.md)、[运维接口](../user/operations.md)。
+- [首版数据库设计归档](../archive/initial-database-design.md)：仅解释历史，不是当前 schema。

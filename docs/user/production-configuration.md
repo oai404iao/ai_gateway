@@ -1,45 +1,90 @@
-# 生产配置与容量调优
+# 配置与容量调优
 
-> 状态：当前。参数默认值仍以配置模板和 `src/runtime_config/mod.rs` 为准。
+> 状态：当前。字段和默认值以[源码模板](../../config.example.toml)、[容器模板](../../deploy/compose/config.example.toml)和配置反序列化实现为准。
 
-本页描述默认 PostgreSQL 配置；Linux 文件后端见 [SQLite 部署](sqlite.md)。
-仓库默认配置面向单个 Gateway 进程与单节点 PostgreSQL，基线机器为：
-
-- 4–8 个 CPU 核心。
-- 4–8 GiB 内存。
-- PostgreSQL 与 Gateway 同机，或位于低延迟私有网络。
-- 可提供可靠 `fsync` 的本地 SSD/NVMe 或云块存储。
-
-默认值的目标是保持请求日志耐久性、限制数据库竞争并提供足够的诊断数据，而不是在某一台开发机上追求最高基准分数。任何生产发布仍需按实际流量、日志保留周期、机器规格和存储类型做容量验证。
-
-本文件说明参数与容量基线。若要把 Gateway 本身也运行在容器中，请使用
-`docker-compose.prd.yaml`，并先阅读
-[`docs/user/production-deployment.md`](production-deployment.md)。
+本页帮助你选择配置入口、设置请求与存储边界，并调优单实例 Gateway 与单节点 PostgreSQL。默认值是 4–8 核、4–8 GiB、低延迟数据库连接和可靠 fsync 本地磁盘的起点，不是吞吐承诺。SQLite 的连接与文件生命周期不同，见[专用指南](sqlite.md)。
 
 ## 首次启动
 
-默认 Compose 使用文件型数据库密码，不在仓库、Compose 环境变量或进程参数中内置弱密码：
+新部署按[快速开始](quickstart.md)生成秘密、创建管理员并建立路由；容器使用[生产部署](production-deployment.md)。不要在已有部署重复生成数据库密码或覆盖 TOML。
 
-```bash
-mkdir -p ./config
-openssl rand -hex 32 > ./config/postgres-password
-chmod 600 ./config/postgres-password
+## 选择配置入口
 
-cp config.example.toml ./config/config.toml
-docker compose up -d
-```
+| 内容 | 修改位置 | 生效方式 |
+| --- | --- | --- |
+| listener、数据库、插件目录、请求体上限、日志 spool/批次、观测 | 进程 TOML | 重启 |
+| 上游超时、重试、被动健康、自动禁用、定时测试、Session affinity | 首次创建 `forwarding_policy` 前可用 TOML 初始化，之后在 Console“系统设置”修改 | 当前进程发布快照，其他实例周期重载 |
+| 凭证、接入、渠道、操作能力、模型路由、价格、Key 与授权 | Console / Console API，持久化在数据库 | 完整快照校验与发布 |
+| Codex provider 身份、合成工作区、隐私设置 | Console“插件管理”的插件设置 | 插件配置快照，不放回系统设置 |
+| `AI_GATEWAY_*` 部署变量 | Compose 的受控 env 文件或部署系统 | 只展开 Compose，不是 Gateway 配置来源 |
 
-`config.example.toml` 默认包含：
+serve 默认读取当前工作目录的 `./config/config.toml`，可传 `ai-gateway /absolute/config.toml`。没有 XDG 查找、dotenv 或自动 local override；相对秘密/spool 路径也按工作目录解析。不要把动态 `[[api_keys]]`、`[[channels]]` 或 `[[model_rules]]` 写进 TOML，这些字段会被拒绝。
+
+## 监听器与请求体限制
 
 ```toml
-[database]
-url = "postgres://ai_gateway@127.0.0.1:5432/ai_gateway"
-password_file = "./config/postgres-password"
+[server]
+host = "127.0.0.1"
+port = 3000
+
+[request_limits]
+proxy_body_bytes = 1_048_576
+image_edit_body_bytes = 67_108_864
+image_edit_file_bytes = 52_428_800
+image_edit_memory_bytes = 1_048_576
+image_edit_spool_directory = "./data/image-edit-spool"
+console_body_bytes = 262_144
+auth_body_bytes = 16_384
+
+[console]
+enabled = true
+host = "127.0.0.1"
+port = 3001
+allowed_origins = ["https://console.example.com"]
+
+[auth]
+issuer = "ai-gateway"
+audience = "ai-gateway-console"
+access_token_ttl_seconds = 900
+refresh_token_ttl_seconds = 2_592_000
+key_id = "primary-2026"
+signing_key_path = "./config/console-jwt-private.pem"
+verification_key_path = "./config/console-jwt-public.pem"
 ```
 
-相对路径以 Gateway 进程的工作目录为基准。数据库 URL 内联密码仍受支持，适合部分托管 PostgreSQL 连接串，但不能与 `password_file` 同时配置。内联密码中的特殊字符必须进行 URL 编码。
+- 公共数据面默认监听 `127.0.0.1:3000`。
+- Console 是独立监听器；应仅通过 HTTPS 反向代理对外暴露。
+- `proxy_body_bytes` 限制 JSON OpenAI 代理请求，包括 Images generation。
+- `image_edit_body_bytes` 与 `image_edit_file_bytes` 分别限制 multipart edit 总 body 和单个
+  image/mask part；`image_edit_memory_bytes` 是转为匿名临时文件前的内存阈值。
+- `image_edit_spool_directory` 必须位于容量足够的本地文件系统。Unix 上目录和临时文件分别使用
+  `0700` 与 `0600`；图片字节不会进入请求日志。
+- `console_body_bytes` 限制已认证 Console 写操作；`auth_body_bytes` 限制登录、注册、刷新和邀请激活请求。
 
-### 升级已有 Compose 数据卷
+## 上游超时
+
+```toml
+[upstream]
+connect_timeout_seconds = 10
+response_header_timeout_seconds = 30
+images_response_header_timeout_seconds = 300
+standalone_web_search_response_header_timeout_seconds = 300
+stream_idle_timeout_seconds = 90
+```
+
+这些 TOML 值只在数据库 `forwarding_policy` 系统设置不存在时用于首次初始化；之后应在 Console
+的“系统设置”分类页面修改。按页面分类编辑上游超时、重试与健康、定时测试、会话亲和和 WebSocket 等策略；各类有独立地址。
+保存只提交当前页面的编辑，其他分类保留读取时的值；整份配置仍使用同一个 ETag 防止覆盖
+并发修改。切换分类前请先保存，未保存编辑不会带到另一个页面。Images generation/edit 使用独立的
+`images_response_header_timeout_seconds`，因为上游通常要完成图片处理后才返回响应头。Chat
+Completions、Responses 和其他辅助上游请求继续使用 `response_header_timeout_seconds`。
+非流式 `/v1/alpha/search` 使用
+`standalone_web_search_response_header_timeout_seconds`，因为 provider 可能在返回响应头前执行
+多个 Search command。
+渠道显式 `response_header_timeout_ms` 始终优先于对应的系统默认值；Images 仍与其他格式共享建连
+超时和流空闲超时。所有响应头超时都必须大于有效建连超时。
+
+## 轮换已有数据库密码
 
 `POSTGRES_PASSWORD_FILE` 只在初始化新数据卷时设置数据库角色密码。已有
 `postgres-data` volume 会保留原密码，不能通过替换密码文件自动轮换。
@@ -57,7 +102,10 @@ migration；计划密码轮换时，再通过受保护的 `psql` 会话执行：
 
 Compose 将 PostgreSQL 端口默认绑定到 `127.0.0.1`。只有 Gateway 位于另一台受控主机或容器网络时，才应通过 `AI_GATEWAY_POSTGRES_BIND_ADDRESS` 放宽监听，并同时配置防火墙、私有网络和 PostgreSQL 主机认证。
 
+
 ## Gateway 参数
+
+下面的日志参数位于 `[request_logging]`，请求体参数位于 `[request_limits]`；绝对 Images 目录为容器模板值，源码模板使用 `./data/image-edit-spool`。
 
 默认生产模板使用：
 
@@ -87,7 +135,7 @@ Gateway 实例数
   + migration / 管理 / 监控余量
 ```
 
-默认 PostgreSQL `max_connections=50` 可容纳三个默认 Gateway 实例并保留少量管理余量。同一主机上的多个 Gateway 实例必须使用不同的 spool 目录；同一 spool 目录不能被多个进程共享。
+默认 PostgreSQL `max_connections=50` 从连接数上可容纳三个默认 Gateway 实例并保留少量管理余量，但这不是多实例部署、插件协调或吞吐能力保证。同一主机上的多个 Gateway 实例必须使用不同的 spool 目录；同一 spool 目录不能被多个进程共享。
 
 不要仅通过增加日志连接数扩大吞吐。当前日志流水线的投影与结算并发受到刻意限制；连接过多会增加 WAL、索引、CPU 和热账户行锁竞争。
 
@@ -111,8 +159,7 @@ filter = "ai_gateway=info,ai_gateway::application::proxy=warn,tower_http=warn"
 “系统负载”页面查看当前实例；无 Console 的部署如需周期日志，可将
 `request_logging.metrics_interval_seconds` 设置为 `300`–`900`。无论是否启用完整心跳，
 backlog 停滞、日志数据库池持续饱和、健康查询不可用及其恢复都会按状态变化输出一次日志。
-升级不会重写已有 TOML；从旧模板复制了显式值 `10` 的部署如需采用新默认行为，必须手工改为
-`0` 后重启 Gateway。
+已有 TOML 的显式值不会随默认值改变；要关闭完整心跳，将该值改为 `0` 后重启。
 
 高流量生产环境不应长期启用全局 `debug`。故障排查时应限制时间和范围，并确保容器或服务管理器具有日志轮转。
 
@@ -240,6 +287,8 @@ LIMIT 20;
 - NOCOW 会同时失去 Btrfs 数据 checksum 与压缩，需要结合 PostgreSQL checksum、备份和底层冗余评估。
 - 继续使用 CoW 时，可分别 A/B 测试 `wal_init_zero=off` 与 `wal_recycle=off`，不要和其他大项同时切换。
 
+### 区分两类 spool
+
 request-log spool 应位于本地持久磁盘，而不是容器临时层。必须监控剩余空间；磁盘写满是本地耐久
 入口的硬失败边界。
 
@@ -282,7 +331,7 @@ docker compose up -d
 - PostgreSQL 流复制或自动故障转移。
 - WAL 归档与时间点恢复。
 - 跨主机 spool 复制。
-- 数据库、JWT 密钥和 request-log spool 的备份。Images edit scratch spool 不需要备份。
+- 数据库、配置、JWT 密钥、插件目录和 request-log spool 的备份。Images edit scratch spool 不需要备份。
 
 正式生产应优先采用受管理 PostgreSQL，或独立设计 base backup、WAL 归档、恢复演练、监控告警和故障切换。备份必须覆盖 PostgreSQL；spool 主要用于数据库短暂不可用和进程恢复，不能替代数据库备份。
 
@@ -297,3 +346,7 @@ docker compose up -d
 5. 再决定是否保留调整。
 
 仓库中的 Quick/Standard Harness 仍只在明确要求时运行，报告也不等同于生产容量承诺。
+
+## 相关任务
+
+[部署和停止容器](production-deployment.md) · [日志故障与监控](observability.md) · [升级与恢复](upgrades.md) · [保护秘密](security.md)

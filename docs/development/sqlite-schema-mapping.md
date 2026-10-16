@@ -1,146 +1,152 @@
-# SQLite 完整 schema 与约束映射
+# SQLite schema、编码与约束映射
 
-> 状态：当前 S2 实现。业务 baseline 对齐 `081d8c9` 的 PostgreSQL
-> 0001–0063 最终 schema；S3–S5 仓储已接入，S6 已开放 Linux 部署。核对日期：2026-09-20。
+> 状态：当前。SQLite 使用独立有序历史；本文区分当前 schema 与不可改写的早期 baseline。
 
-整体进度见 [SQLite 双后端实施](sqlite-backend.md)，原子安装、文件身份和
-进程独占见[文件与迁移生命周期](sqlite-lifecycle.md)。S2 完成不代表 S3–S6
-的完整后端或生产开放门槛已经满足。
+维护仓储时先选择正确的列适配器，再确认 SQL 写入满足数据库保护。
+SQLite 不接受 PG 原始 SQL 的逐字替换，也不依赖 affinity 或应用断言补救错误编码。
+当前表结构以完整 migration 和 canonical inventory 为准，不以初始表数为准。
 
-## 完整 baseline
+## 目录
 
-`SqliteDatabase::install_schema()` 使用独立 SQLite 历史，在一个事务中安装：
+- [当前 schema 与历史 baseline](#当前-schema-与历史-baseline)
+- [存储类型与连接函数](#存储类型与连接函数)
+- [精确金额](#精确金额)
+- [数据库保护与写入契约](#数据库保护与写入契约)
+- [延迟路由约束](#延迟路由约束)
+- [索引、错误与验证](#索引错误与验证)
 
-- `migrations/sqlite/0001_baseline.sql`：34 个 STRICT 业务表、401 列、主键、
-  唯一键、56 个外键、183 个原 CHECK 名称及额外存储检查、索引和默认组 seed。
-- `migrations/sqlite/0002_guards.sql`：跨表保护、不可变性、派生投影和延迟路由约束。
-- `migrations/sqlite/0003_codex_operations.sql`：S5 外部 provider 操作的耐久 intent 及更新 fencing。
+## 当前 schema 与历史 baseline
 
-| 范围 | 已实现表 |
+install_schema() 在独立 SQLite 历史上运行完整 manifest。
+当前 0001–0012 不仅包括最早 baseline/guard，还包含 Codex 外部调用 fencing、
+独立凭证、新拓扑、六操作、逻辑渠道授权、请求时归属、原生连接器、
+插件生命周期及拼车移除。迁移事务和文件身份见[生命周期](sqlite-lifecycle.md)。
+
+| 当前领域 | 结构与所有权 |
 | --- | --- |
-| 身份 | `users`、`user_groups`、`api_key_policies`、`api_keys`、`user_sessions`、`user_invitations`、`registration_invitation_codes` |
-| 普通控制面 | `proxies`、`config_templates`、`models`、`model_routing_profiles`、`model_rules`、`model_rule_routing_tiers`、`model_rule_routing_candidates`、`channel_groups`、`channels`、`system_settings` |
-| Codex | `connector_pools`、`codex_oauth_credentials`、`codex_oauth_credential_channels`、`codex_oauth_flows`、`codex_quota_window_periods`、`codex_quota_reset_events`、`user_group_codex_quota_visibility` |
-| 日志与财务 | `request_log_ingest`、`request_logs`、`request_metering_facts`、`request_settlements`、`request_settlement_pending`、`spend_leaderboard_periods`、`spend_leaderboard_entries`、`audit_logs` |
+| 身份 | 用户/组、会话、邀请、注册码、Key/Policy |
+| 上游拓扑 | 凭证、接入、管理组、逻辑渠道、操作能力 |
+| 路由 | 计价模型、profile、操作规则、能力 tier/candidate |
+| 授权 | Key/Policy 固定逻辑渠道与来源 |
+| Codex | OAuth 扩展/flow、quota 窗口/reset、组可见性；不再有 pool/自动投影配置 |
+| 财务 | ingress、不可变 fact/credential attribution/receipt、pending |
+| 查询与审计 | request_logs、排行榜周期/条目、audit |
+| 历史/内部 | 只读身份注册表、owner 身份/history、延迟路由 helper、Codex intent 等 |
 
-PG 基线有 34 个主键、19 个 UNIQUE constraint 和 55 个非内部 trigger。
-SQLite 保留约束语义，不要求相同的物理对象数；ingress 序列改为
-`INTEGER PRIMARY KEY AUTOINCREMENT`。五个 `_gateway_*` 内部表不计入业务表：
-身份、迁移历史、路由真值常量、路由 assertion 及 Codex 未决操作。
+### 历史 baseline 的作用
 
-`tests/fixtures/sqlite-schema-inventory.json` 固定当前 PG 列顺序、原类型与约束名。
-`tests/contracts/sqlite_parity.rs` 在真正执行完 PG migration 的新库上对照该清单、
-SQLite 表结构、外键列/目标/删除动作，以及默认组 UUID、名称、描述、角色。
-后续 schema 修改必须同步两个后端、清单和测试，不能以旧本地库代替当前 migration。
+0001_baseline.sql 对齐 PG 0001–0063 的最终结构：
+34 个 STRICT 业务表、401 列、56 个 FK、183 个原 CHECK 名称；
+PG 当时有 34 个 PK、19 个 UNIQUE、55 个非内部 trigger，
+SQLite baseline 有 57 个显式索引。数字只用于历史对照，不是当前 schema 总量。
+SQLite 保留业务效果，不要求同样物理对象数，ingress 用
+INTEGER PRIMARY KEY AUTOINCREMENT，不模拟 PG sequence。
 
-不包含历史已删除表或 `request_logs.billed_at`，不重放 PG 数据回填或枚举提交屏障。
-保留 0022 默认用户/管理员组；系统探测身份仍由仓储创建，不是静态 seed。
+0002_guards.sql 安装跨表/不可变/派生/延迟约束；
+0003_codex_operations.sql 安装 SQLite 私有维护 intent。
+baseline 的旧 pool 与 paired projection 后续已迁移退役，不是当前仓储写入协议。
+不改 baseline 以假装从未存在旧结构。
+
+tests/fixtures/sqlite-schema-inventory.json 服务冻结历史迁移测试；
+canonical-schema-inventory.json 是当前结构对照。
+新增 schema 同步两后端、当前清单和测试，不覆盖历史夹具。
+不重放 PG 历史数据回填/枚举提交屏障，保留默认用户/管理员组 seed；
+系统探测身份由仓储创建，不是静态 seed。
+request_logs 物理 billed_at 不属于独立事实 schema。
 
 ## 存储类型与连接函数
 
-类型适配位于 `src/persistence/sqlite/{types,decimal,functions}.rs`，
-不改变领域类型。每个物理连接注册 schema 函数与排序规则，未注册连接写入 fail closed。
+适配位于 sqlite/{types,decimal,functions}.rs，不改变领域类型。
+每个物理连接注册 schema 函数/排序规则；未注册连接写入 fail closed。
 
 | PG 类型/语义 | SQLite 编码与保护 |
 | --- | --- |
-| UUID | 规范小写连字符 TEXT；`SqliteUuid` 与 CHECK 拒绝非规范编码 |
-| enum | TEXT 枚举 CHECK；`ag_api_format` 按领域枚举顺序排序，不按文字顺序 |
-| boolean、smallint、integer、bigint | STRICT INTEGER，布尔 0/1、16/32 位范围和原 NULL/CHECK |
-| timestamptz/date | `SqliteTimestamp` 固定 UTC 六位微秒加 `Z`；`SqliteDate` 为 `YYYY-MM-DD`，四位年份；时间量化匹配 SQLx PG 相对 2000 年纪元的微秒编码，含纪元前亚微秒与闰秒归一化 |
-| varchar(n)、char(3)、text | 明确长度/币种检查；拒绝 NUL，不依赖 SQLite 声明长度 |
-| bytea、cidr | BLOB/hash 长度检查；网络前缀解析校验 |
-| JSONB | `ag_json_valid` 解析 JSON，递归拒绝 NUL/孤立 surrogate；保留 object/array、NULL 与空对象约束，空对象比较使用解析值 |
-| UUID[]、text[]、api_format[] | JSON 数组，校验元素类型、枚举、NULL 成员、非空及子集；不以逗号分隔文本代替数组 |
-| NUMERIC | 规范十进制 TEXT、精确 Decimal 比较及列精度/范围/符号检查；禁止 REAL 和 NUMERIC affinity |
-| 正则、lower、ANY/ALL、array_position | 专属纯函数执行既有字段规则，保留 NULL/空数组语义 |
+| UUID | 规范小写连字符 TEXT，SqliteUuid/CHECK 拒绝其他编码 |
+| enum | TEXT + CHECK；ag_api_format 使用领域枚举顺序，不按字面排序 |
+| boolean / integer | STRICT INTEGER；布尔 0/1，16/32 位及原计数范围/NULL |
+| timestamptz / date | 固定 UTC 六位微秒加 Z / YYYY-MM-DD，四位年份；量化匹配 SQLx PG 相对 2000 纪元编码，覆盖纪元前亚微秒及闰秒归一化 |
+| varchar / char / text | 显式长度/币种/NUL 检查，不依赖声明长度 |
+| bytea / cidr | BLOB/hash 长度及网络前缀校验 |
+| JSONB | ag_json_valid 解析，递归拒绝 NUL/孤立 surrogate；保留 object/array/NULL/空对象要求 |
+| UUID[] / text[] / enum[] | JSON 数组，检查元素类型、枚举、NULL 成员、非空与子集，不用分隔字符串 |
+| NUMERIC | 规范十进制 TEXT，精确比较/精度/范围/符号检查，禁止 REAL/NUMERIC affinity |
+| lower / 正则 / ANY/ALL / array_position | 专属纯函数，保留字段规则和 NULL/空数组语义 |
 
-`ag_lower` 使用每个 Unicode 标量的简单小写映射；测试与基线 PostgreSQL
-`en_US.utf8` 的 ASCII、重音字母、土耳其 `İ`、希腊词尾等案例对照。
-这不是任意 PG locale/ICU 排序规则的兼容承诺。JSON 存储不承诺保留 JSONB
-的展示空格或对象键顺序；未来仓储仍按类型解码。
+ag_lower 使用逐 Unicode 标量简单小写映射；历史测试与 PG en_US.utf8 的
+ASCII、重音、土耳其 İ、希腊词尾等对照，不承诺任意 locale/ICU 排序一致。
+JSON 不保证 PG JSONB 展示空白或对象键顺序，读取按类型解码。
 
-### 精确金额
+## 精确金额
 
-25 个金额/倍率列以及一个吞吐率列按实际精度区分：
-
-| 类型适配器 | PG 列类型 | 用途 |
+| 适配器 | 对应列 | 使用 |
 | --- | --- | --- |
-| `SqliteAmount` | `numeric(24,8)` | 余额、费用、额度、排行榜和邀请码金额 |
-| `SqliteUnitPrice` | `numeric(24,12)` | 四项单价和渠道倍率 |
-| `SqliteTokenRate` | `numeric(14,4)` | `request_logs.output_tokens_per_second` |
+| SqliteAmount | numeric(24,8) | 余额、费用、额度、排行榜、邀请码 |
+| SqliteUnitPrice | numeric(24,12) | 有效单价和倍率 |
+| SqliteTokenRate | numeric(14,4) | output_tokens_per_second |
 
-构造、绑定和解码均校验精度，不舍入；解码恢复 PG/SQLx 的列 scale，
-零值保持 SQLx PG 的 scale 0。`SqliteDecimal` 只是通用规范 TEXT 传输，不替代列适配器。
-`users.balance_amount` 允许负数以保留软配额透支。价格快照的全有/全无、符号、
-币种和费用一致性仍在数据库检查。
+构造/绑定/解码检查精度，不在适配器内舍入；解码恢复 PG/SQLx 显示 scale，
+零保留 PG scale 0。通用 SqliteDecimal 仅作规范 TEXT 传输，不替代列类型。
+写仓储按既有列规则量化后绑定，比较重放也用相同规范。
+余额允许负以保留软配额透支；价格快照全有/全无、USD、符号和费用资格由数据库检查。
 
-不能使用 TEXT 字典序或 SQLite `SUM`、浮点运算、NUMERIC/REAL CAST 计算金额。
-S4 仓储已落实 checked Decimal 更新与精确聚合；S2 没有添加第二套结算业务逻辑。
+禁止金额 TEXT 字典序、SQLite SUM、浮点或 NUMERIC/REAL CAST。
+账户用 checked Decimal，统计用精确整数中间态后进入既有报告结果边界，
+见[计量与结算](sqlite-metering.md)。不能把审计/日志 JSON 当作金额来源。
 
-## 数据库保护与归一化写入契约
+## 数据库保护与写入契约
 
-| 职责 | PG 来源 | SQLite 当前实现 |
-| --- | --- | --- |
-| 事务时间 / `updated_at` | 0001 及后续安装 | `BEGIN IMMEDIATE` 后设置 `ag_now()` 事务时钟；更新校验触发器拒绝未使用当前事务时间的行 |
-| audit、事实、回执不可变 | 0001 / 0063 | 数据库触发器禁止 UPDATE/DELETE |
-| 查询日志不可变 | 0063 | 禁止 UPDATE，允许 DELETE，不联动删除财务事实/回执 |
-| 回执资格、金额、币种、账户 | 0063 | 插入时验证事实状态、精确金额/币种及 API Key 归属 |
-| pending / ingress ack | 0063 | pending 禁止 UPDATE，无回执不得 DELETE；ingress 删除要求 metered、事实和查询投影均存在 |
-| 提交时路由 shape | 0052 / 0062 | 受保护的延迟外键 assertion，允许合法事务中间态 |
-| 路由父锁、profile touch、priced identity | 0052 / 0057 / 0062 | 单写事务、profile 时间推进、已路由模型身份保护 |
-| 用户/组/Key 硬删 | 0058 | 禁止硬删，保留 soft-delete CHECK |
-| 渠道/组/模型墓碑与引用 | 0059 / 0060 | 墓碑不可恢复/改写；子渠道、探测、启用协议和已删除模型引用保护 |
-| Codex pool 一致性及双投影 | 0036 / 0052 | pool/format 检查；数据库派生禁用 Images 组和 credential projections，保留 Responses 身份与 MD5 UUID |
-| Images 同步/墓碑 | 0036 / 0052 | 同步共享字段，不传播独立健康/WS 状态；凭证墓碑禁用 Images |
-| 请求 operation | 0035 | NOT NULL 与 format 一致性 CHECK；仓储在绑定前归一化 |
+| 不变量 | 当前保护 |
+| --- | --- |
+| 事务时钟 | BEGIN IMMEDIATE 后设置 ag_now；updated_at guard 拒绝非当前事务值 |
+| audit / fact / attribution / receipt 不可变 | 禁止 UPDATE/DELETE |
+| 查询日志 | 禁 UPDATE，允许 DELETE，不级联移除财务证据 |
+| 回执资格 | 校验事实分类、精确金额/币种及 Key/user 归属 |
+| pending / ingress ack | pending 无回执不可删除/修改；ack 要求 metered、事实及日志投影 |
+| 模型身份与墓碑 | 已路由计价身份不可变；墓碑不可恢复/硬删/新引用 |
+| 路由提交完整性 | 延迟 FK assertion，允许事务中间形态，最终必须完整 |
+| 上游拓扑 | 凭证/接入连接器与范围、绑定/能力身份、生命周期及 revision 保护 |
+| Codex intent | 未决维护的受保护更新 fence；迁移后重新安装，不靠重启清除 |
+| 操作/格式 | 明确 NOT NULL 与匹配规则，旧 journal 在写入前规范化 |
 
-SQLite 不支持 PG BEFORE trigger 给 `NEW.column` 赋值。这里不模拟“重发整行
-INSERT/UPDATE，再 `RAISE(IGNORE)`”：这种方案会破坏 `ON CONFLICT`、行数和幂等语义。
-后端私有 SQL 必须满足下列写入前置条件，数据库拒绝不满足条件的最终状态：
+SQLite BEFORE trigger 不能给 NEW.column 赋值。
+不通过“重发整行再 RAISE(IGNORE)”模拟 PG：那会破坏 ON CONFLICT、行数和幂等。
+后端私有写入必须显式完成：
 
-1. 新建 Codex Responses group 前，在同一写事务创建/解析 `connector_pools`；
-   显式绑定 pool ID。credential 也绑定一致的 pool ID，不依赖数据库补空值。
-2. 数据库负责 Images 派生与后续共享字段传播；不能自动启用 Images 或扩大授权。
-3. 请求日志 upsert 显式绑定 operation。沿用已有 `ApiOperation::legacy_default`
-   / journal 归一化处理旧事件，不在插入后绕过 NOT NULL 修补。
-4. 更新带 `updated_at` 的表时显式 `SET updated_at=ag_now()`；派生更新触发器也遵守
-   此规则。不得使用连接外系统时间或 SQL `CURRENT_TIMESTAMP` 混入其他编码。
+1. 为拓扑绑定、操作、凭证归属及其他必需字段绑定明确规范值，不靠旧投影触发器补空值。
+2. 请求 operation 使用当前枚举，旧事件走 legacy_default/journal 归一化，不在 INSERT 后绕过 NOT NULL 修补。
+3. 带 updated_at 的更新显式 SET updated_at=ag_now()，派生更新同样遵守，
+   不混用系统时间或 CURRENT_TIMESTAMP。
+4. Codex 导入只写凭证，不创建旧 pool/paired channel；能力开关与授权均显式配置。
+5. 数据库 guard 继续拒绝不合法最终状态，不能只在应用中检查。
 
-这是 S3–S5 遵守的内部写入契约，不是公共 API 变更，也不承诺 PG 原始 SQL
-可以逐字执行。数据库仍独立保护跨表业务不变量；没有将保护替换成应用层断言。
+历史 0001–0004 的仓储夹具仍可能使用旧 pool/投影规则，不能据此编写当前 SQL。
 
-### 延迟路由约束
+## 延迟路由约束
 
-`_gateway_routing_shape` view 计算 enabled rule / tier 是否完整；
-每个 rule 有一条 `_gateway_routing_assertions`，其 `valid` 通过
-`DEFERRABLE INITIALLY DEFERRED` 外键引用唯一且不可修改的 `_gateway_true(value=1)`。
-rule、tier、candidate 变动立即刷新 assertion，提交时才要求全部有效。
+_gateway_routing_shape 计算规则/tier 完整性。
+每条规则对应 _gateway_routing_assertions，其 valid 通过
+DEFERRABLE INITIALLY DEFERRED FK 引用唯一不可改 _gateway_true(value=1)。
+规则/tier/candidate 变化立即刷新 assertion，提交时才要求全部有效。
 
-helper 行禁止伪造或提前删除；父 rule 的删除和 ID 更新可以合法级联。
-tier/candidate 不能跨 rule 移动。测试覆盖合法删旧建新、空 enabled rule/空 tier
-提交失败、helper 绕过、级联和精确 candidate 去重，不以迁移器的通用延迟 FK 测试代替。
+helper 行不能伪造或提前删除；合法父规则删除/ID 更新可以级联。
+tier/candidate 不得跨 rule 移动。
+测试要覆盖删旧建新、空 enabled rule/空 tier 提交失败、
+helper 绕过、级联及同 tier 精确候选去重，不用通用 deferred-FK 测试替代业务 shape。
 
-## 索引与错误分类
+## 索引、错误与验证
 
-baseline 有 57 个显式索引，另有主键/UNIQUE 内部索引。保留 active-name/source-model
-部分唯一键、pool/format 唯一键、同 tier 精确 channel/model 唯一键以及 UUID 幂等键。
-Codex active identity 的 `NULLS NOT DISTINCT` 用表达式唯一索引实现：
-空 identity 已由 CHECK 禁止，故可以用空串表示 NULL 而不合并合法空串值。
+索引保留活动自然名/source-model 部分唯一、操作/绑定唯一、精确候选唯一和 UUID 幂等。
+历史 Codex NULLS NOT DISTINCT 由表达式唯一索引模拟：
+CHECK 已禁止合法空 identity，空串才能安全代表 NULL，而不是随意合并空值。
 
-`storage_error.rs` 根据实际 `SqliteError` 分类，不对 SQLite 套用 SQLSTATE：
-BUSY/LOCKED 为 Conflict；约束、类型/长度与 schema 函数拒绝为 InvalidInput；
-四个已有路由依赖名称通过受限触发器错误映射到 RoutingDependency。未知故障仍为 Internal，
-不会把任意 trigger 文本误判为可向客户端暴露的约束名。
+StorageError 按实际 SQLite 码分类：BUSY/LOCKED 为 Conflict，
+约束/类型/长度/schema 函数拒绝为 InvalidInput；
+有限路由依赖名称映射 RoutingDependency，其他仍 Internal。
+不套用 SQLSTATE，也不把任意 trigger 文本暴露给客户端。
 
-## S2 验收
-
-`tests/contracts/sqlite_schema.rs` 覆盖完整安装、重开、真实 baseline 加失败后续版本
-的整批回滚、合法写入与直接 SQL 负向约束、类型边界、幂等 upsert、金融保护、
-路由提交、墓碑和 paired projection。
-`tests/contracts/sqlite_parity.rs` 对照当前 PG schema、seed、枚举顺序、金额显示、
-时间量化及派生 UUID。文件/进程与取消/重启测试见[生命周期验收](sqlite-lifecycle.md)。
-
-S2 的 schema、编码、约束、错误分类、原子迁移和所有权已实现。
-S6 部署见[用户指南](../user/sqlite.md)；S3 身份/普通控制面仓储见[当前实现](sqlite-control-plane.md)。
-其余业务仓储、完整双后端系统验收、备份恢复与原生 SQLite 版本升级门槛仍属于
-后续切片，不能以 S2 测试代替。
+tests/contracts/sqlite_schema.rs 验证完整历史 baseline 安装/重开、后续失败整批回滚、
+合法 SQL 与直接负例、upsert、金融/墓碑/路由保护。
+sqlite_parity.rs 对照真实 PG schema、seed、枚举、金额显示、时间及历史派生 UUID。
+当前拓扑/财务/维护契约运行完整启动迁移，另保留每次存量升级/失败回滚。
+进程、别名、取消和崩溃检查见[生命周期](sqlite-lifecycle.md)；
+部署与恢复见[用户指南](../user/sqlite.md)。

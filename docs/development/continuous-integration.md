@@ -2,6 +2,25 @@
 
 > 状态：当前。
 
+普通 CI 按路径选择检查，但每个 PR 都产生稳定的 `ci-gate`。排查红灯时先确定事件、提交 SHA
+和所选 job，再看具体失败；workflow 成功、CodeQL 无告警、发布成功是三个不同结论。
+
+## 本页内容
+
+- [查看变更会选择哪些检查](#普通-ci)
+- [理解 Rust、Console 与系统门禁](#可复用质量门禁)
+- [维护缓存和并发](#cache-写入策略)
+- [区分依赖检查与代码扫描](#依赖与代码扫描)
+- [修改 workflow 后本地验证](#本地验证)
+
+## 定位一次失败
+
+1. 记录 `pull_request`、`main` push、tag、schedule 或手动事件，以及精确 SHA。
+2. 检查 `changes` 的分类输出与被选择的 job，不把正确的 `skipped` 解释为缺失验证。
+3. 修复最早的实质失败；最终 gate 只聚合结果，不是根因。
+4. 合并后核对合并 SHA 的 `main` push。旧 PR、关闭事件或另一个 SHA 的成功不能代替它。
+5. 发现安全告警时转入[逐条核查流程](security-alert-triage.md)，不能靠重跑普通 CI 关闭告警。
+
 ## 普通 CI
 
 `.github/workflows/ci.yml` 对每个 Pull Request 和 `main` push 运行，并始终
@@ -122,7 +141,7 @@ bypass；正常变更仍必须走 CI 和项目合并策略。
 
 ## 本地验证
 
-修改 workflow、缓存策略或 CI 脚本时至少执行：
+先运行不启动服务的分类/发布自动化回归：
 
 ```bash
 shellcheck scripts/ci-changed-areas.sh scripts/test-ci-changed-areas.sh
@@ -130,8 +149,15 @@ scripts/test-ci-changed-areas.sh
 scripts/test-release-automation.sh
 git diff --check
 python3 scripts/check-docs.py
+```
+
+workflow 同时改变浏览器或 Rust 构建路径时，再运行相应执行门禁：
+
+```bash
 pnpm --dir web/console e2e
 cargo build --locked --workspace --all-targets
 ```
 
-Docker 或 Release 路径变更还需执行验证矩阵中的容器/发布检查。
+Docker 或 Release 路径变更还需执行容器/[发布检查](releasing.md)；系统测试路径变化按
+[系统 E2E](system-e2e.md)执行相关后端。仅修改本文不会执行这些代码门禁，文档检查也不证明
+GitHub 远端 ruleset 或安全扫描设置已经生效。
