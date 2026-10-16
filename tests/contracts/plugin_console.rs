@@ -254,6 +254,271 @@ fn hex_digest(bytes: &[u8]) -> String {
         .collect()
 }
 
+async fn put_plugin(
+    app: &App,
+    path: &str,
+    value: serde_json::Value,
+    etag: &str,
+) -> axum::response::Response {
+    let token = grant(app).await;
+    request(
+        app,
+        "PUT",
+        path,
+        value,
+        &[("if-match", etag), ("x-plugin-authorization", &token)],
+    )
+    .await
+}
+
+#[tokio::test]
+async fn plugin_settings_etag_tracks_settings_not_enabled_state() {
+    let database = TestDatabase::new().await;
+    let directory = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let catalog = Arc::new(DirectoryPluginCatalog::open(directory.path().join("plugins")).unwrap());
+    let app = app_with_options(database.pool.clone(), None, Some(catalog)).await;
+    let path = "/console/v1/plugins/fixture";
+    let settings_path = format!("{path}/settings");
+    let state_path = format!("{path}/state");
+    let mut digests = Vec::new();
+    for version in ["1.0.0", "2.0.0"] {
+        let (archive, digest) = package_version(directory.path(), version);
+        let response = upload(&app, &grant(&app).await, archive).await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let job = body_json(response).await;
+        assert_eq!(
+            wait_job(&app, job["id"].as_str().unwrap()).await["status"],
+            "succeeded"
+        );
+        digests.push(digest);
+    }
+    let detail = request(&app, "GET", path, json!({}), &[]).await;
+    assert_eq!(
+        put_plugin(
+            &app,
+            &state_path,
+            json!({"enabled":true,"artifact_digest":digests[0]}),
+            &response_etag(&detail)
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let settings = request(&app, "GET", &settings_path, json!({}), &[]).await;
+    let original_etag = response_etag(&settings);
+    let original_revision = body_json(settings).await["revision"].clone();
+    for enabled in [false, true] {
+        let detail = request(&app, "GET", path, json!({}), &[]).await;
+        assert_eq!(
+            put_plugin(
+                &app,
+                &state_path,
+                json!({"enabled":enabled,"artifact_digest":digests[0]}),
+                &response_etag(&detail)
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        let settings = request(&app, "GET", &settings_path, json!({}), &[]).await;
+        assert_eq!(response_etag(&settings), original_etag);
+        assert_eq!(body_json(settings).await["revision"], original_revision);
+    }
+    assert_eq!(
+        put_plugin(
+            &app,
+            &settings_path,
+            json!({"schema_version":1,"values":{"mode":"alternate"}}),
+            &original_etag
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        put_plugin(
+            &app,
+            &settings_path,
+            json!({"schema_version":1,"values":{"mode":"default"}}),
+            &original_etag
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    let settings = request(&app, "GET", &settings_path, json!({}), &[]).await;
+    let settings_etag = response_etag(&settings);
+    let settings = body_json(settings).await;
+    assert_ne!(settings_etag, original_etag);
+    assert_eq!(settings["values"], json!({"mode":"alternate"}));
+    assert_eq!(
+        put_plugin(
+            &app,
+            &settings_path,
+            json!({"schema_version":1,"values":{"mode":"default"}}),
+            &settings_etag
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        put_plugin(
+            &app,
+            &settings_path,
+            json!({"schema_version":1,"values":{"mode":"alternate"}}),
+            &settings_etag
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    let latest = request(&app, "GET", &settings_path, json!({}), &[]).await;
+    let latest_etag = response_etag(&latest);
+    let latest = body_json(latest).await;
+    assert_ne!(latest_etag, settings_etag);
+    assert_eq!(
+        latest["revision"].as_i64().unwrap(),
+        settings["revision"].as_i64().unwrap() + 1
+    );
+    assert_eq!(latest["values"], json!({"mode":"default"}));
+    let detail = request(&app, "GET", path, json!({}), &[]).await;
+    assert_eq!(
+        put_plugin(
+            &app,
+            &state_path,
+            json!({"enabled":true,"artifact_digest":digests[1]}),
+            &response_etag(&detail)
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let switched = request(&app, "GET", &settings_path, json!({}), &[]).await;
+    assert_ne!(response_etag(&switched), latest_etag);
+    let switched = body_json(switched).await;
+    assert_eq!(switched["revision"], latest["revision"]);
+    assert_eq!(switched["values"], latest["values"]);
+    assert_eq!(
+        put_plugin(
+            &app,
+            &settings_path,
+            json!({"schema_version":1,"values":{"mode":"default"}}),
+            &latest_etag
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn plugin_job_polling_requires_active_admin_without_reauthorization() {
+    let database = TestDatabase::new().await;
+    let directory = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let catalog = Arc::new(DirectoryPluginCatalog::open(directory.path().join("plugins")).unwrap());
+    let app = app_with_options(database.pool.clone(), None, Some(catalog)).await;
+    let token = grant(&app).await;
+    let response = request(
+        &app,
+        "POST",
+        "/console/v1/plugins/discover",
+        json!({}),
+        &[("x-plugin-authorization", &token)],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let job = body_json(response).await;
+    let id = job["id"].as_str().unwrap();
+    assert_eq!(wait_job(&app, id).await["status"], "succeeded");
+    let user = Uuid::new_v4();
+    let email = format!("{user}@example.test");
+    let password = hash_console_password(test_password().into()).await.unwrap();
+    sqlx::query("INSERT INTO users(id,email,display_name,role,status,password_hash) VALUES ($1,$2,$2,'user','active',$3)")
+        .bind(user).bind(&email).bind(password).execute(&database.pool).await.unwrap();
+    let session = app
+        .auth
+        .login_with_user_agent(email, test_password().into(), None)
+        .await
+        .unwrap();
+    let path = format!("/console/v1/plugins/jobs/{id}");
+    let response =
+        request_with_token(&app, &session.access_token, "GET", &path, json!({}), &[]).await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(body_json(response).await.get("actor_user_id").is_none());
+    sqlx::query("UPDATE users SET role='user' WHERE id=$1")
+        .bind(app.user_id)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        request(&app, "GET", &path, json!({}), &[]).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn plugin_periodic_discovery_quarantines_once_and_continues() {
+    let database = TestDatabase::new().await;
+    let directory = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let catalog = Arc::new(DirectoryPluginCatalog::open(directory.path().join("plugins")).unwrap());
+    let app = app_with_options(database.pool.clone(), None, Some(Arc::clone(&catalog))).await;
+    let coordinator = ControlPlaneCoordinator::new(
+        ControlPlaneRepository::new(database.pool.clone()),
+        Arc::clone(&app.runtime),
+        RoutingRuntime::new(PassiveHealthPolicy::default()),
+    );
+    let incoming = catalog.root().join("incoming");
+    std::fs::write(incoming.join("invalid.tar.gz"), b"invalid archive").unwrap();
+    coordinator.discover_plugin_directory().await.unwrap();
+    let rejected = incoming.join("invalid.tar.gz.rejected");
+    assert!(!incoming.join("invalid.tar.gz").exists());
+    assert_eq!(std::fs::read(&rejected).unwrap(), b"invalid archive");
+    let rejected_modified = std::fs::metadata(&rejected).unwrap().modified().unwrap();
+    coordinator.discover_plugin_directory().await.unwrap();
+    assert_eq!(
+        std::fs::metadata(&rejected).unwrap().modified().unwrap(),
+        rejected_modified
+    );
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM plugin_artifacts")
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+    let (archive, digest) = package(directory.path());
+    std::fs::write(incoming.join("fixture.tar.gz"), &archive).unwrap();
+    coordinator.discover_plugin_directory().await.unwrap();
+    let imported = incoming.join("fixture.tar.gz.imported");
+    assert!(!incoming.join("fixture.tar.gz").exists());
+    assert_eq!(std::fs::read(&imported).unwrap(), archive);
+    let imported_modified = std::fs::metadata(&imported).unwrap().modified().unwrap();
+    coordinator.discover_plugin_directory().await.unwrap();
+    assert_eq!(
+        std::fs::metadata(&imported).unwrap().modified().unwrap(),
+        imported_modified
+    );
+    assert_eq!(
+        std::fs::metadata(&rejected).unwrap().modified().unwrap(),
+        rejected_modified
+    );
+    let artifacts: Vec<String> = sqlx::query_scalar("SELECT digest FROM plugin_artifacts")
+        .fetch_all(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(artifacts, vec![digest]);
+    let discoveries: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM audit_logs WHERE object_type='plugin' AND action='discover'",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(discoveries, 1);
+    assert!(app.runtime.snapshot().plugins().get("fixture").is_none());
+    database.cleanup().await;
+}
+
 #[tokio::test]
 async fn plugin_console_discovery_preserves_an_inventory_with_only_a_deleted_artifact() {
     let database = TestDatabase::new().await;
@@ -591,6 +856,8 @@ async fn plugin_console_install_activate_settings_cas_and_disable_missing_artifa
     );
     let artifact = catalog.resolve("fixture", &digest).unwrap();
     std::fs::remove_file(artifact.path).unwrap();
+    let detail = request(&app, "GET", "/console/v1/plugins/fixture", json!({}), &[]).await;
+    let etag = response_etag(&detail);
     let token = grant(&app).await;
     let disabled = request(
         &app,

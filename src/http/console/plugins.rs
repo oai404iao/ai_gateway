@@ -228,8 +228,13 @@ async fn discover(
 
 async fn job(
     State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
     Path(id): Path<Uuid>,
 ) -> Result<Response, ConsoleError> {
+    state
+        .coordinator
+        .verify_active_admin(principal.user_id())
+        .await?;
     Ok(Json(state.coordinator.plugin_job(id).await?).into_response())
 }
 

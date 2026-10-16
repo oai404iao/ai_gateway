@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 const MAX_ARCHIVE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_MEMBER_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_MEMBERS: usize = 10_000;
+const MAX_LOADED_ARTIFACTS: usize = 64;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct PluginArtifact {
@@ -27,6 +28,8 @@ pub struct DirectoryPluginCatalog {
     root: PathBuf,
     _owner: File,
     install: std::sync::Mutex<()>,
+    // Only unconfigured bases are retained here. Configured generations belong
+    // to snapshots and in-flight requests, and are released with their last Arc.
     loaded: std::sync::Mutex<HashMap<(String, String), LoadedArtifact>>,
 }
 
@@ -107,11 +110,17 @@ impl DirectoryPluginCatalog {
     }
 
     pub fn is_loaded(&self, digest: &str) -> bool {
-        self.loaded.lock().map_or(true, |loaded| {
-            loaded
-                .keys()
-                .any(|(_, loaded_digest)| loaded_digest == digest)
-        })
+        self.loaded_artifacts()
+            .keys()
+            .any(|(_, loaded_digest)| loaded_digest == digest)
+    }
+
+    fn loaded_artifacts(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashMap<(String, String), LoadedArtifact>> {
+        self.loaded
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
     }
 
     pub fn discover(&self) -> Result<Vec<PluginArtifact>, PluginError> {
@@ -157,9 +166,7 @@ impl DirectoryPluginCatalog {
         validate_id(id)?;
         validate_hash(digest)?;
         if let Some(loaded) = self
-            .loaded
-            .lock()
-            .map_err(|_| PluginError::Load)?
+            .loaded_artifacts()
             .get(&(id.to_owned(), digest.to_owned()))
         {
             return Ok(loaded.artifact.clone());
@@ -178,22 +185,27 @@ impl DirectoryPluginCatalog {
     }
 
     pub fn load(&self, artifact: &PluginArtifact) -> Result<Arc<Plugin>, PluginError> {
-        if let Some(loaded) = self
-            .loaded
-            .lock()
-            .map_err(|_| PluginError::Load)?
-            .get(&(artifact.id.clone(), artifact.digest.clone()))
-        {
+        validate_id(&artifact.id)?;
+        validate_hash(&artifact.digest)?;
+        let mut loaded = self.loaded_artifacts();
+        if let Some(loaded) = loaded.get(&(artifact.id.clone(), artifact.digest.clone())) {
             return Ok(Arc::clone(&loaded.plugin));
         }
-        let verified = self.resolve(&artifact.id, &artifact.digest)?;
+        // Never evict a base: configured generations do not hold its Arc, and
+        // its artifact must remain protected while any generation can use it.
+        if loaded.len() >= MAX_LOADED_ARTIFACTS {
+            return Err(PluginError::Configuration(
+                "loaded artifact cache limit reached; restart required",
+            ));
+        }
+        let verified = self.resolve_on_disk(&artifact.id, &artifact.digest)?;
         let plugin = Plugin::load(&verified.path, &verified.digest, &verified.id)?;
-        if serde_json::to_value(plugin.manifest()).ok()
-            != serde_json::to_value(&verified.manifest).ok()
+        if serde_json::to_value(plugin.manifest()).map_err(|_| PluginError::Manifest)?
+            != serde_json::to_value(&verified.manifest).map_err(|_| PluginError::Manifest)?
         {
             return Err(PluginError::Manifest);
         }
-        self.loaded.lock().map_err(|_| PluginError::Load)?.insert(
+        loaded.insert(
             (verified.id.clone(), verified.digest.clone()),
             LoadedArtifact {
                 artifact: verified,
@@ -335,6 +347,7 @@ impl DirectoryPluginCatalog {
 }
 
 fn discard_abandoned_staging(directory: &Path) -> Result<(), PluginError> {
+    // Installs are not resumable: after interruption clients must reupload.
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
         let name = entry.file_name();
@@ -614,6 +627,157 @@ impl<R: Read> Read for BoundedReader<R> {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    unsafe extern "C" fn fixture_dispatch(
+        command: ByteSlice,
+        metadata: ByteSlice,
+        body: ByteSlice,
+        output: *mut CallOutput,
+    ) -> u32 {
+        unsafe {
+            ai_gateway_connector_sdk::dispatch_adapter(
+                command,
+                metadata,
+                body,
+                output,
+                |command, metadata, _| {
+                    let metadata = match command {
+                        ai_gateway_connector_sdk::SETTINGS_DESCRIBE => json!({
+                            "schema_version":1,"title":{"en":"Fixture"},
+                            "fields":[{"key":"enabled","label":{"en":"Enabled"},
+                                "required":true,"type":"boolean"}],
+                            "defaults":{"enabled":true}
+                        }),
+                        ai_gateway_connector_sdk::SETTINGS_VALIDATE => {
+                            json!({"valid":true,"errors":[]})
+                        }
+                        ai_gateway_connector_sdk::SETTINGS_COMPILE => {
+                            json!({"config":metadata["values"]})
+                        }
+                        _ => metadata,
+                    };
+                    Ok(PluginOutput {
+                        metadata,
+                        body: Vec::new(),
+                    })
+                },
+            )
+        }
+    }
+
+    fn cached_fixture(digest: String) -> LoadedArtifact {
+        let manifest: PluginManifest = serde_json::from_value(json!({
+            "id":"fixture","version":"1","protocol_version":2,
+            "operations":["responses"],"commands":["echo", "settings.describe/v1",
+                "settings.validate/v1", "settings.compile/v1"]
+        }))
+        .unwrap();
+        LoadedArtifact {
+            artifact: PluginArtifact {
+                id: manifest.id.clone(),
+                version: manifest.version.clone(),
+                digest: digest.clone(),
+                path: PathBuf::from("/nonexistent/fixture.so"),
+                manifest: manifest.clone(),
+            },
+            plugin: Arc::new(Plugin {
+                attempt_descriptors: contracts::descriptor_cache(&manifest),
+                manifest,
+                dispatch: fixture_dispatch,
+                free_buffer: ai_gateway_connector_sdk::free_buffer,
+                artifact_digest: digest.clone(),
+                generation_id: format!("{digest}:unconfigured"),
+                settings: None,
+            }),
+        }
+    }
+
+    #[test]
+    fn poisoned_cache_preserves_loaded_artifact_protection_and_unknown_lookup() {
+        let root = root();
+        let catalog = DirectoryPluginCatalog::open(root.path().join("plugins")).unwrap();
+        let digest = "a".repeat(64);
+        let fixture = cached_fixture(digest.clone());
+        let artifact = fixture.artifact.clone();
+        catalog
+            .loaded_artifacts()
+            .insert((artifact.id.clone(), digest.clone()), fixture);
+        std::thread::scope(|scope| {
+            assert!(
+                scope
+                    .spawn(|| {
+                        let _guard = catalog.loaded.lock().unwrap();
+                        panic!("poison loaded cache");
+                    })
+                    .join()
+                    .is_err()
+            );
+        });
+        assert!(catalog.loaded.is_poisoned());
+        assert!(catalog.is_loaded(&digest));
+        assert!(!catalog.is_loaded(&"b".repeat(64)));
+        assert_eq!(catalog.resolve("fixture", &digest).unwrap().digest, digest);
+        assert!(catalog.load(&artifact).is_ok());
+    }
+
+    #[test]
+    fn loaded_artifact_bound_rejects_new_entries_without_evicting_live_generations() {
+        let root = root();
+        let catalog = DirectoryPluginCatalog::open(root.path().join("plugins")).unwrap();
+        for index in 0..MAX_LOADED_ARTIFACTS {
+            let digest = format!("{index:064x}");
+            let fixture = cached_fixture(digest.clone());
+            catalog
+                .loaded_artifacts()
+                .insert(("fixture".into(), digest), fixture);
+        }
+        let artifact = catalog.resolve("fixture", &"0".repeat(64)).unwrap();
+        let base = catalog.load(&artifact).unwrap();
+        let live = base.with_revision(1);
+        let extra = cached_fixture(format!("{MAX_LOADED_ARTIFACTS:064x}"));
+        assert!(matches!(
+            catalog.load(&extra.artifact),
+            Err(PluginError::Configuration(
+                "loaded artifact cache limit reached; restart required"
+            ))
+        ));
+        assert_eq!(catalog.loaded_artifacts().len(), MAX_LOADED_ARTIFACTS);
+        assert!(Arc::ptr_eq(&base, &catalog.load(&artifact).unwrap()));
+        assert!(catalog.is_loaded(&artifact.digest));
+        assert!(live.call("echo", &json!({}), &[]).is_ok());
+    }
+
+    #[test]
+    fn configured_generations_are_released_without_growing_the_base_cache() {
+        let root = root();
+        let catalog = DirectoryPluginCatalog::open(root.path().join("plugins")).unwrap();
+        let digest = "a".repeat(64);
+        let fixture = cached_fixture(digest.clone());
+        let artifact = fixture.artifact.clone();
+        catalog
+            .loaded_artifacts()
+            .insert((artifact.id.clone(), digest), fixture);
+        let base = catalog.load(&artifact).unwrap();
+        let document = base
+            .settings_descriptor()
+            .unwrap()
+            .unwrap()
+            .default_document();
+        let live = base.configured(&document, 1).unwrap();
+        for revision in 2..=(MAX_LOADED_ARTIFACTS as u64 + 2) {
+            let generation = base.configured(&document, revision).unwrap();
+            let weak = Arc::downgrade(&generation);
+            drop(generation);
+            assert!(weak.upgrade().is_none());
+        }
+        assert_eq!(catalog.loaded_artifacts().len(), 1);
+        assert!(catalog.load(&artifact).unwrap().settings.is_none());
+        assert_eq!(
+            live.call("echo", &json!({}), &[]).unwrap().metadata["settings"]["enabled"],
+            true
+        );
+    }
 
     #[test]
     fn plugin_directory_has_one_lifetime_owner() {
@@ -637,8 +801,6 @@ mod tests {
         assert!(!partial.exists());
         assert!(unrelated.exists());
     }
-    use serde_json::json;
-
     fn archive(path: &Path, entries: &[(&str, &[u8], tar::EntryType)]) {
         let gzip =
             flate2::write::GzEncoder::new(File::create(path).unwrap(), flate2::Compression::fast());

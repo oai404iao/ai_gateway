@@ -37,6 +37,188 @@ fn fixture_with_flags(abi: u32, flags: &[&str]) -> (tempfile::TempDir, PathBuf, 
 }
 
 #[test]
+fn uppercase_digest_is_rejected_before_loading_a_valid_library() {
+    let (_directory, path, hash) = fixture(1);
+    let error = Plugin::load(&path, &hash.to_ascii_uppercase(), "fixture").unwrap_err();
+    assert!(matches!(
+        error,
+        PluginError::Configuration("SHA-256 must contain 64 lowercase hexadecimal digits")
+    ));
+    let plugin = Plugin::load(&path, &hash, "fixture").unwrap();
+    assert_eq!(plugin.artifact_digest(), hash);
+}
+
+#[test]
+fn managed_plugins_isolate_settings_and_keep_other_channels_when_missing_or_disabled() {
+    use ai_gateway::{
+        connector_plugins::DirectoryPluginCatalog,
+        domain::ApiOperation,
+        persistence::{
+            ChannelGroupRecord, ChannelRecord, ControlPlaneRecords, PluginArtifactRecord,
+            PluginRuntimeRecords, PluginSettingsRecord, PluginStateRecord, RuntimeConfigRecords,
+            SystemSessionAffinitySettingsInput, SystemSettingsRecord,
+        },
+        runtime_config::compile_runtime_config_with_catalog,
+    };
+    use uuid::Uuid;
+
+    let directory = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let catalog = DirectoryPluginCatalog::open(directory.path().join("plugins")).unwrap();
+    let mut plugin_records = PluginRuntimeRecords::default();
+    let mut control_plane = ControlPlaneRecords::default();
+    for (index, id, mode) in [(1, "alpha", "default"), (2, "beta", "alternate")] {
+        let id_flag = format!("-DFIXTURE_PLUGIN_ID=\"{id}\"");
+        let (_source, path, digest) = fixture_with_flags(1, &["-DFIXTURE_SETTINGS", &id_flag]);
+        let plugin = Plugin::load(&path, &digest, id).unwrap();
+        let package = catalog.root().join("artifacts").join(id).join(&digest);
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::copy(path, package.join("connector.so")).unwrap();
+        std::fs::write(
+            package.join("manifest.json"),
+            serde_json::to_vec(plugin.manifest()).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            package.join("build-info.json"),
+            serde_json::to_vec(&json!({
+                "schema_version":1,"connector_abi":1,"connector_version":plugin.manifest().version,
+                "target":format!("{}-unknown-linux-gnu",std::env::consts::ARCH),
+                "library":"connector.so","library_sha256":digest,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        plugin_records.artifacts.push(PluginArtifactRecord {
+            plugin_id: id.into(),
+            digest: digest.clone(),
+            version: plugin.manifest().version.clone(),
+            manifest: serde_json::to_value(plugin.manifest()).unwrap(),
+            created_at: chrono::Utc::now(),
+        });
+        plugin_records.states.push(PluginStateRecord {
+            plugin_id: id.into(),
+            enabled: true,
+            artifact_digest: Some(digest),
+            revision: 1,
+            updated_at: chrono::Utc::now(),
+        });
+        plugin_records.settings.push(PluginSettingsRecord {
+            plugin_id: id.into(),
+            schema_version: 1,
+            values: json!({"mode":mode}),
+            revision: 1,
+            updated_at: chrono::Utc::now(),
+        });
+        let group = Uuid::from_u128(index);
+        control_plane.groups.push(ChannelGroupRecord {
+            id: group,
+            name: id.into(),
+            api_format: ApiOperation::Responses.api_format().as_str().into(),
+            connector_kind: id.into(),
+            request_compression: "default".into(),
+            enabled: true,
+        });
+        control_plane.channels.push(ChannelRecord {
+            id: Uuid::from_u128(index + 10),
+            channel_group_id: group,
+            api_format: ApiOperation::Responses.api_format().as_str().into(),
+            logical_channel_id: Uuid::from_u128(index + 20),
+            access_id: Uuid::from_u128(index + 30),
+            api_operation: Some(ApiOperation::Responses),
+            connector_kind: id.into(),
+            request_compression: "default".into(),
+            access_revision: Uuid::new_v4(),
+            capability_revision: Uuid::new_v4(),
+            transports: ApiOperation::Responses.transports().to_vec(),
+            name: id.into(),
+            base_url: "https://upstream.test/v1".into(),
+            enabled: true,
+            supports_websocket: false,
+            supports_standalone_web_search: false,
+            auto_disabled: false,
+            auto_disable_allowed: false,
+            billing_multiplier: 1.into(),
+            proxy_id: None,
+            config_template_id: None,
+            override_document: json!({}),
+            connect_timeout_ms: None,
+            response_header_timeout_ms: None,
+            stream_idle_timeout_ms: None,
+            upstream_auth_kind: "none".into(),
+            upstream_auth_header_name: None,
+            upstream_api_key: None,
+            available_models: vec![],
+            test_model: None,
+            test_pricing_model_id: None,
+            credential: None,
+            credential_binding_revision: Uuid::new_v4(),
+        });
+    }
+    for availability in ["enabled", "missing", "disabled"] {
+        let mut plugins = plugin_records.clone();
+        if availability == "missing" {
+            plugins
+                .artifacts
+                .retain(|artifact| artifact.plugin_id != "alpha");
+        } else if availability == "disabled" {
+            plugins.states[0].enabled = false;
+        }
+        let records = RuntimeConfigRecords {
+            plugin_records: plugins,
+            control_plane: ControlPlaneRecords {
+                groups: control_plane
+                    .groups
+                    .iter()
+                    .map(|group| ChannelGroupRecord {
+                        id: group.id,
+                        name: group.name.clone(),
+                        api_format: group.api_format.clone(),
+                        connector_kind: group.connector_kind.clone(),
+                        request_compression: group.request_compression.clone(),
+                        enabled: group.enabled,
+                    })
+                    .collect(),
+                channels: control_plane.channels.clone(),
+                ..Default::default()
+            },
+            connector_ids: vec!["alpha".into(), "beta".into()],
+            system_settings: SystemSettingsRecord {
+                setting_key: ai_gateway::persistence::FORWARDING_SETTINGS_KEY.into(),
+                value: json!({
+                    "upstream":{"connect_timeout_seconds":5,"response_header_timeout_seconds":30,"stream_idle_timeout_seconds":30},
+                    "passive_health":{"connection_failure_threshold":3,"cooldown_seconds":60},
+                    "session_affinity":serde_json::to_value(SystemSessionAffinitySettingsInput::default()).unwrap(),
+                }),
+                updated_at: chrono::Utc::now(),
+            },
+        };
+        let snapshot = compile_runtime_config_with_catalog(records, &catalog).unwrap();
+        let beta = snapshot.plugins().get("beta").unwrap();
+        assert_eq!(
+            beta.call("echo", &json!({}), &[]).unwrap().metadata["settings"]["mode"],
+            "alternate"
+        );
+        assert!(
+            snapshot
+                .channels()
+                .any(|channel| channel.id() == Uuid::from_u128(12))
+        );
+        assert!(snapshot.plugin_error("beta").is_none());
+        if availability == "enabled" {
+            let alpha = snapshot.plugins().get("alpha").unwrap();
+            assert_eq!(
+                alpha.call("echo", &json!({}), &[]).unwrap().metadata["settings"]["mode"],
+                "default"
+            );
+            assert_eq!(snapshot.channels().count(), 2);
+        } else {
+            assert!(snapshot.plugins().get("alpha").is_none());
+            assert_eq!(snapshot.channels().count(), 1);
+        }
+    }
+}
+
+#[test]
 fn native_abi_roundtrip_errors_and_process_lifetime() {
     let (directory, path, hash) = fixture(1);
     let registry = ConnectorPlugins::load(&[PluginConfig {
