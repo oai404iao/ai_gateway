@@ -1,18 +1,22 @@
 # Docker Compose 生产部署
 
-> 状态：当前。
+> 状态：当前。单主机 PostgreSQL stack；SQLite 使用[单实例文件后端指南](sqlite.md)。
 
-SQLite 不使用此 PG stack，改用 `docker-compose.sqlite.yaml`，见[文件后端部署](sqlite.md)。
+本指南使用 `docker-compose.prd.yaml` 运行 Gateway、PostgreSQL 和嵌入式 Console。镜像不需要常驻 Node；部署仍需你提供 HTTPS 入口、可靠持久存储、备份和监控，不自带 HA、PITR 或跨主机 spool 复制。
 
-`docker-compose.prd.yaml` 在单台主机上运行 Gateway 与 PostgreSQL。Gateway
-镜像内已嵌入 Console Web UI；生产环境不需要常驻 Node 进程。该方案是单节点基线，
-不提供 PostgreSQL 高可用、PITR、跨主机 spool 复制或 TLS 终止。
+## 部署前确认
+
+- 使用支持 Compose 的 Docker 主机，确认数据目录/卷容量和持久性。
+- 固定 Compose 项目名、目标版本和实际镜像身份；不要依赖 `latest`。
+- 数据面和 Console 默认只映射宿主 `127.0.0.1:3000/3001`；PostgreSQL 不映射宿主端口。
+- 以下配置命令用于新部署；已有环境先走[升级与回滚](upgrades.md)，不要覆盖秘密或初始化卷。
 
 ## 1. 准备配置与密钥
 
 从仓库根目录执行：
 
 ```bash
+umask 077
 mkdir -p ./config
 cp deploy/compose/config.example.toml ./config/config.prd.toml
 cp deploy/compose/env.example ./config/compose.prd.env
@@ -62,9 +66,7 @@ docker compose \
   pull gateway
 ```
 
-私有 GHCR Package 需要先执行 `docker login ghcr.io`。tag 发布工作流会同时
-发布 GHCR 镜像与 GitHub Release 二进制包；若当前主机不能访问 GHCR，则使用
-下方本地构建。
+私有 GHCR Package 需要先执行 `docker login ghcr.io`；无法访问镜像仓库时可从匹配 tag 的源码本地构建。
 
 ### 从当前 checkout 构建
 
@@ -77,8 +79,7 @@ docker compose \
 
 Dockerfile 使用 Rust 1.97.1 构建 release 二进制，并先构建、再嵌入 Console
 Web UI；源码构建也以同一固定
-工具链作为受支持和持续验证的边界。运行镜像只保留二进制及必要的 CA、健康检查
-和权限切换工具。
+工具链作为受支持和持续验证的边界。运行镜像只保留二进制、许可与通知文件及必要的 CA、健康检查和权限切换工具。
 
 ## 3. 启动与验证
 
@@ -93,7 +94,7 @@ docker compose \
   -f docker-compose.prd.yaml \
   ps
 
-curl -i http://127.0.0.1:3000/health
+curl --fail-with-body -i http://127.0.0.1:3000/health
 ```
 
 PostgreSQL 不映射到宿主机端口，只能通过 Compose 网络或
@@ -102,6 +103,8 @@ PostgreSQL 不映射到宿主机端口，只能通过 Compose 网络或
 
 Console refresh cookie 带 `Secure` 属性。浏览器生产访问必须经过 HTTPS
 反向代理；Gateway 本身不终止 TLS。
+
+`/health` 的 `204` 与容器 healthy 只确认进程健康，不证明路由和结算可用。检查容器日志与 Console“系统负载”，再按下面步骤建立实际可用配置。
 
 ## 4. 创建首个管理员
 
@@ -120,70 +123,39 @@ docker compose \
   < /secure/path/admin-password.txt
 ```
 
-## 5. 升级
 
-从包含 Codex 拼车的旧版本升级时，先阅读[移除升级说明](operations.md#codex-拼车移除升级)；
-迁移会停用原受保护渠道，必须审核普通授权后才能手动重新启用。
+管理员密码至少 12 字节。`bootstrap-admin` 只在没有 active admin 时成功；密码文件须由部署者保护，不放进版本库。然后按[路由指南](routing.md)建立凭证、接入、渠道、能力、模型规则及 Key 授权；空数据库启动后不能直接代理。
 
-移除 MCP 的版本包含 `0053_remove_mcp.sql`：删除 MCP 实例表、类型和系统设置，将历史
-MCP 日志归入 `client`，保留用量与费用，并兼容旧 spool/ingress 日志回放。升级前备份并停止
-所有旧实例；不要混跑新旧二进制，也不要仅回滚应用而继续使用已迁移数据库。移除旧配置中的
-`[mcp]` 段及构建命令中的 `mcp-server` feature。Images 与独立搜索 HTTP 接口不变。
+## 5. 记录存储与运行身份
 
-1. 备份 PostgreSQL，并确认本地 spool 与 `request_log_ingest` 已排空；包含 journal payload 破坏性变更的升级不能保留旧二进制写入的积压记录。
-2. 将 `config/compose.prd.env` 中的 `AI_GATEWAY_VERSION` 改为目标版本。
-3. 拉取镜像或在对应 tag 的 checkout 上重新构建。
-4. 执行 `up -d --no-build`；Gateway 启动时自动运行 migration。
-5. 检查 `/health`、容器日志、spool/ingress/settlement backlog 和 Console。
+| Compose 卷 | 容器路径 | 恢复责任 |
+| --- | --- | --- |
+| `postgres-data` | `/var/lib/postgresql` | 数据库支持的一致备份、角色/扩展和恢复演练 |
+| `gateway-spool` | `/var/lib/ai-gateway/request-log-spool` | 持久财务入口，保留完整目录，与数据库恢复点配套 |
+| `gateway-plugins` | `/var/lib/ai-gateway/plugins` | 插件库存和制品，单独备份，不由数据库工具自动包含 |
+| `gateway-image-edit-spool` | `/var/lib/ai-gateway/image-edit-spool` | 匿名短生命周期 scratch，不备份在途请求 |
 
-Gateway 会在数据库 migration advisory lock 下，将连续待执行 migration 放在同一个 PostgreSQL
-事务中；任一版本失败都会回滚同批已经执行的其他版本。历史 `0034`、`0046` 新增 PostgreSQL
-枚举值，因数据库要求先提交再引用而构成事务屏障；`0053–0063` 不含屏障，会整体提交或回滚。
-旧 Gateway 此前已经提交的 migration 不属于当前事务，仍需通过升级前备份恢复，不能靠切换旧
-二进制撤销。
+真实卷名受 Compose 项目名影响。长期运维固定 env 文件、项目名、工作目录和配置路径，不要因更换启动目录误建空卷。
 
-Migration `0061_zero_failed_and_cancelled_costs.sql` 会把历史失败/取消请求改为零费用，并退回
-此前已经结算的用户余额与 API Key 已用额度。升级前应保留余额、Key 额度和请求日志的一致备份。
+entrypoint 以 root 读取只读挂载，将配置与秘密复制到私有 tmpfs，准备卷所有权，再降权为 UID/GID `10001`。不要绕过 entrypoint，也不要通过 `chmod 777`、特权容器或挂 Docker socket 修复权限。镜像根文件系统只读；数据库、持久 spool、插件和 scratch 的写权限各有用途。
 
-Migration `0062_flat_model_route_candidates.sql` 会一次性展开旧 Channel Group 路由目标，并删除
-旧 group/channel 路由表。所有旧 Gateway 必须在应用 migration 前排空并停止；迁移后不能回切旧
-二进制。旧 `all` 目标只快照迁移时的当前成员，之后组成员变化不再自动改变模型规则。
+## 6. 停止与重新启动
 
-Migration `0063_independent_metering_facts.sql` 把历史费用与已结算状态回填到独立事实/回执，
-不再次扣款，并删除日志物理 `billed_at`。必须停止全部旧 worker 后整体切换，不能滚动混跑或
-仅回滚二进制。该 migration 本身不改变 journal 格式，支持版本的 spool/ingress 可以保留；
-未知 intent 必须保留待核对。发布前需用真实规模的隔离副本验证回填时长与磁盘/WAL 余量。
-完整备份、恢复与验收要求见[独立计量切换](../development/independent-metering.md)；
-手动隔离验证入口见[成对备份恢复演练](../development/persistence-rehearsal.md)。
-小数据开发库的通过结果不能代替不同数据量/硬件下的生产停机容量验收。
+停止前先在入口阻止新请求，让在途请求排空：
 
-Migration `0017_remove_legacy_compatibility.sql` 会永久删除
-`api_keys.tokens_per_minute` 与 `channels.health_check` 的值；升级前备份必须可用。
+```bash
+docker compose \
+  --env-file ./config/compose.prd.env \
+  -f docker-compose.prd.yaml \
+  stop gateway
+```
 
-Migration `0036_codex_images_projection.sql` 会新增旧版 Gateway 无法编译的 Codex
-`open_ai_images` groups。多实例部署必须先排空并停止所有未包含该 migration 对应代码的旧实例，
-再由新版本执行 migration 并整体切换；migration 应用后不得把流量或 Console 请求切回旧二进制。
+`stop` 不删除持久卷。默认容器停止宽限为 3 分钟，应长于服务的请求宽限加日志排空时间；改大服务超时后同时调整部署停止预算。启动或应用配置仍使用前面的 `up -d --no-build`，不可用 `down -v` 做常规维护。
 
-Migration `0040_codex_optional_account_id.sql` 允许个人 Codex 凭证把 workspace account ID 保存为
-`NULL`。旧二进制的持久化类型仍把该列当作必填字符串，无法加载新版本写入的 accountless
-凭证；多实例部署应停止旧实例后再升级并导入这类凭证，不能让新旧版本共同维护同一 Codex
-credential pool。
+## 升级、备份与验收
 
-Images edit 不增加数据库 migration，新二进制可以用未包含 `image_edit_*` 的旧 TOML 启动并采用
-默认值。但旧二进制的 TOML schema 使用 `deny_unknown_fields`，不能读取新增的
-`request_limits.image_edit_*` 设置；滚动升级或应用回滚时，必须让旧实例继续使用旧配置，或先从
-其配置中移除这些字段。所有实例完成升级前，也不要把 `/v1/images/edits` 流量发送到混合版本
-负载均衡池，否则旧实例会返回 404。
+升级前阅读[升级指南](upgrades.md)，完成停写、一致备份和目标版本兼容性检查，再调整 env 文件中的版本、拉取/构建并启动。数据库 migration 不能靠切回旧镜像撤销；恢复前必须处理升级后新增的数据。
 
-不要删除 `postgres-data`、`gateway-spool` 或正在服务请求的
-`gateway-image-edit-spool` volume 来完成升级。后者只保存匿名短生命周期文件，正常停止 Gateway
-后可以重建，但删除正在使用的 mount 会使 in-flight edit 失败。回滚应用版本前，
-先确认新 migration 是否向后兼容；数据库回滚必须依赖经过演练的备份恢复方案。
+备份目的地、加密、保留、异机副本、RPO/RTO 和恢复演练由部署方定义；默认 Compose 不执行这些工作。验收至少核对：镜像身份、原卷数据、运行 UID、HTTPS 登录及 Cookie、路由授权、日志/结算进度和停止后的持久性。真实上游验证会产生外部调用和费用，应单独授权；本指南不是压测或恢复通过证明。
 
-## 安全与耐久边界
-
-- 配置与密钥不会烤入镜像。容器 entrypoint 以 root 读取只读 mount，复制到私有
-  tmpfs 后降权为 UID/GID `10001` 运行 Gateway。
-- 根文件系统只读；request-log spool 与 Images edit scratch spool 使用两个独立本地卷。
-- Compose 的 PostgreSQL 参数与 `docker-compose.yml` 使用相同的单节点基线。
-- 生产必须另行设计 TLS、备份、PITR、监控、告警和高可用。
+容量建议见[配置与调优](production-configuration.md)，诊断见[日志与监控](observability.md)，秘密管理见[安全指南](security.md)。

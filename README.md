@@ -4,421 +4,93 @@
 
 # ai-gateway
 
-> **Status:** Current implementation, under active development. The public
-> data plane supports Chat Completions, Responses, Codex standalone web
-> search, non-streaming JSON Images generation, and multipart Images edits.
+> **Status:** Current implementation, under active development.
 
-<p align="center">
-  A production-oriented, single-binary Rust gateway for OpenAI-compatible LLM traffic.
-</p>
+[简体中文](README.zh-CN.md) · [Documentation](docs/README.md) · [Releases](https://github.com/oai404iao/ai_gateway/releases)
 
-<p align="center">
-  <a href="https://github.com/oai404iao/ai_gateway/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/oai404iao/ai_gateway/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/oai404iao/ai_gateway/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/oai404iao/ai_gateway"></a>
-  <a href="rust-toolchain.toml"><img alt="Rust 1.97.1" src="https://img.shields.io/badge/Rust-1.97.1-orange"></a>
-  <a href="LICENSE"><img alt="License: AGPL-3.0-only" src="https://img.shields.io/badge/license-AGPL--3.0--only-blue"></a>
-</p>
+`ai-gateway` is a self-hosted, single-binary Rust gateway for OpenAI-compatible
+LLM requests. Route traffic to configured upstreams, manage access through a
+separate Console, and record usage with durable asynchronous accounting.
 
-<p align="center">
-  <strong>English</strong>
-  ·
-  <a href="README.zh-CN.md">简体中文</a>
-  ·
-  <a href="docs/README.md">Documentation</a>
-</p>
+It supports Chat Completions, Responses over HTTP/SSE and WebSocket, non-streaming
+Images generation and multipart edits, and a Codex standalone search extension.
+API formats remain separate: the gateway does not translate between them.
+See the [compatibility reference](docs/reference/openai-compatibility.md) for
+supported operations and limits.
 
-`ai-gateway` is a self-hosted LLM request gateway built with Rust, Axum,
-Tokio, SQLx, and PostgreSQL (or SQLite on Linux). It keeps routing on an immutable in-memory
-snapshot, streams responses without whole-body buffering, and provides a
-separate management Console for users and administrators.
+## Get started
 
-The `general` connector is built in. Codex is a separately installed, trusted
-C ABI plugin maintained in [ai-gateway-connectors](https://github.com/oai404iao/ai-gateway-connectors);
-see [plugin installation and upgrade](docs/user/connector-plugins.md).
-Gateway images and archives do not bundle the Codex library.
+Follow the [quickstart](docs/user/quickstart.md) to start PostgreSQL, configure
+the Console, create the first administrator and route, and send a request.
+An empty control plane can pass health checks but cannot proxy requests yet.
 
-PostgreSQL remains the default. For single-instance local-file deployment,
-see [SQLite setup and offline recovery](docs/user/sqlite.md); source builds require
-`--features sqlite-backend`, while official container/release builds include it.
+Choose another setup if it better fits your deployment:
 
-## ✨ Features
+| Goal | Guide |
+| --- | --- |
+| Deploy the released image on one host | [Production Compose](docs/user/production-deployment.md) |
+| Use a local database file on Linux | [SQLite deployment and offline recovery](docs/user/sqlite.md) |
+| Configure limits, storage, and capacity | [Production configuration](docs/user/production-configuration.md) |
+| Connect a Codex subscription | [Install the connector plugin](docs/user/connector-plugins.md) |
 
-- **OpenAI-compatible data plane** for Chat Completions, Responses, the Codex
-  standalone web-search extension, Images generation, and multipart Images
-  edits over HTTP, SSE, and Responses WebSocket where applicable.
-- **Model-rule-owned priority tiers and weighted channel/model candidates**
-  with passive health, optional session affinity, and controlled failover on
-  transport failures or explicitly configured upstream statuses.
-- **In-process upstream connectors** keep provider-specific authentication and
-  request preparation inside the single Rust service. The first connector,
-  Codex OAuth, adds subscription credentials, per-account proxies, token
-  refresh, quota-aware draining, and shared provider-managed Responses
-  HTTP/SSE/WebSocket/search plus Images generation/edit channels.
-- **Bounded Images uploads** spill multipart edits from memory to anonymous
-  permission-restricted temporary files without raising the global JSON body
-  limit, and expose spool capacity/failure metrics in the Console.
-- **Database-backed control plane** compiled into immutable runtime snapshots;
-  proxy requests do not query PostgreSQL on the hot path.
-- **Constrained transforms** for request JSON, request/response headers, and
-  SSE/WebSocket JSON events, with protected-header enforcement and upstream
-  credential injection. Ordinary non-streaming response bodies pass through
-  without JSON rewriting.
-- **Admission and accounting** with process-local RPM/concurrency limits, soft
-  USD quotas, durable request-log spooling, usage extraction, and asynchronous
-  settlement.
-- **Management Console** with JWT sessions, user/admin roles, administrator-
-  assisted temporary-password recovery, API-key policy, routing and channel
-  management, owner-scoped
-  request/cost analytics, administrator system analytics, audit logs, and
-  optimistic concurrency.
-- **Single-binary deployment** with an optional embedded React Console UI; no
-  Node.js process is required in production.
+PostgreSQL is the default backend. Source builds require `sqlite-backend` for
+SQLite; official images and release binaries include it. The `general` connector
+is built in. Codex requires a separately installed, explicitly enabled native
+plugin from [ai-gateway-connectors](https://github.com/oai404iao/ai-gateway-connectors);
+gateway distributions do not bundle it.
 
-## 🔌 Supported APIs
+## Use and operate the gateway
 
-| Endpoint | Authentication | Purpose |
-| --- | --- | --- |
-| `GET /health` | None | Liveness check; returns `204 No Content`. |
-| `GET /v1/models` | Client API key | Lists models reachable by the key. |
-| `POST /v1/chat/completions` | Client API key | Proxies Chat Completions requests. |
-| `POST /v1/responses` | Client API key | Proxies Responses requests over HTTP or SSE. |
-| `POST /v1/alpha/search` | Client API key | Proxies non-streaming Codex standalone web-search requests through capable Responses channels. |
-| `GET /v1/responses` + Upgrade | Client API key | Proxies sequential Responses requests over WebSocket. |
-| `POST /v1/images/generations` | Client API key | Proxies non-streaming JSON Images generation requests. |
-| `POST /v1/images/edits` | Client API key | Proxies non-streaming multipart Images edit requests. |
+- [Use the APIs and Console](docs/user/operations.md): client keys, routes,
+  streaming, credentials, logs, and billing.
+- [Check compatibility](docs/reference/README.md): accepted request fields,
+  protocol behavior, and upstream-specific limitations.
+- [Run securely](docs/user/security.md): listener exposure, credentials,
+  trusted plugins, and recovery boundaries.
 
-Each API format uses a separate protocol rule under its priced client model and
-never falls back or transforms into another format. Public `/v1/images/edits` JSON/data-URL edits, image streaming, embeddings,
-audio, files, batches, assistants, and fine-tuning APIs are outside the
-current scope. See the
-[OpenAI compatibility reference](docs/reference/openai-compatibility.md) for
-the exact validation, streaming, retry, and pass-through boundaries.
+The public `/v1/*` listener uses client API keys. The Console API and optional
+embedded React UI use a **separate** listener and JWT sessions. Production needs
+no Node.js process; the gateway does not terminate TLS. Put the Console behind
+an HTTPS reverse proxy.
 
-## 🏗️ Architecture
+Routing uses immutable in-memory snapshots rather than a per-request control-plane
+database query. Upstream clients are reused, normal responses are streamed, and
+requests are never retried after downstream response headers or bytes are sent.
+RPM, concurrency, affinity, health, and WebSocket pools are process-local, not
+cluster-wide coordination.
 
-```text
-OpenAI-compatible client
-  │  Bearer API key
-  ▼
-Public listener (/v1/*)
-  → authentication and admission
-  → immutable routing snapshot
-  → channel selection and optional transforms
-  → reusable HTTP client or pinned Responses WebSocket
-  → streamed upstream response
-  → durable asynchronous logging, usage, and settlement
+Request logs omit prompts, completions, complete headers, and credentials.
+The database and backups still contain credential-sensitive control-plane data.
+Quotas are soft checks, not prepaid cost reservations; see the
+[operations guide](docs/user/operations.md) before relying on them for spending limits.
 
-Browser or Console client
-  │  JWT through an HTTPS reverse proxy
-  ▼
-Console listener (/console/v1/*)
-  → user/admin authorization
-  → PostgreSQL transaction and audit record
-  → immediate runtime snapshot publication
-```
+## Develop
 
-The public data-plane listener never serves the Console API or UI. The Console
-listener is separate so it can have its own network and browser security
-policy.
+Start with the [development setup](docs/development/getting-started.md), then
+choose a topic from the [maintainer guide](docs/development/README.md).
+Rust **1.97.1** is pinned in [`rust-toolchain.toml`](rust-toolchain.toml).
+Console tooling requires Node.js 24 and pnpm 11.17.0.
 
-## 🚀 Quick start
-
-### Prerequisites
-
-- Rust **1.97.1** (Rust 2024 edition), pinned by `rust-toolchain.toml` as the
-  supported development and release toolchain.
-- PostgreSQL, or Docker with Docker Compose.
-- OpenSSL for generating the local password and Console signing keys.
-- Node.js 24 and pnpm 11.17 only when developing or building the Console UI.
-
-### 1. Start PostgreSQL and the gateway
+With the development database configured and running:
 
 ```bash
-git clone https://github.com/oai404iao/ai_gateway.git
-cd ai_gateway
-
-mkdir -p ./config
-openssl rand -hex 32 > ./config/postgres-password
-chmod 600 ./config/postgres-password
-cp config.example.toml ./config/config.toml
-
-docker compose up -d
-cargo run
-```
-
-Verify the public listener:
-
-```bash
-curl -i http://127.0.0.1:3000/health
-# HTTP/1.1 204 No Content
-```
-
-The binary applies database migrations automatically. The default template
-starts with an empty control plane and leaves the Console disabled, so health
-checks work immediately but proxy requests require the next steps.
-
-The default configuration path is `./config/config.toml`. A different path can
-be passed as the first argument:
-
-```bash
-cargo run -- ./config/other-config.toml
-```
-
-The service does not load `.env` files or use an XDG configuration directory.
-
-### 2. Enable the Console
-
-Generate an Ed25519 key pair:
-
-```bash
-openssl genpkey -algorithm Ed25519 \
-  -out ./config/console-jwt-private.pem
-openssl pkey \
-  -in ./config/console-jwt-private.pem \
-  -pubout \
-  -out ./config/console-jwt-public.pem
-chmod 600 ./config/console-jwt-private.pem
-```
-
-Uncomment and review `[console]` and `[auth]` in
-[`config.example.toml`](config.example.toml), then apply those settings to
-`./config/config.toml`. The Console listener should remain behind an HTTPS
-reverse proxy; the gateway does not terminate TLS.
-
-Create the first administrator by reading the password from standard input:
-
-```bash
-cargo run -- bootstrap-admin \
-  --email admin@example.com \
-  --display-name "Initial Admin" \
-  --password-stdin < /secure/path/admin-password.txt
-```
-
-If an existing active administrator is locked out, use the stdin-only
-`reset-admin-password` recovery command documented in the
-[operations guide](docs/user/operations.md#紧急重置管理员密码).
-
-Restart the gateway after enabling the Console. By default, the public API is
-available at `http://127.0.0.1:3000` and the Console API at
-`http://127.0.0.1:3001`.
-
-### 3. Provision a route
-
-Use the Console UI or API to create:
-
-1. A priced model.
-2. A channel group for the required API format and connector. Creating a Codex
-   OAuth Responses group also creates a disabled Images group backed by the
-   same credential pool.
-3. A channel with its upstream URL, credentials, and available models.
-4. A top-level model rule attached to the priced client model, then one or
-   more format-specific protocol rules. Each tier contains explicit,
-   independently weighted channel/upstream-model candidates, edited as rows
-   in the Console. See [routing operations](docs/user/operations.md) for details.
-5. A client API key with `proxy` permission; add `models.read` for
-   `/v1/models`.
-
-Create separate protocol rules under the priced model for Chat Completions,
-Responses, and Images as needed. The
-[operations guide](docs/user/operations.md) documents the full Console route
-inventory and control-plane behavior.
-
-### 4. Send a request
-
-```bash
-export AI_GATEWAY_API_KEY='replace-with-client-key'
-
-curl http://127.0.0.1:3000/v1/chat/completions \
-  --header "Authorization: Bearer $AI_GATEWAY_API_KEY" \
-  --header 'Content-Type: application/json' \
-  --data '{
-    "model": "gateway-chat-model",
-    "messages": [
-      {"role": "user", "content": "Say hello."}
-    ]
-  }'
-```
-
-OpenAI-compatible clients can use the public listener as their base URL. A
-Responses route uses the same client authentication but sends requests to
-`/v1/responses`.
-
-## 🖥️ Console UI
-
-For frontend development, run the Rust API and Vite dev server separately:
-
-```bash
-# Terminal 1
-cargo run
-
-# Terminal 2
-pnpm --dir web/console install --frozen-lockfile
-pnpm --dir web/console dev
-```
-
-Then open `https://console.localhost:5173`. The Vite server proxies
-`/console/v1/*` to the gateway.
-
-For a production single binary, build and embed the SPA:
-
-```bash
-pnpm --dir web/console install --frozen-lockfile
-pnpm --dir web/console build
-cargo build --release --features embedded-console-ui
-```
-
-Set `[console].ui_enabled = true` before running that binary. UI assets are
-served only from the Console listener. See
-[`web/console/README.md`](web/console/README.md) for frontend workflows.
-
-## ⚙️ Configuration
-
-Configuration is split into two layers:
-
-| Layer | Source | Examples |
-| --- | --- | --- |
-| Process/bootstrap | TOML | Listeners, PostgreSQL, request limits, one-time defaults for forwarding settings, durable spool, Console JWT key paths. |
-| Dynamic control plane | PostgreSQL through the Console | Users, API keys, models, routes, channels, proxies, transforms, and forwarding settings. |
-
-Console writes validate the complete candidate configuration before commit and
-publish a new immutable snapshot immediately afterward. A periodic reload
-worker provides cross-process convergence.
-
-Start with [`config.example.toml`](config.example.toml). Production sizing,
-PostgreSQL tuning, storage, and operational metrics are covered in the
-[production configuration guide](docs/user/production-configuration.md).
-
-## 🐳 Production deployment
-
-Tagged releases publish:
-
-- a multi-platform image at `ghcr.io/oai404iao/ai_gateway`;
-- GitHub Release archives containing the production binary and required
-  license material.
-
-Pin an immutable version in production instead of relying on `latest`.
-[`docker-compose.prd.yaml`](docker-compose.prd.yaml) provides a complete
-single-host Gateway and PostgreSQL stack with persistent database and
-request-log spool volumes plus a separate local Images edit scratch volume.
-
-This Compose setup is a deployment baseline, not a high-availability platform:
-TLS termination, backups, PITR, monitoring, alerting, and PostgreSQL HA remain
-operator responsibilities. Follow the
-[production deployment guide](docs/user/production-deployment.md) before
-starting the stack.
-
-## 🧭 Runtime boundaries
-
-- Requests are authenticated and admitted before their body is read.
-- Client Headers and top-level body fields are checked against the
-  [request allowlist contract](docs/reference/request-allowlists.md); unknown
-  body fields fail closed while unknown Headers are ignored.
-- Original request bytes are preserved when neither request policy nor a model
-  alias/configured body transform changes them.
-- `POST /v1/responses` accepts `identity` or `zstd` request bodies. A Responses
-  channel group may independently compress the final upstream HTTP JSON body
-  with zstd; WebSocket, standalone search, and Images remain uncompressed.
-- A user group can enable Fast filtering, which removes top-level
-  `service_tier` immediately after ingress allowlist validation so it does not
-  affect logs, billing multipliers, affinity, transforms, or upstream requests.
-- Codex connectors replace client-local installation/workspace fingerprints
-  with credential-stable and administrator-configured synthetic metadata
-  before forwarding.
-- Client credentials, hop-by-hop headers, `Connection`-declared headers, and
-  common reverse-proxy/CDN forwarding metadata are removed before every
-  upstream channel request.
-- Multipart Images edits use dedicated total/file limits and spill to
-  anonymous temporary files after the configured memory threshold.
-- Upstream responses are streamed; the gateway does not buffer the complete
-  response for normal forwarding or usage collection.
-- Automatic failover covers connection failures and timeouts before upstream
-  response headers. Administrators may additionally opt specific 4xx/5xx
-  statuses into failover before any response is sent downstream. Each retry
-  excludes the exact channel/model candidate already attempted; another model
-  on the same channel remains eligible. No switch occurs after downstream
-  headers or response bytes are sent.
-- RPM, concurrency, passive health, session affinity, and WebSocket pools are
-  process-local rather than cluster-coordinated.
-- Request logs do not persist prompts, completions, full headers, API keys,
-  cookies, or unredacted upstream error bodies.
-- All balances, quotas, prices, and request costs use USD.
-
-## 🛠️ Development
-
-Start PostgreSQL, then run the Rust checks from the repository root:
-
-```bash
-docker compose up -d
 cargo fmt --check
 cargo clippy --locked --workspace --all-targets
 cargo test --locked --workspace
 ```
 
-Console checks:
+For frontend commands, see [`web/console/README.md`](web/console/README.md).
+Console API shapes come from [`console-v1.yaml`](docs/openapi/console-v1.yaml);
+regenerate TypeScript types rather than editing them by hand.
 
-```bash
-pnpm --dir web/console install --frozen-lockfile
-pnpm --dir web/console generate:api:check
-pnpm --dir web/console typecheck
-pnpm --dir web/console lint
-pnpm --dir web/console test
-pnpm --dir web/console build
-```
+Forwarding changes also require the [paid real-upstream smoke test](docs/development/real-upstream-smoke.md)
+with explicit authorization. [Performance runs](docs/development/forwarding-performance.md)
+are separately opt-in; neither belongs in routine setup.
 
-The Console OpenAPI contract is
-[`docs/openapi/console-v1.yaml`](docs/openapi/console-v1.yaml); generated
-TypeScript declarations must not be edited by hand. Forwarding-path changes
-also require the explicitly authorized real-upstream smoke test described in
-[`docs/development/real-upstream-smoke.md`](docs/development/real-upstream-smoke.md).
+## License
 
-## 🗂️ Repository layout
-
-```text
-src/                    Rust service
-  application/          Proxy and Console orchestration
-  domain/               API formats, routing, and value objects
-  http/                 Public and Console Axum routers
-  persistence/          PostgreSQL repositories
-  routing/              Selection and passive health
-  transforms/           Constrained transform engine
-  upstream/             Reusable HTTP and WebSocket clients
-  workers/              Reload, logging, projection, and settlement
-web/console/            React + TypeScript management SPA
-migrations/             Ordered PostgreSQL migrations
-tests/                  Rust integration tests
-tools/forwarding-perf/  Opt-in forwarding benchmark tooling
-docs/                   User, development, and compatibility documentation
-```
-
-## 📚 Documentation
-
-| Guide | Audience |
-| --- | --- |
-| [Documentation center](docs/README.md) | Complete document map and source precedence. |
-| [Operations](docs/user/operations.md) | Data plane, Console API, logging, billing, and runtime behavior. |
-| [Production configuration](docs/user/production-configuration.md) | Capacity, PostgreSQL, storage, and observability. |
-| [Production deployment](docs/user/production-deployment.md) | Compose, secrets, upgrades, and deployment boundaries. |
-| [OpenAI compatibility](docs/reference/openai-compatibility.md) | Supported semantics and intentional differences. |
-| [Current architecture](docs/development/architecture.md) | Runtime design and module boundaries. |
-| [Release process](docs/development/releasing.md) | Versioning, verification, packaging, and publication. |
-
-## 🔐 Security
-
-- Keep `./config/config.toml`, database passwords, upstream credentials, client
-  API keys, and Console JWT private keys out of version control.
-- Prefer `[database].password_file` over embedding a password in TOML.
-- Treat PostgreSQL, backups, and Console access as credential-sensitive.
-- Expose the Console only through a deliberately configured HTTPS reverse
-  proxy and restrict the public listener to the intended network boundary.
-
-## 📜 License
-
-`ai-gateway` is licensed under the
-[GNU Affero General Public License v3.0 only](LICENSE)
-(`AGPL-3.0-only`).
-
-If you modify the program and make the modified version available to users
-over a network, AGPL section 13 requires offering those users access to the
-corresponding source code. Third-party components retain their own licenses;
-see [`LICENSES/`](LICENSES/) and
-[`web/console/NOTICES.md`](web/console/NOTICES.md).
+[GNU Affero General Public License v3.0 only](LICENSE) (`AGPL-3.0-only`).
+If you modify the program and make it available to users over a network,
+AGPL section 13 requires offering those users access to the corresponding source.
+Third-party notices and redistribution material are in [`LICENSES/`](LICENSES/)
+and [`web/console/NOTICES.md`](web/console/NOTICES.md).

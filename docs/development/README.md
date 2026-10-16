@@ -1,67 +1,76 @@
-# 开发文档
+# 维护者文档
 
-> 状态：当前索引。面向后端、前端、测试、运维工具和发布维护者。
+> 状态：当前索引。面向后端、前端、测试和发布维护者。
 
-## 当前架构与设计
+首次参与开发，先[设置环境](getting-started.md)，再阅读[当前架构](architecture.md)。
+部署和调用步骤在[用户指南](../user/README.md)，无需先读完所有设计记录。
 
-- [当前架构](architecture.md)：运行拓扑、请求链路、模块边界和来源优先级。
-- [原生连接器插件](connector-plugins.md)：C ABI、宿主/插件职责、外部 Codex 与发布验收。
-- [连接器响应适配 SDK](connector-response-adapters.md)：协议 3 能力描述、有界同格式
-  JSON/SSE 归一化、请求级状态和独立计量边界。
-- [上游 usage 规范化](usage-normalization.md)：实际上游接口的解析选择、缓存包含/拆分、
-  规范计数及未知 usage 的边界。
-- [Codex OAuth Connector 设计记录](codex-oauth-connector.md)：进程内 Connector、
-  managed channel、凭证快照、quota 与粘性边界。
-- [OpenAI Images 转发设计与分阶段实施](openai-images.md)：格式/操作拆分、generation/edit
-  转发、Codex 凭证共享投影，以及 replayable 大 body 边界。
-- [数据库与控制面架构](database-architecture.md)：当前持久化实体组、快照编译和 schema
-  修改流程；逐列结构以 migration 为准。
-- [控制面软删除](soft-deletion.md)：不可恢复墓碑语义、自动解绑边界和三阶段实施记录。
-- [Console 认证与授权设计记录](console-auth.md)
-- [Console Web UI 架构与开发指南](console-ui.md)：当前 Base UI 技术栈、会话、安全、构建和测试。
-- [Console 导航与页面交互规范](console-interaction-standard.md)：父级返回、列表、详情布局、草稿和历史入口。
-- [请求日志耐久化流水线](request-log-durability.md)
-- [持久化行为契约基线](persistence-contracts.md)：金额、结算原子性、重放、约束测试和费用读写路径；
-  明确独立计量事实实施前的已知限制。
-- [持久化操作接口](persistence-interfaces.md)：P2 的专属事务操作、窄仓储句柄、PG 错误与池观测边界。
-- [SQLite 双后端实施](sqlite-backend.md)：第三阶段范围、开发基础、分阶段契约与生产启用门槛；尚不可部署。
-- [SQLite 文件与迁移生命周期](sqlite-lifecycle.md)：协作式进程 lease、数据库身份、原子迁移与故障验收。
-- [SQLite schema 约束映射](sqlite-schema-mapping.md)：0063 后完整业务 baseline、数据库保护、类型编码与归一化写入契约。
-- [SQLite 身份与控制面](sqlite-control-plane.md)：S3 后端分派、完整认证/管理操作与双后端契约；生产配置仍关闭。
-- [SQLite 耐久计量、结算与查询](sqlite-metering.md)：S4 原子财务链路、精确聚合、独立查询投影和取消/崩溃恢复。
-- [SQLite Codex 仓储](sqlite-codex.md)：S5 OAuth/配额、外部调用 fencing 与未知结果恢复。
-- [独立计量事实与结算回执](independent-metering.md)：P3 的财务来源、pending 工作集合、独立投影和 0063 停机切换。
-- [0063 升级与成对备份恢复演练](persistence-rehearsal.md)：P4 的手动小数据量演练、PG dump/restore、spool/WAL 配对及 10/30 分钟预算。
-- [统计功能设计](statistics.md)
-- [Transform DSL](transform-dsl.md)
+## 修改转发与连接器
 
-早期的产品蓝图、11 表数据库方案和 Console UI 分阶段计划已移入
-[`docs/archive/`](../archive/README.md)，只用于追溯。
+| 任务 | 阅读 |
+| --- | --- |
+| 理解请求顺序、快照和模块职责 | [架构](architecture.md) |
+| 修改上游身份、授权、能力与操作路由 | [上游实体与路由设计](upstream-identity-capabilities.md) |
+| 实现或升级原生插件 | [插件边界](connector-plugins.md)、[SDK](../../crates/connector-sdk/README.md)、[命令契约](../../crates/connector-sdk/docs/commands.md) |
+| 修改 Codex 生命周期与宿主适配 | [Codex 设计记录](codex-oauth-connector.md) |
+| 修改 Images generation/edit | [Images 转发](openai-images.md) |
+| 实现同格式 JSON/SSE 响应适配 | [响应适配 SDK](connector-response-adapters.md) |
+| 修改用量解析与缓存计数 | [usage 规范化](usage-normalization.md) |
+| 修改受限变换 | [Transform DSL](transform-dsl.md) |
 
-## 设计提案
+公共请求策略以[请求策略 JSON](../reference/request-allowlists.json)为准；供应商特有隐私和
+body/Header 策略归外部插件。转发变更需 deterministic tests 和经明确授权的真实上游验证，
+见[测试入口](getting-started.md#选择验证层级)。
 
-- [上游身份、渠道能力与路由目标重构](upstream-identity-capabilities.md)：三阶段设计，
-  独立凭证身份优先实施；协议转换不在范围内。
-- [持久化边界与独立计量事实](persistence-boundaries.md)：第二阶段的存储职责、金额与恢复契约、
-  PG 封装，以及独立计量事实/结算回执的迁移和验收计划；P4 提供小数据量演练，实际发布容量须匹配部署条件。
+## 修改 Console
 
-## 测试、性能与发布
+- [认证与授权](console-auth.md)：JWT、会话、角色与归属边界。
+- [前端架构](console-ui.md)与[前端命令](../../web/console/README.md)：开发、构建和嵌入式交付。
+- [导航与页面交互](console-interaction-standard.md)：列表状态、返回、草稿和历史入口。
+- [统计口径](statistics.md)：个人与系统范围、费用与监控定义。
 
-- [系统 E2E](system-e2e.md)：真实浏览器、CLI、Gateway、临时 PostgreSQL 与共享协议场景。
-- [日志故障准入审查](request-log-admission-review.md)：现状、风险、决策边界与后续故障验证。
+请求/响应形状先修改 [OpenAPI](../openapi/console-v1.yaml)，再生成前端类型并更新测试。
+不要从设计记录或生成类型反向定义契约。
 
-- [持续集成与安全扫描](continuous-integration.md)：路径感知门禁、稳定
-  `ci-gate`、cache 写入边界、Playwright、CodeQL 与默认分支 ruleset。
-- [安全告警核查与处置](security-alert-triage.md)：逐条 CodeQL 核查证据、测试用途与误报边界，
-  以及必须重新评估的条件。
-- [Rust 单工具链策略](rust-toolchain-policy.md)：固定开发、CI、Release 和容器
-  构建使用的同一版本，并定义协调升级门禁。
-- [真实上游 smoke test](real-upstream-smoke.md)：付费、显式执行的转发验证。
-- [转发性能测试](forwarding-performance.md)：隔离的手动性能 Harness。
-- [版本发布流程](releasing.md)
+## 修改持久化与恢复
 
-## 开发入口
+- [数据库与控制面](database-architecture.md)：实体、事务、迁移与快照发布。
+- [软删除](soft-deletion.md)：墓碑、解绑、历史查询与不可恢复边界。
+- [持久化行为契约](persistence-contracts.md)和[操作接口](persistence-interfaces.md)：金额、原子性、错误与仓储边界。
+- [耐久请求流水线](request-log-durability.md)：spool、入口、独立投影与结算。
+- [独立计量事实](independent-metering.md)：财务事实、pending 集合和唯一结算回执。
+- [日志故障准入](request-log-admission-review.md)：故障矩阵与准入策略。
+- [成对备份恢复演练](persistence-rehearsal.md)：0063 演练的步骤、测量口径与限制。
+- [持久化边界设计记录](persistence-boundaries.md)：拆分动机与切换约束。
 
-编码 Agent 应先阅读仓库根目录 [`AGENTS.md`](../../AGENTS.md)。普通贡献者也可使用其中的命令和变更工作流，但产品使用方式应以 [`docs/user/`](../user/README.md) 为准。
+### SQLite 专题
 
-Console API 契约变更必须从 [`docs/openapi/console-v1.yaml`](../openapi/console-v1.yaml) 开始，并重新生成前端类型。
+部署请直接阅读[用户指南](../user/sqlite.md)。修改实现时按职责阅读：
+
+| 职责 | 文档 |
+| --- | --- |
+| 整体范围与双后端决策 | [SQLite 后端](sqlite-backend.md) |
+| 文件、lease、身份、迁移与恢复 | [生命周期](sqlite-lifecycle.md) |
+| 类型编码、约束与索引 | [schema 映射](sqlite-schema-mapping.md) |
+| 认证、管理与快照 | [身份与控制面](sqlite-control-plane.md) |
+| 计量、结算与查询 | [耐久计量](sqlite-metering.md) |
+| OAuth、外部副作用与不确定结果 | [Codex 仓储](sqlite-codex.md) |
+
+## 验证、排障与发布
+
+- [系统 E2E](system-e2e.md)：真实浏览器、CLI、隔离网关和双数据库场景。
+- [真实上游 smoke](real-upstream-smoke.md)：显式授权、付费外部调用。
+- [转发性能测试](forwarding-performance.md)：仅按需执行的隔离负载工具。
+- [CI 与安全扫描](continuous-integration.md)：路径选择、`ci-gate` 和 cache 写入限制。
+- [安全告警处置](security-alert-triage.md)：逐条证据、历史核查与重新评估条件。
+- [Rust 工具链](rust-toolchain-policy.md)：固定版本及协调升级。
+- [版本发布](releasing.md)：验证、产物、tag 与发布后检查。
+
+## 维护仓库与文档
+
+Git 与 worktree 工作流见[项目工作流](../../.agents/skills/ai-gateway-development-workflow/SKILL.md)。
+编码 Agent 另需遵守 [`AGENTS.md`](../../AGENTS.md)。
+
+文档变更阅读[编写规范](../documentation-standard.md)；组织和写法的依据见
+[Pi 文档研究](documentation-design.md)。[历史归档](../archive/README.md)只用于追溯，
+不要把过去的实施切片、验收记录或退出条件当成当前部署状态。

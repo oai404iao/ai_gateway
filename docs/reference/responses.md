@@ -1,71 +1,96 @@
 # Responses API 参考
 
-> 类型：外部参考。
+> 类型：外部参考与网关兼容边界。
 >
-> 最近核对：2026-08-04。
+> 最近核对：2026-08-04。外部连接时限等观察保留该日期，不代表重新核验。
 >
-> 权威来源：[Create a model response](https://developers.openai.com/api/reference/resources/responses/methods/create)、[Streaming API responses](https://developers.openai.com/api/docs/guides/streaming-responses) 和 [WebSocket mode](https://developers.openai.com/api/docs/guides/websocket-mode)。
+> 权威来源：[Create a model response](https://developers.openai.com/api/reference/resources/responses/methods/create)、
+> [Streaming API responses](https://developers.openai.com/api/docs/guides/streaming-responses)、
+> [WebSocket mode](https://developers.openai.com/api/docs/guides/websocket-mode)。
+
+## 选择传输
+
+| 需要 | 客户端入口 | 网关操作 |
+| --- | --- | --- |
+| 一次 JSON 或 SSE 调用 | `POST /v1/responses` | `responses` |
+| 顺序交互和连接级增量上下文 | `GET /v1/responses` Upgrade | `responses-ws` |
+
+两者都属于 `open_ai_responses`，但能力和模型操作路由分别配置，不能借用对方路由。
+订阅凭证后端另有[Codex 限制](codex-oauth-connect.md)，不是所有普通 Responses 都必须使用 SSE。
+
+## 最小请求
+
+```bash
+curl "$GATEWAY_BASE_URL/v1/responses" \
+  -H "Authorization: Bearer $GATEWAY_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"your-client-model","input":"Reply with OK."}'
+```
+
+`GATEWAY_BASE_URL` 不含 `/v1`。增加 `"stream":true` 可请求 SSE；请求会产生正常调用费用。
+WebSocket 在握手中使用同一 Gateway Bearer Key，连接后发送：
+
+```json
+{"type":"response.create","model":"your-client-model","input":[{"role":"user","content":"Reply with OK."}]}
+```
+
+等待本条终态后才能发下一条。不要把 HTTP `stream` 请求方式与 WS 事件封装混为一谈。
 
 ## 外部接口关键语义
 
-- 请求路径是 `POST /v1/responses`。
-- 请求以 `model` 和 `input` 为核心，也可按模型能力使用 instructions、tools、结构化输出等字段。
-- 非流式响应返回 Response JSON 对象。
-- `stream=true` 时，响应是带语义事件类型的 SSE 流；客户端应根据 `type` 处理事件，而不是假设所有 `data:` 都是文本 delta。
-- 成功流通常包含 `response.completed`；失败流可能包含 `response.failed`。完整事件集合以官方文档为准。
-- WebSocket 模式通过 `/v1/responses` Upgrade 建立长连接，客户端发送
-  `response.create` JSON 文本消息，并接收与 SSE 相同的 Responses 事件对象。
-- 一个 WebSocket 同时只能有一个 Response 在途；后续请求必须等待前一个 Response 完成。
-- `previous_response_id` 可让同一连接只发送新增输入；服务端缓存属于具体 WebSocket
-  连接，断开后不可假设仍然存在。
-- 官方服务当前把单条 Responses WebSocket 的最长连接时间限制为 60 分钟。
+Responses 以 `model`、`input` 为核心，instructions、tools 和结构化输出依模型能力而定。
+非流式返回 Response 对象；SSE 返回有类型的事件，不能把每个 `data:` 当文本 delta。
+核对时成功流通常包含 `response.completed`，失败可能包含 `response.failed`。
+
+官方 WebSocket 模式发送 `response.create` 并接收 Responses 事件对象，一次只能有一个
+Response 在途。`previous_response_id` 的增量缓存属于具体连接，断线后不可假定仍存在；
+核对时官方连接最长 60 分钟。其他上游须单独确认这些约束。
 
 ## ai-gateway 行为
 
-- 此路径只匹配 `open_ai_responses` 模型规则、渠道组和渠道。
-- 网关不会把 `input` 转换为 Chat Completions `messages`，也不会反向转换响应。
-- HTTP 与 WebSocket `response.create` 分别使用独立顶层字段白名单；未知顶层字段返回本地
-  `400`，允许字段内部的嵌套结构仍由目标上游解释。
-- 客户端 policy 未删除字段且无变换时保留原始请求字节；模型别名只改写顶层 `model`。
-- 普通 JSON 和 SSE 响应默认流式透传。
-- SSE 变换按 Responses 事件类型匹配，不能使用 Chat Completions 事件规则。
-- WebSocket 事件使用同一套 Responses 事件选择器和 JSON patch 规则，但没有 SSE 文本 envelope。
-- usage 采集识别 `input_tokens`、`output_tokens`、
-  `input_tokens_details.cached_tokens`、`input_tokens_details.cache_write_tokens`
-  和 `output_tokens_details.reasoning_tokens`。
-- 日志识别 `response.completed` 和 `response.failed` 作为应用层终态；终态可在底层连接 EOF 前完成日志结果判断。
-- WebSocket Upgrade 使用 Gateway Bearer Key；每个 `response.create` 重新鉴权、独立准入、选路、
-  usage、计费和日志。
-- 下游未设置时，网关默认注入
-  `OpenAI-Beta: responses_websockets=2026-02-06`；渠道请求 Header 变换可覆盖该值。
-- 网关不在连接内多路复用；成功终态后的干净上游连接立即进入有界池，同一下游 Session 的下一条消息
-  优先取回同一连接。池按 Gateway API Key、下游握手身份、渠道、目标、网络策略和最终 Header 精确
-  隔离。
-- 上游 WebSocket 池最多保留 128 条空闲连接；同一精确身份只保留最近一条，空闲 5 分钟或总龄
-  55 分钟后淘汰，以避开官方 60 分钟上限。
-- 非空 `previous_response_id` 只会发送到精确命中的池连接；状态连接已经丢失时，网关不建立新连接
-  转发增量输入，而是返回 `404 previous_response_not_found`，要求客户端重发完整请求。
-- 上游 `websocket_connection_limit_reached` 和 `previous_response_not_found` 控制错误会原样
-  转发并使对应连接退出复用；这两类事件不会触发渠道自动禁用或清除 Session affinity。
-- 上游 Upgrade 前的连接类失败可以按全局重试策略故障转移；请求消息发出后不重试。
-- 上游握手发生在下游 Upgrade 和首条消息之后，因此上游握手响应 Header 与响应 Header 变换不能
-  回填到下游握手。请求 Header、请求 JSON 和 Responses 事件变换仍然生效。
+### HTTP 与事件
+
+- HTTP 和 WS 分别检查顶层白名单；未知字段本地 `400`，允许字段内部由上游或插件解释。
+- 不在 `input` 与 Chat `messages` 之间转换。模型别名只改顶层 `model`；无任何 body
+  修改时保留原始字节。
+- HTTP `Content-Encoding: zstd` 在大小限制内解码后才检查策略；其他 JSON 操作不因此获得 zstd 入口。
+- Responses HTTP 操作能力可显式选择出站 zstd：只编码适配后的最终 HTTP Responses JSON，
+  不用于 WS、search 或 Images。
+- JSON/SSE 默认逐块转发。Responses SSE 规则按事件类型选择；WS 可使用相同事件选择器和
+  JSON patch，但没有 SSE 文本 envelope。显式响应适配仍限定同格式。
+- 内置 Responses usage 支持 `input_tokens`、`output_tokens`、缓存命中/写入和 reasoning
+  细分；插件供应商解析见[usage 规范化](../development/usage-normalization.md)。
+- `response.completed` / `response.failed` 可在 EOF 前确定日志终态。
+
+### WebSocket 状态与复用
+
+Upgrade 验证 API Key，每个 `response.create` 再独立执行鉴权、准入、选路、日志和计费。
+系统、用户和选中操作能力的 WS 条件均须满足；不可用时用通用 `426 websocket_unavailable`，
+不泄露内部渠道或插件状态。
+
+成功终态且无残留事件的上游连接才返回有界池，同 Session 优先复用。池身份包括 API Key、
+下游握手身份、渠道及凭证/接入版本、上游模型、插件 generation、网络策略、目标和最终 Header。
+轮换或改绑不会因为密钥文本相同而复用旧身份。
+
+池参数由运行时设置控制：默认最多 128 条空闲连接、空闲 300 秒、总龄 3300 秒；不是固定协议限制。
+同一精确身份只保留最近一条。非空 `previous_response_id` 必须精确命中连接，否则在新派发前返回
+`404 previous_response_not_found`，由客户端重发完整请求。
+
+`websocket_connection_limit_reached`、`previous_response_not_found` 保留原形状，不做事件 patch，
+并废弃该连接；不因此自动禁用渠道或清掉 affinity。仅上游 Upgrade 前连接失败可故障转移；
+消息发出后不重试，不复制生成。
+
+下游 Upgrade 先于上游握手，所以上游握手响应 Header 和相应变换不能回填下游握手。
+请求 Header/JSON 和事件变换仍可生效。缺少时默认注入
+`OpenAI-Beta: responses_websockets=2026-02-06`，普通渠道 Header 变换可覆盖；Codex 由插件约束。
 
 ## 接入检查
 
-接入新的 Responses 兼容上游时，至少验证：
+1. 分别配置并测试 `responses`、`responses-ws`，确认路径、鉴权和模型目录。
+2. 核对 JSON usage，SSE `event:` 与 JSON `type`，以及成功、失败和断连终态。
+3. 核对 tools、文件/图片、持久化和 cache 字段，不把入口放行当能力证明。
+4. WS 测试连续请求、精确连接复用、断线后的完整重发、代理及自定义 Beta Header。
+5. 区分客户端 fallback 与服务端重试；网关消息发送后不重放。
 
-1. base URL 与 `/v1/responses` 拼接正确。
-2. 非流式 Response 和 `usage` 字段形状。
-3. SSE 是否同时提供 `event:` 与 JSON `type`，以及两者是否一致。
-4. 成功、失败和连接中断分别使用什么终态事件。
-5. tools、图片/文件输入或 provider 扩展是否真的被目标上游支持。
-6. 上游是否对持久化、会话引用或 prompt cache 字段有额外语义。
-7. 上游是否支持 Responses WebSocket、要求哪个 `OpenAI-Beta` 值，以及连接时长限制。
-8. `previous_response_id` 是否严格绑定 WebSocket 连接，并验证断线后的错误事件。
-
-转发路径变更后，按 [真实上游 smoke test](../development/real-upstream-smoke.md) 验证。
-Codex 的具体请求形状、连接缓存、增量请求和 fallback 实现见
-[Codex Responses WebSocket 实现参考](codex-responses-websocket.md)。
-完整客户端与 Codex 字段/Header 动作见
-[`请求字段与 Header 白名单`](request-allowlists.md)。
+更多：[请求白名单](request-allowlists.md)、[Codex WS 研究](codex-responses-websocket.md)、
+[上游凭证轮换](../user/upstream-credentials.md)、[真实上游 smoke](../development/real-upstream-smoke.md)。

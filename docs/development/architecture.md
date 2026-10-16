@@ -2,11 +2,24 @@
 
 > 状态：当前。本文描述已实现的运行时架构；具体行为仍以代码、测试、migration 和 OpenAPI 契约为准。
 
+`ai-gateway` 把公共 LLM 转发与 Console 控制面分开监听，用不可变快照连接两者。
+数据面在内存中鉴权、选路和准入；数据库持久化配置、认证状态与独立计量事实。
+
+## 本页内容
+
+- [查看进程和监听器](#运行拓扑)
+- [跟踪数据面请求](#数据面请求链路)
+- [理解连接器与 WebSocket](#进程内-upstream-connector)
+- [判断重试和流边界](#重试与-streaming-边界)
+- [修改控制面与日志管线](#控制面与一致性)
+- [定位实现](#代码边界)
+
 ## 系统定位
 
 `ai-gateway` 是 Rust 2024 服务，`general` 连接器可仅凭网关二进制运行。外部连接器通过
 目录管理的 C ABI 动态库加载；Codex 需要管理员独立安装并启用插件。
-生产运行时由 Axum/Tokio、reqwest、PostgreSQL/SQLx 和 `ArcSwap` 组成；
+生产运行时由 Axum/Tokio、reqwest、SQLx 和 `ArcSwap` 组成；默认使用 PostgreSQL，
+Linux 上启用 `sqlite-backend` 可使用完整 SQLite 后端。
 Console Web UI 可在构建时嵌入二进制，生产环境不需要常驻 Node 服务。
 
 系统支持三种数据面格式：
@@ -18,8 +31,9 @@ Console Web UI 可在构建时嵌入二进制，生产环境不需要常驻 Node
 三种格式共享鉴权、选路、上游客户端和日志基础设施，但路由、变换、协议操作和 usage
 解析保持隔离，禁止跨格式回退或转换。`ApiOperation` 进一步区分 `chat_completion`、
 `responses`、`responses-ws`、`web_search`、`images_edit` 与 `images_generation`。
-Responses HTTP、WS 和独立搜索同属 `OpenAiResponses`，但能力、路由、固定授权及日志操作
-相互独立；当前 Images 实现非流式 JSON generation 和非流式 multipart edit。
+Responses HTTP、WS 和独立搜索同属 `OpenAiResponses`，但能力、路由及日志操作相互独立。
+固定授权属于逻辑渠道并覆盖其能力，不为每个操作创建独立渠道授权；当前 Images 实现
+非流式 JSON generation 和非流式 multipart edit。
 
 客户端 API 格式与上游接入方式是两个维度。上游接入持有 `ConnectorKind`：
 普通连接器使用 `general`，Codex 使用 `codex`；凭证种类 `codex_oauth` 不变。
@@ -44,7 +58,7 @@ Browser or Console client
   -> dedicated Console listener
   -> embedded SPA and /console/v1/*
   -> JWT authorization
-  -> PostgreSQL transaction and audit
+  -> database transaction and audit
   -> immediate snapshot publication
 ```
 
@@ -97,11 +111,14 @@ Browser or Console client
    变换而不执行请求 JSON Transform。Standalone web search 同样禁止 Request JSON Transform，
    但保留模型别名和 Header/响应 Header Transform。只要 body 被别名、JSON Transform 或 provider adapter
    改变，客户端完整性 Header 会先被移除，随后 Header Transform 才能设置与新 body 匹配的值。
+
+### Connector 准备与派发
+
 9. 由进程内 Connector 的 `PreparedUpstreamAttempt` 完成 provider 特定 body、目标路径和最终
    Header/鉴权准备。Codex Connector 在普通 Transform 之后再次执行 provider body 白名单，
    只保留 wire type 声明的字段或显式兼容项；随后把
    `client_metadata["x-codex-installation-id"]` 和 turn metadata 的 `installation_id` 归一化为
-   按逻辑凭证稳定的 opaque UUID，并把 `workspaces` 强制替换为系统设置中的单一合成 Git
+   按逻辑凭证稳定的 opaque UUID，并把 `workspaces` 强制替换为插件设置中的单一合成 Git
    工作区。Responses HTTP/WebSocket 缺少 `client_metadata`、`prompt_cache_key` 或安全身份字段时
    会补齐；不伪造 request kind、sandbox、beta、subagent、attestation 或 turn-state，也不改变
    其他 metadata 和 W3C trace/baggage。普通 Connector 保持相同 API 路径和认证行为。
@@ -117,13 +134,15 @@ Browser or Console client
    `Accept-Encoding` 由网关拥有：下游值不会直接转发，普通请求向上游声明
    `gzip, deflate, br, zstd`，Range 请求使用 `identity`。随后使用按代理、TLS 和超时策略复用的
    reqwest client 直接转发，不经过 sidecar、Unix Socket RPC 或第二个 HTTP 服务。Responses
-   渠道组可把 `request_compression` 从默认的 `default` 改为 `zstd`；此时 HTTP
+   HTTP 操作能力的有效配置可把 `request_compression` 从默认的 `default` 改为 `zstd`；此时 HTTP
    `POST /v1/responses` 的最终 JSON body 使用 Zstandard level 3 编码，并设置
    `Content-Encoding: zstd` 与 `Content-Type: application/json`。WebSocket、standalone
    search 与 Images 请求不使用该请求编码。
 11. 上游响应按 `Content-Encoding` 流式解码；支持 gzip、RFC 1950 deflate、Brotli 和
     Zstandard，已知的多层 coding 按逆序解码。usage、错误诊断和 SSE Transform 只读取解码后的
-    明文流，不缓冲完整响应。公共 listener 再按下游请求的 `Accept-Encoding` 独立选择 coding；
+    明文流；默认透传路径不缓冲完整响应。显式启用的同格式 JSON 响应适配是有界例外，
+    在下游派发前最多缓冲 8 MiB，且 usage 仍只取原始上游。公共 listener 再按下游请求的
+    `Accept-Encoding` 独立选择 coding；
     已知小于 1KiB 的响应保持 identity，长度未知的可压缩非 SSE 流仍可立即流式重编码。SSE 保持
     identity 以避免事件延迟。未知或过深的上游 coding 在发送下游响应头前返回
     `502 upstream_content_encoding_unsupported`。
@@ -134,7 +153,7 @@ Browser or Console client
     完整 slot 可按 UUID 重放；终态缺失保留待核对，不伪造 usage 或零费用。
 
 客户端和 Connector policy 均未删除/覆盖字段、且没有模型别名、body Transform、客户端请求
-解码或渠道组请求压缩时，原始请求字节保持不变。`POST /v1/responses` 另外接受客户端
+解码或操作能力请求压缩时，原始请求字节保持不变。`POST /v1/responses` 另外接受客户端
 `Content-Encoding: zstd`；网关先在配置的 JSON 请求上限内解码，再执行解析、白名单与路由。
 其他 JSON 接口只接受 identity。普通响应不会为了 usage 采集而整体缓冲。
 
@@ -164,6 +183,15 @@ OpenAI-compatible edit 直接回放，或在模型别名存在时使用原 bound
 
 ## 进程内 Upstream Connector
 
+| 边界 | 宿主 | 插件 |
+| --- | --- | --- |
+| 请求 | 鉴权、授权、路由、准入、Transform、最终出站 guard | provider body、目标及协议 Header 准备 |
+| I/O 与状态 | 网络、文件、数据库、维护锁、intent 和 generation | 同步、有界的请求计划与响应解释 |
+| 计量 | 原始 usage 收集、事实、定价、结算 | 显式声明解析器，或返回规范 token 计数 |
+| 配置 | 通用设置存储、审计、快照发布 | 独立 schema、默认值、校验与编译 |
+
+插件是受信任的同进程代码，不是权限沙箱；“无插件自有 I/O”是接口约束，不是对恶意原生代码的隔离。
+
 普通渠道通过 `credential_id` 引用独立上游身份，仓储在控制面事务内解析静态认证、
 精确 Base URL 范围与启用状态，再编译完整快照；数据面不逐请求读取凭证数据库。
 通用凭证轮换不改变渠道、模型或权限；Codex 身份仍走下述专属生命周期。
@@ -185,7 +213,7 @@ observation 接口，不包含 provider 的 OAuth claim、路径或 Header 细�
   操作上限，不在标准 Chat Completions/Responses/Images 逻辑中另建路由器。
 
 Codex OAuth、Token、配额和模型协议解析也由外部插件执行；宿主保留网络、事务、维护锁、
-generation、外部操作 intent 和金额恢复。插件不拥有数据库或 socket。
+generation、后端专属外部操作恢复和金额恢复。插件不拥有数据库或 socket。
 未安装/不兼容插件不得回退为 `general`。兼容升级通过不可变代际热切换，
 在途请求固定旧代际，已加载库保留到进程退出。插件定义自己的设置和隐私策略，
 宿主提供通用配置管理、审计及传输约束。
@@ -205,9 +233,11 @@ Responses affinity hit 会持续命中原 channel 并 fail closed，不会因一
 
 Codex token 与 quota 使用按凭证 UUID 索引的独立 `ArcSwap` 快照；渠道通过实际 credential_id
 获取身份，避免每次 token 轮换都重编译整个控制面。
-维护 worker 从 PostgreSQL 周期收敛多实例更新，并以有界并发处理各凭证；单凭证 token refresh
-同时使用进程内 mutex、PostgreSQL row lock 和 `refresh_generation`，防止 rotating refresh token
-并发重用。正式代理请求仍直接通过 reqwest streaming path，不经过 worker actor。
+维护 worker 周期收敛数据库更新，并以有界并发处理各凭证。单凭证 token refresh 使用进程内
+mutex 和 `refresh_generation`；PostgreSQL 保留覆盖外部 HTTP 的行锁，SQLite 则用每凭证互斥、
+generation/version CAS 与派发前持久 intent fencing，不能把 SQLite 机制当作 PG 已有保证。
+正式代理请求仍直接通过 reqwest streaming path，不经过 worker actor。
+后端差异见[持久化边界](persistence-boundaries.md)和[SQLite Codex](sqlite-codex.md)。
 
 Codex 凭证可移植性仍沿用相同 provider 边界：服务端显式导出 API 从 repository 读取敏感 Token
 及实际引用的维护代理，生成不含组归属或路由权重的 version 3 原生 Bundle；高级导入页在浏览器内把原生、
@@ -216,6 +246,8 @@ Sub2API JSON 标准化成可编辑草稿，完成代理 CRUD/映射后再逐条�
 格式解析不是数据面职责，也不会绕过“account/user 至少存在一个”、models、代理 enable 或
 凭证范围。代理删除使用 optimistic concurrency，并在 repository 层拒绝仍被接入、凭证或 OAuth
 授权流引用的记录。
+
+### Responses WebSocket
 
 Responses WebSocket 使用同一个 `/v1/responses` 路径的 `GET` Upgrade。握手先验证 API Key
 认证与 Responses `proxy` 权限，再要求数据库系统设置、API Key 所属用户和最终候选渠道三层均显式
@@ -273,7 +305,10 @@ Session affinity 不受影响。
 
 ## 控制面与一致性
 
-动态配置保存在 PostgreSQL。Console 写操作在事务中完成授权、候选配置校验、审计和提交；提交成功后立即编译并发布新的不可变快照。周期 worker 负责从数据库重新加载，以覆盖进程间或外部变更。
+动态配置保存在所选数据库。Console 写操作在控制面串行门内验证候选，在事务中完成授权复核、
+持久化和审计，并发布编译后的完整不可变快照。无效配置不能只落库而继续使用旧快照。
+周期 worker 负责重新加载，以覆盖进程间或外部变更。SQLite 单实例 owner/writer 约束不等于
+PostgreSQL 多实例部署能力。
 
 数据面不会为每个请求查询 PostgreSQL。用户 WebSocket 偏好和渠道 WebSocket 能力随完整控制面快照
 编译并原子发布；Connector 动态凭证从独立不可变快照读取。进程内限流、被动健康、in-flight、
@@ -318,16 +353,26 @@ profile 绑定的价格模型，不随重试选中的上游 wire model 改变。
 dense candidate slot 数组，因此正常选择路径没有全局渠道状态锁，也不创建候选
 `Vec`、`HashSet` 或 Session affinity `Box`。
 
-Channel Group 不再保存 priority 或 selection strategy，Channel 和 Codex credential 也不再保存
-routing weight。Group 继续承担格式、Connector、启用、请求压缩和状态统计等资源配置；Channel
-继续承担端点、鉴权、模型能力、变换、网络、计费和健康状态。路由层级与权重只由引用这些资源的
-模型 profile 下的协议规则拥有；Group 在路由编辑器中只用于一次性批量加入当前 Channel，不进入
-持久化路由或编译结果。
+资源拓扑的职责不能与路由权重混用：
+
+| 资源 | 当前职责 |
+| --- | --- |
+| 上游接入 | Connector、Base URL、转发代理与超时 |
+| 上游凭证 | 认证身份、范围和独立生命周期 |
+| 渠道组 | 组织逻辑渠道，不拥有路由 priority 或 selection strategy |
+| 逻辑渠道 | 显式绑定接入与凭证，承载固定授权身份 |
+| 操作能力 | 操作、模型目录、Transform、网络/健康等有效配置 |
+| 模型 profile 下的操作规则 | priority tier、selection strategy、显式能力/模型/权重 candidate |
+
+组在编辑器中只提供一次性候选选择上下文；保存后新增组成员不能隐式改写规则或授权。
+旧格式渠道与 Codex projection 的迁移背景见[上游身份与能力](upstream-identity-capabilities.md)，
+不能据旧表名恢复 pool-managed topology。
 
 ## 请求日志耐久链路
 
 ```text
-terminal request event
+pre-dispatch intent + reserved terminal slot
+  -> terminal request event
   -> process-unique local append-only spool
   -> request_log_ingest via COPY
   -> immutable financial facts + pending work

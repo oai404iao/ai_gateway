@@ -4,6 +4,20 @@
 > 和测试为准。原始分阶段计划保存在
 > [Console UI 实施计划归档](../archive/console-ui-implementation-plan.md)。
 
+Console UI 是只由 Console listener 提供的 React SPA。开发时用 Vite，生产时把静态资产嵌入
+Rust 二进制；Node 不是生产服务。先选择运行方式，再按契约和交互规范修改页面。
+
+## 本页内容
+
+- [启动开发或构建生产资产](#7-开发与生产运行)
+- [定位目录和生成类型](#4-目录与契约)
+- [修改导航与模型工作区](#模型配置导航与层级编辑)
+- [编写安全表单](#6-base-ui-与表单约定)
+- [运行匹配的验证](#9-测试与验证)
+- [排查静态路由和缓存](#3-路由规则)
+
+## 页面与资源组织
+
 页面结构、返回与跳转、列表、草稿和历史入口的统一约定见
 [Console 导航与页面交互规范](console-interaction-standard.md)。
 
@@ -134,8 +148,8 @@ docs/openapi/console-v1.yaml
   长上下文档位和请求倍率，并省略不在普通详情响应中的 `source_payload`。桌面布局使用左侧价格/
   星期时段编辑区和右侧 sticky 计算、摘要、保存工具栏，窄屏按 DOM 顺序降级为单栏。星期 Toggle
   Group 必须保持至少一个 UTC 开始星期，旧响应缺少 `weekdays` 时在表单层归一化为全周。
-- `/admin/model-setup` 是计价模型、Channel 和协议路由三个专用管理面的轻量入口，不复制这些
-  页面中的编辑器或状态推导。普通 Channel 和计价模型的复制仍由各自列表/详情页负责；复制 URL
+- `/admin/model-setup` 是兼容重定向，当前模型工作区为 `/admin/models`；不要重新创建旧配置总览。
+  普通 Channel 和计价模型的复制仍由各自列表/详情页负责；复制 URL
   只能携带资源 UUID 和经过校验的 `/admin/*` 返回路径，不能序列化凭据或完整资源。
 
 ### 模型配置导航与层级编辑
@@ -152,7 +166,7 @@ docs/openapi/console-v1.yaml
 - 操作编辑器复用显式能力/上游模型候选、优先级层、权重和 ETag 更新；路由候选仍按操作过滤。
   已有操作编辑和新建操作共用同一编辑器，不在工作区复制验证或提交逻辑。
 - 价格同步作为模型配置页签；模型属性、复制、价格编辑仍通过原有详情页完成。窄屏工作区
-  退化为模型列表在上、编辑器在下。
+  在模型列表与编辑器间切换，不把完整模型列表堆在编辑器上方。
 - 生产使用 data router 的 `useBlocker` 保护 PUSH/REPLACE/浏览器 POP；表单草稿不持久化。
   Declarative `AppRouter` 留给组件测试，fallback 保护应用链接和返回操作；真正的 POP
   保护由详情页测试覆盖。页面刷新/关闭由 `beforeunload` 保护。
@@ -160,6 +174,9 @@ docs/openapi/console-v1.yaml
 ## 7. 开发与生产运行
 
 开发模式：
+
+前提是 Console 已启用、JWT 密钥已配置且存在可登录账户。命令从仓库根目录运行；
+Vite 代理不会替代 Rust Console API，也不自动 bootstrap 管理员。
 
 ```bash
 # Terminal 1: Console API on 127.0.0.1:3001
@@ -217,7 +234,8 @@ pnpm --dir web/console e2e
   ```
 
 后端静态 UI 测试位于 `src/http/console_ui.rs` 和相关 router 单元测试中，不存在单独的
-`tests/console_ui_integration.rs`。
+`tests/console_ui_integration.rs`。这些 mock API 浏览器测试不证明数据库持久化、真实 Cookie
+轮换或账单闭环；需要跨进程证据时运行[系统 E2E](system-e2e.md)，不要把两套测试混称。
 
 ## 10. 相关来源
 

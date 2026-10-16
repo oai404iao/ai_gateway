@@ -1,543 +1,75 @@
 # ai-gateway
 
-中文 | [English](README.md)
-
 > **状态：** 当前实现，持续开发中。
 
-`ai-gateway` 是一个单二进制 Rust 网关，用于转发 OpenAI 兼容请求。它向客户端提供
-Chat Completions、Responses、Codex standalone web search、非流式 JSON Images generation
-与 multipart Images edit API，
-根据 PostgreSQL 或 Linux SQLite 控制面完成路由，并将请求转发到已配置的上游提供商。
+[English](README.md) · [文档](docs/README.md) · [发行版](https://github.com/oai404iao/ai_gateway/releases)
 
-`general` 连接器内置；Codex 是独立安装的可信 C ABI 插件，由
-[ai-gateway-connectors](https://github.com/oai404iao/ai-gateway-connectors) 仓库维护。
-网关镜像与发行包不包含 Codex 库，升级前请阅读[插件安装与升级](docs/user/connector-plugins.md)。
+`ai-gateway` 是自托管的单二进制 Rust 网关，用于转发 OpenAI 兼容的 LLM 请求。
+你可以配置上游和路由，通过独立 Console 管理访问权限，并以耐久异步流水线记录用量和结算费用。
 
-下方快速启动沿用默认 PostgreSQL。单实例本地文件部署见
-[SQLite 配置与停机恢复](docs/user/sqlite.md)；源码构建需加 `sqlite-backend` feature，
-官方容器/发行构建包含该功能。
+支持 Chat Completions、Responses HTTP/SSE 与 WebSocket、非流式 Images generation、
+multipart Images edit，以及 Codex standalone search 扩展。不同 API 格式始终独立，
+不做跨格式转换；具体操作和限制见[兼容性参考](docs/reference/openai-compatibility.md)。
 
-文档已按读者分类整理，统一入口见[文档中心](docs/README.md)：用户文档、开发与
-设计文档、OpenAI 外部参考和历史归档。
+## 开始使用
 
-公共数据面和管理 Console API 是刻意分离的两个监听器：
+按[快速上手](docs/user/quickstart.md)启动 PostgreSQL、配置 Console、创建首个管理员与路由，
+再发送请求。空控制面能够通过健康检查，但还不能代理请求。
 
-- **数据面**（`/v1/*`）：面向客户端 API Key 与 OpenAI 兼容请求。
-- **Console API**（`/console/v1/*`）：面向 JWT 认证的用户自助服务与管理员控制面管理。
+根据部署目标选择入口：
 
-## 特性
-
-- 支持 OpenAI Chat Completions、Responses、Codex standalone web search、非流式 JSON
-  Images generation 和 multipart Images edit；
-  三种格式绝不相互回退。
-- 每个计价客户端模型拥有一个顶层模型规则，其下按 API 格式配置协议规则；协议规则各自拥有
-  优先级层级与选择策略，其中每个显式渠道/上游模型候选拥有独立权重，可在 Console 中逐行编辑；
-  详见[路由运维说明](docs/user/operations.md)。
-- 特殊上游通过单进程内 Connector 接入，不增加 sidecar 或第二次网络跳转。首个
-  Codex OAuth Connector 支持订阅凭证、每账户代理、Token 刷新、额度感知 draining
-  以及共享凭证的 provider-managed Responses HTTP/SSE/WebSocket/Search 与 Images
-  generation/edit 渠道。
-- multipart edit 超过内存阈值后写入受限匿名临时文件，不提高全局 JSON body 上限；Console
-  系统负载页显示活跃落盘字节、可用容量和失败次数。
-- 将 PostgreSQL 控制面记录编译为不可变内存快照，因此代理请求不需要逐次查询数据库。
-- 可按配置执行模型别名、请求 JSON、请求/响应 Header，以及 SSE/WebSocket JSON 事件变换；
-  普通非流式响应 body 不做 JSON 改写。
-- Codex Connector 会将客户端本地 installation ID 替换为凭证稳定的 opaque UUID，并把
-  workspace/Git 指纹替换为管理员配置的单一合成工作区后再转发。
-- 转发前会移除客户端凭据、hop-by-hop Header 和常见反向代理/CDN 转发元数据，再注入渠道专属的上游鉴权。
-- 上游响应以流式方式转发，不缓冲完整响应；一旦发送响应头或任何响应字节，绝不重试或切换渠道。
-- 提供进程内 RPM、并发和软额度准入控制、被动连接健康、异步请求日志、用量提取与结算。
-- 提供独立的 JWT Console API 与 Web 管理台，包括按用户邀请、可复用邀请码自助注册、管理员辅助临时密码恢复、轮换 refresh session、用户/管理员角色、审计日志，以及大多数可变资源的乐观并发控制。
-
-## 架构
-
-```text
-OpenAI 兼容客户端
-  │ Bearer API Key
-  ▼
-公共监听器（/v1/*）
-  → 鉴权与准入
-  → 不可变路由快照
-  → 渠道选择与可选变换
-  → 可复用 reqwest 上游客户端或固定的 Responses WebSocket
-  → 流式上游响应
-  → 异步请求日志 / 用量 / 结算
-
-Console 客户端
-  │ JWT
-  ▼
-独立 Console 监听器（/console/v1/*）
-  → 用户或管理员授权
-  → PostgreSQL 控制面事务 + 审计记录
-  → 立即发布运行时快照
-```
-
-## 环境要求
-
-- Rust **1.97.1**（Rust 2024 edition）；`rust-toolchain.toml` 将其固定为
-  受支持的开发与发布工具链。
-- PostgreSQL
-- Docker Compose（可选；`docker-compose.yml` 提供开发用 PostgreSQL，
-  `docker-compose.prd.yaml` 可通过拉取或本地构建 Gateway 镜像运行完整生产栈）
-- 建议安装 OpenSSL，用于生成本地数据库密码与 Console Ed25519 密钥
-- 仅开发或构建 Console UI 时需要 Node.js 24 与 pnpm 11.17
-
-## 快速开始 / Quick start
-
-> 默认配置文件为已被 Git 忽略的 `./config/config.toml`；本地 JWT 文件也统一放在 `./config/`。
-> 服务不会加载 `.env` 文件，也不使用 XDG 配置目录。英文说明见 [README.md](README.md)。
-
-### 1. 创建本地密钥与配置并启动 PostgreSQL
-
-```bash
-mkdir -p ./config
-openssl rand -hex 32 > ./config/postgres-password
-chmod 600 ./config/postgres-password
-cp config.example.toml ./config/config.toml
-docker compose up -d
-```
-
-按需编辑 `./config/config.toml`。至少确认 `[database]`、公共 `[server]` 和 `[upstream]` 超时设置。仓库内 Docker Compose 服务与示例数据库连接串相匹配。
-示例通过 `./config/postgres-password` 读取数据库密码，不再在 TOML 或
-Compose 中内置默认弱密码。Compose 默认值面向 4–8GiB 单节点主机，可通过带注释的
-`AI_GATEWAY_POSTGRES_*` 环境变量覆盖。
-
-如果从旧的根目录文件布局升级，请一次性迁移本地文件：
-
-```bash
-mkdir -p ./config
-mv ./config.toml ./config/config.toml
-mv ./console-jwt-private.pem ./console-jwt-public.pem ./config/
-```
-
-二进制会在启动时自动执行数据库 migration。
-
-### 2. 启用 Console API（推荐）
-
-Console API 是管理用户、API Key、模型、路由、渠道和变换的受支持方式。在当前工作目录的 `./config/` 中生成 Ed25519 密钥对；这些文件已被 Git 忽略：
-
-```bash
-openssl genpkey -algorithm Ed25519 \
-  -out ./config/console-jwt-private.pem
-openssl pkey \
-  -in ./config/console-jwt-private.pem \
-  -pubout \
-  -out ./config/console-jwt-public.pem
-chmod 600 ./config/console-jwt-private.pem
-```
-
-然后按 `config.example.toml` 中的注释模板，在 `./config/config.toml` 里启用 `[console]` 并填写 `[auth]`。例如，配置专用的 `127.0.0.1:3001` 监听器、明确的浏览器来源白名单，以及 `./config/` 下刚生成的两个 PEM 文件路径。
-
-服务自身**不终止 TLS**。在向浏览器或互联网暴露 Console 监听器之前，必须将其置于正确配置的 HTTPS 反向代理之后。
-
-### 3. 创建首个管理员
-
-一次性 bootstrap 命令仅会在不存在 active admin 时成功。请从受保护的文件或密钥管理器通过标准输入传入密码：
-
-```bash
-cargo run -- bootstrap-admin \
-  --email admin@example.com \
-  --display-name "Initial Admin" \
-  --password-stdin < /secure/path/admin-password.txt
-```
-
-若现有 active 管理员无法登录，可使用只从标准输入读取新密码的
-`reset-admin-password` 恢复命令；完整边界见
-[运行与接口说明](docs/user/operations.md#紧急重置管理员密码)。
-
-### 4. 启动网关
-
-```bash
-cargo run
-```
-
-验证公共监听器：
-
-```bash
-curl -i http://127.0.0.1:3000/health
-# HTTP/1.1 204 No Content
-```
-
-空控制面可以正常启动，但在创建用户/API Key 和路由配置前不能代理任何请求。
-
-### 5. 配置控制面
-
-使用 bootstrap 管理员登录 Console API，随后使用响应中的 access JWT 调用其他 Console 接口。如果你已启用 Console Web UI（`[console].ui_enabled = true` 且编译了 `embedded-console-ui` feature，或开发模式下的 Vite 开发服务器），直接浏览器打开 UI 即可，跳过下方 curl —— UI 调用的是同一套 Console API。
-
-```bash
-curl --request POST http://127.0.0.1:3001/console/v1/auth/login \
-  --header 'Content-Type: application/json' \
-  --data '{"email":"admin@example.com","password":"your-password"}'
-```
-
-要让数据面路由可用，请按以下顺序创建格式兼容的记录：
-
-1. 一个带价格的**模型**。
-2. 所需 API 格式与 Connector 的**渠道组**。新建 Codex OAuth Responses 组时会同时创建一个
-   共享凭证池、默认停用的 Images 组。
-3. 该渠道组内的**渠道**：配置上游 URL、上游凭据和支持的上游模型名。
-4. 为该计价模型创建一个顶层**模型规则**，再添加所需格式的协议规则；每个 tier 直接保存从
-   Channel 能力中选择的上游 wire 模型与独立权重。
-5. 一个客户端 **API Key**：至少授予 `proxy` 权限；如需调用 `/v1/models`，还要授予 `models.read`。
-
-按需在同一计价模型下分别创建 Chat Completions、Responses 与 Images 协议规则；三种格式的
-路由候选仍相互独立。请使用 Console API 管理控制面，不要直接编辑控制面数据表。
-
-Console 路由覆盖与运行行为详见[运行与接口说明](docs/user/operations.md)。
-
-## Docker 生产部署
-
-发布镜像包含 Rust 二进制与嵌入式 Console UI。完整生产 Compose 默认不向宿主机
-暴露 PostgreSQL，数据面与 Console 只绑定宿主机 loopback，并使用独立持久卷保存
-request-log spool 和短生命周期 Images edit scratch body。
-
-先准备已被 Git 忽略的配置与密钥：
-
-```bash
-mkdir -p ./config
-cp deploy/compose/config.example.toml ./config/config.prd.toml
-cp deploy/compose/env.example ./config/compose.prd.env
-# 生成 ./config/postgres-password 和两个 Console JWT PEM 文件。
-```
-
-然后拉取固定版本镜像，或从当前 checkout 本地构建：
-
-```bash
-docker compose --env-file ./config/compose.prd.env \
-  -f docker-compose.prd.yaml pull gateway
-# 或：docker compose --env-file ./config/compose.prd.env \
-#       -f docker-compose.prd.yaml build gateway
-
-docker compose --env-file ./config/compose.prd.env \
-  -f docker-compose.prd.yaml up -d --no-build
-```
-
-密钥生成、bootstrap-admin、反向代理/TLS、升级和备份边界详见
-[Docker 生产部署说明](docs/user/production-deployment.md)。
-
-## 手动转发性能测试
-
-仓库提供一套必须显式启动、完全隔离的端到端转发性能 Harness。它会创建临时
-PostgreSQL 数据库，启动 Mock LLM 上游和全新的 release Gateway 进程，执行直连与
-Gateway JSON/SSE 负载，校验异步请求日志持久化率，并输出 Markdown/JSON 报告。
-
-普通 `cargo test` 和 CI 不会执行该测试：
-
-```bash
-docker compose up -d
-./scripts/run-forwarding-perf.sh --profile quick
-```
-
-完整设计、场景、安全边界和 `standard` 配置见
-[转发性能测试设计与使用说明](docs/development/forwarding-performance.md)。
-
-## 使用数据面
-
-所有公共 API 接口均使用 `Authorization: Bearer <client-api-key>`。
-
-| 接口 | 用途 |
+| 目标 | 阅读 |
 | --- | --- |
-| `GET /health` | 无需认证的存活检查；返回 `204`。 |
-| `GET /v1/models` | 列出此 API Key 可达的模型；至少一个格式需要同时拥有 `proxy` 与 `models.read`。 |
-| `POST /v1/chat/completions` | 仅代理 Chat Completions 请求。 |
-| `POST /v1/responses` | 仅代理 Responses 请求。 |
-| `POST /v1/alpha/search` | 通过显式支持的 Responses 渠道代理非流式 Codex standalone web search 请求。 |
-| 带 WebSocket Upgrade 的 `GET /v1/responses` | 通过 WebSocket 顺序代理 Responses `response.create` 消息。 |
-| `POST /v1/images/generations` | 仅代理非流式 JSON Images generation 请求。 |
-| `POST /v1/images/edits` | 仅代理非流式 multipart Images edit 请求。 |
+| 在单台主机运行发行镜像 | [生产 Compose 部署](docs/user/production-deployment.md) |
+| 在 Linux 使用本地数据库文件 | [SQLite 部署与停机恢复](docs/user/sqlite.md) |
+| 调整限制、存储与容量 | [生产配置](docs/user/production-configuration.md) |
+| 接入 Codex 订阅 | [安装连接器插件](docs/user/connector-plugins.md) |
 
-在创建匹配的模型规则和 API Key 后：
+默认后端是 PostgreSQL。源码构建使用 SQLite 需要 `sqlite-backend` feature；官方镜像和
+发行二进制包含该功能。`general` 连接器内置；Codex 需要从
+[ai-gateway-connectors](https://github.com/oai404iao/ai-gateway-connectors)
+单独安装并显式启用原生插件，网关发行物不附带该库。
 
-```bash
-export GATEWAY_URL=http://127.0.0.1:3000
-export AI_GATEWAY_API_KEY='replace-with-client-key'
+## 使用与运维
 
-curl "$GATEWAY_URL/v1/models" \
-  --header "Authorization: Bearer $AI_GATEWAY_API_KEY"
+- [使用 API 与 Console](docs/user/operations.md)：客户端 Key、路由、流式请求、上游凭证、日志与计费。
+- [查阅兼容边界](docs/reference/README.md)：请求字段、协议行为和上游特有的限制。
+- [安全运行](docs/user/security.md)：监听器暴露、凭据、可信插件与恢复边界。
 
-curl --request POST "$GATEWAY_URL/v1/chat/completions" \
-  --header "Authorization: Bearer $AI_GATEWAY_API_KEY" \
-  --header 'Content-Type: application/json' \
-  --data '{
-    "model": "gateway-chat-model",
-    "messages": [{"role": "user", "content": "Say hello."}]
-  }'
-```
+公共 `/v1/*` 监听器使用客户端 API Key。Console API 与可选嵌入式 React UI 位于
+**另一个监听器**，使用 JWT 会话。生产环境不需要常驻 Node.js；网关不终止 TLS，
+Console 应置于 HTTPS 反向代理后。
 
-对于 Responses，请先在计价模型规则下配置独立的 `open_ai_responses` 协议规则，再发送请求：
+路由读取不可变内存快照，不逐请求查询控制面数据库。上游客户端复用，普通响应流式转发；
+发送下游响应头或任何响应字节后不再重试。RPM、并发、粘性、健康状态和 WebSocket 池
+均为进程本地状态，不提供集群级协调。
 
-```bash
-curl --request POST "$GATEWAY_URL/v1/responses" \
-  --header "Authorization: Bearer $AI_GATEWAY_API_KEY" \
-  --header 'Content-Type: application/json' \
-  --data '{
-    "model": "gateway-responses-model",
-    "input": "Say hello."
-  }'
-```
+请求日志不保存 prompt、completion、完整 Header 或凭据，但数据库和备份仍包含敏感控制面数据。
+额度是软预检查，不是预付费用预留；将其用于支出限制前，请阅读[运维说明](docs/user/operations.md)。
 
-对于 Images generation，请配置独立的 `open_ai_images` 渠道组、渠道、协议规则与 API Key
-权限，并让路由候选选择对应上游模型，然后发送 JSON 请求：
+## 参与开发
+
+先完成[开发环境设置](docs/development/getting-started.md)，再从[维护者文档](docs/development/README.md)
+选择主题。[`rust-toolchain.toml`](rust-toolchain.toml) 固定 Rust **1.97.1**；
+Console 工具链使用 Node.js 24 和 pnpm 11.17.0。
+
+开发数据库配置并启动后，在仓库根目录运行：
 
 ```bash
-curl --request POST "$GATEWAY_URL/v1/images/generations" \
-  --header "Authorization: Bearer $AI_GATEWAY_API_KEY" \
-  --header 'Content-Type: application/json' \
-  --data '{
-    "model": "gateway-image-model",
-    "prompt": "A blue whale in watercolor"
-  }'
-```
-
-Images edit 使用同一 `open_ai_images` 路由：
-
-```bash
-curl --request POST "$GATEWAY_URL/v1/images/edits" \
-  --header "Authorization: Bearer $AI_GATEWAY_API_KEY" \
-  --form 'model=gateway-image-model' \
-  --form 'prompt=Add a red hat' \
-  --form 'image=@./input.png;type=image/png'
-```
-
-Images generation/edit 都不接受 `stream: true`。edit 当前只接受 multipart，不接受公开客户端
-JSON/data URL body；总大小、单文件大小、内存阈值和临时目录由 `[request_limits]` 中的
-`image_edit_*` 设置控制。
-
-网关会转发上游状态码和响应体；Chat Completions 与 Responses 会保持流式行为，如客户端需要
-SSE，请使用对应 OpenAI 请求中的流式字段。
-Responses WebSocket 客户端使用同一个 Gateway Bearer Key 连接
-`ws://<gateway>/v1/responses`（或通过终止 TLS 的反向代理使用 `wss://`）。网关对每个顺序到达的
-`response.create` 独立执行准入和日志记录，在可用时取回同一 Session 隔离的上游 WebSocket 以保持
-连接级缓存连续性，并在请求成功完成后把干净连接归还有界池；同一个 WebSocket 不支持并发多路复用
-Responses 请求。WebSocket 转发默认关闭：管理员必须在数据库系统设置中启用总开关并把 Responses
-渠道标记为支持，API Key 所属用户也必须在个人设置中启用；连接池容量和连接寿命同样由系统设置管理。
-最小校验、透传、Streaming、重试和错误边界见
-[OpenAI 兼容性参考](docs/reference/openai-compatibility.md)。
-
-## 配置模型
-
-TOML 仅保存进程级 bootstrap 配置。二进制默认读取
-`./config/config.toml`；已忽略的 `./config/` 目录也保存本地 JWT 密钥文件。
-
-| 区域 | 示例 |
-| --- | --- |
-| `[server]` | 公共监听器和优雅关闭期限。 |
-| `[request_limits]` | 代理、Console 和认证接口各自独立的请求体大小限制。 |
-| `[database]` | PostgreSQL URL、连接池大小和连接超时。 |
-| `[upstream]` | 默认建连、普通响应头、Images 响应头和流空闲超时。 |
-| `[request_retry]` | 传输失败与显式上游状态码的自动候选故障转移初始值。 |
-| `[runtime_config]` | PostgreSQL 控制面定时重载间隔。 |
-| `[passive_health]` | 连接失败阈值和冷却时间。 |
-| `[automatic_disable]` | 按状态码/错误关键词自动停用的初始值。 |
-| `[scheduled_testing]` | 定时直接上游测试的初始值。 |
-| `[session_affinity]` | 进程内成功渠道粘性的初始值与规则。 |
-| `[models_sync]` | 管理员触发的 models.dev 同步限制。 |
-| `[request_logging]` | 本地耐久 spool、独立数据库池、COPY 入口、投影、结算与观测参数。 |
-| `[console]` 与 `[auth]` | 可选的独立 Console 监听器与 JWT 密钥文件设置。 |
-| `[observability]` | tracing filter。 |
-
-用户、API Key、模型、模型规则、渠道组、渠道、代理、变换模板等动态数据面配置保存在 PostgreSQL 中，并被编译为不可变运行时快照。项目刻意不支持 `[[api_keys]]`、`[[channels]]`、`[[model_rules]]` 之类的动态 TOML 表。
-
-通过 Console API 写入配置时，服务会校验完整候选快照，并在提交后立即发布；定时重载器也会从 PostgreSQL 刷新快照。
-
-终态请求日志会先跨过本地可恢复 spool，再通过 `COPY FROM` 进入低索引
-PostgreSQL 入口表，随后异步投影和结算。耐久保证、故障边界与运维指标见
-[docs/development/request-log-durability.md](docs/development/request-log-durability.md)。
-
-生产机器规格分档、PostgreSQL 参数、密码文件、存储和容量验证方式见
-[生产配置与容量调优](docs/user/production-configuration.md)。
-
-## Console API
-
-Console 监听器独立于公共监听器，使用短期 JWT access token。登录、邀请码注册、刷新和邀请激活成功时还会签发轮换的 `HttpOnly; Secure; SameSite=Lax` refresh Cookie。
-
-- 用户自助资源接口主要位于 `/console/v1/me`，资源归属完全从 JWT 主体推导；个人统计接口同样从 JWT 固定用户范围。
-- 管理员可创建和调整可复用注册邀请码，配置可选次数、可选过期时间、目标用户组和初始 USD 额度；邀请码明文只在创建时返回。
-- 用户请求日志和花费统计始终只读取当前 JWT 用户；管理员查看全局请求日志或按用户、API Key、渠道分析花费时使用独立的系统接口。
-- 仅管理员可调用的控制面接口可管理用户、注册邀请码、API Key Policy、API Key、模型、路由、网络代理、变换模板、请求日志、审计日志和手动重载。
-- 大多数可变资源在 `GET` 时返回 `ETag`，并要求 `PUT` 携带 `If-Match` 实现乐观并发控制。
-- `admin` 是用户角色，不是独立的 `/admin` API 命名空间，也不是进程级静态 Token。
-
-完整路由清单见 [docs/user/operations.md](docs/user/operations.md)；Console 认证设计见 [docs/development/console-auth.md](docs/development/console-auth.md)。
-
-## Console Web UI
-
-Console 管理台是 **React + TypeScript + Vite + Tailwind CSS + shadcn/ui
-`base-nova`（Base UI）**
-单页应用，源码位于 `web/console/`。发布构建可将 Vite 静态产物嵌入 Rust 二进制，并只通过
-独立的 Console listener 同源提供：
-
-```text
-https://console.example.com/                 # SPA
-https://console.example.com/assets/*          # 静态资源
-https://console.example.com/console/v1/*      # 既有 Console API
-```
-
-这不会把 UI 暴露到公共 `/v1/*` listener，也不引入 SSR 或常驻 Node 服务。Access token
-只保存在浏览器内存；轮换 refresh cookie 继续保持 `HttpOnly; Secure; SameSite=Lax`。
-
-UI 有两种运行模式。两者前置条件一致：PostgreSQL 已启动、`./config/config.toml` 已启用 `[console]` 并配好 `[auth]` JWT 密钥对（见快速启动步骤 1–2）、bootstrap 管理员已创建（步骤 3）。
-
-### 运行模式 A — 开发模式（热重载，不嵌入）
-
-分别运行网关（仅提供 Console API）和 Vite 开发服务器。开发服务器通过 HTTPS 提供 SPA，并将 `/console/v1/*` 代理到网关的 Console listener，因此你可以在热重载下编辑前端，同时由 Rust 二进制响应真实 API 调用。
-
-```bash
-# 终端 1 — 网关，公共监听 127.0.0.1:3000，Console 监听 127.0.0.1:3001
-cargo run
-
-# 终端 2 — Vite 开发服务器，https://console.localhost:5173
-pnpm --dir web/console install --frozen-lockfile
-pnpm --dir web/console dev
-```
-
-浏览器打开 `https://console.localhost:5173`。`console.localhost` 主机和自签名 HTTPS 使 `__Host-` refresh cookie 及其 `Secure` 属性表现与生产一致。此模式下 `ui_enabled` 无意义（网关只提供 API）；Vite 开发服务器是开发用的 Node 进程，不是生产运行时。
-
-### 运行模式 B — 生产模式（嵌入单二进制）
-
-先构建前端，再用 `embedded-console-ui` feature 构建网关，Vite 产物会被烤进二进制并只从 Console listener 提供。生产环境没有 Node 进程。
-
-```bash
-# 1. 构建前端（生成 web/console/dist）
-pnpm --dir web/console install --frozen-lockfile
-pnpm --dir web/console build
-
-# 2. 启用嵌入 feature 构建网关
-cargo build --release --features embedded-console-ui
-```
-
-在 `./config/config.toml` 中设置 `[console].ui_enabled = true` 即可在 Console listener 挂载 SPA。若 `ui_enabled = true` 但未编译该 feature，启动会被拒绝。（debug 构建下 `rust-embed` 运行时从磁盘读取 `web/console/dist`，因此 dist 仍须存在；release 构建会将其嵌入。）
-
-```bash
-# 在 HTTPS 反向代理后运行单二进制
-cargo run --release --features embedded-console-ui
-# 浏览 Console listener origin，例如 https://console.example.com/
-```
-
-### 前端检查与测试
-
-```bash
-pnpm --dir web/console typecheck   # tsc --noEmit（严格）
-pnpm --dir web/console lint         # oxlint
-pnpm --dir web/console test         # vitest 组件测试（jsdom + MSW）
-pnpm --dir web/console e2e:install  # 首次运行：安装 Chromium 与系统依赖
-pnpm --dir web/console e2e          # Playwright 浏览器测试
-pnpm --dir web/console generate:api:check   # OpenAPI spec/类型漂移门禁
-```
-
-完整命令列表、目录结构与 OpenAPI 契约流程见 `web/console/README.md`；目录布局、认证/缓存模型、
-Base UI 组件规范和嵌入式交付边界见
-[Console Web UI 架构与开发指南](docs/development/console-ui.md)。
-
-## 运行行为与边界
-
-- 请求在读取 body 前完成认证与准入。
-- 客户端 Header 和顶层 body 字段按
-  [请求白名单契约](docs/reference/request-allowlists.md)检查；未知 body 字段 fail closed，
-  未知 Header 被忽略。
-- 只有请求 policy、模型别名或变换确有需要时才重新序列化请求；否则转发原始请求字节。
-- Responses HTTP 可接收 `Content-Encoding: zstd`，并在解码后执行白名单；Responses 渠道组也可
-  把最终上游 HTTP JSON body 压缩为 zstd。WebSocket、standalone search 和 Images 不使用该出站
-  请求压缩。
-- 用户组 `filter_fast_mode` 在客户端白名单后删除顶层 `service_tier`，后续日志、计费倍率、
-  Session affinity、Transform 和 Connector 都只能看到过滤后的 body。
-- 顺序固定为：客户端 body 白名单 → 可选 Fast 过滤 → 客户端 Header 白名单 → 模板默认值 →
-  渠道覆盖 → Codex body 白名单与 installation/workspace 隐私归一化（如适用）→
-  受保护 Header 清理 → Codex Header 白名单（如适用）→ 上游鉴权。
-- 客户端 `Authorization`、hop-by-hop Header、`Connection` 声明的 Header，以及常见反向代理/CDN
-  转发元数据永不转发给任何上游渠道。
-- 被动健康响应收到上游响应头之前的连接失败。配置允许时，传输失败或显式列出的上游 4xx/5xx
-  状态可在发送下游响应前切换到尚未尝试的渠道/模型候选；同一渠道的其他模型仍可参与，
-  已经开始的下游响应流不会重试。
-- RPM、并发和软额度准入均为进程内状态；没有跨实例协调。
-- 终态请求日志会先追加到本地 durable spool；用量提取和结算异步执行。额度是基于
-  已结算用量的软预检查，不会在转发前预留本次成本。
-- 请求日志不保存 prompt、completion、完整 Header、API Key、Cookie 或未经脱敏的上游错误内容。
-
-当前公开 `/v1/images/edits` 范围不包含 JSON/data URL edit；项目也不包含图片流式响应、
-embeddings、audio、files、batches、assistants、fine-tuning、发送下游响应后的自动重试、
-TLS 终止、独立财务账本、充值/退款或多币种兑换。
-
-## 开发与验证
-
-请在仓库根目录运行：
-
-```bash
-cargo check
 cargo fmt --check
-cargo clippy --all-targets
-cargo test
+cargo clippy --locked --workspace --all-targets
+cargo test --locked --workspace
 ```
 
-发布准备与 tag 发布流程见 [`docs/development/releasing.md`](docs/development/releasing.md)。本地发布门禁：
+前端命令见 [`web/console/README.md`](web/console/README.md)。Console API 形状由
+[`console-v1.yaml`](docs/openapi/console-v1.yaml) 定义，TypeScript 类型必须生成，不能手改。
 
-```bash
-VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
-./scripts/verify-release.sh "$VERSION"
-```
-
-修改请求转发路径后，还必须运行可选的付费真实上游 smoke test。请使用低额度的专用凭据，并只将其保存在已忽略的本地密钥文件中：
-
-```bash
-cp .env.real-upstream.example .env.real-upstream
-# 填写本地变量后运行：
-./scripts/run-real-upstream-smoke.sh
-```
-
-该脚本是仓库中唯一允许使用 `.env` 的例外。运行前请阅读 [docs/development/real-upstream-smoke.md](docs/development/real-upstream-smoke.md)。
-
-## 仓库结构
-
-```text
-src/
-  application/       代理、Console 鉴权、控制面、日志、用量
-  admission/         进程内 RPM、并发与软额度控制
-  domain/            API 格式、路由、凭据、请求日志类型
-  http/              公共 Axum 路由与独立 Console 路由
-  persistence/       SQLx 仓储与 migration 集成
-  runtime_config/    TOML bootstrap 配置与 ArcSwap 快照
-  routing/           优先级/权重选择与被动健康
-  transforms/        受限请求 JSON、请求/响应 Header 与 SSE/WebSocket 事件变换
-  upstream/          可复用 reqwest 客户端与代理/超时策略
-  workers/           快照重载与异步请求日志 worker
-migrations/          PostgreSQL schema migration
-deploy/postgres/     Compose 初始化辅助文件
-docs/                用户、开发、外部参考与历史归档文档
-config/              已忽略的运行配置、数据库密码和 JWT 密钥目录
-config.example.toml  已跟踪的配置模板
-tests/               本地与 PostgreSQL 集成测试
-```
-
-## 安全注意事项
-
-- 将 JWT 私钥保存在已忽略的 `./config/` 本地文件中，并严格限制文件系统权限。
-- 将 `./config/postgres-password` 权限保持为 `0600`，优先使用
-  `[database].password_file`，不要把数据库密码直接写进 TOML。
-- 请将数据库、备份和 Console 访问视为凭据敏感边界：控制面记录包含客户端和上游凭据。
-- 不要将客户端/上游凭据或 JWT 私钥材料写入 TOML、源代码、日志、测试 fixture 或 shell 历史记录。
-- Console API 仅应通过 HTTPS 和明确的来源策略对外暴露；公共数据面监听器同样应按网络边界限制访问。
-
-## 文档
-
-- [文档中心与文档规范](docs/README.md)
-- [运行与接口说明](docs/user/operations.md)
-- [生产配置与容量调优](docs/user/production-configuration.md)
-- [Docker 生产部署](docs/user/production-deployment.md)
-- [OpenAI 兼容性参考](docs/reference/openai-compatibility.md)
-- [当前架构](docs/development/architecture.md)
-- [版本发布流程](docs/development/releasing.md)
-- [Console Web UI 架构与开发指南](docs/development/console-ui.md)
-- [数据库与控制面架构](docs/development/database-architecture.md)
-- [真实上游 smoke test 说明](docs/development/real-upstream-smoke.md)
-- [历史归档](docs/archive/README.md)
+转发改动还需要经明确授权的[付费真实上游 smoke test](docs/development/real-upstream-smoke.md)。
+[性能测试](docs/development/forwarding-performance.md)另行按需执行，二者都不是普通安装步骤。
 
 ## 许可证
 
-`ai-gateway` 采用
-[GNU Affero General Public License v3.0 only](LICENSE)
-（`AGPL-3.0-only`）许可证。
-
-如果你修改本程序并通过网络向用户提供修改后的版本，AGPL 第 13 条要求向这些
-用户提供获取对应源码的方式。第三方组件继续遵循各自的许可证；详见
-[Console 第三方声明](web/console/NOTICES.md) 与仓库中的
-[`LICENSES/`](LICENSES/)。
+[GNU Affero General Public License v3.0 only](LICENSE)（`AGPL-3.0-only`）。
+修改本程序并通过网络向用户提供修改后的版本时，AGPL 第 13 条要求向这些用户提供获取对应源码的方式。
+第三方声明与再分发材料见 [`LICENSES/`](LICENSES/) 和
+[`web/console/NOTICES.md`](web/console/NOTICES.md)。

@@ -1,66 +1,80 @@
-# 请求日志故障准入审查
+# 请求日志故障准入决策
 
-> 状态：已完成设计记录；2026-09-16 审查、故障复现后已实施生产日志准入。
-> 当前实现细节及运维恢复以[日志流水线](request-log-durability.md)为准。
+> 状态：已完成设计记录。2026-09-16 的审查促成派发前同步准入；
+> 当前格式、容量与恢复操作见[日志耐久化](request-log-durability.md)。
 
-## 审查边界
+这项决策解决的是“上游已经派发，却没有可靠本地终态落点”的风险。
+仅在终态 append 失败时返回错误已经太晚：客户端可能收到响应，上游调用也无法撤销。
+因此客户端逻辑请求必须先同步 intent、预留终态 slot，再允许派发。
 
-对比背景：[Monoize 工程研究](../reference/monoize-engineering-study.md)。
-本次检查 `src/application/request_log.rs`、`src/request_log_spool.rs`、
-`src/workers/durable_request_log.rs` 及 `src/persistence/postgres_control_plane.rs`。
-参见[日志流水线](request-log-durability.md)。
+## 目录
 
-## 改动前的故障矩阵
+- [选定策略](#选定策略)
+- [未知结果的取舍](#未知结果的取舍)
+- [为什么原流水线不够](#为什么原流水线不够)
+- [证据与剩余边界](#证据与剩余边界)
 
-| 故障 | 当前代码行为 | 后果/恢复边界 |
-| --- | --- | --- |
-| 通知队列满 | durable append 后合并通知 | 事件仍在 spool，不等于日志丢失 |
-| DB/COPY 暂时失败 | 保留 spool，不推进成功 checkpoint | 可重放；磁盘积压可能继续增长 |
-| 投影失败 | 保留 ingress 行，延迟重试 | 查询和依赖最终表的结算落后 |
-| 结算事务失败 | claim 与账户更新一同回滚 | 由 `billed_at IS NULL` 恢复 |
-| spool append 失败 | 增加指标、ERROR，sink 返回 `()` | 普通请求没有持久化确认回传；事件可能没有结算来源 |
-| 请求终态前进程被杀 | 普通日志只在终态构造/append | 不能把已完成 write 的恢复保证外推给尚未产生的事件 |
-| group sync 前主机断电 | 默认 10ms 同步窗口 | 不保证逐条断电耐久 |
-| worker 停止但 append 成功 | 保留 spool 并输出告警 | 可在重启后恢复，不代表马上可查询 |
+## 选定策略
 
-现有自动化依据：
+1. 完成选路后、Connector 准备前，为每个客户端逻辑请求分配最大终态 slot 并同步 intent。
+   HTTP 重试复用预占，每个 WS response.create 单独准入。
+2. 默认本地预算 1GiB、最小剩余空间 64MiB。容量不足返回 503，不派发；
+   不把拒绝伪造为取消终态。路由前拒绝和 scheduled probe 不属于此范围。
+3. 终态先同步 slot，再同步 events.log，最后删除预占。
+   append 失败不撤回已发响应；完整 slot 用原 UUID 在重启后恢复。
+4. DB 不可用但本地容量允许时继续服务，请求路径不查询数据库。
+5. 容量压力可提前压缩已排空 spool；写/同步故障则锁定 writer，使用原目录重启恢复，
+   不通过盲写探测、删除证据或更换目录绕过。
+6. 不改变计费公式、价格快照或 UUID 幂等结算。财务事实和回执另见
+   [独立计量](independent-metering.md)。
 
-- `src/request_log_spool.rs`：checkpoint 重放、截断尾帧修复、单写者锁、压缩后继续 append。
-- `tests/control_plane_integration.rs`：
-  `durable_request_log_pipeline_replays_spool_after_an_ingress_outage`、
-  `settlement_claim_is_concurrent_idempotent_and_allows_soft_quota_overdraft`、
-  `batch_settlement_aggregates_account_updates_and_deduplicates_ids`。
+不能仅把 try_record 改为返回错误就声称已完成准入；
+也不能为了 SQLite 删除或禁用 durable spool。
 
-这些测试不等价于真实主机断电、磁盘耗尽或所有请求阶段的 kill 注入。
-[系统 E2E](system-e2e.md) 还验证 DB 暂停后的 kill/restart 恢复、
-checkpoint 回退重复重放不重复扣费，以及真实 Gateway 的局部 ENOSPC/EACCES syscall 注入。
-改动前曾确认普通请求继续 dispatch、终态日志缺失、writer 在去除注入后仍拒绝 append。
-改动后的场景已改为断言拒绝新派发，并验证完整 slot 重放，不保留旧的危险预期。
+## 未知结果的取舍
 
-## 已选生产策略
+所选策略是**只保留待核对，不因未知费用冻结普通用户或全局服务**：
 
-经用户确认，选择逐请求同步，但未知费用只保留待核对，不冻结相关用户或全局服务：
+- 只有 intent、无完整可信终态时，不制造 failed/cancelled，不记零，不伪造 usage。
+- intent 不证明已派发；同步与真正 dispatch 之间仍有窗口。
+- 重启释放未知 slot 的闲置预分配空间，保留实际证据和告警；
+  设施健康且预算允许时，新请求继续。
+- 人工核对前仍存在未知费用风险。这不是普通用户金额 fail-closed，也不是费用已经结清。
+- 自动核对、补账 API 和 Console 待核对页尚未提供。
 
-1. 每个客户端逻辑请求在 Connector 准备前预分配最大终态 slot 并同步 intent。
-   HTTP 重试复用预占；WS 每个 `response.create` 独立准入。
-2. 默认本地预算 1GiB、最小剩余空间 64MiB；容量不足返回 503。
-   已排空文件可因容量压力提前压缩，写/同步错误则锁定到重启，不作盲目写入探测。
-3. 终态先同步 slot，再同步 events.log，然后删除预占。终态写日志失败不撤销已发出的响应；
-   完整 slot 在重启后使用原 UUID 重放，未知记录不投影为零费用失败/取消。
-4. DB 不可用但本地容量允许时继续服务；不在请求路径查询 PostgreSQL。
-5. 未知请求在重启后释放闲置预分配空间，只保留证据和待核对告警。
-   新请求可以继续；**人工核对前存在未知费用风险**，这不是普通用户金额 fail-closed。
-6. 不修改现有计费公式、价格快照终态或 UUID 幂等结算。
+## 为什么原流水线不够
 
-不要简单将 `try_record` 改为返回错误后，就宣称已解决准入：
-响应可能已发送，不能撤销上游调用。也不要通过禁用或删除 durable spool 支持 SQLite。
+以下是**改动前**的故障矩阵，不是当前运行时描述：
 
-## 已验证与剩余边界
+| 故障 | 原处理及局限 |
+| --- | --- |
+| 通知队列满 | append 后合并通知，事件仍在 spool，队列满本身不丢日志 |
+| DB/COPY 故障 | 不推进 checkpoint，保留 spool；本地空间仍可能耗尽 |
+| 查询投影失败 | 保留 ingress；当时结算依赖查询表，会一起落后 |
+| 结算失败 | billed_at 认领与账户回滚；现已由独立回执替代 |
+| spool append 失败 | 只增指标/ERROR，sink 返回 ()，普通请求可能缺结算证据 |
+| 终态前进程退出 | 事件尚未生成，已有 append 的恢复保证无法覆盖 |
+| group sync 前断电 | 默认 10ms 窗口不保证逐条掉电耐久 |
+| worker 停止而 append 成功 | 数据可重启恢复，不等于立即可查询 |
 
-- Rust 单测覆盖预占/终态同步、slot 恢复、容量压力压缩、剩余空间拒绝和未知记录反复恢复。
-- HTTP 所有操作及每次 WS create 的确定性测试验证拒绝前无上游调用。
-- 系统 E2E 验证派发前 ENOSPC/EACCES、终态追加失败重放、终态前 kill 留待核对、
-  sync EIO、DB 停止后的 kill/restart 和 checkpoint 回退不重复扣费；不会填满宿主磁盘。
-- Rust 门禁与获授权的真实上游 smoke 已执行，后续转发改动仍必须按仓库规范重跑。
-- 不宣称覆盖所有部分写/断电组合；没有运行性能基准。
-- 自动核对、补账 API 和 Console 待核对页面仍未实现，未知费用不会自动扣除。
+后续独立事实切换解决了日志投影与扣款权的逻辑耦合；
+它不替代派发前本地准入，也不隔离共享数据库的硬件资源。
+
+## 证据与剩余边界
+
+代码入口：application/request_log.rs、request_log_admission.rs、
+request_log_spool.rs、workers/durable_request_log.rs。
+
+- spool 单测覆盖预占/终态同步、CRC/撕裂 slot、未知 intent、容量拒绝、
+  压力压缩、checkpoint/reopen 与故障锁定。
+- HTTP 各操作及每次 WS create 的确定性测试断言：准入拒绝前没有上游调用。
+- [系统 E2E](system-e2e.md)覆盖 DB 暂停后 kill/restart、checkpoint 回退无双扣、
+  局部 ENOSPC/EACCES、终态 append 失败后 slot 重放、终态前 kill 及 sync EIO。
+  注入不填满宿主磁盘。
+- 原故障复现确认“继续派发但无终态、去除注入仍锁定”的风险；
+  当前测试已改为拒绝新派发并恢复完整 slot，不保留危险旧预期。
+- 2026-09-16 的 Rust 与获授权上游回归仅是对应实现版本的历史证据。
+  后续转发变化仍需按仓库规范验证，不继承历史付费授权。
+
+这些测试不覆盖所有部分写/断电组合，不保证设备损坏或主机永久丢失后无损；
+没有性能基准结论。工程对比背景见[Monoize 研究](../reference/monoize-engineering-study.md)。

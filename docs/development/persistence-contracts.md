@@ -1,35 +1,38 @@
 # 持久化行为契约基线
 
-> 状态：当前。记录 P1 固定的业务不变量，并同步 P2/P3 的实现定位和约束变化。
-> 设计与后续切片见[持久化边界提案](persistence-boundaries.md)。
+> 状态：当前。金额、事务和恢复的业务基线；两后端用不同机制实现同一不变量。
 
-## 范围
+修改金额、结算、恢复或统计前，先用本页确认哪些行为不能改变，再按读写路径找到实现。
+事实与回执是财务来源，查询日志只是投影；不能为了接口重构或后端适配删掉故障测试。
 
-P1 仅补充测试和职责清单，不修改生产金额计算、结算路径、公开 API 或 migration。
-本页代码定位已随 [P2 接口收拢](persistence-interfaces.md)和
-[P3 独立事实](independent-metering.md)更新；收费规则不变，异常隔离与财务来源的变化如下。
-以下区分必须保持的业务保证与待替换的 PG 机制/已知缺陷；P2/P3 可以替换实现，
-但不能靠删掉失败场景测试宣称保持了保证。
+## 目录
 
-新增 PG 契约测试位于 `tests/contracts/persistence.rs`，作为
+- [金额与状态契约](#金额与状态契约)
+- [原子性、重放与恢复](#原子性重放与恢复)
+- [费用与状态读写路径清单](#费用与状态读写路径清单)
+- [保证与证明边界](#保证与证明边界)
+- [验证入口](#验证入口)
+
+PG 基线位于 `tests/contracts/persistence.rs`，作为
 `tests/control_plane_integration.rs` 的子模块复用其私有临时数据库/fixture。
 它不是独立 Cargo test target，不复制数据库创建和清理代码。
-测试专用触发器只创建在随机测试数据库中。
+测试触发器只创建于随机库。SQLite 的真实文件库和共享 case 见
+[计量对照](sqlite-metering.md)；PG 原生锁/COPY 测试不因双后端出现而移除。
 
 ## 金额与状态契约
 
 | 契约 | 当前实现及可执行证据 |
 | --- | --- |
 | 有效单价先取 12 位，费用在各项求和、除以计价 token 单位后取 8 位；均为中点取偶 | `src/application/billing.rs` 的四个 `tests`，包含中点上下舍入、分项不可提前取整、有效价格先舍入 |
-| 已选模型快照、渠道/请求/时间倍率决定费用，当前模型价格不能重算历史 | 原有 `src/application/proxy.rs` billing 单测；新增 `recovery_is_bounded_oldest_first_and_preserves_prices_and_probe_charges` |
+| 已选模型快照、渠道/请求/时间倍率决定费用，当前模型价格不能重算历史 | `src/application/proxy.rs` billing 单测；`recovery_is_bounded_oldest_first_and_preserves_prices_and_probe_charges` |
 | 金额使用 Decimal/NUMERIC；单条最大值精确保存、批量越界整笔失败 | `maximum_amount_is_exact_and_aggregate_overflow_never_partially_settles` |
-| 普通余额可负、Key 软配额可透支，但已用额度不能负 | 原有 `settlement_claim_is_concurrent_idempotent_and_allows_soft_quota_overdraft`；migrations `0001`、`0003` |
+| 普通余额可负、Key 软配额可透支，但已用额度不能负 | `settlement_claim_is_concurrent_idempotent_and_allows_soft_quota_overdraft`；migrations `0001`、`0003` |
 | 成功缺 usage/费用不结算；路由前 rejected 无计费事实不是已结算零费用 | `unknown_rejected_and_zero_by_policy_remain_distinct_during_recovery`；均保留 `NotBillable`，内部分类见 P3 |
-| 明确 failed/cancelled 始终归零，包括缺价格/usage 或旧事件携带正费用 | 同一测试；原有 `zero_cost_migration_refunds_and_reconciles_historical_failures` |
+| 明确 failed/cancelled 始终归零，包括缺价格/usage 或旧事件携带正费用 | 同一测试；`zero_cost_migration_refunds_and_reconciles_historical_failures` |
 | 有费用不等于具备结算资格 | `missing_price_evidence_is_preserved_without_blocking_eligible_facts`；资格转移到独立事实/回执，不再毒化正常批次 |
 | scheduled probe 仍按系统身份和既有价格计费，不能因 source 改为免费 | `recovery_is_bounded_oldest_first_and_preserves_prices_and_probe_charges` |
 
-P3 用生成的 `amount_state` 保存金额分类，没有改变公共 API 枚举。
+生成的 `amount_state` 保存内部金额分类，不改变公共 API 枚举。
 只有 intent 的请求不能伪造成 terminal fact。
 
 ## 原子性、重放与恢复
@@ -37,20 +40,20 @@ P3 用生成的 `amount_state` 保存金额分类，没有改变公共 API 枚�
 | 保证 | 证据 |
 | --- | --- |
 | 唯一回执、余额、Key 已用额度及 pending 删除同事务；部分账户未更新时全部回滚 | `settlement_rolls_back_claims_and_all_accounts_on_overflow_or_missing_updates`：余额溢出、Key 溢出、用户/Key BEFORE UPDATE 跳过一行，共四个隔离场景 |
-| 同 UUID 并发及提交后再次调用只扣一次 | 原有 `settlement_claim_is_concurrent_idempotent_and_allows_soft_quota_overdraft`；`batch_settlement_aggregates_account_updates_and_deduplicates_ids` |
-| 用户与 Key 不匹配不可认领；有效行可独立结算 | 原有 `batch_settlement_classifies_ineligible_rows_independently`；`settlement_leaves_account_mismatch_unbilled_and_worker_recovers_durable_logs` |
-| 确认丢失后的数据库效果由再次查询/调用恢复，而不是凭返回超时重复扣款 | 原有重复 `settle`/`settle_batch` 测试；未新增真实网络 COMMIT 回复丢失注入，不将调用级重试描述为网络故障证明 |
-| 数据库最终写入后才能 ack ingress，COPY 接收后才能推进 spool checkpoint | 原有 `durable_request_log_pipeline_replays_spool_after_an_ingress_outage`；`src/request_log_spool.rs` checkpoint/reopen 测试；根 E2E 的 DB outage/replay 场景 |
-| 相同 UUID 内容不一致不能悄悄覆盖 | 原有 `request_log_insert_is_idempotent_and_worker_continues_after_failure`；`request_log_batch_insert_isolates_duplicates_and_invalid_statuses` |
-| 恢复扫描按 completed_at/id 有界推进，limit 最小为 1，不再次扣已结算行 | 新增 `recovery_is_bounded_oldest_first_and_preserves_prices_and_probe_charges` 固定跨时间顺序及 limit=0/1；同时间 UUID 排序由当前 SQL 定义 |
-| slot 完整重放、未知 intent/撕裂 slot 不制造零费用终态 | 原有 `src/request_log_spool.rs` admission、latched failure、unknown intent、torn slot 测试 |
-| 连续 migration 原子执行；失败/取消历史退款只执行一次 | 原有 `pending_migrations_commit_and_rollback_as_one_batch`、`zero_cost_migration_refunds_and_reconciles_historical_failures` |
+| 同 UUID 并发及提交后再次调用只扣一次 | `settlement_claim_is_concurrent_idempotent_and_allows_soft_quota_overdraft`；`batch_settlement_aggregates_account_updates_and_deduplicates_ids` |
+| 用户与 Key 不匹配不可认领；有效行可独立结算 | `batch_settlement_classifies_ineligible_rows_independently`；`settlement_leaves_account_mismatch_unbilled_and_worker_recovers_durable_logs` |
+| 确认丢失后的数据库效果由再次查询/调用恢复，而不是凭返回超时重复扣款 | 重复 `settle`/`settle_batch`；证明调用级幂等，不证明真实网络 COMMIT 回复丢失 |
+| 数据库最终写入后才能 ack ingress，COPY 接收后才能推进 spool checkpoint | `durable_request_log_pipeline_replays_spool_after_an_ingress_outage`；spool checkpoint/reopen；系统 E2E DB outage/replay |
+| 相同 UUID 内容不一致不能悄悄覆盖 | `request_log_insert_is_idempotent_and_worker_continues_after_failure`；`request_log_batch_insert_isolates_duplicates_and_invalid_statuses` |
+| 恢复扫描按 completed_at/id 有界推进，limit 最小为 1，不再次扣已结算行 | `recovery_is_bounded_oldest_first_and_preserves_prices_and_probe_charges` 固定跨时间顺序及 limit=0/1；同时间 UUID 排序由 SQL 定义 |
+| slot 完整重放、未知 intent/撕裂 slot 不制造零费用终态 | spool admission、latched failure、unknown intent、torn slot 测试 |
+| 连续 migration 原子执行；失败/取消历史退款只执行一次 | `pending_migrations_commit_and_rollback_as_one_batch`、`zero_cost_migration_refunds_and_reconciles_historical_failures` |
 
-新增 `database_constraints_reject_invalid_money_and_illegal_log_updates` 绕过应用直接执行 SQL，
+`database_constraints_reject_invalid_money_and_illegal_log_updates` 绕过应用直接执行 SQL，
 验证 failed/cancelled 正费用、部分价格快照、非 USD、非正 token 单位、
 负费用及越界 reasoning tokens 被 CHECK 拒绝；非结算字段更新与撤销回执被触发器拒绝。
 `tests/contracts/facts.rs` 另验证无合格模型/价格的事实不能获得回执及旧认领列不可写。
-这些是 PG 实现契约，未来后端必须证明同等业务效果，不要求复刻同一 SQLSTATE。
+这些是 PG 数据库保护证据；SQLite 证明同等业务效果，不要求复刻 SQLSTATE。
 
 ## 费用与状态读写路径清单
 
@@ -79,14 +82,14 @@ P3 用生成的 `amount_state` 保存金额分类，没有改变公共 API 枚�
 `MeteringQueries` 和 `SettlementRepository`。
 费用读源迁移不得统一成一种 source 或时间口径。
 
-| 查询 | 时间/source/权限边界 | 当前 P3 归属 |
+| 查询 | 时间/source/权限边界 | 当前读源 |
 | --- | --- | --- |
 | `query_console_request_logs` / `query_console_request_log` | 本人查询绑定 user；管理视图及字段脱敏保持原状；时间筛选含两端；`billed` 过滤 billed_at | 日志投影 + 回执 LEFT JOIN，不再拥有认领权 |
 | `personal_usage` | started_at 闭开区间、UTC 日桶、仅 client、本人 user | 费用/usage 读独立事实 |
 | `cost_statistics` | started_at 闭开区间；可按 user/Key/channel/credential 限定；不默认排除 scheduled_test | 事实提供全部聚合维度；保留 NULL 费用与请求计数差异 |
-| `channel_group_status` | started_at 闭开区间，24h/3d/7d UTC 分桶；启用统计且未删除组；不默认排除 scheduled_test | 财务部分来自事实；成功率/状态指标需保留当前定义 |
+| `channel_group_status` | started_at 闭开区间，24h/3d/7d UTC 分桶；活动组/渠道的已启用统计能力；不默认排除 scheduled_test | 成功率、延迟和吞吐来自日志投影，按组与 API format 区分 |
 | `refresh_spend_leaderboard_snapshots` | 仅 client；Asia/Shanghai 日/周/月边界；写入 `spend_leaderboard_*` | 保留统计快照，费用源改为事实 |
-| `persistence/codex.rs::CODEX_CURRENT_WINDOW_COSTS_LATERAL`、管理员/本人 quota history | 两个 managed projection 的 channel；started_at 在 period 起点至 ended_at 或 min(now,reset_at) 的闭开区间；cost 非 NULL；本人视图遵守 group/pool 可见性 | 读事实，不依赖日志或普通结算回执 |
+| `persistence/codex.rs::CODEX_CURRENT_WINDOW_COSTS_LATERAL`、管理员/本人 quota history | 按不可变请求凭证归属；started_at 在 period 起点至 ended_at 或 min(now,reset_at) 的闭开区间；cost 非 NULL；本人视图遵守用户组的渠道组可见性 | 事实 JOIN request_credential_identities；旧未知才用冻结历史回退，不依赖日志、当前改绑或回执 |
 | `settlement_backlog` / `settle_pending` | 只扫描合格 pending；排除账户不匹配 | unknown/invalid/账户异常有独立核对计数，不伪装成清零 |
 
 ### Codex quota 不是普通 Key 额度重置
@@ -97,17 +100,23 @@ P3 用生成的 `amount_state` 保存金额分类，没有改变公共 API 枚�
   `record_codex_quota_reset_transaction` 写 reset 事件/审计；
   `claim_manual_codex_quota_reset` 以 reset event 记录窗口应用状态，不重置 Key 已用金额。
 
-## 基线限制的演进
+## 保证与证明边界
 
-P1 固定了“不误扣、无部分扣款”，没有把旧日志表实现固化成未来保证。P3 已改进：
+行为基线保证“不误扣、无部分扣款”，不把旧日志表认领机制固化为业务要求：
 
 - 缺价格的历史费用归为 invalid，不再回滚正常结算批次。
 - unknown/invalid/账户异常有独立核对计数与变化日志，但没有自动补账或 Console 核对页。
 - 日志 DELETE 不再移除财务认领证据；事实/回执禁止删改，但没有启用日志 TTL。
 - 查询表被锁或展示字段非法时，事实、结算与费用统计仍可推进。
 
-P2 的驱动边界继续由测试固定。具体实现仍仅支持 PostgreSQL，
-SQLx source 只在 PG 测试/内部诊断中使用；没有 SQLite、分布式 exactly-once 或无损硬件保证。
+驱动边界由[接口契约](persistence-interfaces.md)固定。当前同时支持 PostgreSQL 和 Linux SQLite；
+应用不解释 SQLx source，两后端各自保留真实约束/迁移/恢复测试。
+重复调用证明幂等账户效果，不证明端到端 exactly-once；SIGKILL、取消和重启也不证明
+所有硬件断电组合。既有调用级重试测试没有注入真实 PG COMMIT 网络回复丢失。
+
+这组测试最初在 P1 固定收费规则，P2 收拢驱动接口，P3 将财务来源迁出日志。
+这些编号只解释演进，不表示 SQLite 或独立事实仍待实现；设计理由见
+[持久化边界](persistence-boundaries.md)。
 
 ## 验证入口
 
@@ -118,11 +127,12 @@ cargo test --locked --test control_plane_integration metering_facts
 cargo fmt --check
 cargo clippy --locked --workspace --all-targets
 cargo test --locked --workspace
+cargo test --locked --workspace --features sqlite-backend
 git diff --check
 python3 scripts/check-docs.py
 ```
 
 PG 测试使用现有 helper 创建随机 `ai_gateway_test_*` 数据库并清理，不修改业务库。
 `TEST_DATABASE_ADMIN_URL` 必须指向管理数据库而不是 `ai_gateway`。
-仅测试代码变更不调用付费上游或性能负载；对应系统 E2E 场景是现有证据入口，
-不代表本次重复运行了 E2E。
+这些契约命令不调用付费上游或性能负载；系统 E2E 是独立验证入口，
+仓储 case 不替代真实服务、CLI 与浏览器的故障恢复验收。
