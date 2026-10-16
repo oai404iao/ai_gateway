@@ -155,6 +155,7 @@ def exercise_plugin_lifecycle(data, plugin):
         check("HTTP 409" in str(error), "stale plugin settings failed for the wrong reason")
     else:
         raise RuntimeError("stale plugin settings were accepted")
+    _, headers = request(console, path, token=token)
     write(path + "/state", "PUT", {**selected, "enabled": False}, headers["ETag"])
     connectors, _ = request(console, "/console/v1/system/connectors", token=token)
     check(not any(item["id"] == "codex" for item in connectors), "disabled plugin remains dispatchable")
