@@ -320,10 +320,14 @@ fn validate_id(id: &str) -> Result<(), PluginError> {
     Ok(())
 }
 
-fn validate_hash(hash: &str) -> Result<(), PluginError> {
-    if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+pub(crate) fn validate_hash(hash: &str) -> Result<(), PluginError> {
+    if hash.len() != 64
+        || !hash
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
         return Err(PluginError::Configuration(
-            "SHA-256 must contain 64 hexadecimal digits",
+            "SHA-256 must contain 64 lowercase hexadecimal digits",
         ));
     }
     Ok(())
@@ -474,7 +478,7 @@ mod linux {
             .get_or_init(Default::default)
             .lock()
             .map_err(|_| PluginError::Load)?;
-        let digest = expected_sha256.to_ascii_lowercase();
+        let digest = expected_sha256.to_owned();
         if let Some(plugin) = retained.loaded.get(&digest) {
             return if plugin.manifest.id == expected_id {
                 Ok(Arc::clone(plugin))
@@ -541,8 +545,8 @@ mod linux {
             manifest,
             dispatch,
             free_buffer,
-            artifact_digest: expected_sha256.to_ascii_lowercase(),
-            generation_id: format!("{}:unconfigured", expected_sha256.to_ascii_lowercase()),
+            artifact_digest: expected_sha256.to_owned(),
+            generation_id: format!("{expected_sha256}:unconfigured"),
             settings: None,
         }))
     }
@@ -610,7 +614,7 @@ mod linux {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect();
-        if !hash.eq_ignore_ascii_case(expected_sha256) {
+        if hash != expected_sha256 {
             return Err(PluginError::HashMismatch);
         }
         let seals =
@@ -779,7 +783,18 @@ mod tests {
         }
         assert!(validate_id("codex").is_ok());
         assert!(validate_hash(&"a".repeat(64)).is_ok());
-        assert!(validate_hash(&"g".repeat(64)).is_err());
+        for hash in [
+            "g".repeat(64),
+            "A".repeat(64),
+            "aB".repeat(32),
+            "a".repeat(63),
+        ] {
+            assert!(validate_hash(&hash).is_err());
+            assert!(matches!(
+                Plugin::load(Path::new("/does/not/exist"), &hash, "fixture"),
+                Err(PluginError::Configuration(_))
+            ));
+        }
         let config = PluginConfig {
             id: "codex".to_owned(),
             path: PathBuf::from("/does/not/exist"),

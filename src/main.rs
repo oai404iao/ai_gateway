@@ -213,6 +213,7 @@ async fn serve_connected(
         })
         .await?;
     let system_probe_identity = repository.ensure_system_probe_identity().await?;
+    // Installs are not resumable: catalog startup discards staging; interrupted uploads need reuploading.
     repository.interrupt_plugin_install_jobs().await?;
     let initial = compile_runtime_config_with_catalog(repository.load_runtime().await?, &plugins)?;
     let initial_passive_health = initial.system_settings().passive_health();

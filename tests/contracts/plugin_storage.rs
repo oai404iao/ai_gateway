@@ -1,5 +1,6 @@
 //! Plugin storage contracts shared by isolated PostgreSQL and SQLite fixtures.
 
+use ai_gateway::connector_plugins::DirectoryPluginCatalog;
 use ai_gateway::persistence::{
     ControlPlaneMutation, ControlPlaneRepository, PluginArtifactInput, PluginJobCompletion,
     PluginSaveInput, PluginSettingsInput, RepositoryError,
@@ -308,6 +309,272 @@ async fn contract(repository: ControlPlaneRepository) {
             .as_deref(),
         Some("plugin_install_failed")
     );
+    uppercase_digest_contract(&repository).await;
+    settings_isolation_contract(&repository).await;
+    interrupted_restart_contract(&repository).await;
+}
+
+async fn uppercase_digest_contract(repository: &ControlPlaneRepository) {
+    let artifact = PluginArtifactInput {
+        plugin_id: "digest-fixture".into(),
+        digest: "a".repeat(64),
+        version: "1.0.0".into(),
+        manifest: json!({"id":"digest-fixture","version":"1.0.0"}),
+    };
+    for digest in ["A".repeat(64), format!("{}A", "a".repeat(63))] {
+        let mut invalid = artifact.clone();
+        invalid.digest = digest;
+        assert!(matches!(
+            repository.register_discovered_plugin(invalid.clone()).await,
+            Err(RepositoryError::Validation)
+        ));
+        assert!(matches!(
+            repository
+                .prepare_mutation(ADMIN, ControlPlaneMutation::RegisterPluginArtifact(invalid))
+                .await,
+            Err(RepositoryError::Validation)
+        ));
+    }
+    let records = repository.plugin_records().await.unwrap();
+    assert!(
+        !records
+            .artifacts
+            .iter()
+            .any(|row| row.plugin_id == artifact.plugin_id)
+    );
+    assert!(
+        !records
+            .states
+            .iter()
+            .any(|row| row.plugin_id == artifact.plugin_id)
+    );
+    repository
+        .register_discovered_plugin(artifact.clone())
+        .await
+        .unwrap();
+    let job = Uuid::new_v4();
+    repository
+        .create_plugin_install_job(ADMIN, job, "install")
+        .await
+        .unwrap();
+    repository
+        .claim_plugin_install_job(ADMIN, job)
+        .await
+        .unwrap();
+    for digest in ["A".repeat(64), format!("{}A", "a".repeat(63))] {
+        for enabled in [false, true] {
+            assert!(matches!(
+                repository
+                    .prepare_mutation(
+                        ADMIN,
+                        ControlPlaneMutation::SavePlugin {
+                            plugin_id: artifact.plugin_id.clone(),
+                            input: PluginSaveInput {
+                                enabled,
+                                artifact_digest: Some(digest.clone()),
+                                settings: None,
+                            },
+                            expected_revision: 1,
+                        },
+                    )
+                    .await,
+                Err(RepositoryError::Validation)
+            ));
+        }
+        assert!(matches!(
+            repository
+                .prepare_mutation(
+                    ADMIN,
+                    ControlPlaneMutation::DeletePluginArtifact {
+                        plugin_id: artifact.plugin_id.clone(),
+                        digest: digest.clone(),
+                        expected_revision: 1,
+                    },
+                )
+                .await,
+            Err(RepositoryError::Validation)
+        ));
+        assert!(matches!(
+            repository
+                .finish_plugin_install_job(
+                    ADMIN,
+                    job,
+                    PluginJobCompletion {
+                        plugin_id: Some(artifact.plugin_id.clone()),
+                        artifact_digest: Some(digest),
+                        error_code: None,
+                    },
+                )
+                .await,
+            Err(RepositoryError::Validation)
+        ));
+    }
+    let records = repository.plugin_records().await.unwrap();
+    let state = records
+        .states
+        .iter()
+        .find(|row| row.plugin_id == artifact.plugin_id)
+        .unwrap();
+    assert_eq!(state.revision, 1);
+    assert!(!state.enabled);
+    assert!(state.artifact_digest.is_none());
+    assert!(
+        records
+            .artifacts
+            .iter()
+            .any(|row| row.plugin_id == artifact.plugin_id && row.digest == artifact.digest)
+    );
+    assert_eq!(
+        repository
+            .plugin_install_job(job)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        "running"
+    );
+    repository
+        .fail_plugin_install_job(job, "plugin_install_failed")
+        .await
+        .unwrap();
+}
+
+async fn settings_isolation_contract(repository: &ControlPlaneRepository) {
+    for (plugin_id, values) in [
+        ("settings-alpha", json!({"workspace":"alpha-private"})),
+        ("settings-beta", json!({"workspace":"beta-private"})),
+    ] {
+        repository
+            .prepare_mutation(
+                ADMIN,
+                ControlPlaneMutation::SavePlugin {
+                    plugin_id: plugin_id.into(),
+                    input: PluginSaveInput {
+                        enabled: false,
+                        artifact_digest: None,
+                        settings: Some(PluginSettingsInput {
+                            schema_version: 1,
+                            values,
+                        }),
+                    },
+                    expected_revision: 0,
+                },
+            )
+            .await
+            .unwrap()
+            .commit()
+            .await
+            .unwrap();
+    }
+    repository
+        .prepare_mutation(
+            ADMIN,
+            ControlPlaneMutation::SavePlugin {
+                plugin_id: "settings-alpha".into(),
+                input: PluginSaveInput {
+                    enabled: false,
+                    artifact_digest: None,
+                    settings: Some(PluginSettingsInput {
+                        schema_version: 2,
+                        values: json!({"workspace":"alpha-updated"}),
+                    }),
+                },
+                expected_revision: 1,
+            },
+        )
+        .await
+        .unwrap()
+        .commit()
+        .await
+        .unwrap();
+    let records = repository.plugin_records().await.unwrap();
+    for (plugin_id, revision, values) in [
+        ("settings-alpha", 2, json!({"workspace":"alpha-updated"})),
+        ("settings-beta", 1, json!({"workspace":"beta-private"})),
+    ] {
+        let settings = repository
+            .plugin_settings(plugin_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(settings.plugin_id, plugin_id);
+        assert_eq!(settings.revision, revision);
+        assert_eq!(i64::from(settings.schema_version), revision);
+        assert_eq!(settings.values, values);
+        let runtime_settings = records
+            .settings
+            .iter()
+            .find(|row| row.plugin_id == plugin_id)
+            .unwrap();
+        assert_eq!(runtime_settings.values, values);
+        assert_eq!(runtime_settings.revision, revision);
+    }
+}
+
+async fn interrupted_restart_contract(repository: &ControlPlaneRepository) {
+    let directory = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let root = directory.path().join("plugins");
+    let catalog = DirectoryPluginCatalog::open(root.clone()).unwrap();
+    let queued = Uuid::new_v4();
+    let running = Uuid::new_v4();
+    for id in [queued, running] {
+        repository
+            .create_plugin_install_job(ADMIN, id, "install")
+            .await
+            .unwrap();
+    }
+    repository
+        .claim_plugin_install_job(ADMIN, running)
+        .await
+        .unwrap();
+    let upload = root.join("staging").join(format!("{queued}.tar.gz"));
+    let partial = root.join("staging/install-abc123");
+    std::fs::write(&upload, b"incomplete upload").unwrap();
+    std::fs::create_dir(&partial).unwrap();
+    std::fs::write(partial.join("connector.so"), b"incomplete library").unwrap();
+    std::fs::write(
+        partial.join("manifest.json"),
+        br#"{"id":"restart-fixture","version":"1.0.0"}"#,
+    )
+    .unwrap();
+    let artifacts_before = repository.plugin_artifacts().await.unwrap();
+    drop(catalog);
+
+    let restarted = DirectoryPluginCatalog::open(root).unwrap();
+    assert!(!upload.exists());
+    assert!(!partial.exists());
+    assert!(restarted.discover().unwrap().is_empty());
+    assert_eq!(repository.interrupt_plugin_install_jobs().await.unwrap(), 2);
+    assert_eq!(repository.interrupt_plugin_install_jobs().await.unwrap(), 0);
+    let artifacts_after = repository.plugin_artifacts().await.unwrap();
+    assert_eq!(
+        serde_json::to_value(artifacts_after).unwrap(),
+        serde_json::to_value(artifacts_before).unwrap()
+    );
+    let audits = repository.audit_logs(100).await.unwrap();
+    for id in [queued, running] {
+        let job = repository.plugin_install_job(id).await.unwrap().unwrap();
+        assert_eq!(job.status, "failed");
+        assert_eq!(job.error_code.as_deref(), Some("interrupted"));
+        assert!(job.plugin_id.is_none());
+        assert!(job.artifact_digest.is_none());
+        let interrupts: Vec<_> = audits
+            .iter()
+            .filter(|row| {
+                row.object_type == "plugin_install_job"
+                    && row.object_id == id
+                    && row.action == "interrupt"
+            })
+            .collect();
+        assert_eq!(interrupts.len(), 1);
+        let audit = interrupts[0];
+        assert_eq!(audit.actor_type, "system");
+        assert!(audit.actor_user_id.is_none());
+        assert!(audit.actor_role.is_none());
+        let after = audit.after_redacted.as_ref().unwrap();
+        assert_eq!(after["status"], "failed");
+        assert_eq!(after["error_code"], "interrupted");
+    }
 }
 
 #[tokio::test]
