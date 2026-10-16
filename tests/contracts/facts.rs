@@ -8,6 +8,8 @@ use serde_json::json;
 
 #[path = "rehearsal.rs"]
 mod rehearsal;
+#[path = "sharing_removal.rs"]
+mod sharing_removal;
 
 async fn accounts(pool: &PgPool, key: Uuid) -> (Decimal, Decimal) {
     sqlx::query_as(
@@ -41,7 +43,7 @@ async fn wait_for_receipts(pool: &PgPool, ids: &[Uuid], expected: i64) {
 }
 
 #[tokio::test]
-async fn locked_or_invalid_log_projection_does_not_block_settlement_or_sharing_recovery() {
+async fn locked_or_invalid_log_projection_does_not_block_settlement_or_cost_statistics() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
     let directory = tempfile::tempdir().unwrap();
@@ -73,10 +75,6 @@ async fn locked_or_invalid_log_projection_does_not_block_settlement_or_sharing_r
     assert_eq!(
         accounts(&database.pool, seed.key).await,
         (-cost * Decimal::from(2), cost * Decimal::from(2))
-    );
-    assert_eq!(
-        queries.sharing_completed_costs(&ids).await.unwrap().len(),
-        2
     );
     let report = queries
         .cost_statistics(CostStatisticsFilter {
@@ -169,10 +167,6 @@ async fn locked_or_invalid_log_projection_does_not_block_settlement_or_sharing_r
     assert_eq!(
         accounts(&database.pool, seed.key).await,
         (-cost * Decimal::from(2), cost * Decimal::from(2))
-    );
-    assert_eq!(
-        queries.sharing_completed_costs(&ids).await.unwrap().len(),
-        2
     );
     database.cleanup().await;
 }

@@ -21,7 +21,6 @@ import { AdminDetailShell } from "@/features/admin/components/admin-detail-shell
 import { useReturnPath } from "@/lib/page-navigation";
 import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
 import { ApiKeyValue } from "@/components/shared/api-key-value";
-import { SharingChannelFields } from "@/components/shared/sharing-channel-fields";
 import {
   RoutingTargetFields,
   type RoutingTargetChannel,
@@ -197,16 +196,11 @@ export function ApiKeyDetailPage() {
       }));
     return [...available, ...missing];
   }, [key?.allowed_group_ids, options.data?.groups]);
-  const sharingChannelIds = useMemo(
-    () => new Set(options.data?.sharing_channels.map((item) => item.channel_id) ?? []),
-    [options.data?.sharing_channels],
-  );
   const targetChannels = useMemo<RoutingTargetChannel[]>(() => {
     const available = options.data?.channels ?? [];
     const missing = (key?.allowed_channel_ids ?? [])
       .filter((channelId) =>
-        !sharingChannelIds.has(channelId)
-        && !available.some((channel) => channel.id === channelId))
+        !available.some((channel) => channel.id === channelId))
       .map((channelId) => ({
         id: channelId,
         channel_group_id: "",
@@ -220,34 +214,20 @@ export function ApiKeyDetailPage() {
   }, [
     key?.allowed_channel_ids,
     options.data?.channels,
-    sharingChannelIds,
     t,
   ]);
   const selectedGroupIds = form.watch("allowed_group_ids");
   const selectedChannelIds = form.watch("allowed_channel_ids");
-  const selectedSharingChannelIds = selectedChannelIds.filter((channelId) =>
-    sharingChannelIds.has(channelId),
-  );
-  const selectedPolicyChannelIds = selectedChannelIds.filter(
-    (channelId) => !sharingChannelIds.has(channelId),
-  );
   const targetError =
     form.formState.errors.allowed_group_ids?.message ??
     form.formState.errors.allowed_channel_ids?.message;
   const allowedGroupNames = (key?.allowed_group_ids ?? []).map(
     (groupId) => targetGroups.find((group) => group.id === groupId)?.name ?? groupId,
   );
-  const allowedChannelNames = [
-    ...(options.data?.sharing_channels ?? [])
-      .filter((channel) => key?.allowed_channel_ids.includes(channel.channel_id))
-      .map((channel) => channel.channel_name),
-    ...(key?.allowed_channel_ids ?? [])
-      .filter((channelId) => !sharingChannelIds.has(channelId))
-      .map((channelId) => {
-        const channel = targetChannels.find((channel) => channel.id === channelId);
-        return channel ? `${channel.name} (${channel.channel_group_name ?? channel.channel_group_id})` : channelId;
-      }),
-  ];
+  const allowedChannelNames = (key?.allowed_channel_ids ?? []).map((channelId) => {
+    const channel = targetChannels.find((channel) => channel.id === channelId);
+    return channel ? `${channel.name} (${channel.channel_group_name ?? channel.channel_group_id})` : channelId;
+  });
 
   return (
     <>
@@ -372,23 +352,12 @@ export function ApiKeyDetailPage() {
                           : t("Unable to load API key target options.")}
                       </FieldError>
                     ) : null}
-                    <div className="grid items-start gap-4 xl:col-span-2 xl:grid-cols-2">
-                      <SharingChannelFields
-                        channels={options.data?.sharing_channels ?? []}
-                        selectedChannelIds={selectedSharingChannelIds}
-                        onChange={(channelIds) =>
-                          form.setValue(
-                            "allowed_channel_ids",
-                            [...selectedPolicyChannelIds, ...channelIds],
-                            { shouldDirty: true, shouldValidate: true },
-                          )
-                        }
-                      />
+                    <div className="xl:col-span-2">
                       <RoutingTargetFields
                         groups={targetGroups}
                         channels={targetChannels}
                         selectedGroupIds={selectedGroupIds}
-                        selectedChannelIds={selectedPolicyChannelIds}
+                        selectedChannelIds={selectedChannelIds}
                         onChange={(allowedGroupIds, allowedChannelIds) => {
                           form.setValue("allowed_group_ids", allowedGroupIds, {
                             shouldDirty: true,
@@ -396,14 +365,14 @@ export function ApiKeyDetailPage() {
                           });
                           form.setValue(
                             "allowed_channel_ids",
-                            [...selectedSharingChannelIds, ...allowedChannelIds],
+                            allowedChannelIds,
                             { shouldDirty: true, shouldValidate: true },
                           );
                         }}
                         legend={t("API Key Policy targets")}
                         description={t(options.data?.policy_enabled
                           ? "These ordinary groups and channels come from your enabled API Key Policy."
-                          : "No enabled API Key Policy is assigned. Sharing credentials remain available.")}
+                          : "No enabled API Key Policy is assigned. Ask an administrator to assign one.")}
                         error={targetError ? t(targetError) : undefined}
                       />
                     </div>

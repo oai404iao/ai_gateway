@@ -110,7 +110,7 @@ fn result(
 
 /// Runs inside the coordinator's serializable transaction. Scope validation
 /// includes disabled and unrouted bindings; the caller still owns the complete
-/// settings/sharing validation, audit, commit, and snapshot publication.
+/// settings validation, audit, commit, and snapshot publication.
 pub async fn pg_save(
     transaction: &mut Transaction<'_, Postgres>,
     id: Uuid,

@@ -60,7 +60,6 @@ export function returnPathLabel(path: string): string {
     ["/admin/registration-invitation-codes", "Back to registration codes", "Back to registration code"],
     ["/admin/network/proxies", "Back to proxies", "Back to proxy"],
     ["/admin/transforms/templates", "Back to templates", "Back to template"],
-    ["/admin/codex-sharing", "Back to sharing groups", "Back to sharing group"],
     ["/api-keys", "Back to API keys", "Back to API key"],
   ] as const;
   for (const [parent, listLabel, detailLabel] of parents) {

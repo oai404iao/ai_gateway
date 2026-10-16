@@ -79,7 +79,6 @@ use super::{
 /// request and a process-shared upstream client registry.
 #[derive(Clone)]
 pub struct ProxyService {
-    sharing: crate::codex_sharing::SharingRuntime,
     runtime: Arc<RuntimeConfig>,
     upstream_clients: Arc<UpstreamClientRegistry>,
     max_request_body_bytes: usize,
@@ -213,7 +212,6 @@ impl ProxyService {
         routing.reconcile(&snapshot);
         upstream_clients.configure_websockets(snapshot.system_settings().websocket());
         Ok(Self {
-            sharing: Default::default(),
             runtime,
             upstream_clients,
             max_request_body_bytes: request_body_limits.proxy_body_bytes,
@@ -230,11 +228,6 @@ impl ProxyService {
     #[must_use]
     pub fn with_connector_registry(mut self, connectors: UpstreamConnectorRegistry) -> Self {
         self.connectors = connectors;
-        self
-    }
-
-    pub fn with_sharing_runtime(mut self, sharing: crate::codex_sharing::SharingRuntime) -> Self {
-        self.sharing = sharing;
         self
     }
 
@@ -502,18 +495,9 @@ impl ProxyService {
             ) {
                 Ok(attempt) => attempt,
                 Err(error) => {
-                    if affinity_hit
-                        || snapshot
-                            .sharing()
-                            .for_channel(current_channel.id())
-                            .is_some()
-                    {
+                    if affinity_hit {
                         completion.set_preserve_affinity_on_failure(true);
-                        let error = if affinity_hit {
-                            ProxyError::sticky_connector_unavailable(error)
-                        } else {
-                            ProxyError::connector_unavailable(error)
-                        };
+                        let error = ProxyError::sticky_connector_unavailable(error);
                         completion
                             .finish_with_proxy_error(RequestOutcome::UpstreamUnavailable, &error);
                         return Err(error);
@@ -735,11 +719,6 @@ impl ProxyService {
                 .request(parts.method.clone(), url)
                 .headers(headers)
                 .body(body);
-            if let Err(error) = completion.admit_sharing(&self.sharing, &snapshot).await {
-                completion.set_preserve_affinity_on_failure(true);
-                completion.finish_with_proxy_error(RequestOutcome::ClientRequestError, &error);
-                return Err(error);
-            }
             let send_result = match timeout(
                 upstream_policy.timeouts().response_header(),
                 upstream_request.send(),
@@ -1352,30 +1331,6 @@ impl ProxyError {
 
     fn invalid_request(message: &'static str, param: &'static str) -> Self {
         Self::invalid_request_with_code(message, param, "invalid_request")
-    }
-
-    fn sharing(error: crate::codex_sharing::SharingError) -> Self {
-        use crate::codex_sharing::SharingError;
-        let status = match error {
-            SharingError::Membership | SharingError::UnsupportedOperation => StatusCode::FORBIDDEN,
-            SharingError::QuotaExceeded
-            | SharingError::RateLimited
-            | SharingError::ConcurrentLimited => StatusCode::TOO_MANY_REQUESTS,
-            _ => StatusCode::SERVICE_UNAVAILABLE,
-        };
-        Self {
-            status,
-            message: error.to_string(),
-            error_type: if status == StatusCode::TOO_MANY_REQUESTS {
-                "rate_limit_error"
-            } else {
-                "api_error"
-            },
-            param: None,
-            code: Some(error.code()),
-            authenticate: false,
-            retry_after: matches!(error, SharingError::RateLimited).then_some(60),
-        }
     }
 
     fn invalid_request_with_code(
@@ -2892,7 +2847,6 @@ struct CompletionContext {
 /// Emits exactly one event, including when Axum drops an in-flight response
 /// body after a downstream client disconnects.
 struct CompletionGuard {
-    sharing: Option<crate::codex_sharing::SharingLease>,
     context: Option<CompletionContext>,
     lease: Option<ChannelLease>,
     _admission: Option<AdmissionLease>,
@@ -2953,7 +2907,6 @@ impl CompletionGuard {
         request_billing_multiplier: Decimal,
     ) -> Self {
         Self {
-            sharing: None,
             context: Some(CompletionContext {
                 event_id: Uuid::new_v4(),
                 user_id: api_key.user_id(),
@@ -2997,40 +2950,6 @@ impl CompletionGuard {
                 automatic_disable_settings,
             ),
         }
-    }
-
-    async fn admit_sharing(
-        &mut self,
-        runtime: &crate::codex_sharing::SharingRuntime,
-        snapshot: &crate::domain::CompiledRuntimeConfig,
-    ) -> Result<(), ProxyError> {
-        let Some(context) = &self.context else {
-            return Ok(());
-        };
-        if !snapshot
-            .sharing()
-            .permits(context.user_id, context.channel_id)
-        {
-            return Err(ProxyError::sharing(
-                crate::codex_sharing::SharingError::Membership,
-            ));
-        }
-        if self.sharing.is_none()
-            && let Some(group) = snapshot.sharing().for_channel(context.channel_id)
-        {
-            if context.api_operation == ApiOperation::StandaloneWebSearch {
-                return Err(ProxyError::sharing(
-                    crate::codex_sharing::SharingError::UnsupportedOperation,
-                ));
-            }
-            self.sharing = Some(
-                runtime
-                    .reserve(group, context.user_id, context.event_id)
-                    .await
-                    .map_err(ProxyError::sharing)?,
-            );
-        }
-        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3297,9 +3216,6 @@ impl CompletionGuard {
             billing_ttft_ms,
             log_outcome,
         );
-        if let Some(sharing) = self.sharing.take() {
-            sharing.settle(billing.cost_amount);
-        }
         tracing::info!(
             event = "proxy_request_completed",
             api_key_id = %context.api_key_id,
@@ -3482,7 +3398,6 @@ mod tests {
                 mode: ai_gateway_connector_sdk::ResponseMode::Sse,
             };
             let completion = CompletionGuard {
-                sharing: None,
                 context: None,
                 lease: None,
                 _admission: None,

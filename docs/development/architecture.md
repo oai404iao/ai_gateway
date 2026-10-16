@@ -214,7 +214,7 @@ Codex 凭证可移植性仍沿用相同 provider 边界：服务端显式导出 
 CLIProxyAPI 和
 Sub2API JSON 标准化成可编辑草稿，完成代理 CRUD/映射后再逐条调用既有服务端验证导入事务。导入
 格式解析不是数据面职责，也不会绕过“account/user 至少存在一个”、models、代理 enable 或
-凭证范围和拼车保护。代理删除使用 optimistic concurrency，并在 repository 层拒绝仍被接入、凭证或 OAuth
+凭证范围。代理删除使用 optimistic concurrency，并在 repository 层拒绝仍被接入、凭证或 OAuth
 授权流引用的记录。
 
 Responses WebSocket 使用同一个 `/v1/responses` 路径的 `GET` Upgrade。握手先验证 API Key
@@ -272,15 +272,6 @@ Session affinity 不受影响。
 - 客户端断开会释放上游响应体；流空闲超时只终止当前流，不再发起新尝试。
 
 ## 控制面与一致性
-
-可选 [Codex 拼车](codex-sharing.md) 在授权快照中保护拼车/专用池投影，保留成员对普通渠道
-的原有访问。仅拼车请求在 dispatch 前
-通过独立单写线程完成金额预占的 WAL fsync。HTTP/SSE、Images 和每条 WebSocket 请求复用
-同一完成回调进行幂等结算；失败或取消请求按零费用释放预占，成功请求缺失 usage 时保留
-pending 并 fail closed。配置/窗口及对账由后台访问数据库，数据面不逐请求查库。
-成员由车队席位中的用户 UUID 直接确定，不依赖下方的单用户组授权模型。本人 API Key
-可以从席位获得拼车凭证目标，并与可选 API Key Policy 的普通目标组合；没有 Policy 时仍可
-创建仅含拼车投影的 Key。它不分享会话上下文，也不提供多实例全局配额。
 
 动态配置保存在 PostgreSQL。Console 写操作在事务中完成授权、候选配置校验、审计和提交；提交成功后立即编译并发布新的不可变快照。周期 worker 负责从数据库重新加载，以覆盖进程间或外部变更。
 

@@ -88,7 +88,6 @@ spool，不是靠易失队列换可移植性。它在请求开始时预留容量
 研究时普通 `RequestLogSink::try_record` 返回 `()`，终态 append 失败只输出指标/ERROR，
 无法撤销已完成上游调用。后续第一阶段已增加独立 `admit` 端口、派发前同步 intent、
 预分配终态 slot 和恢复；未知费用选择只保留待核对，不冻结用户。
-拼车另有预占 WAL，仍不能把其金额 fail-closed 保证外推给普通请求。
 
 耐久性要区分进程崩溃和断电：Monoize SQLite 的 `synchronous=NORMAL` 存在近期
 事务断电丢失窗口；我们已准入的客户端请求现在逐条同步，

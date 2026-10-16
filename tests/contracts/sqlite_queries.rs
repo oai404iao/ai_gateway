@@ -1,11 +1,10 @@
 //! SQLite S4 query and statistics contracts.
 //!
 //! These run against a real installed business schema and exercise the public
-//! read surface the Console and Codex sharing depend on: owner-scoped and
+//! read surface the Console depends on: owner-scoped and
 //! redacted request-log views, the channel-group status aggregation with exact
 //! PostgreSQL buckets/windows/log metrics, personal usage, cost statistics,
-//! spend-leaderboard refresh snapshots/reads, and independent sharing cost
-//! reads.
+//! and spend-leaderboard refresh snapshots/reads.
 //!
 //! Host wiring (the parent-owned `tests/sqlite_foundation.rs`):
 //!
@@ -56,7 +55,7 @@ struct Queries {
 impl Queries {
     async fn new() -> Self {
         let (directory, database) = database().await;
-        assert_eq!(database.install_schema().await.unwrap(), 11);
+        assert_eq!(database.install_schema().await.unwrap(), 12);
         let database = Arc::new(database);
         let request_logs =
             ai_gateway::persistence::sqlite::SqliteRequestLogQueries::new(Arc::clone(&database));
@@ -1280,99 +1279,6 @@ async fn spend_leaderboard_refresh_writes_shanghai_snapshots_and_reads_bounded_p
             .await
             .unwrap(),
         SpendLeaderboardRefresh::Updated
-    );
-    queries.finish().await;
-}
-
-#[tokio::test]
-async fn sharing_completed_costs_reads_only_eligible_facts_and_bounds_the_batch() {
-    let queries = Queries::new().await;
-    seed(&queries).await;
-    let priced = Uuid::new_v4();
-    let zero = Uuid::new_v4();
-    let unknown = Uuid::new_v4();
-    let rejected = Uuid::new_v4();
-    insert_fact(
-        &queries,
-        &Fact::succeeded(priced, "2026-09-18T01:00:00.000000Z", "1.25"),
-    )
-    .await;
-    insert_fact(
-        &queries,
-        &Fact {
-            id: zero,
-            outcome: "failed",
-            cost_amount: Some("0"),
-            input_tokens: None,
-            output_tokens: None,
-            ttft_ms: None,
-            tps: None,
-            ..Fact::succeeded(zero, "2026-09-18T01:00:00.000000Z", "0")
-        },
-    )
-    .await;
-    insert_fact(
-        &queries,
-        &Fact {
-            id: unknown,
-            cost_amount: None,
-            input_tokens: None,
-            output_tokens: None,
-            ttft_ms: None,
-            tps: None,
-            ..Fact::succeeded(unknown, "2026-09-18T01:00:00.000000Z", "0")
-        },
-    )
-    .await;
-    insert_fact(
-        &queries,
-        &Fact {
-            id: rejected,
-            outcome: "rejected",
-            cost_amount: None,
-            input_tokens: None,
-            output_tokens: None,
-            ttft_ms: None,
-            tps: None,
-            ..Fact::succeeded(rejected, "2026-09-18T01:00:00.000000Z", "0")
-        },
-    )
-    .await;
-
-    let costs = queries
-        .metering
-        .sharing_completed_costs(&[priced, zero, unknown, rejected, Uuid::new_v4()])
-        .await
-        .unwrap();
-    let mut costs = costs;
-    costs.sort_by_key(|(id, _)| *id);
-    let mut expected = vec![
-        (priced, Decimal::from_str_exact("1.25").unwrap()),
-        (zero, Decimal::ZERO),
-    ];
-    expected.sort_by_key(|(id, _)| *id);
-    assert_eq!(costs, expected);
-    // The read is independent of the log projection and the receipt.
-    let projected: i64 = queries.scalar("SELECT count(*) FROM request_logs").await;
-    assert_eq!(projected, 0);
-    let receipts: i64 = queries
-        .scalar("SELECT count(*) FROM request_settlements")
-        .await;
-    assert_eq!(receipts, 0);
-
-    // The batch bound is a typed rejection, not a truncated answer.
-    let oversized = (0..1001).map(Uuid::from_u128).collect::<Vec<_>>();
-    assert!(matches!(
-        queries.metering.sharing_completed_costs(&oversized).await,
-        Err(ai_gateway::persistence::RepositoryError::Validation)
-    ));
-    assert!(
-        queries
-            .metering
-            .sharing_completed_costs(&[])
-            .await
-            .unwrap()
-            .is_empty()
     );
     queries.finish().await;
 }

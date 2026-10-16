@@ -802,7 +802,6 @@ fn configured_proxy_with_policy_and_transforms(
         } else {
             "general".into()
         },
-        sharing_only: false,
         request_compression: if api_format == "open_ai_responses" {
             transforms.responses_request_compression.into()
         } else {
@@ -1416,7 +1415,6 @@ fn session_affinity_proxy(first_upstream_url: &str, second_upstream_url: &str) -
             api_format: "open_ai_chat_completions".into(),
             connector_kind: "general".into(),
             request_compression: "default".into(),
-            sharing_only: false,
             enabled: true,
         }],
         channels: vec![

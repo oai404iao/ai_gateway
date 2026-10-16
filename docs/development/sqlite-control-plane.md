@@ -44,11 +44,10 @@ S6 已接通 stdin/配置/容器路径，仍由 `AppConfig::validate` 统一检�
 渠道/组、模板、代理、系统设置、用户设置的读写，以及用户/渠道批量操作、
 模型目录同步、自动禁用/恢复和手动 reload。
 保留资源详情、审计投影、秘密字段脱敏、删除影响/确认 token、软删除与引用修剪、
-本人 Key 所有权/Policy/固定席位授权、版本冲突和撤销不可逆规则。
+本人 Key 所有权/Policy 授权、版本冲突和撤销不可逆规则。
 
 完整 runtime snapshot 在同一个读事务中加载，包含 Codex credential projection、
-拼车 canonical/protected channels、身份别名、完整 quota windows 和 sharing-only 限制。
-这些读取由 S3 引入；专属 OAuth/额度/WAL 操作见 [S5](sqlite-codex.md)。
+身份别名和 quota 状态。这些读取由 S3 引入；专属 OAuth/额度操作见 [S5](sqlite-codex.md)。
 
 ## 事务与金额
 
@@ -82,8 +81,8 @@ S3 双后端契约同时发现并修复 PostgreSQL 代理列表/审计的正则�
 
 ## 后续切片边界
 
-SQLite Codex credential 管理/视图、OAuth flow、token refresh、quota 更新/history/reset、
-sharing ledger 认领和独立 sharing 管理列表已在 [S5](sqlite-codex.md) 接通，
+SQLite Codex credential 管理/视图、OAuth flow、token refresh、quota 更新/history/reset
+已在 [S5](sqlite-codex.md) 接通，
 不再经过 PG-only 拒绝占位。
 
 S4 的 ingress、计量/结算、统计见[计量与结算](sqlite-metering.md)。S6 已开放 Linux 部署；
@@ -101,13 +100,13 @@ cargo test --locked --workspace --features sqlite-backend
 
 `tests/contracts/sqlite_auth.rs` / `sqlite_control_plane.rs` 使用真实文件 schema，
 覆盖仓储和故障点；包括耗尽 reader 时正确分类过期会话、不同 group/credential UUID
-下保留拼车保护、两个 format projection 与 alias、编译失败/审计失败回滚。
+下保留两个 format projection 与 alias、编译失败/审计失败回滚。
 
 `tests/contracts/sqlite_s3_parity.rs` 使用**同一套 case 函数和断言**，
 分别经公共仓储运行于新 PostgreSQL 库和 SQLite 文件库，不使用空仓储替身：
 
 - 认证、会话重放、管理员操作、邀请/注册码；
-- 全部 31 个普通 `ControlPlaneMutation` 变体；`SaveCodexSharing` 属于 S5；
+- 全部普通 `ControlPlaneMutation` 变体；
 - 批量操作、路由重建、删除影响、设置、目录和资源生命周期；
 - 权限、ETag、软删除、所有权及无副作用拒绝；
 - 真实 coordinator 的 compile/commit/publish 与 rollback；

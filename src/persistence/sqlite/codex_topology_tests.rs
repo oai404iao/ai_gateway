@@ -7,8 +7,8 @@ use crate::domain::{ApiOperation, ConnectorKind};
 use crate::persistence::sqlite::SqliteDatabase;
 use crate::persistence::{
     CodexCredentialBatchInput, CodexCredentialBatchOperation, CodexCredentialBatchTarget,
-    CodexCredentialCreate, ControlPlaneMutation, ControlPlaneRepository, RepositoryError,
-    RoutingGroupInput, sqlite_load,
+    CodexCredentialCreate, ControlPlaneMutation, ControlPlaneRepository, RoutingGroupInput,
+    sqlite_load,
 };
 use uuid::Uuid;
 
@@ -199,7 +199,7 @@ async fn canonical_create_lifecycle_and_delete_round_trip() {
                 expected: None,
                 input: serde_json::from_value(serde_json::json!({
                     "name":"Explicit logical channel","group_id":group,"access_id":access_id,
-                    "credential_id":credential,"enabled":true,"sharing_only":false
+                    "credential_id":credential,"enabled":true
                 }))
                 .unwrap(),
             },
@@ -430,43 +430,6 @@ async fn canonical_create_lifecycle_and_delete_round_trip() {
             .unwrap();
     assert_ne!(revision_reimported, revision_disabled);
     drop(reader);
-
-    // Sharing blocks deletion.
-    let mut transaction = database.begin_write().await.unwrap();
-    sqlx::query(
-        "INSERT INTO codex_sharing_groups
-         (id,credential_id,channel_id,provider_account_id,provider_user_id,name,enabled,seats,
-          primary_limit_amount,secondary_limit_amount,request_reservation_amount,
-          user_requests_per_minute,group_requests_per_minute,
-          user_max_concurrent_requests,group_max_concurrent_requests)
-         VALUES (?,?,?,'account-lifecycle','user-lifecycle','Sharing',1,'[{}]',
-                 '1','1','1',60,60,10,10)",
-    )
-    .bind(Uuid::new_v4().to_string())
-    .bind(credential.to_string())
-    .bind(credential.to_string())
-    .execute(&mut *transaction)
-    .await
-    .unwrap();
-    transaction.commit().await.unwrap();
-    let record = repository
-        .codex_credential(credential)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(matches!(
-        repository
-            .prepare_codex_credential_delete(admin, credential, record.updated_at)
-            .await,
-        Err(RepositoryError::SharingCredentialInUse)
-    ));
-    let mut transaction = database.begin_write().await.unwrap();
-    sqlx::query("DELETE FROM codex_sharing_groups WHERE credential_id=?")
-        .bind(credential.to_string())
-        .execute(&mut *transaction)
-        .await
-        .unwrap();
-    transaction.commit().await.unwrap();
 
     // A pending SQLite Codex operation fails the delete closed.
     let mut transaction = database.begin_write().await.unwrap();

@@ -23,9 +23,6 @@ Console 页面调整遵循[导航与页面交互规范](development/console-inte
 处理 GitHub 安全告警时，参见[安全告警核查与处置](development/security-alert-triage.md)，
 区分真实修复、测试用途和误报，并保留逐条证据。
 
-配置专用 Codex 共享凭证时，参见[拼车使用说明](user/codex-sharing.md)和
-[金额账本实现](development/codex-sharing.md)。该功能仅支持单实例。
-
 上游实体联合切换见[身份、渠道能力与路由目标设计](development/upstream-identity-capabilities.md)。
 启动迁移、Codex 生命周期、固定逻辑渠道授权和新拓扑 Console 已实现；旧 CRUD、DTO 与配置表已退役。
 PostgreSQL/SQLite 全量回归及真实系统验收已通过。升级要求停机和一致备份，不能滚动混跑旧版本；
@@ -47,7 +44,7 @@ PostgreSQL/SQLite 全量回归及真实系统验收已通过。升级要求停�
 成对备份与恢复入口见[0063 演练](development/persistence-rehearsal.md)。
 第三阶段见 [SQLite 双后端实施](development/sqlite-backend.md)；
 目前已实现 schema/生命周期、[身份与控制面](development/sqlite-control-plane.md)
-以及[计量与结算](development/sqlite-metering.md)、[Codex 与拼车](development/sqlite-codex.md)，
+以及[计量与结算](development/sqlite-metering.md)、[Codex 仓储](development/sqlite-codex.md)，
 Linux SQLite 的配置、停机备份与恢复见[部署指南](user/sqlite.md)。
 
 当文档之间出现差异时，按以下优先级判断：

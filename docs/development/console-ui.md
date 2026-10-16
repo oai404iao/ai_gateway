@@ -20,9 +20,8 @@
 创建后只读，所有连接器均可显式创建和删除支持的能力。Key/Policy 选择组和逻辑渠道，使用固定逻辑
 渠道授权；每个渠道只出现一次，其新增能力共享授权，后加入组的渠道不自动获权。
 “上游凭证”按 `general` / `codex` 页签管理，Codex 导入、OAuth、批量操作、quota 和导出
-不再接收组参数，也不隐式创建拓扑。渠道详情选择兼容的凭证并配置 `sharing_only`，
-组页面不再包含凭证入口或拼车开关。拼车表单保存 `channel_id`，本人 Key 选项使用
-`sharing_channels`，不再展开凭证的所有引用渠道。只读 quota 按账号去重。
+不再接收组参数，也不隐式创建拓扑。渠道详情选择兼容的凭证，
+组页面不再包含凭证入口。只读 quota 按账号去重。
 旧管理页面已移除，旧地址跳转到规范化列表；操作规则可以按定价模型选择或显式创建
 profile。批量修改与手动恢复位于能力页面，恢复不改变显式启用状态。
 普通能力编辑可按所选接入和凭证发现模型；选择结果只更新草稿，保存后发布。
@@ -79,14 +78,6 @@ Console API/UI 不可达。
 nullable `credential_id`。凭证详情展示受影响渠道、显式轮换输入和受 ETag 保护的修改；
 Codex 身份为只读入口并跳转至专属管理页。相关边界见
 [上游凭证管理](../user/upstream-credentials.md)。
-
-`/codex-sharing` 是本人金额视图；`/admin/codex-sharing` 和其详情页负责不依赖用户组的固定
-席位配置、ETag 保存和逐席位用量。它们位于 `src/features/codex-sharing/`，不与只读 Codex
-官方配额页混用；本人金额接口不返回其他成员或凭证信息。API Key 编辑器把席位可选的逻辑凭证
-和 API Key Policy 普通目标分成响应式双栏，前者只暴露路由所需 UUID/格式，不暴露 provider
-identity 或 Token。规则见 [Codex 拼车](codex-sharing.md)。
-Codex 渠道组编辑器提供“仅拼车使用”开关；普通 Connector 不显示该控件。
-同池配对组模式同步，但不联动格式启用或 Key 授权，成员普通渠道仍按原权限使用。
 
 ```text
 web/console/

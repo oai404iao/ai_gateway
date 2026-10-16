@@ -930,11 +930,7 @@ test.describe("Console SPA smoke", () => {
     await page.getByRole("button", { name: "New API key" }).click();
 
     await page.getByLabel(/^name$/i).fill("browser key");
-    await expect(page.getByText("Sharing channels", { exact: true })).toBeVisible();
     await expect(page.getByText("API Key Policy targets", { exact: true })).toBeVisible();
-    await expect(
-      page.getByRole("checkbox", { name: "Personal Plus", exact: true }),
-    ).toBeVisible();
     await expect(
       page.getByRole("checkbox", { name: "upstream-a (chat-primary)" }),
     ).toHaveCount(0);

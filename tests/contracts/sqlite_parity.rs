@@ -249,7 +249,7 @@ async fn compare(postgres: &super::TestDatabase, sqlite: &SqliteDatabase) {
         };
     }
     use ai_gateway::persistence::sqlite::{
-        SqliteAmount, SqliteSharingAmount, SqliteTokenRate, SqliteUnitPrice,
+        SqliteAmount, SqliteNumeric, SqliteTokenRate, SqliteUnitPrice,
     };
     numeric_parity!(
         SqliteAmount,
@@ -267,7 +267,7 @@ async fn compare(postgres: &super::TestDatabase, sqlite: &SqliteDatabase) {
         ["0.000000000001", "999999999999.999999999999"]
     );
     numeric_parity!(
-        SqliteSharingAmount,
+        SqliteNumeric<20, 8>,
         "numeric(20,8)",
         ["0.00000001", "999999999999.99999999"]
     );

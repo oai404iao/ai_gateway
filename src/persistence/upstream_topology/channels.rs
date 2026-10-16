@@ -11,10 +11,7 @@ use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
 use super::{LogicalChannelInput, LogicalChannelRecord, UpstreamTopologyRecords};
-use crate::{
-    domain::ConnectorKind,
-    persistence::{MutationResult, RepositoryError},
-};
+use crate::persistence::{MutationResult, RepositoryError};
 
 fn validate_input(input: &LogicalChannelInput) -> Result<(), RepositoryError> {
     if input.name.trim().is_empty() || input.name.chars().count() > 100 {
@@ -54,14 +51,11 @@ fn validate_replacement(
         .iter()
         .find(|group| group.id == input.group_id && group.deleted_at.is_none())
         .ok_or(RepositoryError::RoutingDependencyInvalid)?;
-    let access = topology
+    topology
         .upstream_accesses
         .iter()
         .find(|access| access.id == input.access_id && access.deleted_at.is_none())
         .ok_or(RepositoryError::RoutingDependencyInvalid)?;
-    if input.sharing_only && access.connector_kind != ConnectorKind::CodexOauth {
-        return Err(RepositoryError::Validation);
-    }
     let name = input.name.trim();
     if topology.logical_channels.iter().any(|channel| {
         channel.id != id
@@ -110,7 +104,6 @@ fn audit(record: Option<&LogicalChannelRecord>) -> serde_json::Value {
                 "credential_id": record.credential_id,
                 "name": record.name,
                 "enabled": record.enabled,
-                "sharing_only": record.sharing_only,
                 "binding_revision": record.binding_revision,
                 "created_at": record.created_at,
                 "updated_at": record.updated_at,
@@ -180,8 +173,8 @@ pub async fn pg_save(
     let changed = if let Some(expected) = expected {
         sqlx::query(
             "UPDATE upstream_channels SET group_id=$2,access_id=$3,credential_id=$4,name=$5,
-             enabled=$6,binding_revision=$7,sharing_only=$8
-             WHERE id=$1 AND updated_at=$9 AND deleted_at IS NULL",
+             enabled=$6,binding_revision=$7
+             WHERE id=$1 AND updated_at=$8 AND deleted_at IS NULL",
         )
         .bind(id)
         .bind(input.group_id)
@@ -190,7 +183,6 @@ pub async fn pg_save(
         .bind(input.name.trim())
         .bind(input.enabled)
         .bind(binding_revision)
-        .bind(input.sharing_only)
         .bind(expected)
         .execute(&mut **transaction)
         .await?
@@ -198,8 +190,8 @@ pub async fn pg_save(
     } else {
         sqlx::query(
             "INSERT INTO upstream_channels
-             (id,group_id,access_id,credential_id,name,enabled,binding_revision,sharing_only)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+             (id,group_id,access_id,credential_id,name,enabled,binding_revision)
+             VALUES ($1,$2,$3,$4,$5,$6,$7)",
         )
         .bind(id)
         .bind(input.group_id)
@@ -208,7 +200,6 @@ pub async fn pg_save(
         .bind(input.name.trim())
         .bind(input.enabled)
         .bind(binding_revision)
-        .bind(input.sharing_only)
         .execute(&mut **transaction)
         .await?
         .rows_affected()
@@ -269,7 +260,7 @@ pub async fn sqlite_save(
     let changed = if let Some(expected) = expected {
         sqlx::query(
             "UPDATE upstream_channels SET group_id=?,access_id=?,credential_id=?,name=?,
-             enabled=?,binding_revision=?,sharing_only=?,updated_at=ag_now()
+             enabled=?,binding_revision=?,updated_at=ag_now()
              WHERE id=? AND updated_at=? AND deleted_at IS NULL",
         )
         .bind(SqliteUuid(input.group_id))
@@ -278,7 +269,6 @@ pub async fn sqlite_save(
         .bind(input.name.trim())
         .bind(input.enabled)
         .bind(SqliteUuid(binding_revision))
-        .bind(input.sharing_only)
         .bind(SqliteUuid(id))
         .bind(SqliteTimestamp(expected))
         .execute(&mut **transaction)
@@ -287,8 +277,8 @@ pub async fn sqlite_save(
     } else {
         sqlx::query(
             "INSERT INTO upstream_channels
-             (id,group_id,access_id,credential_id,name,enabled,binding_revision,sharing_only)
-             VALUES (?,?,?,?,?,?,?,?)",
+             (id,group_id,access_id,credential_id,name,enabled,binding_revision)
+             VALUES (?,?,?,?,?,?,?)",
         )
         .bind(SqliteUuid(id))
         .bind(SqliteUuid(input.group_id))
@@ -297,7 +287,6 @@ pub async fn sqlite_save(
         .bind(input.name.trim())
         .bind(input.enabled)
         .bind(SqliteUuid(binding_revision))
-        .bind(input.sharing_only)
         .execute(&mut **transaction)
         .await?
         .rows_affected()
@@ -391,6 +380,7 @@ pub async fn sqlite_delete(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::ConnectorKind;
     use crate::persistence::upstream_topology::{RoutingGroupRecord, UpstreamAccessRecord};
 
     fn at() -> DateTime<Utc> {
@@ -404,7 +394,6 @@ mod tests {
             credential_id: None,
             name: name.into(),
             enabled: true,
-            sharing_only: false,
         }
     }
 
@@ -445,7 +434,6 @@ mod tests {
             credential_id: None,
             name: name.into(),
             enabled: true,
-            sharing_only: false,
             binding_revision: Uuid::from_u128(id + 900),
             created_at: at(),
             updated_at: at(),
@@ -546,20 +534,11 @@ mod tests {
     }
 
     #[test]
-    fn codex_channels_are_editable_and_sharing_only_requires_codex() {
+    fn codex_channels_are_editable() {
         let id = Uuid::from_u128(3);
         let mut codex = topology();
         codex.upstream_accesses[0].connector_kind = ConnectorKind::CodexOauth;
         assert!(validate_replacement(&codex, id, &input(1, 2, "channel"), Some(at())).is_ok());
-
-        let sharing = topology();
-        let mut sharing_input = input(1, 2, "channel");
-        sharing_input.sharing_only = true;
-        assert!(matches!(
-            validate_replacement(&sharing, id, &sharing_input, Some(at())),
-            Err(RepositoryError::Validation)
-        ));
-        assert!(validate_replacement(&codex, id, &sharing_input, Some(at())).is_ok());
 
         let mut gone = topology();
         gone.upstream_accesses.clear();

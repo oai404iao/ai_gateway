@@ -985,7 +985,7 @@ async fn repository_facades_dispatch_ordinary_operations_to_sqlite() {
     use uuid::Uuid;
 
     let (_directory, database) = database().await;
-    assert_eq!(database.install_schema().await.unwrap(), 11);
+    assert_eq!(database.install_schema().await.unwrap(), 12);
     let database = Arc::new(database);
 
     let auth = AuthRepository::from_sqlite(Arc::clone(&database));
@@ -1012,7 +1012,6 @@ async fn repository_facades_dispatch_ordinary_operations_to_sqlite() {
         vec!["https://gateway.example.test"]
     );
 
-    assert!(control_plane.sharing_groups(None).await.unwrap().is_empty());
     assert!(control_plane.codex_credentials().await.unwrap().is_empty());
     assert!(
         control_plane
@@ -1029,12 +1028,12 @@ async fn repository_facades_dispatch_ordinary_operations_to_sqlite() {
 #[tokio::test]
 async fn s4_pipeline_and_query_facades_share_one_sqlite_database() {
     use ai_gateway::persistence::{
-        ChannelGroupStatusWindow, DatabaseHealth, MeteringQueries, RequestLogFilter,
-        RequestLogQueries, RequestLogRepository, SettlementRepository,
+        ChannelGroupStatusWindow, DatabaseHealth, RequestLogFilter, RequestLogQueries,
+        RequestLogRepository, SettlementRepository,
     };
 
     let (_directory, database) = database().await;
-    assert_eq!(database.install_schema().await.unwrap(), 11);
+    assert_eq!(database.install_schema().await.unwrap(), 12);
     let database = Arc::new(database);
 
     let repository = RequestLogRepository::from_sqlite(Arc::clone(&database));
@@ -1044,7 +1043,6 @@ async fn s4_pipeline_and_query_facades_share_one_sqlite_database() {
 
     // A second facade family derived from the same shared handle.
     let standalone_queries = RequestLogQueries::from_sqlite(Arc::clone(&database));
-    let standalone_metering = MeteringQueries::from_sqlite(Arc::clone(&database));
     let standalone_settlements = SettlementRepository::from_sqlite(Arc::clone(&database));
 
     for filter in [RequestLogFilter {
@@ -1081,13 +1079,6 @@ async fn s4_pipeline_and_query_facades_share_one_sqlite_database() {
     assert_eq!(
         (counts.unknown, counts.invalid, counts.account_mismatch),
         (0, 0, 0)
-    );
-    assert_eq!(
-        standalone_metering
-            .sharing_completed_costs(&[])
-            .await
-            .unwrap(),
-        Vec::new()
     );
     assert!(settlements.settle_pending(8).await.unwrap().is_empty());
     assert!(

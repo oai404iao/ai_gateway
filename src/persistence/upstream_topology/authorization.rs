@@ -7,15 +7,11 @@ use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
 use super::{GrantOriginKind, UpstreamTopologyRecords};
-use crate::persistence::{
-    RepositoryError,
-    postgres_control_plane::{SelfApiKeyPolicy, SelfApiKeySharingAccess},
-};
+use crate::persistence::{RepositoryError, postgres_control_plane::SelfApiKeyPolicy};
 
 pub(crate) fn options(
     topology: &UpstreamTopologyRecords,
     policy: Option<&SelfApiKeyPolicy>,
-    sharing: &SelfApiKeySharingAccess,
 ) -> (
     Vec<crate::persistence::SelfApiKeyGroupOption>,
     Vec<crate::persistence::SelfApiKeyChannelOption>,
@@ -28,7 +24,7 @@ pub(crate) fn options(
         .iter()
         .filter(|g| g.deleted_at.is_none())
     {
-        if let Ok(plan) = resolve(topology, &[group.id], &[], Some((policy, sharing)))
+        if let Ok(plan) = resolve(topology, &[group.id], &[], Some(policy))
             && !plan.grants.is_empty()
         {
             groups.push(SelfApiKeyGroupOption {
@@ -38,12 +34,12 @@ pub(crate) fn options(
                 enabled: group.enabled,
             });
         }
-        for channel in topology.logical_channels.iter().filter(|c| {
-            c.group_id == group.id
-                && c.deleted_at.is_none()
-                && !sharing.protected_channels.contains(&c.id)
-        }) {
-            if let Ok(plan) = resolve(topology, &[], &[channel.id], Some((policy, sharing)))
+        for channel in topology
+            .logical_channels
+            .iter()
+            .filter(|c| c.group_id == group.id && c.deleted_at.is_none())
+        {
+            if let Ok(plan) = resolve(topology, &[], &[channel.id], Some(policy))
                 && !plan.grants.is_empty()
             {
                 channels.push(SelfApiKeyChannelOption {
@@ -112,7 +108,7 @@ pub(crate) fn resolve(
     topology: &UpstreamTopologyRecords,
     groups: &[Uuid],
     channels: &[Uuid],
-    self_service: Option<(Option<&SelfApiKeyPolicy>, &SelfApiKeySharingAccess)>,
+    self_service: Option<Option<&SelfApiKeyPolicy>>,
 ) -> Result<AuthorizationPlan, RepositoryError> {
     let live_groups = topology
         .routing_groups
@@ -141,9 +137,7 @@ pub(crate) fn resolve(
         if !group_selected && !channel_selected {
             continue;
         }
-        let (allow_group, allow_channel) = if let Some((policy, sharing)) = self_service {
-            let protected = sharing.protected_channels.contains(&channel.id);
-            let owned = sharing.owned_channels.contains(&channel.id);
+        let (allow_group, allow_channel) = if let Some(policy) = self_service {
             let policy_allows = policy.is_some_and(|policy| {
                 policy.enabled
                     && topology.policy_grants.iter().any(|grant| {
@@ -156,8 +150,7 @@ pub(crate) fn resolve(
                             }
                     })
             });
-            let ordinary = !protected && !channel.sharing_only && policy_allows;
-            (ordinary, ordinary || owned)
+            (policy_allows, policy_allows)
         } else {
             (true, true)
         };
@@ -176,7 +169,7 @@ pub(crate) fn resolve(
             });
         }
     }
-    if let Some((policy, _)) = self_service
+    if let Some(policy) = self_service
         && (groups
             .iter()
             .any(|id| !grants.iter().any(|g| g.group && g.origin_id == *id))

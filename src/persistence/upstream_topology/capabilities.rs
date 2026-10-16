@@ -590,7 +590,6 @@ mod tests {
             credential_id: None,
             name: format!("channel-{id}"),
             enabled: true,
-            sharing_only: false,
             binding_revision: Uuid::from_u128(id + 600),
             created_at: at(),
             updated_at: at(),

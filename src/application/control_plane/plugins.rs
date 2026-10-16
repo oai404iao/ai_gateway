@@ -183,7 +183,7 @@ impl ControlPlaneCoordinator {
             plugin_id: id.into(),
             artifact_digest: digest.into(),
             schema_version: descriptor.schema_version,
-            revision: current.revision,
+            revision: settings.revision,
             descriptor,
             values: settings.values.clone(),
         })
@@ -197,6 +197,10 @@ impl ControlPlaneCoordinator {
         digest: Option<String>,
         expected: &str,
     ) -> Result<MutationResult, ControlPlaneError> {
+        if let Some(digest) = &digest {
+            crate::connector_plugins::validate_hash(digest)
+                .map_err(|_| RepositoryError::Validation)?;
+        }
         let _guard = self.serial.lock().await;
         self.verify_active_admin(actor).await?;
         let records = self.repository.plugin_records().await?;
@@ -224,10 +228,11 @@ impl ControlPlaneCoordinator {
                 .settings_descriptor()
                 .map_err(|_| RepositoryError::Validation)?
             {
-                let mut document = records
+                let previous_settings = records
                     .settings
                     .iter()
-                    .find(|settings| settings.plugin_id == id)
+                    .find(|settings| settings.plugin_id == id);
+                let mut document = previous_settings
                     .map(|settings| PluginSettingsDocument {
                         schema_version: settings.schema_version as u32,
                         values: settings.values.clone(),
@@ -249,11 +254,16 @@ impl ControlPlaneCoordinator {
                 plugin
                     .configured(&document, next_revision)
                     .map_err(|_| RepositoryError::Validation)?;
-                settings = Some(PluginSettingsInput {
-                    schema_version: i32::try_from(document.schema_version)
-                        .map_err(|_| RepositoryError::Validation)?,
-                    values: document.values,
-                });
+                let schema_version = i32::try_from(document.schema_version)
+                    .map_err(|_| RepositoryError::Validation)?;
+                if previous_settings.is_none_or(|previous| {
+                    previous.schema_version != schema_version || previous.values != document.values
+                }) {
+                    settings = Some(PluginSettingsInput {
+                        schema_version,
+                        values: document.values,
+                    });
+                }
             }
         } else if enabled && digest.is_none() {
             return Err(RepositoryError::Validation.into());
@@ -287,7 +297,14 @@ impl ControlPlaneCoordinator {
         self.verify_active_admin(actor).await?;
         let records = self.repository.plugin_records().await?;
         let current = state(&records, &id)?;
-        expect_revision(current, expected)?;
+        let stored = records
+            .settings
+            .iter()
+            .find(|settings| settings.plugin_id == id)
+            .ok_or(RepositoryError::NotFound)?;
+        if expected != plugin_etag(stored.revision, current.artifact_digest.as_deref()) {
+            return Err(RepositoryError::Conflict.into());
+        }
         let digest = current
             .artifact_digest
             .as_deref()
@@ -360,6 +377,8 @@ impl ControlPlaneCoordinator {
         digest: String,
         expected: &str,
     ) -> Result<MutationResult, ControlPlaneError> {
+        crate::connector_plugins::validate_hash(&digest)
+            .map_err(|_| RepositoryError::Validation)?;
         let _guard = self.serial.lock().await;
         self.verify_active_admin(actor).await?;
         let records = self.repository.plugin_records().await?;
@@ -505,11 +524,13 @@ fn discover_packages(
                         entry.path(),
                         catalog.root().join("incoming").join(completed),
                     )?;
+                    std::fs::File::open(catalog.root().join("incoming"))?.sync_all()?;
                 }
                 Err(error) => {
                     let mut rejected = entry.file_name();
                     rejected.push(".rejected");
                     std::fs::rename(entry.path(), catalog.root().join("incoming").join(rejected))?;
+                    std::fs::File::open(catalog.root().join("incoming"))?.sync_all()?;
                     tracing::warn!(error = %error, "plugin package discovery rejected an archive");
                 }
             }

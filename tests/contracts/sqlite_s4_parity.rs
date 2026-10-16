@@ -508,20 +508,6 @@ async fn classification(db: &Backend, now: DateTime<Utc>) -> Value {
     );
     assert_eq!(db.accounts().await, (amount("100"), Decimal::ZERO));
     assert_eq!(db.count("request_settlement_pending").await, 1);
-    let shared = logs
-        .queries()
-        .metering()
-        .sharing_completed_costs(&events.iter().map(|e| e.id).collect::<Vec<_>>())
-        .await
-        .unwrap();
-    assert_eq!(shared.len(), 3);
-    assert!(
-        logs.queries()
-            .metering()
-            .sharing_completed_costs(&vec![Uuid::nil(); 1001])
-            .await
-            .is_err()
-    );
     json!({"unknown":counts.unknown,"invalid":counts.invalid,"mismatch":counts.account_mismatch})
 }
 

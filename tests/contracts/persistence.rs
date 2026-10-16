@@ -72,15 +72,6 @@ async fn unknown_rejected_and_zero_by_policy_remain_distinct_during_recovery() {
     let before = account_state(&database.pool, &[seed.key]).await;
     repository.insert_batch(&events).await.unwrap();
 
-    let costs = ai_gateway::persistence::MeteringQueries::new(database.pool.clone())
-        .sharing_completed_costs(&events.iter().map(|event| event.id).collect::<Vec<_>>())
-        .await
-        .unwrap()
-        .into_iter()
-        .collect::<BTreeMap<_, _>>();
-    assert_eq!(costs.len(), 2);
-    assert_eq!(costs.get(&events[2].id), Some(&Decimal::ZERO));
-    assert_eq!(costs.get(&events[3].id), Some(&Decimal::ZERO));
     assert_eq!(account_state(&database.pool, &[seed.key]).await, before);
     for event in &events[..2] {
         assert_eq!(

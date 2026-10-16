@@ -14,7 +14,6 @@ mod ownership;
 mod pipeline;
 mod queries;
 pub(crate) mod schema;
-mod sharing;
 mod types;
 mod upstream_credentials;
 pub(crate) use upstream_credentials::records as credential_records;
@@ -26,16 +25,12 @@ mod codex_topology_tests;
 pub use auth::SqliteAuthRepository;
 pub(crate) use codex::operation::SqliteCodexOperation;
 pub use control_plane::{SqliteControlPlaneRepository, SqlitePreparedControlPlaneChange};
-pub use decimal::{
-    SqliteAmount, SqliteDecimal, SqliteNumeric, SqliteSharingAmount, SqliteTokenRate,
-    SqliteUnitPrice,
-};
+pub use decimal::{SqliteAmount, SqliteDecimal, SqliteNumeric, SqliteTokenRate, SqliteUnitPrice};
 pub use migrations::{SqliteMigration, SqliteMigrationError};
 pub use pipeline::{
     SqliteMeteringRepository, SqliteRequestLogRepository, SqliteSettlementRepository,
 };
 pub use queries::{SqliteMeteringQueries, SqliteRequestLogQueries};
-pub(crate) use sharing::SqliteSharingLease;
 pub use types::{SqliteDate, SqliteTimestamp, SqliteUuid};
 
 use std::{
@@ -99,7 +94,6 @@ pub struct SqliteDatabase {
     leaderboard_refresh: tokio::sync::Mutex<()>,
     codex_operations:
         Mutex<std::collections::HashMap<Uuid, std::sync::Weak<tokio::sync::Mutex<()>>>>,
-    sharing_owner: Arc<tokio::sync::Mutex<()>>,
 }
 
 struct DatabasePools {
@@ -220,7 +214,6 @@ impl SqliteDatabase {
                     owner_closed,
                     leaderboard_refresh: tokio::sync::Mutex::new(()),
                     codex_operations: Mutex::new(std::collections::HashMap::new()),
-                    sharing_owner: Arc::new(tokio::sync::Mutex::new(())),
                 })
             }
             Err(error) => {

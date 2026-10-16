@@ -804,7 +804,6 @@ mod tests {
                     api_format: api_format.into(),
                     connector_kind: "general".into(),
                     request_compression: "default".into(),
-                    sharing_only: false,
                     enabled: true,
                 }],
                 channels: vec![ChannelRecord {

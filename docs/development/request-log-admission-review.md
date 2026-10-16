@@ -8,8 +8,7 @@
 对比背景：[Monoize 工程研究](../reference/monoize-engineering-study.md)。
 本次检查 `src/application/request_log.rs`、`src/request_log_spool.rs`、
 `src/workers/durable_request_log.rs` 及 `src/persistence/postgres_control_plane.rs`。
-拼车另有预占 WAL，不能将其 fail-closed 保证外推给普通请求。
-参见[日志流水线](request-log-durability.md)和[拼车账本](codex-sharing.md)。
+参见[日志流水线](request-log-durability.md)。
 
 ## 改动前的故障矩阵
 
@@ -51,8 +50,7 @@ checkpoint 回退重复重放不重复扣费，以及真实 Gateway 的局部 EN
 4. DB 不可用但本地容量允许时继续服务；不在请求路径查询 PostgreSQL。
 5. 未知请求在重启后释放闲置预分配空间，只保留证据和待核对告警。
    新请求可以继续；**人工核对前存在未知费用风险**，这不是普通用户金额 fail-closed。
-6. 不修改现有计费公式、价格快照终态、UUID 幂等结算或拼车 WAL/金额准入。
-   新日志准入也覆盖拼车客户端请求，但不代替其独立的资金预占。
+6. 不修改现有计费公式、价格快照终态或 UUID 幂等结算。
 
 不要简单将 `try_record` 改为返回错误后，就宣称已解决准入：
 响应可能已发送，不能撤销上游调用。也不要通过禁用或删除 durable spool 支持 SQLite。

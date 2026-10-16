@@ -1852,7 +1852,6 @@ mod tests {
                     api_format: format.as_str().into(),
                     connector_kind: "general".into(),
                     request_compression: "default".into(),
-                    sharing_only: false,
                     enabled: true,
                 })
                 .collect(),
@@ -2307,7 +2306,6 @@ mod tests {
                 api_format: "open_ai_chat_completions".into(),
                 connector_kind: "general".into(),
                 request_compression: "default".into(),
-                sharing_only: false,
                 enabled: true,
             }],
             channels: vec![ChannelRecord {

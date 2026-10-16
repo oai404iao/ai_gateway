@@ -28,7 +28,6 @@ P1 仅补充测试和职责清单，不修改生产金额计算、结算路径�
 | 明确 failed/cancelled 始终归零，包括缺价格/usage 或旧事件携带正费用 | 同一测试；原有 `zero_cost_migration_refunds_and_reconciles_historical_failures` |
 | 有费用不等于具备结算资格 | `missing_price_evidence_is_preserved_without_blocking_eligible_facts`；资格转移到独立事实/回执，不再毒化正常批次 |
 | scheduled probe 仍按系统身份和既有价格计费，不能因 source 改为免费 | `recovery_is_bounded_oldest_first_and_preserves_prices_and_probe_charges` |
-| 拼车窗口预算每席位除法按 8 位向零截断，不使用普通费用的中点取偶 | 新增 `src/codex_sharing.rs::tests::seat_budgets_truncate_instead_of_rounding_up_at_eight_places` |
 
 P3 用生成的 `amount_state` 保存金额分类，没有改变公共 API 枚举。
 只有 intent 的请求不能伪造成 terminal fact。
@@ -45,7 +44,6 @@ P3 用生成的 `amount_state` 保存金额分类，没有改变公共 API 枚�
 | 相同 UUID 内容不一致不能悄悄覆盖 | 原有 `request_log_insert_is_idempotent_and_worker_continues_after_failure`；`request_log_batch_insert_isolates_duplicates_and_invalid_statuses` |
 | 恢复扫描按 completed_at/id 有界推进，limit 最小为 1，不再次扣已结算行 | 新增 `recovery_is_bounded_oldest_first_and_preserves_prices_and_probe_charges` 固定跨时间顺序及 limit=0/1；同时间 UUID 排序由当前 SQL 定义 |
 | slot 完整重放、未知 intent/撕裂 slot 不制造零费用终态 | 原有 `src/request_log_spool.rs` admission、latched failure、unknown intent、torn slot 测试 |
-| 拼车对账可读未 billed 的确定费用，本身不改普通余额 | 新增 `unknown_rejected_and_zero_by_policy_remain_distinct_during_recovery` 直接调用 `sharing_completed_costs`；原有 sharing WAL 幂等/重启测试覆盖窗口账本 |
 | 连续 migration 原子执行；失败/取消历史退款只执行一次 | 原有 `pending_migrations_commit_and_rollback_as_one_batch`、`zero_cost_migration_refunds_and_reconciles_historical_failures` |
 
 新增 `database_constraints_reject_invalid_money_and_illegal_log_updates` 绕过应用直接执行 SQL，
@@ -78,7 +76,7 @@ P3 用生成的 `amount_state` 保存金额分类，没有改变公共 API 枚�
 ### 查询与财务读源
 
 除 Codex 模块外，下列 PG 查询位于 `persistence/postgres_control_plane.rs` 的 `RequestLogQueries`、
-`MeteringQueries` 和 `SettlementRepository`；拼车费用读取也归 `MeteringQueries`。
+`MeteringQueries` 和 `SettlementRepository`。
 费用读源迁移不得统一成一种 source 或时间口径。
 
 | 查询 | 时间/source/权限边界 | 当前 P3 归属 |
@@ -89,20 +87,15 @@ P3 用生成的 `amount_state` 保存金额分类，没有改变公共 API 枚�
 | `channel_group_status` | started_at 闭开区间，24h/3d/7d UTC 分桶；启用统计且未删除组；不默认排除 scheduled_test | 财务部分来自事实；成功率/状态指标需保留当前定义 |
 | `refresh_spend_leaderboard_snapshots` | 仅 client；Asia/Shanghai 日/周/月边界；写入 `spend_leaderboard_*` | 保留统计快照，费用源改为事实 |
 | `persistence/codex.rs::CODEX_CURRENT_WINDOW_COSTS_LATERAL`、管理员/本人 quota history | 两个 managed projection 的 channel；started_at 在 period 起点至 ended_at 或 min(now,reset_at) 的闭开区间；cost 非 NULL；本人视图遵守 group/pool 可见性 | 读事实，不依赖日志或普通结算回执 |
-| `persistence/codex_sharing.rs::sharing_completed_costs` | 按请求 UUID，最多 1000 个；cost 非 NULL；不要求 billed | 拼车恢复读事实，保持单向费用证据读取 |
 | `settlement_backlog` / `settle_pending` | 只扫描合格 pending；排除账户不匹配 | unknown/invalid/账户异常有独立核对计数，不伪装成清零 |
 
-### Codex quota 与拼车不是普通 Key 额度重置
+### Codex quota 不是普通 Key 额度重置
 
 - `persistence/codex.rs::persist_codex_quota` 和 `reconcile_codex_quota_window` 更新
   提供方 quota 观测/窗口历史，行锁与观测版本保证归并；窗口切换不是普通账户退款。
 - `application/codex/mod.rs::reset_quota` 在既有锁范围内调用外部兑换，
   `record_codex_quota_reset_transaction` 写 reset 事件/审计；
   `claim_manual_codex_quota_reset` 以 reset event 记录窗口应用状态，不重置 Key 已用金额。
-- `src/codex_sharing.rs` 的 `LedgerStore` / `Actor::{reserve,finish}` 拥有独立
-  request UUID、窗口/席位/用户金额及 uncertain 状态；不得写普通余额或复用普通回执当窗口账本。
-- `persistence/codex_sharing.rs::claim_sharing_ledger` 与 `main.rs` 保活拥有单实例锁；
-  配置存储、窗口完整性加载不替代本地 WAL。
 
 ## 基线限制的演进
 
@@ -111,7 +104,7 @@ P1 固定了“不误扣、无部分扣款”，没有把旧日志表实现固�
 - 缺价格的历史费用归为 invalid，不再回滚正常结算批次。
 - unknown/invalid/账户异常有独立核对计数与变化日志，但没有自动补账或 Console 核对页。
 - 日志 DELETE 不再移除财务认领证据；事实/回执禁止删改，但没有启用日志 TTL。
-- 查询表被锁或展示字段非法时，事实、结算、费用统计与拼车恢复仍可推进。
+- 查询表被锁或展示字段非法时，事实、结算与费用统计仍可推进。
 
 P2 的驱动边界继续由测试固定。具体实现仍仅支持 PostgreSQL，
 SQLx source 只在 PG 测试/内部诊断中使用；没有 SQLite、分布式 exactly-once 或无损硬件保证。
@@ -120,7 +113,6 @@ SQLx source 只在 PG 测试/内部诊断中使用；没有 SQLite、分布式 e
 
 ```bash
 cargo test --locked --lib application::billing::tests
-cargo test --locked --lib codex_sharing::tests
 cargo test --locked --test control_plane_integration persistence_contracts
 cargo test --locked --test control_plane_integration metering_facts
 cargo fmt --check

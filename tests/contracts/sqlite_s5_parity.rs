@@ -139,7 +139,7 @@ async fn setup(backend: &Backend) -> Context {
                 expected: None,
                 input: serde_json::from_value(serde_json::json!({
                     "name":"Explicit Codex channel","group_id":group,"access_id":access,
-                    "credential_id":context.id,"enabled":true,"sharing_only":false
+                    "credential_id":context.id,"enabled":true
                 }))
                 .unwrap(),
             },
@@ -232,8 +232,7 @@ async fn run(case: u8) {
                 1 => oauth(c).await,
                 2 => quota(c).await,
                 3 => refresh(c).await,
-                4 => sharing(c).await,
-                5 => recovery_and_costs(&backend, c).await,
+                5 => visible_projection_costs(&backend, c).await,
                 6 => window_edges(c).await,
                 7 => identity_and_proxy_export(&backend, c).await,
                 _ => unreachable!(),
@@ -270,11 +269,7 @@ async fn refresh_generation_and_confirmed_reset_match() {
     run(3).await;
 }
 #[tokio::test]
-async fn sharing_membership_ledger_and_alias_protection_match() {
-    run(4).await;
-}
-#[tokio::test]
-async fn sharing_wal_recovery_facts_and_visible_projection_costs_match() {
+async fn visible_projection_costs_match() {
     run(5).await;
 }
 #[tokio::test]
@@ -724,97 +719,6 @@ async fn refresh(c: Context) {
     );
 }
 
-async fn sharing(c: Context) {
-    use ai_gateway::domain::codex_sharing::SharingGroupInput;
-    let ledger = Uuid::new_v4();
-    let mut owner = c.repo.claim_sharing_ledger(ledger).await.unwrap();
-    owner.ping().await.unwrap();
-    assert!(c.repo.claim_sharing_ledger(ledger).await.is_err());
-    owner.close().await.unwrap();
-    assert!(c.repo.claim_sharing_ledger(Uuid::new_v4()).await.is_err());
-    let owner = c.repo.claim_sharing_ledger(ledger).await.unwrap();
-    let input = SharingGroupInput {
-        channel_id: c.channel,
-        name: "Car".into(),
-        enabled: true,
-        seats: vec![Some(c.admin), None],
-        primary_limit_amount: Decimal::from(5),
-        secondary_limit_amount: Decimal::from(10),
-        request_reservation_amount: Decimal::new(1, 2),
-        user_requests_per_minute: 10,
-        group_requests_per_minute: 20,
-        user_max_concurrent_requests: 2,
-        group_max_concurrent_requests: 4,
-    };
-    let saved = c
-        .repo
-        .prepare_mutation(
-            c.admin,
-            ControlPlaneMutation::SaveCodexSharing {
-                id: Uuid::new_v4(),
-                input,
-                expected_updated_at: None,
-            },
-        )
-        .await
-        .unwrap()
-        .commit()
-        .await
-        .unwrap()
-        .0;
-    let groups = c.repo.sharing_groups(Some(c.admin)).await.unwrap();
-    assert_eq!(groups.len(), 1);
-    assert_eq!(groups[0].id, saved[0].id);
-    assert_eq!(
-        groups[0].policy.request_reservation_amount,
-        Decimal::new(1, 2)
-    );
-    assert!(
-        c.repo
-            .sharing_groups(Some(Uuid::nil()))
-            .await
-            .unwrap()
-            .is_empty()
-    );
-    let r = c.repo.codex_credential(c.id).await.unwrap().unwrap();
-    assert!(
-        c.repo
-            .prepare_codex_credential_delete(c.admin, c.id, r.updated_at)
-            .await
-            .is_err()
-    );
-    let snapshot = c.repo.load_runtime().await.unwrap();
-    let topology = c.repo.topology().await.unwrap();
-    let mut capabilities = topology
-        .channel_capabilities
-        .iter()
-        .filter(|capability| capability.channel_id == c.channel)
-        .map(|capability| capability.id)
-        .collect::<Vec<_>>();
-    capabilities.sort_unstable();
-    assert_eq!(capabilities.len(), 5);
-    let mut channels = snapshot.sharing[0].channel_ids.clone();
-    channels.sort_unstable();
-    assert_eq!(channels, capabilities);
-    let mut protected = snapshot.sharing[0].protected_channel_ids.clone();
-    protected.sort_unstable();
-    assert_eq!(protected, capabilities);
-    owner.close().await.unwrap();
-}
-
-async fn reopen_sharing(path: &std::path::Path) -> ai_gateway::codex_sharing::SharingRuntime {
-    tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            match ai_gateway::codex_sharing::SharingRuntime::open(path.to_path_buf()).await {
-                Ok(runtime) => break runtime,
-                Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
-            }
-        }
-    })
-    .await
-    .unwrap()
-}
-
 async fn window_edges(c: Context) {
     let now = Utc::now() - chrono::Duration::hours(10);
     let mut update = observation(now, 0);
@@ -1017,8 +921,7 @@ async fn identity_and_proxy_export(backend: &Backend, c: Context) {
         .unwrap();
 }
 
-async fn recovery_and_costs(backend: &Backend, c: Context) {
-    use ai_gateway::domain::codex_sharing::SharingGroupInput;
+async fn visible_projection_costs(backend: &Backend, c: Context) {
     let key = Uuid::new_v4();
     let model = Uuid::new_v4();
     let (formats, permissions) = match backend {
@@ -1052,57 +955,18 @@ async fn recovery_and_costs(backend: &Backend, c: Context) {
             .len(),
         1
     );
-    c.repo
-        .prepare_mutation(
-            c.admin,
-            ControlPlaneMutation::SaveCodexSharing {
-                id: Uuid::new_v4(),
-                expected_updated_at: None,
-                input: SharingGroupInput {
-                    channel_id: c.channel,
-                    name: "Durable car".into(),
-                    enabled: true,
-                    seats: vec![Some(c.admin), None],
-                    primary_limit_amount: Decimal::from(5),
-                    secondary_limit_amount: Decimal::from(10),
-                    request_reservation_amount: Decimal::new(1, 2),
-                    user_requests_per_minute: 100,
-                    group_requests_per_minute: 100,
-                    user_max_concurrent_requests: 10,
-                    group_max_concurrent_requests: 10,
-                },
-            },
-        )
-        .await
-        .unwrap()
-        .commit()
-        .await
-        .unwrap();
-    let record = c.repo.load_runtime().await.unwrap().sharing.remove(0);
-    assert_eq!(record.windows.len(), 2);
-    let group = record.group;
-    let dir = tempfile::tempdir().unwrap();
-    let runtime = reopen_sharing(dir.path()).await;
-    let ledger = runtime.ledger_id().unwrap();
-    let owner = c.repo.claim_sharing_ledger(ledger).await.unwrap();
-    runtime
-        .sync(vec![group.clone()], record.windows.clone())
-        .await
-        .unwrap();
     let topology = c.repo.topology().await.unwrap();
-    assert_eq!(record.channel_ids.len(), 5);
     let metered_capabilities = topology
         .channel_capabilities
         .iter()
         .filter(|capability| {
-            record.channel_ids.contains(&capability.id)
+            capability.channel_id == c.channel
                 && capability.settings.operation != ApiOperation::StandaloneWebSearch
         })
         .collect::<Vec<_>>();
     assert_eq!(metered_capabilities.len(), 4);
     let expected_amount = Decimal::new(10, 8);
     let mut events = Vec::new();
-    let mut leases = Vec::new();
     for (index, capability) in metered_capabilities.iter().enumerate() {
         let mut event = request_log_event(c.admin, key, model, c.group, capability.id);
         event.upstream_credential = Some(ai_gateway::domain::RequestCredentialAttribution {
@@ -1130,48 +994,10 @@ async fn recovery_and_costs(backend: &Backend, c: Context) {
         };
         event.streamed = false;
         event.billing.as_mut().unwrap().cost_amount = Some(Decimal::new((index + 1) as i64, 8));
-        let lease = runtime.reserve(&group, c.admin, event.id).await.unwrap();
-        leases.push(lease);
         events.push(event);
     }
-    for lease in leases {
-        lease.settle(None);
-    }
-    runtime.flush().await.unwrap();
-    assert!(runtime.inspect(&group, c.admin).await.uncertain);
-    drop(runtime);
-    owner.close().await.unwrap();
-    let runtime = reopen_sharing(dir.path()).await;
-    assert_eq!(runtime.ledger_id(), Some(ledger));
-    let owner = c.repo.claim_sharing_ledger(ledger).await.unwrap();
-    runtime
-        .sync(vec![group.clone()], record.windows.clone())
-        .await
-        .unwrap();
-    assert!(runtime.inspect(&group, c.admin).await.uncertain);
     let logs = backend.logs();
     logs.metering().record_batch(&events).await.unwrap();
-    let costs = logs
-        .queries()
-        .metering()
-        .sharing_completed_costs(&runtime.pending().await)
-        .await
-        .unwrap();
-    assert_eq!(costs.len(), 4);
-    for (id, cost) in &costs {
-        runtime.finish(*id, Some(*cost));
-        runtime.finish(*id, Some(*cost));
-    }
-    runtime.flush().await.unwrap();
-    let usage = runtime.inspect(&group, c.admin).await;
-    assert!(!usage.uncertain);
-    assert_eq!(usage.pending_requests, 0);
-    assert!(
-        usage
-            .windows
-            .iter()
-            .all(|w| w.used_amount == expected_amount)
-    );
     let view = c.repo.codex_credential_view(c.id).await.unwrap().unwrap();
     assert_eq!(view.primary_window_cost_amount, Some(expected_amount));
     assert_eq!(view.secondary_window_cost_amount, Some(expected_amount));
@@ -1186,20 +1012,4 @@ async fn recovery_and_costs(backend: &Backend, c: Context) {
             .iter()
             .all(|p| p.cost_amount == expected_amount)
     );
-    drop(runtime);
-    owner.close().await.unwrap();
-    let runtime = reopen_sharing(dir.path()).await;
-    runtime
-        .sync(vec![group.clone()], record.windows)
-        .await
-        .unwrap();
-    assert!(
-        runtime
-            .inspect(&group, c.admin)
-            .await
-            .windows
-            .iter()
-            .all(|w| w.used_amount == expected_amount)
-    );
-    drop(runtime);
 }

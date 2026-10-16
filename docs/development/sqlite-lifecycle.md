@@ -40,7 +40,7 @@ S2 曾使用的 3.46.0 不再是可部署构建。连接策略、原子迁移和
 2. **逻辑 opener**：同一进程同一时刻只能有一个 `SqliteDatabase` opener；
    关闭全部池/句柄后可在该进程重开同一路径。另一个进程必须等待原进程退出。
    池关闭会等待借出的连接归还；丢弃数据库但仍持有连接时仍拒绝第二个 opener。
-   S5 provider 操作和拼车 ledger guard 同样保留逻辑 opener，关闭须等待其释放。
+   S5 provider 操作同样保留逻辑 opener，关闭须等待其释放。
 
 保留进程 lease 是有意的 fail-closed 选择：S2 基于 SQLx 0.8.6 发现的 replacement connection
 可在注册 native callback 前被取消，后台 SQLite worker 不一定已终止。
@@ -84,7 +84,7 @@ marker 不是密码学认证；不防同 UID 伪造整套文件。
 marker 不完整时不猜测、不重建；若中断发生在 marker fsync 前且数据库仍空，
 需要人工确认后处理整套未初始化文件，不能据此删掉可能存在的业务数据。
 
-备份包含 `.identity`、同一时点数据库及 spool/拼车 WAL。
+备份包含 `.identity`、同一时点数据库及完整 spool。
 不能只拷贝正在使用的 `.sqlite` 文件；S6 提供[停机备份恢复命令](../user/sqlite.md)，不提供 PG 导入。
 
 ## 原子 migration runner

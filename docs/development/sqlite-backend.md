@@ -2,7 +2,7 @@
 
 > 状态：当前双后端实现。基于 `081d8c9`（第二阶段 PR #177）；S1 已提交，
 > S2 已提交为 `65d8fee`，S3 为 `aec8103`，S4 为 `dc25eb4`；
-> S5 已实现 Codex 与拼车仓储及外部调用 fencing，本地门禁及真实上游回归均通过。
+> S5 已实现 Codex 仓储及外部调用 fencing，本地门禁及真实上游回归均通过。
 > S6 已接通 Linux 配置、serve/CLI、停机备份恢复与双后端系统验收。最后核对：2026-09-20。
 
 前置工作见[持久化边界](persistence-boundaries.md)、
@@ -12,7 +12,7 @@
 ## 已确认范围
 
 - 保留 PostgreSQL，SQLite 最终支持全部现有功能，包括 Console、普通渠道、Codex、
-  拼车、计量结算及查询；不是“只有控制面使用 SQLite”的混合部署。
+  计量结算及查询；不是“只有控制面使用 SQLite”的混合部署。
 - SQLite 面向单实例、本地文件系统；不承诺 HA、网络文件系统或多实例共享文件。
 - 分可验证切片实现。首版只支持新建部署及 SQLite 自身后续 schema 升级，
   不提供 PostgreSQL 数据导入，也不改写历史 PG migration。
@@ -44,7 +44,7 @@ Linux 构建接受 `sqlite:///absolute/path`，其他构建在配置验证时拒
 拒绝浮点、整数、BLOB、溢出、精度下溢和非规范表示；可选字段通过
 `Option<SqliteDecimal>` 保留 NULL。规范化只去掉无意义尾零，不改变数值。
 
-S2 的 `SqliteAmount` / `SqliteUnitPrice` / `SqliteSharingAmount` / `SqliteTokenRate`
+S2 的 `SqliteAmount` / `SqliteUnitPrice` / `SqliteTokenRate`
 按列精度检查并恢复 SQLx/PG 的显示 scale；数据库 CHECK 使用相同精度规则。
 `SqliteDecimal` 仍是通用底层传输，不用于代替这些业务列类型。
 这些底层适配器不执行舍入、聚合或结算；S4 操作实现遵守既有金额规则。
@@ -54,7 +54,7 @@ S1 提交为 `5668ea4`。S2 的 `install_schema()` 通过独立的 `0001_baselin
 和 `0002_guards.sql` 一次性安装完整业务 schema。另有身份 metadata、原子 runner 和进程所有权。
 S3 仓储分派与双后端契约见[身份与控制面](sqlite-control-plane.md)；
 S4 耐久写入、精确聚合和故障恢复见[计量与结算](sqlite-metering.md)；
-S5 增加 `0003_codex_operations.sql`，见 [Codex 与拼车](sqlite-codex.md)；
+S5 增加 `0003_codex_operations.sql`，见 [Codex 仓储](sqlite-codex.md)；
 S6 提供停机成对备份恢复和双后端系统测试。SQLx 仍按路径打开文件，不使用自定义 VFS；
 调用方不得移动、替换或删除进程已认领的目录/数据库文件，直到该进程退出。
 完整 schema 和归一化写入契约见[约束映射](sqlite-schema-mapping.md)。
@@ -70,7 +70,7 @@ S6 提供停机成对备份恢复和双后端系统测试。SQLx 仍按路径打
 S2 已固定这些编码、NULL、默认值和数据库校验；未来仓储必须使用列类型适配器，
 不能依赖 PG 自动 cast 或 SQLite affinity，也不能遗漏归一化写入字段。
 
-金额计算保持既有 Decimal 舍入顺序；8/12 位小数、拼车 ToZero 和越界整笔回滚
+金额计算保持既有 Decimal 舍入顺序；8/12 位小数和越界整笔回滚
 见[契约基线](persistence-contracts.md)。SQLite 账户更新在独占写事务内读取、
 checked Decimal 运算、验证列精度后写回；PG 保留其原生 NUMERIC SQL。
 统计采用精确整数单位聚合，再进入现有 Decimal 结果边界，按有界批次扫描/投影，
@@ -94,7 +94,7 @@ PG 行锁/advisory lock 与 SQLite 单写事务不机械对应：
 - Codex refresh/reset 现有锁跨越外部 HTTP；SQLite 全局写锁不能照搬成长网络事务。
   S5 使用 generation/version CAS、专属操作锁及耐久 intent fencing，覆盖取消和外部结果不确定，
   不自动重试 token 轮换/兑换，不在此基础切片偷偷改变 PG 行为。
-- 拼车单实例所有权须覆盖启动、CLI 管理命令、全部池及恢复。
+- SQLite 单实例所有权须覆盖启动、CLI 管理命令、全部池及恢复。
   进程内单写连接不是进程独占证明；busy timeout 也不是重试授权。
 - SQLite 的 durable ingress 使用事务批量 INSERT，不模拟 COPY；
   成功提交才允许 checkpoint，事实/ready 同事务，投影后 ack，
@@ -126,7 +126,7 @@ SQLite 拒绝 password_file；日志没有独立数据库池，连接预算语�
 | S2 schema 与生命周期 | 完整约束映射和 baseline、原子迁移、类型编码、单实例所有权、错误分类、路径/身份/关闭恢复负向测试 | 已实现；包括真实 PG schema/编码对照和完整 baseline 批次回滚 |
 | S3 身份与控制面 | 认证/会话/管理员操作、完整配置读写、编译失败和审计失败回滚、权限/版本/软删除/路由约束双后端契约 | 已实现；S6 同时接通管理员 CLI |
 | S4 事实与结算 | ingress/计量/独立投影/回执/pending、精确聚合、重复与冲突重放、未知费用、取消/崩溃与提交回复丢失 | 已实现；同一套 PG/SQLite 财务和报告契约，取消及 SIGKILL 恢复 |
-| S5 Codex 与拼车 | OAuth/配额/paired projections、长事务替代协议、单实例 WAL 恢复、窗口费用及授权隔离 | 已完成；本地门禁及已授权真实上游回归通过，见专项文档 |
+| S5 Codex | OAuth/配额/paired projections、长事务替代协议、窗口费用及授权隔离 | 已完成；本地门禁及已授权真实上游回归通过，见专项文档 |
 | S6 可部署验收 | 组合根与配置开放、真实浏览器/CLI 系统链路双后端矩阵、SQLite 故障/备份恢复、运维说明与发行构建 | 已实现；当前验证结果以本轮交付记录为准 |
 
 S3–S5 的公共仓储使用显式后端分派和后端私有行映射，保留既有窄操作接口；
@@ -145,9 +145,8 @@ S5 专属的 Codex 方法已全部双后端分派：`codex_credentials`、`codex
 `set_codex_user_id_if_missing`、`codex_quota_window_history`、`self_codex_quota_credentials`、
 `self_codex_quota_window_history`、`persist_codex_quota`、`record_codex_quota_reset`、
 `mark_codex_credential_error`、`lock_codex_refresh`、`lock_codex_quota_reset`、
-`prepare_codex_credential_{create,update,delete}`、`prepare_codex_credentials_batch`、
-`claim_sharing_ledger`、`sharing_groups`。原 PG-only 拒绝占位已移除；
-provider 操作与账本使用不透明后端中立 guard。所有 SQLite 仓储共享一个 owner；
+`prepare_codex_credential_{create,update,delete}`、`prepare_codex_credentials_batch`。
+原 PG-only 拒绝占位已移除；provider 操作使用不透明后端中立 guard。所有 SQLite 仓储共享一个 owner；
 关停先排空 worker、释放后台任务，再关闭数据库；错误出口也关闭数据库。
 
 正式启用必须覆盖同一套行为契约：金额逐位相等、权限与快照一致、

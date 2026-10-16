@@ -504,83 +504,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/me/codex-sharing": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** @description Own sharing membership and USD allowances. No other member identities or OAuth secrets. */
-        get: operations["getOwnCodexSharing"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/codex-sharing-groups": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listCodexSharingGroups"];
-        put?: never;
-        /**
-         * @description Bind stable, directly assigned user seats to a dedicated logical credential.
-         *     Every seat may initially be vacant. Enabling requires the local single-writer
-         *     runtime. Duplicate provider identities cannot create another allowance.
-         *     There is no delete-and-recreate reset operation.
-         */
-        post: operations["createCodexSharingGroup"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/codex-sharing-groups/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getCodexSharingGroup"];
-        /**
-         * @description Credential is immutable. Seats may be assigned from any user group and
-         *     expanded but not shrunk. Budget and seat-count changes apply independently
-         *     when each next monetary window is initialized. Replacements inherit remaining
-         *     seat allowance. Pause and rate/concurrency settings apply to subsequent requests.
-         */
-        put: operations["updateCodexSharingGroup"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/codex-sharing-groups/{id}/usage": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["getCodexSharingUsage"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/user-groups": {
         parameters: {
             query?: never;
@@ -874,7 +797,7 @@ export interface paths {
             cookie?: never;
         };
         get: operations["getRoutingGroup"];
-        /** @description Replaces group organization and enabled state. Credentials and sharing restrictions belong to individual logical channels, not groups. */
+        /** @description Replaces group organization and enabled state. Credentials belong to individual logical channels, not groups. */
         put: operations["updateRoutingGroup"];
         post?: never;
         /** @description Soft-deletes the group. Any non-deleted member channel, including disabled or unrouted channels, blocks deletion; nothing cascades. */
@@ -1930,83 +1853,6 @@ export interface components {
         StatisticsGranularity: "hour" | "day";
         /** Format: date-time */
         DateTime: string;
-        CodexSharingGroupInput: {
-            /**
-             * Format: uuid
-             * @description Logical channel selected for this car. Immutable after creation; its upstream account cannot be replaced.
-             */
-            channel_id: string;
-            name: string;
-            enabled: boolean;
-            /** @description Stable slot order independent of user groups. A null reserves a vacant seat; non-null active user IDs must be unique across all sharing groups. */
-            seats: (string | null)[];
-            /** @description Total distributable primary-window USD allowance, positive, at most 1000000 and eight decimal places. */
-            primary_limit_amount: components["schemas"]["Decimal"];
-            /** @description Total distributable secondary-window USD allowance; same bounds as primary. */
-            secondary_limit_amount: components["schemas"]["Decimal"];
-            /** @description Fixed per-request USD admission estimate, not a hard per-request cap. Positive, at most each per-seat allowance. */
-            request_reservation_amount: components["schemas"]["Decimal"];
-            user_requests_per_minute: number;
-            group_requests_per_minute: number;
-            user_max_concurrent_requests: number;
-            group_max_concurrent_requests: number;
-        };
-        CodexSharingGroup: {
-            /** Format: uuid */
-            id: string;
-            updated_at: components["schemas"]["DateTime"];
-            /** Format: uuid */
-            channel_id: string;
-            name: string;
-            enabled: boolean;
-            seats: (string | null)[];
-            primary_limit_amount: components["schemas"]["Decimal"];
-            secondary_limit_amount: components["schemas"]["Decimal"];
-            request_reservation_amount: components["schemas"]["Decimal"];
-            user_requests_per_minute: number;
-            group_requests_per_minute: number;
-            user_max_concurrent_requests: number;
-            group_max_concurrent_requests: number;
-        };
-        CodexSharingUsage: {
-            /** @description Runtime and observed windows are ready; remaining money and in-flight limits still apply. */
-            available: boolean;
-            seat_number: number | null;
-            pending_requests: number;
-            uncertain: boolean;
-            windows: components["schemas"]["CodexSharingWindowBalance"][];
-        };
-        CodexSharingWindowBalance: {
-            /**
-             * Format: uuid
-             * @description Gateway monetary epoch ID, usually reusing the observed quota-period record; zero-percent windows may use a separately generated epoch.
-             */
-            window_id: string;
-            /** @enum {string} */
-            window_kind: "primary" | "secondary";
-            reset_at: components["schemas"]["DateTime"];
-            limit_amount: components["schemas"]["Decimal"];
-            /** @description Effective spent amount, including inherited seat spend and the user's own window spend. */
-            used_amount: components["schemas"]["Decimal"];
-            reserved_amount: components["schemas"]["Decimal"];
-            remaining_amount: components["schemas"]["Decimal"];
-            group_remaining_amount: components["schemas"]["Decimal"];
-            provider_used_percent: number;
-            checked_at: components["schemas"]["DateTime"];
-        };
-        SelfCodexSharingView: {
-            /** Format: uuid */
-            id: string;
-            name: string;
-            enabled: boolean;
-            seat_count: number;
-            /** @enum {string} */
-            currency: "USD";
-            request_reservation_amount: components["schemas"]["Decimal"];
-            user_requests_per_minute: number;
-            user_max_concurrent_requests: number;
-            usage: components["schemas"]["CodexSharingUsage"];
-        } | null;
         /** @description rust_decimal::Decimal serialized as a string. */
         Decimal: string;
         /** Format: date-time */
@@ -2511,23 +2357,10 @@ export interface components {
             policy_name: string | null;
             /** @description Whether the resolved user/group API Key Policy currently contributes ordinary targets. */
             policy_enabled: boolean;
-            /** @description Logical channels selectable because the current user occupies an explicit sharing seat; independent of API Key Policy. */
-            sharing_channels: components["schemas"]["SelfApiKeySharingChannelOption"][];
             /** @description Ordinary groups contributed by the enabled API Key Policy; groups with no ordinary channel are excluded. */
             groups: components["schemas"]["SelfApiKeyGroupOption"][];
-            /** @description Ordinary individual channels contributed by the enabled API Key Policy; sharing credentials and protected aliases are excluded. */
+            /** @description Individual channels contributed by the enabled API Key Policy. */
             channels: components["schemas"]["SelfApiKeyChannelOption"][];
-        };
-        SelfApiKeySharingChannelOption: {
-            /** Format: uuid */
-            channel_id: string;
-            channel_name: string;
-            /** Format: uuid */
-            sharing_group_id: string;
-            /** @description Administrator-defined sharing-group name; provider identity remains private. */
-            name: string;
-            /** @description Combined channel, group, access, credential and car availability. Authorization covers this channel's current and future capabilities, subject to sharing admission; unmetered operations remain rejected. */
-            enabled: boolean;
         };
         SelfApiKeyGroupOption: {
             /** Format: uuid */
@@ -2691,8 +2524,6 @@ export interface components {
             credential_id: string | null;
             name: string;
             enabled: boolean;
-            /** @description Only valid for a connector with sharing support. Protects the channel and recognized account aliases; it does not grant seats or create a car. */
-            sharing_only: boolean;
             /** Format: uuid */
             binding_revision: string;
             created_at: components["schemas"]["DateTime"];
@@ -2712,8 +2543,6 @@ export interface components {
             credential_id: string | null;
             name: string;
             enabled: boolean;
-            /** @description Channel-level policy. Disabling it never removes an existing car binding or its financial protection. */
-            sharing_only: boolean;
         };
         CapabilitySettings: {
             operation: components["schemas"]["ApiOperation"];
@@ -4413,7 +4242,7 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
-            /** @description No usable policy or sharing seat, invalid limits, or an unauthorized target. */
+            /** @description Missing or disabled policy, invalid limits, or an unauthorized target. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -4433,7 +4262,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Sharing credentials owned through seats plus ordinary targets selectable under the user's policy. */
+            /** @description Targets selectable under the user's enabled API Key Policy. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -4443,7 +4272,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
-            /** @description Missing or disabled default API key policy when the user has no sharing seat. */
+            /** @description Missing or disabled default API key policy. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -5004,172 +4833,6 @@ export interface operations {
                 };
             };
             429: components["responses"]["RateLimited"];
-        };
-    };
-    getOwnCodexSharing: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Sharing membership, or null when the user occupies no sharing seat. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SelfCodexSharingView"];
-                };
-            };
-            401: components["responses"]["Unauthorized"];
-        };
-    };
-    listCodexSharingGroups: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Administrator sharing configuration and local ledger availability. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        runtime_available: boolean;
-                        groups: components["schemas"]["CodexSharingGroup"][];
-                    };
-                };
-            };
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-        };
-    };
-    createCodexSharingGroup: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CodexSharingGroupInput"];
-            };
-        };
-        responses: {
-            /** @description Sharing group created. */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MutationResponse"];
-                };
-            };
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            409: components["responses"]["Conflict"];
-            422: components["responses"]["Unprocessable"];
-        };
-    };
-    getCodexSharingGroup: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["PathId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Configuration; ETag does not change with live usage counters. */
-            200: {
-                headers: {
-                    ETag: components["headers"]["ETag"];
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CodexSharingGroup"];
-                };
-            };
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["NotFound"];
-        };
-    };
-    updateCodexSharingGroup: {
-        parameters: {
-            query?: never;
-            header: {
-                /** @description ETag from the preceding GET; stale values yield `409`. */
-                "If-Match": components["parameters"]["IfMatch"];
-            };
-            path: {
-                id: components["parameters"]["PathId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CodexSharingGroupInput"];
-            };
-        };
-        responses: {
-            /** @description Sharing group updated. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MutationResponse"];
-                };
-            };
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
-            422: components["responses"]["Unprocessable"];
-        };
-    };
-    getCodexSharingUsage: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["PathId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Current per-seat local monetary counters. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        seats: {
-                            seat_number: number;
-                            /** Format: uuid */
-                            user_id: string | null;
-                            usage: components["schemas"]["CodexSharingUsage"];
-                        }[];
-                    };
-                };
-            };
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["NotFound"];
         };
     };
     listUserGroups: {

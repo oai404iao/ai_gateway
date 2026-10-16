@@ -155,6 +155,7 @@ def exercise_plugin_lifecycle(data, plugin):
         check("HTTP 409" in str(error), "stale plugin settings failed for the wrong reason")
     else:
         raise RuntimeError("stale plugin settings were accepted")
+    _, headers = request(console, path, token=token)
     write(path + "/state", "PUT", {**selected, "enabled": False}, headers["ETag"])
     connectors, _ = request(console, "/console/v1/system/connectors", token=token)
     check(not any(item["id"] == "codex" for item in connectors), "disabled plugin remains dispatchable")
@@ -412,8 +413,6 @@ settlement_interval_milliseconds = 100
 shutdown_drain_seconds = 5
 [request_retry]
 enabled = false
-[codex_sharing]
-enabled = true
 [observability]
 filter = "ai_gateway=info,tower_http=warn"
 """)
@@ -471,12 +470,11 @@ def seed(console, password, upstream):
     channel, _ = api("/routing/logical-channels", "POST", {
         "group_id": group["id"], "access_id": access["id"],
         "name": "system-e2e", "enabled": True, "credential_id": credential["id"],
-        "sharing_only": False,
     })
     api("/routing/logical-channels", "POST", {
         "group_id": group["id"], "access_id": access["id"],
         "name": "system-e2e-disabled-reference", "enabled": False,
-        "credential_id": credential["id"], "sharing_only": False,
+        "credential_id": credential["id"],
     })
     key, _ = api("/api-keys", "POST", {
         "user_id": user, "name": "system-e2e",

@@ -613,7 +613,6 @@ async fn gateway_harness_with_controls(
             api_format: "open_ai_responses".into(),
             connector_kind: "general".into(),
             request_compression: "default".into(),
-            sharing_only: false,
             enabled: controls.group_enabled,
         }],
         channels: vec![ChannelRecord {
@@ -731,7 +730,6 @@ async fn gateway_harness_with_controls(
             api_format: "open_ai_responses".into(),
             connector_kind: "general".into(),
             request_compression: "default".into(),
-            sharing_only: false,
             enabled: true,
         };
         let mut channel = records.channels[0].clone();

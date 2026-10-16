@@ -5,7 +5,6 @@ mod api_key;
 mod api_operation;
 mod billing;
 mod channel_capability;
-pub mod codex_sharing;
 mod compiled_routing;
 mod connector;
 mod console_auth;

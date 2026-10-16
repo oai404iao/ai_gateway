@@ -383,7 +383,6 @@ fn gateway(
             api_format: format.api_format_name().into(),
             connector_kind: "general".into(),
             request_compression: "default".into(),
-            sharing_only: false,
             enabled: true,
         }],
         channels: operations

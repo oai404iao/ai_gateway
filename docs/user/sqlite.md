@@ -3,7 +3,7 @@
 > 状态：当前。Linux、本地文件系统、协作式单实例；不提供 PG 数据导入、HA 或在线备份。
 
 SQLite 与 PostgreSQL 是完整的替代后端，不是混合存储。Console、API Key、路由、
-Codex、拼车、请求日志、不可变计量事实与结算均使用选定的数据库。
+Codex、请求日志、不可变计量事实与结算均使用选定的数据库。
 公共协议、鉴权和金额规则不变；单写事务不适合通过增加实例数扩容。
 
 ## 构建与配置
@@ -101,8 +101,8 @@ ai-gateway restore-sqlite --source /absolute/backups/new-snapshot \
 
 1. 取得数据库进程/目录锁，拒绝活跃 Gateway；验证身份、完整 migration checksum、
    integrity、外键，然后执行 checkpoint 并关闭 native 连接。
-2. 保留文件所有权，取得所有 spool/拼车 writer 锁；复制主库、`.identity`、仍存在的
-   SQLite sidecars 及整个 spool（含拼车账本、未知请求、检查点和终结槽）。
+2. 保留文件所有权，取得所有 spool writer 锁；复制主库、`.identity`、仍存在的
+   SQLite sidecars 及整个 spool（含未知请求、检查点和终结槽）。
 3. 写带数据库 UUID、相对路径、文件大小和 SHA-256 的 manifest，fsync 文件与目录。
    manifest 最后落盘；没有完整 manifest 的目录不是可用备份。
 4. 恢复先验证清单、文件集合与 checksum，写入新的私有 staging tree，再由同一个二进制
@@ -131,8 +131,8 @@ Codex refresh/reset 在 HTTP 前持久化 intent；取消、超时或结果提�
 放弃的 refresh 可由管理员重新导入正确凭证；活跃操作不允许抢占。
 未知 quota-reset **持续拒绝受保护操作**，没有人工确认结果的恢复 API。
 不要删除 intent、重试兑换或凭借重启宣称已经退款；保留 provider 证据。
-拼车未知费用仍保持 pending，换座、重导或恢复不能补发金额。
-详见[Codex 与拼车协议](../development/sqlite-codex.md)。
+详见[Codex 仓储协议](../development/sqlite-codex.md)。
+从旧版升级还需遵循[Codex 拼车移除升级](operations.md#codex-拼车移除升级)说明。
 
 验收与故障场景见[双后端系统 E2E](../development/system-e2e.md)、
 [文件生命周期](../development/sqlite-lifecycle.md)及[独立计量](../development/sqlite-metering.md)。

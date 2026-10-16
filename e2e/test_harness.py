@@ -164,13 +164,15 @@ class HarnessTests(unittest.TestCase):
             with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory:
                 (Path(directory) / "codex-test.tar.gz").write_bytes(b"synthetic-package")
                 plugin = {"path": str(Path(directory) / "fixture.so"), "sha256": "a" * 64}
-                state = {"enabled": False, "revision": 0, "values": {"client_version": "original"}}
+                state = {"enabled": False, "revision": 1, "settings_revision": 0,
+                         "values": {"client_version": "original"}}
                 authorization = None
 
                 def api(_base, path, method="GET", body=None, token=None, etag=None,
                         plugin_authorization=None):
                     nonlocal authorization
-                    headers = {"ETag": f'"{state["revision"]}"'}
+                    revision = state["settings_revision"] if path.endswith("/settings") else state["revision"]
+                    headers = {"ETag": f'"{revision}"'}
                     if path.endswith("/reauth"):
                         authorization = object()
                         return {"token": authorization}, {}
@@ -193,10 +195,13 @@ class HarnessTests(unittest.TestCase):
                             raise RuntimeError("HTTP 409 (conflict)")
                         if path.endswith("/state"):
                             state["enabled"] = body["enabled"]
+                            if not state["settings_revision"]:
+                                state["settings_revision"] = 1
                             if fault == "reset_settings" and state["revision"] > 1 and body["enabled"]:
                                 state["values"] = {"client_version": "original"}
                         else:
                             state["values"] = dict(body["values"])
+                            state["settings_revision"] += 1
                         state["revision"] += 1
                         return {}, {}
                     if path.endswith("/settings"):

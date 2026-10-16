@@ -1,11 +1,7 @@
 //! Opt-in, synthetic-only schema-62 backup, cutover, and paired recovery rehearsal.
 
 use super::*;
-use ai_gateway::{
-    application::RequestLogIntent,
-    codex_sharing::SharingRuntime,
-    domain::codex_sharing::{SharingGroup, SharingGroupInput},
-};
+use ai_gateway::application::RequestLogIntent;
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
@@ -171,115 +167,6 @@ async fn measured_cutover(pool: &PgPool) -> serde_json::Value {
     })
 }
 
-async fn sharing_fixture(
-    pool: &PgPool,
-    seed: &Seed,
-    directory: &Path,
-    terminal_id: Uuid,
-    unknown_id: Uuid,
-) -> (SharingRuntime, SharingGroup, serde_json::Value) {
-    let repository = ControlPlaneRepository::new(pool.clone());
-    repository
-        .ensure_system_settings(system_settings())
-        .await
-        .unwrap();
-    let runtime = Arc::new(RuntimeConfig::new(
-        compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap(),
-    ));
-    let sharing = SharingRuntime::open(directory.to_path_buf()).await.unwrap();
-    let owner = repository
-        .claim_sharing_ledger(sharing.ledger_id().unwrap())
-        .await
-        .unwrap();
-    let coordinator = ControlPlaneCoordinator::new(
-        repository,
-        runtime.clone(),
-        RoutingRuntime::new(PassiveHealthPolicy::default()),
-    )
-    .with_sharing_runtime(sharing.clone());
-    let codex_group = Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO channel_groups(id,name,api_format,connector_kind,enabled,sharing_only)
-         VALUES($1,'rehearsal-sharing','open_ai_responses','codex_oauth',true,true)",
-    )
-    .bind(codex_group)
-    .execute(pool)
-    .await
-    .unwrap();
-    let mut input = business_codex_credential(
-        codex_group,
-        "rehearsal",
-        "rehearsal@example.test",
-        "rehearsal-user",
-    );
-    input.quota = Some(CodexQuotaUpdate {
-        allowed: true,
-        limit_reached: false,
-        primary_used_percent: Some(10),
-        primary_window_seconds: Some(3600),
-        primary_reset_at: Some(Utc::now() + chrono::Duration::hours(1)),
-        secondary_used_percent: None,
-        secondary_window_seconds: None,
-        secondary_reset_at: None,
-        reset_credits_available: None,
-        checked_at: Utc::now(),
-    });
-    let credential = coordinator
-        .create_codex_credential(seed.user, input, None)
-        .await
-        .unwrap();
-    let group_id = Uuid::new_v4();
-    coordinator
-        .mutate(
-            seed.user,
-            ControlPlaneMutation::SaveCodexSharing {
-                id: group_id,
-                input: SharingGroupInput {
-                    channel_id: credential.id,
-                    name: "Rehearsal seats".into(),
-                    enabled: true,
-                    seats: vec![Some(seed.user)],
-                    primary_limit_amount: Decimal::from(20),
-                    secondary_limit_amount: Decimal::from(100),
-                    request_reservation_amount: Decimal::ONE,
-                    user_requests_per_minute: 30,
-                    group_requests_per_minute: 60,
-                    user_max_concurrent_requests: 4,
-                    group_max_concurrent_requests: 4,
-                },
-                expected_updated_at: None,
-            },
-        )
-        .await
-        .unwrap();
-    let group = runtime
-        .snapshot()
-        .sharing()
-        .group(group_id)
-        .unwrap()
-        .clone();
-    sharing
-        .reserve(&group, seed.user, Uuid::new_v4())
-        .await
-        .unwrap()
-        .settle(Some(Decimal::ONE));
-    sharing.flush().await.unwrap();
-    let terminal = sharing
-        .reserve(&group, seed.user, terminal_id)
-        .await
-        .unwrap();
-    let unknown = sharing
-        .reserve(&group, seed.user, unknown_id)
-        .await
-        .unwrap();
-    drop((terminal, unknown));
-    sharing.flush().await.unwrap();
-    let usage = serde_json::to_value(sharing.inspect(&group, seed.user).await).unwrap();
-    assert_eq!(usage["pending_requests"], 2);
-    drop((coordinator, owner));
-    (sharing, group, usage)
-}
-
 async fn financial_snapshot(pool: &PgPool) -> serde_json::Value {
     sqlx::query_scalar(
         "SELECT jsonb_build_object(
@@ -432,15 +319,6 @@ async fn schema62_backup_cutover_and_paired_restore() {
     sink.try_record(spooled.clone());
     sink.try_record(billed.clone());
     drop(sink);
-    let (sharing, group, sharing_before) = sharing_fixture(
-        &database.pool,
-        &seed,
-        &spool.join("codex-sharing"),
-        spooled.id,
-        intent.id,
-    )
-    .await;
-    let ledger_id = sharing.ledger_id().unwrap();
     let before = accounts(&database.pool, seed.key).await;
     let backup = directory.join("backup");
     fs::create_dir(&backup).unwrap();
@@ -579,19 +457,6 @@ async fn schema62_backup_cutover_and_paired_restore() {
         .unwrap();
     assert_eq!(restored_schema, 62);
     assert_eq!(accounts(&restored.pool, seed.key).await, before);
-    let restored_sharing = SharingRuntime::open(restored_spool.join("codex-sharing"))
-        .await
-        .unwrap();
-    assert_eq!(restored_sharing.ledger_id(), Some(ledger_id));
-    let repository = ControlPlaneRepository::new(restored.pool.clone());
-    let owner = repository.claim_sharing_ledger(ledger_id).await.unwrap();
-    let snapshot = compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap();
-    restored_sharing.publish(snapshot.sharing());
-    restored_sharing.flush().await.unwrap();
-    assert_eq!(
-        serde_json::to_value(restored_sharing.inspect(&group, seed.user).await).unwrap(),
-        sharing_before
-    );
     let restored_cutover = measured_cutover(&restored.pool).await;
     assert_eq!(accounts(&restored.pool, seed.key).await, before);
     recover(&restored.pool, &restored_spool, &ids).await;
@@ -604,23 +469,6 @@ async fn schema62_backup_cutover_and_paired_restore() {
             .await
             .unwrap();
     assert_eq!(restored_receipt, original_receipt);
-    let pending_sharing = restored_sharing.pending().await;
-    let costs = MeteringQueries::new(restored.pool.clone())
-        .sharing_completed_costs(&pending_sharing)
-        .await
-        .unwrap();
-    assert_eq!(costs.len(), 1);
-    for (id, cost) in costs {
-        assert_eq!(id, spooled.id);
-        restored_sharing.finish(id, Some(cost));
-    }
-    restored_sharing.flush().await.unwrap();
-    assert_eq!(restored_sharing.pending().await, vec![intent.id]);
-    let usage = restored_sharing.inspect(&group, seed.user).await;
-    assert_eq!(
-        usage.windows[0].used_amount,
-        Decimal::ONE + spooled.effective_cost_amount().unwrap()
-    );
     assert!(
         restored_spool
             .join(format!("admissions/{}.json", intent.id))
@@ -630,21 +478,20 @@ async fn schema62_backup_cutover_and_paired_restore() {
     assert_eq!(financial_snapshot(&restored.pool).await, expected);
     assert_ineligible(&restored.pool, unknown.id, rejected.id).await;
     let restore_total_ms = restore_started.elapsed().as_millis();
-    drop((owner, restored_sharing, sharing));
     let report = json!({
         "status":"passed",
         "scope":"small synthetic data on development PostgreSQL; not production capacity certification",
         "schema_from":62,"schema_to":63,
         "source_database":database.name,"restore_database":restored.name,
         "fixture":{"historical_logs":5,"historical_receipts":1,"ingress_rows":3,
-          "spool_events":2,"unresolved_intents":1,"sharing_pending_before":2,"sharing_pending_after":1},
+          "spool_events":2,"unresolved_intents":1},
         "backup_ms":backup_ms,"backup_bytes":manifest.keys().map(|p|fs::metadata(backup.join(p)).unwrap().len()).sum::<u64>(),
         "upgrade_downtime_ms":upgrade_downtime_ms,"upgrade_budget_ms":600_000,
         "restore_total_ms":restore_total_ms,"restore_budget_ms":1_800_000,
         "cutover":cutover,"restored_cutover":restored_cutover,
         "checks":["no backfill debit","old claim and ack rejected","old migration registry rejected",
           "paired backup integrity","schema62 restore","exact financial replay","no duplicate debit on restart",
-          "unknown intent retained","sharing identity money and pending restored"],
+          "unknown intent retained"],
         "post_snapshot_external_dispatches":0,
         "postgres_version":sqlx::query_scalar::<_,String>("SHOW server_version").fetch_one(&database.pool).await.unwrap(),
         "source_commit":String::from_utf8(Command::new("git").args(["rev-parse","HEAD"]).output().unwrap().stdout).unwrap().trim(),

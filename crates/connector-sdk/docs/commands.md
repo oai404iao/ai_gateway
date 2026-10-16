@@ -238,6 +238,9 @@ For a provider-specific parser, declare the command and select:
 {"parser":"plugin","interface":"vendor.messages/v1"}
 ```
 
+The host accepts `parser=plugin` only when the manifest also declares
+`usage.parse/v1`; otherwise the protocol-3 descriptor is invalid.
+
 `interface` is a nonempty identifier of at most 64 ASCII bytes, beginning with
 a lowercase letter and containing lowercase letters, digits, `_`, `-`, `.`,
 or `/`. It identifies an upstream interface, not a filesystem path or URL.
@@ -383,7 +386,9 @@ original bytes without reserialization.
 
 The host rejects non-object JSON, changes to the selected top-level `model`,
 and any addition/removal/change of top-level `service_tier` (including adding
-`null` where the field was absent). These checks keep routing, Fast filtering,
+`null` where the field was absent or restoring a value removed by Fast filtering).
+The same protected-field checks apply to the Codex `attempt` output.
+These checks keep routing, Fast filtering,
 and billing bound to host decisions. Multipart Images edit uses the separate
 planning commands instead of sending image files to this command.
 

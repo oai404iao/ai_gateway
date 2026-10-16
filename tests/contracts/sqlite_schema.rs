@@ -179,7 +179,7 @@ async fn complete_baseline_and_guards_rollback_as_one_pending_batch() {
     assert!(!table_exists(&db, "users").await);
     assert!(!table_exists(&db, "request_metering_facts").await);
     assert!(!table_exists(&db, "_gateway_routing_assertions").await);
-    assert_eq!(db.install_schema().await.unwrap(), 11);
+    assert_eq!(db.install_schema().await.unwrap(), 12);
     db.close().await;
 }
 
@@ -727,16 +727,7 @@ async fn codex_projections_share_only_intended_state_and_keep_images_disabled() 
         0
     );
     assert_eq!(scalar::<String>(&db,&format!("SELECT connector_pool_id FROM codex_oauth_credentials WHERE channel_id='{CODEX_CHANNEL}'")).await,CODEX_GROUP);
-    execute(&db,&format!("UPDATE channel_groups SET updated_at=ag_now(),sharing_only=1 WHERE id='{CODEX_GROUP}';
-        UPDATE channels SET updated_at=ag_now(),name='Updated',billing_multiplier='1.25',supports_websocket=1 WHERE id='{CODEX_CHANNEL}';")).await.unwrap();
-    assert_eq!(
-        scalar::<i64>(
-            &db,
-            "SELECT count(*) FROM channel_groups WHERE sharing_only=1"
-        )
-        .await,
-        2
-    );
+    execute(&db,&format!("UPDATE channels SET updated_at=ag_now(),name='Updated',billing_multiplier='1.25',supports_websocket=1 WHERE id='{CODEX_CHANNEL}';")).await.unwrap();
     assert_eq!(
         scalar::<String>(
             &db,
@@ -762,37 +753,6 @@ async fn codex_projections_share_only_intended_state_and_keep_images_disabled() 
         .await,
         0
     );
-    db.close().await;
-}
-
-#[tokio::test]
-async fn sharing_binding_identity_and_seat_numbers_are_protected() {
-    let (_directory, db) = schema().await;
-    codex(&db).await;
-    execute(&db,&format!("INSERT INTO codex_sharing_groups(id,credential_id,provider_account_id,provider_user_id,
-        name,enabled,seats,primary_limit_amount,secondary_limit_amount,request_reservation_amount,
-        user_requests_per_minute,group_requests_per_minute,user_max_concurrent_requests,group_max_concurrent_requests)
-        VALUES ('{REQUEST}','{CODEX_CHANNEL}','account','provider-user','Car',1,'[null,null]','1','2','0.01',1,1,1,1);")).await.unwrap();
-    for sql in [
-        "UPDATE codex_sharing_groups SET updated_at=ag_now(),seats='[null]'".to_owned(),
-        "UPDATE codex_sharing_groups SET updated_at=ag_now(),provider_user_id='different'".into(),
-        "UPDATE codex_sharing_groups SET updated_at=ag_now(),primary_limit_amount='1000000000000'"
-            .into(),
-        format!(
-            "UPDATE codex_oauth_credentials SET updated_at=ag_now(),account_id='different' WHERE channel_id='{CODEX_CHANNEL}'"
-        ),
-        format!(
-            "UPDATE codex_oauth_credentials SET updated_at=ag_now(),deleted_at=ag_now() WHERE channel_id='{CODEX_CHANNEL}'"
-        ),
-    ] {
-        assert!(execute(&db, &sql).await.is_err(), "{sql}");
-    }
-    execute(
-        &db,
-        "UPDATE codex_sharing_groups SET updated_at=ag_now(),seats='[null,null,null]',enabled=0",
-    )
-    .await
-    .unwrap();
     db.close().await;
 }
 
@@ -930,7 +890,6 @@ async fn identity_audit_quota_catalog_and_leaderboard_constraints_are_live() {
                  '2026-01-01T00:05:00.000000Z',0,0,ag_now(),ag_now());
          INSERT INTO codex_quota_reset_events(id,credential_id,actor_user_id,requested_at,outcome,windows_reset,correlation_id)
              VALUES ('{REQUEST}','{CODEX_CHANNEL}','{USER}',ag_now(),'no_credit',0,'{REQUEST}');
-         INSERT INTO codex_sharing_ledger VALUES (1,'{REQUEST}');
          INSERT INTO spend_leaderboard_periods VALUES ('day','2026-01-01','2026-01-02',ag_now(),'1');
          INSERT INTO spend_leaderboard_entries VALUES ('day','2026-01-01','{USER}',1,1,1,1,'1');"
     )).await.unwrap();
@@ -946,7 +905,6 @@ async fn identity_audit_quota_catalog_and_leaderboard_constraints_are_live() {
         "UPDATE codex_quota_window_periods SET updated_at=ag_now(),ended_at='2025-01-01T00:00:00.000000Z',reset_reason='manual'",
         "UPDATE codex_quota_window_periods SET updated_at=ag_now(),last_used_percent=101",
         "UPDATE codex_quota_reset_events SET windows_reset=3",
-        "UPDATE codex_sharing_ledger SET singleton=0",
         "UPDATE spend_leaderboard_entries SET priced_request_count=2",
         "UPDATE spend_leaderboard_periods SET period_end='2026-01-01'",
         "UPDATE audit_logs SET action='changed'",

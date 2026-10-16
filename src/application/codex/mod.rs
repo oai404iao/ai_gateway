@@ -621,15 +621,7 @@ impl CodexConnectorService {
                 "Codex OAuth credential refresh failed"
             );
         }
-        let sharing_due = self
-            .runtime_config
-            .snapshot()
-            .sharing()
-            .is_protected(record.channel_id)
-            && record
-                .quota_checked_at
-                .is_none_or(|checked| Utc::now() - checked >= chrono::Duration::seconds(60));
-        if (quota_due(&record) || sharing_due)
+        if quota_due(&record)
             && let Err(error) = self.refresh_quota_system(record.channel_id).await
         {
             tracing::warn!(
@@ -937,14 +929,6 @@ impl CodexConnectorService {
                         .persist_codex_quota(channel_id, quota)
                         .await?;
                     self.reload_runtime().await?;
-                    if self
-                        .runtime_config
-                        .snapshot()
-                        .sharing()
-                        .is_protected(channel_id)
-                    {
-                        self.coordinator.reload().await?;
-                    }
                     return Ok(());
                 }
                 Err(CodexConnectorError::CodexBackendStatus(401))

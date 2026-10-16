@@ -81,8 +81,6 @@ pub(crate) enum CanonicalGraphError {
     DeletedCredential { credential_id: Uuid },
     #[error("canonical credential {credential_id} does not allow the bound access base URL")]
     CredentialScope { credential_id: Uuid },
-    #[error("canonical logical channel {channel_id} is sharing-only but does not use Codex")]
-    SharingOnlyRequiresCodex { channel_id: Uuid },
     #[error("canonical operation rule {rule_id} has no model routing profile binding")]
     MissingProfile { rule_id: Uuid },
     #[error("canonical operation rule {rule_id} references a missing model")]
@@ -319,11 +317,6 @@ fn validate_logical_credentials<'a>(
             None => None,
         };
         resolve_credential(access, credential, &channel.id)?;
-        if channel.sharing_only && access.connector_kind != ConnectorKind::CodexOauth {
-            return Err(CanonicalGraphError::SharingOnlyRequiresCodex {
-                channel_id: channel.id,
-            });
-        }
     }
     Ok(())
 }
@@ -506,7 +499,6 @@ fn build_groups(groups: &HashMap<Uuid, &RoutingGroupRecord>) -> Vec<ChannelGroup
             api_format: String::new(),
             connector_kind: String::new(),
             request_compression: String::new(),
-            sharing_only: false,
             enabled: group.enabled,
         })
         .collect()
@@ -733,7 +725,6 @@ mod tests {
             credential_id: credential_id.map(Uuid::from_u128),
             name: format!("channel-{id}"),
             enabled: true,
-            sharing_only: false,
             binding_revision: Uuid::from_u128(id + 700),
             created_at: at(),
             updated_at: at(),
@@ -1312,22 +1303,6 @@ mod tests {
             resolve_runtime(&records, base(), &[], &[]).unwrap_err(),
             CanonicalGraphError::MissingProfile {
                 rule_id: Uuid::from_u128(200)
-            }
-        );
-    }
-
-    #[test]
-    fn sharing_only_channels_reject_non_codex_capabilities() {
-        let mut records = topology(vec![capability(
-            100,
-            3,
-            settings(ApiOperation::Responses, vec![CapabilityTransport::HttpSse]),
-        )]);
-        records.logical_channels[0].sharing_only = true;
-        assert_eq!(
-            resolve_runtime(&records, base(), &[], &[]).unwrap_err(),
-            CanonicalGraphError::SharingOnlyRequiresCodex {
-                channel_id: Uuid::from_u128(3)
             }
         );
     }

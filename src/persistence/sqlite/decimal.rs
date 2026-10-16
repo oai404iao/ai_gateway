@@ -19,7 +19,6 @@ pub struct SqliteNumeric<const PRECISION: u32, const SCALE: u32>(pub Decimal);
 
 pub type SqliteAmount = SqliteNumeric<24, 8>;
 pub type SqliteUnitPrice = SqliteNumeric<24, 12>;
-pub type SqliteSharingAmount = SqliteNumeric<20, 8>;
 pub type SqliteTokenRate = SqliteNumeric<14, 4>;
 
 pub(super) fn fits_precision(value: Decimal, precision: u32, scale: u32) -> bool {

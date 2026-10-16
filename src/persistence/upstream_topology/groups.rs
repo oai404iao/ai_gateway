@@ -348,7 +348,6 @@ mod tests {
             name: format!("channel-{id}"),
             enabled: true,
             binding_revision: Uuid::from_u128(id + 900),
-            sharing_only: false,
             created_at: at(),
             updated_at: at(),
             deleted_at: None,
@@ -408,7 +407,7 @@ mod tests {
     }
 
     #[test]
-    fn group_organization_allows_mixed_connectors_without_changing_channel_policy() {
+    fn group_organization_allows_mixed_connectors_without_changing_channels() {
         let id = Uuid::from_u128(1);
         let mut topology = UpstreamTopologyRecords {
             routing_groups: vec![group(1, "group")],
@@ -417,7 +416,6 @@ mod tests {
             ..Default::default()
         };
 
-        topology.logical_channels[0].sharing_only = true;
         assert!(validate_replacement(&topology, id, &input("group"), Some(at())).is_ok());
 
         topology
@@ -425,8 +423,6 @@ mod tests {
             .push(access(4, ConnectorKind::OpenAiCompatible));
         topology.logical_channels.push(channel(5, 1, 4));
         assert!(validate_replacement(&topology, id, &input("group"), Some(at())).is_ok());
-        assert!(topology.logical_channels[0].sharing_only);
-        assert!(!topology.logical_channels[1].sharing_only);
     }
 
     #[test]

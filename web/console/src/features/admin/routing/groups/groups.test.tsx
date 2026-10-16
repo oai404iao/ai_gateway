@@ -22,7 +22,7 @@ function renderAt(path: string) {
 }
 
 describe("routing groups", () => {
-  it("lists canonical groups with their sharing switch", async () => {
+  it("lists canonical groups", async () => {
     renderAt("/admin/routing/groups");
     expect(await screen.findByText("Primary group")).toBeInTheDocument();
   });

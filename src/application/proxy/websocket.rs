@@ -577,18 +577,9 @@ impl ResponsesWebSocketSession {
                         self.release_pinned(pinned.take());
                         return reject_previous_response_not_found(client, &mut completion).await;
                     }
-                    if connector_affinity_hit
-                        || snapshot
-                            .sharing()
-                            .for_channel(current_channel.id())
-                            .is_some()
-                    {
+                    if connector_affinity_hit {
                         completion.set_preserve_affinity_on_failure(true);
-                        let error = if connector_affinity_hit {
-                            ProxyError::sticky_connector_unavailable(error)
-                        } else {
-                            ProxyError::connector_unavailable(error)
-                        };
+                        let error = ProxyError::sticky_connector_unavailable(error);
                         return reject_websocket_unavailable(
                             client,
                             &mut completion,
@@ -811,15 +802,6 @@ impl ResponsesWebSocketSession {
                 )
                 .await;
             };
-            if let Err(error) = completion
-                .admit_sharing(&self.proxy.sharing, &snapshot)
-                .await
-            {
-                completion.set_preserve_affinity_on_failure(true);
-                completion.finish_with_proxy_error(RequestOutcome::ClientRequestError, &error);
-                send_proxy_error(client, error).await;
-                return SessionAction::Close;
-            }
             active.reusable = false;
             completion.set_upstream_status(200);
             let request = match UpstreamUtf8Bytes::try_from(prepared.body) {

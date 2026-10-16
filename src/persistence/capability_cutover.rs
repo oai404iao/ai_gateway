@@ -219,7 +219,7 @@ impl CapabilityCutoverIndex {
         Ok(output)
     }
 
-    /// Rewrites target grants only. User/key status, sharing seats, format/transport
+    /// Rewrites target grants only. User/key status, format/transport
     /// permissions and admission remain independent runtime checks.
     ///
     /// `formats=None` is for a Policy's target ceiling, not an API key with no formats.

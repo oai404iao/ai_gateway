@@ -104,12 +104,6 @@ bytes. Install/discovery jobs are polled and their IDs remain in the page URL
 so progress can be reopened after refresh. Version and settings updates use
 server-issued ETags; conflicts reload the current resource.
 
-`/codex-sharing` and `/admin/codex-sharing/:id` expose private member usage and
-ordinary-channel coexistence. The Codex channel-group editor also exposes
-pool-wide sharing-only access without enabling Images. Sharing pages provide
-administrator fixed-seat settings. See the [sharing guide](../../docs/user/codex-sharing.md)
-for money windows, required runtime enablement, and single-instance recovery.
-
 The TypeScript types consumed across the app are generated from
 `docs/openapi/console-v1.yaml`. Never hand-edit
 `src/api/generated/console-v1.d.ts`; change the spec, run `pnpm generate:api`,

@@ -90,10 +90,9 @@ test.describe("canonical routing topology", () => {
     const request = await requestPromise;
     expect(request.headers()["if-match"]).toBeTruthy();
     expect(request.postDataJSON().credential_id).toBeNull();
-    expect(request.postDataJSON().sharing_only).toBe(false);
   });
 
-  test("unified credentials and channel sharing fit the desktop viewport", async ({ page }) => {
+  test("unified credentials fit the desktop viewport", async ({ page }) => {
     await prepare(page);
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.getByRole("link", { name: "Upstream credentials" }).click();
@@ -101,11 +100,6 @@ test.describe("canonical routing topology", () => {
     await expect(page.getByText("Personal Plus", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Connect account" })).toBeEnabled();
     await expect(page.getByRole("button", { name: "Back to groups" })).toHaveCount(0);
-    await expect.poll(() => page.evaluate(() =>
-      document.documentElement.scrollWidth <= innerWidth,
-    )).toBe(true);
-    await page.goto("/admin/codex-sharing/00000000-0000-0000-0000-000000000801");
-    await expect(page.getByRole("combobox", { name: "Logical channel" })).toBeDisabled();
     await expect.poll(() => page.evaluate(() =>
       document.documentElement.scrollWidth <= innerWidth,
     )).toBe(true);

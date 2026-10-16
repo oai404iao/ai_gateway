@@ -49,7 +49,7 @@ TMPDIR="$PERSISTENCE_REHEARSAL_DIRECTORY" \
 | 路径 | 内容 |
 | --- | --- |
 | `backup/database.dump` | schema 62 的 PG custom-format 完整合成库备份 |
-| `backup/spool/` | 同一停写点的 events、checkpoint、admissions、完整拼车 ledger/WAL |
+| `backup/spool/` | 同一停写点的 events、checkpoint、admissions |
 | `backup-manifest.json` | 备份内每个文件的相对路径与 SHA-256 |
 | `source-spool/`、`restored-spool/` | 分别升级原库、恢复副本时使用的本地证据 |
 | `report.json` | 结果、规模、时限、版本/脏工作区标记、库名、空间和 WAL 测量 |
@@ -66,21 +66,20 @@ PG 工具以容器内 30 分钟 watchdog 限时，不依赖工具可能自行重
 旧库包含 5 条日志：已 billed、可计价未 billed、成功但费用未知、失败策略归零、
 无费用拒绝。ingress 有 3 条记录，其中 2 条重复已 billed UUID；spool 有 2 个终态，
 其中一个又重复已 billed UUID，另有一个只写 intent 的未决请求。
-拼车包含已使用金额、待恢复终态预占和无终态预占。
 
 演练顺序：
 
-1. 完成夹具写入并停止写者，flush 拼车 WAL。PG dump 与整个 spool 树在同一静止状态复制，
+1. 完成夹具写入并停止写者。PG dump 与整个 spool 树在同一静止状态复制，
    生成成对 SHA-256 清单。不能把活跃写入时的顺序复制当作一致快照。
 2. 通过生产 `run_migrations` 执行 0063，确认回填不更新余额/Key 额度，
    已 billed 的 UUID 和原时间一致。旧 claim、提前 ack 和旧 migration registry 必须失败。
 3. 启动真实 durable worker 恢复 ingress/spool；仅对三个新增的已知费用各扣一次，
    失败写零额回执。明确检查 unknown 的费用仍为 NULL、rejected 不适用，两者均无回执。
 4. 校验完整备份清单，在第二个全新库以 `pg_restore --single-transaction --exit-on-error`
-   恢复 schema 62；复制配套 spool，核对旧账户、拼车账本身份、金额、预占。
+   恢复 schema 62；复制配套 spool，核对旧账户与金额。
 5. 再迁移并重放。逐 UUID 比较全部财务字段、回执金额/资格、所有账户余额/Key 额度，
    不是只比较总金额。新产生回执的时间可不同，历史回执时间必须相同。
-6. 拼车从计量事实恢复已有终态的费用，仅保留无终态预占；未决 intent 文件仍存在。
+6. 未决 intent 文件仍存在。
    再次重启 worker，仍不得重复扣款，unknown/rejected 仍不能被偷偷结清。
 
 配套自动测试（不需要备份工具）：
@@ -90,13 +89,13 @@ cargo test --locked --test control_plane_integration metering_facts
 ```
 
 其中 migration 等待在途旧认领、异常历史回执导致整个迁移回滚、事实/ready 原子性、
-日志投影故障下结算/拼车恢复等故障测试，见[独立计量事实](independent-metering.md)。
+日志投影故障下结算等故障测试，见[独立计量事实](independent-metering.md)。
 完整门禁仍包括 Rust format/clippy/workspace tests、系统 E2E 与文档检查。
 
 ## 测量口径与发布判定
 
 - 升级离线计时：静止后的备份开始，直到迁移、首次重放与账户核对完成。
-- 恢复总计时：检查备份、创建新库、restore、复制证据、账本恢复、再迁移与两次重放核对。
+- 恢复总计时：检查备份、创建新库、restore、复制证据、再迁移与两次重放核对。
 - `database_bytes_before/after` 是 PG 逻辑库大小，不是文件系统峰值、容器卷或临时文件峰值。
 - `cluster_wal_bytes_upper_bound` 来自集群级 WAL insert LSN 差值，可能包括其他开发库的写入，
   不能称为本次迁移的精确 WAL；不估计 PITR 归档容量。

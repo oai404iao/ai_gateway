@@ -36,7 +36,7 @@ async fn repository() -> (
     SqliteControlPlaneRepository,
 ) {
     let (directory, database) = database().await;
-    assert_eq!(database.install_schema().await.unwrap(), 11);
+    assert_eq!(database.install_schema().await.unwrap(), 12);
     let database = Arc::new(database);
     let repository = SqliteControlPlaneRepository::new(Arc::clone(&database));
     (directory, database, repository)
@@ -197,7 +197,7 @@ fn settings() -> SystemSettingsInput {
 }
 
 #[tokio::test]
-async fn runtime_snapshot_is_coherent_and_includes_codex_sharing_state() {
+async fn runtime_snapshot_is_coherent_and_includes_codex_state() {
     let (_directory, database, repository) = repository().await;
     seed_admin_and_user(&database).await;
     seed_routing(&database).await;
@@ -232,8 +232,6 @@ async fn runtime_snapshot_is_coherent_and_includes_codex_sharing_state() {
         control_plane.templates[0].document["api_format"],
         "open_ai_chat_completions"
     );
-    assert!(records.sharing.is_empty());
-    assert!(records.sharing_only_channels.is_empty());
 
     let compiled = compile_runtime_config(records).unwrap();
     assert_eq!(compiled.channels().count(), 1);
@@ -361,10 +359,12 @@ async fn console_reads_expose_lists_details_audit_and_self_service_options() {
     assert!(repository.own_api_key(USER, KEY).await.unwrap().is_some());
 
     // With no default policy the user has no selectable targets at all.
-    assert!(matches!(
-        repository.own_api_key_options(USER).await.err(),
-        Some(RepositoryError::DefaultApiKeyPolicyRequired)
-    ));
+    let options = repository.own_api_key_options(USER).await.unwrap();
+    assert!(options.policy_id.is_none());
+    assert!(options.policy_name.is_none());
+    assert!(!options.policy_enabled);
+    assert!(options.groups.is_empty());
+    assert!(options.channels.is_empty());
 
     assert_eq!(
         repository.model_source_ids().await.unwrap(),
@@ -720,6 +720,25 @@ async fn self_service_and_admin_writes_enforce_versions_and_policies() {
     assert_eq!(options.groups.len(), 1);
     assert_eq!(options.groups[0].api_formats, ["open_ai_chat_completions"]);
     assert_eq!(options.channels.len(), 1);
+
+    execute(
+        &database,
+        "UPDATE api_key_policies SET enabled=0,updated_at=ag_now()
+         WHERE id='40200000-0000-0000-0000-000000000471'",
+    )
+    .await;
+    let disabled_options = repository.own_api_key_options(USER).await.unwrap();
+    assert_eq!(disabled_options.policy_id, options.policy_id);
+    assert_eq!(disabled_options.policy_name, options.policy_name);
+    assert!(!disabled_options.policy_enabled);
+    assert!(disabled_options.groups.is_empty());
+    assert!(disabled_options.channels.is_empty());
+    execute(
+        &database,
+        "UPDATE api_key_policies SET enabled=1,updated_at=ag_now()
+         WHERE id='40200000-0000-0000-0000-000000000471'",
+    )
+    .await;
 
     let mut change = repository
         .prepare_own_api_key_create(
@@ -1335,282 +1354,4 @@ async fn invalid_management_inputs_fail_before_writing() {
         .await
         .is_some_and(|error| error.contains("routing_groups_name_check"))
     );
-}
-
-async fn seed_codex_credential(
-    repository: &SqliteControlPlaneRepository,
-    responses_group: Uuid,
-    label: &str,
-    account_id: &str,
-    provider_user_id: &str,
-) -> (Uuid, Uuid) {
-    repository
-        .prepare_mutation(
-            ADMIN,
-            ControlPlaneMutation::SaveRoutingGroup {
-                id: responses_group,
-                expected: None,
-                input: ai_gateway::persistence::RoutingGroupInput {
-                    name: format!("{label} car"),
-                    enabled: true,
-                },
-            },
-        )
-        .await
-        .unwrap()
-        .commit()
-        .await
-        .unwrap();
-    let credential = repository
-        .prepare_codex_credential_create(
-            ADMIN,
-            ai_gateway::persistence::CodexCredentialCreate {
-                label: label.into(),
-                enabled: true,
-                proxy_id: None,
-                quota_threshold_percent: 95,
-                base_url: "https://codex.invalid".into(),
-                email: None,
-                account_id: Some(account_id.into()),
-                user_id: Some(provider_user_id.into()),
-                plan_type: None,
-                is_fedramp: false,
-                id_token: "id".into(),
-                access_token: "access".into(),
-                refresh_token: "refresh".into(),
-                access_token_expires_at: None,
-                available_models: vec!["gpt-test".into()],
-                quota: None,
-            },
-            None,
-        )
-        .await
-        .unwrap()
-        .commit()
-        .await
-        .unwrap()
-        .0[0]
-        .id;
-    let access = repository
-        .prepare_mutation(
-            ADMIN,
-            ControlPlaneMutation::CreateUpstreamAccess(
-                serde_json::from_value(json!({
-                    "name":format!("{label} access"),"connector_kind":"codex",
-                    "base_url":"https://codex.invalid","enabled":true
-                }))
-                .unwrap(),
-            ),
-        )
-        .await
-        .unwrap()
-        .commit()
-        .await
-        .unwrap()
-        .0[0]
-        .id;
-    let channel = Uuid::new_v4();
-    repository
-        .prepare_mutation(
-            ADMIN,
-            ControlPlaneMutation::SaveLogicalChannel {
-                id: channel,
-                expected: None,
-                input: serde_json::from_value(json!({
-                    "group_id":responses_group,"access_id":access,"credential_id":credential,
-                    "name":label,"enabled":true,"sharing_only":false
-                }))
-                .unwrap(),
-            },
-        )
-        .await
-        .unwrap()
-        .commit()
-        .await
-        .unwrap();
-    for operation in [
-        "responses",
-        "responses-ws",
-        "web_search",
-        "images_generation",
-        "images_edit",
-    ] {
-        repository.prepare_mutation(ADMIN, ControlPlaneMutation::SaveChannelCapability {
-            id:Uuid::new_v4(),expected:None,
-            input:serde_json::from_value(json!({
-                "channel_id":channel,
-                "settings":{"operation":operation,"enabled":true,"available_models":["gpt-test"],
-                    "request_compression":"default","test_model":null,"test_pricing_model_id":null,
-                    "auto_disable_allowed":false},
-                "status_statistics_enabled":false,"config_template_id":null,
-                "override_document":{},"billing_multiplier":"1"
-            })).unwrap()
-        }).await.unwrap().commit().await.unwrap();
-    }
-    (credential, channel)
-}
-
-async fn channel_capabilities(database: &SqliteDatabase, channel: Uuid) -> Vec<Uuid> {
-    let mut reader = database.acquire_read().await.unwrap();
-    sqlx::query_scalar::<_, SqliteUuid>(
-        "SELECT cap.id FROM channel_capabilities cap JOIN upstream_channels channel ON channel.id=cap.channel_id
-         WHERE channel.id=? AND cap.deleted_at IS NULL AND channel.deleted_at IS NULL",
-    )
-    .bind(SqliteUuid(channel))
-    .fetch_all(&mut *reader)
-    .await
-    .unwrap()
-    .into_iter()
-    .map(|value| value.0)
-    .collect()
-}
-
-fn sorted(mut values: Vec<Uuid>) -> Vec<Uuid> {
-    values.sort_unstable();
-    values.dedup();
-    values
-}
-
-// Eligibility is channel-specific, while quota and alias protection are account-wide.
-#[tokio::test]
-async fn sharing_selects_one_channel_and_protects_siblings_reusing_its_credential() {
-    let (_directory, database, repository) = repository().await;
-    seed_admin_and_user(&database).await;
-    repository.ensure_system_settings(settings()).await.unwrap();
-
-    let responses_group = Uuid::from_u128(0x4b2);
-    let sharing_group = Uuid::from_u128(0x4b3);
-    let primary_window = Uuid::from_u128(0x4b6);
-    let secondary_window = Uuid::from_u128(0x4b7);
-    let alias_group = Uuid::from_u128(0x4c2);
-    let outsider = Uuid::from_u128(0x4c3);
-
-    let (credential, channel) = seed_codex_credential(
-        &repository,
-        responses_group,
-        "Canonical",
-        "shared-account",
-        "shared-user",
-    )
-    .await;
-    let (identity_alias, alias_channel) = seed_codex_credential(
-        &repository,
-        alias_group,
-        "Alias",
-        "shared-account",
-        "shared-user",
-    )
-    .await;
-    assert_eq!(identity_alias, credential);
-    execute(
-        &database,
-        &format!(
-            "UPDATE codex_oauth_credentials SET updated_at=ag_now(),\
-                 primary_used_percent=10,primary_window_seconds=300,\
-                 primary_reset_at='2099-01-01T00:00:00.000000Z',\
-                 secondary_used_percent=5,secondary_window_seconds=3600,\
-                 secondary_reset_at='2099-01-01T00:00:00.000005Z',\
-                 quota_checked_at='2099-01-01T00:00:00.000000Z' \
-             WHERE channel_id='{credential}';
-             INSERT INTO codex_sharing_groups
-             (id,credential_id,channel_id,provider_account_id,provider_user_id,name,enabled,seats,
-              primary_limit_amount,secondary_limit_amount,request_reservation_amount,
-              user_requests_per_minute,group_requests_per_minute,user_max_concurrent_requests,
-              group_max_concurrent_requests)
-             VALUES ('{sharing_group}','{credential}','{channel}','shared-account','shared-user','Car',1,
-                     '[\"{ADMIN}\",\"{USER}\"]','10','10','0.01',10,10,1,1);
-             INSERT INTO codex_quota_window_periods
-             (id,credential_id,window_kind,window_seconds,started_at,scheduled_reset_at,
-              initial_used_percent,last_used_percent,first_observed_at,last_observed_at)
-             VALUES ('{primary_window}','{credential}','primary',300,
-                     '2098-12-31T00:00:00.000000Z','2099-01-01T00:00:00.000000Z',10,10,
-                     '2098-12-31T00:00:00.000000Z','2099-01-01T00:00:00.000000Z');
-             INSERT INTO codex_quota_window_periods
-             (id,credential_id,window_kind,window_seconds,started_at,scheduled_reset_at,
-              initial_used_percent,last_used_percent,first_observed_at,last_observed_at)
-             VALUES ('{secondary_window}','{credential}','secondary',3600,
-                     '2098-12-31T00:00:00.000000Z','2099-01-01T00:00:00.000005Z',5,5,
-                     '2098-12-31T00:00:00.000000Z','2099-01-01T00:00:00.000000Z');"
-        ),
-    )
-    .await;
-
-    let records = repository.load_runtime().await.unwrap();
-    assert!(
-        records.sharing_only_channels.is_empty(),
-        "no channel is sharing-only"
-    );
-    assert_eq!(records.sharing.len(), 1);
-    let record = &records.sharing[0];
-    assert_eq!(record.group.id, sharing_group);
-    assert_eq!(record.group.bound_credential_id, credential);
-
-    let canonical_capabilities = channel_capabilities(&database, channel).await;
-    let alias_capabilities = channel_capabilities(&database, alias_channel).await;
-    assert_eq!(canonical_capabilities.len(), 5);
-    assert_eq!(alias_capabilities.len(), 5);
-    assert_eq!(
-        sorted(record.channel_ids.clone()),
-        sorted(canonical_capabilities.clone()),
-        "only the selected logical channel's capabilities are eligible"
-    );
-    assert_eq!(
-        sorted(record.protected_channel_ids.clone()),
-        sorted(
-            canonical_capabilities
-                .iter()
-                .chain(&alias_capabilities)
-                .copied()
-                .collect()
-        ),
-        "protected identities cover both the canonical credential and the provider alias"
-    );
-    assert!(
-        !record.protected_channel_ids.contains(&sharing_group),
-        "the sharing group id is not a channel"
-    );
-
-    let mut windows = record.windows.clone();
-    windows.sort_by_key(|window| window.window_kind.clone());
-    assert_eq!(windows.len(), 2);
-    assert!(
-        windows
-            .iter()
-            .all(|window| window.credential_id == credential),
-        "windows are keyed by credential"
-    );
-    assert_eq!(windows[0].window_kind, "primary");
-    assert_eq!(windows[0].id, primary_window);
-    assert_eq!(windows[0].used_percent, 10);
-    assert_eq!(windows[1].window_kind, "secondary");
-    assert_eq!(windows[1].id, secondary_window);
-    assert_eq!(windows[1].used_percent, 5);
-
-    let compiled = compile_runtime_config(records).unwrap();
-    let sharing = compiled.sharing();
-    assert_eq!(
-        sharing.for_user(ADMIN).map(|group| group.id),
-        Some(sharing_group)
-    );
-    assert!(sharing.for_user(outsider).is_none());
-    for channel in &canonical_capabilities {
-        assert_eq!(
-            sharing.for_channel(*channel).map(|group| group.id),
-            Some(sharing_group)
-        );
-        assert!(sharing.permits(ADMIN, *channel));
-    }
-    for channel in canonical_capabilities.iter().chain(&alias_capabilities) {
-        assert!(
-            !sharing.permits(outsider, *channel),
-            "an unseated user is denied {channel}"
-        );
-    }
-    for channel in alias_capabilities {
-        assert!(sharing.is_protected(channel));
-        assert!(
-            !sharing.permits(ADMIN, channel),
-            "an identity alias is protected but not canonical"
-        );
-    }
 }

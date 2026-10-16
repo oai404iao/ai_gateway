@@ -71,7 +71,7 @@ impl Backend {
                 .install_schema()
                 .await
                 .expect("infrastructure: SQLite schema must install"),
-            11
+            12
         );
         Self::Sqlite {
             directory,
@@ -417,7 +417,6 @@ async fn world(repositories: &Repositories) -> World {
                 access_id: access,
                 credential_id: None,
                 name: "Parity Channel".into(),
-                sharing_only: false,
                 enabled: true,
             },
         },
@@ -1082,7 +1081,6 @@ async fn self_service_contract(repositories: Repositories) {
                 access_id: world.access,
                 credential_id: None,
                 name: "Outside channel".into(),
-                sharing_only: false,
                 enabled: true,
             },
         },
@@ -1527,7 +1525,6 @@ fn logical_input(channel: &LogicalChannelRecord) -> ai_gateway::persistence::Log
         access_id: channel.access_id,
         credential_id: channel.credential_id,
         name: channel.name.clone(),
-        sharing_only: channel.sharing_only,
         enabled: channel.enabled,
     }
 }
@@ -2797,7 +2794,6 @@ async fn reusable_upstream_identity_contract(repositories: Repositories) {
                     access_id: world.access,
                     credential_id: Some(id),
                     name: "second identity reference".into(),
-                    sharing_only: false,
                     enabled: false,
                 },
             },
@@ -4006,7 +4002,6 @@ async fn authorization_and_etag_rollback_contract(repositories: Repositories) {
                     group_id: world.group,
                     access_id: world.access,
                     name: "Rollback Channel 2".into(),
-                    sharing_only: false,
                     enabled: true,
                     credential_id: None,
                 },
@@ -4423,7 +4418,6 @@ async fn authorization_and_etag_rollback_contract(repositories: Repositories) {
                 group_id: world.group,
                 access_id: world.access,
                 name: "Rollback Extra Channel".into(),
-                sharing_only: false,
                 enabled: true,
                 credential_id: None,
             },
@@ -4997,7 +4991,6 @@ async fn missing_and_soft_deleted_resource_contract(repositories: Repositories) 
                 group_id: world.group,
                 access_id: world.access,
                 name: "Probe Channel".into(),
-                sharing_only: false,
                 enabled: true,
                 credential_id: None,
             },
@@ -5189,7 +5182,6 @@ async fn missing_and_soft_deleted_resource_contract(repositories: Repositories) 
                 access_id: world.access,
                 credential_id: None,
                 name: "Probe Auto Channel".into(),
-                sharing_only: false,
                 enabled: true,
             },
         },
@@ -5315,7 +5307,6 @@ async fn capability_validation_contract(repositories: Repositories) {
                 access_id: world.access,
                 credential_id: None,
                 name: "Probe channel".into(),
-                sharing_only: false,
                 enabled: true,
             },
         },

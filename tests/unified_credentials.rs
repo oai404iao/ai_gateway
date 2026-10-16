@@ -1,4 +1,4 @@
-//! Independent credential ownership and channel-bound sharing contracts.
+//! Independent credential ownership and reusable channel contracts.
 
 #[cfg(all(feature = "sqlite-backend", target_os = "linux"))]
 mod sqlite {
@@ -96,7 +96,6 @@ mod sqlite {
                 .unwrap()
                 .is_empty()
         );
-        assert!(repository.sharing_groups(None).await.unwrap().is_empty());
         let mut connection = database.acquire_read().await.unwrap();
         let pools: i64 =
             sqlx::query_scalar("SELECT count(*) FROM sqlite_schema WHERE name='connector_pools'")
@@ -115,7 +114,7 @@ mod sqlite {
     }
 
     #[tokio::test]
-    async fn credentials_are_independent_reusable_and_sharing_selects_one_channel() {
+    async fn credentials_are_independent_and_reusable_across_channels() {
         let (_directory, _database, repository) = repository().await;
         let mut change = repository
             .prepare_codex_credential_create(ADMIN, credential(), None)
@@ -169,7 +168,7 @@ mod sqlite {
                     expected: None,
                     input: serde_json::from_value(json!({
                         "group_id":group,"access_id":access.id,"credential_id":identity.id,
-                        "name":format!("Channel {index}"),"enabled":true,"sharing_only":false
+                        "name":format!("Channel {index}"),"enabled":true
                     }))
                     .unwrap(),
                 },
@@ -209,30 +208,6 @@ mod sqlite {
                 .await
                 .is_err()
         );
-        let car = Uuid::new_v4();
-        let policy = json!({
-            "channel_id":channels[0].0,"name":"Channel car","enabled":true,"seats":[ADMIN],
-            "primary_limit_amount":"20","secondary_limit_amount":"100","request_reservation_amount":"0.1",
-            "user_requests_per_minute":10,"group_requests_per_minute":20,
-            "user_max_concurrent_requests":1,"group_max_concurrent_requests":2
-        });
-        mutate(
-            &repository,
-            ControlPlaneMutation::SaveCodexSharing {
-                id: car,
-                expected_updated_at: None,
-                input: serde_json::from_value(policy).unwrap(),
-            },
-        )
-        .await;
-        let records = repository.load_runtime().await.unwrap();
-        let sharing = &records.sharing;
-        assert_eq!(sharing.len(), 1);
-        assert_eq!(sharing[0].channel_ids, [channels[0].1]);
-        assert!(sharing[0].protected_channel_ids.contains(&channels[1].1));
-        let options = repository.own_api_key_options(ADMIN).await.unwrap();
-        assert_eq!(options.sharing_channels.len(), 1);
-        assert_eq!(options.sharing_channels[0].channel_id, channels[0].0);
         let mut change = repository
             .prepare_codex_credential_create(ADMIN, credential(), None)
             .await

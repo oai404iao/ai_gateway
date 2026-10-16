@@ -15,16 +15,13 @@
 //! Prepared-change ordering and mutation results match
 //! the PostgreSQL repository's neutral contracts.
 
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::{collections::HashSet, sync::Arc};
 
 use chrono::{DateTime, Utc};
 use regex::Regex;
 use rust_decimal::{Decimal, RoundingStrategy};
 use serde_json::{Value, json};
-use sqlx::{Connection, FromRow, Sqlite, SqliteConnection, Transaction, pool::PoolConnection};
+use sqlx::{Connection, FromRow, Sqlite, Transaction, pool::PoolConnection};
 use uuid::Uuid;
 
 use crate::{
@@ -39,17 +36,16 @@ use crate::{
         ProxyCreateInput, ProxyInput, ProxyRecord, RepositoryError, RuntimeConfigRecords,
         SYSTEM_PROBE_API_KEY_ID, SYSTEM_PROBE_API_KEY_NAME, SYSTEM_PROBE_DISPLAY_NAME,
         SYSTEM_PROBE_USER_ID, SelfApiKeyCreate, SelfApiKeyCurrent, SelfApiKeyOptions,
-        SelfApiKeyPolicy, SelfApiKeySharingAccess, SelfApiKeySharingChannelOption,
-        SelfApiKeyUpdate, SystemProbeIdentity, SystemSettingsInput, SystemSettingsRecord,
-        SystemSettingsView, UserBatchUpdateInput, UserGroupInput, UserInput, UserSettingsInput,
-        UserSettingsView, UserUpdateInput, deleted_api_key_secret, generate_api_key_secret,
-        system_settings_audit_value, system_settings_view, validate_system_settings_input,
+        SelfApiKeyPolicy, SelfApiKeyUpdate, SystemProbeIdentity, SystemSettingsInput,
+        SystemSettingsRecord, SystemSettingsView, UserBatchUpdateInput, UserGroupInput, UserInput,
+        UserSettingsInput, UserSettingsView, UserUpdateInput, deleted_api_key_secret,
+        generate_api_key_secret, system_settings_audit_value, system_settings_view,
+        validate_system_settings_input,
     },
 };
 
 use super::{
-    SqliteAmount, SqliteDatabase, SqliteOpenError, SqliteSharingAmount, SqliteTimestamp,
-    SqliteUnitPrice, SqliteUuid,
+    SqliteAmount, SqliteDatabase, SqliteOpenError, SqliteTimestamp, SqliteUnitPrice, SqliteUuid,
 };
 
 /// SQLite implementation of the ordinary control-plane repository. The parent
@@ -138,8 +134,7 @@ impl SqliteControlPlaneRepository {
         Ok(records)
     }
 
-    /// Loads every record needed to build one coherent data-plane snapshot,
-    /// including Codex sharing groups and sharing-only channel protections.
+    /// Loads every record needed to build one coherent data-plane snapshot.
     pub async fn load_runtime(&self) -> Result<RuntimeConfigRecords, RepositoryError> {
         let mut connection = self.read().await?;
         let mut transaction = connection.begin().await?;
@@ -153,14 +148,10 @@ impl SqliteControlPlaneRepository {
     ) -> Result<RuntimeConfigRecords, RepositoryError> {
         let control_plane = Self::load_transaction(transaction).await?;
         let system_settings = Self::load_system_settings_transaction(transaction).await?;
-        let sharing = load_sharing_transaction(&mut *transaction).await?;
-        let sharing_only_channels = load_sharing_only_channels(&mut *transaction).await?;
         Ok(RuntimeConfigRecords {
             plugin_records: crate::persistence::plugins::sqlite::load(transaction).await?,
             control_plane,
             system_settings,
-            sharing,
-            sharing_only_channels,
             connector_ids: sqlx::query_scalar(
                 "SELECT connector_kind FROM upstream_accesses WHERE deleted_at IS NULL
                  UNION SELECT connector_kind FROM upstream_credentials WHERE deleted_at IS NULL",
@@ -202,10 +193,6 @@ fn normalize_numeric(value: Decimal, scale: u32) -> Decimal {
 
 fn amount_24_8(value: Decimal) -> Result<SqliteAmount, RepositoryError> {
     SqliteAmount::new(normalize_numeric(value, 8)).map_err(|_| RepositoryError::Validation)
-}
-
-fn amount_20_8(value: Decimal) -> Result<SqliteSharingAmount, RepositoryError> {
-    SqliteSharingAmount::new(normalize_numeric(value, 8)).map_err(|_| RepositoryError::Validation)
 }
 
 fn amount_24_12(value: Decimal) -> Result<SqliteUnitPrice, RepositoryError> {
@@ -308,228 +295,6 @@ impl SystemSettingsRow {
             updated_at: self.updated_at.0,
         })
     }
-}
-
-/// Sharing-only channels protect every recognizable account alias as well.
-/// No token or identity material is returned.
-async fn load_sharing_only_channels(
-    connection: &mut SqliteConnection,
-) -> Result<Vec<Uuid>, RepositoryError> {
-    let rows = sqlx::query_as::<_, ChannelIdRow>(
-        "WITH restricted AS ( \
-             SELECT DISTINCT channel.credential_id AS credential_id, \
-                    identity.user_id AS user_id,COALESCE(identity.account_id,'') AS account_id \
-             FROM upstream_channels AS channel \
-             JOIN codex_oauth_credentials AS identity ON identity.channel_id=channel.credential_id \
-             WHERE channel.sharing_only AND channel.deleted_at IS NULL AND channel.credential_id IS NOT NULL \
-               AND identity.deleted_at IS NULL), \
-         protected AS ( \
-             SELECT credential_id FROM restricted \
-             UNION \
-             SELECT alias.channel_id FROM restricted AS source \
-             JOIN codex_oauth_credentials AS alias ON alias.user_id=source.user_id \
-               AND COALESCE(alias.account_id,'')=source.account_id \
-             WHERE source.user_id IS NOT NULL AND alias.deleted_at IS NULL) \
-         SELECT DISTINCT capability.id AS channel_id \
-         FROM channel_capabilities AS capability \
-         JOIN upstream_channels AS channel ON channel.id=capability.channel_id \
-         WHERE channel.deleted_at IS NULL AND capability.deleted_at IS NULL \
-           AND channel.credential_id IN (SELECT credential_id FROM protected)",
-    )
-    .fetch_all(&mut *connection)
-    .await?;
-    Ok(rows.into_iter().map(|row| row.channel_id.0).collect())
-}
-
-#[derive(FromRow)]
-struct ChannelIdRow {
-    channel_id: SqliteUuid,
-}
-
-#[derive(FromRow)]
-struct SharingGroupRow {
-    id: SqliteUuid,
-    credential_id: SqliteUuid,
-    channel_id: SqliteUuid,
-    provider_account_id: String,
-    provider_user_id: String,
-    name: String,
-    enabled: bool,
-    seats: String,
-    primary_limit_amount: SqliteSharingAmount,
-    secondary_limit_amount: SqliteSharingAmount,
-    request_reservation_amount: SqliteSharingAmount,
-    user_requests_per_minute: i32,
-    group_requests_per_minute: i32,
-    user_max_concurrent_requests: i32,
-    group_max_concurrent_requests: i32,
-    updated_at: SqliteTimestamp,
-}
-
-#[derive(FromRow)]
-struct SharingProjectionRow {
-    credential_id: SqliteUuid,
-    channel_id: SqliteUuid,
-}
-
-#[derive(FromRow)]
-struct SharingWindowRow {
-    id: SqliteUuid,
-    credential_id: SqliteUuid,
-    window_kind: String,
-    scheduled_reset_at: SqliteTimestamp,
-    used_percent: i32,
-    checked_at: SqliteTimestamp,
-}
-
-/// Loads the sharing groups, their channel projections, protected identity
-/// aliases, and every fully observed provider window.
-async fn load_sharing_transaction(
-    connection: &mut SqliteConnection,
-) -> Result<Vec<crate::domain::codex_sharing::SharingRecord>, RepositoryError> {
-    let groups = sqlx::query_as::<_, SharingGroupRow>(
-        "SELECT id,credential_id,channel_id,provider_account_id,provider_user_id,name,enabled,seats, \
-                primary_limit_amount,secondary_limit_amount,request_reservation_amount, \
-                user_requests_per_minute,group_requests_per_minute,user_max_concurrent_requests, \
-                group_max_concurrent_requests,updated_at \
-         FROM codex_sharing_groups ORDER BY id",
-    )
-    .fetch_all(&mut *connection)
-    .await?;
-    let projections = sqlx::query_as::<_, SharingProjectionRow>(
-        "SELECT channel.credential_id AS credential_id,capability.id AS channel_id \
-         FROM upstream_channels AS channel \
-         JOIN channel_capabilities AS capability ON capability.channel_id=channel.id \
-         JOIN codex_sharing_groups s ON s.channel_id=channel.id AND s.credential_id=channel.credential_id \
-         WHERE channel.deleted_at IS NULL AND capability.deleted_at IS NULL \
-           AND channel.credential_id IS NOT NULL \
-         ORDER BY channel.credential_id,capability.id",
-    )
-    .fetch_all(&mut *connection)
-    .await?;
-    // Protected identities follow both the canonical credential and any
-    // recognizable provider alias, matching the PostgreSQL reader.
-    let protected = sqlx::query_as::<_, SharingProjectionRow>(
-        "SELECT s.credential_id AS credential_id,capability.id AS channel_id \
-         FROM codex_sharing_groups AS s \
-         JOIN upstream_channels AS channel ON channel.credential_id=s.credential_id \
-         JOIN channel_capabilities AS capability ON capability.channel_id=channel.id \
-         WHERE channel.deleted_at IS NULL AND capability.deleted_at IS NULL \
-         UNION \
-         SELECT s.credential_id,capability.id \
-         FROM codex_sharing_groups AS s \
-         JOIN codex_oauth_credentials AS identity \
-           ON COALESCE(identity.account_id,'')=s.provider_account_id \
-          AND identity.user_id=s.provider_user_id \
-         JOIN upstream_channels AS channel ON channel.credential_id=identity.channel_id \
-         JOIN channel_capabilities AS capability ON capability.channel_id=channel.id \
-         WHERE channel.deleted_at IS NULL AND capability.deleted_at IS NULL",
-    )
-    .fetch_all(&mut *connection)
-    .await?;
-    let windows = sqlx::query_as::<_, SharingWindowRow>(
-        "WITH observed AS ( \
-             SELECT p.id,p.credential_id,p.window_kind,p.scheduled_reset_at, \
-                    p.last_used_percent AS used_percent,c.quota_checked_at AS checked_at, \
-                    ((c.primary_window_seconds IS NOT NULL) \
-                     + (c.secondary_window_seconds IS NOT NULL)) AS expected_count, \
-                    count(*) OVER (PARTITION BY p.credential_id) AS observed_count \
-             FROM codex_quota_window_periods AS p \
-             JOIN codex_oauth_credentials AS c ON c.channel_id=p.credential_id \
-             JOIN codex_sharing_groups AS s ON s.credential_id=p.credential_id \
-             WHERE p.ended_at IS NULL AND c.deleted_at IS NULL AND c.enabled \
-               AND p.last_observed_at=c.quota_checked_at \
-               AND ((c.primary_used_percent IS NULL) \
-                    + (c.primary_window_seconds IS NULL) \
-                    + (c.primary_reset_at IS NULL)) IN (0,3) \
-               AND ((c.secondary_used_percent IS NULL) \
-                    + (c.secondary_window_seconds IS NULL) \
-                    + (c.secondary_reset_at IS NULL)) IN (0,3) \
-               AND ((p.window_kind='primary' AND p.scheduled_reset_at=c.primary_reset_at \
-                     AND p.window_seconds=c.primary_window_seconds \
-                     AND p.last_used_percent=c.primary_used_percent) \
-                 OR (p.window_kind='secondary' AND p.scheduled_reset_at=c.secondary_reset_at \
-                     AND p.window_seconds=c.secondary_window_seconds \
-                     AND p.last_used_percent=c.secondary_used_percent))) \
-         SELECT id,credential_id,window_kind,scheduled_reset_at,used_percent,checked_at \
-         FROM observed WHERE observed_count=expected_count",
-    )
-    .fetch_all(&mut *connection)
-    .await?;
-
-    let mut channel_ids = HashMap::<Uuid, Vec<Uuid>>::new();
-    for row in projections {
-        channel_ids
-            .entry(row.credential_id.0)
-            .or_default()
-            .push(row.channel_id.0);
-    }
-    let mut protected_channel_ids = HashMap::<Uuid, Vec<Uuid>>::new();
-    for row in protected {
-        protected_channel_ids
-            .entry(row.credential_id.0)
-            .or_default()
-            .push(row.channel_id.0);
-    }
-    let mut windows_by_credential =
-        HashMap::<Uuid, Vec<crate::domain::codex_sharing::SharingWindow>>::new();
-    for window in windows {
-        windows_by_credential
-            .entry(window.credential_id.0)
-            .or_default()
-            .push(crate::domain::codex_sharing::SharingWindow {
-                id: window.id.0,
-                credential_id: window.credential_id.0,
-                window_kind: window.window_kind,
-                scheduled_reset_at: window.scheduled_reset_at.0,
-                checked_at: window.checked_at.0,
-                used_percent: window.used_percent,
-            });
-    }
-    groups
-        .into_iter()
-        .map(|group| {
-            let id = group.id.0;
-            let credential_id = group.credential_id.0;
-            // The provider identity is persisted for the database's own
-            // uniqueness guards and is not part of the compiled registry.
-            let _ = (&group.provider_account_id, &group.provider_user_id);
-            let seats: Vec<Option<Uuid>> =
-                serde_json::from_str(&group.seats).map_err(|_| RepositoryError::Validation)?;
-            let policy = crate::domain::codex_sharing::SharingGroupInput {
-                channel_id: group.channel_id.0,
-                name: group.name,
-                enabled: group.enabled,
-                seats,
-                primary_limit_amount: group.primary_limit_amount.0,
-                secondary_limit_amount: group.secondary_limit_amount.0,
-                request_reservation_amount: group.request_reservation_amount.0,
-                user_requests_per_minute: u32::try_from(group.user_requests_per_minute)
-                    .map_err(|_| RepositoryError::Validation)?,
-                group_requests_per_minute: u32::try_from(group.group_requests_per_minute)
-                    .map_err(|_| RepositoryError::Validation)?,
-                user_max_concurrent_requests: u32::try_from(group.user_max_concurrent_requests)
-                    .map_err(|_| RepositoryError::Validation)?,
-                group_max_concurrent_requests: u32::try_from(group.group_max_concurrent_requests)
-                    .map_err(|_| RepositoryError::Validation)?,
-            };
-            Ok(crate::domain::codex_sharing::SharingRecord {
-                group: crate::domain::codex_sharing::SharingGroup {
-                    id,
-                    bound_credential_id: credential_id,
-                    policy,
-                    updated_at: group.updated_at.0,
-                },
-                channel_ids: channel_ids.remove(&credential_id).unwrap_or_default(),
-                protected_channel_ids: protected_channel_ids
-                    .remove(&credential_id)
-                    .unwrap_or_default(),
-                windows: windows_by_credential
-                    .remove(&credential_id)
-                    .unwrap_or_default(),
-            })
-        })
-        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -1156,44 +921,16 @@ impl SqliteControlPlaneRepository {
         .await?
         .map(SelfApiKeyPolicyRow::into_policy)
         .transpose()?;
-        let sharing_channels = sqlx::query_as::<_, SharingChannelOptionRow>(
-            "SELECT s.channel_id,c.name AS channel_name,s.id AS sharing_group_id,s.name, \
-                    (s.enabled AND c.enabled AND g.enabled AND a.enabled AND credential.enabled) AS enabled \
-             FROM codex_sharing_groups AS s \
-             JOIN upstream_channels c ON c.id=s.channel_id AND c.deleted_at IS NULL \
-             JOIN routing_groups g ON g.id=c.group_id \
-             JOIN upstream_accesses a ON a.id=c.access_id \
-             JOIN upstream_credentials credential ON credential.id=c.credential_id \
-             JOIN users AS u ON u.id=? AND u.status='active' AND u.deleted_at IS NULL \
-                              AND u.is_system=0 \
-             WHERE EXISTS (SELECT 1 FROM json_each(s.seats) AS seat \
-                           WHERE seat.value=CAST(? AS TEXT)) \
-             ORDER BY s.name,s.id",
-        )
-        .bind(SqliteUuid(user_id))
-        .bind(user_id.to_string())
-        .fetch_all(&mut *reader)
-        .await?
-        .into_iter()
-        .map(SharingChannelOptionRow::into_view)
-        .collect::<Vec<_>>();
-        if sharing_channels.is_empty() {
-            ensure_optional_policy_enabled(policy.as_ref())?;
-        }
-
         let mut transaction = reader.begin().await?;
         let topology = crate::persistence::upstream_topology::sqlite_load(&mut transaction).await?;
-        let sharing = load_self_api_key_sharing_access(&mut transaction, user_id).await?;
         let (groups, channels) = crate::persistence::upstream_topology::authorization::options(
             &topology,
             policy.as_ref(),
-            &sharing,
         );
         Ok(SelfApiKeyOptions {
             policy_id: policy.as_ref().map(|p| p.id),
             policy_name: policy.as_ref().map(|p| p.name.clone()),
             policy_enabled: policy.as_ref().is_some_and(|p| p.enabled),
-            sharing_channels,
             groups,
             channels,
         })
@@ -1214,37 +951,6 @@ impl SelfApiKeyPolicyRow {
             name: self.name,
             enabled: self.enabled,
         })
-    }
-}
-
-#[derive(FromRow)]
-struct SharingChannelOptionRow {
-    channel_id: SqliteUuid,
-    channel_name: String,
-    sharing_group_id: SqliteUuid,
-    name: String,
-    enabled: bool,
-}
-
-impl SharingChannelOptionRow {
-    fn into_view(self) -> SelfApiKeySharingChannelOption {
-        SelfApiKeySharingChannelOption {
-            channel_id: self.channel_id.0,
-            channel_name: self.channel_name,
-            sharing_group_id: self.sharing_group_id.0,
-            name: self.name,
-            enabled: self.enabled,
-        }
-    }
-}
-
-fn ensure_optional_policy_enabled(
-    policy: Option<&SelfApiKeyPolicy>,
-) -> Result<(), RepositoryError> {
-    match policy {
-        Some(policy) if policy.enabled => Ok(()),
-        Some(_) => Err(RepositoryError::DefaultApiKeyPolicyDisabled),
-        None => Err(RepositoryError::DefaultApiKeyPolicyRequired),
     }
 }
 
@@ -2149,55 +1855,11 @@ async fn load_optional_self_api_key_policy(
     row.map(SelfApiKeyPolicyRow::into_policy).transpose()
 }
 
-async fn load_self_api_key_sharing_access(
-    transaction: &mut Transaction<'_, Sqlite>,
-    user_id: Uuid,
-) -> Result<SelfApiKeySharingAccess, RepositoryError> {
-    let rows = sqlx::query_as::<_, SharingAccessRow>(
-        "WITH protected AS ( \
-             SELECT credential_id,provider_account_id,provider_user_id FROM codex_sharing_groups \
-             UNION SELECT c.credential_id,COALESCE(identity.account_id,''),identity.user_id \
-             FROM upstream_channels c JOIN codex_oauth_credentials identity ON identity.channel_id=c.credential_id \
-             WHERE c.sharing_only AND c.deleted_at IS NULL AND identity.deleted_at IS NULL \
-         ) SELECT projection.id AS channel_id, \
-                max(EXISTS(SELECT 1 FROM codex_sharing_groups own \
-                    WHERE own.channel_id=projection.id AND own.credential_id=candidate.channel_id \
-                      AND EXISTS(SELECT 1 FROM json_each(own.seats) seat WHERE seat.value=CAST(? AS TEXT)))) AS owned \
-         FROM protected AS s \
-         JOIN codex_oauth_credentials AS candidate \
-           ON candidate.channel_id=s.credential_id \
-           OR (COALESCE(candidate.account_id,'')=s.provider_account_id \
-               AND candidate.user_id=s.provider_user_id) \
-         JOIN upstream_channels AS projection \
-           ON projection.credential_id=candidate.channel_id \
-         WHERE candidate.deleted_at IS NULL AND projection.deleted_at IS NULL \
-         GROUP BY projection.id",
-    )
-    .bind(user_id.to_string())
-    .fetch_all(&mut **transaction)
-    .await?;
-    let mut access = SelfApiKeySharingAccess::default();
-    for row in rows {
-        access.protected_channels.insert(row.channel_id.0);
-        if row.owned {
-            access.owned_channels.insert(row.channel_id.0);
-        }
-    }
-    Ok(access)
-}
-
-#[derive(FromRow)]
-struct SharingAccessRow {
-    channel_id: SqliteUuid,
-    owned: bool,
-}
-
 async fn resolve_self_api_key_targets(
     transaction: &mut Transaction<'static, Sqlite>,
     selected_group_ids: &[Uuid],
     selected_channel_ids: &[Uuid],
     policy: Option<&SelfApiKeyPolicy>,
-    sharing: &SelfApiKeySharingAccess,
 ) -> Result<crate::persistence::upstream_topology::authorization::AuthorizationPlan, RepositoryError>
 {
     let topology = crate::persistence::upstream_topology::sqlite_load(transaction).await?;
@@ -2205,7 +1867,7 @@ async fn resolve_self_api_key_targets(
         &topology,
         selected_group_ids,
         selected_channel_ids,
-        Some((policy, sharing)),
+        Some(policy),
     )
 }
 
@@ -2224,13 +1886,11 @@ async fn create_own_api_key(
         false,
     )?;
     let policy = load_optional_self_api_key_policy(transaction, user_id).await?;
-    let sharing = load_self_api_key_sharing_access(transaction, user_id).await?;
     let allowed_api_formats = resolve_self_api_key_targets(
         transaction,
         &input.allowed_group_ids,
         &input.allowed_channel_ids,
         policy.as_ref(),
-        &sharing,
     )
     .await?;
     let id = Uuid::new_v4();
@@ -2312,14 +1972,12 @@ async fn update_own_api_key(
     )?;
     let allowed_api_formats = if targets_changed {
         let policy = load_optional_self_api_key_policy(transaction, user_id).await?;
-        let sharing = load_self_api_key_sharing_access(transaction, user_id).await?;
         Some(
             resolve_self_api_key_targets(
                 transaction,
                 &input.allowed_group_ids,
                 &input.allowed_channel_ids,
                 policy.as_ref(),
-                &sharing,
             )
             .await?,
         )
@@ -2901,11 +2559,6 @@ async fn apply_control_plane_mutation(
             )
             .await
         }
-        ControlPlaneMutation::SaveCodexSharing {
-            id,
-            input,
-            expected_updated_at,
-        } => save_codex_sharing(transaction, id, input, expected_updated_at).await,
         ControlPlaneMutation::CreateUser(input) => {
             user_create(transaction, Uuid::new_v4(), input).await
         }
@@ -4646,211 +4299,5 @@ impl SqliteControlPlaneRepository {
         }
         transaction.commit().await?;
         Ok(())
-    }
-}
-
-/// Persists one Codex sharing-group policy. The database enforces provider
-/// identity uniqueness, seat occupancy, and the monotonic seat-count guard, so
-/// the repository validates the API-level shape and binds the credential's
-/// provider identity itself.
-async fn save_codex_sharing(
-    transaction: &mut Transaction<'static, Sqlite>,
-    id: Uuid,
-    mut input: crate::domain::codex_sharing::SharingGroupInput,
-    expected: Option<DateTime<Utc>>,
-) -> Result<MutationResult, RepositoryError> {
-    if !input.valid() {
-        return Err(RepositoryError::Validation);
-    }
-    input.name = input.name.trim().to_owned();
-    let before = sqlx::query_as::<_, SharingGroupAuditRow>(SHARING_GROUP_SELECT)
-        .bind(SqliteUuid(id))
-        .fetch_optional(&mut **transaction)
-        .await?
-        .map(SharingGroupAuditRow::into_value)
-        .transpose()?;
-    match (&before, expected) {
-        (Some(value), Some(version)) => {
-            let previous: crate::domain::codex_sharing::SharingGroup =
-                serde_json::from_value(value.clone()).map_err(|_| RepositoryError::Validation)?;
-            if previous.updated_at != version {
-                return Err(RepositoryError::Conflict);
-            }
-            if previous.policy.channel_id != input.channel_id
-                || input.seats.len() < previous.policy.seats.len()
-            {
-                return Err(RepositoryError::Validation);
-            }
-        }
-        (None, None) => {}
-        (None, Some(_)) => return Err(RepositoryError::NotFound),
-        _ => return Err(RepositoryError::Conflict),
-    }
-    let previous_seats: Vec<Option<Uuid>> = before
-        .as_ref()
-        .and_then(|value| value.get("seats"))
-        .map(|value| serde_json::from_value(value.clone()))
-        .transpose()
-        .map_err(|_| RepositoryError::Validation)?
-        .unwrap_or_default();
-    let members = input
-        .seats
-        .iter()
-        .enumerate()
-        .filter(|(index, user)| previous_seats.get(*index) != Some(*user))
-        .filter_map(|(_, user)| *user)
-        .collect::<Vec<_>>();
-    let member_array = uuid_array_text(&members)?;
-    let member_count = sqlx::query_scalar::<_, i64>(
-        "SELECT count(*) FROM users WHERE deleted_at IS NULL AND is_system=0 AND status='active' \
-           AND EXISTS (SELECT 1 FROM json_each(?) AS member WHERE member.value=users.id)",
-    )
-    .bind(&member_array)
-    .fetch_one(&mut **transaction)
-    .await?;
-    if member_count != members.len() as i64 {
-        return Err(RepositoryError::Validation);
-    }
-    let identity = sqlx::query_as::<_, (String, String, SqliteUuid)>(
-        "SELECT COALESCE(credential.account_id,''),credential.user_id,credential.channel_id
-         FROM upstream_channels channel
-         JOIN upstream_accesses access ON access.id=channel.access_id AND access.connector_kind='codex'
-         JOIN codex_oauth_credentials credential ON credential.channel_id=channel.credential_id
-         WHERE channel.id=? AND channel.deleted_at IS NULL AND access.deleted_at IS NULL
-           AND credential.deleted_at IS NULL AND credential.user_id IS NOT NULL AND credential.user_id<>''",
-    )
-    .bind(SqliteUuid(input.channel_id))
-    .fetch_optional(&mut **transaction)
-    .await?
-    .ok_or(RepositoryError::Validation)?;
-    let seated_users = input
-        .seats
-        .iter()
-        .flatten()
-        .map(Uuid::to_string)
-        .collect::<Vec<_>>();
-    let seated_array = json_text(&seated_users)?;
-    let conflict = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM codex_sharing_groups WHERE id<>? \
-         AND (credential_id=? \
-              OR (provider_account_id=? AND provider_user_id=?) \
-              OR EXISTS (SELECT 1 FROM json_each(codex_sharing_groups.seats) AS member \
-                         WHERE EXISTS (SELECT 1 FROM json_each(?) AS target \
-                                       WHERE target.value=member.value))))",
-    )
-    .bind(SqliteUuid(id))
-    .bind(identity.2)
-    .bind(&identity.0)
-    .bind(&identity.1)
-    .bind(&seated_array)
-    .fetch_one(&mut **transaction)
-    .await?;
-    if conflict {
-        return Err(RepositoryError::Conflict);
-    }
-    let updated_at = sqlx::query_scalar::<_, SqliteTimestamp>(
-        "INSERT INTO codex_sharing_groups \
-         (id,credential_id,provider_account_id,provider_user_id,name,enabled,seats, \
-          primary_limit_amount,secondary_limit_amount,request_reservation_amount, \
-          user_requests_per_minute,group_requests_per_minute,user_max_concurrent_requests, \
-          group_max_concurrent_requests,channel_id) \
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) \
-         ON CONFLICT (id) DO UPDATE SET name=excluded.name,enabled=excluded.enabled, \
-          seats=excluded.seats,primary_limit_amount=excluded.primary_limit_amount, \
-          secondary_limit_amount=excluded.secondary_limit_amount, \
-          request_reservation_amount=excluded.request_reservation_amount, \
-          user_requests_per_minute=excluded.user_requests_per_minute, \
-          group_requests_per_minute=excluded.group_requests_per_minute, \
-          user_max_concurrent_requests=excluded.user_max_concurrent_requests, \
-          group_max_concurrent_requests=excluded.group_max_concurrent_requests, \
-          updated_at=ag_now() \
-         RETURNING updated_at",
-    )
-    .bind(SqliteUuid(id))
-    .bind(identity.2)
-    .bind(&identity.0)
-    .bind(&identity.1)
-    .bind(&input.name)
-    .bind(input.enabled)
-    .bind(json_text(&input.seats)?)
-    .bind(amount_20_8(input.primary_limit_amount)?)
-    .bind(amount_20_8(input.secondary_limit_amount)?)
-    .bind(amount_20_8(input.request_reservation_amount)?)
-    .bind(i32::try_from(input.user_requests_per_minute).map_err(|_| RepositoryError::Validation)?)
-    .bind(i32::try_from(input.group_requests_per_minute).map_err(|_| RepositoryError::Validation)?)
-    .bind(
-        i32::try_from(input.user_max_concurrent_requests)
-            .map_err(|_| RepositoryError::Validation)?,
-    )
-    .bind(
-        i32::try_from(input.group_max_concurrent_requests)
-            .map_err(|_| RepositoryError::Validation)?,
-    )
-    .bind(SqliteUuid(input.channel_id))
-    .fetch_one(&mut **transaction)
-    .await?;
-    let after = serde_json::to_value(crate::domain::codex_sharing::SharingGroup {
-        id,
-        bound_credential_id: identity.2.0,
-        policy: input,
-        updated_at: updated_at.0,
-    })
-    .map_err(|_| RepositoryError::Validation)?;
-    Ok(MutationResult {
-        object_type: "codex_sharing_group",
-        id,
-        action: if before.is_some() { "update" } else { "create" },
-        before_redacted: before.unwrap_or_else(|| json!({})),
-        after_redacted: after,
-        created_secret: None,
-        reason: None,
-        updated_at: updated_at.0,
-        correlation_id: None,
-    })
-}
-
-const SHARING_GROUP_SELECT: &str = "SELECT id,credential_id,channel_id,provider_account_id,provider_user_id, \
-     name,enabled,seats,primary_limit_amount,secondary_limit_amount,request_reservation_amount, \
-     user_requests_per_minute,group_requests_per_minute,user_max_concurrent_requests, \
-     group_max_concurrent_requests,updated_at FROM codex_sharing_groups WHERE id=?";
-
-#[derive(FromRow)]
-pub(super) struct SharingGroupAuditRow {
-    id: SqliteUuid,
-    credential_id: SqliteUuid,
-    channel_id: SqliteUuid,
-    name: String,
-    enabled: bool,
-    seats: String,
-    primary_limit_amount: SqliteSharingAmount,
-    secondary_limit_amount: SqliteSharingAmount,
-    request_reservation_amount: SqliteSharingAmount,
-    user_requests_per_minute: i32,
-    group_requests_per_minute: i32,
-    user_max_concurrent_requests: i32,
-    group_max_concurrent_requests: i32,
-    updated_at: SqliteTimestamp,
-}
-
-impl SharingGroupAuditRow {
-    pub(super) fn into_value(self) -> Result<Value, RepositoryError> {
-        let seats: Vec<Option<Uuid>> =
-            serde_json::from_str(&self.seats).map_err(|_| RepositoryError::Validation)?;
-        Ok(json!({
-            "id": self.id.0,
-            "bound_credential_id": self.credential_id.0,
-            "channel_id": self.channel_id.0,
-            "name": self.name,
-            "enabled": self.enabled,
-            "seats": seats,
-            "primary_limit_amount": format!("{:.8}",self.primary_limit_amount.0),
-            "secondary_limit_amount": format!("{:.8}",self.secondary_limit_amount.0),
-            "request_reservation_amount": format!("{:.8}",self.request_reservation_amount.0),
-            "user_requests_per_minute": self.user_requests_per_minute,
-            "group_requests_per_minute": self.group_requests_per_minute,
-            "user_max_concurrent_requests": self.user_max_concurrent_requests,
-            "group_max_concurrent_requests": self.group_max_concurrent_requests,
-            "updated_at": self.updated_at.0,
-        }))
     }
 }

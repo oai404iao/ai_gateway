@@ -95,7 +95,7 @@ usage 解析只解释原始上游计数，不能决定路由、响应成败、�
 
 缓存写入价格仍是既有额外项，没有改成扣除写入后的另一套规则。
 失败/取消请求继续零收费；成功 unknown usage 依现有结算策略处理，
-Codex 拼车保持 pending 和 fail closed，不清除不确定财务状态。
+不清除不确定财务状态。
 
 新 Codex 插件使用协议 3，所有响应模式为 `passthrough`，usage 复用
 `general/open_ai_responses`。HTTP Responses 只声明 SSE；无其他可用普通渠道时，
