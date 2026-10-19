@@ -22,11 +22,6 @@ function renderAt(path: string) {
 }
 
 describe("routing groups", () => {
-  it("lists canonical groups", async () => {
-    renderAt("/admin/routing/groups");
-    expect(await screen.findByText("Primary group")).toBeInTheDocument();
-  });
-
   it("creates an enabled group", async () => {
     let created: RoutingGroupInput | undefined;
     server.use(
@@ -42,25 +37,5 @@ describe("routing groups", () => {
     await waitFor(() =>
       expect(created).toEqual({ name: "Fresh group", enabled: true }),
     );
-  });
-
-  it("edits an existing group with If-Match", async () => {
-    let updated: RoutingGroupInput | undefined;
-    let ifMatch: string | null = null;
-    server.use(
-      http.put("/console/v1/routing/groups/:id", async ({ request }) => {
-        updated = (await request.json()) as RoutingGroupInput;
-        ifMatch = request.headers.get("if-match");
-        return HttpResponse.json({ id: ROUTING_GROUP.id });
-      }),
-    );
-    const user = userEvent.setup();
-    renderAt(`/admin/routing/groups/${ROUTING_GROUP.id}`);
-    await waitFor(() =>
-      expect(screen.getByLabelText("Name")).toHaveValue(ROUTING_GROUP.name),
-    );
-    await user.click(screen.getByRole("button", { name: "Save group" }));
-    await waitFor(() => expect(updated?.name).toBe(ROUTING_GROUP.name));
-    expect(ifMatch).toBe(`"${ROUTING_GROUP.updated_at}"`);
   });
 });

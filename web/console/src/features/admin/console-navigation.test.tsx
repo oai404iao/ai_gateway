@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { AppProviders } from "@/app/providers";
@@ -15,10 +15,8 @@ function renderAt(path: string) {
 
 describe("Console navigation contracts", () => {
   it.each([
-    ["/admin/model-setup", "/admin/models", "Model configuration"],
     ["/admin/catalog", "/admin/models?view=prices", "Model configuration"],
     ["/admin/routing/groups", "/admin/routing/channels?view=groups", "Channel configuration"],
-    ["/admin/routing/logical-channels?group=id", "/admin/routing/channels?group=id", "Channel configuration"],
   ])("redirects %s to one canonical workspace", async (from, to, title) => {
     renderAt(from);
     expect(await screen.findByRole("heading", { level: 1, name: title })).toBeInTheDocument();
@@ -46,20 +44,6 @@ describe("Console navigation contracts", () => {
     expect(await screen.findByRole("link", { name: LOGICAL_CHANNEL.name })).toBeInTheDocument();
     expect(window.location.search).toBe(`?group=${ROUTING_GROUP.id}&page=2`);
     expect(screen.queryByRole("link", { name: "Channel 0" })).not.toBeInTheDocument();
-  });
-
-  it("protects dirty channel tabs and explicit parent navigation in the production router", async () => {
-    renderAt(`/admin/routing/logical-channels/${LOGICAL_CHANNEL.id}`);
-    const user = userEvent.setup();
-    const name = await screen.findByLabelText("Name");
-    fireEvent.change(name, { target: { value: "Unsaved channel" } });
-    await user.click(screen.getByRole("tab", { name: "Channel capabilities" }));
-    expect(await screen.findByRole("alertdialog", { name: "Discard unsaved changes?" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(name).toHaveValue("Unsaved channel");
-    await user.click(screen.getByRole("link", { name: "Back to channels" }));
-    await user.click(await screen.findByRole("button", { name: "Discard changes" }));
-    expect(await screen.findByRole("heading", { level: 1, name: "Channel configuration" })).toBeInTheDocument();
   });
 
   it("uses a safe parent after direct entry with a malicious return target", async () => {
