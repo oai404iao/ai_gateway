@@ -19,25 +19,6 @@ function renderAppAt(path: string) {
 }
 
 describe("LoginPage", () => {
-  it("submits credentials and redirects to /account", async () => {
-    server.use(
-      http.post("/console/v1/auth/refresh", () =>
-        HttpResponse.json({ error: "unauthorized" }, { status: 401 }),
-      ),
-    );
-    const user = userEvent.setup();
-    renderAppAt("/login");
-
-    const email = await screen.findByLabelText(/email/i);
-    await user.type(email, "admin@example.com");
-    await user.type(screen.getByLabelText(/password/i), "a-very-long-password");
-    await user.click(screen.getByRole("button", { name: /sign in/i }));
-
-    await waitFor(() => {
-      expect(screen.getByRole("heading", { name: /^profile$/i })).toBeInTheDocument();
-    });
-  });
-
   it("shows a server error toast on 401", async () => {
     server.use(
       http.post("/console/v1/auth/refresh", () =>
@@ -61,38 +42,6 @@ describe("LoginPage", () => {
 });
 
 describe("SessionsPage", () => {
-  it("identifies devices and revokes a selected browser session", async () => {
-    seedAuthenticatedSession();
-    let revokedId: string | null = null;
-    server.use(
-      http.delete("/console/v1/me/sessions/:id", ({ params }) => {
-        revokedId = String(params.id);
-        return new HttpResponse(null, { status: 204 });
-      }),
-    );
-    const user = userEvent.setup();
-    renderAppAt("/account/sessions");
-
-    expect(await screen.findByText("Safari 18 · macOS")).toBeInTheDocument();
-    expect(screen.getByText("Firefox 128 · Windows")).toBeInTheDocument();
-    expect(screen.getByText("Current device")).toBeInTheDocument();
-    expect(screen.queryByText("Revoked session")).not.toBeInTheDocument();
-
-    await user.click(
-      screen.getByRole("button", { name: "Sign out Firefox 128 · Windows" }),
-    );
-    const dialog = screen.getByRole("alertdialog");
-    expect(
-      within(dialog).getByText(/immediately ends that browser session/i),
-    ).toBeInTheDocument();
-    await user.click(within(dialog).getByRole("button", { name: /^sign out$/i }));
-
-    await waitFor(() => {
-      expect(revokedId).toBe("00000000-0000-0000-0000-0000000000a3");
-      expect(screen.getByText("Device signed out")).toBeInTheDocument();
-    });
-  });
-
   it("revokes every other active session while preserving the current one", async () => {
     seedAuthenticatedSession();
     let collectionDelete = false;

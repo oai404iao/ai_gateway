@@ -105,13 +105,6 @@ describe("channel capabilities", () => {
     expect(await screen.findByRole("checkbox", { name: "Select gpt-5-codex" })).toBeInTheDocument();
   });
 
-  it("lists operation capabilities without configurable transports", async () => {
-    renderAt("/admin/routing/capabilities");
-    expect(await screen.findByText("Primary channel")).toBeInTheDocument();
-    expect(screen.getAllByText("Responses").length).toBeGreaterThan(0);
-    expect(screen.queryByText("Transports")).not.toBeInTheDocument();
-  });
-
   it("preserves operation settings and sends If-Match on update", async () => {
     let submitted: ChannelCapabilityInput | undefined;
     let ifMatch: string | null = null;

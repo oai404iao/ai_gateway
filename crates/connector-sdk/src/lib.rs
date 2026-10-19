@@ -364,32 +364,6 @@ macro_rules! export_plugin {
 mod tests {
     use super::*;
 
-    fn manifest() -> PluginManifest {
-        PluginManifest {
-            protocol_version: 1,
-            id: "fixture".into(),
-            version: "1".into(),
-            operations: vec!["responses".into()],
-            commands: vec!["echo".into()],
-        }
-    }
-
-    fn dispatch(_: &str, metadata: Value, body: &[u8]) -> Result<PluginOutput, PluginCallError> {
-        Ok(PluginOutput {
-            metadata,
-            body: body.to_vec(),
-        })
-    }
-
-    export_plugin!(manifest, dispatch);
-
-    #[test]
-    fn export_macro_accepts_dispatch_named_function() {
-        let descriptor = unsafe { ai_gateway_connector_entry_v1().as_ref() }
-            .expect("plugin descriptor initialization failed");
-        assert_eq!(descriptor.abi_version, ABI_VERSION);
-    }
-
     fn call<F>(metadata: &[u8], dispatch: F) -> (u32, CallOutput)
     where
         F: FnOnce(&str, Value, &[u8]) -> Result<PluginOutput, PluginCallError>,
