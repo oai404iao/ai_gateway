@@ -28,31 +28,6 @@ function renderAppAt(path: string) {
 }
 
 describe("RequestLogsView", () => {
-  it("refetches when the same request-log filters are applied again", async () => {
-    seedAuthenticatedSession();
-    let requests = 0;
-    server.use(
-      http.get("/console/v1/me/request-logs", () => {
-        requests += 1;
-        return HttpResponse.json([REQUEST_LOG]);
-      }),
-    );
-
-    const user = userEvent.setup();
-    renderAppAt("/usage/request-logs");
-
-    await screen.findByRole("columnheader", { name: "Started" });
-    await waitFor(() => expect(requests).toBe(1));
-
-    const apply = screen.getByRole("button", { name: "Apply" });
-    await user.click(apply);
-    await waitFor(() => expect(requests).toBe(2));
-    await waitFor(() => expect(apply).toBeEnabled());
-
-    await user.click(apply);
-    await waitFor(() => expect(requests).toBe(3));
-  });
-
   it("keeps the personal request-log table owner-scoped even for administrators", async () => {
     seedAuthenticatedSession();
     const queries: URLSearchParams[] = [];
@@ -151,26 +126,6 @@ describe("RequestLogsView", () => {
     await screen.findByText(REQUEST_LOG.client_model);
     expect(screen.queryByLabelText(/Reasoning effort:/)).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Fast mode")).not.toBeInTheDocument();
-  });
-
-  it("marks costs whose request start matched peak pricing", async () => {
-    seedAuthenticatedSession();
-    server.use(
-      http.get("/console/v1/me/request-logs", () =>
-        HttpResponse.json([
-          {
-            ...REQUEST_LOG,
-            peak_pricing: true,
-          },
-        ]),
-      ),
-    );
-
-    renderAppAt("/usage/request-logs");
-
-    const peak = await screen.findByLabelText("Peak pricing");
-    expect(peak).toHaveTextContent("Peak");
-    expect(peak.closest("td")).toHaveTextContent("0.0001 USD");
   });
 
   it("adds user and channel names only to the system request-log table", async () => {

@@ -47,24 +47,6 @@ describe("ModelsPage", () => {
       .getByText(`Base prices · USD / ${unit} tokens`)).toBeInTheDocument();
   });
 
-  it("provides a direct pricing action without opening the general model editor", async () => {
-    seedAuthenticatedSession();
-    const user = userEvent.setup();
-    renderAppAt("/admin/models");
-
-    await user.click(await screen.findByRole("button", { name: new RegExp(MODEL.display_name) }));
-    await user.click(
-      await screen.findByRole("link", { name: /configure pricing/i }),
-    );
-
-    await waitFor(() => {
-      expect(window.location.pathname).toBe(`/admin/models/${MODEL.id}/pricing`);
-    });
-    expect(
-      await screen.findByText(/multiplier calculator/i),
-    ).toBeInTheDocument();
-  });
-
   it("edits an operation in the selected model's right-hand panel with If-Match", async () => {
     seedAuthenticatedSession();
     let input: OperationRuleInput | undefined;

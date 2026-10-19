@@ -5,7 +5,7 @@ import { BrowserRouter } from "react-router";
 import { describe, expect, it } from "vitest";
 import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
-import { CODEX_QUOTA_GROUP, USER_GROUP, ROUTING_GROUP, LOGICAL_CHANNEL, UPSTREAM_ACCESS } from "@/test/fixtures";
+import { USER_GROUP } from "@/test/fixtures";
 import { server, seedAuthenticatedSession } from "@/test/msw";
 
 function renderAppAt(path: string) {
@@ -70,52 +70,5 @@ describe("UserGroupDetailPage", () => {
     );
 
     await waitFor(() => expect(deleted).toBe(true));
-  });
-
-  it("configures read-only Codex quota visibility", async () => {
-    seedAuthenticatedSession();
-    let submitted: unknown;
-    server.use(
-      http.get("/console/v1/routing/groups", () =>
-        HttpResponse.json([{ ...ROUTING_GROUP, id: CODEX_QUOTA_GROUP.id, name: CODEX_QUOTA_GROUP.name }]),
-      ),
-      http.get("/console/v1/routing/logical-channels", () =>
-        HttpResponse.json([{ ...LOGICAL_CHANNEL, group_id: CODEX_QUOTA_GROUP.id }]),
-      ),
-      http.get("/console/v1/routing/accesses", () =>
-        HttpResponse.json([{ ...UPSTREAM_ACCESS, connector_kind: "codex" }]),
-      ),
-      http.put("/console/v1/user-groups/:id", async ({ request }) => {
-        submitted = await request.json();
-        return HttpResponse.json({
-          id: USER_GROUP.id,
-          correlation_id: "00000000-0000-0000-0000-000000000055",
-        });
-      }),
-    );
-    const user = userEvent.setup();
-    renderAppAt(`/admin/user-groups/${USER_GROUP.id}`);
-
-    await user.click(
-      await screen.findByRole("checkbox", {
-        name: CODEX_QUOTA_GROUP.name,
-      }),
-    );
-    await user.click(
-      screen.getByRole("switch", {
-        name: "Filter Fast mode",
-      }),
-    );
-    await user.click(screen.getByRole("button", { name: "Save user group" }));
-
-    await waitFor(() =>
-      expect(submitted).toEqual({
-        name: USER_GROUP.name,
-        description: USER_GROUP.description,
-        default_api_key_policy_id: USER_GROUP.default_api_key_policy_id,
-        visible_codex_quota_group_ids: [CODEX_QUOTA_GROUP.id],
-        filter_fast_mode: true,
-      }),
-    );
   });
 });

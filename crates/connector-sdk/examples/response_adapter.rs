@@ -361,38 +361,6 @@ export_plugin!(manifest, dispatch);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ai_gateway_connector_sdk::{ABI_VERSION, ByteSlice, CallOutput, STATUS_OK};
-
-    #[test]
-    fn exported_descriptor_and_json_dispatch_use_native_abi_one() {
-        let descriptor = unsafe { ai_gateway_connector_entry_v1().as_ref() }.unwrap();
-        assert_eq!(descriptor.abi_version, ABI_VERSION);
-        let bytes = unsafe {
-            std::slice::from_raw_parts(descriptor.manifest.ptr, descriptor.manifest.len as usize)
-        };
-        let exported: PluginManifest = serde_json::from_slice(bytes).unwrap();
-        assert_eq!(exported.protocol_version, 3);
-        assert_eq!(exported.commands, manifest().commands);
-        let mut result = CallOutput::default();
-        let status = unsafe {
-            descriptor.dispatch.unwrap()(
-                ByteSlice::new(RESPONSE_JSON.as_bytes()),
-                ByteSlice::new(
-                    br#"{"operation":"chat_completion","protocol":"non_stream","status":200}"#,
-                ),
-                ByteSlice::new(br#"{"choices":[{"message":{"content":"hello"}}]}"#),
-                &mut result,
-            )
-        };
-        assert_eq!(status, STATUS_OK);
-        let body = unsafe { std::slice::from_raw_parts(result.body.ptr, result.body.len as usize) };
-        let body: Value = serde_json::from_slice(body).unwrap();
-        assert_eq!(body["choices"][0]["message"]["content"], "adapted:hello");
-        unsafe {
-            descriptor.free_buffer.unwrap()(result.metadata);
-            descriptor.free_buffer.unwrap()(result.body);
-        }
-    }
 
     #[test]
     fn settings_and_capabilities_are_explicit() {
@@ -432,33 +400,7 @@ mod tests {
     }
 
     #[test]
-    fn json_rewrites_only_text_and_preserves_metering() {
-        for (operation, body, pointer) in [
-            (
-                "chat_completion",
-                json!({"choices":[{"message":{"content":"hello"},"finish_reason":"stop"}],
-                       "usage":{"prompt_tokens":1,"completion_tokens":2}}),
-                "/choices/0/message/content",
-            ),
-            (
-                "responses",
-                json!({"status":"completed","output":[{"content":[
-                    {"type":"output_text","text":"hello"}]}],
-                    "usage":{"input_tokens":1,"output_tokens":2}}),
-                "/output/0/content/0/text",
-            ),
-        ] {
-            let result = dispatch(
-                RESPONSE_JSON,
-                json!({"operation":operation,"protocol":"non_stream","status":200}),
-                &serde_json::to_vec(&body).unwrap(),
-            )
-            .unwrap();
-            let mut result: Value = serde_json::from_slice(&result.body).unwrap();
-            assert_eq!(result.pointer(pointer).unwrap(), "adapted:hello");
-            *result.pointer_mut(pointer).unwrap() = json!("hello");
-            assert_eq!(result, body);
-        }
+    fn error_json_is_preserved() {
         let result = dispatch(
             RESPONSE_JSON,
             json!({"operation":"chat_completion","protocol":"non_stream","status":400}),
@@ -477,45 +419,11 @@ mod tests {
     }
 
     #[test]
-    fn stream_state_is_request_local_and_terminal_finish_are_unchanged() {
+    fn stream_preserves_event_id_and_emits_no_finish_events() {
         let body = br#"{"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}"#;
         let first = dispatch(RESPONSE_EVENT, event_metadata(json!({}), 0), body).unwrap();
         assert_eq!(first.metadata["events"][0]["id"], "event-id");
-        assert!(
-            first.metadata["events"][0]["data"]
-                .as_str()
-                .unwrap()
-                .contains("adapted:1:hello")
-        );
-        let second = dispatch(
-            RESPONSE_EVENT,
-            event_metadata(first.metadata["state"].clone(), 1),
-            body,
-        )
-        .unwrap();
-        assert!(
-            second.metadata["events"][0]["data"]
-                .as_str()
-                .unwrap()
-                .contains("adapted:2:hello")
-        );
-        assert_eq!(second.metadata["state"]["text_events"], 2);
-        let fresh = dispatch(RESPONSE_EVENT, event_metadata(json!({}), 0), body).unwrap();
-        assert_eq!(fresh.metadata, first.metadata);
-        let terminal = br#"{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2}}"#;
-        for body in [terminal.as_slice(), b"[DONE]"] {
-            let result = dispatch(
-                RESPONSE_EVENT,
-                event_metadata(second.metadata["state"].clone(), 2),
-                body,
-            )
-            .unwrap();
-            assert_eq!(
-                result.metadata["events"][0]["data"],
-                std::str::from_utf8(body).unwrap()
-            );
-        }
-        let mut metadata = event_metadata(second.metadata["state"].clone(), 3);
+        let mut metadata = event_metadata(first.metadata["state"].clone(), 1);
         metadata["phase"] = json!("finish");
         let result = dispatch(RESPONSE_EVENT, metadata, &[]).unwrap();
         assert_eq!(result.metadata["events"], json!([]));

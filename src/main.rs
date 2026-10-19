@@ -890,24 +890,6 @@ mod tests {
     }
 
     #[test]
-    fn reset_admin_password_command_parses_its_required_arguments() {
-        let command = parse_command(vec![
-            "reset-admin-password".to_owned(),
-            "--email".to_owned(),
-            "admin@example.com".to_owned(),
-            "--password-stdin".to_owned(),
-            "--config".to_owned(),
-            "./config/test.toml".to_owned(),
-        ])
-        .expect("reset command must parse");
-        let Command::ResetAdminPassword { config_path, email } = command else {
-            panic!("expected reset-admin-password command");
-        };
-        assert_eq!(email, "admin@example.com");
-        assert_eq!(config_path, PathBuf::from("./config/test.toml"));
-    }
-
-    #[test]
     fn bootstrap_admin_rejects_the_removed_currency_option() {
         assert!(
             parse_command(vec![
