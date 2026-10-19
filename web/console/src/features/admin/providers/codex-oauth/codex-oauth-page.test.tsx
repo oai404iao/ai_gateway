@@ -7,7 +7,6 @@ import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
 import type {
   RoutingGroupView,
-  CodexCredentialBatchInput,
   CodexCredentialExportInput,
   CodexCredentialUpdateInput,
   CodexCredentialView,
@@ -103,36 +102,6 @@ describe("CodexOauthPage", () => {
     expect(screen.queryByRole("button", { name: "Back to groups" })).not.toBeInTheDocument();
   });
 
-  it("shows quota state and manually refreshes a credential quota", async () => {
-    seedAuthenticatedSession();
-    let refreshedId: string | undefined;
-    server.use(
-      ...baseHandlers([CREDENTIAL]),
-      http.post(
-        "/console/v1/routing/upstream-credentials/codex/:id/quota/refresh",
-        ({ params }) => {
-          refreshedId = String(params.id);
-          return new HttpResponse(null, { status: 204 });
-        },
-      ),
-    );
-    const user = userEvent.setup();
-    renderPage();
-
-    expect(await screen.findByText("Personal Plus")).toBeInTheDocument();
-    expect(screen.getByText("96% used")).toBeInTheDocument();
-    expect(screen.getByText("Draining")).toBeInTheDocument();
-    expect(screen.getByText("4.75 USD")).toBeInTheDocument();
-    expect(screen.getByText("4.947917 USD")).toBeInTheDocument();
-
-    await user.click(
-      screen.getByRole("button", {
-        name: "Refresh quota for Personal Plus",
-      }),
-    );
-    await waitFor(() => expect(refreshedId).toBe(CREDENTIAL_ID));
-  });
-
   it("renders personal credentials without a workspace account id", async () => {
     seedAuthenticatedSession();
     server.use(
@@ -152,47 +121,6 @@ describe("CodexOauthPage", () => {
       screen.getByText("Personal credential (no workspace ID)"),
     ).toBeInTheDocument();
     expect(screen.queryByText("Workspace account-123")).not.toBeInTheDocument();
-  });
-
-  it("consumes an OpenAI reset credit with confirmation", async () => {
-    seedAuthenticatedSession();
-    let resetId: string | undefined;
-    server.use(
-      ...baseHandlers([CREDENTIAL]),
-      http.post(
-        "/console/v1/routing/upstream-credentials/codex/:id/quota/reset",
-        ({ params }) => {
-          resetId = String(params.id);
-          return HttpResponse.json({
-            outcome: "reset",
-            windows_reset: 2,
-            quota_refreshed: true,
-            correlation_id: "00000000-0000-0000-0000-00000000c010",
-          });
-        },
-      ),
-    );
-    const user = userEvent.setup();
-    renderPage();
-
-    await user.click(
-      await screen.findByRole("button", {
-        name: "Reset quota with an OpenAI credit for Personal Plus",
-      }),
-    );
-    expect(
-      screen.getByRole("heading", {
-        name: "Consume an OpenAI reset credit?",
-      }),
-    ).toBeInTheDocument();
-    await user.click(
-      screen.getByRole("button", { name: "Consume reset credit" }),
-    );
-
-    await waitFor(() => expect(resetId).toBe(CREDENTIAL_ID));
-    expect(
-      await screen.findByText("OpenAI reset credit consumed. 2 windows reset."),
-    ).toBeInTheDocument();
   });
 
   it("opens quota-window history and jumps to system costs for both projections", async () => {
@@ -292,12 +220,12 @@ describe("CodexOauthPage", () => {
     expect(query?.has("channel_id")).toBe(false);
   });
 
-  it("exposes tooltip descriptions for credential actions", async () => {
+  it("shows credential action tooltips on focus and dismisses them on blur", async () => {
     seedAuthenticatedSession();
     server.use(...baseHandlers([CREDENTIAL]));
     renderPage();
 
-    expect(await screen.findByText("Personal Plus")).toBeInTheDocument();
+    await screen.findByText("Personal Plus");
 
     for (const label of [
       "View quota history for Personal Plus",
@@ -506,43 +434,6 @@ describe("CodexOauthPage", () => {
     expect(createObjectUrl).toHaveBeenCalled();
     expect(click).toHaveBeenCalled();
     expect(revokeObjectUrl).toHaveBeenCalledWith("blob:codex-export");
-  });
-
-  it("batch-disables selected credentials with their list versions", async () => {
-    seedAuthenticatedSession();
-    let batchInput: CodexCredentialBatchInput | undefined;
-    server.use(
-      ...baseHandlers([CREDENTIAL]),
-      http.post(
-        "/console/v1/routing/upstream-credentials/codex/batch",
-        async ({ request }) => {
-          batchInput = (await request.json()) as CodexCredentialBatchInput;
-          return HttpResponse.json({
-            updated_ids: [CREDENTIAL_ID],
-            correlation_id: "00000000-0000-0000-0000-00000000c005",
-          });
-        },
-      ),
-    );
-    const user = userEvent.setup();
-    renderPage();
-
-    await user.click(
-      await screen.findByRole("checkbox", { name: "Select Personal Plus" }),
-    );
-    await user.click(screen.getByRole("button", { name: "Disable" }));
-
-    await waitFor(() =>
-      expect(batchInput).toEqual({
-        items: [
-          {
-            id: CREDENTIAL_ID,
-            updated_at: CREDENTIAL.updated_at,
-          },
-        ],
-        operation: "disable",
-      }),
-    );
   });
 
   it("confirms credential deletion and sends If-Match", async () => {

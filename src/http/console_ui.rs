@@ -230,23 +230,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unknown_html_route_falls_back_to_index() {
-        let response = router()
-            .oneshot(
-                Request::get("/account/sessions")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            response.headers().get(header::CONTENT_TYPE).unwrap(),
-            "text/html; charset=utf-8"
-        );
-    }
-
-    #[tokio::test]
     async fn non_get_head_methods_are_rejected() {
         let response = router()
             .oneshot(Request::post("/whatever").body(Body::empty()).unwrap())

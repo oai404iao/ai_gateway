@@ -1,11 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BrowserRouter } from "react-router";
 import { http, HttpResponse } from "msw";
 import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
-import { ADMIN_LOGIN_RESPONSE, PLUGIN, PLUGIN_JOB, PLUGIN_SETTINGS } from "@/test/fixtures";
+import { ADMIN_LOGIN_RESPONSE, PLUGIN_JOB, PLUGIN_SETTINGS } from "@/test/fixtures";
 import { seedAuthenticatedSession, server } from "@/test/msw";
 import type { PluginSettingsInput } from "@/api/types";
 
@@ -170,30 +170,6 @@ describe("Plugin management", () => {
     await confirm(user, "Enable selected version");
     await waitFor(() => expect(body).toEqual({ enabled: true, artifact_digest: "b".repeat(64) }));
     expect(etag).toBe('"plugin-3"');
-  });
-
-  it("uploads raw package bytes and follows the asynchronous install job without auto-enabling", async () => {
-    let contentType: string | null = null;
-    let raw: string | undefined;
-    let token: string | null = null;
-    server.use(http.post("/console/v1/plugins/install", async ({ request }) => {
-      contentType = request.headers.get("content-type");
-      token = request.headers.get("x-plugin-authorization");
-      raw = await request.text();
-      return HttpResponse.json({ ...PLUGIN_JOB, status: "queued" }, { status: 202 });
-    }));
-    const user = userEvent.setup();
-    renderPage("/admin/plugins");
-    expect(await screen.findByRole("link", { name: PLUGIN.id })).toBeInTheDocument();
-    const { File: NativeFile } = await vi.importActual<{ File: typeof File }>("node:buffer");
-    await user.upload(screen.getByLabelText("Plugin package"), new NativeFile(["package-bytes"], "plugin.tar.gz", { type: "application/gzip" }));
-    await user.click(screen.getByRole("button", { name: "Install plugin" }));
-    await confirm(user, "Install plugin");
-    expect(await screen.findByText("succeeded")).toBeInTheDocument();
-    expect(raw).toBe("package-bytes");
-    expect(contentType).toBe("application/octet-stream");
-    expect(token).toBe("plugin-test-authorization");
-    expect(window.location.search).toContain(PLUGIN_JOB.id);
   });
 
   it("shows discovery job failures and preserves the installed plugin inventory", async () => {

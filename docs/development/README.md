@@ -68,7 +68,6 @@ body/Header 策略归外部插件。转发变更需 deterministic tests 和经�
 
 ## 维护仓库与文档
 
-Git 与 worktree 工作流见[项目工作流](../../.agents/skills/ai-gateway-development-workflow/SKILL.md)。
 编码 Agent 另需遵守 [`AGENTS.md`](../../AGENTS.md)。
 
 文档变更阅读[编写规范](../documentation-standard.md)；组织和写法的依据见

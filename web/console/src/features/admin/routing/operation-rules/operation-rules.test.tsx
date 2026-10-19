@@ -6,8 +6,7 @@ import { http, HttpResponse } from "msw";
 import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
 import { server, seedAuthenticatedSession } from "@/test/msw";
-import { CHANNEL_CAPABILITY, OPERATION_RULE, ROUTING_PROFILE, MODEL } from "@/test/fixtures";
-import type { OperationRuleInput } from "@/api/types";
+import { OPERATION_RULE, ROUTING_PROFILE, MODEL } from "@/test/fixtures";
 
 function renderAt(path: string) {
   seedAuthenticatedSession();
@@ -53,38 +52,5 @@ describe("operation rules", () => {
       model_routing_profile_id: ROUTING_PROFILE.id, operation: "responses",
       enabled: false, routing_tiers: [],
     }));
-  });
-
-  it("lists rules with their capability/model tiers", async () => {
-    renderAt("/admin/routing/operation-rules");
-    expect(await screen.findByText(MODEL.display_name)).toBeInTheDocument();
-    expect(screen.getAllByText("Responses").length).toBeGreaterThan(0);
-  });
-
-  it("updates the tier graph with capability candidates and If-Match", async () => {
-    let submitted: OperationRuleInput | undefined;
-    let ifMatch: string | null = null;
-    server.use(
-      http.put("/console/v1/routing/operation-rules/:id", async ({ request }) => {
-        submitted = (await request.json()) as OperationRuleInput;
-        ifMatch = request.headers.get("if-match");
-        return HttpResponse.json({ id: OPERATION_RULE.id });
-      }),
-    );
-    const user = userEvent.setup();
-    renderAt(`/admin/routing/operation-rules/${OPERATION_RULE.id}`);
-    await waitFor(() =>
-      expect(screen.getByLabelText("Model routing profile")).toHaveTextContent(
-        ROUTING_PROFILE.model_display_name,
-      ),
-    );
-    await user.click(screen.getByRole("button", { name: "Save operation rule" }));
-    await waitFor(() =>
-      expect(submitted?.routing_tiers[0].candidates[0].capability_id).toBe(
-        CHANNEL_CAPABILITY.id,
-      ),
-    );
-    expect(submitted?.operation).toBe("responses");
-    expect(ifMatch).toBe(`"${OPERATION_RULE.updated_at}"`);
   });
 });

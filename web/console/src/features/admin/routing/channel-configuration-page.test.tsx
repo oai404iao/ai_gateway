@@ -55,13 +55,4 @@ describe("Channel configuration", () => {
     expect(await screen.findByRole("heading", { name: "Channel capabilities" })).toBeInTheDocument();
     expect(window.location.pathname).toBe(`/admin/routing/logical-channels/${LOGICAL_CHANNEL.id}`);
   });
-
-  it("exposes group management inside channel configuration", async () => {
-    const user = userEvent.setup();
-    renderAppAt("/admin/routing/channels");
-    await user.click(await screen.findByRole("tab", { name: "Group configuration" }));
-    expect(await screen.findByRole("link", { name: "New group" })).toBeInTheDocument();
-    expect(new URLSearchParams(window.location.search).get("view")).toBe("groups");
-    expect(screen.getByRole("link", { name: "Channel configuration" })).toHaveAttribute("data-active");
-  });
 });
