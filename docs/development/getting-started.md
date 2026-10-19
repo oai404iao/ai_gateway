@@ -22,8 +22,7 @@ rustc --version
 cargo --version
 ```
 
-修改前按[项目工作流](../../.agents/skills/ai-gateway-development-workflow/SKILL.md)创建独立
-worktree，不直接在主 checkout 的 `main` 开发。已有用户改动不得重置或覆盖。
+修改前创建独立 worktree，不直接在主 checkout 的 `main` 开发。已有用户改动不得重置或覆盖。
 下面源码相关命令在任务 worktree 根目录运行。
 
 ## 准备本地配置与数据库
@@ -47,7 +46,7 @@ docker compose up -d
 启动时应用 migration，控制面初始为空。
 
 若主 checkout 已运行开发 PostgreSQL，复用该实例，而不是从不同 worktree 启动争用固定端口的
-Compose 项目。数据库启动位置和隔离要求见[worktree 约定](../../.agents/skills/ai-gateway-development-workflow/references/worktrees.md)。
+Compose 项目。
 新增 migration 的任务必须使用独立数据库，不能修改其他任务依赖的共享 schema。
 
 ```bash
@@ -79,8 +78,7 @@ cargo run
 
 ## 选择验证层级
 
-以下是常用入口；涉及多个区域时合并对应检查，完整要求见
-[验证矩阵](../../.agents/skills/ai-gateway-development-workflow/references/verification-matrix.md)。
+以下是常用入口；涉及多个区域时合并对应检查，完整要求见 [`AGENTS.md`](../../AGENTS.md)。
 
 ### 文档
 
@@ -138,6 +136,5 @@ cargo test --locked --test console_spec_integration
 
 ## 提交与交付
 
-检查 diff、只包含本任务文件，记录实际运行的命令及结果。推送、创建 PR、合并和发布均按
-[项目工作流](../../.agents/skills/ai-gateway-development-workflow/SKILL.md)的授权边界执行。
+检查 diff、只包含本任务文件，记录实际运行的命令及结果。推送、创建 PR、合并和发布须经明确授权。
 发布另见[版本发布](releasing.md)，不要把一般开发验证当成发行门禁。
