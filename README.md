@@ -69,7 +69,7 @@ Quotas are soft checks, not prepaid cost reservations; see the
 Start with the [development setup](docs/development/getting-started.md), then
 choose a topic from the [maintainer guide](docs/development/README.md).
 Rust **1.97.1** is pinned in [`rust-toolchain.toml`](rust-toolchain.toml).
-Console tooling requires Node.js 24 and pnpm 11.17.0.
+Console tooling requires Node.js 24 and pnpm 12.10.1.
 
 With the development database configured and running:
 

@@ -12,7 +12,7 @@
 | Rust 1.97.1 | `rust-toolchain.toml` 固定开发、CI 和发行使用的版本；Rust 2024 edition |
 | Docker Compose / PostgreSQL | PostgreSQL 集成测试与默认本地数据库 |
 | OpenSSL | 本地数据库密码及 Console Ed25519 密钥 |
-| Node.js 24、pnpm 11.17.0 | Console 开发、构建、组件与浏览器测试；生产不需要 Node 常驻 |
+| Node.js 24、pnpm 12.10.1 | Console 开发、构建、组件与浏览器测试；生产不需要 Node 常驻 |
 | Python 3.11+、C 编译器、Linux | 系统 E2E 及原生插件测试等专题；详见各自指南 |
 
 ```bash

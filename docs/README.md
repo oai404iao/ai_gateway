@@ -29,6 +29,7 @@
 - [理解当前架构](development/architecture.md)：监听器、转发、快照和后台流水线。
 - [查找维护者专题](development/README.md)：连接器、Console、持久化、测试、CI 与发布。
 - [开发 Console UI](../web/console/README.md) 或 [实现原生连接器](../crates/connector-sdk/README.md)。
+- [Console 视觉规范](../design.md)：Nova 主题、图标、动画与布局原语边界。
 
 ## 查阅契约与历史
 

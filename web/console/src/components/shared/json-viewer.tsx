@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { ChevronRight } from "lucide-react";
+import { motion } from "motion/react";
 import { Button } from "@/components/ui/button";
 import {
   Collapsible,
@@ -14,6 +15,8 @@ interface JsonViewerProps {
   value: unknown;
   className?: string;
 }
+
+const MotionChevron = motion.create(ChevronRight);
 
 /** Minimal collapsible JSON viewer for audit-log before/after payloads. */
 export function JsonViewer({ value, className }: JsonViewerProps) {
@@ -35,9 +38,10 @@ export function JsonViewer({ value, className }: JsonViewerProps) {
   return (
     <Collapsible open={open} onOpenChange={setOpen} className={className}>
       <CollapsibleTrigger render={<Button variant="ghost" size="xs" />}>
-        <ChevronRight
+        <MotionChevron
           data-icon="inline-start"
-          className={cn("transition-transform", open && "rotate-90")}
+          initial={false}
+          animate={{ rotate: open ? 90 : 0 }}
         />
         {open ? t("Collapse") : t("Expand")}
       </CollapsibleTrigger>

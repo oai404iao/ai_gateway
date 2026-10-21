@@ -6,7 +6,9 @@ import "@/test/msw";
 // them minimally.
 if (!window.matchMedia) {
   window.matchMedia = (query: string) => ({
-    matches: false,
+    // Keep looping Motion animations out of DOM mutation-based component
+    // waits; browser tests cover both motion preferences and live changes.
+    matches: query === "(prefers-reduced-motion: reduce)",
     media: query,
     onchange: null,
     addEventListener: () => {},
