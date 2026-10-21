@@ -1,4 +1,6 @@
-import { createContext, useContext } from "react";
+import { createContext, useCallback, useContext } from "react";
+import { useStore } from "zustand";
+import { createStore, type StoreApi } from "zustand/vanilla";
 
 export type ConsoleLocale = "en-US" | "zh-CN";
 
@@ -2538,7 +2540,25 @@ const zhCN: Record<string, string> = {
   "Credential changed elsewhere. Reloading.": "凭证已被其他管理员修改，正在重新加载。",
 };
 
-let activeLocale: ConsoleLocale = "en-US";
+interface I18nState {
+  locale: ConsoleLocale;
+  setLocale: (locale: ConsoleLocale) => void;
+}
+
+export function createI18nStore(locale: ConsoleLocale) {
+  return createStore<I18nState>((set) => ({
+    locale,
+    setLocale: (locale) => set({ locale }),
+  }));
+}
+
+let activeStore = createI18nStore("en-US");
+
+// Imperative formatters share the active provider's locale, while React
+// consumers subscribe only to their own provider's store.
+export function setCurrentI18nStore(store: StoreApi<I18nState>): void {
+  activeStore = store;
+}
 
 export function browserLocale(): ConsoleLocale {
   if (typeof window === "undefined") return "en-US";
@@ -2548,18 +2568,18 @@ export function browserLocale(): ConsoleLocale {
 }
 
 export function currentLocale(): ConsoleLocale {
-  return activeLocale;
+  return activeStore.getState().locale;
 }
 
 export function setCurrentLocale(locale: ConsoleLocale): void {
-  activeLocale = locale;
+  activeStore.getState().setLocale(locale);
 }
 
 export function translate(
   key: string,
   values: Record<string, string | number> = {},
 ): string {
-  return translateFor(activeLocale, key, values);
+  return translateFor(currentLocale(), key, values);
 }
 
 export function translateFor(
@@ -2577,7 +2597,7 @@ interface I18nContextValue {
   t: (key: string, values?: Record<string, string | number>) => string;
 }
 
-const I18nContext = createContext<I18nContextValue | null>(null);
+const I18nContext = createContext<StoreApi<I18nState> | null>(null);
 export { I18nContext, STORAGE_KEY };
 
 export function useI18n(): I18nContextValue {
@@ -2585,5 +2605,10 @@ export function useI18n(): I18nContextValue {
   if (!context) {
     throw new Error("useI18n must be used within I18nProvider");
   }
-  return context;
+  const { locale, setLocale } = useStore(context);
+  const t = useCallback(
+    (key: string, values?: Record<string, string | number>) => translateFor(locale, key, values),
+    [locale],
+  );
+  return { locale, setLocale, t };
 }

@@ -1,5 +1,6 @@
 import { useId, useMemo, useState } from "react";
 import { ChevronDown, Search, X } from "lucide-react";
+import { motion } from "motion/react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -34,6 +35,8 @@ import {
 } from "@/components/ui/input-group";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { cn } from "@/lib/utils";
+
+const MotionChevron = motion.create(ChevronDown);
 import { useI18n } from "@/app/i18n";
 
 export interface RoutingTargetGroup {
@@ -323,9 +326,10 @@ export function RoutingTargetFields({
                   : t("Show individual channels ({count})", {
                       count: visibleChannels.length,
                     })}
-                <ChevronDown
+                <MotionChevron
                   data-icon="inline-end"
-                  className={cn("transition-transform", channelsOpen && "rotate-180")}
+                  initial={false}
+                  animate={{ rotate: channelsOpen ? 180 : 0 }}
                 />
               </CollapsibleTrigger>
             </CardAction>

@@ -1,5 +1,5 @@
-import { useSyncExternalStore } from "react";
-import { getSession, subscribe, type SessionStatus } from "@/api/session-store";
+import { useStore } from "zustand";
+import { sessionStore, type SessionStatus } from "@/api/session-store";
 import type { ConsoleUser } from "@/api/types";
 
 export interface UseSessionResult {
@@ -10,10 +10,11 @@ export interface UseSessionResult {
 
 /** React binding for the in-memory session store. */
 export function useSession(): UseSessionResult {
-  const snapshot = useSyncExternalStore(subscribe, getSession, getSession);
+  const status = useStore(sessionStore, (state) => state.status);
+  const user = useStore(sessionStore, (state) => state.user);
   return {
-    status: snapshot.status,
-    user: snapshot.user,
-    isAuthenticated: snapshot.status === "authenticated",
+    status,
+    user,
+    isAuthenticated: status === "authenticated",
   };
 }

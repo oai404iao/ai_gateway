@@ -9,7 +9,7 @@ ARG CARGO_CHEF_DIGEST=sha256:856a5a208a9d33cf1eaddb9b78e67192a6dd3381f8299f0c588
 
 # Static Console assets are architecture-independent; build them natively.
 FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-bookworm-slim AS console-builder
-ARG PNPM_VERSION=11.17.0
+ARG PNPM_VERSION=12.10.1
 ENV PNPM_HOME=/pnpm
 ENV PATH="${PNPM_HOME}:${PATH}"
 WORKDIR /workspace

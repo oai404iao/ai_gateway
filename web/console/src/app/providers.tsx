@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { MotionConfig } from "motion/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
@@ -49,16 +50,18 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
   );
   return (
     <ErrorBoundary>
-      <I18nProvider>
-        <ThemeProvider>
-          <QueryClientProvider client={queryClient}>
-            <TooltipProvider>
-              <SessionGate>{children}</SessionGate>
-              <Toaster richColors closeButton />
-            </TooltipProvider>
-          </QueryClientProvider>
-        </ThemeProvider>
-      </I18nProvider>
+      <MotionConfig reducedMotion="user" transition={{ duration: 0.15 }}>
+        <I18nProvider>
+          <ThemeProvider>
+            <QueryClientProvider client={queryClient}>
+              <TooltipProvider>
+                <SessionGate>{children}</SessionGate>
+                <Toaster richColors closeButton />
+              </TooltipProvider>
+            </QueryClientProvider>
+          </ThemeProvider>
+        </I18nProvider>
+      </MotionConfig>
     </ErrorBoundary>
   );
 }

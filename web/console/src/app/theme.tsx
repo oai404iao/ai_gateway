@@ -1,4 +1,6 @@
 import { createContext, useContext, useEffect, useState } from "react";
+import { useStore } from "zustand";
+import { createStore, type StoreApi } from "zustand/vanilla";
 
 type Theme = "light" | "dark" | "system";
 
@@ -7,7 +9,7 @@ interface ThemeContextValue {
   setTheme: (theme: Theme) => void;
 }
 
-const ThemeContext = createContext<ThemeContextValue | null>(null);
+const ThemeContext = createContext<StoreApi<ThemeContextValue> | null>(null);
 const STORAGE_KEY = "console-theme";
 
 function systemPrefersDark(): boolean {
@@ -20,27 +22,26 @@ function applyTheme(theme: Theme): void {
 }
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const [theme, setThemeState] = useState<Theme>(() => {
-    const stored = localStorage.getItem(STORAGE_KEY) as Theme | null;
-    return stored ?? "system";
-  });
+  const [store] = useState(() => createStore<ThemeContextValue>((set) => ({
+    theme: (localStorage.getItem(STORAGE_KEY) as Theme | null) ?? "system",
+    setTheme: (theme) => {
+      localStorage.setItem(STORAGE_KEY, theme);
+      set({ theme });
+    },
+  })));
+  const theme = useStore(store, (state) => state.theme);
 
   useEffect(() => {
     applyTheme(theme);
   }, [theme]);
 
-  const setTheme = (next: Theme) => {
-    localStorage.setItem(STORAGE_KEY, next);
-    setThemeState(next);
-  };
-
   return (
-    <ThemeContext value={{ theme, setTheme }}>{children}</ThemeContext>
+    <ThemeContext value={store}>{children}</ThemeContext>
   );
 }
 
 export function useTheme(): ThemeContextValue {
   const context = useContext(ThemeContext);
   if (!context) throw new Error("useTheme must be used within ThemeProvider");
-  return context;
+  return useStore(context);
 }

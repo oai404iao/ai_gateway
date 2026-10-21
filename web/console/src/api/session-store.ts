@@ -1,3 +1,4 @@
+import { createStore } from "zustand/vanilla";
 import type { ConsoleUser } from "@/api/types";
 
 // In-memory only. Access tokens, refresh tokens, and API keys are never
@@ -7,43 +8,30 @@ import type { ConsoleUser } from "@/api/types";
 
 export type SessionStatus = "loading" | "authenticated" | "unauthenticated";
 
-type Listener = () => void;
-
 interface SessionState {
   status: SessionStatus;
   accessToken: string | null;
   user: ConsoleUser | null;
 }
 
-let state: SessionState = {
+export const sessionStore = createStore<SessionState>(() => ({
   status: "loading",
   accessToken: null,
   user: null,
-};
-
-const listeners = new Set<Listener>();
+}));
 
 export function getSession(): SessionState {
-  return state;
+  return sessionStore.getState();
 }
 
 export function setSession(session: Partial<SessionState>): void {
-  state = { ...state, ...session };
-  for (const listener of listeners) listener();
+  sessionStore.setState(session);
 }
 
 export function clearSession(): void {
-  state = { status: "unauthenticated", accessToken: null, user: null };
-  for (const listener of listeners) listener();
-}
-
-export function subscribe(listener: Listener): () => void {
-  listeners.add(listener);
-  return () => {
-    listeners.delete(listener);
-  };
+  sessionStore.setState({ status: "unauthenticated", accessToken: null, user: null });
 }
 
 export function getAccessToken(): string | null {
-  return state.accessToken;
+  return sessionStore.getState().accessToken;
 }

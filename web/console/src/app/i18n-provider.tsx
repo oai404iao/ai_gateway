@@ -1,35 +1,22 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
+import { useStore } from "zustand";
 import {
   I18nContext,
   STORAGE_KEY,
   browserLocale,
-  setCurrentLocale,
-  translateFor,
-  type ConsoleLocale,
+  createI18nStore,
+  setCurrentI18nStore,
 } from "@/app/i18n";
 
 export function I18nProvider({ children }: { children: React.ReactNode }) {
-  const [locale, setLocale] = useState<ConsoleLocale>(browserLocale);
-  setCurrentLocale(locale);
+  const [store] = useState(() => createI18nStore(browserLocale()));
+  const locale = useStore(store, (state) => state.locale);
+  setCurrentI18nStore(store);
 
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEY, locale);
     document.documentElement.lang = locale;
   }, [locale]);
 
-  const t = useCallback(
-    (key: string, values?: Record<string, string | number>) =>
-      translateFor(locale, key, values),
-    [locale],
-  );
-  const value = useMemo(
-    () => ({
-      locale,
-      setLocale,
-      t,
-    }),
-    [locale, t],
-  );
-
-  return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
+  return <I18nContext.Provider value={store}>{children}</I18nContext.Provider>;
 }

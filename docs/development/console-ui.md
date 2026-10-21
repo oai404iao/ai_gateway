@@ -20,6 +20,7 @@ Rust 二进制；Node 不是生产服务。先选择运行方式，再按契约�
 
 页面结构、返回与跳转、列表、草稿和历史入口的统一约定见
 [Console 导航与页面交互规范](console-interaction-standard.md)。
+视觉、主题、图标和动画遵循根目录的 [design.md](../../design.md)。
 
 系统设置分类定义在 `web/console/src/features/admin/system/settings-sections.ts`，侧栏的
 可展开子菜单与 `/admin/system/:section` 页面共用此定义。旧 `/admin/system` 地址跳转
@@ -62,6 +63,9 @@ Console UI 是管理 `ai-gateway` 的 React 单页应用，不是聊天产品或
 | --- | --- |
 | UI | React 19 + TypeScript（strict）+ Vite |
 | 样式/组件 | Tailwind CSS v4 + shadcn/ui `base-nova`，primitives 使用 Base UI |
+| 主题/图标 | 集中的 CSS 变量；Lucide；项目品牌图形保留 |
+| 动画 | Motion（`motion/react`）；保留 Nova/Base UI 自带的基础状态过渡 |
+| 共享客户端状态 | Zustand：内存会话、主题和语言偏好 |
 | 路由 | React Router |
 | 服务端状态 | TanStack Query |
 | 表单 | React Hook Form + Zod |
@@ -71,6 +75,19 @@ Console UI 是管理 `ai-gateway` 的 React 单页应用，不是聊天产品或
 
 `web/console/components.json` 和 `web/console/package.json` 是前端 base/style 与依赖的直接来源。
 shadcn 组件以源码形式保存在 `src/components/ui/`，不是运行时黑盒组件包。
+
+Node.js 使用 24，pnpm 在 `packageManager` 和 Docker 构建中固定为 12.10.1。
+在仓库根目录和 `web/console/` 分别检查 `pnpm --version`，避免项目 pin 使系统级
+pnpm 自动切回旧版。当前没有可调整尺寸或拖拽布局；后续分别采用
+`react-resizable-panels` 和 `dnd-kit`，重复组合封装在项目自己的
+`src/components/layout/`，不预先增加依赖、占位组件或布局配置系统。
+
+Zustand 会话 store 只存在于内存。主题与语言 store 按 provider mount 创建，只有这些
+非敏感偏好写入已有浏览器存储键；Context 只传递 store，不再独立维护一份共享状态。
+服务端数据继续归 TanStack Query，表单归 React Hook Form，局部展开状态留在组件。
+`QueryClient` 仍按 mount 创建。Toast 复用应用主题，不使用独立的 `next-themes` provider。
+Motion 的全局配置响应用户减弱动态效果偏好，循环加载动画另行停止；CSS 同时关闭原语的
+基础状态过渡。不要将这些基础过渡的保留误解为允许新增另一套应用动画库。
 
 ## 3. 路由规则
 

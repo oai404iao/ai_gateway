@@ -51,7 +51,7 @@ Console 应置于 HTTPS 反向代理后。
 
 先完成[开发环境设置](docs/development/getting-started.md)，再从[维护者文档](docs/development/README.md)
 选择主题。[`rust-toolchain.toml`](rust-toolchain.toml) 固定 Rust **1.97.1**；
-Console 工具链使用 Node.js 24 和 pnpm 11.17.0。
+Console 工具链使用 Node.js 24 和 pnpm 12.10.1。
 
 开发数据库配置并启动后，在仓库根目录运行：
 

@@ -18,7 +18,7 @@ service, SSR, or UI route on the public `/v1/*` listener.
 
 ## Prerequisites
 
-- Node.js 24 (declared in `engines`) and pnpm 11.17.0 (pinned by
+- Node.js 24 (declared in `engines`) and pnpm 12.10.1 (pinned by
   `packageManager`)
 - A POSIX shell for test scripts; Playwright Chromium for browser tests
 - For live development: a running Gateway with Console/JWT configured and a
@@ -132,6 +132,14 @@ and commit both. `pnpm generate:api:check` is the drift gate.
 Use Tailwind CSS v4 and the checked-in shadcn/ui `base-nova` wrappers backed by
 Base UI. Custom triggers use `render`, not Radix `asChild`.
 
+- Follow [`design.md`](../../design.md) for visual rules: centralized CSS variables,
+  Lucide icons, and Motion (`motion/react`) for application animations. Keep
+  reduced-motion behavior; Nova/Base UI primitive transitions remain component-owned.
+- Use Zustand for shared client state (memory-only session, theme and locale).
+  Keep server state in TanStack Query, forms in React Hook Form, and local state local.
+- Future resizable panels use `react-resizable-panels`; future drag-and-drop uses
+  `dnd-kit`. Encapsulate recurring combinations in project-owned layout components.
+  No resize/drag interaction or dependency is currently installed.
 - Follow the [interaction standard](../../docs/development/console-interaction-standard.md)
   for parent links, URL list state, detail layouts, unsaved drafts, labels and
   redirects. Navigation uses links; mutations use buttons. Do not duplicate Back controls.
