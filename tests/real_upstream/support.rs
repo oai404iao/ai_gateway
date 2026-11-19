@@ -675,7 +675,7 @@ async fn complete_nonstreaming_request(
     let events = gateway.logs.events();
     assert_usage_was_logged(&events, format, operation, RequestProtocol::NonStream);
     check_nonstreaming_usage_matches_wire(operation, &value, &events[0])
-        .unwrap_or_else(|error| panic!("{error}"));
+        .unwrap_or_else(|error| panic!("{operation:?}: {error}"));
     NonStreamingResult {
         value,
         elapsed: started.elapsed(),
@@ -1156,7 +1156,7 @@ fn check_nonstreaming_usage_matches_wire(
     operation: ApiOperation,
     value: &Value,
     event: &RequestLogEvent,
-) -> Result<(), String> {
+) -> Result<(), &'static str> {
     let (format, usage) = match operation {
         ApiOperation::ChatCompletions => (SmokeFormat::ChatCompletions, value.get("usage")),
         ApiOperation::Responses => (
@@ -1169,23 +1169,19 @@ fn check_nonstreaming_usage_matches_wire(
             (SmokeFormat::Images, value.get("usage"))
         }
         ApiOperation::StandaloneWebSearch | ApiOperation::ResponsesWebSocket => {
-            return Err(format!(
-                "unexpected operation for non-streaming token usage: {operation:?}"
-            ));
+            return Err("unexpected operation for non-streaming token usage");
         }
     };
     let expected = usage
         .and_then(|usage| usage_from_wire_object(format, usage))
-        .ok_or_else(|| format!("invalid wire usage for {operation:?}"))?;
+        .ok_or("invalid wire usage")?;
     let actual = event
         .billing
         .as_ref()
         .and_then(|billing| billing.usage)
-        .ok_or_else(|| format!("no terminal usage for {operation:?}"))?;
+        .ok_or("no terminal usage")?;
     if actual != expected {
-        return Err(format!(
-            "terminal usage for {operation:?} differs from wire: {actual:?} != {expected:?}"
-        ));
+        return Err("terminal usage differs from wire");
     }
     Ok(())
 }
@@ -1532,7 +1528,7 @@ mod tests {
                 let error =
                     check_nonstreaming_usage_matches_wire(operation, &result.value, &mismatched)
                         .unwrap_err();
-                assert!(error.contains("differs from wire"), "{error}");
+                assert_eq!(error, "terminal usage differs from wire");
             }
         }
     }
