@@ -992,7 +992,7 @@ async fn visible_projection_costs(backend: &Backend, c: Context) {
         } else {
             RequestProtocol::NonStream
         };
-        event.streamed = false;
+        event.streamed = event.request_protocol.is_streamed();
         event.billing.as_mut().unwrap().cost_amount = Some(Decimal::new((index + 1) as i64, 8));
         events.push(event);
     }
@@ -1006,10 +1006,17 @@ async fn visible_projection_costs(backend: &Backend, c: Context) {
         .self_codex_quota_window_history(c.admin, c.id, 10)
         .await
         .unwrap();
-    assert!(
-        history
-            .periods
-            .iter()
-            .all(|p| p.cost_amount == expected_amount)
+    let mut periods = history
+        .periods
+        .iter()
+        .map(|p| (p.window_kind.as_str(), p.window_seconds, p.cost_amount))
+        .collect::<Vec<_>>();
+    periods.sort_unstable();
+    assert_eq!(
+        periods,
+        [
+            ("primary", 18_000, expected_amount),
+            ("secondary", 604_800, expected_amount)
+        ]
     );
 }

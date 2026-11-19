@@ -81,6 +81,7 @@ class AdapterUpstream:
                 pass
 
             def do_POST(self):
+                fixture.arrived.set()
                 try:
                     self.connection.settimeout(10)
                     length = int(self.headers.get("Content-Length", "0"))
@@ -95,7 +96,6 @@ class AdapterUpstream:
                             raise ValueError("request limit exceeded")
                         fixture.evidence.append({"path": self.path, "stream": body.get("stream", False),
                                                  "model": body["model"]})
-                    fixture.arrived.set()
                     if not fixture.release.wait(timeout=10):
                         raise ValueError("response gate timeout")
                     stream = body.get("stream", False)

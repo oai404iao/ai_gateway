@@ -99,10 +99,21 @@ class ResponseAdapterTests(unittest.TestCase):
                     wire_request(data, "synthetic", stream=True)
         response = MagicMock()
         response.__enter__.return_value = response
-        response.read.side_effect = TimeoutError()
+        response.read1.side_effect = TimeoutError()
         with patch("response_adapter.HTTP.open", return_value=response):
             with self.assertRaises(TimeoutError):
                 wire_request(data, "synthetic", stream=True)
+
+    def test_late_stream_reset_retains_received_adapter_delta(self):
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.status = 200
+        body = wire(adapted_sse()[:1])
+        response.read1.side_effect = [body, ConnectionResetError()]
+        with patch("response_adapter.HTTP.open", return_value=response):
+            status, payload = wire_request({"public": "http://localhost"}, "synthetic", stream=True)
+        self.assertEqual((status, payload), (200, body))
+        verify_failed_wire(status, payload, truncated_label="adapted:")
 
     def test_explicit_fixture_requires_matching_manifest_and_archive_digest(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -154,10 +165,13 @@ class ResponseAdapterTests(unittest.TestCase):
                 verify_responses_json(damaged, "adapted:")
 
     def test_protocol_oracle_requires_both_rejection_and_zero_dispatch(self):
-        verify_no_dispatch(503, 0, 0)
-        for status, before, after in ((200, 0, 0), (503, 0, 1)):
-            with self.assertRaises(RuntimeError):
-                verify_no_dispatch(status, before, after)
+        rejected = b'{"error":{"code":"no_healthy_channel"}}'
+        verify_no_dispatch(503, rejected, False)
+        for status, body, arrived in ((200, rejected, False), (0, b"", False), (401, b"", False),
+                                      (503, b'{"error":{"code":"request_log_unavailable"}}', False),
+                                      (503, rejected, True)):
+            with self.subTest(status=status, arrived=arrived), self.assertRaises(RuntimeError):
+                verify_no_dispatch(status, body, arrived)
 
     def test_json_oracle_rejects_passthrough_usage_tampering_and_missing_terminal(self):
         value = chat_json()
@@ -177,6 +191,7 @@ class ResponseAdapterTests(unittest.TestCase):
     def test_sse_oracle_rejects_shared_state_usage_missing_and_duplicate_done(self):
         events = adapted_sse()
         verify_sse(200, wire(events), "adapted:")
+        verify_sse(200, wire(events).replace(b"data: ", b"data:").replace(b"\n", b"\r\n"), "adapted:")
         failures = [events[:-1], [*events, "[DONE]"], chat_events()]
         shared = json.loads(events[0])
         shared["choices"][0]["delta"]["content"] = "adapted:3:raw-first"
@@ -191,15 +206,23 @@ class ResponseAdapterTests(unittest.TestCase):
     def test_failure_oracle_rejects_raw_fallback_or_synthesized_success(self):
         error = json.dumps({"error": {"code": "response_transform_failed"}}).encode()
         verify_failed_wire(502, error)
+        verify_failed_wire(502, error, stream=True)
         verify_failed_wire(200, b"", stream=True)
+        prefix = wire(adapted_sse()[:-1])
+        verify_failed_wire(200, prefix, truncated_label="adapted:")
         for status, payload, extra in (
             (200, json.dumps(chat_json()).encode(), {}),
             (502, error.replace(b"response_transform_failed", b"upstream_unavailable"), {}),
+            (401, b"", {"stream": True}),
+            (502, error.replace(b"response_transform_failed", b"upstream_unavailable"), {"stream": True}),
             (200, wire(["raw-first"]), {"stream": True}),
             (200, wire(adapted_sse()), {"stream": True}),
-            (200, wire(adapted_sse()), {"stream": True, "truncated": True}),
+            (200, wire(adapted_sse()), {"truncated_label": "adapted:"}),
+            (200, prefix + b"data:[DONE]\n\n", {"truncated_label": "adapted:"}),
+            (200, prefix.replace(b"adapted:1:raw-first", b"raw-first"), {"truncated_label": "adapted:"}),
+            (0, b"", {"truncated_label": "adapted:"}),
         ):
-            with self.assertRaises(RuntimeError):
+            with self.subTest(status=status, extra=extra), self.assertRaises(RuntimeError):
                 verify_failed_wire(status, payload, **extra)
 
     def test_loopback_fixture_is_same_format_and_bounded(self):
@@ -233,25 +256,28 @@ class ResponseAdapterTests(unittest.TestCase):
             "error_code": None, "outcome": "succeeded", "cost_amount": "0.000009",
             "request_protocol": "non_stream",
         }
-        logs = [{**base, "request_protocol": "sse" if i < 2 else "non_stream"}
+        logs = [{**base, "id": f"chat-{i}", "request_protocol": "sse" if i < 2 else "non_stream"}
                 for i in range(5)] + [
-            {**base, "api_operation": "responses", "channel_id": "responses-channel"},
+            {**base, "id": "responses-json", "api_operation": "responses", "channel_id": "responses-channel"},
         ] + [
-            {**base, "outcome": "failed", "error_code": "response_transform_failed",
-             "cost_amount": "0", "input_tokens": 0 if i == 0 else 5,
-             "output_tokens": 0 if i == 0 else 2,
-             "request_protocol": "sse" if i < 2 else "non_stream"}
-            for i in range(4)]
+            {**base, "id": name, "outcome": "failed", "error_code": "response_transform_failed",
+             "cost_amount": "0", "input_tokens": 0 if name == "invalid-first-event" else 5,
+             "output_tokens": 0 if name == "invalid-first-event" else 2,
+             "request_protocol": protocol}
+            for name, protocol in (("invalid-json", "non_stream"), ("metering-tamper", "non_stream"),
+                                   ("invalid-first-event", "sse"), ("truncated", "sse"))]
         logs += [
-            {**base, "api_operation": "responses", "channel_id": "responses-channel",
+            {**base, "id": "responses-completed", "api_operation": "responses", "channel_id": "responses-channel",
              "request_protocol": "sse"},
-            *[{**base, "api_operation": "responses", "channel_id": "responses-channel",
+            *[{**base, "id": terminal, "api_operation": "responses", "channel_id": "responses-channel",
                "request_protocol": "sse", "outcome": "failed", "error_code": "upstream_sse_error",
-               "cost_amount": "0"} for _ in range(2)],
+               "cost_amount": "0"} for terminal in ("incomplete", "cancelled")],
         ]
+        failures = {"invalid-json": ("non_stream", True), "metering-tamper": ("non_stream", True),
+                    "invalid-first-event": ("sse", False), "truncated": ("sse", True)}
         data = {"console": "http://localhost", "token": "synthetic"}
         for fault in (None, "success", "usage", "cost", "balance", "quota",
-                      "upstream_kind", "upstream_usage"):
+                      "upstream_kind", "upstream_usage", "swap_json_usage", "swap_sse_usage"):
             changed = copy.deepcopy(logs)
             if fault == "success":
                 changed[-1]["outcome"] = "succeeded"
@@ -263,20 +289,27 @@ class ResponseAdapterTests(unittest.TestCase):
                 changed[-1]["error_code"] = "response_transform_failed"
             elif fault == "upstream_usage":
                 changed[-1]["input_tokens"] = changed[-1]["output_tokens"] = None
+            elif fault in ("swap_json_usage", "swap_sse_usage"):
+                by_id = {log["id"]: log for log in changed}
+                invalid = by_id["invalid-first-event"]
+                known = by_id["invalid-json" if fault == "swap_json_usage" else "truncated"]
+                for field in ("input_tokens", "output_tokens"):
+                    invalid[field], known[field] = known[field], invalid[field]
             def api(_base, path, **_kwargs):
                 if "request-logs" in path:
                     return changed, {}
                 if path.endswith("/me"):
                     return {"balance_amount": "100" if fault == "balance" else "99.999937"}, {}
                 return {"quota_used_amount": "0" if fault == "quota" else "0.000063"}, {}
-            with patch("response_adapter.request", side_effect=api):
+            with (self.subTest(fault=fault), patch("run.request", side_effect=api),
+                  patch("response_adapter.request", side_effect=api)):
                 if fault:
                     with self.assertRaises(RuntimeError):
                         verify_adapter_settlement(data, "key", Decimal("100"), "channel",
-                                                  "responses-channel")
+                                                  "responses-channel", failures)
                 else:
                     result = verify_adapter_settlement(data, "key", Decimal("100"), "channel",
-                                                       "responses-channel")
+                                                       "responses-channel", failures)
                     self.assertEqual(result["logs"], 13)
 
 

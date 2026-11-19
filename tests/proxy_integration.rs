@@ -1272,6 +1272,13 @@ fn proxy_request(model: &str) -> axum::http::Request<Body> {
         .unwrap()
 }
 
+fn structured_error_detail(summary: &str) -> Value {
+    let json = summary
+        .split_once("\n\n")
+        .map_or(summary, |(_, detail)| detail);
+    serde_json::from_str(json).expect("the complete error summary must retain structured detail")
+}
+
 struct DeniedLogSink;
 
 impl RequestLogSink for DeniedLogSink {
@@ -1628,8 +1635,12 @@ async fn unknown_model_returns_not_found_without_upstream_contact() {
     assert!(logs[0].fast_mode);
     assert_eq!(logs[0].error_code.as_deref(), Some("model_not_found"));
     let summary = logs[0].error_summary.as_deref().unwrap();
-    assert!(summary.starts_with("The model `unknown-model` does not exist or is unavailable."));
-    assert!(summary.contains("\"type\": \"invalid_request_error\""));
+    let detail = structured_error_detail(summary);
+    assert_eq!(detail["error"]["type"], "invalid_request_error");
+    assert_eq!(
+        detail["error"]["message"],
+        "The model `unknown-model` does not exist or is unavailable."
+    );
 }
 
 #[tokio::test]
@@ -1694,10 +1705,7 @@ async fn configured_model_with_only_disabled_channels_returns_service_unavailabl
     assert_eq!(events[0].response_status_code, Some(503));
     assert_eq!(events[0].error_code.as_deref(), Some("no_healthy_channel"));
     let summary = events[0].error_summary.as_deref().unwrap();
-    assert!(
-        summary.starts_with("No healthy upstream channel is currently available for this model.")
-    );
-    assert!(summary.contains("\"code\": \"no_healthy_channel\""));
+    assert_eq!(structured_error_detail(summary), body);
 }
 
 #[tokio::test]
@@ -3012,15 +3020,17 @@ async fn client_body_allowlists_reject_unknown_fields_before_upstream_contact() 
 async fn images_edit_ignores_only_declared_client_compatibility_fields() {
     let harness = harness(StatusCode::OK, br#"{"data":[]}"#.to_vec()).await;
     let boundary = "gateway-edit-client-policy-boundary";
+    let prompt = "change the clothes to blue";
+    let image = b"\x89PNG\r\n\x1a\n\x00\xff";
     let request_body = multipart_edit_body(
         boundary,
         "gpt-image-2",
         &[
-            ("prompt", "change the clothes to blue"),
+            ("prompt", prompt),
             ("output_format", "png"),
             ("moderation", "auto"),
         ],
-        b"image",
+        image,
     );
 
     let response = authorized_multipart_post(
@@ -3040,9 +3050,27 @@ async fn images_edit_ignores_only_declared_client_compatibility_fields() {
     assert_eq!(requests.len(), 1);
     assert_ne!(requests[0].body, request_body);
     assert!(requests[0].headers.get("content-md5").is_none());
-    let body = String::from_utf8_lossy(&requests[0].body);
-    assert!(body.contains("name=\"output_format\""));
-    assert!(!body.contains("name=\"moderation\""));
+    let outbound_boundary =
+        multer::parse_boundary(requests[0].headers["content-type"].to_str().unwrap()).unwrap();
+    let bytes = Bytes::copy_from_slice(&requests[0].body);
+    let stream = futures_util::stream::once(async move { Ok::<_, std::io::Error>(bytes) });
+    let mut multipart = multer::Multipart::new(stream, outbound_boundary);
+    let mut parts = std::collections::BTreeMap::new();
+    while let Some(field) = multipart.next_field().await.unwrap() {
+        let name = field.name().unwrap().to_owned();
+        assert!(
+            parts
+                .insert(name.clone(), field.bytes().await.unwrap())
+                .is_none(),
+            "duplicate multipart field {name}"
+        );
+    }
+    assert!(!parts.contains_key("moderation"));
+    assert_eq!(parts.len(), 4);
+    assert_eq!(parts["model"].as_ref(), b"gpt-image-2");
+    assert_eq!(parts["prompt"].as_ref(), prompt.as_bytes());
+    assert_eq!(parts["output_format"].as_ref(), b"png");
+    assert_eq!(parts["image"].as_ref(), image);
 }
 
 #[tokio::test]
@@ -3211,10 +3239,7 @@ async fn images_edit_rejects_json_transforms_after_routing_without_forwarding_se
     );
     assert_eq!(logs[0].error_code.as_deref(), Some("invalid_request"));
     let summary = logs[0].error_summary.as_deref().unwrap();
-    assert!(
-        summary.starts_with("Images edit multipart bodies do not support request JSON transforms.")
-    );
-    assert!(summary.contains("\"code\": \"image_edit_json_transform_unsupported\""));
+    assert_eq!(structured_error_detail(summary), body);
     assert!(!summary.contains("do not log this"));
     assert!(!summary.contains("sensitive-image"));
 }
@@ -3713,9 +3738,10 @@ async fn protocol_sse_errors_fail_logs_before_client_disconnect() {
     assert_eq!(events[0].outcome.as_str(), "failed");
     assert_eq!(events[0].error_code.as_deref(), Some("provider_error"));
     let summary = events[0].error_summary.as_deref().unwrap();
-    assert!(summary.starts_with("sensitive upstream detail\n\n{"));
-    assert!(summary.contains("\"type\": \"server_error\""));
-    assert!(summary.contains("\"code\": \"provider_error\""));
+    let detail = structured_error_detail(summary);
+    assert_eq!(detail["error"]["type"], "server_error");
+    assert_eq!(detail["error"]["code"], "provider_error");
+    assert_eq!(detail["error"]["message"], "sensitive upstream detail");
     assert_eq!(
         events[0].response_status_code,
         Some(StatusCode::OK.as_u16())
@@ -3747,9 +3773,10 @@ async fn protocol_sse_errors_fail_logs_before_client_disconnect() {
     assert_eq!(events[1].outcome.as_str(), "failed");
     assert_eq!(events[1].error_code.as_deref(), Some("server_error"));
     let summary = events[1].error_summary.as_deref().unwrap();
-    assert!(summary.starts_with("sensitive upstream detail\n\n{"));
-    assert!(summary.contains("\"param\": null"));
-    assert!(summary.contains("\"sequence_number\": 3"));
+    let detail = structured_error_detail(summary);
+    assert_eq!(detail.get("param"), Some(&Value::Null));
+    assert_eq!(detail["sequence_number"].as_u64(), Some(3));
+    assert_eq!(detail["message"], "sensitive upstream detail");
     assert_eq!(
         events[1].response_status_code,
         Some(StatusCode::OK.as_u16())
@@ -4712,9 +4739,10 @@ async fn rejected_upstream_response_is_attempted_once_without_automatic_retry() 
     assert_eq!(logs.len(), 1);
     assert_eq!(logs[0].error_code.as_deref(), Some("overloaded"));
     let summary = logs[0].error_summary.as_deref().unwrap();
-    assert!(summary.starts_with("provider overloaded\n\n{"));
-    assert!(summary.contains("\"param\": \"capacity\""));
-    assert!(summary.contains("\"request_id\": \"req_123\""));
+    let detail = structured_error_detail(summary);
+    assert_eq!(detail["error"]["param"], "capacity");
+    assert_eq!(detail["error"]["message"], "provider overloaded");
+    assert_eq!(detail["request_id"], "req_123");
 }
 
 #[tokio::test]

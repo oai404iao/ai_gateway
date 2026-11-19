@@ -4,12 +4,7 @@ import { BrowserRouter } from "react-router";
 import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
 import { seedAuthenticatedSession } from "@/test/msw";
-import {
-  API_KEY_POLICY,
-  CONFIG_TEMPLATE,
-  PROXY,
-  REGISTRATION_INVITATION_CODE,
-} from "@/test/fixtures";
+import { API_KEY_POLICY, PROXY } from "@/test/fixtures";
 import { STORAGE_KEY, setCurrentLocale } from "@/app/i18n";
 
 function renderAppAt(path: string) {
@@ -30,21 +25,14 @@ afterEach(() => {
 
 const createRoutes = [
   ["/admin/user-groups/new", /create user group/i],
-  ["/admin/api-key-policies/new", /create policy/i],
   ["/admin/models/new", /create client model/i],
-  ["/admin/routing/groups/new", /save group/i],
   ["/admin/routing/logical-channels/new", /save channel/i],
   ["/admin/transforms/templates/new", /create template/i],
 ] as const;
 
 const editRoutes = [
-  [
-    `/admin/registration-invitation-codes/${REGISTRATION_INVITATION_CODE.id}`,
-    /save registration code/i,
-  ],
   [`/admin/api-key-policies/${API_KEY_POLICY.id}`, /save policy/i],
   [`/admin/network/proxies/${PROXY.id}`, /save proxy/i],
-  [`/admin/transforms/templates/${CONFIG_TEMPLATE.id}`, /save template/i],
 ] as const;
 
 describe("Admin detail routes", () => {

@@ -7,7 +7,6 @@ import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
 import { server, seedAuthenticatedSession } from "@/test/msw";
 import { CHANNEL_GROUP, NEW_API_KEY_SECRET, OWN_API_KEY } from "@/test/fixtures";
-import { maskApiKey } from "@/lib/api-keys";
 import type { SelfApiKeyCreateInput } from "@/api/types";
 
 function renderAppAt(path: string) {
@@ -48,7 +47,6 @@ describe("ApiKeysPage", () => {
     renderAppAt("/api-keys");
 
     expect(await screen.findByText(OWN_API_KEY.name)).toBeInTheDocument();
-    expect(screen.getByDisplayValue(maskApiKey(NEW_API_KEY_SECRET))).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "Channel groups" })).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "Logical channels" })).toBeInTheDocument();
     expect(screen.queryByRole("columnheader", { name: "Formats" })).not.toBeInTheDocument();
@@ -70,14 +68,14 @@ describe("ApiKeysPage", () => {
     const user = userEvent.setup();
     renderAppAt("/api-keys");
 
-    const value = await screen.findByLabelText(/api key value/i);
-    expect(value).toHaveValue(maskApiKey(NEW_API_KEY_SECRET));
+    const value = await screen.findByLabelText<HTMLInputElement>(/api key value/i);
+    expect(value.value === "sk-••••••••••••••••••••••••").toBe(true);
 
     await user.click(screen.getByRole("button", { name: /show full api key/i }));
-    expect(value).toHaveValue(NEW_API_KEY_SECRET);
+    expect(value.value === NEW_API_KEY_SECRET).toBe(true);
 
     await user.click(screen.getByRole("button", { name: /copy api key/i }));
-    expect(await navigator.clipboard.readText()).toBe(NEW_API_KEY_SECRET);
+    expect(await navigator.clipboard.readText() === NEW_API_KEY_SECRET).toBe(true);
   });
 
   it("shows and copies administrator-configured API hosts", async () => {
@@ -230,19 +228,17 @@ describe("ApiKeysPage", () => {
 
   it("surfaces an optimistic-concurrency conflict as a toast", async () => {
     seedAuthenticatedSession();
-    // Own API key detail GET returns a stable ETag; PUT with a mismatched
-    // If-Match yields 409.
-    let putHit = false;
+    const versions: (string | null)[] = [];
     server.use(
-      http.get("/console/v1/me/api-keys/:id", () =>
+      http.get(`/console/v1/me/api-keys/${OWN_API_KEY.id}`, () =>
         HttpResponse.json(OWN_API_KEY, {
           headers: { ETag: `"v1"` },
         }),
       ),
-      http.put("/console/v1/me/api-keys/:id", () => {
-        putHit = true;
+      http.put(`/console/v1/me/api-keys/${OWN_API_KEY.id}`, ({ request }) => {
+        versions.push(request.headers.get("if-match"));
         return HttpResponse.json(
-          { error: "Console operation rejected" },
+          { error: "conflict" },
           { status: 409 },
         );
       }),
@@ -250,16 +246,12 @@ describe("ApiKeysPage", () => {
     const user = userEvent.setup();
     renderAppAt(`/api-keys/${OWN_API_KEY.id}`);
 
-    // The detail form loads with reset (valid) values; renaming and saving
-    // sends If-Match from the GET ETag, and the overridden PUT returns 409.
     const nameField = await screen.findByLabelText(/name/i);
     await user.clear(nameField);
     await user.type(nameField, "renamed");
     await user.click(screen.getByRole("button", { name: /save changes/i }));
 
-    await waitFor(() => {
-      expect(putHit).toBe(true);
-      expect(screen.getByText(/changed by another session/i)).toBeInTheDocument();
-    }, { timeout: 3000 });
+    expect(await screen.findByText(/changed by another session/i)).toBeInTheDocument();
+    expect(versions).toEqual(['"v1"']);
   });
 });

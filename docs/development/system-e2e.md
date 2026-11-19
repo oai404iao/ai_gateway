@@ -66,7 +66,7 @@
 - 验证 Chat/Responses JSON/SSE 文本归一化、原始 usage 和一次结算。
 - Responses incomplete/cancelled 必须保留真实失败终态，不能生成 completed 或 `[DONE]`。
 - 并发交错 SSE 请求的计数状态不串用；设置修改时在途 JSON 请求仍使用旧代际。
-- 不支持的 transport 零上游派发；畸形输出、usage 篡改和无终止符的截断流
+- 仅支持 non-stream 的渠道收到 SSE 请求时，验证 `503 no_healthy_channel` 且上游未收到 POST；畸形输出、usage 篡改和无终止符的截断流
   不得透传原内容或伪造成功。
 - 使用独立 Key 和余额基线验证新增日志、费用和额度，保留失败请求零费用政策。
 
@@ -125,7 +125,7 @@ Codex 分别显式运行 HTTP 与 WS；没有跨协议转换矩阵，也未覆�
 SQLite 需要 `sqlite-backend,embedded-console-ui` 两个 feature，且不依赖 Docker。
 两种后端都运行全部浏览器、真实 CLI、请求计量与故障场景。
 浏览器还验证独立上游凭证的共享引用、带 ETag 的密钥轮换和渠道不再内联编辑密钥；
-后续真实 CLI 转发使用轮换后的同一凭证。
+HTTP/SSE 请求和 WebSocket 握手均在模拟上游校验轮换后的 Bearer，不以 Console 回读成功代替转发验证。
 SQLite 额外核验：
 
 - 活跃 serve 拒绝备份及管理员 CLI；

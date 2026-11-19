@@ -696,6 +696,11 @@ async fn recovery_scans_only_outstanding_work_not_settled_history() {
             .unwrap(),
         0
     );
+    // Isolate access to settled history from dead heap/index entries left by draining the queue.
+    sqlx::query("VACUUM (INDEX_CLEANUP ON) request_settlement_pending")
+        .execute(&database.pool)
+        .await
+        .unwrap();
     let current = request_log_event(&seed, RequestLogOutcome::Succeeded);
     metering
         .record_batch(std::slice::from_ref(&current))
@@ -709,38 +714,49 @@ async fn recovery_scans_only_outstanding_work_not_settled_history() {
             .is_err()
     );
     sqlx::raw_sql(
-        "ANALYZE request_metering_facts; ANALYZE request_settlement_pending; ANALYZE api_keys;",
+        "ANALYZE request_metering_facts; ANALYZE request_settlement_pending;
+         ANALYZE request_settlements; ANALYZE api_keys;",
     )
     .execute(&database.pool)
     .await
     .unwrap();
-    let plan: serde_json::Value = sqlx::query_scalar(
-        "EXPLAIN (ANALYZE,FORMAT JSON)
-         SELECT fact.id FROM request_settlement_pending AS pending
-         JOIN request_metering_facts AS fact ON fact.id=pending.request_id
-         JOIN api_keys AS key ON key.id=fact.api_key_id AND key.user_id=fact.user_id
-         WHERE fact.amount_state IN ('priced','zero_by_policy')
-         ORDER BY pending.completed_at,pending.request_id LIMIT 1",
+    let page_budget = 32;
+    let history_pages: i64 = sqlx::query_scalar(
+        "SELECT pg_relation_size('request_metering_facts') / pg_size_bytes(current_setting('block_size') || ' bytes')",
     )
     .fetch_one(&database.pool)
     .await
     .unwrap();
-    fn check_plan(node: &serde_json::Value) {
-        if node["Relation Name"] == "request_metering_facts" {
-            assert!(
-                node["Actual Rows"].as_f64().unwrap() * node["Actual Loops"].as_f64().unwrap()
-                    <= 1.0,
-                "{node}"
-            );
-        }
-        if let Some(children) = node["Plans"].as_array() {
-            for child in children {
-                check_plan(child);
-            }
-        }
-    }
-    check_plan(&plan[0]["Plan"]);
-    assert_eq!(settlements.settle_pending(1).await.unwrap().len(), 1);
+    assert!(
+        history_pages > page_budget,
+        "history must exceed the access budget"
+    );
+    let plan: serde_json::Value = sqlx::query_scalar(concat!(
+        "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ",
+        include_str!("../../src/persistence/settlement_pending_postgres.sql"),
+    ))
+    .bind(1_i64)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    let root = &plan[0]["Plan"];
+    let accessed_pages =
+        root["Shared Hit Blocks"].as_i64().unwrap() + root["Shared Read Blocks"].as_i64().unwrap();
+    assert!(accessed_pages <= page_budget, "{plan}");
+    assert!(matches!(
+        settlements.settle_pending(1).await.unwrap().as_slice(),
+        [RequestLogSettlementOutcome::Settled { .. }]
+    ));
+    assert!(
+        sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (SELECT 1 FROM request_settlements WHERE request_id=$1)
+                AND NOT EXISTS (SELECT 1 FROM request_settlement_pending WHERE request_id=$1)",
+        )
+        .bind(current.id)
+        .fetch_one(&database.pool)
+        .await
+        .unwrap()
+    );
     assert!(settlements.settle_pending(1).await.unwrap().is_empty());
     database.cleanup().await;
 }

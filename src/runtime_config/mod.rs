@@ -3353,16 +3353,73 @@ mod tests {
 
     #[test]
     fn production_example_configuration_parses_and_validates() {
-        let example = include_str!("../../config.example.toml");
-        assert!(example.contains(r#"name = "session-id""#));
-        assert!(example.contains(r#"name = "thread-id""#));
-        assert!(example.contains(r#"pointer = "/id""#));
-        assert!(!example.contains(r#"name = "session_id""#));
-        assert!(!example.contains(r#"name = "thread_id""#));
-        toml::from_str::<AppConfig>(example)
+        toml::from_str::<AppConfig>(include_str!("../../config.example.toml"))
             .unwrap()
             .validate()
             .unwrap();
+    }
+
+    #[test]
+    fn commented_session_affinity_examples_are_usable_responses_rules() {
+        #[derive(Deserialize)]
+        struct Example {
+            session_affinity: SessionAffinityConfig,
+        }
+
+        for (path, template) in [
+            (
+                "config.example.toml",
+                include_str!("../../config.example.toml"),
+            ),
+            (
+                "deploy/compose/config.example.toml",
+                include_str!("../../deploy/compose/config.example.toml"),
+            ),
+        ] {
+            let example = template
+                .lines()
+                .map(|line| line.trim_start().strip_prefix('#'))
+                .skip_while(|line| {
+                    line.and_then(|line| line.trim().strip_prefix("[["))
+                        .and_then(|header| header.strip_suffix("]]"))
+                        .is_none_or(|table| table.trim() != "session_affinity.rules")
+                })
+                .map_while(|line| line)
+                .collect::<Vec<_>>()
+                .join("\n");
+            let config = toml::from_str::<Example>(&example)
+                .unwrap_or_else(|error| panic!("{path}: {error}"))
+                .session_affinity;
+            validate_session_affinity_config(&config)
+                .unwrap_or_else(|error| panic!("{path}: {error}"));
+            let [rule] = config.rules.as_slice() else {
+                panic!("{path}: expected one example rule");
+            };
+            assert!(rule.enabled, "{path}");
+            assert_eq!(rule.api_formats, ["open_ai_responses"], "{path}");
+            let sources = rule
+                .key_sources
+                .iter()
+                .map(|source| match source {
+                    SystemSessionAffinityKeySourceInput::JsonPointer { pointer } => {
+                        ("json_pointer", pointer.as_str())
+                    }
+                    SystemSessionAffinityKeySourceInput::RequestHeader { name } => {
+                        ("request_header", name.as_str())
+                    }
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                sources,
+                [
+                    ("json_pointer", "/prompt_cache_key"),
+                    ("json_pointer", "/id"),
+                    ("request_header", "session-id"),
+                    ("request_header", "thread-id"),
+                ],
+                "{path}"
+            );
+        }
     }
 
     #[test]
@@ -3414,11 +3471,6 @@ mod tests {
     #[test]
     fn container_example_configuration_matches_the_embedded_image_contract() {
         let example = include_str!("../../deploy/compose/config.example.toml");
-        assert!(example.contains(r#"name = "session-id""#));
-        assert!(example.contains(r#"name = "thread-id""#));
-        assert!(example.contains(r#"pointer = "/id""#));
-        assert!(!example.contains(r#"name = "session_id""#));
-        assert!(!example.contains(r#"name = "thread_id""#));
         let file = toml::from_str::<AppConfig>(example).unwrap();
 
         #[cfg(not(feature = "embedded-console-ui"))]
@@ -3758,20 +3810,20 @@ mod tests {
 
     #[test]
     fn bootstrap_rejects_incoherent_spool_capacity() {
-        for limits in [
-            "spool_max_bytes=1",
-            "spool_max_bytes=4194304\nspool_compaction_threshold_bytes=8388608",
-        ] {
-            let value = format!(
-                "[server]\nhost='x'\nport=1\n[database]\nurl='postgres://x'\nmax_connections=1\nconnect_timeout_seconds=1\n[upstream]\nconnect_timeout_seconds=1\nresponse_header_timeout_seconds=2\nstream_idle_timeout_seconds=1\n[runtime_config]\nreload_interval_seconds=1\n[request_logging]\n{limits}\n[observability]\nfilter='info'"
-            );
-            assert!(
-                toml::from_str::<AppConfig>(&value)
-                    .unwrap()
-                    .validate()
-                    .is_err()
-            );
-        }
+        let validate = |max_bytes, compaction_threshold_bytes| {
+            let mut config =
+                toml::from_str::<AppConfig>(include_str!("../../config.example.toml")).unwrap();
+            config.request_logging.spool_max_bytes = max_bytes;
+            config.request_logging.spool_compaction_threshold_bytes = compaction_threshold_bytes;
+            config.validate()
+        };
+        let minimum_capacity = 2 * crate::request_log_admission::RESERVATION_BYTES;
+
+        assert!(validate(minimum_capacity - 1, 1).is_err());
+        validate(minimum_capacity, 1).unwrap();
+
+        validate(minimum_capacity, minimum_capacity).unwrap();
+        assert!(validate(minimum_capacity, minimum_capacity + 1).is_err());
     }
 
     #[test]

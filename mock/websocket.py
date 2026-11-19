@@ -5,16 +5,17 @@ import threading
 from websockets.exceptions import ConnectionClosed
 from websockets.sync.server import serve
 
-from mock.upstream import CONTRACT, MAX_BODY, Scenario
+from mock.upstream import CONTRACT, MAX_BODY, Scenario, require_bearer
 
 
 class WebSocketUpstream:
-    def __init__(self, marker):
+    def __init__(self, marker, *, secret):
+        self.secret = secret
         self.scenario = Scenario(marker)
         self.connections = set()
         self.lock = threading.Lock()
         self.connection_count = 0
-        self.warmups = 0
+        self.request_kinds = []
         self.errors = []
         self.server = serve(
             self.handle, "127.0.0.1", 0, compression=None,
@@ -26,6 +27,10 @@ class WebSocketUpstream:
     def url(self):
         return f"http://127.0.0.1:{self.server.socket.getsockname()[1]}"
 
+    @property
+    def warmups(self):
+        return self.request_kinds.count("warmup")
+
     def handle(self, socket):
         with self.lock:
             self.connection_count += 1
@@ -34,6 +39,7 @@ class WebSocketUpstream:
         try:
             if connection > 2 or socket.request.path != "/v1/responses":
                 raise ValueError("unexpected WS connection or path")
+            require_bearer(socket.request.headers, self.secret)
             previous = None
             for _ in range(4):
                 body = json.loads(socket.recv(timeout=30))
@@ -42,9 +48,10 @@ class WebSocketUpstream:
                 if body.get("previous_response_id") and body["previous_response_id"] != previous:
                     raise ValueError("continuation moved to another socket or response")
                 if body.get("generate") is False:
-                    if self.warmups:
-                        raise ValueError("duplicate warmup")
-                    self.warmups += 1
+                    with self.lock:
+                        if self.warmups:
+                            raise ValueError("duplicate warmup")
+                        self.request_kinds.append("warmup")
                     previous = "resp_e2e_warmup"
                     response = {
                         "id": previous, "object": "response", "model": CONTRACT["wire_model"],
@@ -56,6 +63,8 @@ class WebSocketUpstream:
                 if self.scenario.tool_issued and not body.get("previous_response_id"):
                     raise ValueError("tool continuation must use previous_response_id")
                 events, response = self.scenario.respond(body, "websocket", connection)
+                with self.lock:
+                    self.request_kinds.append("generation")
                 for event in events:
                     socket.send(json.dumps(event))
                 previous = response["id"]

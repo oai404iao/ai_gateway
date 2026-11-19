@@ -85,44 +85,63 @@ where
 }
 
 #[tokio::test]
-async fn complete_baseline_has_all_columns_constraints_and_seeds_and_reopens() {
+async fn complete_baseline_preserves_columns_storage_guards_and_seeds_and_reopens() {
     let (directory, db) = schema().await;
     let inventory: Value =
         serde_json::from_str(include_str!("../fixtures/sqlite-schema-inventory.json")).unwrap();
     let mut reader = db.acquire_read().await.unwrap();
     for (table, expected) in inventory.as_object().unwrap() {
-        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
-            "PRAGMA table_xinfo('{table}')"
-        )))
-        .fetch_all(&mut *reader)
-        .await
-        .unwrap();
-        let columns: Vec<String> = rows.iter().map(|row| row.get("name")).collect();
+        let columns: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM pragma_table_xinfo(?) ORDER BY cid")
+                .bind(table)
+                .fetch_all(&mut *reader)
+                .await
+                .unwrap();
         assert_eq!(
             serde_json::to_value(columns).unwrap(),
             expected["columns"],
             "{table}"
         );
-        let sql: String =
-            sqlx::query_scalar("SELECT sql FROM sqlite_schema WHERE name=? AND type='table'")
-                .bind(table)
-                .fetch_one(&mut *reader)
-                .await
-                .unwrap();
-        assert!(sql.ends_with("STRICT"), "{table}");
-        for name in expected["checks"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .chain(expected["constraints"].as_array().unwrap())
-        {
-            let name = name.as_str().unwrap();
-            if name == "request_log_ingest_pkey" {
-                continue;
-            }
-            assert!(sql.contains(name), "missing {table}.{name}");
-        }
+        let strict: i64 = sqlx::query_scalar(
+            "SELECT strict FROM pragma_table_list(?) WHERE schema='main' AND type='table'",
+        )
+        .bind(table)
+        .fetch_one(&mut *reader)
+        .await
+        .unwrap();
+        assert_eq!(strict, 1, "{table}");
     }
+    let key_fks: Vec<(String, String, String, String)> = sqlx::query_as(
+        "SELECT \"from\",\"table\",\"to\",on_delete FROM pragma_foreign_key_list('api_keys') ORDER BY \"from\"",
+    )
+    .fetch_all(&mut *reader)
+    .await
+    .unwrap();
+    assert_eq!(
+        key_fks,
+        ["deleted_by", "user_id"].map(|column| (
+            column.to_owned(),
+            "users".to_owned(),
+            "id".to_owned(),
+            "RESTRICT".to_owned(),
+        ))
+    );
+    let index: (i64, i64) = sqlx::query_as(
+        "SELECT \"unique\",partial FROM pragma_index_list('api_keys') WHERE name='api_keys_active_user_name_idx'",
+    )
+    .fetch_one(&mut *reader)
+    .await
+    .unwrap();
+    assert_eq!(index, (1, 1));
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT name FROM pragma_index_info('api_keys_active_user_name_idx') ORDER BY seqno",
+        )
+        .fetch_all(&mut *reader)
+        .await
+        .unwrap(),
+        ["user_id", "name"]
+    );
     let count: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM user_groups WHERE system_role IN ('user','admin')",
     )
@@ -146,6 +165,38 @@ async fn complete_baseline_has_all_columns_constraints_and_seeds_and_reopens() {
     );
     drop(reader);
     seed(&db).await;
+    for (format, status, rejected_by) in [
+        (
+            "open_ai_images",
+            200,
+            Some("request_logs_api_operation_format_check"),
+        ),
+        (
+            "open_ai_responses",
+            600,
+            Some("request_logs_response_status_code_check"),
+        ),
+        ("open_ai_responses", 200, None),
+    ] {
+        let result = execute(
+            &db,
+            &format!(
+                "INSERT INTO request_logs(id,started_at,completed_at,user_id,api_key_id,
+                api_format,api_operation,client_model,outcome,response_status_code)
+             VALUES ('{REQUEST}',ag_now(),ag_now(),'{USER}','{KEY}',
+                '{format}','standalone_web_search','test-model','succeeded',{status})"
+            ),
+        )
+        .await;
+        if let Some(constraint) = rejected_by {
+            let error = result.unwrap_err();
+            let error = error.as_database_error().unwrap();
+            assert_eq!(error.code().as_deref(), Some("275"), "{error}");
+            assert!(error.message().ends_with(constraint), "{error}");
+        } else {
+            result.unwrap();
+        }
+    }
     assert_eq!(db.migrate(IDENTITY_MIGRATIONS).await.unwrap(), 0);
     db.close().await;
     let reopened = SqliteDatabase::open(&directory.path().join("gateway.sqlite"))

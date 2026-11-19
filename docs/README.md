@@ -26,6 +26,7 @@
 ## 理解实现与参与开发
 
 - [设置开发环境](development/getting-started.md)，选择对应的检查层级。
+- [设计和审查测试](development/test-design.md)，判断断言能否发现目标回归。
 - [理解当前架构](development/architecture.md)：监听器、转发、快照和后台流水线。
 - [转发与插件拆分决策](development/relay-boundaries.md)：new-api、magpie 的对照与本项目的分层取舍。
 - [查找维护者专题](development/README.md)：连接器、Console、持久化、测试、CI 与发布。

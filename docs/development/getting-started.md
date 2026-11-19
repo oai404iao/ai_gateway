@@ -90,7 +90,14 @@ python3 scripts/check-docs.py
 
 ### Rust 与双后端
 
+两组 workspace 测试都需要能创建临时数据库的 PostgreSQL 连接，以及按[插件测试说明](connector-plugins.md#验收边界)
+准备的真实 Codex 动态库。使用上面的本地 Compose 和十六进制密码时，在 Bash 中设置：
+
 ```bash
+export TEST_DATABASE_ADMIN_URL="postgres://ai_gateway:$(<config/postgres-password)@127.0.0.1:${AI_GATEWAY_POSTGRES_PORT:-5432}/postgres"
+AI_GATEWAY_TEST_CODEX_PLUGIN="$(scripts/prepare-connector-tests.sh)"
+export AI_GATEWAY_TEST_CODEX_PLUGIN
+
 cargo fmt --check
 cargo clippy --locked --workspace --all-targets
 cargo test --locked --workspace
@@ -105,7 +112,6 @@ cargo test --locked --workspace --features sqlite-backend
 
 系统 E2E 的 `--backend sqlite`、配套构建与隔离条件见[系统 E2E](system-e2e.md)，
 不能仅用单元测试替代恢复、lease 和财务验收。
-涉及 Codex 的测试须先按[插件测试说明](connector-plugins.md)准备实际动态库，不能以内置替身替代。
 
 ### Console 与 API 契约
 

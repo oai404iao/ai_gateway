@@ -43,7 +43,7 @@ def build_injector(resources):
     return library
 
 
-def exercise_faults(resources, binary, data, count, warmups, protocols):
+def exercise_faults(resources, binary, data, protocols, warmup_id):
     def api(path, method="GET", body=None):
         return request(data["console"], "/console/v1" + path, method, body, data["token"])[0]
 
@@ -63,7 +63,7 @@ def exercise_faults(resources, binary, data, count, warmups, protocols):
             raise AssertionError("unavailable journal allowed dispatch")
 
     results = []
-    with Upstream("unused") as upstream:
+    with Upstream("unused", secret=data["upstream_rotated_secret"]) as upstream:
         set_upstream(data, upstream.url)
         with resources.database_outage():
             dispatch()
@@ -73,10 +73,9 @@ def exercise_faults(resources, binary, data, count, warmups, protocols):
             offset = int.from_bytes(old_checkpoint or b"\0" * 8, "little")
             wait_until(lambda: journal.stat().st_size > offset)
             stop_gateway(resources)
-        count += 1
-        protocols = [*protocols, "non_stream"]
+        protocols.append("non_stream")
         start_gateway(resources, binary, data, "gateway-recovered")
-        verify_settlement(data, count, warmups, protocols)
+        verify_settlement(data, protocols, warmup_id)
         results.append({"id": "db-outage-kill-replay", "status": "passed"})
 
         # Rewind only the private checkpoint with the gateway stopped. This
@@ -89,8 +88,8 @@ def exercise_faults(resources, binary, data, count, warmups, protocols):
         start_gateway(resources, binary, data, "gateway-duplicate-replay")
         wait_until(lambda: api("/system/load")["request_log"]["spool_pending_bytes"] == 0)
         wait_until(resources.ingress_empty)
-        verify_settlement(data, count, warmups, protocols)
-        check(len(upstream.scenario.evidence) == 1, "recovery redispatched a model request")
+        verify_settlement(data, protocols, warmup_id)
+        check(upstream.post_count == 1, "recovery redispatched a model request")
         results.append({"id": "duplicate-replay-no-double-charge", "status": "passed"})
 
     library = build_injector(resources)
@@ -101,7 +100,7 @@ def exercise_faults(resources, binary, data, count, warmups, protocols):
         "E2E_SPOOL_FAULT_CONTROL": str(control),
     }
     for mode in ("ENOSPC", "EACCES", "EIO_SYNC"):
-        with Upstream("unused") as upstream:
+        with Upstream("unused", secret=data["upstream_rotated_secret"]) as upstream:
             set_upstream(data, upstream.url)
             key = api("/api-keys", "POST", {
                 "user_id": data["user_id"], "name": f"fault-{mode}",
@@ -118,7 +117,7 @@ def exercise_faults(resources, binary, data, count, warmups, protocols):
             denied(key["secret"])
             check(api(f"/request-logs?api_key_id={key['id']}") == [], "failed append unexpectedly produced a log")
             check(api("/me")["balance_amount"] == before, "failed append unexpectedly changed balance")
-            check(len(upstream.scenario.evidence) == 0, "failed admission dispatched upstream")
+            check(upstream.post_count == 0, "failed admission dispatched upstream")
             results.append({
                 "id": f"spool-write-{mode.lower()}", "status": "passed",
                 "dispatches": 0, "durable_logs": 0, "writer_latched_until_restart": True,
@@ -127,9 +126,8 @@ def exercise_faults(resources, binary, data, count, warmups, protocols):
             start_gateway(resources, binary, data, f"gateway-after-{mode}")
             set_upstream(data, upstream.url)
             dispatch()
-            count += 1
             protocols.append("non_stream")
-            verify_settlement(data, count, warmups, protocols)
+            verify_settlement(data, protocols, warmup_id)
 
             stop_gateway(resources)
             terminal_env = {**env, "E2E_SPOOL_FAULT_PATH": str(resources.directory / "spool/events.log")}
@@ -139,19 +137,20 @@ def exercise_faults(resources, binary, data, count, warmups, protocols):
             wait_until(lambda: api("/system/load")["request_log"]["spool_append_failures_total"] == 1)
             control.unlink()
             denied()
-            check(len(upstream.scenario.evidence) == 2, "latched terminal failure allowed redispatch")
+            check(upstream.post_count == 2, "latched terminal failure allowed redispatch")
             stop_gateway(resources)
             start_gateway(resources, binary, data, f"gateway-terminal-replay-{mode}")
-            count += 1
             protocols.append("non_stream")
-            verify_settlement(data, count, warmups, protocols)
+            verify_settlement(data, protocols, warmup_id)
+            check(upstream.post_count == 2, "terminal slot replay redispatched a model request")
             results.append({
                 "id": f"terminal-slot-replay-{mode.lower()}", "status": "passed",
                 "replayed_without_redispatch": True,
             })
 
     gate = threading.Event()
-    with Upstream("unused", response_gate=gate) as upstream, ThreadPoolExecutor(max_workers=1) as client:
+    with (Upstream("unused", secret=data["upstream_rotated_secret"], response_gate=gate) as upstream,
+          ThreadPoolExecutor(max_workers=1) as client):
         set_upstream(data, upstream.url)
         pending_directory = resources.directory / "spool/admissions"
         before_ids = {path.name for path in pending_directory.glob("*.json")}
@@ -173,14 +172,13 @@ def exercise_faults(resources, binary, data, count, warmups, protocols):
         check(intents[0].exists(), "unknown request intent was lost on restart")
         check(intents[0].with_suffix(".slot").stat().st_size == 0,
               "unknown request retained unused terminal allocation")
-        verify_settlement(data, count, warmups, protocols)
-        check(len(upstream.scenario.evidence) == 1, "unknown request was redispatched")
+        verify_settlement(data, protocols, warmup_id)
+        check(upstream.post_count == 1, "unknown request was redispatched")
         dispatch()
-        count += 1
         protocols.append("non_stream")
-        verify_settlement(data, count, warmups, protocols)
+        verify_settlement(data, protocols, warmup_id)
         results.append({
             "id": "kill-before-terminal-pending", "status": "passed",
             "unknown_usage_retained": True, "new_dispatch_allowed": True,
         })
-    return results, verify_settlement(data, count, warmups, protocols)
+    return results, verify_settlement(data, protocols, warmup_id)

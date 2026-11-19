@@ -30,10 +30,22 @@ def generate(socket, body):
             return event["response"]
 
 
+def open_socket(upstream, secret="rotated"):
+    url = upstream.url.replace("http:", "ws:") + "/v1/responses"
+    return connect(url, proxy=None, additional_headers={"Authorization": f"Bearer {secret}"})
+
+
 class WebSocketTests(unittest.TestCase):
+    def test_stale_handshake_cannot_start_a_generation(self):
+        with WebSocketUpstream("marker", secret="rotated") as upstream:
+            with open_socket(upstream, "stale") as socket, self.assertRaises(ConnectionClosedError):
+                generate(socket, create())
+            self.assertEqual(upstream.errors, ["unexpected upstream credential"])
+            self.assertEqual(upstream.scenario.evidence, [])
+
     def test_warmup_does_not_count_as_tool_success(self):
-        with WebSocketUpstream("marker") as upstream:
-            with connect(upstream.url.replace("http:", "ws:") + "/v1/responses", proxy=None) as socket:
+        with WebSocketUpstream("marker", secret="rotated") as upstream:
+            with open_socket(upstream) as socket:
                 response = generate(socket, create(generate=False))
                 self.assertEqual(response["usage"]["input_tokens"], 0)
                 self.assertEqual(upstream.scenario.evidence, [])
@@ -48,8 +60,8 @@ class WebSocketTests(unittest.TestCase):
 
     def test_missing_or_wrong_continuation_is_rejected(self):
         for previous in (None, "resp_wrong"):
-            with WebSocketUpstream("marker") as upstream:
-                with connect(upstream.url.replace("http:", "ws:") + "/v1/responses", proxy=None) as socket:
+            with WebSocketUpstream("marker", secret="rotated") as upstream:
+                with open_socket(upstream) as socket:
                     generate(socket, create())
                     body = create(input=[{
                         "type": "function_call_output", "call_id": "call_system_e2e", "output": "marker",
@@ -62,11 +74,10 @@ class WebSocketTests(unittest.TestCase):
                 self.assertFalse(upstream.scenario.tool_completed)
 
     def test_connection_local_state_cannot_move(self):
-        with WebSocketUpstream("marker") as upstream:
-            url = upstream.url.replace("http:", "ws:") + "/v1/responses"
-            with connect(url, proxy=None) as first:
+        with WebSocketUpstream("marker", secret="rotated") as upstream:
+            with open_socket(upstream) as first:
                 response = generate(first, create())
-            with connect(url, proxy=None) as second:
+            with open_socket(upstream) as second:
                 with self.assertRaises(ConnectionClosedError):
                     generate(second, create(previous_response_id=response["id"]))
             self.assertIn("another socket", upstream.errors[0])

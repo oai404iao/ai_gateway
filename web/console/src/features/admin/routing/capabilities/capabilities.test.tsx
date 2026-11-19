@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BrowserRouter } from "react-router";
 import { http, HttpResponse } from "msw";
 import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
 import { server, seedAuthenticatedSession } from "@/test/msw";
-import { CHANNEL_CAPABILITY, LOGICAL_CHANNEL, UPSTREAM_ACCESS } from "@/test/fixtures";
+import { CHANNEL_CAPABILITY, LOGICAL_CHANNEL, UPSTREAM_ACCESS, UPSTREAM_CREDENTIAL } from "@/test/fixtures";
 import type { CapabilityBatchUpdateInput, ChannelCapabilityInput, ChannelModelDiscoveryInput } from "@/api/types";
 
 function renderAt(path: string) {
@@ -89,10 +89,22 @@ describe("channel capabilities", () => {
 
   it("fetches models for a codex-credentialed channel through the shared discovery endpoint", async () => {
     let discovery: ChannelModelDiscoveryInput | undefined;
+    const oauth = {
+      ...UPSTREAM_CREDENTIAL,
+      id: "00000000-0000-0000-0000-000000001801",
+      connector_kind: "codex",
+      kind: "codex_oauth",
+      provider_managed: true,
+      channel_ids: [LOGICAL_CHANNEL.id],
+      allowed_base_urls: ["https://codex.test"],
+    };
     server.use(
       http.get("/console/v1/routing/accesses", () =>
-        HttpResponse.json([{ ...UPSTREAM_ACCESS, connector_kind: "codex" }]),
+        HttpResponse.json([{ ...UPSTREAM_ACCESS, connector_kind: "codex", base_url: "https://codex.test" }]),
       ),
+      http.get("/console/v1/routing/logical-channels", () =>
+        HttpResponse.json([{ ...LOGICAL_CHANNEL, credential_id: oauth.id }])),
+      http.get("/console/v1/routing/upstream-credentials", () => HttpResponse.json([UPSTREAM_CREDENTIAL, oauth])),
       http.post("/console/v1/routing/channels/models/discover", async ({ request }) => {
         discovery = await request.json() as ChannelModelDiscoveryInput;
         return HttpResponse.json({ models: ["gpt-5-codex"] });
@@ -101,7 +113,10 @@ describe("channel capabilities", () => {
     const user = userEvent.setup();
     renderAt(`/admin/routing/capabilities/${CHANNEL_CAPABILITY.id}`);
     await user.click(await screen.findByRole("button", { name: "Fetch models" }));
-    await waitFor(() => expect(discovery?.credential_id).toBe(LOGICAL_CHANNEL.credential_id));
+    await waitFor(() => expect(discovery).toMatchObject({
+      credential_id: oauth.id,
+      base_url: "https://codex.test",
+    }));
     expect(await screen.findByRole("checkbox", { name: "Select gpt-5-codex" })).toBeInTheDocument();
   });
 
@@ -143,19 +158,22 @@ describe("channel capabilities", () => {
   });
 
   it("confirms route withdrawal before deleting a capability with its version", async () => {
-    let ifMatch: string | null = null;
-    server.use(http.delete("/console/v1/routing/capabilities/:id", ({ request }) => {
-      ifMatch = request.headers.get("if-match");
+    const deletes: { id: string; ifMatch: string | null }[] = [];
+    server.use(http.delete("/console/v1/routing/capabilities/:id", ({ request, params }) => {
+      deletes.push({ id: String(params.id), ifMatch: request.headers.get("if-match") });
       return new HttpResponse(null, { status: 204 });
     }));
     const user = userEvent.setup();
     renderAt(`/admin/routing/logical-channels/${LOGICAL_CHANNEL.id}?view=capabilities&capability=${CHANNEL_CAPABILITY.id}`);
     await user.click(await screen.findByRole("button", { name: "Delete capability" }));
     expect(screen.getByText("This deletes the capability and all routing candidates referencing it. Empty route rules are disabled. Channel authorization and billing history are preserved.")).toBeInTheDocument();
-    expect(ifMatch).toBeNull();
-    await user.click(screen.getByRole("button", { name: "Confirm" }));
-    await waitFor(() => expect(ifMatch).toBe(`"${CHANNEL_CAPABILITY.updated_at}"`));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+    expect(deletes).toEqual([]);
+    await user.click(screen.getByRole("button", { name: "Delete capability" }));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Confirm" }));
     await waitFor(() => expect(new URLSearchParams(window.location.search).has("capability")).toBe(false));
+    expect(deletes).toEqual([{ id: CHANNEL_CAPABILITY.id, ifMatch: `"${CHANNEL_CAPABILITY.updated_at}"` }]);
     expect(window.location.pathname).toBe(`/admin/routing/logical-channels/${LOGICAL_CHANNEL.id}`);
     expect(new URLSearchParams(window.location.search).get("view")).toBe("capabilities");
   });
@@ -209,26 +227,35 @@ describe("channel capabilities", () => {
   });
 
   it("reloads a stale recovery instead of retrying the write", async () => {
-    let reads = 0;
-    let writes = 0;
+    const versions: (string | null)[] = [];
+    const updatedAt = "2026-08-02T00:00:00Z";
+    const path = `/console/v1/routing/capabilities/${CHANNEL_CAPABILITY.id}`;
     server.use(
-      http.get("/console/v1/routing/capabilities/:id", () => {
-        reads += 1;
+      http.get(path, () => {
+        const updated_at = versions.length ? updatedAt : CHANNEL_CAPABILITY.updated_at;
         return HttpResponse.json({
-          ...CHANNEL_CAPABILITY, auto_disabled: true, auto_disable_reason: "HTTP 429",
-        }, { headers: { ETag: `"${CHANNEL_CAPABILITY.updated_at}"` } });
+          ...CHANNEL_CAPABILITY, updated_at, auto_disabled: versions.length < 2,
+          auto_disable_reason: versions.length === 0 ? "HTTP 429" : versions.length === 1 ? "HTTP 503" : null,
+        }, { headers: { ETag: `"${updated_at}"` } });
       }),
-      http.post("/console/v1/routing/capabilities/:id/recover", () => {
-        writes += 1;
-        return HttpResponse.json({ error: { code: "conflict", message: "Changed" } }, { status: 409 });
+      http.post(`${path}/recover`, ({ request }) => {
+        const ifMatch = request.headers.get("if-match");
+        versions.push(ifMatch);
+        return ifMatch === `"${updatedAt}"`
+          ? HttpResponse.json({ id: CHANNEL_CAPABILITY.id })
+          : HttpResponse.json({ error: { code: "conflict", message: "Changed" } }, { status: 409 });
       }),
     );
     const user = userEvent.setup();
     renderAt(`/admin/routing/capabilities/${CHANNEL_CAPABILITY.id}`);
+    expect(await screen.findByText("HTTP 429")).toBeInTheDocument();
     await user.click(await screen.findByRole("button", { name: "Recover capability" }));
     await user.click(screen.getByRole("button", { name: "Recover" }));
-    await waitFor(() => expect(reads).toBe(2));
-    expect(writes).toBe(1);
-    expect(screen.getByText("HTTP 429")).toBeInTheDocument();
+    expect(await screen.findByText("HTTP 503")).toBeInTheDocument();
+    expect(screen.queryByText("HTTP 429")).not.toBeInTheDocument();
+    expect(versions).toEqual([`"${CHANNEL_CAPABILITY.updated_at}"`]);
+    await user.click(screen.getByRole("button", { name: "Recover" }));
+    expect(await screen.findByText("Capability recovered")).toBeVisible();
+    expect(versions).toEqual([`"${CHANNEL_CAPABILITY.updated_at}"`, `"${updatedAt}"`]);
   });
 });

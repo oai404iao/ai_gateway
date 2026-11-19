@@ -1,4 +1,4 @@
-//! Effective PostgreSQL schema drift must fail the SQLite baseline gate.
+//! Compare the fully migrated databases against the current logical schema.
 
 use std::{collections::BTreeMap, os::unix::fs::PermissionsExt};
 
@@ -107,6 +107,31 @@ async fn compare(postgres: &super::TestDatabase, sqlite: &SqliteDatabase) {
                 "{table}.{name}"
             );
         }
+        let sqlite_columns: BTreeMap<String, String> =
+            sqlx::query_as::<_, (String, String)>("SELECT name,type FROM pragma_table_xinfo(?)")
+                .bind(&table)
+                .fetch_all(&mut *reader)
+                .await
+                .unwrap()
+                .into_iter()
+                .collect();
+        let expected_columns = expected["types"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(name, pg_type)| {
+                let storage = match pg_type.as_str().unwrap() {
+                    "bool" | "int2" | "int4" | "int8" => "INTEGER",
+                    "bytea" => "BLOB",
+                    "api_format" | "api_format[]" | "bpchar" | "cidr" | "date" | "jsonb"
+                    | "numeric" | "text" | "text[]" | "timestamptz" | "uuid" | "uuid[]"
+                    | "varchar" => "TEXT",
+                    other => panic!("no documented SQLite mapping for {table}.{name}: {other}"),
+                };
+                (name.clone(), storage.to_owned())
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(sqlite_columns, expected_columns, "{table}");
         let pg_names: Vec<String> = sqlx::query_scalar(
             "SELECT conname::text FROM pg_constraint WHERE conrelid=$1::regclass AND contype IN ('p','u','f','c') ORDER BY conname"
         ).bind(&table).fetch_all(&postgres.pool).await.unwrap();
@@ -277,4 +302,61 @@ async fn compare(postgres: &super::TestDatabase, sqlite: &SqliteDatabase) {
         ["1.2345", "9999999999.9999"]
     );
     drop(reader);
+    check_current_sqlite_fact_constraints(sqlite).await;
+}
+
+async fn check_current_sqlite_fact_constraints(sqlite: &SqliteDatabase) {
+    let mut tx = sqlite.begin_write().await.unwrap();
+    let user = "10000000-0000-0000-0000-000000000001";
+    let key = "10000000-0000-0000-0000-000000000002";
+    let request = "10000000-0000-0000-0000-000000000003";
+    sqlx::query("INSERT INTO users(id,display_name) VALUES (?,'Schema parity user')")
+        .bind(user)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO api_keys(id,user_id,name,secret_value,status,allowed_api_formats,permissions)
+         VALUES (?,?,'Schema parity key','parity-test-secret','active','[\"open_ai_responses\"]','[\"proxy\"]')",
+    )
+    .bind(key)
+    .bind(user)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    for (format, cost, rejected_by) in [
+        (
+            "open_ai_images",
+            "0",
+            Some("request_metering_operation_format_check"),
+        ),
+        (
+            "open_ai_responses",
+            "1",
+            Some("request_metering_zero_policy_check"),
+        ),
+        ("open_ai_responses", "0", None),
+    ] {
+        let result = sqlx::query(
+            "INSERT INTO request_metering_facts(id,started_at,completed_at,user_id,api_key_id,
+                 request_source,api_format,api_operation,request_protocol,client_model,outcome,cost_amount,peak_pricing)
+             VALUES (?,ag_now(),ag_now(),?,?,'client',?,'responses-ws','websocket','test-model','failed',?,0)",
+        )
+        .bind(request)
+        .bind(user)
+        .bind(key)
+        .bind(format)
+        .bind(cost)
+        .execute(&mut *tx)
+        .await;
+        if let Some(constraint) = rejected_by {
+            let error = result.unwrap_err();
+            let error = error.as_database_error().unwrap();
+            assert_eq!(error.code().as_deref(), Some("275"), "{error}");
+            assert!(error.message().ends_with(constraint), "{error}");
+        } else {
+            assert_eq!(result.unwrap().rows_affected(), 1);
+        }
+    }
+    tx.commit().await.unwrap();
 }

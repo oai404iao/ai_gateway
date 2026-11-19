@@ -201,7 +201,14 @@ mod sqlite {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(view.channel_ids.len(), 2);
+        let mut actual_channel_ids = view.channel_ids;
+        actual_channel_ids.sort_unstable();
+        let mut expected_channel_ids = channels
+            .iter()
+            .map(|(channel, _)| *channel)
+            .collect::<Vec<_>>();
+        expected_channel_ids.sort_unstable();
+        assert_eq!(actual_channel_ids, expected_channel_ids);
         assert!(
             repository
                 .prepare_codex_credential_delete(ADMIN, identity.id, view.updated_at)

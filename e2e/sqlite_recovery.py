@@ -13,7 +13,7 @@ def rejected(resources, args, name, stdin=None, extra_env=None):
     check(process.returncode != 0, f"{name}: unsafe operation was accepted")
 
 
-def exercise_backup(resources, binary, data, count, warmups):
+def exercise_backup(resources, binary, data, protocols, warmup_id):
     config = resources.directory / "gateway.toml"
     snapshot = resources.directory / "snapshot"
     backup = [str(binary), "backup-sqlite", "--config", str(config), "--destination", str(snapshot)]
@@ -57,7 +57,7 @@ def exercise_backup(resources, binary, data, count, warmups):
     config.write_text(text)
     resources.database_file = restored / "database/gateway.sqlite"
     start_gateway(resources, binary, data, "gateway-restored")
-    verify_settlement(data, count, warmups)
+    verify_settlement(data, protocols, warmup_id)
     for name in unknown:
         check((restored / "spool/admissions" / name).is_file(), "restore lost uncertain usage")
     return [

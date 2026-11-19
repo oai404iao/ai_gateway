@@ -401,14 +401,14 @@ async fn two_chunk_sse(State(state): State<TwoChunkState>) -> Response {
     let second = stream::once(async move {
         release_second.await.unwrap();
         Ok::<Bytes, Infallible>(Bytes::from_static(
-            b"data: {\"object\":\"chat.completion.chunk\"}\n\n",
+            b"data: {\"object\":\"chat.completion.chunk\",\"seq\":2}\n\n",
         ))
     });
     sse_response(Body::from_stream(first.chain(second)))
 }
 
 #[tokio::test]
-async fn sse_first_chunk_is_forwarded_without_waiting_for_the_second_chunk() {
+async fn transformed_sse_first_event_arrives_before_the_second_is_released() {
     let (release_second_tx, release_second_rx) = oneshot::channel();
     let upstream = start_server(
         Router::new()
@@ -435,23 +435,40 @@ async fn sse_first_chunk_is_forwarded_without_waiting_for_the_second_chunk() {
         .expect("gateway did not return SSE response headers")
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        timeout(CANCELLATION_TIMEOUT, response.chunk())
-            .await
-            .expect("first SSE chunk was buffered")
+    let event_data = |event: &[u8]| -> Value {
+        let data = event
+            .strip_prefix(b"data:")
             .unwrap()
-            .unwrap(),
-        Bytes::from_static(b"data: {\"object\":\"chat.completion.chunk\",\"patched\":true}\n\n")
+            .strip_suffix(b"\n\n")
+            .unwrap();
+        serde_json::from_slice(data).unwrap()
+    };
+    let mut first = Vec::new();
+    timeout(CANCELLATION_TIMEOUT, async {
+        while !first.ends_with(b"\n\n") {
+            let chunk = response
+                .chunk()
+                .await
+                .unwrap()
+                .expect("missing first event");
+            first.extend_from_slice(&chunk);
+        }
+    })
+    .await
+    .expect("first SSE event was buffered");
+    assert_eq!(
+        event_data(&first),
+        serde_json::json!({"object": "chat.completion.chunk", "patched": true})
     );
 
     release_second_tx.send(()).unwrap();
+    let second = timeout(OUTER_TIMEOUT, response.bytes())
+        .await
+        .expect("second SSE event did not finish")
+        .unwrap();
     assert_eq!(
-        timeout(OUTER_TIMEOUT, response.chunk())
-            .await
-            .expect("second SSE chunk was not forwarded")
-            .unwrap()
-            .unwrap(),
-        Bytes::from_static(b"data: {\"object\":\"chat.completion.chunk\",\"patched\":true}\n\n")
+        event_data(&second),
+        serde_json::json!({"object": "chat.completion.chunk", "patched": true, "seq": 2})
     );
 }
 
@@ -738,9 +755,7 @@ async fn unusual_sse_response() -> Response {
     )
 }
 
-async fn chat_usage_sse() -> Response {
-    sse_response(Body::from(Bytes::from_static(
-        br#"data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"pong"},"finish_reason":null}],"usage":null}
+const CHAT_USAGE_SSE: &[u8] = br#"data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"pong"},"finish_reason":null}],"usage":null}
 
 data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":null}
 
@@ -748,24 +763,21 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":11
 
 data: [DONE]
 
-"#,
-    )))
-}
+"#;
 
-async fn deepseek_chat_usage_sse_with_unterminated_final_frame() -> Response {
-    sse_response(Body::from(Bytes::from_static(
-        br#"data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":null,"reasoning_content":"The answer is pong."},"finish_reason":null}]}
+const DEEPSEEK_UNTERMINATED_SSE: &[u8] = br#"data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":null,"reasoning_content":"The answer is pong."},"finish_reason":null}]}
 
 data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"pong","reasoning_content":null},"finish_reason":null}]}
 
-data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"","reasoning_content":null},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":45,"total_tokens":56,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":42},"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":11}}"#,
-    )))
-}
+data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"","reasoning_content":null},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":45,"total_tokens":56,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":42},"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":11}}"#;
 
 #[tokio::test]
 async fn chat_sse_usage_is_collected_without_changing_forwarded_bytes() {
-    let upstream =
-        start_server(Router::new().route("/v1/chat/completions", post(chat_usage_sse))).await;
+    let upstream = start_server(Router::new().route(
+        "/v1/chat/completions",
+        post(|| async { sse_response(Body::from(CHAT_USAGE_SSE)) }),
+    ))
+    .await;
     let logs = RecordingRequestLogSink::default();
     let gateway = start_server(http::router(proxy_service_with_documents(
         &format!("http://{}", upstream.address),
@@ -779,11 +791,7 @@ async fn chat_sse_usage_is_collected_without_changing_forwarded_bytes() {
 
     let response = request(&client(), gateway.address).send().await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let body = response.bytes().await.unwrap();
-    assert!(
-        body.windows(b"\"prompt_tokens\":11".len())
-            .any(|window| { window == b"\"prompt_tokens\":11" })
-    );
+    assert_eq!(response.bytes().await.unwrap(), CHAT_USAGE_SSE);
     let events = logs.events();
     assert_eq!(events.len(), 1);
     let billing = events[0].billing.as_ref().unwrap();
@@ -804,7 +812,7 @@ async fn chat_sse_usage_is_collected_without_changing_forwarded_bytes() {
 async fn deepseek_chat_sse_usage_in_unterminated_final_frame_is_collected() {
     let upstream = start_server(Router::new().route(
         "/v1/chat/completions",
-        post(deepseek_chat_usage_sse_with_unterminated_final_frame),
+        post(|| async { sse_response(Body::from(DEEPSEEK_UNTERMINATED_SSE)) }),
     ))
     .await;
     let logs = RecordingRequestLogSink::default();
@@ -820,14 +828,7 @@ async fn deepseek_chat_sse_usage_in_unterminated_final_frame_is_collected() {
 
     let response = request(&client(), gateway.address).send().await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    assert!(
-        response
-            .bytes()
-            .await
-            .unwrap()
-            .windows(b"\"prompt_tokens\":11".len())
-            .any(|window| window == b"\"prompt_tokens\":11")
-    );
+    assert_eq!(response.bytes().await.unwrap(), DEEPSEEK_UNTERMINATED_SSE);
 
     let events = logs.events();
     assert_eq!(events.len(), 1);

@@ -55,6 +55,8 @@ import {
 } from "@/test/fixtures";
 import { clearSession, setSession } from "@/api/session-store";
 
+const unhandledConsoleRequests: string[] = [];
+
 /**
  * Default MSW handlers covering the routes touched by the component tests.
  * Routes are registered relative to `location.origin` (jsdom defaults to
@@ -75,9 +77,6 @@ export const handlers = [
     HttpResponse.json(ADMIN_LOGIN_RESPONSE, { headers: { "Set-Cookie": "refresh=rotated" } }),
   ),
   http.post("/console/v1/auth/login", () =>
-    HttpResponse.json(ADMIN_LOGIN_RESPONSE, { headers: { "Set-Cookie": "refresh=rotated" } }),
-  ),
-  http.post("/console/v1/auth/register", () =>
     HttpResponse.json(ADMIN_LOGIN_RESPONSE, { headers: { "Set-Cookie": "refresh=rotated" } }),
   ),
   http.post("/console/v1/auth/logout", () => new HttpResponse(null, { status: 204 })),
@@ -300,9 +299,12 @@ export const handlers = [
     }),
   ),
 
-  // Anything not mocked falls through to the real network (fails loudly),
-  // which keeps tests honest about coverage.
-  http.all("*", () => passthrough()),
+  http.all("*", ({ request }) => {
+    const { pathname } = new URL(request.url);
+    if (!pathname.startsWith("/console/v1/")) return passthrough();
+    unhandledConsoleRequests.push(`${request.method} ${pathname}`);
+    return HttpResponse.json({ error: "unhandled_console_request" }, { status: 501 });
+  }),
 ];
 
 export const server = setupServer(...handlers);
@@ -311,6 +313,8 @@ beforeAll(() => server.listen({ onUnhandledRequest: "warn" }));
 afterEach(() => {
   server.resetHandlers();
   clearSession();
+  const unhandled = unhandledConsoleRequests.splice(0);
+  if (unhandled.length > 0) throw new Error(`Unhandled Console API requests:\n${unhandled.join("\n")}`);
 });
 afterAll(() => server.close());
 

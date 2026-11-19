@@ -1475,26 +1475,6 @@ async fn request(
 }
 
 #[tokio::test]
-async fn retired_sharing_routes_are_not_exposed() {
-    let database = TestDatabase::new().await;
-    let app = app(database.pool.clone()).await;
-    let detail = format!("/console/v1/codex-sharing-groups/{}", Uuid::new_v4());
-    let usage = format!("{detail}/usage");
-    for (method, path) in [
-        ("GET", "/console/v1/codex-sharing-groups"),
-        ("POST", "/console/v1/codex-sharing-groups"),
-        ("GET", detail.as_str()),
-        ("PUT", detail.as_str()),
-        ("GET", usage.as_str()),
-        ("GET", "/console/v1/me/codex-sharing"),
-    ] {
-        let response = request(&app, method, path, serde_json::json!({}), &[]).await;
-        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {path}");
-    }
-    database.cleanup().await;
-}
-
-#[tokio::test]
 async fn upstream_access_contract_is_versioned_and_does_not_create_authority() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
@@ -1586,21 +1566,9 @@ async fn canonical_topology_contract_has_versioned_immutable_capability_identity
         "/console/v1/routing/model-rules",
     ] {
         for method in ["GET", "POST", "PUT", "DELETE"] {
-            assert_eq!(
-                request(&app, method, path, serde_json::json!({}), &[])
-                    .await
-                    .status(),
-                StatusCode::NOT_FOUND,
-                "{method} {path}",
-            );
             let detail = format!("{path}/{}", Uuid::new_v4());
-            assert_eq!(
-                request(&app, method, &detail, serde_json::json!({}), &[])
-                    .await
-                    .status(),
-                StatusCode::NOT_FOUND,
-                "{method} {detail}",
-            );
+            assert_console_route_absent(&app, method, path).await;
+            assert_console_route_absent(&app, method, &detail).await;
         }
     }
     let model = request(&app, "POST", "/console/v1/models", serde_json::json!({
@@ -2012,14 +1980,20 @@ async fn unauthenticated_request(
     app.router.clone().oneshot(request).await.unwrap()
 }
 
+async fn assert_console_route_absent(app: &App, method: &str, path: &str) {
+    let anonymous = unauthenticated_request(app, method, path, serde_json::json!({})).await;
+    assert_eq!(
+        anonymous.status(),
+        StatusCode::NOT_FOUND,
+        "anonymous {method} {path}"
+    );
+    let response = request(app, method, path, serde_json::json!({}), &[]).await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {path}");
+}
+
 async fn body_json(response: axum::response::Response) -> serde_json::Value {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
-}
-
-async fn body_text(response: axum::response::Response) -> String {
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    String::from_utf8(bytes.to_vec()).unwrap()
 }
 
 async fn upstream_models(headers: HeaderMap) -> Result<Json<serde_json::Value>, StatusCode> {
@@ -2900,6 +2874,8 @@ async fn catalog_apply_requires_a_preview_token_for_each_selection() {
 async fn removed_console_compatibility_paths_are_not_routed() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
+    let sharing_group = format!("/console/v1/codex-sharing-groups/{}", Uuid::new_v4());
+    let sharing_usage = format!("{sharing_group}/usage");
 
     for (method, path) in [
         ("GET", "/console/v1/channel-groups"),
@@ -2911,9 +2887,14 @@ async fn removed_console_compatibility_paths_are_not_routed() {
         ("POST", "/console/v1/models/sync/import"),
         ("POST", "/console/v1/reload"),
         ("GET", "/console/v1/statistics/channel-status"),
+        ("GET", "/console/v1/codex-sharing-groups"),
+        ("POST", "/console/v1/codex-sharing-groups"),
+        ("GET", sharing_group.as_str()),
+        ("PUT", sharing_group.as_str()),
+        ("GET", sharing_usage.as_str()),
+        ("GET", "/console/v1/me/codex-sharing"),
     ] {
-        let response = request(&app, method, path, serde_json::json!({}), &[]).await;
-        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {path}");
+        assert_console_route_absent(&app, method, path).await;
     }
 
     database.cleanup().await;
@@ -2927,15 +2908,21 @@ async fn legacy_user_name_field_is_rejected() {
     let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
     assert_eq!(detail.status(), StatusCode::OK);
     let etag = detail.headers()[header::ETAG].to_str().unwrap().to_owned();
-    let mut update = body_json(detail).await;
-    let display_name = update["display_name"].clone();
-    for field in ["id", "created_at", "updated_at", "display_name"] {
-        update.as_object_mut().unwrap().remove(field);
+    let detail = body_json(detail).await;
+    let update = serde_json::json!({
+        "email": detail["email"], "display_name": "Renamed user", "role": detail["role"],
+        "status": detail["status"], "balance_amount": detail["balance_amount"]
+    });
+    let mut extra = update.clone();
+    extra["name"] = update["display_name"].clone();
+    let mut alias = extra.clone();
+    alias.as_object_mut().unwrap().remove("display_name");
+    for invalid in [extra, alias] {
+        let response = request(&app, "PUT", &path, invalid, &[("if-match", &etag)]).await;
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
-    update["name"] = display_name;
-
     let response = request(&app, "PUT", &path, update, &[("if-match", &etag)]).await;
-    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(response.status(), StatusCode::OK);
     database.cleanup().await;
 }
 
@@ -4491,36 +4478,24 @@ async fn etag_if_match_optimistic_concurrency_matches_spec() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
 
-    let removed_group_routing = request(
-        &app,
-        "POST",
-        "/console/v1/routing/groups",
-        serde_json::json!({
-            "name": "legacy-spec-group",
-            "api_format": "open_ai_chat_completions",
-            "priority": 1,
-            "selection_strategy": "weighted_random",
-            "enabled": true,
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(
-        removed_group_routing.status(),
-        StatusCode::UNPROCESSABLE_ENTITY
-    );
+    let collection = "/console/v1/routing/groups";
+    let input = serde_json::json!({"name": "spec-group", "enabled": true});
+    for (field, value) in [
+        ("api_format", serde_json::json!("open_ai_chat_completions")),
+        ("priority", serde_json::json!(1)),
+        ("selection_strategy", serde_json::json!("weighted_random")),
+    ] {
+        let mut legacy_input = input.clone();
+        legacy_input[field] = value;
+        let response = request(&app, "POST", collection, legacy_input, &[]).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{field}"
+        );
+    }
 
-    let create = request(
-        &app,
-        "POST",
-        "/console/v1/routing/groups",
-        serde_json::json!({
-            "name": "spec-group",
-            "enabled": true,
-        }),
-        &[],
-    )
-    .await;
+    let create = request(&app, "POST", collection, input, &[]).await;
     assert_eq!(create.status(), StatusCode::CREATED);
     let group_id = body_json(create).await["id"].as_str().unwrap().to_owned();
     let path = format!("/console/v1/routing/groups/{group_id}");
@@ -4561,11 +4536,8 @@ async fn etag_if_match_optimistic_concurrency_matches_spec() {
 
     let conflict = request(&app, "PUT", &path, update, &[("if-match", &etag)]).await;
     assert_eq!(conflict.status(), StatusCode::CONFLICT);
-    let conflict_body = body_text(conflict).await;
-    assert!(
-        conflict_body.contains("\"error\""),
-        "conflict body is an error body"
-    );
+    assert_eq!(conflict.headers()[header::CONTENT_TYPE], "application/json");
+    assert!(body_json(conflict).await["error"].is_string());
     database.cleanup().await;
 }
 
@@ -6971,50 +6943,41 @@ async fn self_api_key_create_reports_policy_preconditions() {
     database.cleanup().await;
 }
 
-/// `limit` query is honored on log endpoints (bounded result, non-error).
 #[tokio::test]
-async fn request_logs_limit_query_matches_spec() {
+async fn request_logs_limit_defaults_and_clamps_to_the_documented_bounds() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
-    let response = request(
-        &app,
-        "GET",
-        "/console/v1/request-logs?limit=10",
-        serde_json::json!({}),
-        &[],
+    sqlx::query(
+        "WITH fixture_key AS (
+             INSERT INTO api_keys(id,user_id,name,secret_value,status,allowed_api_formats,permissions)
+             VALUES(gen_random_uuid(),$1,'limit test','limit-test-key','active',ARRAY['open_ai_chat_completions']::api_format[],ARRAY['proxy'])
+             RETURNING id,user_id
+         )
+         INSERT INTO request_logs(id,started_at,completed_at,user_id,api_key_id,api_format,api_operation,client_model,outcome)
+         SELECT gen_random_uuid(),now(),now(),user_id,id,'open_ai_chat_completions','chat_completions','limit-test','succeeded'
+         FROM fixture_key CROSS JOIN generate_series(1,101)",
     )
-    .await;
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        response
-            .headers()
-            .get(header::CACHE_CONTROL)
-            .map(|v| v.to_str().unwrap()),
-        Some("no-store"),
-        "API responses are no-store per spec"
-    );
-    let body = body_json(response).await;
-    assert!(body.is_array(), "request logs endpoint returns an array");
-    database.cleanup().await;
-}
+    .bind(app.user_id)
+    .execute(&database.pool)
+    .await
+    .unwrap();
 
-/// An out-of-range `limit` is clamped rather than rejected (the spec allows
-/// 1..=100 and documents clamping).
-#[tokio::test]
-async fn request_logs_limit_is_clamped() {
-    let database = TestDatabase::new().await;
-    let app = app(database.pool.clone()).await;
-    let response = request(
-        &app,
-        "GET",
-        "/console/v1/request-logs?limit=99999",
-        serde_json::json!({}),
-        &[],
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = body_json(response).await;
-    assert!(body.is_array());
+    for (query, expected) in [
+        ("", 50),
+        ("?limit=10", 10),
+        ("?limit=0", 1),
+        ("?limit=99999", 100),
+    ] {
+        let path = format!("/console/v1/request-logs{query}");
+        let response = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        assert_eq!(
+            body_json(response).await.as_array().unwrap().len(),
+            expected,
+            "{path}"
+        );
+    }
     database.cleanup().await;
 }
 

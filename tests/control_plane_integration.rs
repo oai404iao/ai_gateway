@@ -4332,8 +4332,12 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     );
     if codex_protocol == 2 {
         let summary = non_streaming_event.error_summary.as_deref().unwrap();
-        assert!(summary.contains("\"code\": \"codex_streaming_required\""));
-        assert!(summary.contains("\"param\": \"stream\""));
+        let json = summary
+            .split_once("\n\n")
+            .map_or(summary, |(_, detail)| detail);
+        let detail: serde_json::Value = serde_json::from_str(json).unwrap();
+        assert_eq!(detail["error"]["code"], "codex_streaming_required");
+        assert_eq!(detail["error"]["param"], "stream");
     } else {
         assert!(non_streaming_event.billing.is_none());
     }
@@ -5845,16 +5849,16 @@ async fn batch_settlement_aggregates_account_updates_and_deduplicates_ids() {
     assert_eq!(facts.1, cost);
     assert_eq!(facts.2, 2);
 
-    let retried = repository
+    let mut retried = repository
         .settlements()
         .settle_batch(&[first.id, second.id])
         .await
         .unwrap();
-    assert!(
-        retried
-            .iter()
-            .all(|(_, outcome)| matches!(outcome, RequestLogSettlementOutcome::AlreadyBilled))
-    );
+    retried.sort_unstable_by_key(|(id, _)| *id);
+    let mut expected =
+        [first.id, second.id].map(|id| (id, RequestLogSettlementOutcome::AlreadyBilled));
+    expected.sort_unstable_by_key(|(id, _)| *id);
+    assert_eq!(retried, expected);
     let unchanged: (rust_decimal::Decimal, rust_decimal::Decimal) = sqlx::query_as(
         "SELECT user_account.balance_amount,key.quota_used_amount
          FROM users AS user_account
@@ -8711,6 +8715,50 @@ async fn request_log_peak_pricing_migration_defaults_existing_logs() {
 }
 
 #[tokio::test]
+async fn historical_enum_boundaries_commit_before_the_next_batch() {
+    use ai_gateway::persistence::MigrationRunError;
+    use sqlx::migrate::MigrateError;
+
+    let database = TestDatabase::new_unmigrated().await;
+    for (block, failure, sqlstate, committed, unblock) in [
+        (
+            "CREATE TABLE connector_pools(id uuid)",
+            36,
+            "42P07",
+            34,
+            "DROP TABLE connector_pools",
+        ),
+        (
+            "ALTER TABLE channel_groups ADD COLUMN request_compression text",
+            48,
+            "42701",
+            46,
+            "ALTER TABLE channel_groups DROP COLUMN request_compression",
+        ),
+    ] {
+        sqlx::query(block).execute(&database.pool).await.unwrap();
+        let error = run_migrations(&database.pool).await.unwrap_err();
+        let MigrationRunError::Migration(MigrateError::ExecuteMigration(error, version)) = error
+        else {
+            panic!("expected migration {failure} to fail, got {error}");
+        };
+        assert_eq!(version, failure);
+        assert_eq!(
+            error.as_database_error().unwrap().code().as_deref(),
+            Some(sqlstate)
+        );
+        let latest: i64 = sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations")
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+        assert_eq!(latest, committed);
+        sqlx::query(unblock).execute(&database.pool).await.unwrap();
+    }
+    run_migrations(&database.pool).await.unwrap();
+    database.cleanup().await;
+}
+
+#[tokio::test]
 async fn pending_migrations_commit_and_rollback_as_one_batch() {
     let database = TestDatabase::new_unmigrated().await;
     let mut previous = sqlx::migrate::Migrator::new(std::path::Path::new("./migrations"))
@@ -10060,15 +10108,36 @@ async fn standalone_web_search_migration_backfills_codex_capability_and_timeout(
     .unwrap();
     assert_eq!(timeout, 300);
 
-    let constraint: String = sqlx::query_scalar(
-        "SELECT pg_get_constraintdef(oid) FROM pg_constraint \
-         WHERE conrelid='request_logs'::regclass \
-           AND conname='request_logs_api_operation_format_check'",
-    )
-    .fetch_one(&database.pool)
-    .await
-    .unwrap();
-    assert!(constraint.contains("web_search"));
+    let seed = seed(&database.pool).await;
+    let request = Uuid::new_v4();
+    let insert_search_log = |format| {
+        sqlx::query(
+            "INSERT INTO request_logs(id,started_at,completed_at,user_id,api_key_id,
+                 api_format,api_operation,client_model,outcome)
+             VALUES ($1,now(),now(),$2,$3,$4::api_format,'standalone_web_search','test-model','succeeded')",
+        )
+        .bind(request)
+        .bind(seed.user)
+        .bind(seed.key)
+        .bind(format)
+        .execute(&database.pool)
+    };
+    let error = insert_search_log("open_ai_chat_completions")
+        .await
+        .unwrap_err();
+    let error = error.as_database_error().unwrap();
+    assert_eq!(error.code().as_deref(), Some("23514"));
+    assert_eq!(
+        error.constraint(),
+        Some("request_logs_api_operation_format_check")
+    );
+    assert_eq!(
+        insert_search_log("open_ai_responses")
+            .await
+            .unwrap()
+            .rows_affected(),
+        1
+    );
 
     database.cleanup().await;
 }

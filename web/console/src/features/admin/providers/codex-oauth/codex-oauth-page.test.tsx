@@ -7,6 +7,7 @@ import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
 import type {
   RoutingGroupView,
+  CodexCredentialExportBundle,
   CodexCredentialExportInput,
   CodexCredentialUpdateInput,
   CodexCredentialView,
@@ -92,14 +93,22 @@ afterEach(() => {
 describe("CodexOauthPage", () => {
   it("manages detached credentials without reading a routing group", async () => {
     seedAuthenticatedSession();
+    const groupReads: string[] = [];
+    const recordGroupRead = ({ request }: { request: Request }) => {
+      groupReads.push(new URL(request.url).pathname);
+      return HttpResponse.json({ error: "not_found" }, { status: 404 });
+    };
     server.use(...baseHandlers([]));
-    server.use(http.get("/console/v1/routing/groups/:id", () =>
-      HttpResponse.json({ error: "not_found" }, { status: 404 })));
+    server.use(
+      http.get("/console/v1/routing/groups", recordGroupRead),
+      http.get("/console/v1/routing/groups/:id", recordGroupRead),
+    );
     renderPage();
 
     expect(await screen.findByText("No Codex credentials")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Connect account" })).toBeEnabled();
     expect(screen.queryByRole("button", { name: "Back to groups" })).not.toBeInTheDocument();
+    expect(groupReads).toEqual([]);
   });
 
   it("renders personal credentials without a workspace account id", async () => {
@@ -371,31 +380,36 @@ describe("CodexOauthPage", () => {
     );
   });
 
-  it("confirms and downloads a sensitive native credential export", async () => {
+  it.each(["selected", "all"] as const)("confirms and downloads %s native credentials as JSON", async (mode) => {
     seedAuthenticatedSession();
     let exportInput: CodexCredentialExportInput | undefined;
+    const ids = mode === "selected" ? [CREDENTIAL_ID] : [];
     const createObjectUrl = vi
       .spyOn(URL, "createObjectURL")
       .mockReturnValue("blob:codex-export");
     const revokeObjectUrl = vi
       .spyOn(URL, "revokeObjectURL")
       .mockImplementation(() => undefined);
-    const click = vi
-      .spyOn(HTMLAnchorElement.prototype, "click")
-      .mockImplementation(() => undefined);
+    const downloads: { href: string; filename: string }[] = [];
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      downloads.push({ href: this.href, filename: this.download });
+    });
     server.use(
-      ...baseHandlers([CREDENTIAL]),
+      ...baseHandlers(mode === "all" ? [CREDENTIAL] : [
+        CREDENTIAL, { ...CREDENTIAL, id: "00000000-0000-0000-0000-00000000c004", label: "Unselected credential" },
+      ]),
       http.post(
         "/console/v1/routing/upstream-credentials/codex/export",
         async ({ request }) => {
           exportInput =
             (await request.json()) as CodexCredentialExportInput;
+          if (exportInput.credential_ids.length !== ids.length || ids.some((id, index) => id !== exportInput?.credential_ids[index])) {
+            return HttpResponse.json({ error: "unexpected_credential_selection" }, { status: 400 });
+          }
           return HttpResponse.json({
             type: "ai-gateway-codex-credentials",
-            version: 2,
+            version: 3,
             exported_at: "2026-07-30T12:00:00.000Z",
-            channel_group_id: GROUP_ID,
-            channel_group_name: CODEX_GROUP.name,
             proxies: [],
             credentials: [
               {
@@ -413,26 +427,42 @@ describe("CodexOauthPage", () => {
                 enabled: true,
               },
             ],
-          });
+          } satisfies CodexCredentialExportBundle);
         },
       ),
     );
     const user = userEvent.setup();
     renderPage();
 
-    await user.click(
-      await screen.findByRole("button", { name: "Export credentials" }),
-    );
-    await user.click(screen.getByRole("button", { name: "Export all" }));
+    if (mode === "selected") {
+      await user.click(await screen.findByRole("checkbox", { name: "Select Personal Plus" }));
+      await user.click(screen.getByRole("button", { name: "Export selected (1)" }));
+    } else {
+      await user.click(await screen.findByRole("button", { name: "Export credentials" }));
+    }
+    const confirmation = screen.getByRole("alertdialog");
+    expect(within(confirmation).getByText(/contains raw ID, access, refresh, and proxy credentials/)).toBeVisible();
+    expect(exportInput).toBeUndefined();
+    await user.click(within(confirmation).getByRole("button", { name: `Export ${mode}` }));
 
-    await waitFor(() =>
-      expect(exportInput).toEqual({
-        credential_ids: [],
-        include_proxies: true,
-      }),
-    );
-    expect(createObjectUrl).toHaveBeenCalled();
-    expect(click).toHaveBeenCalled();
+    expect(await screen.findByText("Codex credentials exported.")).toBeVisible();
+    expect(exportInput).toEqual({ credential_ids: ids, include_proxies: true });
+    expect(createObjectUrl).toHaveBeenCalledTimes(1);
+    const [blob] = createObjectUrl.mock.calls[0];
+    if (!(blob instanceof Blob)) throw new Error("Expected an export Blob");
+    expect(blob.type).toBe("application/json");
+    const { type, version, credentials } = JSON.parse(await blob.text()) as CodexCredentialExportBundle;
+    expect({ type, version, identities: credentials.map(({ label, email, account_id }) => ({ label, email, account_id })) }).toEqual({
+      type: "ai-gateway-codex-credentials",
+      version: 3,
+      identities: [{ label: "Personal Plus", email: "codex@example.test", account_id: "account-123" }],
+    });
+    const { id_token, access_token, refresh_token } = credentials[0];
+    expect(id_token === "secret-id" && access_token === "secret-access" && refresh_token === "secret-refresh").toBe(true);
+    expect(downloads).toEqual([{
+      href: "blob:codex-export",
+      filename: expect.stringMatching(/^codex-credentials-\d{4}-\d{2}-\d{2}\.json$/),
+    }]);
     expect(revokeObjectUrl).toHaveBeenCalledWith("blob:codex-export");
   });
 

@@ -47,17 +47,26 @@ describe("Plugin management", () => {
     expect(etag).toBe('"plugin-3"');
     expect(token).toBe("plugin-test-authorization");
     expect(await screen.findByText("Plugin settings saved and applied.")).toBeInTheDocument();
-    expect(JSON.stringify(localStorage)).not.toContain("plugin-test-authorization");
-    expect(JSON.stringify(sessionStorage)).not.toContain("administrator-password");
+    for (const storage of [localStorage, sessionStorage]) {
+      const secrets = ["plugin-test-authorization", "administrator-password"];
+      expect(Object.entries(storage).some(([key, value]) =>
+        secrets.some((secret) => key.includes(secret) || value.includes(secret)))).toBe(false);
+    }
   });
 
   it("rejects a required field before requesting native authorization", async () => {
+    let reauths = 0;
+    server.use(http.post("/console/v1/plugins/reauth", () => {
+      reauths++;
+      return HttpResponse.json({ error: "unexpected_reauthentication" }, { status: 403 });
+    }));
     const user = userEvent.setup();
     renderPage();
     await user.clear(await screen.findByLabelText("Attempt limit"));
     await user.click(screen.getByRole("button", { name: "Save plugin settings" }));
     expect(await screen.findByText("This setting is required.")).toBeInTheDocument();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(reauths).toBe(0);
   });
 
   it("leaves empty-string business validation to the plugin rather than inventing a minimum length", async () => {

@@ -672,13 +672,10 @@ async fn complete_nonstreaming_request(
         value.is_object(),
         "the real upstream response JSON must be an object"
     );
-    assert_response_has_usage(format, &value);
-    assert_usage_was_logged(
-        &gateway.logs.events(),
-        format,
-        operation,
-        RequestProtocol::NonStream,
-    );
+    let events = gateway.logs.events();
+    assert_usage_was_logged(&events, format, operation, RequestProtocol::NonStream);
+    check_nonstreaming_usage_matches_wire(operation, &value, &events[0])
+        .unwrap_or_else(|error| panic!("{error}"));
     NonStreamingResult {
         value,
         elapsed: started.elapsed(),
@@ -735,8 +732,12 @@ async fn assert_codex_nonstreaming_rejection(
         Some("codex_streaming_required")
     );
     let summary = event.error_summary.as_deref().unwrap();
-    assert!(summary.contains("\"code\": \"codex_streaming_required\""));
-    assert!(summary.contains("\"param\": \"stream\""));
+    let json = summary
+        .split_once("\n\n")
+        .map_or(summary, |(_, detail)| detail);
+    let detail: Value = serde_json::from_str(json).unwrap();
+    assert_eq!(detail["error"]["code"], "codex_streaming_required");
+    assert_eq!(detail["error"]["param"], "stream");
     assert_eq!(
         event.billing.as_ref().and_then(|billing| billing.usage),
         None
@@ -898,22 +899,26 @@ fn assert_images_response_has_output(value: &Value) -> usize {
         .filter(|data| !data.is_empty())
         .expect("the real Images response must include a nonempty data array");
     for item in data {
-        let has_base64 = item
-            .get("b64_json")
-            .and_then(Value::as_str)
-            .is_some_and(|value| value.len() >= 128);
-        let has_url = item
-            .get("url")
-            .and_then(Value::as_str)
-            .is_some_and(|value| {
-                value.len() >= 16 && (value.starts_with("https://") || value.starts_with("http://"))
-            });
         assert!(
-            has_base64 || has_url,
-            "each real Images output must contain a nontrivial b64_json payload or HTTP(S) URL"
+            valid_images_output(item),
+            "each real Images output must contain nonempty base64 bytes or an HTTP(S) URL with a host"
         );
     }
     data.len()
+}
+
+fn valid_images_output(item: &Value) -> bool {
+    item["b64_json"].as_str().is_some_and(|value| {
+        BASE64_STANDARD
+            .decode(value)
+            .is_ok_and(|bytes| !bytes.is_empty())
+    }) || item["url"].as_str().is_some_and(|value| {
+        // URL parsers may repair a missing authority (e.g. https:///path).
+        value.split_once("://").is_some_and(|(_, authority)| {
+            !authority.is_empty() && !authority.starts_with(['/', '\\', '?', '#'])
+        }) && reqwest::Url::parse(value)
+            .is_ok_and(|url| matches!(url.scheme(), "http" | "https") && url.has_host())
+    })
 }
 
 fn images_edit_request() -> Request<Body> {
@@ -1147,21 +1152,42 @@ fn sanitized_error_details(body: &[u8]) -> String {
     }
 }
 
-fn assert_response_has_usage(format: SmokeFormat, value: &Value) {
-    let usage = match format {
-        SmokeFormat::ChatCompletions => value.get("usage"),
-        SmokeFormat::Responses => value.get("usage").or_else(|| {
+fn check_nonstreaming_usage_matches_wire(
+    operation: ApiOperation,
+    value: &Value,
+    event: &RequestLogEvent,
+) -> Result<(), String> {
+    let (format, usage) = match operation {
+        ApiOperation::ChatCompletions => (SmokeFormat::ChatCompletions, value.get("usage")),
+        ApiOperation::Responses => (
+            SmokeFormat::Responses,
             value
-                .get("response")
-                .and_then(|response| response.get("usage"))
-        }),
-        SmokeFormat::StandaloneWebSearch => return,
-        SmokeFormat::Images => value.get("usage"),
+                .get("usage")
+                .or_else(|| value.pointer("/response/usage")),
+        ),
+        ApiOperation::ImagesGeneration | ApiOperation::ImagesEdit => {
+            (SmokeFormat::Images, value.get("usage"))
+        }
+        ApiOperation::StandaloneWebSearch | ApiOperation::ResponsesWebSocket => {
+            return Err(format!(
+                "unexpected operation for non-streaming token usage: {operation:?}"
+            ));
+        }
     };
-    assert!(
-        usage.is_some_and(Value::is_object),
-        "the real upstream non-streaming response must include a usage object"
-    );
+    let expected = usage
+        .and_then(|usage| usage_from_wire_object(format, usage))
+        .ok_or_else(|| format!("invalid wire usage for {operation:?}"))?;
+    let actual = event
+        .billing
+        .as_ref()
+        .and_then(|billing| billing.usage)
+        .ok_or_else(|| format!("no terminal usage for {operation:?}"))?;
+    if actual != expected {
+        return Err(format!(
+            "terminal usage for {operation:?} differs from wire: {actual:?} != {expected:?}"
+        ));
+    }
+    Ok(())
 }
 
 fn assert_usage_was_logged(
@@ -1243,7 +1269,7 @@ fn assert_streaming_usage_matches_terminal_sse_event(
     bytes: &[u8],
 ) {
     let expected = terminal_sse_usage(format, bytes)
-        .expect("the real upstream SSE stream must contain a compatible usage object");
+        .expect("the real upstream SSE stream must contain a valid terminal usage summary");
     let actual = events[0]
         .billing
         .as_ref()
@@ -1256,72 +1282,62 @@ fn assert_streaming_usage_matches_terminal_sse_event(
 }
 
 fn terminal_sse_usage(format: SmokeFormat, bytes: &[u8]) -> Option<RequestUsage> {
-    let mut remaining = bytes;
-    let mut latest = None;
-    let mut terminal = None;
-    while !remaining.is_empty() {
-        let (frame, next) = match sse_frame_end(remaining) {
-            Some(end) => (&remaining[..end], &remaining[end..]),
-            None => (remaining, &[][..]),
-        };
-        remaining = next;
-        let Some(value) = sse_frame_json(frame) else {
+    let text = std::str::from_utf8(bytes)
+        .ok()?
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
+    let mut chat_summary = None;
+    for frame in text.split("\n\n") {
+        let data = frame
+            .lines()
+            .filter_map(|line| line.strip_prefix("data:"))
+            .map(|data| data.strip_prefix(' ').unwrap_or(data))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if data.is_empty() {
             continue;
-        };
-        let Some(usage) = usage_from_sse_value(format, &value) else {
-            continue;
-        };
-        if is_terminal_sse_usage(format, &value) {
-            terminal = Some(usage);
         }
-        latest = Some(usage);
-    }
-    terminal.or(latest)
-}
-
-fn sse_frame_end(bytes: &[u8]) -> Option<usize> {
-    bytes
-        .windows(2)
-        .position(|window| window == b"\n\n")
-        .map(|end| end + 2)
-        .or_else(|| {
-            bytes
-                .windows(4)
-                .position(|window| window == b"\r\n\r\n")
-                .map(|end| end + 4)
-        })
-}
-
-fn sse_frame_json(frame: &[u8]) -> Option<Value> {
-    let mut data = Vec::new();
-    for line in frame.split(|byte| *byte == b'\n') {
-        let line = line.strip_suffix(b"\r").unwrap_or(line);
-        let Some(value) = line.strip_prefix(b"data:") else {
-            continue;
-        };
-        let value = value.strip_prefix(b" ").unwrap_or(value);
-        if !data.is_empty() {
-            data.push(b'\n');
+        if data == "[DONE]" {
+            break;
         }
-        data.extend_from_slice(value);
+        let value: Value = serde_json::from_str(&data).ok()?;
+        if matches!(format, SmokeFormat::Responses) {
+            let event = frame
+                .lines()
+                .filter_map(|line| line.strip_prefix("event:"))
+                .next_back()
+                .map(str::trim);
+            match value["type"].as_str().or(event) {
+                Some("response.completed") => return usage_from_sse_value(format, &value),
+                Some(
+                    "error" | "response.failed" | "response.incomplete" | "response.cancelled",
+                ) => return None,
+                _ => (),
+            }
+        } else if matches!(format, SmokeFormat::ChatCompletions)
+            && value["choices"].as_array().is_some_and(|choices| {
+                choices.is_empty()
+                    || choices
+                        .iter()
+                        .any(|choice| !choice["finish_reason"].is_null())
+            })
+        {
+            chat_summary = usage_from_sse_value(format, &value);
+        }
     }
-    (!data.is_empty() && data.as_slice() != b"[DONE]")
-        .then(|| serde_json::from_slice(&data).ok())
-        .flatten()
+    chat_summary
 }
 
 fn usage_from_sse_value(format: SmokeFormat, value: &Value) -> Option<RequestUsage> {
-    if matches!(format, SmokeFormat::StandaloneWebSearch) {
-        return None;
-    }
-    let usage = value
-        .get("usage")
-        .or_else(|| {
-            value
-                .get("response")
-                .and_then(|response| response.get("usage"))
-        })
-        .unwrap_or(value);
+    let usage = match format {
+        SmokeFormat::ChatCompletions => value.get("usage")?,
+        SmokeFormat::Responses => value.pointer("/response/usage")?,
+        SmokeFormat::StandaloneWebSearch | SmokeFormat::Images => return None,
+    };
+    usage_from_wire_object(format, usage)
+}
+
+fn usage_from_wire_object(format: SmokeFormat, usage: &Value) -> Option<RequestUsage> {
     let (input_field, output_field, input_details_field, output_details_field) = match format {
         SmokeFormat::ChatCompletions => (
             "prompt_tokens",
@@ -1329,19 +1345,13 @@ fn usage_from_sse_value(format: SmokeFormat, value: &Value) -> Option<RequestUsa
             "prompt_tokens_details",
             "completion_tokens_details",
         ),
-        SmokeFormat::Responses => (
+        SmokeFormat::Responses | SmokeFormat::Images => (
             "input_tokens",
             "output_tokens",
             "input_tokens_details",
             "output_tokens_details",
         ),
-        SmokeFormat::StandaloneWebSearch => unreachable!("handled above"),
-        SmokeFormat::Images => (
-            "input_tokens",
-            "output_tokens",
-            "input_tokens_details",
-            "output_tokens_details",
-        ),
+        SmokeFormat::StandaloneWebSearch => return None,
     };
     let input_tokens = nonnegative_token(usage.get(input_field))?;
     let output_tokens = nonnegative_token(usage.get(output_field))?;
@@ -1383,29 +1393,6 @@ fn nonnegative_token(value: Option<&Value>) -> Option<i64> {
     value?.as_i64().filter(|value| *value >= 0)
 }
 
-fn is_terminal_sse_usage(format: SmokeFormat, value: &Value) -> bool {
-    match format {
-        SmokeFormat::ChatCompletions => {
-            value
-                .get("choices")
-                .and_then(Value::as_array)
-                .is_some_and(|choices| {
-                    choices.is_empty()
-                        || choices.iter().any(|choice| {
-                            choice
-                                .get("finish_reason")
-                                .is_some_and(|reason| !reason.is_null())
-                        })
-                })
-        }
-        SmokeFormat::Responses => {
-            value.get("type").and_then(Value::as_str) == Some("response.completed")
-        }
-        SmokeFormat::StandaloneWebSearch => false,
-        SmokeFormat::Images => false,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1417,6 +1404,8 @@ mod tests {
         routing::post,
     };
     use std::sync::Mutex;
+
+    const TINY_PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 
     #[derive(Clone, Debug)]
     struct CapturedImagesRequest {
@@ -1430,6 +1419,121 @@ mod tests {
         SmokeUpstream {
             base_url: "https://default.example.invalid".into(),
             api_key: "default-key".into(),
+        }
+    }
+
+    #[test]
+    fn smoke_sse_usage_requires_a_terminal_summary() {
+        let responses = SmokeFormat::Responses;
+        let early = "data: {\"type\":\"response.created\",\"response\":{\"usage\":{\"input_tokens\":7,\"output_tokens\":1}}}\r\n\r\n";
+        let completed = "event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":9,\"output_tokens\":3}}}\n\n";
+        for suffix in [
+            "",
+            "data: {\"type\":\"response.completed\",\"response\":{\"usage\":null}}\n\n",
+        ] {
+            assert_eq!(
+                terminal_sse_usage(responses, format!("{early}{suffix}").as_bytes()),
+                None
+            );
+        }
+        assert_eq!(
+            terminal_sse_usage(responses, format!("{early}{completed}").as_bytes())
+                .unwrap()
+                .input_tokens,
+            9
+        );
+
+        let chat = SmokeFormat::ChatCompletions;
+        let delta = "data: {\"choices\":[{\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":1}}\n\n";
+        let summary =
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":3}}\n\n";
+        let done = "data: [DONE]\n\n";
+        assert_eq!(
+            terminal_sse_usage(chat, format!("{delta}{done}{summary}").as_bytes()),
+            None
+        );
+        assert_eq!(
+            terminal_sse_usage(chat, format!("{delta}{summary}{done}").as_bytes())
+                .unwrap()
+                .input_tokens,
+            9
+        );
+    }
+
+    #[tokio::test]
+    async fn nonstreaming_smoke_detects_each_mismatched_terminal_usage_count() {
+        let upstream = start_gateway_server(
+            Router::new()
+                .route("/v1/chat/completions", post(|| async {
+                    Json(json!({"usage": {
+                        "prompt_tokens": 41, "completion_tokens": 17,
+                        "prompt_cache_hit_tokens": 2,
+                        "prompt_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 3},
+                        "completion_tokens_details": {"reasoning_tokens": 5}
+                    }}))
+                }))
+                .route("/v1/responses", post(|| async {
+                    Json(json!({"usage": {
+                        "input_tokens": 53, "output_tokens": 19,
+                        "input_tokens_details": {"cached_tokens": 3, "cache_creation_tokens": 7},
+                        "output_tokens_details": {"reasoning_tokens": 11}
+                    }}))
+                })),
+        )
+        .await;
+        let settings = SmokeSettings {
+            default_upstream: SmokeUpstream {
+                base_url: format!("http://{}", upstream.address),
+                api_key: "local-upstream-key".into(),
+            },
+            websocket_upstream: fallback_upstream(),
+            images: None,
+            search: None,
+            chat_completions_model: "local-chat-model".into(),
+            responses_model: "local-responses-model".into(),
+            responses_profile: ResponsesUpstreamProfile::OpenAiCompatible,
+            timeout: Duration::from_secs(5),
+        };
+        for (format, model) in [
+            (
+                SmokeFormat::ChatCompletions,
+                &settings.chat_completions_model,
+            ),
+            (SmokeFormat::Responses, &settings.responses_model),
+        ] {
+            let operation = format.api_operation();
+            let gateway = gateway(
+                &settings,
+                &settings.default_upstream,
+                format,
+                CLIENT_MODEL,
+                model,
+            );
+            let logs = gateway.logs.clone();
+            let result = complete_nonstreaming_request(
+                &settings,
+                gateway,
+                request(format, false, false),
+                format,
+                operation,
+            )
+            .await;
+            let [event]: [RequestLogEvent; 1] = logs.events().try_into().unwrap();
+            let mutations: [fn(&mut RequestUsage); 5] = [
+                |usage| usage.input_tokens -= 1,
+                |usage| usage.cached_input_tokens += 1,
+                |usage| usage.cache_write_tokens += 1,
+                |usage| usage.output_tokens -= 1,
+                |usage| usage.reasoning_tokens += 1,
+            ];
+            for mutate in mutations {
+                let mut mismatched = event.clone();
+                mutate(mismatched.billing.as_mut().unwrap().usage.as_mut().unwrap());
+                let error =
+                    check_nonstreaming_usage_matches_wire(operation, &result.value, &mismatched)
+                        .unwrap_err();
+                assert!(error.contains("differs from wire"), "{error}");
+            }
         }
     }
 
@@ -1453,7 +1557,7 @@ mod tests {
         });
         Json(json!({
             "created": 1,
-            "data": [{"b64_json": BASE64_STANDARD.encode([0_u8; 96])}],
+            "data": [{"b64_json": TINY_PNG_BASE64}],
             "usage": {
                 "input_tokens": 7,
                 "output_tokens": 11,
@@ -1614,15 +1718,19 @@ mod tests {
     #[test]
     fn standalone_search_request_uses_the_typed_commands_object() {
         let body = SmokeFormat::StandaloneWebSearch.request_body(false);
-        assert_eq!(
-            body["commands"]["search_query"][0]["q"],
-            "official Rust programming language"
-        );
-        assert_eq!(
-            body["commands"]["search_query"][0]["domains"][0],
-            "rust-lang.org"
-        );
-        assert!(body["commands"].is_object());
+        let commands = body["commands"].as_object().unwrap();
+        let queries = commands["search_query"].as_array().unwrap();
+        assert!(!queries.is_empty());
+        for query in queries {
+            assert!(query["q"].as_str().is_some_and(|q| !q.trim().is_empty()));
+            let domains = query["domains"].as_array().unwrap();
+            assert!(!domains.is_empty());
+            assert!(domains.iter().all(|domain| {
+                domain
+                    .as_str()
+                    .is_some_and(|domain| !domain.trim().is_empty())
+            }));
+        }
         assert!(
             body.get("input").is_none(),
             "command-only search requests need no invented history"
@@ -1630,12 +1738,22 @@ mod tests {
     }
 
     #[test]
-    fn responses_requests_use_explicit_message_arrays() {
-        let body = SmokeFormat::Responses.request_body(false);
-        assert_eq!(body["input"][0]["type"], "message");
-        assert_eq!(body["input"][0]["role"], "user");
-        assert_eq!(body["input"][0]["content"][0]["type"], "input_text");
-        assert_eq!(body["max_output_tokens"], 1);
+    fn images_output_requires_decodable_bytes_or_a_hosted_http_url() {
+        for item in [
+            json!({"b64_json": TINY_PNG_BASE64}),
+            json!({"url": "https://example.invalid/image.png"}),
+            json!({"url": "http://127.0.0.1/image.png"}),
+        ] {
+            assert!(valid_images_output(&item), "{item}");
+        }
+        for item in [
+            json!({"b64_json": "!".repeat(128)}),
+            json!({"b64_json": ""}),
+            json!({"url": "https:///missing-host.png"}),
+            json!({"url": "ftp://example.invalid/image.png"}),
+        ] {
+            assert!(!valid_images_output(&item), "{item}");
+        }
     }
 
     #[test]
@@ -1666,16 +1784,6 @@ mod tests {
             "thread",
         );
         assert_eq!(codex["max_output_tokens"], 1);
-    }
-
-    #[test]
-    fn embedded_images_edit_fixture_is_a_1024_square_png() {
-        let image = BASE64_STANDARD
-            .decode(IMAGE_EDIT_PNG_BASE64.trim())
-            .unwrap();
-        assert_eq!(&image[..8], b"\x89PNG\r\n\x1a\n");
-        assert_eq!(u32::from_be_bytes(image[16..20].try_into().unwrap()), 1024);
-        assert_eq!(u32::from_be_bytes(image[20..24].try_into().unwrap()), 1024);
     }
 
     #[tokio::test]
@@ -1712,7 +1820,7 @@ mod tests {
         smoke_images_edit(&settings).await;
         server.abort();
 
-        let requests = captured.lock().unwrap();
+        let requests = captured.lock().unwrap().clone();
         assert_eq!(requests.len(), 2);
         assert_eq!(requests[0].path, "/v1/images/generations");
         assert_eq!(
@@ -1731,18 +1839,27 @@ mod tests {
             requests[1].authorization.as_deref(),
             Some("Bearer images-key")
         );
-        assert!(
-            requests[1]
-                .content_type
-                .as_deref()
-                .is_some_and(|value| value.starts_with("multipart/form-data; boundary="))
-        );
-        assert!(
-            requests[1]
-                .body
-                .windows(b"images-upstream-model".len())
-                .any(|window| window == b"images-upstream-model")
-        );
+        let boundary =
+            multer::parse_boundary(requests[1].content_type.as_deref().unwrap()).unwrap();
+        let body = requests[1].body.clone();
+        let stream = futures_util::stream::once(async move { Ok::<_, std::io::Error>(body) });
+        let mut edit = multer::Multipart::new(stream, boundary);
+        let mut models = Vec::new();
+        let mut images = Vec::new();
+        while let Some(part) = edit.next_field().await.unwrap() {
+            match part.name() {
+                Some("model") => models.push(part.text().await.unwrap()),
+                Some("image") => images.push(part.bytes().await.unwrap()),
+                _ => (),
+            }
+        }
+        assert_eq!(models, ["images-upstream-model"]);
+        let [image] = images.as_slice() else {
+            panic!("expected exactly one uploaded image")
+        };
+        assert_eq!(&image[..8], b"\x89PNG\r\n\x1a\n");
+        assert_eq!(u32::from_be_bytes(image[16..20].try_into().unwrap()), 1024);
+        assert_eq!(u32::from_be_bytes(image[20..24].try_into().unwrap()), 1024);
     }
 
     #[tokio::test]
@@ -1780,6 +1897,9 @@ mod tests {
         assert_eq!(requests.len(), 2);
         for body in requests.iter() {
             assert_eq!(body["model"], "gateway-codex-model");
+            assert_eq!(body["input"][0]["type"], "message");
+            assert_eq!(body["input"][0]["role"], "user");
+            assert_eq!(body["input"][0]["content"][0]["type"], "input_text");
             assert_eq!(body["max_output_tokens"], 1);
         }
         assert_eq!(requests[0]["stream"], false);
