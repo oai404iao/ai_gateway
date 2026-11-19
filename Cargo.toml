@@ -16,6 +16,7 @@ sqlite-backend = ["sqlx/sqlite", "tokio/process", "dep:rustix", "dep:libsqlite3-
 embedded-console-ui = ["dep:rust-embed", "dep:mime_guess"]
 
 [dependencies]
+ai-gateway-connector-host = { path = "crates/connector-host" }
 ai-gateway-connector-sdk = { path = "crates/connector-sdk" }
 arc-swap = "1.7"
 argon2 = { version = "0.5", features = ["password-hash"] }
@@ -26,7 +27,6 @@ bytes = "1.10"
 chrono = { version = "0.4", features = ["serde"] }
 crc32fast = "1.4"
 fs2 = "0.4"
-flate2 = "1"
 futures-util = "0.3"
 hyper = { version = "1", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server-auto", "server-graceful", "service", "tokio"] }
@@ -35,7 +35,6 @@ jsonwebtoken = { version = "11", default-features = false, features = ["rust_cry
 json-patch = "4.2"
 jsonptr = "0.7"
 libc = "0.2"
-libloading = "0.9"
 multer = "3.1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "socks", "stream"] }
 regex = "1.11"
@@ -54,7 +53,6 @@ sha2 = "0.11"
 sqlx = { version = "=0.9.0", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls-ring", "migrate", "chrono", "uuid", "json", "rust_decimal", "macros"] }
 subtle = "2.6"
 tempfile = "3.20"
-tar = "0.4"
 thiserror = "2.0"
 time = "=0.3.54"
 tokio = { version = "1.43", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
@@ -80,7 +78,11 @@ zstd = "0.13"
 rust-embed = { version = "8", optional = true }
 mime_guess = { version = "2", optional = true }
 
+[dev-dependencies]
+flate2 = "1"
+tar = "0.4"
+
 [workspace]
-members = [".", "crates/connector-sdk", "tools/forwarding-perf"]
-default-members = ["."]
+members = [".", "crates/connector-host", "crates/connector-sdk", "tools/forwarding-perf"]
+default-members = [".", "crates/connector-host"]
 resolver = "3"

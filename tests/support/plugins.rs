@@ -1,6 +1,6 @@
 use std::{path::PathBuf, sync::OnceLock};
 
-use ai_gateway::connector_plugins::{ConnectorPlugins, PluginConfig};
+use ai_gateway_connector_host::{ConnectorPlugins, PluginConfig};
 use sha2::{Digest, Sha256};
 
 pub fn codex_plugins() -> ConnectorPlugins {

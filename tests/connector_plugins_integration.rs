@@ -2,7 +2,7 @@
 
 use std::{os::unix::fs::PermissionsExt, path::PathBuf, process::Command};
 
-use ai_gateway::connector_plugins::{ConnectorPlugins, Plugin, PluginConfig, PluginError};
+use ai_gateway_connector_host::{ConnectorPlugins, Plugin, PluginConfig, PluginError};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
@@ -51,7 +51,6 @@ fn uppercase_digest_is_rejected_before_loading_a_valid_library() {
 #[test]
 fn managed_plugins_isolate_settings_and_keep_other_channels_when_missing_or_disabled() {
     use ai_gateway::{
-        connector_plugins::DirectoryPluginCatalog,
         domain::ApiOperation,
         persistence::{
             ChannelGroupRecord, ChannelRecord, ControlPlaneRecords, PluginArtifactRecord,
@@ -60,6 +59,7 @@ fn managed_plugins_isolate_settings_and_keep_other_channels_when_missing_or_disa
         },
         runtime_config::compile_runtime_config_with_catalog,
     };
+    use ai_gateway_connector_host::DirectoryPluginCatalog;
     use uuid::Uuid;
 
     let directory = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();

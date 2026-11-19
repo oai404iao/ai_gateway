@@ -1,10 +1,10 @@
 //! Plugin storage contracts shared by isolated PostgreSQL and SQLite fixtures.
 
-use ai_gateway::connector_plugins::DirectoryPluginCatalog;
 use ai_gateway::persistence::{
     ControlPlaneMutation, ControlPlaneRepository, PluginArtifactInput, PluginJobCompletion,
     PluginSaveInput, PluginSettingsInput, RepositoryError,
 };
+use ai_gateway_connector_host::DirectoryPluginCatalog;
 use serde_json::json;
 use uuid::Uuid;
 

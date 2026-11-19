@@ -27,6 +27,7 @@
 
 - [设置开发环境](development/getting-started.md)，选择对应的检查层级。
 - [理解当前架构](development/architecture.md)：监听器、转发、快照和后台流水线。
+- [转发与插件拆分决策](development/relay-boundaries.md)：new-api、magpie 的对照与本项目的分层取舍。
 - [查找维护者专题](development/README.md)：连接器、Console、持久化、测试、CI 与发布。
 - [开发 Console UI](../web/console/README.md) 或 [实现原生连接器](../crates/connector-sdk/README.md)。
 - [Console 视觉规范](../design.md)：Nova 主题、图标、动画与布局原语边界。

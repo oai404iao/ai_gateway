@@ -199,7 +199,7 @@ OpenAI-compatible edit 直接回放，或在模型别名存在时使用原 bound
 最新有效范围，避免在轮换或改绑期间借出的旧连接重新入池。
 
 `src/application/connector.rs` 统一分派内置 `general` 和通过 C ABI 加载的外部连接器。
-`src/connector_plugins.rs` 负责摘要、ABI、权限和生命周期检查，
+[`crates/connector-host`](../../crates/connector-host/) 负责摘要、ABI、权限和生命周期检查，
 公开 SDK 位于 `crates/connector-sdk`。代理主循环只调用统一的
 prepare、body adaptation、URL、Header injection、pre-header retry capability 和 response
 observation 接口，不包含 provider 的 OAuth claim、路径或 Header 细节。
@@ -254,11 +254,9 @@ Responses WebSocket 使用同一个 `/v1/responses` 路径的 `GET` Upgrade。�
 允许 WebSocket；系统、用户和普通 channel 默认关闭。每条顺序的 `response.create` 重新读取当前快照并
 独立执行鉴权、准入、选路、变换、Connector 凭证准备、usage 和日志。普通 Responses channel
 与 Codex 渠道都由管理员显式声明 `responses-ws` 能力；迁移只保留原有 WS 范围，
-Images 操作不使用 WebSocket，并且 Responses 仍受系统与用户开关限制。由于
-`previous_response_id` 的增量缓存属于具体上游连接，下游连接会固定到一个仍可用的上游渠道和
-WebSocket 身份，不做请求多路复用。每个成功请求结束后，上游连接立即回到按 API Key、Session
-握手身份、渠道/上游模型候选、网络配置、目标和最终 Header 精确隔离的有界空闲池；下一条消息
-优先取回同一连接及候选。
+Images 操作不使用 WebSocket，并且 Responses 仍受系统与用户开关限制。完整请求先选路再复用连接，
+不把下游 socket 固定到一个渠道。增量请求先按 `previous_response_id` 匹配空闲连接，再验证候选和完整池键；
+详细恢复条件见[WS 状态与复用](../user/websocket.md#继续上下文或恢复连接)。
 上游客户端使用与 Codex 相同的 SHA 固定 OpenAI Tungstenite fork，并主动协商
 `permessage-deflate`；未接受该扩展的上游仍使用未压缩消息。池只复用成功终态后的无残留连接。
 系统设置动态配置是否启用、最大空闲连接数、空闲超时和连接

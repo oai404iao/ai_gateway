@@ -1,0 +1,27 @@
+[package]
+name = "ai-gateway-connector-host"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+description = "Native connector artifact catalog, loader, and configured generations for ai-gateway"
+repository = "https://github.com/oai404iao/ai_gateway"
+publish = false
+
+[dependencies]
+ai-gateway-connector-sdk = { path = "../connector-sdk" }
+flate2 = "1"
+fs2 = "0.4"
+libc = "0.2"
+libloading = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+tar = "0.4"
+tempfile = "3.20"
+thiserror = "2.0"
+tracing = "0.1"
+uuid = "1.11"
+zeroize = "1.8"
+
+[dev-dependencies]
+uuid = { version = "1.11", features = ["v4"] }

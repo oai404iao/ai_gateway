@@ -17,7 +17,6 @@ use ai_gateway::{
         ProxyTestService, RequestLogSink, SystemMetricsService, UpstreamConnectorRegistry,
         hash_console_password,
     },
-    connector_plugins::DirectoryPluginCatalog,
     http,
     models_dev::ModelsDevClient,
     observability,
@@ -37,6 +36,7 @@ use ai_gateway::{
         SpendLeaderboardWorker,
     },
 };
+use ai_gateway_connector_host::DirectoryPluginCatalog;
 use axum::{Router, body::Body};
 use chrono::Utc;
 use database::Database;

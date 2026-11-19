@@ -2,6 +2,7 @@
 
 use std::{collections::VecDeque, sync::Arc};
 
+use ai_gateway_connector_host::Plugin;
 use ai_gateway_connector_sdk::{
     MAX_RESPONSE_EVENT_BYTES, MAX_RESPONSE_JSON_BYTES, RESPONSE_EVENT, RESPONSE_JSON,
     ResponseEvent, ResponseEventOutput, ResponseMode,
@@ -10,10 +11,7 @@ use bytes::Bytes;
 use serde_json::{Map, Value, json};
 use thiserror::Error;
 
-use crate::{
-    connector_plugins::Plugin,
-    domain::{ApiFormat, ApiOperation},
-};
+use crate::domain::{ApiFormat, ApiOperation};
 
 use super::usage::UsageCollector;
 

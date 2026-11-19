@@ -7,6 +7,7 @@ use std::{
     time::Duration,
 };
 
+use ai_gateway_connector_host::ConnectorPlugins;
 use chrono::{DateTime, Utc};
 use reqwest::Url;
 use rust_decimal::Decimal;
@@ -1545,7 +1546,7 @@ impl CompiledModelRoutes {
 
 #[derive(Debug)]
 pub struct CompiledRuntimeConfig {
-    plugins: crate::connector_plugins::ConnectorPlugins,
+    plugins: ConnectorPlugins,
     plugin_errors: HashMap<String, &'static str>,
     api_keys: HashMap<ApiKeyHash, Arc<CompiledApiKey>>,
     model_rules: CompiledModelRoutes,
@@ -1644,7 +1645,7 @@ impl CompiledRuntimeConfig {
             system_settings,
         }
     }
-    pub fn with_plugins(mut self, plugins: crate::connector_plugins::ConnectorPlugins) -> Self {
+    pub fn with_plugins(mut self, plugins: ConnectorPlugins) -> Self {
         self.plugins = plugins;
         self
     }
@@ -1654,7 +1655,7 @@ impl CompiledRuntimeConfig {
         self
     }
 
-    pub fn plugins(&self) -> &crate::connector_plugins::ConnectorPlugins {
+    pub fn plugins(&self) -> &ConnectorPlugins {
         &self.plugins
     }
 

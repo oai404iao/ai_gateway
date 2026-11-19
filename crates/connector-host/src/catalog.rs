@@ -1,6 +1,6 @@
 //! Immutable package installation and discovery without executing discovered code.
 
-use super::*;
+use crate::*;
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},

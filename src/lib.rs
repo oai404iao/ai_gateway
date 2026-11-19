@@ -2,7 +2,6 @@
 
 pub mod admission;
 pub mod application;
-pub mod connector_plugins;
 pub mod domain;
 pub mod http;
 pub mod models_dev;
@@ -14,6 +13,9 @@ mod request_log_spool;
 mod request_policy;
 pub mod routing;
 pub mod runtime_config;
+#[cfg(test)]
+#[path = "../tests/support/plugins.rs"]
+mod test_plugins;
 pub mod transforms;
 pub mod upstream;
 pub mod workers;

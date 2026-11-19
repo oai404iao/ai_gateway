@@ -11,6 +11,7 @@ use std::{
     },
 };
 
+use ai_gateway_connector_host::{Plugin, PluginError};
 use axum::{
     body::{Body, Bytes},
     http::{
@@ -265,40 +266,6 @@ impl PreparedRequestBody {
             Self::ImageEdit(body) => Ok((Self::ImageEdit(body), false)),
         }
     }
-
-    pub(crate) async fn rewrite_model(
-        self,
-        client_model: &str,
-        upstream_model: &str,
-    ) -> Result<Self, ImageEditBodyError> {
-        if client_model == upstream_model {
-            return Ok(self);
-        }
-        match self {
-            Self::Json(body) => {
-                let mut value = serde_json::from_slice::<Value>(&body)
-                    .map_err(|_| ImageEditBodyError::InvalidJson)?;
-                let object = value
-                    .as_object_mut()
-                    .ok_or(ImageEditBodyError::InvalidJson)?;
-                object.insert("model".to_owned(), Value::String(upstream_model.to_owned()));
-                serde_json::to_vec(&value)
-                    .map(Bytes::from)
-                    .map(Self::Json)
-                    .map_err(|_| ImageEditBodyError::InvalidJson)
-            }
-            Self::ImageEdit(body) => body.rewrite_model(upstream_model).map(Self::ImageEdit),
-        }
-    }
-
-    pub(crate) async fn into_openai_replayable(
-        self,
-    ) -> Result<ReplayableRequestBody, ImageEditBodyError> {
-        match self {
-            Self::Json(body) => Ok(ReplayableRequestBody::Memory(body)),
-            Self::ImageEdit(body) => body.into_openai_replayable().await,
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -403,7 +370,10 @@ impl ImageEditRequestBody {
         Ok((self, changed))
     }
 
-    fn rewrite_model(mut self, upstream_model: &str) -> Result<Self, ImageEditBodyError> {
+    pub(crate) fn rewrite_model(
+        mut self,
+        upstream_model: &str,
+    ) -> Result<Self, ImageEditBodyError> {
         if upstream_model.contains(['\r', '\n']) {
             return Err(ImageEditBodyError::InvalidModel);
         }
@@ -418,7 +388,9 @@ impl ImageEditRequestBody {
         Ok(self)
     }
 
-    async fn into_openai_replayable(self) -> Result<ReplayableRequestBody, ImageEditBodyError> {
+    pub(crate) async fn into_openai_replayable(
+        self,
+    ) -> Result<ReplayableRequestBody, ImageEditBodyError> {
         if self.model == self.wire_model && self.ignored_part_fields.is_empty() {
             return Ok(self.body);
         }
@@ -503,7 +475,7 @@ impl ImageEditRequestBody {
 
     pub(crate) async fn to_plugin_body(
         &self,
-        plugin: &crate::connector_plugins::Plugin,
+        plugin: &Plugin,
     ) -> Result<(ReplayableRequestBody, HeaderValue), ImageEditBodyError> {
         let fields = self
             .text_fields
@@ -655,7 +627,7 @@ fn plan_literal<'a>(plan: &'a Value, name: &str) -> Result<&'a [u8], ImageEditBo
     Ok(value.as_bytes())
 }
 
-fn image_plugin_error(error: crate::connector_plugins::PluginError) -> ImageEditBodyError {
+fn image_plugin_error(error: PluginError) -> ImageEditBodyError {
     match error.code() {
         Some("too_many_images") => ImageEditBodyError::CodexTooManyImages,
         Some("missing_field") => ImageEditBodyError::CodexMissingField,
@@ -1514,9 +1486,7 @@ mod tests {
     async fn plugin_json(
         body: &ImageEditRequestBody,
     ) -> Result<ReplayableRequestBody, ImageEditBodyError> {
-        let plugin = crate::connector_plugins::test_plugins()
-            .get("codex")
-            .unwrap();
+        let plugin = crate::test_plugins::codex_plugins().get("codex").unwrap();
         body.to_plugin_body(&plugin).await.map(|(body, _)| body)
     }
 
@@ -2096,7 +2066,13 @@ mod tests {
             .apply_policy(RequestPolicyLayer::Client, RequestInterface::ImagesEdit)
             .unwrap();
         assert!(client_changed);
-        let standard = body.clone().into_openai_replayable().await.unwrap();
+        let standard = body
+            .image_edit()
+            .unwrap()
+            .clone()
+            .into_openai_replayable()
+            .await
+            .unwrap();
         let standard_bytes = replay(&standard).await;
         let standard_text = String::from_utf8_lossy(&standard_bytes);
         assert!(!standard_text.contains("name=\"moderation\""));

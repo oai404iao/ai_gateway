@@ -171,6 +171,17 @@ SQLite 使用耐久 intent/CAS。更新插件不能重置事实、重放不确�
 
 ## 验收边界
 
+在 Linux 上用真实制品验证宿主。默认脚本构建[协议 2 固定提交](../../tests/fixtures/codex-plugin.json)；`--protocol-3` 构建[协议 3 固定提交](../../tests/fixtures/codex-plugin-protocol-3.json)。这两种模式都对照 pin 核对原生描述符和包内元数据，而不只看包版本。切换测试环境变量不改变网关的插件安装或启用状态。
+
+```bash
+plugin=$(scripts/prepare-connector-tests.sh) && \
+  AI_GATEWAY_TEST_CODEX_PLUGIN="$plugin" cargo test --locked -p ai-gateway-connector-host -- --include-ignored
+# 使用临时测试数据库，按开发环境指南配置 TEST_DATABASE_ADMIN_URL。
+plugin=$(scripts/prepare-connector-tests.sh --protocol-3) && \
+  AI_GATEWAY_TEST_CODEX_PLUGIN="$plugin" cargo test --locked --test control_plane_integration \
+    codex_connector_forwards_responses_and_images_with_shared_credentials -- --exact
+```
+
 按改变的边界选择证据，不能只用“库能加载”证明生命周期安全：
 
 | 改动 | 至少覆盖 |

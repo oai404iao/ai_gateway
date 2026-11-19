@@ -21,7 +21,6 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::time::Sleep;
 use tokio_tungstenite::tungstenite::{Message as UpstreamMessage, Utf8Bytes as UpstreamUtf8Bytes};
-use uuid::Uuid;
 use zeroize::Zeroizing;
 
 use crate::{
@@ -32,10 +31,10 @@ use crate::{
     },
     request_policy::{
         RequestInterface, RequestPolicyLayer, apply_client_fast_mode_filter,
-        apply_json_body_policy, filter_client_headers, sanitize_outbound_request_headers,
+        apply_json_body_policy, filter_client_headers,
     },
     routing::{SelectionResult, SessionAffinityMatch},
-    transforms::{apply_header_plan, apply_json_patch_plan, apply_websocket_event_plan},
+    transforms::apply_websocket_event_plan,
     upstream::{
         MAX_UPSTREAM_MESSAGE_BYTES, ResolvedUpstreamPolicy, UpstreamWebSocket,
         UpstreamWebSocketError, UpstreamWebSocketKey, WebSocketClientIdentity,
@@ -46,9 +45,10 @@ use crate::{
 use super::super::connector::PreparedUpstreamAttempt as PreparedConnectorAttempt;
 use super::{
     AttemptedCandidateSlots, CompletionGuard, ProxyError, ProxyService, RequestOutcome,
-    WebSocketRuntimeSnapshot, forward_request_headers, match_session_affinity, parse_bearer_token,
-    request_billing_multiplier, request_log_metadata, rewrite_model_alias,
-    sse_terminal_request_outcome,
+    WebSocketRuntimeSnapshot,
+    candidate::{self, JsonPreparationError},
+    forward_request_headers, match_session_affinity, parse_bearer_token,
+    request_billing_multiplier, request_log_metadata, sse_terminal_request_outcome,
 };
 pub(super) use lifecycle::WebSocketLifecycle;
 use lifecycle::WebSocketSessionGuard;
@@ -182,7 +182,6 @@ impl ProxyService {
 
 impl ResponsesWebSocketSession {
     pub(crate) async fn run(self, mut client: WebSocket) {
-        let mut pinned = None;
         loop {
             if self.proxy.websocket_lifecycle.is_draining() {
                 if !self.proxy.websocket_lifecycle.is_force_closing() {
@@ -212,12 +211,14 @@ impl ResponsesWebSocketSession {
                         break;
                     }
                     let bytes: Bytes = text.into();
+                    let mut pinned = None;
                     let action = tokio::select! {
                         action = self.forward_response_create(&mut client, &mut pinned, bytes) => {
                             Some(action)
                         }
                         _ = self.proxy.websocket_lifecycle.force_requested() => None,
                     };
+                    self.release_pinned(pinned);
                     let Some(action) = action else {
                         break;
                     };
@@ -244,7 +245,6 @@ impl ResponsesWebSocketSession {
                 Ok(ClientMessage::Close(_)) | Err(_) => break,
             }
         }
-        self.release_pinned(pinned);
     }
 
     async fn forward_response_create(
@@ -255,13 +255,6 @@ impl ResponsesWebSocketSession {
     ) -> SessionAction {
         let started_at = Instant::now();
         let started_wall_at = chrono::Utc::now();
-
-        if pinned
-            .as_ref()
-            .is_some_and(|pinned| !pinned.reusable || pinned.connection.is_closed())
-        {
-            self.release_pinned(pinned.take());
-        }
 
         let snapshot = self.proxy.runtime.snapshot();
         let api_key = match snapshot.authenticate(&self.client_secret) {
@@ -376,28 +369,52 @@ impl ResponsesWebSocketSession {
             &self.request_headers,
             &original_body,
         );
-        let preferred_candidate = pinned
-            .as_ref()
-            .map(|pinned| {
-                (
-                    pinned.key.channel_id(),
-                    Arc::clone(pinned.key.upstream_model()),
-                )
-            })
-            .or_else(|| {
+        let select_route = |excluded: &[usize]| {
+            self.proxy.routing.select_websocket_with_affinity_excluding(
+                &snapshot,
+                &api_key,
+                OPENAI_RESPONSES_FORMAT,
+                &parsed.model,
+                affinity.clone(),
+                excluded,
+            )
+        };
+        let route = if let Some(response_id) = parsed.previous_response_id {
+            *pinned = self
+                .proxy
+                .upstream_clients
+                .acquire_websocket_continuation(api_key.id(), self.client_identity, response_id)
+                .map(|(key, connection)| PinnedUpstream::new(key, connection));
+            let selected = pinned.as_ref().and_then(|active| {
                 self.proxy
-                    .upstream_clients
-                    .preferred_websocket_candidate(api_key.id(), self.client_identity)
+                    .routing
+                    .select_preferred_websocket_candidate(
+                        &snapshot,
+                        &api_key,
+                        OPENAI_RESPONSES_FORMAT,
+                        &parsed.model,
+                        active.key.channel_id(),
+                        active.key.upstream_model(),
+                        affinity.clone(),
+                        &[],
+                    )
+                    .filter(|route| {
+                        route.channel.id() == active.key.channel_id()
+                            && route.upstream_model == *active.key.upstream_model()
+                    })
             });
-        let route = select_websocket_route(
-            &self.proxy,
-            &snapshot,
-            &api_key,
-            &parsed.model,
-            affinity.clone(),
-            preferred_candidate.as_ref(),
-            &[],
-        );
+            match selected {
+                Some(route) => SelectionResult::Selected(route),
+                None => snapshot
+                    .operation_rule(ApiOperation::ResponsesWebSocket, &parsed.model)
+                    .filter(|rule| api_key.permits_route(rule.route_slot()))
+                    .map_or(SelectionResult::UnknownOrInaccessibleModel, |rule| {
+                        SelectionResult::NoHealthyChannel { rule }
+                    }),
+            }
+        } else {
+            select_route(&[])
+        };
         let crate::routing::SelectedRoute {
             rule,
             channel,
@@ -414,7 +431,7 @@ impl ResponsesWebSocketSession {
                     .filter(|rule| api_key.permits_route(rule.route_slot()))
                 {
                     let error = ProxyError::websocket_unavailable();
-                    self.proxy.record_no_healthy_channel(
+                    self.proxy.record_unrouted(
                         &api_key,
                         RequestLogSource::Client,
                         OPENAI_RESPONSES_FORMAT,
@@ -453,7 +470,7 @@ impl ResponsesWebSocketSession {
                 return SessionAction::Close;
             }
             SelectionResult::NoHealthyChannel { rule } => {
-                let error = if parsed.previous_response_id {
+                let error = if parsed.previous_response_id.is_some() {
                     ProxyError {
                         status: StatusCode::NOT_FOUND,
                         message: PREVIOUS_RESPONSE_NOT_FOUND_MESSAGE.to_owned(),
@@ -466,7 +483,7 @@ impl ResponsesWebSocketSession {
                 } else {
                     ProxyError::websocket_unavailable()
                 };
-                self.proxy.record_no_healthy_channel(
+                self.proxy.record_unrouted(
                     &api_key,
                     RequestLogSource::Client,
                     OPENAI_RESPONSES_FORMAT,
@@ -479,8 +496,7 @@ impl ResponsesWebSocketSession {
                     started_at,
                     &error,
                 );
-                if parsed.previous_response_id {
-                    self.release_pinned(pinned.take());
+                if parsed.previous_response_id.is_some() {
                     send_previous_response_not_found(client).await;
                     return SessionAction::Continue;
                 }
@@ -516,7 +532,6 @@ impl ResponsesWebSocketSession {
             request_multiplier,
         );
         if let Err(error) = completion.admit_request_log() {
-            pinned.take();
             send_proxy_error(client, error).await;
             return SessionAction::Close;
         }
@@ -532,27 +547,15 @@ impl ResponsesWebSocketSession {
         let mut current_candidate_slot = candidate_slot;
         let mut current_upstream_model = upstream_model;
         let mut current_session_affinity = session_affinity;
-        let mut current_preferred_candidate_hit =
-            preferred_candidate
-                .as_ref()
-                .is_some_and(|(channel_id, upstream_model)| {
-                    *channel_id == current_channel.id()
-                        && upstream_model.as_ref() == current_upstream_model.as_ref()
-                });
         let connector_seed = affinity
             .as_ref()
             .map(SessionAffinityMatch::session_hash)
             .unwrap_or_else(|| self.client_identity.connector_seed());
         let mut attempted_candidate_slots = AttemptedCandidateSlots::new();
 
-        if parsed.previous_response_id && !current_preferred_candidate_hit {
-            self.release_pinned(pinned.take());
-            return reject_previous_response_not_found(client, &mut completion).await;
-        }
-
         loop {
             attempted_candidate_slots.push(current_candidate_slot);
-            let connector_affinity_hit = current_preferred_candidate_hit
+            let connector_affinity_hit = parsed.previous_response_id.is_some()
                 || current_session_affinity
                     .as_ref()
                     .is_some_and(crate::routing::SessionAffinitySelection::cache_hit);
@@ -566,15 +569,7 @@ impl ResponsesWebSocketSession {
             ) {
                 Ok(connector) => connector,
                 Err(error) => {
-                    if let Some(active) = pinned.as_mut().filter(|active| {
-                        active.key.channel_id() == current_channel.id()
-                            && active.key.upstream_model().as_ref()
-                                == current_upstream_model.as_ref()
-                    }) {
-                        active.reusable = false;
-                    }
-                    if parsed.previous_response_id {
-                        self.release_pinned(pinned.take());
+                    if parsed.previous_response_id.is_some() {
                         return reject_previous_response_not_found(client, &mut completion).await;
                     }
                     if connector_affinity_hit {
@@ -588,15 +583,7 @@ impl ResponsesWebSocketSession {
                         )
                         .await;
                     }
-                    let retry_route = select_websocket_route(
-                        &self.proxy,
-                        &snapshot,
-                        &api_key,
-                        &parsed.model,
-                        affinity.clone(),
-                        None,
-                        attempted_candidate_slots.as_slice(),
-                    );
+                    let retry_route = select_route(attempted_candidate_slots.as_slice());
                     let SelectionResult::Selected(route) = retry_route else {
                         let error = ProxyError::connector_unavailable(error);
                         return reject_websocket_unavailable(
@@ -632,7 +619,6 @@ impl ResponsesWebSocketSession {
                     current_candidate_slot = candidate_slot;
                     current_upstream_model = upstream_model;
                     current_session_affinity = session_affinity;
-                    current_preferred_candidate_hit = false;
                     continue;
                 }
             };
@@ -671,18 +657,13 @@ impl ResponsesWebSocketSession {
                 }
             };
 
-            if pinned
-                .as_ref()
-                .is_some_and(|existing| existing.key != prepared.key && parsed.previous_response_id)
+            if !parsed.matches_prepared_continuation(&original_body, &prepared.body)
+                || parsed.previous_response_id.is_some()
+                    && pinned
+                        .as_ref()
+                        .is_none_or(|existing| existing.key != prepared.key)
             {
-                self.release_pinned(pinned.take());
                 return reject_previous_response_not_found(client, &mut completion).await;
-            }
-            if pinned
-                .as_ref()
-                .is_some_and(|existing| existing.key != prepared.key)
-            {
-                self.release_pinned(pinned.take());
             }
 
             if pinned.is_none() {
@@ -691,8 +672,6 @@ impl ResponsesWebSocketSession {
                 {
                     *pinned = Some(PinnedUpstream::new(prepared.key.clone(), connection));
                     completion.response_headers_received();
-                } else if parsed.previous_response_id {
-                    return reject_previous_response_not_found(client, &mut completion).await;
                 } else {
                     match connect_upstream_websocket(
                         prepared.target.clone(),
@@ -726,17 +705,7 @@ impl ResponsesWebSocketSession {
                             record_connection_failure(error, &mut completion);
                             let next = (attempt < max_attempts
                                 && !prepared.preserve_channel_on_failure)
-                                .then(|| {
-                                    select_websocket_route(
-                                        &self.proxy,
-                                        &snapshot,
-                                        &api_key,
-                                        &parsed.model,
-                                        affinity.clone(),
-                                        None,
-                                        attempted_candidate_slots.as_slice(),
-                                    )
-                                });
+                                .then(|| select_route(attempted_candidate_slots.as_slice()));
                             let Some(SelectionResult::Selected(route)) = next else {
                                 return reject_websocket_unavailable(
                                     client,
@@ -783,7 +752,6 @@ impl ResponsesWebSocketSession {
                             current_candidate_slot = candidate_slot;
                             current_upstream_model = upstream_model;
                             current_session_affinity = session_affinity;
-                            current_preferred_candidate_hit = false;
                             attempt = attempt.saturating_add(1);
                             continue;
                         }
@@ -802,8 +770,6 @@ impl ResponsesWebSocketSession {
                 )
                 .await;
             };
-            active.reusable = false;
-            completion.set_upstream_status(200);
             let request = match UpstreamUtf8Bytes::try_from(prepared.body) {
                 Ok(request) => request,
                 Err(_) => {
@@ -824,6 +790,15 @@ impl ResponsesWebSocketSession {
                     return SessionAction::Close;
                 }
             };
+            if parsed.previous_response_id.is_some()
+                && !self
+                    .proxy
+                    .upstream_clients
+                    .websocket_continuation_is_ready(&active.key, &mut active.connection)
+            {
+                return reject_previous_response_not_found(client, &mut completion).await;
+            }
+            completion.set_upstream_status(200);
             match tokio::time::timeout(
                 prepared.policy.timeouts().stream_idle(),
                 active.connection.send(UpstreamMessage::Text(request)),
@@ -840,7 +815,6 @@ impl ResponsesWebSocketSession {
                             "The upstream WebSocket closed before the request could be sent: {error}"
                         ),
                     );
-                    self.release_pinned(pinned.take());
                     send_error(
                         client,
                         502,
@@ -858,7 +832,6 @@ impl ResponsesWebSocketSession {
                         Some("stream_idle_timeout"),
                         "Sending the request to the upstream WebSocket timed out.",
                     );
-                    self.release_pinned(pinned.take());
                     send_error(
                         client,
                         504,
@@ -872,9 +845,10 @@ impl ResponsesWebSocketSession {
                 }
             }
 
-            let action = relay_upstream_response(
+            return relay_upstream_response(
                 client,
                 active,
+                &self.proxy.upstream_clients,
                 completion,
                 prepared.policy.timeouts().stream_idle(),
                 current_channel
@@ -884,8 +858,6 @@ impl ResponsesWebSocketSession {
                 &prepared.connector,
             )
             .await;
-            self.release_pinned(pinned.take());
-            return action;
         }
     }
 
@@ -903,18 +875,25 @@ impl ResponsesWebSocketSession {
         client_body_changed: bool,
     ) -> Result<PreparedWebSocketAttempt, ProxyError> {
         let transforms = channel.upstream_policy().effective_transforms();
-        let body = rewrite_model_alias(original_body.clone(), &parsed.model, upstream_model)?;
-        let body = apply_json_patch_plan(body, transforms.request_json())
-            .map_err(|_| ProxyError::transform_failed())?;
-        let body = connector
-            .adapt_json_body(body, RequestProtocol::WebSocket)
-            .map_err(ProxyError::connector_attempt)?;
-        let mut headers = self.request_headers.clone();
-        if client_body_changed || body != *original_body {
-            super::remove_rewritten_request_entity_headers(&mut headers);
-        }
-        apply_header_plan(&mut headers, transforms.request_headers())
-            .map_err(|_| ProxyError::transform_failed())?;
+        let body = candidate::prepare_json(
+            original_body,
+            &parsed.model,
+            upstream_model,
+            transforms.request_json(),
+            &connector,
+            RequestProtocol::WebSocket,
+        )
+        .map_err(|error| match error {
+            JsonPreparationError::Model(error) => error,
+            JsonPreparationError::Transform => ProxyError::transform_failed(),
+            JsonPreparationError::Connector(error) => ProxyError::connector_attempt(error),
+        })?;
+        let headers = candidate::transform_headers(
+            &self.request_headers,
+            client_body_changed || body != *original_body,
+            transforms.request_headers(),
+        )
+        .map_err(|_| ProxyError::transform_failed())?;
         let mut headers = forward_websocket_request_headers(&headers);
         headers
             .entry("openai-beta")
@@ -922,7 +901,6 @@ impl ResponsesWebSocketSession {
         connector
             .inject_headers(&mut headers, channel, RequestProtocol::WebSocket)
             .map_err(ProxyError::connector_attempt)?;
-        sanitize_outbound_request_headers(&mut headers);
         let target = connector
             .upstream_url(channel, &self.request_uri)
             .map_err(ProxyError::connector_attempt)?;
@@ -1005,8 +983,8 @@ struct WebSocketRequestProbe<'a> {
     kind: Option<&'a str>,
     #[serde(borrow)]
     model: Option<&'a str>,
-    #[serde(default)]
-    previous_response_id: Option<&'a str>,
+    #[serde(default, borrow)]
+    previous_response_id: Option<std::borrow::Cow<'a, str>>,
     #[serde(default)]
     reasoning_effort: serde_json::Value,
     #[serde(default)]
@@ -1018,7 +996,30 @@ struct WebSocketRequestProbe<'a> {
 struct ParsedWebSocketRequest {
     model: String,
     log_metadata: super::RequestLogMetadata,
-    previous_response_id: bool,
+    previous_response_id: Option<[u8; 32]>,
+}
+
+#[derive(Deserialize)]
+struct ContinuationProbe<'a> {
+    #[serde(default, borrow)]
+    previous_response_id: Option<std::borrow::Cow<'a, str>>,
+}
+
+impl ParsedWebSocketRequest {
+    fn matches_prepared_continuation(&self, original: &Bytes, prepared: &Bytes) -> bool {
+        if std::ptr::eq(original.as_ref(), prepared.as_ref()) {
+            return true;
+        }
+        serde_json::from_slice::<ContinuationProbe<'_>>(prepared).is_ok_and(|probe| {
+            response_id_digest(probe.previous_response_id.as_deref()) == self.previous_response_id
+        })
+    }
+}
+
+fn response_id_digest(id: Option<&str>) -> Option<[u8; 32]> {
+    use sha2::{Digest, Sha256};
+    id.filter(|id| !id.is_empty())
+        .map(|id| Sha256::digest(id.as_bytes()).into())
 }
 
 fn parse_websocket_request(
@@ -1062,43 +1063,8 @@ fn parse_websocket_request(
                 &probe.service_tier
             },
         ),
-        previous_response_id: probe
-            .previous_response_id
-            .is_some_and(|value| !value.is_empty()),
+        previous_response_id: response_id_digest(probe.previous_response_id.as_deref()),
     })
-}
-
-fn select_websocket_route(
-    proxy: &ProxyService,
-    snapshot: &crate::domain::CompiledRuntimeConfig,
-    api_key: &CompiledApiKey,
-    model: &str,
-    affinity: Option<SessionAffinityMatch>,
-    preferred_candidate: Option<&(Uuid, Arc<str>)>,
-    excluded_candidate_slots: &[usize],
-) -> SelectionResult {
-    if let Some((preferred_channel, preferred_upstream_model)) = preferred_candidate
-        && let Some(selected) = proxy.routing.select_preferred_websocket_candidate(
-            snapshot,
-            api_key,
-            OPENAI_RESPONSES_FORMAT,
-            model,
-            *preferred_channel,
-            preferred_upstream_model,
-            affinity.clone(),
-            excluded_candidate_slots,
-        )
-    {
-        return SelectionResult::Selected(selected);
-    }
-    proxy.routing.select_websocket_with_affinity_excluding(
-        snapshot,
-        api_key,
-        OPENAI_RESPONSES_FORMAT,
-        model,
-        affinity,
-        excluded_candidate_slots,
-    )
 }
 
 fn websocket_upstream_url(mut target: reqwest::Url) -> Result<reqwest::Url, ProxyError> {
@@ -1133,6 +1099,7 @@ fn forward_websocket_request_headers(headers: &HeaderMap) -> HeaderMap {
 async fn relay_upstream_response(
     client: &mut WebSocket,
     upstream: &mut PinnedUpstream,
+    clients: &crate::upstream::UpstreamClientRegistry,
     mut completion: CompletionGuard,
     idle_timeout: Duration,
     response_plan: &crate::transforms::SseEventPatchPlan,
@@ -1242,6 +1209,12 @@ async fn relay_upstream_response(
                                 return SessionAction::Close;
                             }
                         };
+                        let succeeded = matches!(terminal, Some(crate::application::usage::SseTerminalOutcome::Completed))
+                            && event.state_error.is_none();
+                        if succeeded {
+                            // Register ownership before the client can act on this terminal frame.
+                            clients.observe_websocket_completion(&upstream.key, &mut upstream.connection, event.response_id);
+                        }
                         if !matches!(
                             tokio::time::timeout(
                                 idle_timeout,
@@ -1255,11 +1228,7 @@ async fn relay_upstream_response(
                             return SessionAction::Close;
                         }
                         if let Some(terminal) = terminal {
-                            let succeeded = matches!(
-                                terminal,
-                                crate::application::usage::SseTerminalOutcome::Completed
-                            );
-                            upstream.reusable = succeeded && event.state_error.is_none();
+                            upstream.reusable = succeeded;
                             let outcome = if event.state_error.is_some() {
                                 RequestOutcome::WebSocketStateLost
                             } else {
@@ -1383,6 +1352,7 @@ impl WebSocketStateError {
 struct EventInspection {
     status: Option<u16>,
     state_error: WebSocketStateError,
+    response_id: Option<[u8; 32]>,
 }
 
 #[derive(Deserialize)]
@@ -1393,6 +1363,14 @@ struct EventInspectionProbe<'a> {
     status: Option<u16>,
     #[serde(default, borrow)]
     error: Option<EventErrorProbe<'a>>,
+    #[serde(default, borrow)]
+    response: Option<&'a serde_json::value::RawValue>,
+}
+
+#[derive(Deserialize)]
+struct EventResponseProbe<'a> {
+    #[serde(default, borrow)]
+    id: Option<std::borrow::Cow<'a, str>>,
 }
 
 #[derive(Deserialize)]
@@ -1419,6 +1397,16 @@ fn inspect_event(bytes: &[u8]) -> EventInspection {
     EventInspection {
         status: probe.status,
         state_error,
+        response_id: if probe.kind == Some("response.completed") {
+            probe
+                .response
+                .and_then(|response| {
+                    serde_json::from_str::<EventResponseProbe<'_>>(response.get()).ok()
+                })
+                .and_then(|response| response_id_digest(response.id.as_deref()))
+        } else {
+            None
+        },
     }
 }
 

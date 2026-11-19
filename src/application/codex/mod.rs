@@ -7,6 +7,8 @@ mod sqlite_tests;
 
 use std::{collections::HashMap, sync::Arc};
 
+use ai_gateway_connector_host::{ConnectorPlugins, Plugin};
+use ai_gateway_connector_sdk::PluginManifest;
 use chrono::{DateTime, Utc};
 use futures_util::{StreamExt, stream};
 use reqwest::Client;
@@ -16,7 +18,6 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::{
-    connector_plugins::{ConnectorPlugins, Plugin},
     domain::{ApiFormat, ChannelTimeoutPolicy, CompiledChannelUpstreamPolicy},
     persistence::{
         CodexCredentialBatchInput, CodexCredentialCreate, CodexCredentialExportBundle,
@@ -87,7 +88,7 @@ pub struct CodexConnectorService {
 
 impl CodexConnectorService {
     pub(crate) fn validate_plugin_manifest(
-        manifest: &crate::connector_plugins::PluginManifest,
+        manifest: &PluginManifest,
     ) -> Result<(), CodexConnectorError> {
         protocol::validate_plugin_manifest(manifest)
     }

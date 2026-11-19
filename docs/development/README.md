@@ -10,6 +10,7 @@
 | 任务 | 阅读 |
 | --- | --- |
 | 理解请求顺序、快照和模块职责 | [架构](architecture.md) |
+| 判断何时用模板、插件、独立 crate 或服务 | [转发与插件拆分决策](relay-boundaries.md) |
 | 修改上游身份、授权、能力与操作路由 | [上游实体与路由设计](upstream-identity-capabilities.md) |
 | 实现或升级原生插件 | [插件边界](connector-plugins.md)、[SDK](../../crates/connector-sdk/README.md)、[命令契约](../../crates/connector-sdk/docs/commands.md) |
 | 修改 Codex 生命周期与宿主适配 | [Codex 设计记录](codex-oauth-connector.md) |

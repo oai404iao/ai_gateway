@@ -29,7 +29,7 @@
 | 变更路径 | 分类输出 |
 | --- | --- |
 | Markdown、普通 `docs/`、Agent 指令和 `.gitignore` | `docs` |
-| `src/`、`tests/`、`migrations/`、`tools/` | `rust` |
+| `src/`、`crates/`、`tests/`、`migrations/`、`tools/` | `rust` |
 | 根 `e2e/`、`mock/` 的非 Markdown 文件 | `docs`、`rust`、`console` |
 | `Cargo.toml`、`Cargo.lock`、`rust-toolchain.toml` | `rust`、`image` |
 | `web/console/package.json`、`web/console/pnpm-lock.yaml`、`web/console/pnpm-workspace.yaml` | `console`、`image` |
@@ -69,7 +69,7 @@ Docker image job 只依赖快速的路径分类，与 Rust、Console 和 E2E 并
 
 - 文档检查；
 - Rust 1.97.1 format、默认 workspace 的
-  Clippy/测试，包括 Codex Responses 与 Images 适配器集成路径；
+  Clippy/测试，默认使用协议 2；另以真实协议 3 制品运行[Codex 转发契约测试](connector-plugins.md#验收边界)；
 - 非默认 `sqlite-backend` feature 的 Clippy、[SQLite schema/生命周期契约](sqlite-backend.md)
   以及真实 PostgreSQL schema/类型/seed 对照、S3–S5 双后端契约和 S6 SQLite CLI/备份契约；
   不代表完整双后端系统验收；

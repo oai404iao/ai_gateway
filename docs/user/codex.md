@@ -128,7 +128,7 @@ Responses WebSocket 需要独立能力、路由以及系统与用户开关；Web
 上游连接可以使用 Codex 增量状态。首次派发前凭证不可用时，未命中 affinity 或 WebSocket pin
 的请求可以换到同一操作规则内其他合格候选；HTTP 请求或 WebSocket 消息一旦发送到 Codex，不做跨凭证自动重试。
 已命中 affinity 的凭证处于 `unavailable`、`disabled` 或 Token 过期时，会在 affinity TTL
-内持续 fail closed；已经固定到 managed channel 的 WebSocket Session 也不会改用其他订阅账户。
+内持续 fail closed；携带 `previous_response_id` 的 WebSocket 增量请求也不会改用其他订阅账户。完整的新请求不因共用下游连接而绑定上次的账户。
 
 ## 调用独立搜索
 
