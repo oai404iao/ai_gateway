@@ -41,16 +41,10 @@ export function useApiHosts() {
 }
 
 export function useOwnApiKey(id: string) {
-  const query = useQuery({
+  return useQuery({
     queryKey: detailKey(id),
-    queryFn: () => apiGetDetail<ApiKeyView>(`/me/api-keys/${id}`),
+    queryFn: ({ signal }) => apiGetDetail<ApiKeyView>(`/me/api-keys/${id}`, signal),
   });
-  return {
-    data: query.data,
-    etag: query.data?.etag ?? "",
-    isLoading: query.isLoading,
-    error: query.error,
-  };
 }
 
 export function useCreateOwnApiKey() {
@@ -69,10 +63,7 @@ export function useUpdateOwnApiKey(id: string) {
   return useMutation({
     mutationFn: ({ input, ifMatch }: { input: SelfApiKeyUpdateInput; ifMatch: string }) =>
       apiPut<MutationResponse>(`/me/api-keys/${id}`, input, ifMatch),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: LIST_KEY });
-      void queryClient.invalidateQueries({ queryKey: detailKey(id) });
-    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: LIST_KEY }),
   });
 }
 

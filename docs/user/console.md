@@ -104,6 +104,10 @@ Console HTTP 请求的最后访问时间。按 ID 撤销当前 session 时，响
 `GET /console/v1/me/api-key-options` 获取当前可选列表；创建或更新 API Key 时，从该列表中选择
 `allowed_group_ids` / `allowed_channel_ids`，并为该 Key 独立配置 RPM、最大并发和可选额度上限。
 API 格式由所选目标自动推导，自助创建 Key 的权限固定为 `proxy` 和 `models.read`。
+
+在个人 Key 详情页保存时若遇到 `409`，页面会保留草稿并暂停保存。选择「载入最新版本」；若有未保存的修改，
+需确认放弃草稿。读取成功后请核对最新配置，按需重新编辑并保存。取消或读取暂时失败不会丢失草稿。
+
 撤销 Key 只会把状态永久改为 `revoked`，记录仍在 Console 中可见。带详情 `ETag` 调用
 `DELETE /console/v1/me/api-keys/{id}` 会进一步擦除保存的明文 secret、写入墓碑并从普通列表和
 详情隐藏该 Key；请求日志和审计历史继续保留原 Key UUID。

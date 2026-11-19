@@ -1897,7 +1897,13 @@ const zhCN: Record<string, string> = {
     "可复用的受限转换和网络配置文档。",
   "API key": "API 密钥",
   "API key updated": "API 密钥已更新",
-  "This key was changed by another session. Reloading.": "此密钥已被其他会话修改，正在重新加载。",
+  "This version of the API key can no longer be saved.": "无法再保存此版本的 API 密钥。",
+  "Load the latest version before editing again. This will discard your draft.":
+    "请先载入最新版本再继续编辑。载入后将放弃当前草稿。",
+  "Load latest version": "载入最新版本",
+  "The latest version could not be loaded. Your draft has been kept.":
+    "未能载入最新版本。你的草稿已保留。",
+  "This API key is no longer available.": "此 API 密钥已不可用。",
   "Review the highlighted API key fields.": "请检查标记的 API 密钥字段。",
   "API key revoked": "API 密钥已撤销",
   "API key deleted": "API 密钥已删除",

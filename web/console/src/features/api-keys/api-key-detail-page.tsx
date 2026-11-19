@@ -1,12 +1,13 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router";
 import { Controller, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Field, FieldError, FieldSet, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -38,6 +39,7 @@ import {
   useUpdateOwnApiKey,
 } from "@/features/api-keys/api";
 import { ApiError } from "@/api/errors";
+import type { ApiKeyView } from "@/api/types";
 import { formatList, formatUsd } from "@/lib/formatters";
 import {
   dateTimeLocalToIso,
@@ -73,6 +75,7 @@ const editSchema = z
   });
 
 type EditValues = z.infer<typeof editSchema>;
+type KeyVersion = { data: ApiKeyView; etag: string };
 
 const emptyEditValues: EditValues = {
   name: "",
@@ -87,8 +90,15 @@ const emptyEditValues: EditValues = {
 
 export function ApiKeyDetailPage() {
   const { id = "" } = useParams();
+  return <ApiKeyDetail key={id} id={id} />;
+}
+
+function ApiKeyDetail({ id }: { id: string }) {
   const returnTo = useReturnPath("/api-keys");
-  const { data, etag, isLoading, error } = useOwnApiKey(id);
+  const { data, isLoading, isFetching, error, refetch } = useOwnApiKey(id);
+  const [baseline, setBaseline] = useState<KeyVersion>();
+  const [conflict, setConflict] = useState(false);
+  const [discardOpen, setDiscardOpen] = useState(false);
   const options = useOwnApiKeyOptions();
   const update = useUpdateOwnApiKey(id);
   const revoke = useRevokeOwnApiKey();
@@ -98,50 +108,80 @@ export function ApiKeyDetailPage() {
   const [revokeOpen, setRevokeOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [revokeReason, setRevokeReason] = useState("");
-  const formValues: EditValues = data
-    ? {
-        name: data.data.name,
-        status: data.data.status === "active" ? "active" : "disabled",
-        expires_at: formatDateTimeLocalInput(data.data.expires_at),
-        allowed_group_ids: data.data.allowed_group_ids,
-        allowed_channel_ids: data.data.allowed_channel_ids,
-        requests_per_minute: data.data.requests_per_minute,
-        max_concurrent_requests: data.data.max_concurrent_requests,
-        quota_limit_amount: data.data.quota_limit_amount,
-      }
-    : emptyEditValues;
-
   const form = useForm<EditValues>({
     resolver: zodResolver(editSchema),
     defaultValues: emptyEditValues,
-    values: formValues,
   });
+  const { reset, formState: { isDirty } } = form;
+  const loadVersion = useCallback((version: KeyVersion) => {
+    const key = version.data;
+    reset({
+      name: key.name,
+      status: key.status === "active" ? "active" : "disabled",
+      expires_at: formatDateTimeLocalInput(key.expires_at),
+      allowed_group_ids: key.allowed_group_ids,
+      allowed_channel_ids: key.allowed_channel_ids,
+      requests_per_minute: key.requests_per_minute,
+      max_concurrent_requests: key.max_concurrent_requests,
+      quota_limit_amount: key.quota_limit_amount,
+    });
+    setBaseline(version);
+  }, [reset]);
+  useEffect(() => {
+    if (!error && data && data !== baseline && !isDirty && !conflict && !submitting) {
+      loadVersion(data);
+    }
+  }, [data, error, baseline, isDirty, conflict, submitting, loadVersion]);
+
+  const missing = error instanceof ApiError && error.isNotFound;
+  const accessDenied = error instanceof ApiError && (error.isForbidden || error.isUnauthorized);
+  const key = baseline?.data;
+  const reloadRequired = conflict || (isDirty && !!error);
+  const writeBlocked = submitting || reloadRequired || missing || accessDenied;
+  const pageError = missing ? new Error(t("This API key is no longer available."))
+    : key && reloadRequired && !accessDenied ? null : error;
   const { navigate, navigationGuard, markSaved } = useConfigurationDraft(
-    submitting || revoke.isPending || remove.isPending, form.formState.isDirty,
+    submitting || (reloadRequired && isFetching) || revoke.isPending || remove.isPending, isDirty,
   );
 
+  const reloadLatest = async () => {
+    setDiscardOpen(false);
+    const result = await refetch();
+    if (result.isSuccess) {
+      loadVersion(result.data);
+      setConflict(false);
+    } else if (result.error instanceof ApiError && result.error.isNotFound) {
+      reset(emptyEditValues);
+      setBaseline(undefined);
+      setConflict(false);
+    }
+  };
+
   const onSubmit = async (values: EditValues) => {
+    if (writeBlocked || !baseline || baseline.data.status === "revoked") return;
     setSubmitting(true);
     try {
       await update.mutateAsync({
         input: {
           name: values.name,
           status: values.status,
-          expires_at: dateTimeLocalToIso(values.expires_at),
+          expires_at: values.expires_at === formatDateTimeLocalInput(baseline.data.expires_at)
+            ? baseline.data.expires_at
+            : dateTimeLocalToIso(values.expires_at),
           allowed_group_ids: values.allowed_group_ids,
           allowed_channel_ids: values.allowed_channel_ids,
           requests_per_minute: values.requests_per_minute,
           max_concurrent_requests: values.max_concurrent_requests,
           quota_limit_amount: values.quota_limit_amount,
         },
-        ifMatch: etag,
+        ifMatch: baseline.etag,
       });
       form.reset(values);
       markSaved();
       toast.success(t("API key updated"));
     } catch (error) {
       if (error instanceof ApiError && error.isConflict) {
-        toast.error(t("This key was changed by another session. Reloading."));
+        setConflict(true);
       } else if (error instanceof ApiError && error.code === "api_key_target_not_allowed") {
         toast.error(t("One or more selected targets are no longer allowed by your API key policy."));
       } else {
@@ -170,8 +210,9 @@ export function ApiKeyDetailPage() {
 
   const confirmDelete = async () => {
     setDeleteOpen(false);
+    if (writeBlocked || !baseline) return;
     try {
-      await remove.mutateAsync({ ifMatch: etag });
+      await remove.mutateAsync({ ifMatch: baseline.etag });
       toast.success(t("API key deleted"));
       markSaved();
       navigate(returnTo, { replace: true });
@@ -184,7 +225,6 @@ export function ApiKeyDetailPage() {
     }
   };
 
-  const key = data?.data;
   const targetGroups = useMemo<RoutingTargetGroup[]>(() => {
     const available = options.data?.groups ?? [];
     const missing = (key?.allowed_group_ids ?? [])
@@ -232,11 +272,11 @@ export function ApiKeyDetailPage() {
   return (
     <>
       <AdminDetailShell
-        title={key ? key.name : t("API key")}
+        title={key && !missing ? key.name : t("API key")}
         description={t("View, rename, enable, disable, revoke, or delete this key.")}
         backPath={returnTo}
         isLoading={isLoading}
-        error={error}
+        error={pageError}
         hasData={Boolean(key)}
         navigationGuard={navigationGuard}
         detailCard={key ? (
@@ -285,18 +325,38 @@ export function ApiKeyDetailPage() {
               </CardContent>
             </Card>
         ) : null}
-        editCard={key ? (
+        editCard={key && key.status !== "revoked" ? (
             <Card>
               <CardHeader>
                 <CardTitle>{t("Edit")}</CardTitle>
                 <CardDescription>{t("Renaming or disabling takes effect immediately.")}</CardDescription>
               </CardHeader>
-              <CardContent>
+              <CardContent className="flex flex-col gap-4">
+                {reloadRequired && (
+                  <Alert variant="destructive">
+                    <AlertTitle>{t("This version of the API key can no longer be saved.")}</AlertTitle>
+                    <AlertDescription>
+                      {error
+                        ? t("The latest version could not be loaded. Your draft has been kept.")
+                        : t("Load the latest version before editing again. This will discard your draft.")}
+                    </AlertDescription>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="justify-self-start"
+                      disabled={isFetching}
+                      onClick={() => isDirty ? setDiscardOpen(true) : void reloadLatest()}
+                    >
+                      {isFetching ? <Spinner data-icon="inline-start" /> : null}
+                      {t("Load latest version")}
+                    </Button>
+                  </Alert>
+                )}
                 <form
                   onSubmit={form.handleSubmit(onSubmit, onInvalid)}
                   className="flex flex-col gap-4"
                 >
-                  <FieldGroup className="grid gap-5 xl:grid-cols-2">
+                  <FieldSet disabled={writeBlocked} className="grid gap-5 xl:grid-cols-2">
                     <Field data-invalid={Boolean(form.formState.errors.name)}>
                       <FieldLabel htmlFor="name">{t("Name")}</FieldLabel>
                       <Input
@@ -311,7 +371,6 @@ export function ApiKeyDetailPage() {
                     <Controller
                       control={form.control}
                       name="status"
-                      defaultValue={formValues.status}
                       render={({ field, fieldState }) => (
                         <Field data-invalid={fieldState.invalid}>
                           <FieldLabel htmlFor="status">{t("Status")}</FieldLabel>
@@ -425,8 +484,8 @@ export function ApiKeyDetailPage() {
                       }
                       description={t("Leave blank for no per-key quota limit.")}
                     />
-                  </FieldGroup>
-                  <Button type="submit" className="self-start" disabled={submitting}>
+                  </FieldSet>
+                  <Button type="submit" className="self-start" disabled={writeBlocked}>
                     {submitting ? <Spinner data-icon="inline-start" /> : null}
                     {t("Save changes")}
                   </Button>
@@ -447,7 +506,7 @@ export function ApiKeyDetailPage() {
                     key.status === "revoked" ||
                     remove.isPending ||
                     revoke.isPending ||
-                    submitting
+                    writeBlocked
                   }
                 >
                   {t("Revoke API key")}
@@ -455,7 +514,7 @@ export function ApiKeyDetailPage() {
                 <Button
                   variant="destructive"
                   onClick={() => setDeleteOpen(true)}
-                  disabled={remove.isPending || revoke.isPending || submitting}
+                  disabled={remove.isPending || revoke.isPending || writeBlocked}
                 >
                   {remove.isPending ? <Spinner data-icon="inline-start" /> : null}
                   {t("Delete API key")}
@@ -465,6 +524,15 @@ export function ApiKeyDetailPage() {
         ) : null}
       />
 
+      <ConfirmDialog
+        open={discardOpen}
+        onOpenChange={setDiscardOpen}
+        title={t("Discard unsaved changes?")}
+        description={t("Load the latest version before editing again. This will discard your draft.")}
+        confirmLabel={t("Discard changes")}
+        destructive
+        onConfirm={() => void reloadLatest()}
+      />
       <ConfirmDialog
         open={revokeOpen}
         onOpenChange={(open) => {
