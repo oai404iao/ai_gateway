@@ -141,7 +141,8 @@ bypass；正常变更仍必须走 CI 和项目合并策略。
 
 ## 本地验证
 
-先运行不启动服务的分类/发布自动化回归：
+先运行不启动服务的分类/发布自动化回归。发布自动化测试需要 Docker Compose CLI 和
+Python 环境中的 PyYAML（版本见 `ci.yml`）：
 
 ```bash
 shellcheck scripts/ci-changed-areas.sh scripts/test-ci-changed-areas.sh
