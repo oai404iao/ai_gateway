@@ -200,6 +200,19 @@ async fn start_mock_upstream_with_script(
                                 .unwrap();
                             continue;
                         }
+                        if shared_tool_cycle && body["generate"] == false {
+                            let id = format!("prewarm-{connection}");
+                            let event = json!({
+                                "type": "response.completed",
+                                "response": {"id": id, "status": "completed", "output": []}
+                            });
+                            websocket
+                                .send(Message::text(event.to_string()))
+                                .await
+                                .unwrap();
+                            last_response_id = Some(id);
+                            continue;
+                        }
                         let response_number = next_response.fetch_add(1, Ordering::SeqCst);
                         let response_id = format!("resp-{response_number}");
                         if shared_tool_cycle {
@@ -243,7 +256,8 @@ async fn start_mock_upstream_with_script(
                             ))
                             .await
                             .unwrap();
-                        last_response_id = Some(response_id);
+                        last_response_id = (body["client_metadata"]["forget_state"] != true)
+                            .then_some(response_id);
                         if body["client_metadata"]["force_residual"] == true {
                             websocket
                                 .send(Message::Text(
@@ -535,6 +549,7 @@ struct WebSocketControls {
     other_websocket_route: bool,
     other_route_authorized: bool,
     max_idle_connections: usize,
+    idle_timeout: Duration,
     admitted_log_requests: usize,
 }
 
@@ -554,6 +569,7 @@ impl Default for WebSocketControls {
             other_websocket_route: false,
             other_route_authorized: true,
             max_idle_connections: 128,
+            idle_timeout: Duration::from_secs(5 * 60),
             admitted_log_requests: usize::MAX,
         }
     }
@@ -574,6 +590,15 @@ async fn gateway_harness_with_controls(
     upstream: &MockResponsesWebSocket,
     outbound_proxy: Option<ProxyRecord>,
     controls: WebSocketControls,
+) -> GatewayHarness {
+    gateway_harness_with_records(upstream, outbound_proxy, controls, |_| {}).await
+}
+
+async fn gateway_harness_with_records(
+    upstream: &MockResponsesWebSocket,
+    outbound_proxy: Option<ProxyRecord>,
+    controls: WebSocketControls,
+    configure_records: impl FnOnce(&mut ControlPlaneRecords),
 ) -> GatewayHarness {
     let api_key_id = Uuid::from_u128(101);
     let group_id = Uuid::from_u128(102);
@@ -752,6 +777,7 @@ async fn gateway_harness_with_controls(
         records.channels.push(channel);
         records.model_rules.push(rule);
     }
+    configure_records(&mut records);
     let runtime = Arc::new(RuntimeConfig::new(
         compile_control_plane_with_system_settings(
             records,
@@ -765,7 +791,7 @@ async fn gateway_harness_with_controls(
                 ResponsesWebSocketSettings::new(
                     controls.system_enabled,
                     controls.max_idle_connections,
-                    Duration::from_secs(5 * 60),
+                    controls.idle_timeout,
                     Duration::from_secs(55 * 60),
                 ),
             ),
@@ -836,7 +862,7 @@ impl ai_gateway::application::RequestLogSink for LimitedLogSink {
 
 #[tokio::test]
 async fn log_admission_is_checked_for_each_websocket_create_before_dispatch() {
-    for allowed in [0, 1] {
+    for (allowed, continuation) in [(0, false), (1, false), (1, true)] {
         let upstream = start_mock_upstream().await;
         let gateway = gateway_harness_with_controls(
             &upstream,
@@ -854,11 +880,14 @@ async fn log_admission_is_checked_for_each_websocket_create_before_dispatch() {
         ))
         .await
         .unwrap();
-        if allowed == 1 {
+        let previous = if allowed == 1 {
             let events = response_create(&mut client, None).await;
             assert_eq!(events.last().unwrap()["type"], "response.completed");
-        }
-        let events = response_create(&mut client, None).await;
+            continuation.then(|| completed_response_id(&events).to_owned())
+        } else {
+            None
+        };
+        let events = response_create(&mut client, previous.as_deref()).await;
         assert_eq!(
             events.last().unwrap()["error"]["code"],
             "request_log_unavailable"
@@ -866,6 +895,26 @@ async fn log_admission_is_checked_for_each_websocket_create_before_dispatch() {
         assert_eq!(events.last().unwrap()["status"], 503);
         assert_eq!(upstream.requests().len(), allowed);
         assert_eq!(gateway.logs.events().len(), allowed);
+        if continuation {
+            timeout(
+                Duration::from_secs(2),
+                gateway.proxy.wait_for_websocket_shutdown(),
+            )
+            .await
+            .unwrap();
+            let metrics = SystemMetricsService::new(
+                PgPoolOptions::new()
+                    .connect_lazy("postgres://postgres@localhost/unused")
+                    .unwrap()
+                    .into(),
+                1,
+            )
+            .with_websocket_proxy(gateway.proxy.clone())
+            .snapshot()
+            .await;
+            assert_eq!(metrics.websocket.leased_upstream_connections, 0);
+            assert_eq!(metrics.websocket.idle_upstream_connections, 0);
+        }
     }
 }
 
@@ -1230,6 +1279,100 @@ async fn responses_websocket_reports_missing_state_without_dispatching_increment
     );
 }
 
+async fn round_robin_gateway(
+    first: &MockResponsesWebSocket,
+    second: &MockResponsesWebSocket,
+) -> GatewayHarness {
+    gateway_harness_with_records(first, None, Default::default(), |records| {
+        let mut alternate = records.channels[0].clone();
+        alternate.id = Uuid::new_v4();
+        alternate.base_url = second.base_url();
+        alternate.available_models = vec!["alternate-model".into()];
+        let tier = &mut records.model_rules[0].routing_tiers[0];
+        tier.selection_strategy = "weighted_round_robin".into();
+        tier.candidates.push(ModelRuleRouteCandidate {
+            channel_id: alternate.id,
+            upstream_model: "alternate-model".into(),
+            weight: 1,
+        });
+        records.channels.push(alternate);
+    })
+    .await
+}
+
+#[tokio::test]
+async fn full_creates_follow_routing_and_continuations_reuse_the_originating_socket() {
+    let upstream = start_mock_upstream().await;
+    let gateway = round_robin_gateway(&upstream, &upstream).await;
+    let (mut websocket, _) = connect_async(websocket_request(
+        gateway.server.address,
+        CLIENT_KEY,
+        "route",
+    ))
+    .await
+    .unwrap();
+    let first = response_create(&mut websocket, None).await;
+    let second = response_create(&mut websocket, None).await;
+    assert_ne!(
+        completed_response_id(&first),
+        completed_response_id(&second)
+    );
+    assert_previous_response_not_found(&response_create(&mut websocket, Some("unknown-id")).await);
+    assert_eq!(upstream.requests().len(), 2);
+    let third = response_create(&mut websocket, Some(completed_response_id(&first))).await;
+    assert_eq!(completed_response_id(&third), "resp-3");
+    let requests = upstream.requests();
+    assert_eq!(requests.len(), 3);
+    assert_ne!(requests[0].connection, requests[1].connection);
+    assert_ne!(requests[0].body["model"], requests[1].body["model"]);
+    assert_eq!(requests[0].connection, requests[2].connection);
+    assert_eq!(requests[0].body["model"], requests[2].body["model"]);
+}
+
+#[tokio::test]
+async fn colliding_provider_ids_do_not_dispatch_a_continuation() {
+    let first = start_mock_upstream().await;
+    let second = start_mock_upstream().await;
+    let gateway = round_robin_gateway(&first, &second).await;
+    let (mut websocket, _) = connect_async(websocket_request(
+        gateway.server.address,
+        CLIENT_KEY,
+        "collision",
+    ))
+    .await
+    .unwrap();
+    for _ in 0..2 {
+        assert_eq!(
+            completed_response_id(&response_create(&mut websocket, None).await),
+            "resp-1"
+        );
+    }
+    assert_previous_response_not_found(&response_create(&mut websocket, Some("resp-1")).await);
+    assert_eq!(first.requests().len(), 1);
+    assert_eq!(second.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn transformed_continuation_cannot_dispatch_on_an_unrelated_socket() {
+    let upstream = start_mock_upstream().await;
+    let gateway = gateway_harness_with_records(&upstream, None, Default::default(), |records| {
+        records.channels[0].override_document["request_json"] = json!([
+            {"op":"add", "path":"/previous_response_id", "value":"injected"}
+        ]);
+    })
+    .await;
+    let (mut websocket, _) = connect_async(websocket_request(
+        gateway.server.address,
+        CLIENT_KEY,
+        "transformed",
+    ))
+    .await
+    .unwrap();
+    assert_previous_response_not_found(&response_create(&mut websocket, None).await);
+    assert!(upstream.handshakes().is_empty());
+    assert!(upstream.requests().is_empty());
+}
+
 #[tokio::test]
 async fn credential_disabling_rotation_and_rebinding_invalidate_pinned_continuations() {
     for controls in [
@@ -1306,8 +1449,15 @@ async fn responses_websocket_discards_upstream_state_after_previous_response_not
     .await
     .unwrap();
 
-    response_create(&mut websocket, None).await;
-    let missing = response_create(&mut websocket, Some("resp-does-not-exist")).await;
+    // The gateway knows this completed ID, but the upstream independently lost its state.
+    let first = send_websocket_body(
+        &mut websocket,
+        json!({
+            "type":"response.create", "model": CLIENT_MODEL, "client_metadata":{"forget_state":true}
+        }),
+    )
+    .await;
+    let missing = response_create(&mut websocket, Some(completed_response_id(&first))).await;
     assert_previous_response_not_found(&missing);
     let retried = response_create(&mut websocket, None).await;
     assert_eq!(completed_response_id(&retried), "resp-2");
@@ -1999,6 +2149,89 @@ async fn start_http_fallback_upstream() -> MockResponsesWebSocket {
     }
 }
 
+async fn run_loopback_codex(
+    address: SocketAddr,
+    directory: &std::path::Path,
+    prompt: &str,
+) -> String {
+    use std::{
+        fs,
+        process::{Command, Stdio},
+    };
+
+    let home = directory.join("codex-home");
+    let tmp = directory.join("tmp");
+    fs::create_dir(&home).unwrap();
+    fs::create_dir(&tmp).unwrap();
+    fs::write(
+        home.join("config.toml"),
+        format!(
+            r#"
+model = "{CLIENT_MODEL}"
+model_provider = "gateway_mock"
+approval_policy = "never"
+sandbox_mode = "read-only"
+check_for_update_on_startup = false
+analytics.enabled = false
+feedback.enabled = false
+chatgpt_base_url = "http://{address}"
+[model_providers.gateway_mock]
+name = "Loopback fixture"
+base_url = "http://{address}/v1"
+env_key = "GATEWAY_MOCK_KEY"
+wire_api = "responses"
+supports_websockets = true
+stream_max_retries = 1
+request_max_retries = 0
+"#
+        ),
+    )
+    .unwrap();
+    let stderr = directory.join("stderr");
+    let mut child = Command::new(std::env::var_os("CODEX_BIN").unwrap_or_else(|| "codex".into()))
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("HOME", directory)
+        .env("TMPDIR", tmp)
+        .env("CODEX_HOME", &home)
+        .env("GATEWAY_MOCK_KEY", CLIENT_KEY)
+        .env("ALL_PROXY", "http://127.0.0.1:9")
+        .env("NO_PROXY", "127.0.0.1,localhost")
+        .current_dir(directory)
+        .args([
+            "exec",
+            "--ephemeral",
+            "--skip-git-repo-check",
+            "--output-last-message",
+            "answer",
+            prompt,
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(fs::File::create(&stderr).unwrap())
+        .spawn()
+        .expect("install Codex CLI or set CODEX_BIN");
+    let status = timeout(Duration::from_secs(90), async {
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!(
+            "loopback Codex test timed out: {}",
+            fs::read_to_string(&stderr).unwrap()
+        );
+    });
+    assert!(status.success(), "{}", fs::read_to_string(&stderr).unwrap());
+    fs::read_to_string(directory.join("answer")).unwrap()
+}
+
 #[tokio::test]
 #[ignore = "requires a local Codex CLI; isolated synthetic credentials and loopback mocks only"]
 async fn codex_cli_falls_back_to_http_for_unavailable_websocket_routes() {
@@ -2015,80 +2248,13 @@ async fn codex_cli_falls_back_to_http_for_unavailable_websocket_routes() {
         )
         .await;
         let directory = tempfile::tempdir().unwrap();
-        let home = directory.path().join("codex-home");
-        std::fs::create_dir(&home).unwrap();
-        std::fs::write(
-            home.join("config.toml"),
-            format!(
-                r#"
-model = "{CLIENT_MODEL}"
-model_provider = "gateway_mock"
-approval_policy = "never"
-sandbox_mode = "read-only"
-[model_providers.gateway_mock]
-name = "Loopback mock"
-base_url = "http://{}/v1"
-env_key = "GATEWAY_MOCK_KEY"
-wire_api = "responses"
-supports_websockets = true
-stream_max_retries = 1
-request_max_retries = 0
-"#,
-                gateway.server.address
-            ),
+        let answer = run_loopback_codex(
+            gateway.server.address,
+            directory.path(),
+            "Reply with MOCK_OK only. Do not call tools.",
         )
-        .unwrap();
-        let stdout_path = directory.path().join("stdout");
-        let stderr_path = directory.path().join("stderr");
-        let output_path = directory.path().join("answer");
-        let mut command = std::process::Command::new(
-            std::env::var_os("CODEX_BIN").unwrap_or_else(|| "codex".into()),
-        );
-        command
-            .env_clear()
-            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-            .env("HOME", directory.path())
-            .env("CODEX_HOME", &home)
-            .env("GATEWAY_MOCK_KEY", CLIENT_KEY)
-            .current_dir(directory.path())
-            .args([
-                "exec",
-                "--ephemeral",
-                "--skip-git-repo-check",
-                "--output-last-message",
-            ])
-            .arg(&output_path)
-            .arg("Reply with MOCK_OK only. Do not call tools.")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::fs::File::create(&stdout_path).unwrap())
-            .stderr(std::fs::File::create(&stderr_path).unwrap());
-        let status = tokio::task::spawn_blocking(move || {
-            let mut child = command.spawn().expect("install Codex CLI or set CODEX_BIN");
-            let deadline = std::time::Instant::now() + Duration::from_secs(90);
-            loop {
-                if let Some(status) = child.try_wait().unwrap() {
-                    return status;
-                }
-                if std::time::Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    panic!("Codex did not finish loopback fallback within 90 seconds");
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-        })
-        .await
-        .unwrap();
-        let diagnostic = std::fs::read_to_string(&stderr_path).unwrap();
-        assert!(
-            status.success(),
-            "Codex failed against loopback mocks: {diagnostic}"
-        );
-        assert!(
-            std::fs::read_to_string(&output_path)
-                .unwrap()
-                .contains("MOCK_OK")
-        );
+        .await;
+        assert!(answer.contains("MOCK_OK"));
         assert!(
             gateway.upgrade_attempts.load(Ordering::SeqCst) > 0,
             "must attempt WS before falling back"
@@ -2126,3 +2292,6 @@ request_max_retries = 0
         );
     }
 }
+
+#[path = "support/ws_state_recovery.rs"]
+mod ws_state_recovery;

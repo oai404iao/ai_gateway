@@ -29,7 +29,7 @@ use axum::{
     Router,
     body::{Body, Bytes},
     extract::State,
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::Response,
     routing::post,
 };
@@ -156,6 +156,7 @@ fn proxy_fixture_with_retry_and_models(
         upstream,
         routing,
         request_retry,
+        |_| {},
     )
 }
 
@@ -167,6 +168,7 @@ fn proxy_fixture_with_retry_and_candidates(
     upstream: UpstreamConfig,
     routing: RoutingRuntime,
     request_retry: RequestRetrySettings,
+    configure_records: impl FnOnce(&mut ControlPlaneRecords),
 ) -> ProxyFixture {
     assert!(
         candidates
@@ -198,7 +200,7 @@ fn proxy_fixture_with_retry_and_candidates(
             candidates,
         })
         .collect();
-    let records = ControlPlaneRecords {
+    let mut records = ControlPlaneRecords {
         api_keys: vec![ApiKeyRecord {
             id: Uuid::new_v4(),
             user_id: Uuid::new_v4(),
@@ -300,6 +302,7 @@ fn proxy_fixture_with_retry_and_candidates(
         proxies: vec![],
         templates: vec![],
     };
+    configure_records(&mut records);
     let runtime = Arc::new(RuntimeConfig::new(
         compile_control_plane_with_system_settings(
             records,
@@ -538,6 +541,80 @@ async fn retry_rewrites_each_attempt_with_its_candidate_upstream_model() {
 }
 
 #[tokio::test]
+async fn status_retry_rebuilds_the_request_from_filtered_input_for_each_channel() {
+    use serde_json::{Value, json};
+
+    let attempts = Arc::new(Mutex::new(Vec::new()));
+    let upstream = start_server(Router::new().route(
+        "/v1/chat/completions",
+        post({
+            let attempts = Arc::clone(&attempts);
+            move |headers: HeaderMap, body: Bytes| {
+                let mut attempts = attempts.lock().unwrap();
+                attempts.push((headers, serde_json::from_slice::<Value>(&body).unwrap()));
+                let (status, body) = if attempts.len() == 1 {
+                    (StatusCode::TOO_MANY_REQUESTS, json!({"error":"retry"}))
+                } else {
+                    (StatusCode::OK, json!({"id":"completion"}))
+                };
+                async move { (status, axum::Json(body)) }
+            }
+        }),
+    ))
+    .await;
+    let url = format!("http://{}", upstream.address);
+    let fixture = proxy_fixture_with_retry_and_candidates(
+        &[url.clone(), url],
+        &[
+            (0, 0, "wire-primary".into()),
+            (1, 1, "wire-fallback".into()),
+        ],
+        &[0, 1],
+        upstream_config(2, 2),
+        RoutingRuntime::new(PassiveHealthPolicy::default()),
+        RequestRetrySettings::new(true, 1, Arc::from([429])),
+        |records| {
+            records.api_keys[0].user_filter_fast_mode = true;
+            for (channel, tag) in records.channels.iter_mut().zip(["primary", "fallback"]) {
+                channel.override_document = json!({
+                    "version": 1, "api_format": "open_ai_chat_completions",
+                    "request_headers": {"set": {(format!("x-{tag}")): "yes"}},
+                    "request_json": [{"op": "add", "path": format!("/metadata/{tag}"), "value": true}]
+                });
+            }
+        },
+    );
+    let gateway = start_server(http::router(fixture.service)).await;
+    let response = request(&client(), gateway.address)
+        .timeout(WAIT)
+        .body(r#"{"model":"model","service_tier":"priority","metadata":{"client":"preserved"}}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.text().await.unwrap(), r#"{"id":"completion"}"#);
+
+    let attempts = attempts.lock().unwrap();
+    assert_eq!(attempts.len(), 2);
+    for ((headers, body), (tag, other)) in attempts
+        .iter()
+        .zip([("primary", "fallback"), ("fallback", "primary")])
+    {
+        assert_eq!(headers[format!("x-{tag}")], "yes");
+        assert!(!headers.contains_key(format!("x-{other}")));
+        assert_eq!(
+            body,
+            &json!({"model":format!("wire-{tag}"), "metadata":{"client":"preserved", (tag):true}})
+        );
+    }
+    let events = fixture.logs.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].channel_id, Some(fixture.channel_ids[1]));
+    assert_eq!(events[0].upstream_model.as_deref(), Some("wire-fallback"));
+    assert_eq!(events[0].response_status_code, Some(200));
+}
+
+#[tokio::test]
 async fn configured_status_retries_another_model_on_the_same_channel() {
     let models = Arc::new(Mutex::new(Vec::new()));
     let upstream = start_server(
@@ -558,6 +635,7 @@ async fn configured_status_retries_another_model_on_the_same_channel() {
         upstream_config(2, 2),
         RoutingRuntime::new(PassiveHealthPolicy::default()),
         RequestRetrySettings::new(true, 1, Arc::from([429])),
+        |_| {},
     );
     let channel_id = fixture.channel_ids[0];
     let pricing_model_id = fixture
@@ -613,6 +691,7 @@ async fn unconfigured_status_is_forwarded_without_candidate_retry() {
         upstream_config(2, 2),
         RoutingRuntime::new(PassiveHealthPolicy::default()),
         RequestRetrySettings::new(true, 1, Arc::from([])),
+        |_| {},
     );
     let gateway = start_server(http::router(fixture.service)).await;
 

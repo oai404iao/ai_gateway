@@ -6,7 +6,7 @@ mod websocket;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fmt,
-    sync::{Arc, Mutex},
+    sync::Mutex,
     time::Duration,
 };
 
@@ -509,17 +509,35 @@ impl UpstreamClientRegistry {
         self.websockets.snapshot()
     }
 
-    /// Finds the most recently pooled channel/model candidate for one
-    /// downstream WebSocket identity so reconnects can preserve OpenAI's
-    /// connection-local cache.
+    /// Reserves the unique idle socket for this continuation before routing, so
+    /// another request cannot replace its connection-local state during setup.
     #[must_use]
-    pub(crate) fn preferred_websocket_candidate(
+    pub(crate) fn acquire_websocket_continuation(
         &self,
         api_key_id: uuid::Uuid,
         client_identity: WebSocketClientIdentity,
-    ) -> Option<(uuid::Uuid, Arc<str>)> {
+        response_id: [u8; 32],
+    ) -> Option<(UpstreamWebSocketKey, UpstreamWebSocket)> {
         self.websockets
-            .preferred_candidate(api_key_id, client_identity)
+            .acquire_continuation(api_key_id, client_identity, response_id)
+    }
+
+    pub(crate) fn websocket_continuation_is_ready(
+        &self,
+        key: &UpstreamWebSocketKey,
+        connection: &mut UpstreamWebSocket,
+    ) -> bool {
+        self.websockets.continuation_is_ready(key, connection)
+    }
+
+    pub(crate) fn observe_websocket_completion(
+        &self,
+        key: &UpstreamWebSocketKey,
+        connection: &mut UpstreamWebSocket,
+        response_id: Option<[u8; 32]>,
+    ) {
+        self.websockets
+            .observe_completion(key, connection, response_id);
     }
 
     /// Drops every idle Responses WebSocket during process shutdown.

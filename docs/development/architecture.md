@@ -254,11 +254,9 @@ Responses WebSocket 使用同一个 `/v1/responses` 路径的 `GET` Upgrade。�
 允许 WebSocket；系统、用户和普通 channel 默认关闭。每条顺序的 `response.create` 重新读取当前快照并
 独立执行鉴权、准入、选路、变换、Connector 凭证准备、usage 和日志。普通 Responses channel
 与 Codex 渠道都由管理员显式声明 `responses-ws` 能力；迁移只保留原有 WS 范围，
-Images 操作不使用 WebSocket，并且 Responses 仍受系统与用户开关限制。由于
-`previous_response_id` 的增量缓存属于具体上游连接，下游连接会固定到一个仍可用的上游渠道和
-WebSocket 身份，不做请求多路复用。每个成功请求结束后，上游连接立即回到按 API Key、Session
-握手身份、渠道/上游模型候选、网络配置、目标和最终 Header 精确隔离的有界空闲池；下一条消息
-优先取回同一连接及候选。
+Images 操作不使用 WebSocket，并且 Responses 仍受系统与用户开关限制。完整请求先选路再复用连接，
+不把下游 socket 固定到一个渠道。增量请求先按 `previous_response_id` 匹配空闲连接，再验证候选和完整池键；
+详细恢复条件见[WS 状态与复用](../user/websocket.md#继续上下文或恢复连接)。
 上游客户端使用与 Codex 相同的 SHA 固定 OpenAI Tungstenite fork，并主动协商
 `permessage-deflate`；未接受该扩展的上游仍使用未压缩消息。池只复用成功终态后的无残留连接。
 系统设置动态配置是否启用、最大空闲连接数、空闲超时和连接

@@ -1,4 +1,8 @@
+mod candidate;
+mod http_attempt;
 mod websocket;
+
+use http_attempt::HttpRequestInput;
 
 use std::{
     collections::{BTreeSet, HashSet, VecDeque},
@@ -17,7 +21,7 @@ use axum::{
         HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode,
         header::{
             ACCEPT_ENCODING, ACCEPT_RANGES, AUTHORIZATION, CONNECTION, CONTENT_ENCODING,
-            CONTENT_LENGTH, CONTENT_TYPE, HOST, PROXY_AUTHORIZATION, RANGE,
+            CONTENT_LENGTH, CONTENT_TYPE, HOST, PROXY_AUTHORIZATION,
         },
     },
     response::{IntoResponse, Response as AxumResponse},
@@ -41,13 +45,13 @@ use crate::{
     domain::{
         ApiFormat, ApiKeyPermission, ApiOperation, AutomaticDisableSettings,
         AutomaticDisableTrigger, CompiledAdvancedBilling, CompiledApiKey, CompiledChannel,
-        CompiledModelRule, MAX_REQUEST_RETRIES, ModelPriceSnapshot, RequestCompression,
-        RequestCredentialAttribution, RequestLogEvent, RequestLogOutcome, RequestLogSource,
-        RequestProtocol, SessionAffinityKeySource, SessionAffinitySettings,
+        CompiledModelRule, MAX_REQUEST_RETRIES, ModelPriceSnapshot, RequestCredentialAttribution,
+        RequestLogEvent, RequestLogOutcome, RequestLogSource, RequestProtocol,
+        SessionAffinityKeySource, SessionAffinitySettings,
     },
     request_policy::{
         RequestInterface, RequestPolicyError, RequestPolicyLayer, client_header_explicitly_ignored,
-        filter_client_headers, sanitize_outbound_request_headers,
+        filter_client_headers,
     },
     routing::{
         ChannelLease, RoutingRuntime, SelectionResult, SessionAffinityMatch,
@@ -55,12 +59,11 @@ use crate::{
     },
     runtime_config::RuntimeConfig,
     transforms::{
-        JsonPatchPlan, SseEventPatchPlan, SseTransformer, apply_header_plan, apply_json_patch_plan,
-        apply_response_header_plan, parse_connection_header_names,
+        SseEventPatchPlan, SseTransformer, apply_response_header_plan,
+        parse_connection_header_names,
     },
     upstream::{
-        DecodedBodyError, ResolvedUpstreamPolicy, ResponseContentCodings, UPSTREAM_ACCEPT_ENCODING,
-        UpstreamClientRegistry, decode_response_body,
+        DecodedBodyError, ResponseContentCodings, UpstreamClientRegistry, decode_response_body,
     },
 };
 
@@ -69,7 +72,7 @@ use super::{
     request_billing_multiplier_for_value,
     request_body::{
         ImageBodySpoolSnapshot, ImageEditBodyError, ImageEditBodyPolicy, PreparedRequestBody,
-        ProxyRequestBodyLimits, ReplayableRequestBody,
+        ProxyRequestBodyLimits,
     },
     response_adapter::{ResponseAdapterConfig, SseResponseAdapter},
     usage::{ResponseErrorDetails, SseTerminalOutcome, UsageCollector, UsageParserConfig},
@@ -414,7 +417,7 @@ impl ProxyService {
                 return Err(ProxyError::unknown_model(&parsed.model));
             }
             SelectionResult::NoHealthyChannel { rule } => {
-                self.record_no_healthy_channel(
+                self.record_unrouted(
                     &api_key,
                     request_source,
                     api_format,
@@ -477,6 +480,17 @@ impl ProxyService {
         let max_attempts = max_retries.saturating_add(1);
         let mut attempt = 1_u32;
         let mut attempted_candidate_slots = AttemptedCandidateSlots::new();
+
+        let request_input = HttpRequestInput {
+            method: &parts.method,
+            uri: &parts.uri,
+            headers: &client_headers,
+            body: &original_body,
+            body_changed: client_body_changed || fast_mode_filtered || client_body_decoded,
+            client_model: &parsed.model,
+            operation: api_operation,
+            protocol: parsed.request_protocol,
+        };
 
         loop {
             attempted_candidate_slots.push(current_candidate_slot);
@@ -550,196 +564,35 @@ impl ProxyService {
             completion
                 .set_preserve_affinity_on_failure(prepared_attempt.preserves_affinity_on_failure());
             completion.set_usage_parser(prepared_attempt.usage_parser(api_operation));
-            let transforms = current_channel.upstream_policy().effective_transforms();
-            if api_operation == ApiOperation::StandaloneWebSearch
-                && !transforms.request_json().is_empty()
-            {
-                let error = ProxyError::invalid_request_with_code(
-                    "Standalone web search does not support request JSON transforms.",
-                    "body",
-                    "standalone_web_search_json_transform_unsupported",
-                );
-                completion.finish_with_proxy_error(RequestOutcome::ClientRequestError, &error);
-                return Err(error);
-            }
-            let model_rewritten = parsed.model != current_upstream_model.as_ref();
-            let body = match original_body
-                .clone()
-                .rewrite_model(&parsed.model, &current_upstream_model)
+            let outbound = request_input
+                .build_for(
+                    &current_channel,
+                    &current_upstream_model,
+                    &prepared_attempt,
+                    &self.upstream_clients,
+                    snapshot.system_settings().upstream_timeouts(),
+                )
                 .await
-            {
-                Ok(value) => value,
-                Err(error) => {
-                    let error = ProxyError::image_edit_body(error);
-                    completion.finish_with_proxy_error(RequestOutcome::ClientRequestError, &error);
-                    return Err(error);
-                }
-            };
-            let body = match apply_request_json_transform(body, transforms.request_json()) {
-                Ok(body) => body,
-                Err(error) => {
-                    completion.finish_with_proxy_error(RequestOutcome::ClientRequestError, &error);
-                    return Err(error);
-                }
-            };
-            let body = match prepared_attempt
-                .adapt_body(body, parsed.request_protocol)
-                .await
-            {
-                Ok(body) => body,
-                Err(error) => {
-                    let error = ProxyError::connector_attempt(error);
-                    completion.set_client_visible_status(error.status.as_u16());
-                    let outcome = if error.status.is_client_error() {
-                        RequestOutcome::ClientRequestError
-                    } else {
-                        RequestOutcome::UpstreamUnavailable
-                    };
-                    completion.finish_with_proxy_error(outcome, &error);
-                    return Err(error);
-                }
-            };
-            let (body, request_body_encoded) = match encode_upstream_request_body(
-                body,
-                current_channel.request_compression(),
-                api_operation,
-            ) {
-                Ok(encoded) => encoded,
-                Err(source) => {
-                    tracing::error!(
-                        event = "upstream_request_compression_failed",
-                        channel_id = %current_channel.id(),
-                        error = %source,
-                        "failed to compress upstream request body"
-                    );
-                    let error = ProxyError::upstream_request_encoding_failed();
-                    completion.finish_with_proxy_error(RequestOutcome::UpstreamUnavailable, &error);
-                    return Err(error);
-                }
-            };
-            let request_body_changed = client_body_changed
-                || fast_mode_filtered
-                || client_body_decoded
-                || model_rewritten
-                || !transforms.request_json().is_empty()
-                || prepared_attempt.changes_request_body()
-                || request_body_encoded;
-
-            // Apply the plan before hop-by-hop cleanup so `HeaderPlan` can
-            // reject dynamically protected names declared by the client
-            // `Connection` header. Stale client entity metadata is removed
-            // first so the plan may explicitly supply values for the final
-            // body. Cleanup then removes hop-by-hop names again.
-            let mut headers = client_headers.clone();
-            if request_body_changed {
-                remove_rewritten_request_entity_headers(&mut headers);
-            }
-            if let Err(apply_error) = apply_header_plan(&mut headers, transforms.request_headers())
-            {
-                let error = ProxyError::transform_failed();
-                completion.finish_with_error_details(
-                    RequestOutcome::ClientRequestError,
-                    proxy_error_with_source(&error, &apply_error),
-                );
-                return Err(error);
-            }
-            let mut headers = forward_request_headers(&headers);
-
-            let url = match prepared_attempt.upstream_url(&current_channel, &parts.uri) {
-                Ok(value) => value,
-                Err(error) => {
-                    let error = ProxyError::connector_attempt(error);
-                    completion.finish_with_proxy_error(RequestOutcome::UpstreamUnavailable, &error);
-                    return Err(error);
-                }
-            };
-            if let Err(error) = prepared_attempt.inject_headers(
-                &mut headers,
-                &current_channel,
-                parsed.request_protocol,
-            ) {
-                let error = ProxyError::connector_attempt(error);
-                completion.finish_with_proxy_error(RequestOutcome::UpstreamUnavailable, &error);
-                return Err(error);
-            }
-            sanitize_outbound_request_headers(&mut headers);
-            if request_body_encoded {
-                headers.insert(CONTENT_ENCODING, HeaderValue::from_static("zstd"));
-                headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-            } else {
-                headers.remove(CONTENT_ENCODING);
-            }
-            headers.insert(
-                ACCEPT_ENCODING,
-                if headers.contains_key(RANGE) {
-                    HeaderValue::from_static("identity")
-                } else {
-                    HeaderValue::from_static(UPSTREAM_ACCEPT_ENCODING)
-                },
-            );
-            let upstream_policy = match ResolvedUpstreamPolicy::try_resolve_for_operation(
-                api_operation,
-                &snapshot.system_settings().upstream_timeouts(),
-                current_channel.upstream_policy(),
-            ) {
-                Ok(policy) => policy,
-                Err(_) => {
-                    let error = ProxyError::upstream_unavailable();
-                    completion.finish_with_proxy_error(RequestOutcome::UpstreamUnavailable, &error);
-                    return Err(error);
-                }
-            };
-            let upstream_client = match self
-                .upstream_clients
-                .client_for(current_channel.upstream_policy(), upstream_policy)
-            {
-                Ok(client) => client,
-                Err(_) => {
-                    let error = ProxyError::upstream_unavailable();
-                    completion.finish_with_proxy_error(RequestOutcome::UpstreamUnavailable, &error);
-                    return Err(error);
-                }
-            };
-            headers.insert(
-                CONTENT_LENGTH,
-                HeaderValue::from_str(&body.len().to_string())
-                    .expect("request body length is a valid header value"),
-            );
-            let body = match body.reqwest_body().await {
-                Ok(body) => body,
-                Err(error) => {
-                    let error = ProxyError::image_edit_body(error);
-                    completion.set_client_visible_status(error.status.as_u16());
-                    completion.finish_with_proxy_error(RequestOutcome::UpstreamUnavailable, &error);
-                    return Err(error);
-                }
-            };
-
-            let upstream_request = upstream_client
-                .request(parts.method.clone(), url)
-                .headers(headers)
-                .body(body);
-            let send_result = match timeout(
-                upstream_policy.timeouts().response_header(),
-                upstream_request.send(),
-            )
-            .await
-            {
-                Err(_) => Err(PreHeaderFailure::ResponseHeaderTimeout),
-                Ok(Err(error)) if error.is_timeout() && error.is_connect() => {
-                    Err(PreHeaderFailure::ConnectTimeout)
-                }
-                Ok(Err(error)) if error.is_connect() => Err(PreHeaderFailure::ConnectionFailure),
-                Ok(Err(source)) => {
-                    let error = ProxyError::upstream_unavailable();
-                    completion.finish_with_error_details(
-                        RequestOutcome::UpstreamUnavailable,
-                        proxy_error_with_source(&error, &source),
-                    );
-                    return Err(error);
-                }
-                Ok(Ok(response)) => Ok(response),
-            };
+                .map_err(|error| error.finish(&mut completion))?;
+            let send_result =
+                match timeout(outbound.timeouts.response_header(), outbound.request.send()).await {
+                    Err(_) => Err(PreHeaderFailure::ResponseHeaderTimeout),
+                    Ok(Err(error)) if error.is_timeout() && error.is_connect() => {
+                        Err(PreHeaderFailure::ConnectTimeout)
+                    }
+                    Ok(Err(error)) if error.is_connect() => {
+                        Err(PreHeaderFailure::ConnectionFailure)
+                    }
+                    Ok(Err(source)) => {
+                        let error = ProxyError::upstream_unavailable();
+                        completion.finish_with_error_details(
+                            RequestOutcome::UpstreamUnavailable,
+                            proxy_error_with_source(&error, &source),
+                        );
+                        return Err(error);
+                    }
+                    Ok(Ok(response)) => Ok(response),
+                };
 
             let upstream_response = match send_result {
                 Ok(response) => {
@@ -886,9 +739,10 @@ impl ProxyService {
 
             let connector_success_response_is_sse = prepared_attempt.successful_response_is_sse();
 
+            let transforms = current_channel.upstream_policy().effective_transforms();
             return response_from_upstream(
                 upstream_response,
-                upstream_policy.timeouts().stream_idle(),
+                outbound.timeouts.stream_idle(),
                 completion,
                 connector_success_response_is_sse,
                 transforms.response_headers(),
@@ -949,7 +803,7 @@ impl ProxyService {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn record_no_healthy_channel(
+    fn record_unrouted(
         &self,
         api_key: &CompiledApiKey,
         request_source: RequestLogSource,
@@ -993,7 +847,7 @@ impl ProxyService {
             error_code: error.code.map(str::to_owned),
             error_summary: error.request_log_details().summary,
         };
-        tracing::info!(event = "proxy_request_completed", api_key_id = %api_key.id(), api_format = ?api_format, outcome = "no_healthy_channel", "proxy request completed");
+        tracing::info!(event = "proxy_request_completed", api_key_id = %api_key.id(), api_format = ?api_format, outcome = error.code.unwrap_or("unrouted"), "proxy request completed");
         self.request_log_sink.try_record(event);
     }
 
@@ -1716,23 +1570,6 @@ fn request_billing_multiplier_for_body(
     }
 }
 
-fn apply_request_json_transform(
-    body: PreparedRequestBody,
-    plan: &JsonPatchPlan,
-) -> Result<PreparedRequestBody, ProxyError> {
-    match body {
-        PreparedRequestBody::Json(body) => apply_json_patch_plan(body, plan)
-            .map(PreparedRequestBody::Json)
-            .map_err(|_| ProxyError::transform_failed()),
-        PreparedRequestBody::ImageEdit(body) if plan.is_empty() => {
-            Ok(PreparedRequestBody::ImageEdit(body))
-        }
-        PreparedRequestBody::ImageEdit(_) => Err(ProxyError::image_edit_body(
-            ImageEditBodyError::JsonTransformUnsupported,
-        )),
-    }
-}
-
 fn request_log_metadata(
     api_format: ApiFormat,
     reasoning_effort: &Value,
@@ -1948,55 +1785,6 @@ async fn read_bounded_json_body(
     })
 }
 
-fn encode_upstream_request_body(
-    body: ReplayableRequestBody,
-    compression: RequestCompression,
-    api_operation: ApiOperation,
-) -> io::Result<(ReplayableRequestBody, bool)> {
-    if compression == RequestCompression::Default {
-        return Ok((body, false));
-    }
-    if api_operation != ApiOperation::Responses {
-        return Ok((body, false));
-    }
-    let ReplayableRequestBody::Memory(body) = body else {
-        return Err(io::Error::other(
-            "Responses JSON request body unexpectedly used file storage",
-        ));
-    };
-    let pre_compression_bytes = body.len();
-    let compression_start = Instant::now();
-    let body = zstd::stream::encode_all(std::io::Cursor::new(body), 3).map(Bytes::from)?;
-    tracing::debug!(
-        pre_compression_bytes,
-        post_compression_bytes = body.len(),
-        compression_duration_ms = compression_start.elapsed().as_millis(),
-        "compressed upstream Responses request body with zstd"
-    );
-    Ok((ReplayableRequestBody::Memory(body), true))
-}
-
-fn rewrite_model_alias(
-    original_body: Bytes,
-    client_model: &str,
-    upstream_model: &str,
-) -> Result<Bytes, ProxyError> {
-    if client_model == upstream_model {
-        return Ok(original_body);
-    }
-
-    let mut value = serde_json::from_slice::<Value>(&original_body).map_err(|_| {
-        ProxyError::invalid_request("Request body must contain a JSON object.", "model")
-    })?;
-    let object = value.as_object_mut().ok_or_else(|| {
-        ProxyError::invalid_request("Request body must contain a JSON object.", "model")
-    })?;
-    object.insert("model".to_owned(), Value::String(upstream_model.to_owned()));
-    serde_json::to_vec(&value)
-        .map(Bytes::from)
-        .map_err(|_| ProxyError::invalid_request("Request body cannot be rewritten.", "model"))
-}
-
 fn parse_bearer_token(headers: &HeaderMap) -> Result<&str, ProxyError> {
     let value = headers
         .get(AUTHORIZATION)
@@ -2021,20 +1809,6 @@ fn forward_request_headers(headers: &HeaderMap) -> HeaderMap {
 
 fn forward_response_headers(headers: &HeaderMap) -> HeaderMap {
     forward_headers(headers, false)
-}
-
-fn remove_rewritten_request_entity_headers(headers: &mut HeaderMap) {
-    headers.remove(CONTENT_ENCODING);
-    for name in [
-        HeaderName::from_static("content-md5"),
-        HeaderName::from_static("digest"),
-        HeaderName::from_static("content-digest"),
-        HeaderName::from_static("repr-digest"),
-        HeaderName::from_static("etag"),
-        HeaderName::from_static("last-modified"),
-    ] {
-        headers.remove(name);
-    }
 }
 
 fn forward_headers(headers: &HeaderMap, request: bool) -> HeaderMap {

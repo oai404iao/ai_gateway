@@ -68,12 +68,12 @@ Upgrade 验证 API Key，每个 `response.create` 再独立执行鉴权、准入
 系统、用户和选中操作能力的 WS 条件均须满足；不可用时用通用 `426 websocket_unavailable`，
 不泄露内部渠道或插件状态。
 
-成功终态且无残留事件的上游连接才返回有界池，同 Session 优先复用。池身份包括 API Key、
+成功终态且无残留事件的上游连接才返回有界池。完整请求按当前路由选候选，而不是按空闲连接选渠道。池身份包括 API Key、
 下游握手身份、渠道及凭证/接入版本、上游模型、插件 generation、网络策略、目标和最终 Header。
 轮换或改绑不会因为密钥文本相同而复用旧身份。
 
 池参数由运行时设置控制：默认最多 128 条空闲连接、空闲 300 秒、总龄 3300 秒；不是固定协议限制。
-同一精确身份只保留最近一条。非空 `previous_response_id` 必须精确命中连接，否则在新派发前返回
+同一精确身份只保留最近一条。非空 `previous_response_id` 必须匹配该 Session 范围内唯一可用连接的最近成功响应，否则在新派发前返回
 `404 previous_response_not_found`，由客户端重发完整请求。
 
 `websocket_connection_limit_reached`、`previous_response_not_found` 保留原形状，不做事件 patch，

@@ -6,7 +6,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     fmt,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
@@ -236,6 +236,7 @@ mod credential_tests {
         assert_ne!(first, second);
         let state = PoolState {
             idle: VecDeque::new(),
+            live_response_ids: Vec::new(),
             settings: ResponsesWebSocketSettings::default(),
             active_api_keys: HashSet::from([second.api_key_id]),
             active_channels: Some(HashMap::from([(
@@ -276,15 +277,7 @@ mod credential_tests {
                 ),
             )]));
         }
-        let (commands, _command_receiver) = mpsc::channel(1);
-        let (_incoming, messages) = mpsc::channel(1);
-        let connection = UpstreamWebSocket {
-            commands,
-            messages,
-            pump: tokio::spawn(std::future::pending()),
-            closed: Arc::new(AtomicBool::new(false)),
-            created_at: Instant::now(),
-        };
+        let (connection, _incoming) = socket();
         pool.record_connected();
         pool.release(old, connection);
         let snapshot = pool.snapshot();
@@ -292,6 +285,121 @@ mod credential_tests {
         assert_eq!(snapshot.idle_connections, 0);
         assert_eq!(snapshot.discarded_total, 1);
         assert!(pool.acquire(&current).is_none());
+    }
+
+    fn socket() -> (
+        UpstreamWebSocket,
+        mpsc::Sender<Result<Message, UpstreamWebSocketError>>,
+    ) {
+        let (commands, _) = mpsc::channel(1);
+        let (incoming, messages) = mpsc::channel(1);
+        (
+            UpstreamWebSocket {
+                commands,
+                messages,
+                pump: tokio::spawn(std::future::pending()),
+                closed: Arc::new(AtomicBool::new(false)),
+                created_at: Instant::now(),
+                response_claim: None,
+            },
+            incoming,
+        )
+    }
+
+    #[tokio::test]
+    async fn colliding_completion_while_original_is_leased_invalidates_both_continuations() {
+        let pool = UpstreamWebSocketPool::new();
+        pool.configure(ResponsesWebSocketSettings::new(
+            true,
+            4,
+            Duration::from_secs(60),
+            Duration::from_secs(120),
+        ));
+        let first_key = key(Uuid::from_u128(4), Uuid::from_u128(5));
+        let mut second_key = first_key.clone();
+        second_key.channel_id = Uuid::from_u128(6);
+        let digest = [42; 32];
+        let (mut first, _incoming_a) = socket();
+        pool.record_connected();
+        pool.observe_completion(&first_key, &mut first, Some(digest));
+        pool.release(first_key.clone(), first);
+        let (leased_key, mut leased) = pool
+            .acquire_continuation(first_key.api_key_id, first_key.client_identity, digest)
+            .unwrap();
+        assert!(pool.continuation_is_ready(&leased_key, &mut leased));
+        let (mut second, _incoming_b) = socket();
+        pool.record_connected();
+        pool.observe_completion(&second_key, &mut second, Some(digest));
+        pool.release(second_key, second);
+        assert!(!pool.continuation_is_ready(&leased_key, &mut leased));
+        assert!(
+            pool.acquire_continuation(first_key.api_key_id, first_key.client_identity, digest)
+                .is_none()
+        );
+        drop(leased);
+        pool.discard_leased();
+        assert!(
+            pool.acquire_continuation(first_key.api_key_id, first_key.client_identity, digest)
+                .is_none()
+        );
+        assert_eq!(pool.snapshot().leased_connections, 0);
+    }
+
+    #[tokio::test]
+    async fn consecutive_completions_with_the_same_id_are_not_distinguishable() {
+        let pool = UpstreamWebSocketPool::new();
+        pool.configure(ResponsesWebSocketSettings::new(
+            true,
+            4,
+            Duration::from_secs(60),
+            Duration::from_secs(120),
+        ));
+        let key = key(Uuid::from_u128(4), Uuid::from_u128(5));
+        let (mut socket, _incoming) = socket();
+        pool.record_connected();
+        let id = [42; 32];
+        pool.observe_completion(&key, &mut socket, Some(id));
+        pool.release(key.clone(), socket);
+        let (_, mut socket) = pool
+            .acquire_continuation(key.api_key_id, key.client_identity, id)
+            .unwrap();
+        pool.observe_completion(&key, &mut socket, Some(id));
+        pool.release(key.clone(), socket);
+        assert!(
+            pool.acquire_continuation(key.api_key_id, key.client_identity, id)
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn late_residual_frame_or_max_age_invalidates_a_reserved_continuation() {
+        let pool = UpstreamWebSocketPool::new();
+        pool.configure(ResponsesWebSocketSettings::new(
+            true,
+            4,
+            Duration::from_secs(60),
+            Duration::from_secs(120),
+        ));
+        let key = key(Uuid::from_u128(4), Uuid::from_u128(5));
+        for expired in [false, true] {
+            let (mut connection, incoming) = socket();
+            pool.record_connected();
+            pool.observe_completion(&key, &mut connection, Some([42; 32]));
+            pool.release(key.clone(), connection);
+            let (_, mut leased) = pool
+                .acquire_continuation(key.api_key_id, key.client_identity, [42; 32])
+                .unwrap();
+            if expired {
+                leased.created_at -= Duration::from_secs(120);
+            } else {
+                incoming
+                    .try_send(Ok(Message::Text("residual".into())))
+                    .unwrap();
+            }
+            assert!(!pool.continuation_is_ready(&key, &mut leased));
+            pool.discard_leased();
+        }
+        assert_eq!(pool.snapshot().leased_connections, 0);
     }
 }
 
@@ -331,6 +439,7 @@ pub(crate) struct UpstreamWebSocket {
     pump: tokio::task::JoinHandle<()>,
     closed: Arc<AtomicBool>,
     created_at: Instant,
+    response_claim: Option<Arc<ResponseClaim>>,
 }
 
 impl UpstreamWebSocket {
@@ -401,6 +510,7 @@ impl UpstreamWebSocket {
             pump,
             closed,
             created_at: Instant::now(),
+            response_claim: None,
         }
     }
 
@@ -482,6 +592,26 @@ struct IdleWebSocket {
     idle_since: Instant,
 }
 
+struct ResponseClaim {
+    api_key_id: Uuid,
+    client_identity: WebSocketClientIdentity,
+    digest: [u8; 32],
+    ambiguous: AtomicBool,
+}
+
+impl ResponseClaim {
+    fn matches(
+        &self,
+        api_key_id: Uuid,
+        client_identity: WebSocketClientIdentity,
+        digest: [u8; 32],
+    ) -> bool {
+        self.api_key_id == api_key_id
+            && self.client_identity == client_identity
+            && self.digest == digest
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct WebSocketPoolSnapshot {
     pub(crate) enabled: bool,
@@ -517,6 +647,8 @@ type ActiveChannelIdentity = (
 
 struct PoolState {
     idle: VecDeque<IdleWebSocket>,
+    // Borrowed sockets keep their claims until the next terminal response or discard.
+    live_response_ids: Vec<Weak<ResponseClaim>>,
     settings: ResponsesWebSocketSettings,
     active_channels: Option<HashMap<Uuid, ActiveChannelIdentity>>,
     active_api_keys: HashSet<Uuid>,
@@ -545,6 +677,7 @@ impl UpstreamWebSocketPool {
             inner: Arc::new(PoolInner {
                 state: Mutex::new(PoolState {
                     idle: VecDeque::new(),
+                    live_response_ids: Vec::new(),
                     settings: ResponsesWebSocketSettings::default(),
                     active_channels: None,
                     active_api_keys: HashSet::new(),
@@ -577,6 +710,55 @@ impl UpstreamWebSocketPool {
     }
 
     pub(super) fn acquire(&self, key: &UpstreamWebSocketKey) -> Option<UpstreamWebSocket> {
+        self.checkout(|idle| idle.iter().rposition(|entry| entry.key == *key))
+            .map(|entry| entry.connection)
+    }
+
+    pub(super) fn acquire_continuation(
+        &self,
+        api_key_id: Uuid,
+        client_identity: WebSocketClientIdentity,
+        response_id: [u8; 32],
+    ) -> Option<(UpstreamWebSocketKey, UpstreamWebSocket)> {
+        self.checkout(|idle| {
+            idle.iter().position(|entry| {
+                entry
+                    .connection
+                    .response_claim
+                    .as_ref()
+                    .is_some_and(|claim| {
+                        claim.matches(api_key_id, client_identity, response_id)
+                            && !claim.ambiguous.load(Ordering::Relaxed)
+                    })
+            })
+        })
+        .map(|entry| (entry.key, entry.connection))
+    }
+
+    pub(super) fn continuation_is_ready(
+        &self,
+        key: &UpstreamWebSocketKey,
+        connection: &mut UpstreamWebSocket,
+    ) -> bool {
+        let state = self
+            .inner
+            .state
+            .lock()
+            .expect("websocket pool mutex poisoned");
+        state.settings.enabled()
+            && state.permits(key)
+            && connection.age(Instant::now()) < state.settings.max_connection_age()
+            && connection
+                .response_claim
+                .as_ref()
+                .is_some_and(|claim| !claim.ambiguous.load(Ordering::Relaxed))
+            && connection.is_clean()
+    }
+
+    fn checkout(
+        &self,
+        select: impl FnOnce(&VecDeque<IdleWebSocket>) -> Option<usize>,
+    ) -> Option<IdleWebSocket> {
         let now = Instant::now();
         let mut state = self
             .inner
@@ -585,22 +767,57 @@ impl UpstreamWebSocketPool {
             .expect("websocket pool mutex poisoned");
         let discarded = prune_idle(&mut state, now);
         record_discarded(&self.inner, discarded);
-        if !state.settings.enabled() || !state.permits(key) {
-            self.inner.misses_total.fetch_add(1, Ordering::Relaxed);
-            return None;
-        }
-        let Some(index) = state.idle.iter().rposition(|entry| entry.key == *key) else {
+        let index = select(&state.idle)
+            .filter(|index| state.settings.enabled() && state.permits(&state.idle[*index].key));
+        let Some(index) = index else {
             self.inner.misses_total.fetch_add(1, Ordering::Relaxed);
             return None;
         };
-        let connection = state
+        let entry = state
             .idle
             .remove(index)
-            .expect("matched websocket pool entry exists")
-            .connection;
+            .expect("matched websocket pool entry exists");
         self.inner.hits_total.fetch_add(1, Ordering::Relaxed);
         self.inner.leased_connections.fetch_add(1, Ordering::AcqRel);
-        Some(connection)
+        Some(entry)
+    }
+
+    pub(super) fn observe_completion(
+        &self,
+        key: &UpstreamWebSocketKey,
+        connection: &mut UpstreamWebSocket,
+        last_response_id: Option<[u8; 32]>,
+    ) {
+        let Some(digest) = last_response_id else {
+            connection.response_claim = None;
+            return;
+        };
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .expect("websocket pool mutex poisoned");
+        let mut collision = None;
+        state.live_response_ids.retain(|weak| {
+            let Some(claim) = weak.upgrade() else {
+                return false;
+            };
+            if claim.matches(key.api_key_id, key.client_identity, digest) {
+                claim.ambiguous.store(true, Ordering::Relaxed);
+                collision = Some(claim);
+            }
+            true
+        });
+        connection.response_claim = Some(collision.unwrap_or_else(|| {
+            let claim = Arc::new(ResponseClaim {
+                api_key_id: key.api_key_id,
+                client_identity: key.client_identity,
+                digest,
+                ambiguous: AtomicBool::new(false),
+            });
+            state.live_response_ids.push(Arc::downgrade(&claim));
+            claim
+        }));
     }
 
     pub(super) fn release(&self, key: UpstreamWebSocketKey, mut connection: UpstreamWebSocket) {
@@ -644,32 +861,6 @@ impl UpstreamWebSocketPool {
     pub(super) fn discard_leased(&self) {
         decrement(&self.inner.leased_connections);
         self.inner.discarded_total.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub(super) fn preferred_candidate(
-        &self,
-        api_key_id: Uuid,
-        client_identity: WebSocketClientIdentity,
-    ) -> Option<(Uuid, Arc<str>)> {
-        let now = Instant::now();
-        let mut state = self
-            .inner
-            .state
-            .lock()
-            .expect("websocket pool mutex poisoned");
-        let discarded = prune_idle(&mut state, now);
-        record_discarded(&self.inner, discarded);
-        if !state.settings.enabled() {
-            return None;
-        }
-        state
-            .idle
-            .iter()
-            .rev()
-            .find(|entry| {
-                entry.key.api_key_id == api_key_id && entry.key.client_identity == client_identity
-            })
-            .map(|entry| (entry.key.channel_id, Arc::clone(&entry.key.upstream_model)))
     }
 
     pub(super) fn reconcile(&self, snapshot: &CompiledRuntimeConfig) {

@@ -13,7 +13,7 @@ use crate::domain::{ApiOperation, CompiledChannel, ConnectorKind, RequestProtoco
 use super::codex::{
     CodexAttemptError, CodexConnectorService, CodexCredentialUnavailable, PreparedCodexAttempt,
 };
-use super::request_body::{ImageEditBodyError, PreparedRequestBody, ReplayableRequestBody};
+use super::request_body::{ImageEditBodyError, ImageEditRequestBody, ReplayableRequestBody};
 use super::response_adapter::ResponseAdapterConfig;
 use super::usage::UsageParserConfig;
 
@@ -148,10 +148,9 @@ impl PreparedUpstreamAttempt {
         }
     }
 
-    pub(crate) async fn adapt_body(
+    pub(crate) async fn adapt_image_edit(
         &self,
-        body: PreparedRequestBody,
-        request_protocol: RequestProtocol,
+        body: ImageEditRequestBody,
     ) -> Result<ReplayableRequestBody, ConnectorAttemptError> {
         match self {
             Self::OpenAiCompatible => body
@@ -162,39 +161,27 @@ impl PreparedUpstreamAttempt {
                 plugin,
                 image_content_type,
                 ..
-            } => match body {
-                PreparedRequestBody::Json(body) => self
-                    .adapt_json_body(body, request_protocol)
-                    .map(ReplayableRequestBody::Memory),
-                PreparedRequestBody::ImageEdit(body) => {
-                    let (body, content_type) = body
-                        .to_plugin_body(plugin)
-                        .await
-                        .map_err(ConnectorAttemptError::RequestBody)?;
-                    image_content_type
-                        .set(content_type)
-                        .map_err(|_| ConnectorAttemptError::InvalidTarget)?;
-                    Ok(body)
-                }
-            },
-            Self::Codex { attempt, .. } => match body {
-                PreparedRequestBody::Json(body) => self
-                    .adapt_json_body(body, request_protocol)
-                    .map(ReplayableRequestBody::Memory),
-                PreparedRequestBody::ImageEdit(body) if attempt.is_image_edit() => body
+            } => {
+                let (body, content_type) = body
+                    .to_plugin_body(plugin)
+                    .await
+                    .map_err(ConnectorAttemptError::RequestBody)?;
+                image_content_type
+                    .set(content_type)
+                    .map_err(|_| ConnectorAttemptError::InvalidTarget)?;
+                Ok(body)
+            }
+            Self::Codex { attempt, .. } if attempt.is_image_edit() => {
+                let (body, content_type) = body
                     .to_plugin_body(attempt.plugin())
                     .await
-                    .map_err(ConnectorAttemptError::RequestBody)
-                    .and_then(|(body, content_type)| {
-                        if content_type != "application/json" {
-                            return Err(ConnectorAttemptError::InvalidTarget);
-                        }
-                        Ok(body)
-                    }),
-                PreparedRequestBody::ImageEdit(_) => Err(ConnectorAttemptError::from(
-                    CodexAttemptError::UnsupportedOperation,
-                )),
-            },
+                    .map_err(ConnectorAttemptError::RequestBody)?;
+                if content_type != "application/json" {
+                    return Err(ConnectorAttemptError::InvalidTarget);
+                }
+                Ok(body)
+            }
+            Self::Codex { .. } => Err(CodexAttemptError::UnsupportedOperation.into()),
         }
     }
 
@@ -292,7 +279,9 @@ impl PreparedUpstreamAttempt {
             Self::Codex { attempt, .. } => attempt
                 .inject_headers(headers, request_protocol)
                 .map_err(ConnectorAttemptError::from),
-        }
+        }?;
+        crate::request_policy::sanitize_outbound_request_headers(headers);
+        Ok(())
     }
 
     #[must_use]

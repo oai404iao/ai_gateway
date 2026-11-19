@@ -159,6 +159,16 @@ Ordinary Rust CI ignores this test because it does not install Codex;
 deterministic Gateway protocol/authorization/health tests remain part of
 `websocket_integration`.
 
+The idle-expiry case also runs against loopback fixtures. It checks that the CLI receives
+`previous_response_not_found` and sends a full request containing the original user message,
+tool call and tool result; the expired delta must never reach the mock upstream.
+Use an installed Codex CLI or set `CODEX_BIN`:
+
+```bash
+cargo test --locked --test websocket_integration \
+  ws_state_recovery::codex_cli_resends_full_tool_history_after_idle_expiry -- --ignored --exact
+```
+
 ### Paid smoke boundaries
 
 - Use a dedicated credential with a strict spending cap, model allowlist, and

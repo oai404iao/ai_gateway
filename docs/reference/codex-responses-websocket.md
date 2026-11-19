@@ -4,7 +4,7 @@
 >
 > 最近核对：2026-08-02；HTTP fallback 补充核对：2026-09-08（Codex CLI 0.130.0）、
 > 2026-09-15（Codex CLI 0.154.0）；
-> 连接状态恢复补充核对：2026-09-15（本地 `openai/codex@31ffe2bc9adccfe5fd3d29208250f796a13aa7a0`）。
+> `previous_response_not_found` 恢复链路补充核对：2026-11-19（本地 `openai/codex@524e15989b79039e14d01cd197ed6e6580bd59f2`）。
 >
 > 参考版本：[`openai/codex@aa064463458adbef10400c74174107fc4b3550f0`](https://github.com/openai/codex/tree/aa064463458adbef10400c74174107fc4b3550f0)。
 >
@@ -171,10 +171,9 @@ Codex 区分两种提前工作：
 这些重试发生在 Codex 客户端。服务端网关不能在已经发送 `response.create` 后再自动复制请求，否则
 可能产生重复生成。
 
-`previous_response_not_found` 的映射由
-[`openai/codex@64dc1c7a01`](https://github.com/openai/codex/commit/64dc1c7a01b2aaa03701f08cf88b659c1a9737b3)
-加入。Codex 在终态流错误后销毁当前 WebSocket；下一次连接建立会清除上一请求/响应的增量状态，因此
-重试发送完整请求，而不是把同一个 `previous_response_id` 再发到新连接。
+**上游状态过期时，单独的 404、Close 帧或提示文案都不是恢复协议。** 在补充核对的版本中，Codex 从 WS 文本帧读取顶层 `type: "error"`，在普通 HTTP 状态映射之前匹配 `error.code: "previous_response_not_found"`，生成 `ApiError::Retryable`。[错误解析与分类](https://github.com/openai/codex/blob/524e15989b79039e14d01cd197ed6e6580bd59f2/codex-rs/codex-api/src/endpoint/responses_websocket.rs#L768-L839)
+
+在本次响应尚未完成时收到此错误，Codex [丢弃失败的 socket](https://github.com/openai/codex/blob/524e15989b79039e14d01cd197ed6e6580bd59f2/codex-rs/codex-api/src/endpoint/responses_websocket.rs#L458-L473)。客户端若按[重试预算](https://github.com/openai/codex/blob/524e15989b79039e14d01cd197ed6e6580bd59f2/codex-rs/core/src/responses_retry.rs)再次使用 WS，会[重建连接并清除续写状态](https://github.com/openai/codex/blob/524e15989b79039e14d01cd197ed6e6580bd59f2/codex-rs/core/src/client.rs#L2016-L2052)，以[完整 input 而非旧 ID 加 delta](https://github.com/openai/codex/blob/524e15989b79039e14d01cd197ed6e6580bd59f2/codex-rs/core/src/client.rs#L2492-L2570)发送请求。是否重试或切换 HTTP 由客户端决定；[网关返回的具体错误帧](../user/websocket.md#继续上下文或恢复连接)不会触发网关自行重放。
 
 ### Codex 0.130.0 的无可用 WS 路由兼容
 
