@@ -8,6 +8,7 @@ use std::{
     sync::Arc,
 };
 
+use ai_gateway_connector_host::{ConnectorPlugins, DirectoryPluginCatalog};
 use arc_swap::ArcSwap;
 use regex::Regex;
 use reqwest::{Url, header::HeaderName};
@@ -19,7 +20,6 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 use crate::{
-    connector_plugins::{ConnectorPlugins, DirectoryPluginCatalog},
     domain::{
         AdvancedBilling, ApiFormat, ApiKeyHash, ApiKeyPermission, ApiOperation,
         AuthorizationProfile, AutomaticDisableSettings, ChannelIdentity, ChannelTimeoutPolicy,
@@ -774,10 +774,7 @@ impl RuntimeConfig {
             enforce_plugins: false,
         }
     }
-    pub fn new_with_plugins(
-        initial: CompiledRuntimeConfig,
-        plugins: crate::connector_plugins::ConnectorPlugins,
-    ) -> Self {
+    pub fn new_with_plugins(initial: CompiledRuntimeConfig, plugins: ConnectorPlugins) -> Self {
         Self {
             current: ArcSwap::from(Arc::new(initial.with_plugins(plugins.clone()))),
             plugins,
@@ -852,7 +849,7 @@ fn compile_runtime_config_for_plugins(
 
 pub fn compile_runtime_config_with_plugins(
     mut records: RuntimeConfigRecords,
-    plugins: &crate::connector_plugins::ConnectorPlugins,
+    plugins: &ConnectorPlugins,
 ) -> Result<CompiledRuntimeConfig, ConfigError> {
     let mut valid_plugins = Vec::new();
     let mut errors = HashMap::new();

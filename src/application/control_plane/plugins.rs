@@ -2,18 +2,18 @@
 
 use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 
+use ai_gateway_connector_host::{
+    DirectoryPluginCatalog, PluginArtifact, PluginError, validate_hash,
+};
 use ai_gateway_connector_sdk::{PluginSettingsDescriptor, PluginSettingsDocument};
 use serde::Serialize;
 use uuid::Uuid;
 
 use super::{ControlPlaneCoordinator, ControlPlaneError};
-use crate::{
-    connector_plugins::{DirectoryPluginCatalog, PluginArtifact},
-    persistence::{
-        ControlPlaneMutation, MutationResult, PluginArtifactInput, PluginInstallJob,
-        PluginJobCompletion, PluginRuntimeRecords, PluginSaveInput, PluginSettingsInput,
-        PluginStateRecord, RepositoryError,
-    },
+use crate::persistence::{
+    ControlPlaneMutation, MutationResult, PluginArtifactInput, PluginInstallJob,
+    PluginJobCompletion, PluginRuntimeRecords, PluginSaveInput, PluginSettingsInput,
+    PluginStateRecord, RepositoryError,
 };
 
 struct UploadedPluginArchive(PathBuf);
@@ -198,8 +198,7 @@ impl ControlPlaneCoordinator {
         expected: &str,
     ) -> Result<MutationResult, ControlPlaneError> {
         if let Some(digest) = &digest {
-            crate::connector_plugins::validate_hash(digest)
-                .map_err(|_| RepositoryError::Validation)?;
+            validate_hash(digest).map_err(|_| RepositoryError::Validation)?;
         }
         let _guard = self.serial.lock().await;
         self.verify_active_admin(actor).await?;
@@ -377,8 +376,7 @@ impl ControlPlaneCoordinator {
         digest: String,
         expected: &str,
     ) -> Result<MutationResult, ControlPlaneError> {
-        crate::connector_plugins::validate_hash(&digest)
-            .map_err(|_| RepositoryError::Validation)?;
+        validate_hash(&digest).map_err(|_| RepositoryError::Validation)?;
         let _guard = self.serial.lock().await;
         self.verify_active_admin(actor).await?;
         let records = self.repository.plugin_records().await?;
@@ -502,9 +500,7 @@ impl ControlPlaneCoordinator {
     }
 }
 
-fn discover_packages(
-    catalog: &DirectoryPluginCatalog,
-) -> Result<Vec<PluginArtifact>, crate::connector_plugins::PluginError> {
+fn discover_packages(catalog: &DirectoryPluginCatalog) -> Result<Vec<PluginArtifact>, PluginError> {
     for entry in std::fs::read_dir(catalog.root().join("incoming"))?
         .filter(|entry| {
             entry.as_ref().map_or(true, |entry| {

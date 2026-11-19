@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Create a local-only lifecycle package from an explicitly built test plugin."""
 
+import argparse
 import ctypes
 import hashlib
 import json
@@ -8,7 +9,6 @@ import os
 from pathlib import Path
 import platform
 import shutil
-import sys
 import tarfile
 
 
@@ -32,13 +32,17 @@ def digest(path):
 
 
 def main():
-    if len(sys.argv) not in (4, 5):
-        raise ValueError("usage: package-test-plugin.py LIBRARY PLUGIN_SOURCE OUTPUT [FIXTURE_ID]")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("library", type=Path)
+    parser.add_argument("source", type=Path)
+    parser.add_argument("output", type=Path)
+    parser.add_argument("fixture_id", nargs="?", default="codex",
+                        choices=("codex", "example-response-adapter", "example-usage-parser"))
+    parser.add_argument("--pin", type=Path)
+    args = parser.parse_args()
     os.umask(0o077)
-    library_path, source, output = (Path(value).resolve() for value in sys.argv[1:4])
-    fixture_id = sys.argv[4] if len(sys.argv) == 5 else "codex"
-    if fixture_id not in ("codex", "example-response-adapter", "example-usage-parser"):
-        raise ValueError("unsupported trusted fixture")
+    library_path, source, output = (value.resolve() for value in (args.library, args.source, args.output))
+    fixture_id = args.fixture_id
     # This is an explicitly built trusted fixture, never an uploaded/discovered package.
     library = ctypes.CDLL(str(library_path))
     entry = library.ai_gateway_connector_entry_v1
@@ -79,7 +83,7 @@ def main():
         (directory / "manifest.json").write_text(json.dumps(manifest, sort_keys=True))
         (directory / "build-info.json").write_text(json.dumps({
             "schema_version": 1,
-            "connector_abi": 1,
+            "connector_abi": descriptor.abi_version,
             "connector_version": manifest["version"],
             "target": f"{architecture}-unknown-linux-gnu",
             "library": library_path.name,
@@ -92,6 +96,16 @@ def main():
         for path in directory.rglob("*"):
             if path.is_file():
                 path.chmod(0o444)
+    if args.pin:
+        pin = json.loads(args.pin.read_text())
+        packaged = json.loads((directory / "manifest.json").read_text())
+        info = json.loads((directory / "build-info.json").read_text())
+        if packaged != manifest or info["connector_abi"] != descriptor.abi_version:
+            raise ValueError("packaged metadata does not match native descriptor")
+        actual = {"plugin_id": packaged["id"], "plugin_version": packaged["version"],
+                  "abi_version": info["connector_abi"], "protocol_version": packaged["protocol_version"]}
+        if actual != {key: pin[key] for key in actual}:
+            raise ValueError(f"packaged metadata {actual} does not match {args.pin}")
     archive = output / f"{fixture_id}-test.tar.gz"
     with tarfile.open(archive, "w:gz") as destination:
         destination.add(directory, arcname=f"{fixture_id}-test")

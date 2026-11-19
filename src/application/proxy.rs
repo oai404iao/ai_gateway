@@ -3348,9 +3348,9 @@ mod tests {
         use super::{BodyStreamError, CompletionGuard, timed_upstream_stream};
         use crate::{
             application::response_adapter::{ResponseAdapterConfig, SseResponseAdapter},
-            connector_plugins::Plugin,
             transforms::{SseEventPatchPlan, SseTransformer},
         };
+        use ai_gateway_connector_host::Plugin;
         use futures_util::{StreamExt, stream};
         use sha2::{Digest, Sha256};
         use std::{os::unix::fs::PermissionsExt, path::PathBuf, process::Command};

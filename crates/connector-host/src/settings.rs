@@ -1,6 +1,6 @@
 //! Settings compilation binds one immutable configuration to a native library.
 
-use super::*;
+use crate::*;
 use ai_gateway_connector_sdk::{
     MAX_SETTINGS_BYTES, PluginSettingsDescriptor, PluginSettingsDocument, PluginSettingsValidation,
     SETTINGS_COMPILE, SETTINGS_DESCRIBE, SETTINGS_MIGRATE, SETTINGS_VALIDATE,

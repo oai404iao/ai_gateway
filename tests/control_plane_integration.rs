@@ -3780,7 +3780,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         "git_remote_url":synthetic_git_remote,
     });
     let codex_plugins =
-        ai_gateway::connector_plugins::ConnectorPlugins::from_plugins([plugins::codex_plugins()
+        ai_gateway_connector_host::ConnectorPlugins::from_plugins([plugins::codex_plugins()
             .get("codex")
             .unwrap()
             .configured(

@@ -87,7 +87,7 @@ async fn local_validation_precedes_intent_and_cancelled_http_remains_fenced() {
         .id;
     let runtime = Arc::new(RuntimeConfig::new_with_plugins(
         compile_runtime_config(repo.load_runtime().await.unwrap()).unwrap(),
-        crate::connector_plugins::test_plugins(),
+        crate::test_plugins::codex_plugins(),
     ));
     let coordinator = ControlPlaneCoordinator::new(
         repo.clone(),
@@ -137,7 +137,7 @@ async fn local_validation_precedes_intent_and_cancelled_http_remains_fenced() {
             issuer: base.parse().unwrap(),
             responses_base_url: format!("{base}/backend-api/codex").parse().unwrap(),
         },
-        crate::connector_plugins::test_plugins(),
+        crate::test_plugins::codex_plugins(),
     )
     .await
     .unwrap();
@@ -307,7 +307,7 @@ async fn model_discovery_fetches_supported_codex_models_for_the_credential() {
             issuer: base.parse().unwrap(),
             responses_base_url: format!("{base}/backend-api/codex").parse().unwrap(),
         },
-        crate::connector_plugins::test_plugins(),
+        crate::test_plugins::codex_plugins(),
     )
     .await
     .unwrap();
@@ -316,7 +316,7 @@ async fn model_discovery_fetches_supported_codex_models_for_the_credential() {
         service.discover_models(credential_id).await,
         Err(CodexConnectorError::PluginUnavailable)
     ));
-    let plugins = crate::connector_plugins::test_plugins();
+    let plugins = crate::test_plugins::codex_plugins();
     runtime.replace_snapshot(Arc::new(
         compile_runtime_config(repo.load_runtime().await.unwrap())
             .unwrap()

@@ -1,5 +1,6 @@
 //! Built-in general connector and external connector attempt dispatch.
 
+use ai_gateway_connector_host::{ConnectorPlugins, Plugin};
 use ai_gateway_connector_sdk::{ConnectorProtocol, ResponseMode};
 use axum::http::{HeaderMap, HeaderValue, Uri, header::AUTHORIZATION};
 use bytes::Bytes;
@@ -7,7 +8,6 @@ use reqwest::{StatusCode, Url};
 use serde_json::{Value, json};
 use std::sync::{Arc, OnceLock};
 
-use crate::connector_plugins::{ConnectorPlugins, Plugin};
 use crate::domain::{ApiOperation, CompiledChannel, ConnectorKind, RequestProtocol, UpstreamAuth};
 
 use super::codex::{
@@ -652,7 +652,7 @@ pub(crate) mod tests {
     #[cfg(target_os = "linux")]
     fn fixture(
         empty_commands: bool,
-    ) -> Result<ConnectorPlugins, crate::connector_plugins::PluginError> {
+    ) -> Result<ConnectorPlugins, ai_gateway_connector_host::PluginError> {
         fixture_with_mode(empty_commands, 0)
     }
 
@@ -660,7 +660,7 @@ pub(crate) mod tests {
     pub(crate) fn fixture_with_mode(
         empty_commands: bool,
         body_mode: u8,
-    ) -> Result<ConnectorPlugins, crate::connector_plugins::PluginError> {
+    ) -> Result<ConnectorPlugins, ai_gateway_connector_host::PluginError> {
         use sha2::{Digest, Sha256};
         use std::path::PathBuf;
 
@@ -687,7 +687,7 @@ pub(crate) mod tests {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect();
-        ConnectorPlugins::load(&[crate::connector_plugins::PluginConfig {
+        ConnectorPlugins::load(&[ai_gateway_connector_host::PluginConfig {
             id: "fixture".into(),
             path,
             sha256,
@@ -849,7 +849,7 @@ pub(crate) mod tests {
         );
         assert!(matches!(
             fixture(true),
-            Err(crate::connector_plugins::PluginError::Manifest)
+            Err(ai_gateway_connector_host::PluginError::Manifest)
         ));
         for invalid in [
             "https://attacker.test/base/responses",

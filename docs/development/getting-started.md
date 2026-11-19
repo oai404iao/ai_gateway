@@ -70,6 +70,7 @@ cargo run
 | `src/upstream/`、`src/transforms/` | 复用传输客户端与受限变换 |
 | `src/workers/` | 重载、spool 入口、投影和结算 |
 | `crates/connector-sdk/` | 原生连接器 ABI、命令和示例 |
+| `crates/connector-host/` | 制品校验、原生加载和代际管理，不依赖网关业务代码 |
 | `web/console/` | React SPA、生成 API 类型、组件和浏览器测试 |
 | `tests/`、[`e2e/`](../../e2e/README.md)、[`mock/`](../../mock/README.md) | 集成测试、系统验收与共享协议场景 |
 | `tools/forwarding-perf/` | 不链接到生产二进制的手动性能工具 |

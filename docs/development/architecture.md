@@ -199,7 +199,7 @@ OpenAI-compatible edit 直接回放，或在模型别名存在时使用原 bound
 最新有效范围，避免在轮换或改绑期间借出的旧连接重新入池。
 
 `src/application/connector.rs` 统一分派内置 `general` 和通过 C ABI 加载的外部连接器。
-`src/connector_plugins.rs` 负责摘要、ABI、权限和生命周期检查，
+[`crates/connector-host`](../../crates/connector-host/) 负责摘要、ABI、权限和生命周期检查，
 公开 SDK 位于 `crates/connector-sdk`。代理主循环只调用统一的
 prepare、body adaptation、URL、Header injection、pre-header retry capability 和 response
 observation 接口，不包含 provider 的 OAuth claim、路径或 Header 细节。

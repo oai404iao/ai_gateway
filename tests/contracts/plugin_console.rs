@@ -1,7 +1,7 @@
 //! Native plugin administration must remain generic, versioned and reauthorized.
 
 use super::*;
-use ai_gateway::connector_plugins::{DirectoryPluginCatalog, Plugin};
+use ai_gateway_connector_host::{DirectoryPluginCatalog, Plugin};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{os::unix::fs::PermissionsExt, path::Path, process::Command, time::Duration};

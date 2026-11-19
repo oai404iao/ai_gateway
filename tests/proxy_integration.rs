@@ -661,7 +661,7 @@ struct TransformDocuments {
     responses_search_supported: bool,
     responses_transports: Vec<ai_gateway::domain::CapabilityTransport>,
     responses_request_compression: &'static str,
-    responses_plugin: Option<ai_gateway::connector_plugins::ConnectorPlugins>,
+    responses_plugin: Option<ai_gateway_connector_host::ConnectorPlugins>,
     images_override: Value,
     upstream_auth_kind: &'static str,
     upstream_auth_header_name: Option<&'static str>,
@@ -3306,8 +3306,8 @@ async fn responses_nonstream_usage_is_collected_without_buffering_the_response()
 fn response_fixture_plugin(
     target: &str,
     result_mode: u8,
-) -> ai_gateway::connector_plugins::ConnectorPlugins {
-    use ai_gateway::connector_plugins::{ConnectorPlugins, PluginConfig};
+) -> ai_gateway_connector_host::ConnectorPlugins {
+    use ai_gateway_connector_host::{ConnectorPlugins, PluginConfig};
     use sha2::{Digest, Sha256};
     use std::{os::unix::fs::PermissionsExt, path::PathBuf, process::Command};
 

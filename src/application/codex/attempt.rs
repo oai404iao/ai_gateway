@@ -2,16 +2,14 @@
 
 use std::sync::Arc;
 
+use ai_gateway_connector_host::{Plugin, PluginError};
 use axum::http::{HeaderMap, Uri};
 use bytes::Bytes;
 use reqwest::Url;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::{
-    connector_plugins::Plugin,
-    domain::{ApiOperation, CompiledChannel, RequestProtocol},
-};
+use crate::domain::{ApiOperation, CompiledChannel, RequestProtocol};
 
 use super::{CodexCredentialRuntime, CodexCredentialUnavailable, CompiledCodexCredential};
 
@@ -164,7 +162,7 @@ impl PreparedCodexAttempt {
     }
 }
 
-fn plugin_error(error: crate::connector_plugins::PluginError) -> CodexAttemptError {
+fn plugin_error(error: PluginError) -> CodexAttemptError {
     match error.code() {
         Some("streaming_required") => CodexAttemptError::StreamingRequired,
         Some("search_streaming_unsupported") => CodexAttemptError::SearchStreamingUnsupported,

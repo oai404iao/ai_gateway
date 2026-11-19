@@ -6,7 +6,7 @@ use ai_gateway_connector_sdk::{
 };
 use serde_json::json;
 
-use super::*;
+use crate::*;
 
 pub(super) fn descriptor_cache(
     manifest: &PluginManifest,

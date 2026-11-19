@@ -9,6 +9,7 @@
 use std::io::{self, Write};
 use std::sync::Arc;
 
+use ai_gateway_connector_host::Plugin;
 use ai_gateway_connector_sdk::{
     CanonicalUsage, MAX_USAGE_BYTES, USAGE_PARSE, UsageDescriptor, UsageFormat, UsageParseInput,
     UsageParseOutput, parse_general_usage,
@@ -17,7 +18,6 @@ use axum::body::Bytes;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::connector_plugins::Plugin;
 use crate::domain::{ApiFormat, ApiOperation};
 
 const MAX_USAGE_OBJECT_BYTES: usize = 64 * 1_024;
@@ -1681,7 +1681,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":11
         output_body: bool,
     ) -> (
         tempfile::TempDir,
-        std::sync::Arc<crate::connector_plugins::Plugin>,
+        std::sync::Arc<ai_gateway_connector_host::Plugin>,
     ) {
         use sha2::{Digest, Sha256};
         use std::os::unix::fs::PermissionsExt;
@@ -1721,7 +1721,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":11
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
-        let plugin = crate::connector_plugins::Plugin::load(&path, &digest, "fixture").unwrap();
+        let plugin = ai_gateway_connector_host::Plugin::load(&path, &digest, "fixture").unwrap();
         (directory, plugin)
     }
 

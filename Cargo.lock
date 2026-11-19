@@ -32,6 +32,7 @@ dependencies = [
 name = "ai-gateway"
 version = "0.12.0"
 dependencies = [
+ "ai-gateway-connector-host",
  "ai-gateway-connector-sdk",
  "arc-swap",
  "argon2",
@@ -51,7 +52,6 @@ dependencies = [
  "jsonptr",
  "jsonwebtoken",
  "libc",
- "libloading",
  "libsqlite3-sys",
  "md-5 0.10.6",
  "mime_guess",
@@ -91,6 +91,26 @@ dependencies = [
  "webpki-roots 1.0.9",
  "zeroize",
  "zstd",
+]
+
+[[package]]
+name = "ai-gateway-connector-host"
+version = "0.1.0"
+dependencies = [
+ "ai-gateway-connector-sdk",
+ "flate2",
+ "fs2",
+ "libc",
+ "libloading",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tracing",
+ "uuid",
+ "zeroize",
 ]
 
 [[package]]

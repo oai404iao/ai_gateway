@@ -1,9 +1,8 @@
 //! Host-owned execution, resource limits, and OAuth state for connector protocol calls.
 use super::CodexConnectorError;
-use crate::{
-    connector_plugins::Plugin,
-    persistence::{CodexQuotaResetOutcome, CodexQuotaUpdate},
-};
+use crate::persistence::{CodexQuotaResetOutcome, CodexQuotaUpdate};
+use ai_gateway_connector_host::Plugin;
+use ai_gateway_connector_sdk::PluginManifest;
 use base64::Engine;
 use bytes::{Bytes, BytesMut};
 use chrono::{DateTime, Utc};
@@ -45,9 +44,7 @@ const CONTROL_PLANE_COMMANDS: &[&str] = &[
     "quota_reset_parse",
 ];
 
-pub fn validate_plugin_manifest(
-    manifest: &crate::connector_plugins::PluginManifest,
-) -> Result<(), CodexConnectorError> {
+pub fn validate_plugin_manifest(manifest: &PluginManifest) -> Result<(), CodexConnectorError> {
     if manifest.id != "codex"
         || CONTROL_PLANE_COMMANDS
             .iter()
@@ -601,7 +598,7 @@ mod tests {
     use tokio::net::TcpListener;
 
     fn test_plugin() -> Arc<Plugin> {
-        crate::connector_plugins::test_plugins()
+        crate::test_plugins::codex_plugins()
             .get("codex")
             .expect("Codex test plugin must be configured")
     }

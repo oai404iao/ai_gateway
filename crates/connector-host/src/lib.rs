@@ -14,9 +14,8 @@ use std::{
 use ai_gateway_connector_sdk::{
     ABI_VERSION, ByteSlice, CallOutput, DispatchFn, FreeFn, MAX_BODY_BYTES, MAX_COMMAND_BYTES,
     MAX_MANIFEST_BYTES, MAX_METADATA_BYTES, OwnedBuffer, PluginCallError, PluginDescriptor,
-    STATUS_ERROR, STATUS_OK,
+    PluginManifest, PluginOutput, STATUS_ERROR, STATUS_OK,
 };
-pub use ai_gateway_connector_sdk::{PluginManifest, PluginOutput};
 use serde::Deserialize;
 use serde_json::Value;
 use thiserror::Error;
@@ -271,41 +270,6 @@ impl ConnectorPlugins {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn test_plugins() -> ConnectorPlugins {
-    use sha2::{Digest, Sha256};
-    use std::sync::OnceLock;
-
-    static PLUGINS: OnceLock<ConnectorPlugins> = OnceLock::new();
-    PLUGINS
-        .get_or_init(|| {
-            let path = PathBuf::from(
-                std::env::var_os("AI_GATEWAY_TEST_CODEX_PLUGIN")
-                    .expect("run scripts/prepare-connector-tests.sh and export its plugin path"),
-            );
-            let sha256 = Sha256::digest(std::fs::read(&path).unwrap())
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect();
-            let loaded = ConnectorPlugins::load(&[PluginConfig {
-                id: "codex".into(),
-                path,
-                sha256,
-            }])
-            .expect("the test Codex plugin must satisfy the production loader contract");
-            let plugin = loaded.get("codex").unwrap();
-            let descriptor = plugin
-                .settings_descriptor()
-                .expect("test settings descriptor")
-                .expect("Codex owns settings");
-            ConnectorPlugins::from_plugins([plugin
-                .configured(&descriptor.default_document(), 1)
-                .expect("test plugin defaults compile")])
-            .unwrap()
-        })
-        .clone()
-}
-
 fn validate_id(id: &str) -> Result<(), PluginError> {
     if id.is_empty()
         || id.len() > 64
@@ -320,7 +284,7 @@ fn validate_id(id: &str) -> Result<(), PluginError> {
     Ok(())
 }
 
-pub(crate) fn validate_hash(hash: &str) -> Result<(), PluginError> {
+pub fn validate_hash(hash: &str) -> Result<(), PluginError> {
     if hash.len() != 64
         || !hash
             .bytes()

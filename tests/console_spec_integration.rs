@@ -298,7 +298,7 @@ async fn app_with_proxy_test_endpoint(
 async fn app_with_options(
     pool: PgPool,
     proxy_test_endpoint: Option<reqwest::Url>,
-    catalog: Option<Arc<ai_gateway::connector_plugins::DirectoryPluginCatalog>>,
+    catalog: Option<Arc<ai_gateway_connector_host::DirectoryPluginCatalog>>,
 ) -> App {
     let user_id = Uuid::new_v4();
     let password_hash = hash_console_password(test_password().to_owned())

@@ -73,6 +73,14 @@ jobs:
           printf 'AI_GATEWAY_TEST_CODEX_PLUGIN=%s\n' "$plugin" >> "$GITHUB_ENV"
       - run: cargo clippy --locked --workspace --all-targets
       - run: cargo test --locked --workspace
+      - name: Test forwarding contract against pinned Codex protocol 3
+        shell: bash
+        run: |
+          plugin="$(scripts/prepare-connector-tests.sh --protocol-3)"
+          contract=codex_connector_forwards_responses_and_images_with_shared_credentials
+          AI_GATEWAY_TEST_CODEX_PLUGIN="$plugin" cargo test --locked --test control_plane_integration \
+            "$contract" -- --exact --format pretty | tee "$RUNNER_TEMP/codex-contract.log"
+          grep -Fx "test $contract ... ok" "$RUNNER_TEMP/codex-contract.log"
       - run: cargo clippy --locked --workspace --all-targets --features sqlite-backend
       - run: cargo test --locked --features sqlite-backend --test sqlite_foundation
       - run: cargo test --locked --features sqlite-backend --lib persistence::sqlite
