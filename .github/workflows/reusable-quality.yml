@@ -38,8 +38,13 @@ jobs:
 
   rust:
     if: ${{ inputs.run_rust }}
+    name: rust (${{ matrix.features || 'default' }})
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        features: ['', 'sqlite-backend']
     services:
       postgres:
         image: postgres:18.4-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
@@ -56,6 +61,7 @@ jobs:
           --health-retries 20
     env:
       TEST_DATABASE_ADMIN_URL: postgres://ai_gateway:ci-test-password@127.0.0.1:5432/postgres
+      FEATURES: ${{ matrix.features }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
@@ -64,16 +70,18 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          shared-key: stable
+          shared-key: ${{ matrix.features || 'stable' }}
           save-if: ${{ inputs.save_cache }}
-      - run: cargo fmt --check
+      - if: ${{ matrix.features == '' }}
+        run: cargo fmt --check
       - name: Prepare pinned external Codex test plugin
         run: |
           plugin="$(scripts/prepare-connector-tests.sh)"
           printf 'AI_GATEWAY_TEST_CODEX_PLUGIN=%s\n' "$plugin" >> "$GITHUB_ENV"
-      - run: cargo clippy --locked --workspace --all-targets
-      - run: cargo test --locked --workspace
+      - run: cargo clippy --locked --workspace --all-targets --features "$FEATURES"
+      - run: cargo test --locked --workspace --features "$FEATURES"
       - name: Test forwarding contract against pinned Codex protocol 3
+        if: ${{ matrix.features == '' }}
         shell: bash
         run: |
           plugin="$(scripts/prepare-connector-tests.sh --protocol-3)"
@@ -81,12 +89,6 @@ jobs:
           AI_GATEWAY_TEST_CODEX_PLUGIN="$plugin" cargo test --locked --test control_plane_integration \
             "$contract" -- --exact --format pretty | tee "$RUNNER_TEMP/codex-contract.log"
           grep -Fx "test $contract ... ok" "$RUNNER_TEMP/codex-contract.log"
-      - run: cargo clippy --locked --workspace --all-targets --features sqlite-backend
-      - run: cargo test --locked --features sqlite-backend --test sqlite_foundation
-      - run: cargo test --locked --features sqlite-backend --lib persistence::sqlite
-      - run: cargo test --locked --features sqlite-backend --lib application::codex::sqlite_tests
-      - run: cargo test --locked --features sqlite-backend --test sqlite_cli
-      - run: cargo test --locked --features sqlite-backend --test control_plane_integration sqlite_
 
   console:
     if: ${{ inputs.run_console }}
