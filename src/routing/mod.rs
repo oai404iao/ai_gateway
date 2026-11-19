@@ -810,36 +810,32 @@ impl RoutingRuntime {
                 && !excluded_candidate_slots.contains(&candidate.candidate_slot())
                 && usable(&self.inner, &ChannelIdentity::from_channel(channel), now)
         };
-        let mut preferred = None;
-        for tier in rule.tiers() {
-            if !tier.candidates().iter().any(&eligible) {
-                continue;
-            }
-            preferred = affinity
+        let tier = rule
+            .tiers()
+            .iter()
+            .find(|tier| tier.candidates().iter().any(&eligible))?;
+        let candidate = if let Some(upstream_model) = preferred_upstream_model {
+            tier.candidates().iter().find(|candidate| {
+                candidate.channel().id() == preferred_channel_id
+                    && candidate.upstream_model().as_ref() == upstream_model
+                    && eligible(candidate)
+            })
+        } else {
+            affinity
                 .as_ref()
                 .and_then(|affinity| affinity.preferred_candidate.as_ref())
                 .and_then(|identity| {
                     tier.candidates()
                         .iter()
                         .find(|candidate| identity.matches(candidate) && eligible(candidate))
-                });
-            if preferred.is_none() {
-                preferred = if let Some(upstream_model) = preferred_upstream_model {
-                    tier.candidates().iter().find(|candidate| {
-                        candidate.channel().id() == preferred_channel_id
-                            && candidate.upstream_model().as_ref() == upstream_model
-                            && eligible(candidate)
-                    })
-                } else {
+                })
+                .or_else(|| {
                     let mut candidates = tier.candidates().iter().filter(|candidate| {
                         candidate.channel().id() == preferred_channel_id && eligible(candidate)
                     });
                     candidates.next().filter(|_| candidates.next().is_none())
-                };
-            }
-            break;
-        }
-        let candidate = preferred?;
+                })
+        }?;
         let candidate_slot = candidate.candidate_slot();
         let channel_slot = candidate.channel_slot();
         let channel = Arc::clone(candidate.channel());
@@ -854,6 +850,12 @@ impl RoutingRuntime {
             .as_ref()
             .and_then(|affinity| affinity.preferred_candidate.as_ref())
             == Some(&candidate_identity);
+        // A continuation on its origin socket must not evict or rebind a different session route.
+        let affinity = affinity.filter(|affinity| {
+            preferred_upstream_model.is_none()
+                || affinity.preferred_candidate.is_none()
+                || cache_hit
+        });
         let affinity_binding = affinity.as_ref().map(|affinity| AffinityBinding {
             key: affinity.key,
             ttl: affinity.ttl,

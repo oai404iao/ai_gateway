@@ -1149,8 +1149,8 @@ async fn upstream(State(state): State<UpstreamState>) -> Response {
     }
 }
 
-async fn models_dev_catalog() -> axum::Json<serde_json::Value> {
-    axum::Json(serde_json::json!({
+fn models_dev_catalog() -> serde_json::Value {
+    serde_json::json!({
         "provider-a": {
             "id": "provider-a",
             "name": "Provider A",
@@ -1197,7 +1197,7 @@ async fn models_dev_catalog() -> axum::Json<serde_json::Value> {
                 }
             }
         }
-    }))
+    })
 }
 
 #[derive(FromRow)]
@@ -6741,8 +6741,15 @@ async fn managed_models_are_versioned_and_disabling_hides_attached_routes() {
 async fn models_dev_catalog_apply_is_explicit_and_updates_selected_existing_prices() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
-    let catalog_server =
-        start_server(Router::new().route("/api.json", get(models_dev_catalog))).await;
+    let catalog = Arc::new(Mutex::new(models_dev_catalog()));
+    let catalog_server = start_server(Router::new().route(
+        "/api.json",
+        get({
+            let catalog = catalog.clone();
+            move || async move { axum::Json(catalog.lock().unwrap().clone()) }
+        }),
+    ))
+    .await;
     let models_dev = ModelsDevClient::new(&ModelsSyncConfig {
         api_url: format!("http://{}/api.json", catalog_server.address),
         request_timeout_seconds: 1,
@@ -6785,6 +6792,40 @@ async fn models_dev_catalog_apply_is_explicit_and_updates_selected_existing_pric
     );
     assert_eq!(preview["excluded_missing_prices"], 1);
     assert!(preview["models"][0].get("source_payload").is_none());
+    let selection = |preview: &serde_json::Value| {
+        serde_json::json!({
+            "selections":[{"provider_id":"provider-a","model_id":"catalog-model","preview_token":preview["models"][0]["preview_token"]}]
+        })
+    };
+    let reviewed = selection(&preview);
+    let original = catalog.lock().unwrap().clone();
+    catalog.lock().unwrap()["provider-a"]["models"]["catalog-model"]["cost"]["tiers"][0]["input"] =
+        serde_json::json!(20);
+    assert_eq!(
+        admin_request(
+            app.clone(),
+            "POST",
+            "/console/v1/catalog/models/import",
+            reviewed.clone()
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    catalog.lock().unwrap()["provider-a"]["models"]["catalog-model"]["cost"] =
+        serde_json::Value::Null;
+    assert_eq!(
+        admin_request(
+            app.clone(),
+            "POST",
+            "/console/v1/catalog/models/import",
+            reviewed.clone()
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    *catalog.lock().unwrap() = original;
 
     let removed_sync = admin_request(
         app.clone(),
@@ -6808,9 +6849,7 @@ async fn models_dev_catalog_apply_is_explicit_and_updates_selected_existing_pric
         app.clone(),
         "POST",
         "/console/v1/catalog/models/import",
-        serde_json::json!({
-            "selections":[{"provider_id":"provider-a","model_id":"catalog-model"}]
-        }),
+        reviewed.clone(),
     )
     .await;
     assert_eq!(imported.status(), StatusCode::OK);
@@ -6819,6 +6858,17 @@ async fn models_dev_catalog_apply_is_explicit_and_updates_selected_existing_pric
     assert_eq!(imported["model_count"], 1);
     assert_eq!(imported["imported_count"], 1);
     assert_eq!(imported["updated_count"], 0);
+    assert_eq!(
+        admin_request(
+            app.clone(),
+            "POST",
+            "/console/v1/catalog/models/import",
+            reviewed
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
 
     let persisted: (
         String,
@@ -6927,6 +6977,17 @@ async fn models_dev_catalog_apply_is_explicit_and_updates_selected_existing_pric
     .execute(&database.pool)
     .await
     .unwrap();
+    assert_eq!(
+        admin_request(
+            app.clone(),
+            "POST",
+            "/console/v1/catalog/models/import",
+            selection(&preview)
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
     let removed_sync = admin_request(
         app.clone(),
         "POST",
@@ -6949,13 +7010,20 @@ async fn models_dev_catalog_apply_is_explicit_and_updates_selected_existing_pric
         )
     );
 
+    let preview = admin_request(
+        app.clone(),
+        "POST",
+        "/console/v1/catalog/models/sync/preview",
+        serde_json::json!({"provider_ids":["provider-a"]}),
+    )
+    .await;
+    let preview: serde_json::Value =
+        serde_json::from_slice(&preview.into_body().collect().await.unwrap().to_bytes()).unwrap();
     let updated = admin_request(
         app.clone(),
         "POST",
         "/console/v1/catalog/models/import",
-        serde_json::json!({
-            "selections":[{"provider_id":"provider-a","model_id":"catalog-model"}]
-        }),
+        selection(&preview),
     )
     .await;
     assert_eq!(updated.status(), StatusCode::OK);
@@ -7006,19 +7074,16 @@ async fn models_dev_catalog_apply_is_explicit_and_updates_selected_existing_pric
         })
     );
 
-    let missing_price_import = admin_request(
+    let missing_token = admin_request(
         app.clone(),
         "POST",
         "/console/v1/catalog/models/import",
         serde_json::json!({
-            "selections":[{"provider_id":"provider-a","model_id":"missing-price"}]
+            "selections":[{"provider_id":"provider-a","model_id":"catalog-model"}]
         }),
     )
     .await;
-    assert_eq!(
-        missing_price_import.status(),
-        StatusCode::UNPROCESSABLE_ENTITY
-    );
+    assert_eq!(missing_token.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let price_sync_audits: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM audit_logs WHERE object_type='model' AND action='price_sync'",
     )
@@ -7061,9 +7126,7 @@ async fn models_dev_catalog_apply_is_explicit_and_updates_selected_existing_pric
         app,
         "POST",
         "/console/v1/catalog/models/import",
-        serde_json::json!({
-            "selections":[{"provider_id":"provider-a","model_id":"catalog-model"}]
-        }),
+        selection(&preview),
     )
     .await;
     assert_eq!(reimported.status(), StatusCode::OK);

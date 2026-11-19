@@ -605,7 +605,8 @@ impl ResponsesWebSocketSession {
                     } = route;
                     let request_multiplier =
                         request_billing_multiplier(rule.advanced_billing(), &original_body);
-                    completion.replace_route_before_dispatch(
+                    completion.retry_with_route(
+                        error.code(),
                         &rule,
                         &channel,
                         &upstream_model,
@@ -666,6 +667,7 @@ impl ResponsesWebSocketSession {
                 return reject_previous_response_not_found(client, &mut completion).await;
             }
 
+            completion.begin_websocket_setup();
             if pinned.is_none() {
                 if let Some(connection) =
                     self.proxy.upstream_clients.acquire_websocket(&prepared.key)
@@ -729,6 +731,7 @@ impl ResponsesWebSocketSession {
                             let request_multiplier =
                                 request_billing_multiplier(rule.advanced_billing(), &original_body);
                             completion.retry_with_route(
+                                connection_failure_code(error),
                                 &rule,
                                 &channel,
                                 &upstream_model,
@@ -737,16 +740,6 @@ impl ResponsesWebSocketSession {
                                 snapshot.system_settings().automatic_disable().clone(),
                                 session_affinity.as_ref(),
                                 request_multiplier,
-                            );
-                            tracing::warn!(
-                                event = "proxy_websocket_retry",
-                                api_key_id = %api_key.id(),
-                                client_model = %parsed.model,
-                                failed_channel_id = %current_channel.id(),
-                                next_channel_id = %channel.id(),
-                                attempt = attempt.saturating_add(1),
-                                max_retries,
-                                "retrying Responses WebSocket setup on another route candidate"
                             );
                             current_channel = channel;
                             current_candidate_slot = candidate_slot;
@@ -799,6 +792,7 @@ impl ResponsesWebSocketSession {
                 return reject_previous_response_not_found(client, &mut completion).await;
             }
             completion.set_upstream_status(200);
+            completion.begin_dispatch();
             match tokio::time::timeout(
                 prepared.policy.timeouts().stream_idle(),
                 active.connection.send(UpstreamMessage::Text(request)),

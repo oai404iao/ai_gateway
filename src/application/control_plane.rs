@@ -15,8 +15,8 @@ use crate::{
         ApiHostsView, ChannelBatchUpdateInput, CodexCredentialBatchInput, CodexCredentialCreate,
         CodexCredentialUpdateInput, ConsoleApiKey, ConsoleAuditLog,
         ControlPlaneConfigTemplateDetail, ControlPlaneLists, ControlPlaneMutation,
-        ControlPlaneRepository, MutationResult, PreparedControlPlaneChange, RepositoryError,
-        SelfApiKeyCreate, SelfApiKeyOptions, SelfApiKeyUpdate, SyncedModelInput,
+        ControlPlaneRepository, ModelSourceVersions, MutationResult, PreparedControlPlaneChange,
+        RepositoryError, SelfApiKeyCreate, SelfApiKeyOptions, SelfApiKeyUpdate, SyncedModelInput,
         SystemSettingsView, UserBatchUpdateInput, UserSettingsInput, UserSettingsView,
     },
     routing::{
@@ -435,8 +435,8 @@ impl ControlPlaneCoordinator {
         self.commit_mutation(change).await
     }
 
-    pub async fn model_source_ids(&self) -> Result<Vec<String>, ControlPlaneError> {
-        Ok(self.repository.model_source_ids().await?)
+    pub async fn model_source_versions(&self) -> Result<ModelSourceVersions, ControlPlaneError> {
+        Ok(self.repository.model_source_versions().await?)
     }
 
     /// Applies a bounded, already validated external catalog selection and

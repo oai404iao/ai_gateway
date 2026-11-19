@@ -678,6 +678,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** @description Applies all selections atomically. If a selected catalog offer or its local model has changed since preview (including creation or deletion), no selections are applied. Fetch and review a fresh preview before retrying. */
         post: operations["applyCatalogModels"];
         delete?: never;
         options?: never;
@@ -3282,6 +3283,8 @@ export interface components {
             excluded_invalid_models: number;
             excluded_oversized_metadata: number;
         };
+        /** @description Opaque version token. Return the token from the selected preview row unchanged. */
+        ModelSyncPreviewToken: string;
         ModelSyncPreviewModel: {
             provider_id: string;
             provider_name: string;
@@ -3293,6 +3296,7 @@ export interface components {
             output_unit_price: components["schemas"]["Decimal"];
             advanced_billing: components["schemas"]["AdvancedBilling"];
             action: components["schemas"]["ModelSyncAction"];
+            preview_token: components["schemas"]["ModelSyncPreviewToken"];
         };
         ModelImportResponse: {
             model_count: number;
@@ -3690,6 +3694,7 @@ export interface components {
         ModelSyncSelection: {
             provider_id: string;
             model_id: string;
+            preview_token: components["schemas"]["ModelSyncPreviewToken"];
         };
         ListQuery: {
             limit?: number;
@@ -5382,6 +5387,7 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
             422: components["responses"]["Unprocessable"];
             502: components["responses"]["BadGateway"];
         };

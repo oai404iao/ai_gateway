@@ -23,6 +23,7 @@ use crate::{
         DEFAULT_STANDALONE_WEB_SEARCH_RESPONSE_HEADER_TIMEOUT_SECONDS, MAX_REQUEST_RETRIES,
         RequestLogEvent,
     },
+    models_dev::ModelsDevModel,
     request_log_journal::EncodedRequestLog,
 };
 
@@ -817,19 +818,24 @@ pub struct ModelInput {
     #[serde(default)]
     pub source_payload: Option<Value>,
 }
-/// A fully validated, price-bearing models.dev catalog entry selected by an
-/// administrator. Unlike `ModelInput`, this is not decoded from an HTTP request.
+pub type ModelSourceVersions = BTreeMap<String, (Uuid, DateTime<Utc>)>;
+
 #[derive(Clone)]
 pub struct SyncedModelInput {
-    pub source_model_id: String,
-    pub display_name: String,
-    pub provider_name: String,
-    pub input_unit_price: rust_decimal::Decimal,
-    pub cached_input_unit_price: rust_decimal::Decimal,
-    pub cache_write_unit_price: rust_decimal::Decimal,
-    pub output_unit_price: rust_decimal::Decimal,
-    pub advanced_billing: crate::domain::AdvancedBilling,
-    pub source_payload: Value,
+    pub model: ModelsDevModel,
+    pub preview_token: String,
+}
+
+impl SyncedModelInput {
+    pub(crate) fn into_reviewed_model(
+        self,
+        local: Option<(Uuid, DateTime<Utc>)>,
+    ) -> Result<ModelsDevModel, RepositoryError> {
+        if self.model.preview_token(local) != self.preview_token {
+            return Err(RepositoryError::Conflict);
+        }
+        Ok(self.model)
+    }
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -5529,14 +5535,16 @@ impl PostgresControlPlaneRepository {
         }
     }
 
-    pub async fn model_source_ids(&self) -> Result<Vec<String>, RepositoryError> {
-        sqlx::query_scalar(
-            "SELECT source_model_id FROM models \
-             WHERE deleted_at IS NULL ORDER BY source_model_id",
+    pub async fn model_source_versions(&self) -> Result<ModelSourceVersions, RepositoryError> {
+        let rows = sqlx::query_as::<_, (String, Uuid, DateTime<Utc>)>(
+            "SELECT source_model_id,id,updated_at FROM models WHERE deleted_at IS NULL",
         )
         .fetch_all(&self.pool)
-        .await
-        .map_err(RepositoryError::from)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(source, id, updated_at)| (source, (id, updated_at)))
+            .collect())
     }
 
     /// Applies explicitly selected catalog entries. Existing source-model IDs
@@ -5549,16 +5557,17 @@ impl PostgresControlPlaneRepository {
         let synced_at = Utc::now();
         let mut results = Vec::with_capacity(inputs.len());
         for input in inputs {
-            let existing_id = sqlx::query_scalar::<_, Uuid>(
-                "SELECT id FROM models \
+            let local = sqlx::query_as::<_, (Uuid, DateTime<Utc>)>(
+                "SELECT id,updated_at FROM models \
                  WHERE source_model_id=$1 AND deleted_at IS NULL FOR UPDATE",
             )
-            .bind(&input.source_model_id)
+            .bind(&input.model.model_id)
             .fetch_optional(&mut **transaction)
             .await?;
-            results.push(match existing_id {
-                Some(id) => sync_model_price(transaction, id, input, synced_at).await?,
-                None => import_model(transaction, input, synced_at).await?,
+            let model = input.into_reviewed_model(local)?;
+            results.push(match local {
+                Some((id, _)) => sync_model_price(transaction, id, model, synced_at).await?,
+                None => import_model(transaction, model, synced_at).await?,
             });
         }
         Ok(results)
@@ -6846,7 +6855,7 @@ async fn model_soft_delete(
 
 async fn import_model(
     transaction: &mut Transaction<'_, Postgres>,
-    input: SyncedModelInput,
+    input: ModelsDevModel,
     synced_at: DateTime<Utc>,
 ) -> Result<MutationResult, RepositoryError> {
     if input.source_payload.as_object().is_none() {
@@ -6855,9 +6864,9 @@ async fn import_model(
     let id = Uuid::new_v4();
     let advanced_billing =
         serde_json::to_value(&input.advanced_billing).expect("advanced billing serializes");
-    let updated_at = sqlx::query_scalar("INSERT INTO models (id,source_model_id,display_name,provider_name,enabled,currency,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,advanced_billing,source_payload,last_synced_at) VALUES ($1,$2,$3,$4,true,'USD',1000000,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING updated_at")
+    let updated_at = sqlx::query_scalar("INSERT INTO models (id,source_model_id,display_name,provider_name,enabled,currency,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,advanced_billing,source_payload,last_synced_at) VALUES ($1,$2,$3,$4,true,'USD',1000000,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (source_model_id) WHERE deleted_at IS NULL DO NOTHING RETURNING updated_at")
         .bind(id)
-        .bind(&input.source_model_id)
+        .bind(&input.model_id)
         .bind(&input.display_name)
         .bind(&input.provider_name)
         .bind(input.input_unit_price)
@@ -6868,8 +6877,9 @@ async fn import_model(
         .bind(&advanced_billing)
         .bind(&input.source_payload)
         .bind(synced_at)
-        .fetch_one(&mut **transaction)
-        .await?;
+        .fetch_optional(&mut **transaction)
+        .await?
+        .ok_or(RepositoryError::Conflict)?;
     Ok(MutationResult {
         id,
         object_type: "model",
@@ -6889,7 +6899,7 @@ async fn import_model(
 async fn sync_model_price(
     transaction: &mut Transaction<'_, Postgres>,
     id: Uuid,
-    input: SyncedModelInput,
+    input: ModelsDevModel,
     synced_at: DateTime<Utc>,
 ) -> Result<MutationResult, RepositoryError> {
     if input.source_payload.as_object().is_none() {
@@ -6902,7 +6912,7 @@ async fn sync_model_price(
          FOR UPDATE",
     )
     .bind(id)
-    .bind(&input.source_model_id)
+    .bind(&input.model_id)
     .fetch_optional(&mut **transaction)
     .await?
     .ok_or(RepositoryError::Conflict)?;
@@ -6925,7 +6935,7 @@ async fn sync_model_price(
          RETURNING updated_at",
     )
     .bind(id)
-    .bind(&input.source_model_id)
+    .bind(&input.model_id)
     .bind(input.input_unit_price)
     .bind(input.cached_input_unit_price)
     .bind(input.cache_write_unit_price)

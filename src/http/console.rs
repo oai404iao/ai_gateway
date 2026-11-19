@@ -4,7 +4,7 @@ mod plugins;
 
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Extension, Path, Query, Request, State},
+    extract::{DefaultBodyLimit, Extension, Path, Query, Request, State, rejection::JsonRejection},
     http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -1561,15 +1561,21 @@ async fn preview_models_sync(
 async fn import_models(
     State(state): State<ConsoleState>,
     Extension(principal): Extension<ConsolePrincipal>,
-    Json(input): Json<ModelImportRequest>,
-) -> Result<Json<ModelSyncResponse>, ConsoleError> {
+    input: Result<Json<ModelImportRequest>, JsonRejection>,
+) -> Result<Response, ConsoleError> {
+    let Json(input) = match input {
+        Ok(input) => input,
+        Err(JsonRejection::JsonDataError(_)) => return Err(ModelSyncError::InvalidSelection.into()),
+        Err(other) => return Ok(other.into_response()),
+    };
     let result = state.model_sync.apply(principal.user_id(), input).await?;
     Ok(Json(ModelSyncResponse {
         model_count: result.model_count,
         imported_count: result.imported_count,
         updated_count: result.updated_count,
         correlation_id: result.correlation_id,
-    }))
+    })
+    .into_response())
 }
 
 async fn get_model(
@@ -2995,11 +3001,13 @@ impl IntoResponse for ConsoleError {
                 control_plane_status(&error),
                 control_plane_error_message(&error),
             ),
-            Self::ModelSync(ModelSyncError::InvalidSelection)
-            | Self::ModelSync(ModelSyncError::ConflictingSourceModelId) => (
+            Self::ModelSync(ModelSyncError::InvalidSelection) => (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "Console operation rejected",
             ),
+            Self::ModelSync(ModelSyncError::StalePreview) => {
+                (StatusCode::CONFLICT, "Console operation rejected")
+            }
             Self::ModelSync(ModelSyncError::Catalog(_)) => {
                 (StatusCode::BAD_GATEWAY, "Console operation rejected")
             }

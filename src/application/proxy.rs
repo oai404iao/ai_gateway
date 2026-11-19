@@ -544,7 +544,8 @@ impl ProxyService {
                         rule.advanced_billing(),
                         &original_body,
                     );
-                    completion.replace_route_before_dispatch(
+                    completion.retry_with_route(
+                        error.code(),
                         &rule,
                         &channel,
                         &upstream_model,
@@ -574,6 +575,7 @@ impl ProxyService {
                 )
                 .await
                 .map_err(|error| error.finish(&mut completion))?;
+            completion.begin_dispatch();
             let send_result =
                 match timeout(outbound.timeouts.response_header(), outbound.request.send()).await {
                     Err(_) => Err(PreHeaderFailure::ResponseHeaderTimeout),
@@ -625,16 +627,13 @@ impl ProxyService {
                             session_affinity: selected_session_affinity,
                             lease,
                         } = route;
-                        let failed_channel_id = current_channel.id();
-                        let failed_upstream_model = Arc::clone(&current_upstream_model);
-                        let next_channel_id = channel.id();
-                        let next_upstream_model = Arc::clone(&upstream_model);
                         let request_billing_multiplier = request_billing_multiplier_for_body(
                             rule.advanced_billing(),
                             &original_body,
                         );
                         drop(response);
                         completion.retry_with_route(
+                            "configured_upstream_status",
                             &rule,
                             &channel,
                             &upstream_model,
@@ -649,20 +648,6 @@ impl ProxyService {
                         current_upstream_model = upstream_model;
                         current_session_affinity = selected_session_affinity;
                         attempt = attempt.saturating_add(1);
-                        tracing::warn!(
-                            event = "proxy_request_retry",
-                            api_key_id = %api_key.id(),
-                            client_model = %parsed.model,
-                            failed_channel_id = %failed_channel_id,
-                            failed_upstream_model = %failed_upstream_model,
-                            next_channel_id = %next_channel_id,
-                            next_upstream_model = %next_upstream_model,
-                            status = status.as_u16(),
-                            attempt,
-                            max_retries,
-                            reason = "configured_upstream_status",
-                            "retrying proxy request on another route candidate"
-                        );
                         continue;
                     }
                     response
@@ -697,15 +682,12 @@ impl ProxyService {
                         session_affinity: selected_session_affinity,
                         lease,
                     } = route;
-                    let failed_channel_id = current_channel.id();
-                    let failed_upstream_model = Arc::clone(&current_upstream_model);
-                    let next_channel_id = channel.id();
-                    let next_upstream_model = Arc::clone(&upstream_model);
                     let request_billing_multiplier = request_billing_multiplier_for_body(
                         rule.advanced_billing(),
                         &original_body,
                     );
                     completion.retry_with_route(
+                        failure.error_code(),
                         &rule,
                         &channel,
                         &upstream_model,
@@ -720,19 +702,6 @@ impl ProxyService {
                     current_upstream_model = upstream_model;
                     current_session_affinity = selected_session_affinity;
                     attempt = attempt.saturating_add(1);
-                    tracing::warn!(
-                        event = "proxy_request_retry",
-                        api_key_id = %api_key.id(),
-                        client_model = %parsed.model,
-                        failed_channel_id = %failed_channel_id,
-                        failed_upstream_model = %failed_upstream_model,
-                        next_channel_id = %next_channel_id,
-                        next_upstream_model = %next_upstream_model,
-                        attempt,
-                        max_retries,
-                        reason = failure.error_code(),
-                        "retrying proxy request on another route candidate"
-                    );
                     continue;
                 }
             };
@@ -798,7 +767,7 @@ impl ProxyService {
             error_code: error.code.map(str::to_owned),
             error_summary: error.request_log_details().summary,
         };
-        tracing::info!(event = "proxy_request_completed", api_key_id = %api_key.id(), api_format = ?api_format, outcome = "rejected", "proxy request completed");
+        tracing::info!(event = "proxy_request_completed", request_id = %event.id, api_key_id = %api_key.id(), api_format = ?api_format, dispatch_attempts = 0, outcome = "rejected", "proxy request completed");
         self.request_log_sink.try_record(event);
     }
 
@@ -847,7 +816,7 @@ impl ProxyService {
             error_code: error.code.map(str::to_owned),
             error_summary: error.request_log_details().summary,
         };
-        tracing::info!(event = "proxy_request_completed", api_key_id = %api_key.id(), api_format = ?api_format, outcome = error.code.unwrap_or("unrouted"), "proxy request completed");
+        tracing::info!(event = "proxy_request_completed", request_id = %event.id, api_key_id = %api_key.id(), api_format = ?api_format, dispatch_attempts = 0, outcome = error.code.unwrap_or("unrouted"), "proxy request completed");
         self.request_log_sink.try_record(event);
     }
 
@@ -2614,7 +2583,9 @@ struct CompletionContext {
     session_affinity_rule: Option<Arc<str>>,
     session_affinity_hit: Option<bool>,
     preserve_affinity_on_failure: bool,
-    attempts: u32,
+    candidate_attempt: u32,
+    attempt_phase: &'static str,
+    dispatch_attempts: u32,
     error_details: Option<ResponseErrorDetails>,
 }
 
@@ -2713,7 +2684,9 @@ impl CompletionGuard {
                     .map(|selection| Arc::from(selection.rule_name())),
                 session_affinity_hit: session_affinity.map(SessionAffinitySelection::cache_hit),
                 preserve_affinity_on_failure: false,
-                attempts: 1,
+                candidate_attempt: 1,
+                attempt_phase: "preparation",
+                dispatch_attempts: 0,
                 error_details: None,
             }),
             lease: Some(lease),
@@ -2729,6 +2702,7 @@ impl CompletionGuard {
     #[allow(clippy::too_many_arguments)]
     fn retry_with_route(
         &mut self,
+        reason: &'static str,
         rule: &CompiledModelRule,
         channel: &CompiledChannel,
         upstream_model: &str,
@@ -2742,6 +2716,30 @@ impl CompletionGuard {
             previous.request_failed();
         }
         if let Some(context) = &mut self.context {
+            tracing::warn!(
+                event = if context.request_protocol == RequestProtocol::WebSocket {
+                    "proxy_websocket_retry"
+                } else {
+                    "proxy_request_retry"
+                },
+                request_id = %context.event_id,
+                api_key_id = %context.api_key_id,
+                api_operation = context.api_operation.as_str(),
+                request_protocol = context.request_protocol.as_str(),
+                client_model = %context.client_model,
+                failed_channel_id = %context.channel_id,
+                failed_upstream_model = %context.upstream_model,
+                next_channel_id = %channel.id(),
+                next_upstream_model = upstream_model,
+                status = context.upstream_status,
+                candidate_attempt = context.candidate_attempt,
+                attempt_phase = context.attempt_phase,
+                dispatch_attempts = context.dispatch_attempts,
+                reason,
+                "retrying proxy request on another route candidate"
+            );
+            context.candidate_attempt = context.candidate_attempt.saturating_add(1);
+            context.attempt_phase = "preparation";
             context.upstream_model = upstream_model.to_owned();
             context.model_rule_id = rule.id();
             context.channel_group_id = channel.group_id();
@@ -2761,7 +2759,6 @@ impl CompletionGuard {
             context.session_affinity_hit =
                 session_affinity.map(SessionAffinitySelection::cache_hit);
             context.preserve_affinity_on_failure = false;
-            context.attempts = context.attempts.saturating_add(1);
             context.error_details = None;
         }
         self.lease = Some(lease);
@@ -2772,49 +2769,28 @@ impl CompletionGuard {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn replace_route_before_dispatch(
-        &mut self,
-        rule: &CompiledModelRule,
-        channel: &CompiledChannel,
-        upstream_model: &str,
-        lease: ChannelLease,
-        automatic_disable_service: Option<AutomaticDisableService>,
-        automatic_disable_settings: AutomaticDisableSettings,
-        session_affinity: Option<&SessionAffinitySelection>,
-        request_billing_multiplier: Decimal,
-    ) {
-        if let Some(mut previous) = self.lease.take() {
-            previous.request_failed();
-        }
+    fn begin_websocket_setup(&mut self) {
         if let Some(context) = &mut self.context {
-            context.upstream_model = upstream_model.to_owned();
-            context.model_rule_id = rule.id();
-            context.channel_group_id = channel.group_id();
-            context.channel_id = channel.id();
-            context.credential_id = channel.credential_id();
-            context.model_id = rule.model_id();
-            context.first_byte_at = None;
-            context.upstream_status = None;
-            context.client_visible_status = None;
-            context.usage = UsageCollector::new(context.api_format, false);
-            context.price_snapshot = rule.price_snapshot().clone();
-            context.advanced_billing = rule.advanced_billing().clone();
-            context.billing_multiplier = channel.billing_multiplier();
-            context.request_billing_multiplier = request_billing_multiplier;
-            context.session_affinity_rule =
-                session_affinity.map(|selection| Arc::from(selection.rule_name()));
-            context.session_affinity_hit =
-                session_affinity.map(SessionAffinitySelection::cache_hit);
-            context.preserve_affinity_on_failure = false;
-            context.error_details = None;
+            context.attempt_phase = "websocket_setup";
         }
-        self.lease = Some(lease);
-        self.automatic_disable = automatic_disable_context(
-            channel,
-            automatic_disable_service,
-            automatic_disable_settings,
-        );
+    }
+
+    fn begin_dispatch(&mut self) {
+        if let Some(context) = &mut self.context {
+            context.attempt_phase = "dispatch";
+            context.dispatch_attempts = context.dispatch_attempts.saturating_add(1);
+            tracing::debug!(
+                event = "proxy_upstream_dispatch",
+                request_id = %context.event_id,
+                api_operation = context.api_operation.as_str(),
+                request_protocol = context.request_protocol.as_str(),
+                channel_id = %context.channel_id,
+                upstream_model = %context.upstream_model,
+                candidate_attempt = context.candidate_attempt,
+                dispatch_attempts = context.dispatch_attempts,
+                "dispatching upstream request"
+            );
+        }
     }
 
     fn set_upstream_status(&mut self, status: u16) {
@@ -2992,6 +2968,7 @@ impl CompletionGuard {
         );
         tracing::info!(
             event = "proxy_request_completed",
+            request_id = %context.event_id,
             api_key_id = %context.api_key_id,
             client_model = %context.client_model,
             upstream_model = %context.upstream_model,
@@ -3006,7 +2983,9 @@ impl CompletionGuard {
             output_tokens = ?usage.map(|usage| usage.output_tokens),
             session_affinity_rule = ?context.session_affinity_rule,
             session_affinity_hit = ?context.session_affinity_hit,
-            attempts = context.attempts,
+            candidate_attempt = context.candidate_attempt,
+            attempt_phase = context.attempt_phase,
+            dispatch_attempts = context.dispatch_attempts,
             outcome = outcome.tracing_outcome(),
             "proxy request completed"
         );

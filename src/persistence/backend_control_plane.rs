@@ -13,12 +13,12 @@ use super::{
     CodexCredentialUpdateInput, CodexCredentialView, CodexOauthFlowRecord, CodexOauthStartInput,
     CodexQuotaReset, CodexQuotaResetOutcome, CodexQuotaUpdate, CodexQuotaWindowHistory,
     CodexRefresh, ConsoleApiKey, ConsoleAuditLog, ControlPlaneConfigTemplateDetail,
-    ControlPlaneLists, ControlPlaneMutation, ControlPlaneRecords, MutationResult,
-    PostgresControlPlaneRepository, ProxyRecord, RepositoryError, RuntimeConfigRecords,
-    SelfApiKeyCreate, SelfApiKeyOptions, SelfApiKeyUpdate, SelfCodexQuotaCredentialView,
-    SelfCodexQuotaWindowHistory, SyncedModelInput, SystemProbeIdentity, SystemSettingsInput,
-    SystemSettingsView, UserBatchUpdateInput, UserSettingsInput, UserSettingsView,
-    control_plane_write::PostgresPreparedControlPlaneChange,
+    ControlPlaneLists, ControlPlaneMutation, ControlPlaneRecords, ModelSourceVersions,
+    MutationResult, PostgresControlPlaneRepository, ProxyRecord, RepositoryError,
+    RuntimeConfigRecords, SelfApiKeyCreate, SelfApiKeyOptions, SelfApiKeyUpdate,
+    SelfCodexQuotaCredentialView, SelfCodexQuotaWindowHistory, SyncedModelInput,
+    SystemProbeIdentity, SystemSettingsInput, SystemSettingsView, UserBatchUpdateInput,
+    UserSettingsInput, UserSettingsView, control_plane_write::PostgresPreparedControlPlaneChange,
 };
 
 #[cfg(feature = "sqlite-backend")]
@@ -384,11 +384,11 @@ impl ControlPlaneRepository {
         }
     }
 
-    pub async fn model_source_ids(&self) -> Result<Vec<String>, RepositoryError> {
+    pub async fn model_source_versions(&self) -> Result<ModelSourceVersions, RepositoryError> {
         match &self.backend {
-            Backend::Postgres(repository) => repository.model_source_ids().await,
+            Backend::Postgres(repository) => repository.model_source_versions().await,
             #[cfg(feature = "sqlite-backend")]
-            Backend::Sqlite(repository) => repository.model_source_ids().await,
+            Backend::Sqlite(repository) => repository.model_source_versions().await,
         }
     }
 

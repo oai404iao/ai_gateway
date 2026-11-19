@@ -26,21 +26,22 @@ use uuid::Uuid;
 
 use crate::{
     domain::AutomaticDisableTrigger,
+    models_dev::ModelsDevModel,
     persistence::{
         ApiKeyPolicyInput, ChannelBatchUpdateInput, ConfigTemplateMutationInput, ConsoleApiKey,
         ConsoleAuditLog, ControlPlaneApiKey, ControlPlaneApiKeyPolicy, ControlPlaneConfigTemplate,
         ControlPlaneConfigTemplateDetail, ControlPlaneLists, ControlPlaneModel,
         ControlPlaneMutation, ControlPlaneProxy, ControlPlaneRecords, ControlPlaneUser,
         ControlPlaneUserGroup, DEFAULT_ADMIN_GROUP_ID, DEFAULT_USER_GROUP_ID,
-        FORWARDING_SETTINGS_KEY, ModelInput, ModelRuleCreateInput, MutationResult,
-        ProxyCreateInput, ProxyInput, ProxyRecord, RepositoryError, RuntimeConfigRecords,
-        SYSTEM_PROBE_API_KEY_ID, SYSTEM_PROBE_API_KEY_NAME, SYSTEM_PROBE_DISPLAY_NAME,
-        SYSTEM_PROBE_USER_ID, SelfApiKeyCreate, SelfApiKeyCurrent, SelfApiKeyOptions,
-        SelfApiKeyPolicy, SelfApiKeyUpdate, SystemProbeIdentity, SystemSettingsInput,
-        SystemSettingsRecord, SystemSettingsView, UserBatchUpdateInput, UserGroupInput, UserInput,
-        UserSettingsInput, UserSettingsView, UserUpdateInput, deleted_api_key_secret,
-        generate_api_key_secret, system_settings_audit_value, system_settings_view,
-        validate_system_settings_input,
+        FORWARDING_SETTINGS_KEY, ModelInput, ModelRuleCreateInput, ModelSourceVersions,
+        MutationResult, ProxyCreateInput, ProxyInput, ProxyRecord, RepositoryError,
+        RuntimeConfigRecords, SYSTEM_PROBE_API_KEY_ID, SYSTEM_PROBE_API_KEY_NAME,
+        SYSTEM_PROBE_DISPLAY_NAME, SYSTEM_PROBE_USER_ID, SelfApiKeyCreate, SelfApiKeyCurrent,
+        SelfApiKeyOptions, SelfApiKeyPolicy, SelfApiKeyUpdate, SystemProbeIdentity,
+        SystemSettingsInput, SystemSettingsRecord, SystemSettingsView, UserBatchUpdateInput,
+        UserGroupInput, UserInput, UserSettingsInput, UserSettingsView, UserUpdateInput,
+        deleted_api_key_secret, generate_api_key_secret, system_settings_audit_value,
+        system_settings_view, validate_system_settings_input,
     },
 };
 
@@ -533,13 +534,17 @@ impl SqliteControlPlaneRepository {
         row.map(ConsoleApiKeyRow::into_view).transpose()
     }
 
-    pub async fn model_source_ids(&self) -> Result<Vec<String>, RepositoryError> {
+    pub async fn model_source_versions(&self) -> Result<ModelSourceVersions, RepositoryError> {
         let mut reader = self.read().await?;
-        Ok(sqlx::query_scalar(
-            "SELECT source_model_id FROM models WHERE deleted_at IS NULL ORDER BY source_model_id",
+        let rows = sqlx::query_as::<_, (String, SqliteUuid, SqliteTimestamp)>(
+            "SELECT source_model_id,id,updated_at FROM models WHERE deleted_at IS NULL",
         )
         .fetch_all(&mut *reader)
-        .await?)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(source, id, updated_at)| (source, (id.0, updated_at.0)))
+            .collect())
     }
 }
 
@@ -3574,7 +3579,7 @@ async fn model_soft_delete(
 
 async fn import_model(
     transaction: &mut Transaction<'static, Sqlite>,
-    input: crate::persistence::SyncedModelInput,
+    input: ModelsDevModel,
     synced_at: DateTime<Utc>,
 ) -> Result<MutationResult, RepositoryError> {
     if input.source_payload.as_object().is_none() {
@@ -3591,7 +3596,7 @@ async fn import_model(
          VALUES (?,?,?,?,1,'USD',1000000,?,?,?,?,?,?,?,?) RETURNING updated_at",
     )
     .bind(SqliteUuid(id))
-    .bind(&input.source_model_id)
+    .bind(&input.model_id)
     .bind(&input.display_name)
     .bind(&input.provider_name)
     .bind(amount_24_12(input.input_unit_price)?)
@@ -3624,7 +3629,7 @@ async fn import_model(
 async fn sync_model_price(
     transaction: &mut Transaction<'static, Sqlite>,
     id: Uuid,
-    input: crate::persistence::SyncedModelInput,
+    input: ModelsDevModel,
     synced_at: DateTime<Utc>,
 ) -> Result<MutationResult, RepositoryError> {
     if input.source_payload.as_object().is_none() {
@@ -3635,7 +3640,7 @@ async fn sync_model_price(
          WHERE id=? AND source_model_id=? AND deleted_at IS NULL",
     )
     .bind(SqliteUuid(id))
-    .bind(&input.source_model_id)
+    .bind(&input.model_id)
     .fetch_optional(&mut **transaction)
     .await?
     .ok_or(RepositoryError::Conflict)?;
@@ -3660,7 +3665,7 @@ async fn sync_model_price(
     .bind(value_to_text(&input.source_payload)?)
     .bind(SqliteTimestamp(synced_at))
     .bind(SqliteUuid(id))
-    .bind(&input.source_model_id)
+    .bind(&input.model_id)
     .fetch_optional(&mut **transaction)
     .await?
     .ok_or(RepositoryError::Conflict)?;
@@ -3708,16 +3713,17 @@ async fn apply_catalog_models(
     let synced_at = Utc::now();
     let mut results = Vec::with_capacity(inputs.len());
     for input in inputs {
-        let existing_id = sqlx::query_scalar::<_, SqliteUuid>(
-            "SELECT id FROM models WHERE source_model_id=? AND deleted_at IS NULL",
+        let local = sqlx::query_as::<_, (SqliteUuid, SqliteTimestamp)>(
+            "SELECT id,updated_at FROM models WHERE source_model_id=? AND deleted_at IS NULL",
         )
-        .bind(&input.source_model_id)
+        .bind(&input.model.model_id)
         .fetch_optional(&mut **transaction)
         .await?
-        .map(|value| value.0);
-        results.push(match existing_id {
-            Some(id) => sync_model_price(transaction, id, input, synced_at).await?,
-            None => import_model(transaction, input, synced_at).await?,
+        .map(|(id, updated_at)| (id.0, updated_at.0));
+        let model = input.into_reviewed_model(local)?;
+        results.push(match local {
+            Some((id, _)) => sync_model_price(transaction, id, model, synced_at).await?,
+            None => import_model(transaction, model, synced_at).await?,
         });
     }
     Ok(results)

@@ -60,10 +60,13 @@ API Key 和小时/天聚合粒度，不提供用户或渠道筛选，响应中�
 
 ## 跟踪请求日志与结算
 
-每次故障转移会产生 `proxy_request_retry` tracing 事件；每个客户端请求仍只产生一个终态 tracing
-事件和一条 `request_logs`，其中渠道、上游模型、结果和计费快照对应最终尝试。worker 从三种格式的普通 JSON
-以及 Chat Completions/Responses 的 SSE 事件增量提取 usage，在选路时绑定价格快照，并在可结算时以唯一回执幂等更新用户余额
-和 API Key 已用额度。usage 同时保留输入、缓存命中、缓存写入、输出总量，以及输出中包含的
+要区分“客户发了几次请求”和“网关尝试了几个上游”，用 Console 请求日志 API 返回的 `id` 匹配进程 tracing 的 `request_id`。一次 HTTP 请求或一条 WebSocket `response.create` 是一个逻辑请求：
+
+- `proxy_request_retry` / `proxy_websocket_retry`（WARN）记录切换前后的候选、切换原因和阶段。`candidate_attempt` 从 1 开始，候选可能在准备阶段就被排除。
+- `proxy_upstream_dispatch`（DEBUG）记录每次开始发送 HTTP 请求或 WS 请求消息。`dispatch_attempts` 只统计发送尝试，不把 WS 握手当成发送，也不证明服务商收到了请求或产生了费用。
+- `proxy_request_completed`（INFO）是逻辑请求的终态。例如 A 返回可重试的 503、B 成功时，两次发送共用同一 `request_id`。Console 只有一条终态日志，客户费用使用最终候选的 usage 和有效价格，不将 A 当作另一次扣款。
+
+逐次尝试仅保存在按级别启用的进程 tracing 中，不是持久账单。需要查看所有阶段时，临时将[日志过滤器](production-configuration.md#日志级别)中的 `ai_gateway::application::proxy` 调为 `debug`。财务流水线在可结算时以唯一回执幂等更新用户余额和 API Key 已用额度。usage 同时保留输入、缓存命中、缓存写入、输出总量，以及输出中包含的
 reasoning token。Chat Completions 的 `completion_tokens` 始终作为包含 reasoning 的输出总量保存；
 OpenAI 的最终空 `choices` usage chunk 和 DeepSeek 将 usage 附在 `finish_reason` chunk 的形式都可解析。
 Console 请求日志的 `Tokens` 列将未缓存输入和输出总量作为主数字，并用紧凑标记分别展示缓存命中

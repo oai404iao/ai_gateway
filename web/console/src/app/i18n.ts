@@ -1372,6 +1372,9 @@ const zhCN: Record<string, string> = {
     "获取 models.dev 目录，可按提供商 ID 筛选。",
   "Provider ids (optional)": "提供商 ID（可选）",
   "Fetch preview": "获取预览",
+  "Billing details": "计费详情",
+  "USD per million tokens": "美元 / 百万 Token",
+  "Input tokens ≥ {threshold}": "输入 Token 数 ≥ {threshold}",
   "Apply selected ({count})": "应用所选项（{count}）",
   "Preview results": "预览结果",
   "{count} catalog models.": "{count} 个目录模型。",
@@ -1387,6 +1390,8 @@ const zhCN: Record<string, string> = {
   "Preview fetched {time}. Excluded: {missing} missing prices, {invalid} invalid, {oversized} oversized metadata.":
     "预览获取时间：{time}。已排除：{missing} 个缺少价格、{invalid} 个无效模型、{oversized} 个元数据过大模型。",
   "Apply failed": "应用失败",
+  "Nothing was applied. Fetch a fresh preview and review your selections again.":
+    "未应用任何更改。请重新获取预览，核对后再次选择。",
   "Model": "模型",
   "Reasoning effort": "思考等级",
   "Fast mode": "Fast 模式",

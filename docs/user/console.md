@@ -136,7 +136,7 @@ workspace/member 身份、Token、代理、运行状态、错误或 reset-credit
 - API Key Policy：`/console/v1/api-key-policies`
 - 全局 API Key：`/console/v1/api-keys`
 - 模型：`/console/v1/models`
-- models.dev：`/console/v1/catalog/models/sync/preview`、`/sync`、`/import`
+- models.dev：`POST /console/v1/catalog/models/sync/preview`、`POST /console/v1/catalog/models/import`，流程见[导入目录价格](billing.md#导入目录价格)。
 - 路由：`/console/v1/routing/groups`、`/accesses`、`/logical-channels`、`/capabilities`、`/profiles`、`/operation-rules`
 - 能力批量修改/恢复：`POST /console/v1/routing/capabilities/batch`、`POST /console/v1/routing/capabilities/{id}/recover`
 - 网络：`/console/v1/network/proxies`、`POST /console/v1/network/proxies/test`

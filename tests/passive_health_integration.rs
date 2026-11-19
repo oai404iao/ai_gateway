@@ -42,6 +42,9 @@ use tokio::{
 };
 use uuid::Uuid;
 
+#[path = "support/proxy_trace.rs"]
+mod proxy_trace;
+
 const CLIENT_KEY: &str = "passive-health-client-key";
 const WAIT: Duration = Duration::from_secs(3);
 
@@ -542,8 +545,10 @@ async fn retry_rewrites_each_attempt_with_its_candidate_upstream_model() {
 
 #[tokio::test]
 async fn status_retry_rebuilds_the_request_from_filtered_input_for_each_channel() {
+    use rust_decimal::Decimal;
     use serde_json::{Value, json};
 
+    let trace = proxy_trace::capture();
     let attempts = Arc::new(Mutex::new(Vec::new()));
     let upstream = start_server(Router::new().route(
         "/v1/chat/completions",
@@ -553,9 +558,9 @@ async fn status_retry_rebuilds_the_request_from_filtered_input_for_each_channel(
                 let mut attempts = attempts.lock().unwrap();
                 attempts.push((headers, serde_json::from_slice::<Value>(&body).unwrap()));
                 let (status, body) = if attempts.len() == 1 {
-                    (StatusCode::TOO_MANY_REQUESTS, json!({"error":"retry"}))
+                    (StatusCode::TOO_MANY_REQUESTS, json!({"error":"retry-body-canary", "usage":{"prompt_tokens":100, "completion_tokens":100}}))
                 } else {
-                    (StatusCode::OK, json!({"id":"completion"}))
+                    (StatusCode::OK, json!({"id":"completion", "usage":{"prompt_tokens":5,"completion_tokens":2}}))
                 };
                 async move { (status, axum::Json(body)) }
             }
@@ -575,6 +580,9 @@ async fn status_retry_rebuilds_the_request_from_filtered_input_for_each_channel(
         RequestRetrySettings::new(true, 1, Arc::from([429])),
         |records| {
             records.api_keys[0].user_filter_fast_mode = true;
+            records.model_rules[0].input_unit_price = Decimal::ONE;
+            records.model_rules[0].output_unit_price = Decimal::ONE;
+            records.channels[1].billing_multiplier = Decimal::TWO;
             for (channel, tag) in records.channels.iter_mut().zip(["primary", "fallback"]) {
                 channel.override_document = json!({
                     "version": 1, "api_format": "open_ai_chat_completions",
@@ -592,7 +600,10 @@ async fn status_retry_rebuilds_the_request_from_filtered_input_for_each_channel(
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(response.text().await.unwrap(), r#"{"id":"completion"}"#);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&response.bytes().await.unwrap()).unwrap(),
+        json!({"id":"completion", "usage":{"prompt_tokens":5,"completion_tokens":2}})
+    );
 
     let attempts = attempts.lock().unwrap();
     assert_eq!(attempts.len(), 2);
@@ -612,6 +623,33 @@ async fn status_retry_rebuilds_the_request_from_filtered_input_for_each_channel(
     assert_eq!(events[0].channel_id, Some(fixture.channel_ids[1]));
     assert_eq!(events[0].upstream_model.as_deref(), Some("wire-fallback"));
     assert_eq!(events[0].response_status_code, Some(200));
+    let billing = events[0].billing.as_ref().unwrap();
+    let usage = billing.usage.unwrap();
+    assert_eq!((usage.input_tokens, usage.output_tokens), (5, 2));
+    assert_eq!(billing.cost_amount, Some(Decimal::new(14, 6)));
+
+    let trace = std::fs::read_to_string(trace.path()).unwrap();
+    for secret in [CLIENT_KEY, "preserved", "retry-body-canary"] {
+        assert!(!trace.contains(secret));
+    }
+    let id = format!("request_id={}", events[0].id);
+    let correlated: Vec<_> = trace.lines().filter(|line| line.contains(&id)).collect();
+    let [primary, retry, fallback, completed] = correlated.as_slice() else {
+        panic!("expected two dispatches, one retry and one terminal trace: {trace}");
+    };
+    for (line, n, model) in [(primary, 1, "wire-primary"), (fallback, 2, "wire-fallback")] {
+        assert!(line.contains("proxy_upstream_dispatch"));
+        assert!(line.contains(&format!("candidate_attempt={n}")));
+        assert!(line.contains(&format!("dispatch_attempts={n}")));
+        assert!(line.contains(model));
+    }
+    assert!(retry.contains("proxy_request_retry"));
+    assert!(retry.contains("configured_upstream_status"));
+    assert!(retry.contains("status=429"));
+    assert!(retry.contains("attempt_phase=\"dispatch\""));
+    assert!(completed.contains("proxy_request_completed"));
+    assert!(completed.contains("dispatch_attempts=2"));
+    assert!(completed.contains("succeeded"));
 }
 
 #[tokio::test]
