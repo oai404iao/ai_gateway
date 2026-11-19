@@ -80,6 +80,7 @@ mime_guess = { version = "2", optional = true }
 
 [dev-dependencies]
 flate2 = "1"
+syn = { version = "2", features = ["full", "visit"] }
 tar = "0.4"
 
 [workspace]

@@ -82,20 +82,33 @@ describe("upstream credential management", () => {
   });
 
   it("reloads a conflicting credential edit", async () => {
-    let reads = 0;
+    const writes: { ifMatch: string | null; name: string }[] = [];
+    const editedElsewhere = { ...UPSTREAM_CREDENTIAL_DETAIL, name: "New upstream identity", updated_at: "2026-08-02T00:00:00Z" };
+    const path = `/console/v1/routing/upstream-credentials/${UPSTREAM_CREDENTIAL.id}`;
     server.use(
-      http.get("/console/v1/routing/upstream-credentials/:id", () => {
-        reads += 1;
-        return HttpResponse.json(UPSTREAM_CREDENTIAL_DETAIL, { headers: { ETag: `"${UPSTREAM_CREDENTIAL.updated_at}"` } });
+      http.get(path, () => {
+        const current = writes.length ? editedElsewhere : UPSTREAM_CREDENTIAL_DETAIL;
+        return HttpResponse.json(current, { headers: { ETag: `"${current.updated_at}"` } });
       }),
-      http.put("/console/v1/routing/upstream-credentials/:id", () => HttpResponse.json({ error: "conflict" }, { status: 409 })),
+      http.put(path, async ({ request }) => {
+        const { name } = await request.json() as { name: string };
+        const ifMatch = request.headers.get("if-match");
+        writes.push({ ifMatch, name });
+        return ifMatch === `"${editedElsewhere.updated_at}"`
+          ? HttpResponse.json({ id: UPSTREAM_CREDENTIAL.id })
+          : HttpResponse.json({ error: "conflict" }, { status: 409 });
+      }),
     );
     const user = userEvent.setup();
     renderAt(UPSTREAM_CREDENTIAL.id);
     await waitFor(() => expect(screen.getByLabelText("Name")).toHaveValue(UPSTREAM_CREDENTIAL.name));
     await user.click(screen.getByRole("button", { name: "Save credential" }));
-    await waitFor(() => expect(reads).toBeGreaterThan(1));
     expect(await screen.findByText("This credential was changed elsewhere or is still in use. Reloading.")).toBeInTheDocument();
+    expect(await screen.findByDisplayValue(editedElsewhere.name)).toBeVisible();
+    expect(writes).toEqual([{ ifMatch: `"${UPSTREAM_CREDENTIAL.updated_at}"`, name: UPSTREAM_CREDENTIAL.name }]);
+    await user.click(screen.getByRole("button", { name: "Save credential" }));
+    await waitFor(() => expect(writes).toHaveLength(2));
+    expect(writes[1]).toEqual({ ifMatch: `"${editedElsewhere.updated_at}"`, name: editedElsewhere.name });
   });
 
   it("does not expose ordinary credential editing for provider-managed identities", async () => {

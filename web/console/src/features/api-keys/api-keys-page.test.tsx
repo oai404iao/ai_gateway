@@ -1,24 +1,81 @@
-import { describe, expect, it } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useQueryClient } from "@tanstack/react-query";
 import { http, HttpResponse } from "msw";
+import type { PropsWithChildren } from "react";
 import { BrowserRouter } from "react-router";
 import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
 import { server, seedAuthenticatedSession } from "@/test/msw";
-import { CHANNEL_GROUP, NEW_API_KEY_SECRET, OWN_API_KEY } from "@/test/fixtures";
-import { maskApiKey } from "@/lib/api-keys";
-import type { SelfApiKeyCreateInput } from "@/api/types";
+import { CHANNEL, CHANNEL_GROUP, NEW_API_KEY_SECRET, OWN_API_KEY } from "@/test/fixtures";
+import type { ApiKeyView, SelfApiKeyCreateInput, SelfApiKeyUpdateInput } from "@/api/types";
 
-function renderAppAt(path: string) {
-  window.history.replaceState({}, "", path);
-  render(
+function TestApp({ children }: PropsWithChildren) {
+  return (
     <AppProviders>
       <BrowserRouter>
         <AppRouter />
+        {children}
       </BrowserRouter>
-    </AppProviders>,
+    </AppProviders>
   );
+}
+
+function renderAppAt(path: string) {
+  window.history.replaceState({}, "", path);
+  render(<TestApp />);
+}
+
+function keyResponse(key: ApiKeyView, version: string) {
+  return HttpResponse.json(key, { headers: { ETag: `"${version}"` } });
+}
+
+const saveButton = () => screen.getByRole("button", { name: "Save changes" });
+async function findReloadButton() {
+  return within(await screen.findByRole("alert")).findByRole("button", { name: "Load latest version" });
+}
+
+async function openConflictedKey(readLatest: () => Response, draftName?: string) {
+  seedAuthenticatedSession();
+  const endpoint = `/console/v1/me/api-keys/${OWN_API_KEY.id}`;
+  const reload = vi.fn(readLatest);
+  const writes: { etag: string | null; input: SelfApiKeyUpdateInput }[] = [];
+  server.use(
+    http.get(endpoint, () => keyResponse(OWN_API_KEY, "v1"), { once: true }),
+    http.get(endpoint, () => reload()),
+    http.put(endpoint, async ({ request }) => {
+      writes.push({
+        etag: request.headers.get("if-match"),
+        input: await request.json() as SelfApiKeyUpdateInput,
+      });
+      return HttpResponse.json({ error: "conflict" }, { status: 409 });
+    }),
+  );
+  const user = userEvent.setup();
+  renderAppAt(`/api-keys/${OWN_API_KEY.id}`);
+  const name = await screen.findByDisplayValue(OWN_API_KEY.name);
+  if (draftName) {
+    await user.clear(name);
+    await user.type(name, draftName);
+  }
+  await user.click(saveButton());
+  expect(await findReloadButton()).toBeVisible();
+  expect(saveButton()).toBeDisabled();
+  await user.click(saveButton());
+  expect(writes.map(({ etag }) => etag)).toEqual(['"v1"']);
+  expect(reload).not.toHaveBeenCalled();
+  return { user, writes, reload };
+}
+
+async function discardDialog(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await findReloadButton());
+  return within(await screen.findByRole("alertdialog", { name: "Discard unsaved changes?" }));
+}
+
+async function confirmDiscard(user: ReturnType<typeof userEvent.setup>) {
+  const dialog = await discardDialog(user);
+  await user.click(dialog.getByRole("button", { name: "Discard changes" }));
 }
 
 describe("ApiKeysPage", () => {
@@ -48,7 +105,6 @@ describe("ApiKeysPage", () => {
     renderAppAt("/api-keys");
 
     expect(await screen.findByText(OWN_API_KEY.name)).toBeInTheDocument();
-    expect(screen.getByDisplayValue(maskApiKey(NEW_API_KEY_SECRET))).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "Channel groups" })).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "Logical channels" })).toBeInTheDocument();
     expect(screen.queryByRole("columnheader", { name: "Formats" })).not.toBeInTheDocument();
@@ -70,14 +126,14 @@ describe("ApiKeysPage", () => {
     const user = userEvent.setup();
     renderAppAt("/api-keys");
 
-    const value = await screen.findByLabelText(/api key value/i);
-    expect(value).toHaveValue(maskApiKey(NEW_API_KEY_SECRET));
+    const value = await screen.findByLabelText<HTMLInputElement>(/api key value/i);
+    expect(value.value === "sk-••••••••••••••••••••••••").toBe(true);
 
     await user.click(screen.getByRole("button", { name: /show full api key/i }));
-    expect(value).toHaveValue(NEW_API_KEY_SECRET);
+    expect(value.value === NEW_API_KEY_SECRET).toBe(true);
 
     await user.click(screen.getByRole("button", { name: /copy api key/i }));
-    expect(await navigator.clipboard.readText()).toBe(NEW_API_KEY_SECRET);
+    expect(await navigator.clipboard.readText() === NEW_API_KEY_SECRET).toBe(true);
   });
 
   it("shows and copies administrator-configured API hosts", async () => {
@@ -228,38 +284,120 @@ describe("ApiKeysPage", () => {
     });
   });
 
-  it("surfaces an optimistic-concurrency conflict as a toast", async () => {
+  it("keeps the conflicted draft on cancel or read failure and permits another reload", async () => {
+    let fail = true;
+    const { user, writes, reload } = await openConflictedKey(() => fail
+      ? HttpResponse.json({ error: "unavailable" }, { status: 503 })
+      : keyResponse({ ...OWN_API_KEY, name: "recovered" }, "v2"), "my draft");
+
+    const confirm = await discardDialog(user);
+    await user.click(confirm.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByLabelText("Name")).toHaveValue("my draft");
+    expect(reload).not.toHaveBeenCalled();
+
+    await confirmDiscard(user);
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(/could not be loaded/i));
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(await findReloadButton()).toBeEnabled();
+    expect(screen.getByLabelText("Name")).toHaveValue("my draft");
+    expect(saveButton()).toBeDisabled();
+
+    fail = false;
+    await confirmDiscard(user);
+    expect(await screen.findByDisplayValue("recovered")).toBeInTheDocument();
+    expect(reload).toHaveBeenCalledTimes(2);
+    expect(writes).toHaveLength(1);
+    expect(saveButton()).toBeEnabled();
+  });
+
+  it("keeps a dirty draft paired with its original ETag during background refetch", async () => {
     seedAuthenticatedSession();
-    // Own API key detail GET returns a stable ETag; PUT with a mismatched
-    // If-Match yields 409.
-    let putHit = false;
+    const endpoint = `/console/v1/me/api-keys/${OWN_API_KEY.id}`;
+    const remoteRead = vi.fn(() => keyResponse({ ...OWN_API_KEY, name: "remote rename", requests_per_minute: 99 }, "v2"));
+    const writes: (string | null)[] = [];
     server.use(
-      http.get("/console/v1/me/api-keys/:id", () =>
-        HttpResponse.json(OWN_API_KEY, {
-          headers: { ETag: `"v1"` },
-        }),
-      ),
-      http.put("/console/v1/me/api-keys/:id", () => {
-        putHit = true;
-        return HttpResponse.json(
-          { error: "Console operation rejected" },
-          { status: 409 },
-        );
+      http.get(endpoint, () => keyResponse(OWN_API_KEY, "v1"), { once: true }),
+      http.get(endpoint, () => new HttpResponse(null, { status: 503 }), { once: true }),
+      http.get(endpoint, remoteRead),
+      http.put(endpoint, ({ request }) => {
+        writes.push(request.headers.get("if-match"));
+        return HttpResponse.json({ error: "conflict" }, { status: 409 });
       }),
     );
+    window.history.replaceState({}, "", `/api-keys/${OWN_API_KEY.id}`);
+    const { result } = renderHook(() => useQueryClient(), { wrapper: TestApp });
     const user = userEvent.setup();
-    renderAppAt(`/api-keys/${OWN_API_KEY.id}`);
+    const name = await screen.findByDisplayValue(OWN_API_KEY.name);
+    await user.clear(name);
+    await user.type(name, "draft before refresh");
 
-    // The detail form loads with reset (valid) values; renaming and saving
-    // sends If-Match from the GET ETag, and the overridden PUT returns 409.
-    const nameField = await screen.findByLabelText(/name/i);
-    await user.clear(nameField);
-    await user.type(nameField, "renamed");
-    await user.click(screen.getByRole("button", { name: /save changes/i }));
+    await act(() => result.current.refetchQueries({ type: "active" }));
+    expect(await findReloadButton()).toBeEnabled();
+    expect(screen.getByLabelText("Name")).toHaveValue("draft before refresh");
 
-    await waitFor(() => {
-      expect(putHit).toBe(true);
-      expect(screen.getByText(/changed by another session/i)).toBeInTheDocument();
-    }, { timeout: 3000 });
+    await act(() => result.current.refetchQueries({ type: "active" }));
+    expect(remoteRead).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText("Name")).toHaveValue("draft before refresh");
+    expect(screen.getByLabelText("Requests / minute")).toHaveValue(OWN_API_KEY.requests_per_minute);
+    expect(writes).toHaveLength(0);
+    await user.click(saveButton());
+    await waitFor(() => expect(writes).toEqual(['"v1"']));
+  });
+
+  it("replaces all fields and the write version together, including after a second conflict", async () => {
+    const localExpiry = "2099-08-01T12:00";
+    const remoteFields: SelfApiKeyUpdateInput = {
+      name: "remote rename", status: "disabled", expires_at: new Date(`${localExpiry}:42.125`).toISOString(),
+      allowed_group_ids: [], allowed_channel_ids: [CHANNEL.id], requests_per_minute: 81,
+      max_concurrent_requests: 7, quota_limit_amount: "123.45",
+    };
+    let revoked = false;
+    const { user, writes, reload } = await openConflictedKey(() => revoked
+      ? keyResponse({ ...OWN_API_KEY, status: "revoked" }, "v3")
+      : keyResponse({ ...OWN_API_KEY, ...remoteFields }, "v2"), "old local edit");
+
+    await confirmDiscard(user);
+    const name = await screen.findByDisplayValue(remoteFields.name);
+    expect(screen.getByLabelText("Status")).toHaveTextContent(/disabled/i);
+    expect(screen.getByLabelText(/expires at/i)).toHaveValue(localExpiry);
+    expect(screen.getByLabelText("Requests / minute")).toHaveValue(81);
+    expect(screen.getByLabelText("Max concurrent requests")).toHaveValue(7);
+    expect(screen.getByLabelText("Quota limit amount")).toHaveValue("123.45");
+    expect(screen.getByRole("checkbox", { name: CHANNEL_GROUP.name })).not.toBeChecked();
+    await user.click(screen.getByRole("button", { name: /show individual channels/i }));
+    expect(screen.getByRole("checkbox", { name: `${CHANNEL.name} (${CHANNEL_GROUP.name})` })).toBeChecked();
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(writes).toHaveLength(1);
+
+    await user.clear(name);
+    await user.type(name, "new local edit");
+    await user.click(saveButton());
+    expect(await findReloadButton()).toBeVisible();
+    expect(saveButton()).toBeDisabled();
+    expect(writes).toHaveLength(2);
+    expect(writes[1]).toEqual({ etag: '"v2"', input: { ...remoteFields, name: "new local edit" } });
+
+    revoked = true;
+    await confirmDiscard(user);
+    expect(await screen.findByText("Revoked", { exact: true })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Name")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save changes" })).not.toBeInTheDocument();
+    expect(reload).toHaveBeenCalledTimes(2);
+    expect(writes).toHaveLength(2);
+  });
+
+  it("removes the stale editor and key controls when the reload returns 404", async () => {
+    const { user, writes, reload } = await openConflictedKey(() =>
+      HttpResponse.json({ error: "not_found" }, { status: 404 }));
+
+    await user.click(await findReloadButton());
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(/no longer available/i));
+    expect(screen.queryByLabelText("Name")).not.toBeInTheDocument();
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(screen.queryByLabelText("API key value")).not.toBeInTheDocument();
+    for (const name of ["Save changes", "Show full API key", "Copy API key", "Revoke API key", "Delete API key"]) {
+      expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
+    }
+    expect(writes).toHaveLength(1);
   });
 });

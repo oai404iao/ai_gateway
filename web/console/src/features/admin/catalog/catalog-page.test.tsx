@@ -28,6 +28,7 @@ const model: ModelSyncPreviewModel = {
     ],
     request_multipliers: [
       { json_pointer: "/service_tier", value: "priority", multiplier: "2" },
+      { json_pointer: "/service_tier", value: "flex", multiplier: "0.5" },
     ],
   },
   action: "price_update",
@@ -71,8 +72,11 @@ describe("CatalogPage", () => {
     expect(screen.getByRole("heading", { name: "Price sync" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Fetch preview" }));
     const modelRow = await screen.findByRole("row", { name: /GPT-4o mini/ });
-    expect(screen.getByRole("columnheader", { name: "Request multipliers" })).toBeInTheDocument();
-    expect(within(modelRow).getAllByRole("cell")[5]).toHaveTextContent("1");
+    const preview = within(screen.getByRole("table"));
+    const columns = preview.getAllByRole("columnheader");
+    const cells = within(modelRow).getAllByRole("cell");
+    expect(cells[columns.indexOf(preview.getByRole("columnheader", { name: "Long-context tiers" }))]).toHaveTextContent(/^1$/);
+    expect(cells[columns.indexOf(preview.getByRole("columnheader", { name: "Request multipliers" }))]).toHaveTextContent(/^2$/);
     await user.click(
       await screen.findByRole("checkbox", { name: "Select openai/gpt-4o-mini" }),
     );

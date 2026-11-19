@@ -3231,20 +3231,11 @@ impl PostgresSettlementRepository {
         sqlx::query("SET LOCAL lock_timeout = '100ms'")
             .execute(&mut *transaction)
             .await?;
-        let request_log_ids = sqlx::query_scalar::<_, Uuid>(
-            "SELECT log.id
-             FROM request_settlement_pending AS pending
-             JOIN request_metering_facts AS log ON log.id=pending.request_id
-             JOIN api_keys AS key
-               ON key.id = log.api_key_id
-              AND key.user_id = log.user_id
-             WHERE log.amount_state IN ('priced','zero_by_policy')
-             ORDER BY pending.completed_at, pending.request_id
-             LIMIT $1",
-        )
-        .bind(limit.max(1))
-        .fetch_all(&mut *transaction)
-        .await?;
+        let request_log_ids =
+            sqlx::query_scalar::<_, Uuid>(include_str!("settlement_pending_postgres.sql"))
+                .bind(limit.max(1))
+                .fetch_all(&mut *transaction)
+                .await?;
         transaction.commit().await?;
         Ok(self
             .settle_batch(&request_log_ids)

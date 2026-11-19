@@ -1,4 +1,5 @@
 import type { Page, Route } from "@playwright/test";
+import type { ConsoleProfile, ConsoleSession, ConsoleUser, RegisterInput } from "../src/api/types";
 import { CONNECTOR_PLUGINS, SYSTEM_SETTINGS } from "../src/test/fixtures";
 
 /**
@@ -13,10 +14,11 @@ const ADMIN_PROFILE = {
     id: "00000000-0000-0000-0000-000000000001",
     email: "admin@example.com",
     display_name: "Initial Admin",
-    role: "admin",
+    role: "admin" as const,
     password_change_required: false,
     temporary_password_expires_at: null,
     status: "active",
+    balance_amount: "0.00",
     default_api_key_policy_id: null,
     created_at: "2026-01-01T00:00:00.000Z",
     updated_at: "2026-01-01T00:00:00.000Z",
@@ -29,7 +31,7 @@ const TEMPORARY_PASSWORD_PROFILE = {
     id: "00000000-0000-0000-0000-000000000003",
     email: "reset@example.com",
     display_name: "Password Reset User",
-    role: "user",
+    role: "user" as const,
     password_change_required: true,
     temporary_password_expires_at: "2099-08-02T00:00:00.000Z",
     status: "active",
@@ -93,11 +95,11 @@ const E2E_IMAGE_MODEL = {
   display_name: "Gateway Image",
 };
 
-const E2E_USER = {
+export const E2E_USER = {
   id: "00000000-0000-0000-0000-000000000090",
   email: "batch-user@example.test",
   display_name: "Batch User",
-  role: "user",
+  role: "user" as const,
   status: "active",
   can_reissue_invitation: false,
   password_change_required: false,
@@ -175,7 +177,7 @@ const E2E_REGISTRATION_CODE = {
   updated_at: "2026-07-26T12:00:00.000Z",
 };
 
-const E2E_SESSIONS = [
+const E2E_SESSIONS: ConsoleSession[] = [
   {
     id: "00000000-0000-0000-0000-0000000000e1",
     user_agent:
@@ -231,30 +233,6 @@ export const E2E_CODEX_GROUP_ID = "00000000-0000-0000-0000-00000000c001";
 export const E2E_CODEX_CREDENTIAL_ID =
   "00000000-0000-0000-0000-00000000c002";
 
-export const E2E_CODEX_GROUP = {
-  id: E2E_CODEX_GROUP_ID,
-  name: "Codex subscriptions",
-  api_format: "open_ai_responses",
-  connector_kind: "codex",
-  connector_pool_id: E2E_CODEX_GROUP_ID,
-  request_compression: "default",
-  enabled: true,
-  status_statistics_enabled: true,
-  updated_at: "2026-07-29T12:00:00.000Z",
-};
-
-const E2E_STANDARD_CHANNEL_GROUPS = Array.from({ length: 5 }, (_, index) => ({
-  id: `00000000-0000-0000-0000-0000000002${index}`,
-  name: index === 4 ? "target-group" : `standard-group-${index + 1}`,
-  api_format: "open_ai_chat_completions",
-  connector_kind: "general",
-  connector_pool_id: null,
-  request_compression: "default",
-  enabled: true,
-  status_statistics_enabled: true,
-  updated_at: "2026-07-29T12:00:00.000Z",
-}));
-export const E2E_STANDARD_GROUP_ID = E2E_STANDARD_CHANNEL_GROUPS[0].id;
 export const E2E_STANDARD_CHANNEL_ID = "00000000-0000-0000-0000-000000000030";
 
 export const E2E_ROUTING_GROUP_ID = "00000000-0000-0000-0000-0000000002a0";
@@ -278,6 +256,7 @@ const E2E_ROUTING_GROUPS = [
   },
 ];
 
+export const E2E_CHANNEL_ETAG = '"2026-01-02T00:00:00.000000Z"';
 const E2E_LOGICAL_CHANNELS = [
   {
     id: E2E_STANDARD_CHANNEL_ID,
@@ -305,6 +284,7 @@ const E2E_LOGICAL_CHANNELS = [
   },
 ];
 
+export const E2E_CAPABILITY_ETAG = '"2026-01-03T00:00:00.000000Z"';
 const E2E_CHANNEL_CAPABILITIES = [
   {
     id: "00000000-0000-0000-0000-0000000000c1",
@@ -327,7 +307,7 @@ const E2E_CHANNEL_CAPABILITIES = [
     billing_multiplier: "1",
     revision: "00000000-0000-0000-0000-0000000000c2",
     created_at: "2026-01-01T00:00:00Z",
-    updated_at: "2026-01-02T00:00:00Z",
+    updated_at: "2026-01-03T00:00:00Z",
     deleted_at: null,
   },
 ];
@@ -645,43 +625,45 @@ const E2E_PERSONAL_REQUEST_LOG = {
   billed_at: "2026-07-28T10:00:02.000Z",
 };
 
-const E2E_SYSTEM_REQUEST_LOG = {
+export const E2E_SYSTEM_REQUEST_LOG = {
   ...E2E_PERSONAL_REQUEST_LOG,
   user_id: E2E_USER.id,
   user_name: E2E_USER.display_name,
   channel_id: "00000000-0000-0000-0000-000000000022",
-  channel_name: "upstream-a",
+  channel_name: "upstream-channel-name-long-enough-to-overflow-the-request-log-column",
 };
 
 export async function mockConsoleApi(page: Page): Promise<void> {
   let websocketEnabled = false;
   let authenticated = false;
-  let session = ADMIN_PROFILE;
+  let session: { user: ConsoleUser & ConsoleProfile; access_token: string } = ADMIN_PROFILE;
+  const issuedSession = () => ({ ...session, token_type: "Bearer", expires_in: 900 });
+  const sessions = structuredClone(E2E_SESSIONS);
   await page.route("**/console/v1/**", (route: Route) => {
     const url = new URL(route.request().url());
     const method = route.request().method();
-    const path = url.pathname.replace(/^.*console\/v1/, "/console/v1");
+    const path = url.pathname;
 
     if (path === "/console/v1/auth/login" && method === "POST") {
       // The SPA stores the access token from the response body. This in-memory
       // flag stands in for the HttpOnly refresh cookie after a full reload.
-      authenticated = true;
       const input = route.request().postDataJSON() as { email?: string };
-      session =
-        input.email === TEMPORARY_PASSWORD_PROFILE.user.email
-          ? TEMPORARY_PASSWORD_PROFILE
-          : input.email === E2E_USER.email
-          ? { user: E2E_USER, access_token: "e2e-user-token" }
-          : ADMIN_PROFILE;
-      return route.fulfill({ status: 200, json: session });
+      if (input.email === TEMPORARY_PASSWORD_PROFILE.user.email) session = TEMPORARY_PASSWORD_PROFILE;
+      else if (input.email === E2E_USER.email) session = { user: E2E_USER, access_token: "e2e-user-token" };
+      else if (input.email === ADMIN_PROFILE.user.email) session = ADMIN_PROFILE;
+      else return route.fulfill({ status: 401, json: { error: "Unauthorized" } });
+      authenticated = true;
+      return route.fulfill({ json: issuedSession() });
     }
     if (path === "/console/v1/auth/register" && method === "POST") {
+      const { email, display_name } = route.request().postDataJSON() as RegisterInput;
+      session = { user: { ...E2E_USER, email, display_name }, access_token: "e2e-registered-user-token" };
       authenticated = true;
-      return route.fulfill({ status: 200, json: ADMIN_PROFILE });
+      return route.fulfill({ json: issuedSession() });
     }
     if (path === "/console/v1/auth/refresh" && method === "POST") {
       if (authenticated) {
-        return route.fulfill({ status: 200, json: session });
+        return route.fulfill({ json: issuedSession() });
       }
       // Start unauthenticated so the login page renders; the login or
       // registration POST above establishes the mocked refresh session.
@@ -690,13 +672,19 @@ export async function mockConsoleApi(page: Page): Promise<void> {
         json: { error: "Unauthorized" },
       });
     }
+    if (!authenticated || route.request().headers().authorization !== `Bearer ${session.access_token}`) {
+      return route.fulfill({ status: 401, json: { error: "Unauthorized" } });
+    }
+    if (path === "/console/v1/auth/logout" && method === "POST") {
+      authenticated = false;
+      return route.fulfill({ status: 204 });
+    }
     if (
       path === "/console/v1/auth/complete-password-reset" &&
       method === "POST"
     ) {
       session = RESET_COMPLETED_PROFILE;
-      authenticated = true;
-      return route.fulfill({ status: 200, json: session });
+      return route.fulfill({ json: issuedSession() });
     }
     if (path === "/console/v1/me" && method === "GET") {
       return route.fulfill({ status: 200, json: session.user });
@@ -724,12 +712,13 @@ export async function mockConsoleApi(page: Page): Promise<void> {
       });
     }
     if (path === "/console/v1/me/sessions" && method === "GET") {
-      return route.fulfill({ status: 200, json: E2E_SESSIONS });
+      return route.fulfill({ status: 200, json: sessions });
     }
-    if (path === "/console/v1/me/sessions" && method === "DELETE") {
-      return route.fulfill({ status: 204 });
-    }
-    if (path.startsWith("/console/v1/me/sessions/") && method === "DELETE") {
+    const targetSession = sessions.find(({ id }) => path === `/console/v1/me/sessions/${id}`);
+    if (targetSession && method === "DELETE") {
+      targetSession.state = "revoked";
+      targetSession.revoked_at = "2026-07-28T12:00:00.000Z";
+      if (targetSession.is_current) authenticated = false;
       return route.fulfill({ status: 204 });
     }
     if (path === "/console/v1/me/usage" && method === "GET") {
@@ -1131,16 +1120,6 @@ export async function mockConsoleApi(page: Page): Promise<void> {
     if (routingGroup && method === "PUT") {
       return route.fulfill({ status: 200, json: { id: routingGroup.id } });
     }
-    if (
-      path === `/console/v1/routing/groups/${E2E_STANDARD_GROUP_ID}` &&
-      method === "GET"
-    ) {
-      return route.fulfill({
-        status: 200,
-        headers: { ETag: `"${E2E_ROUTING_GROUPS[0].updated_at}"` },
-        json: E2E_ROUTING_GROUPS[0],
-      });
-    }
     if (path === "/console/v1/routing/logical-channels" && method === "GET") {
       return route.fulfill({ status: 200, json: E2E_LOGICAL_CHANNELS });
     }
@@ -1150,15 +1129,15 @@ export async function mockConsoleApi(page: Page): Promise<void> {
     ) {
       return route.fulfill({
         status: 200,
-        headers: { ETag: `"${E2E_LOGICAL_CHANNELS[0].updated_at}"` },
+        headers: { ETag: E2E_CHANNEL_ETAG },
         json: E2E_LOGICAL_CHANNELS[0],
       });
     }
     if (
       path === `/console/v1/routing/logical-channels/${E2E_STANDARD_CHANNEL_ID}` &&
-      method === "DELETE"
+      (method === "PUT" || method === "DELETE")
     ) {
-      return route.fulfill({ status: 200, json: { id: E2E_STANDARD_CHANNEL_ID } });
+      return route.fulfill({ json: { id: E2E_STANDARD_CHANNEL_ID, correlation_id: "00000000-0000-0000-0000-000000000801" } });
     }
     if (path === "/console/v1/routing/capabilities" && method === "GET") {
       return route.fulfill({ status: 200, json: E2E_CHANNEL_CAPABILITIES });
@@ -1170,9 +1149,12 @@ export async function mockConsoleApi(page: Page): Promise<void> {
     ) {
       return route.fulfill({
         status: 200,
-        headers: { ETag: `"${E2E_CHANNEL_CAPABILITIES[0].updated_at}"` },
+        headers: { ETag: E2E_CAPABILITY_ETAG },
         json: E2E_CHANNEL_CAPABILITIES[0],
       });
+    }
+    if (path === `/console/v1/routing/capabilities/${E2E_CHANNEL_CAPABILITIES[0].id}` && method === "PUT") {
+      return route.fulfill({ json: { id: E2E_CHANNEL_CAPABILITIES[0].id, correlation_id: "00000000-0000-0000-0000-000000000802" } });
     }
     if (path === "/console/v1/routing/operation-rules" && method === "GET") {
       return route.fulfill({ status: 200, json: E2E_OPERATION_RULES });
@@ -1263,7 +1245,6 @@ export async function mockConsoleApi(page: Page): Promise<void> {
         },
       });
     }
-    // Default: empty 200 so unknown reads do not break the shell.
     if (path === "/console/v1/system/connectors" && method === "GET") {
       return route.fulfill({ json: CONNECTOR_PLUGINS });
     }
@@ -1275,11 +1256,13 @@ export async function mockConsoleApi(page: Page): Promise<void> {
           headers: { ETag: `"${SYSTEM_SETTINGS.updated_at}"` },
         });
       }
-      return route.fulfill({
-        status: 200,
-        json: { id: "system-settings", correlation_id: "settings-e2e" },
-      });
+      if (method === "PUT") {
+        return route.fulfill({
+          status: 200,
+          json: { id: "00000000-0000-0000-0000-000000000000", correlation_id: "00000000-0000-0000-0000-000000000803" },
+        });
+      }
     }
-    return route.fulfill({ status: 200, json: {} });
+    throw new Error(`Unhandled Console API request: ${method} ${path}`);
   });
 }

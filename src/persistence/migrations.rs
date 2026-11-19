@@ -164,21 +164,7 @@ fn validate_applied_migrations(applied: &[AppliedMigration]) -> Result<(), Migra
 
 #[cfg(test)]
 mod tests {
-    use super::{COMMIT_BARRIERS, MIGRATOR};
-
-    #[test]
-    fn commit_barriers_match_historical_enum_additions() {
-        let enum_additions = MIGRATOR
-            .iter()
-            .filter(|migration| {
-                let sql = migration.sql.as_str().to_ascii_lowercase();
-                sql.contains("alter type") && sql.contains("add value")
-            })
-            .map(|migration| migration.version)
-            .collect::<Vec<_>>();
-
-        assert_eq!(enum_additions, COMMIT_BARRIERS);
-    }
+    use super::MIGRATOR;
 
     #[test]
     fn embedded_migrations_never_opt_out_of_transactions() {

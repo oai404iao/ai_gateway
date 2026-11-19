@@ -1,5 +1,6 @@
 use super::*;
 use ai_gateway::persistence::{RepositoryError, StorageFailureKind};
+use syn::{ext::IdentExt, visit::Visit};
 
 fn create_proxy(name: &str) -> ControlPlaneMutation {
     ControlPlaneMutation::CreateProxy(ProxyCreateInput {
@@ -36,14 +37,99 @@ fn application_and_http_do_not_depend_on_driver_types_or_errors() {
             );
         } else if path.extension().is_some_and(|extension| extension == "rs") {
             let source = std::fs::read_to_string(&path).unwrap();
-            for forbidden in ["sqlx::", "PgPool", "Postgres", ".as_database_error("] {
-                assert!(
-                    !source.contains(forbidden),
-                    "{} contains {forbidden}",
-                    path.display()
-                );
+            let violations = driver_references(&source)
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            assert!(
+                violations.is_empty(),
+                "{} contains driver references: {violations:?}",
+                path.display()
+            );
+        }
+    }
+}
+
+// Checks explicit Rust paths, imports, and error access, not inferred types, re-exported aliases,
+// or references inside macro inputs/expansions.
+fn driver_references(source: &str) -> syn::Result<Vec<String>> {
+    #[derive(Default)]
+    struct DriverReferences(Vec<String>);
+
+    impl DriverReferences {
+        fn check_path_ident(&mut self, ident: &syn::Ident) {
+            let name = ident.unraw().to_string();
+            if matches!(
+                name.as_str(),
+                "sqlx"
+                    | "PgPool"
+                    | "Postgres"
+                    | "PgConnection"
+                    | "PgRow"
+                    | "SqlitePool"
+                    | "Sqlite"
+                    | "SqliteConnection"
+                    | "SqliteRow"
+                    | "as_database_error"
+            ) {
+                self.0.push(name);
             }
         }
+    }
+
+    impl<'ast> Visit<'ast> for DriverReferences {
+        fn visit_path_segment(&mut self, node: &'ast syn::PathSegment) {
+            self.check_path_ident(&node.ident);
+            syn::visit::visit_path_segment(self, node);
+        }
+
+        fn visit_use_tree(&mut self, node: &'ast syn::UseTree) {
+            match node {
+                syn::UseTree::Path(path) => self.check_path_ident(&path.ident),
+                syn::UseTree::Name(name) => self.check_path_ident(&name.ident),
+                syn::UseTree::Rename(rename) => self.check_path_ident(&rename.ident),
+                syn::UseTree::Group(_) | syn::UseTree::Glob(_) => {}
+            }
+            syn::visit::visit_use_tree(self, node);
+        }
+
+        fn visit_item_extern_crate(&mut self, node: &'ast syn::ItemExternCrate) {
+            self.check_path_ident(&node.ident);
+            syn::visit::visit_item_extern_crate(self, node);
+        }
+
+        fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
+            if node.method == "as_database_error" {
+                self.0.push(node.method.to_string());
+            }
+            syn::visit::visit_expr_method_call(self, node);
+        }
+    }
+
+    let mut references = DriverReferences::default();
+    references.visit_file(&syn::parse_file(source)?);
+    Ok(references.0)
+}
+
+#[test]
+fn application_and_http_do_not_depend_guard_checks_syntax_not_text() {
+    let allowed = r#"
+        // use sqlx::{PgPool, Postgres};
+        /// Avoid calling `.as_database_error()` outside persistence.
+        const STORAGE_DESCRIPTION: &str = "Postgres";
+        fn handle(err: RepositoryError) {}
+    "#;
+    assert!(driver_references(allowed).unwrap().is_empty());
+
+    for (source, forbidden) in [
+        ("use ::sqlx as driver;", "sqlx"),
+        ("type Pool = crate::persistence::PgPool;", "PgPool"),
+        ("type Tx = Transaction<'static, Postgres>;", "Postgres"),
+        ("type Pool = crate::persistence::SqlitePool;", "SqlitePool"),
+        (
+            "fn check() { err.as_database_error (); }",
+            "as_database_error",
+        ),
+    ] {
+        assert_eq!(driver_references(source).unwrap(), [forbidden], "{source}");
     }
 }
 

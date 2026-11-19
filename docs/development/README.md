@@ -59,6 +59,7 @@ body/Header 策略归外部插件。转发变更需 deterministic tests 和经�
 
 ## 验证、排障与发布
 
+- [测试设计与审查](test-design.md)：选择独立预期，区分行为契约、结构约束与重复断言。
 - [系统 E2E](system-e2e.md)：真实浏览器、CLI、隔离网关和双数据库场景。
 - [真实上游 smoke](real-upstream-smoke.md)：显式授权、付费外部调用。
 - [转发性能测试](forwarding-performance.md)：仅按需执行的隔离负载工具。

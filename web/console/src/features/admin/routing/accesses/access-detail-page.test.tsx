@@ -78,16 +78,21 @@ describe("upstream accesses", () => {
   });
 
   it("reloads conflicts and blocks non-positive timeout input", async () => {
-    let reads = 0;
-    let writes = 0;
+    const writes: { ifMatch: string | null; name: string }[] = [];
+    const editedElsewhere = { ...UPSTREAM_ACCESS, name: "New upstream access", updated_at: "2026-08-02T00:00:00Z" };
+    const path = `/console/v1/routing/accesses/${UPSTREAM_ACCESS.id}`;
     server.use(
-      http.get("/console/v1/routing/accesses/:id", () => {
-        reads += 1;
-        return HttpResponse.json(UPSTREAM_ACCESS, { headers: { ETag: `"${UPSTREAM_ACCESS.updated_at}"` } });
+      http.get(path, () => {
+        const current = writes.length ? editedElsewhere : UPSTREAM_ACCESS;
+        return HttpResponse.json(current, { headers: { ETag: `"${current.updated_at}"` } });
       }),
-      http.put("/console/v1/routing/accesses/:id", () => {
-        writes += 1;
-        return HttpResponse.json({ error: "conflict" }, { status: 409 });
+      http.put(path, async ({ request }) => {
+        const { name } = await request.json() as UpstreamAccessInput;
+        const ifMatch = request.headers.get("if-match");
+        writes.push({ ifMatch, name });
+        return ifMatch === `"${editedElsewhere.updated_at}"`
+          ? HttpResponse.json({ id: UPSTREAM_ACCESS.id })
+          : HttpResponse.json({ error: "conflict" }, { status: 409 });
       }),
     );
     const user = userEvent.setup();
@@ -95,10 +100,14 @@ describe("upstream accesses", () => {
     await waitFor(() => expect(screen.getByLabelText("Name")).toHaveValue(UPSTREAM_ACCESS.name));
     await user.type(screen.getByLabelText("Connect timeout (ms)"), "0");
     await user.click(screen.getByRole("button", { name: "Save access" }));
-    expect(writes).toBe(0);
+    expect(writes).toEqual([]);
     await user.clear(screen.getByLabelText("Connect timeout (ms)"));
     await user.click(screen.getByRole("button", { name: "Save access" }));
-    await waitFor(() => expect(reads).toBeGreaterThan(1));
     expect(await screen.findByText("This access was changed elsewhere. Reloading.")).toBeInTheDocument();
+    expect(await screen.findByDisplayValue(editedElsewhere.name)).toBeVisible();
+    expect(writes).toEqual([{ ifMatch: `"${UPSTREAM_ACCESS.updated_at}"`, name: UPSTREAM_ACCESS.name }]);
+    await user.click(screen.getByRole("button", { name: "Save access" }));
+    await waitFor(() => expect(writes).toHaveLength(2));
+    expect(writes[1]).toEqual({ ifMatch: `"${editedElsewhere.updated_at}"`, name: editedElsewhere.name });
   });
 });

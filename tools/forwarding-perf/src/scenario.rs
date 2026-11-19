@@ -312,28 +312,27 @@ mod tests {
     use super::{ApiKind, MockMode, ProfileName, profile};
 
     #[test]
-    fn quick_profile_covers_both_formats_and_response_modes() {
+    fn quick_profile_covers_every_format_and_response_mode_pair() {
         let profile = profile(ProfileName::Quick);
-        let formats = profile
+        let pairs = profile
             .scenarios
             .iter()
-            .map(|scenario| scenario.api_kind)
-            .collect::<HashSet<_>>();
-        let modes = profile
-            .scenarios
-            .iter()
-            .map(|scenario| scenario.mock.mode)
+            .map(|scenario| (scenario.api_kind, scenario.mock.mode))
             .collect::<HashSet<_>>();
 
         assert_eq!(
-            formats,
-            HashSet::from([ApiKind::ChatCompletions, ApiKind::Responses])
+            pairs,
+            HashSet::from([
+                (ApiKind::ChatCompletions, MockMode::Json),
+                (ApiKind::ChatCompletions, MockMode::Sse),
+                (ApiKind::Responses, MockMode::Json),
+                (ApiKind::Responses, MockMode::Sse),
+            ])
         );
-        assert_eq!(modes, HashSet::from([MockMode::Json, MockMode::Sse]));
     }
 
     #[test]
-    fn profile_models_are_unique_and_need_no_alias_rewrite() {
+    fn model_names_are_unique_within_each_profile() {
         for name in [ProfileName::Quick, ProfileName::Standard] {
             let profile = profile(name);
             let models = profile

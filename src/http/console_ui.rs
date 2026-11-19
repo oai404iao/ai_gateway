@@ -147,7 +147,7 @@ async fn security_headers(request: Request, next: Next) -> Response {
 
 #[cfg(all(test, feature = "embedded-console-ui"))]
 mod tests {
-    use super::ConsoleAssets;
+    use super::{ConsoleAssets, INDEX_HTML};
     use axum::{
         body::{Body, to_bytes},
         http::{Request, StatusCode, header},
@@ -176,14 +176,18 @@ mod tests {
             response.headers().get(header::CACHE_CONTROL).unwrap(),
             "no-cache"
         );
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "text/html; charset=utf-8"
+        );
         assert!(response.headers().get("content-security-policy").is_some());
         assert_eq!(
             response.headers().get("x-content-type-options").unwrap(),
             "nosniff"
         );
         let body = body_text(response).await;
-        let html = std::str::from_utf8(&body).unwrap();
-        assert!(html.contains("root"), "index.html must mount the SPA root");
+        let index = ConsoleAssets::get(INDEX_HTML).expect("dist contains index.html");
+        assert_eq!(body.as_slice(), index.data.as_ref());
     }
 
     #[tokio::test]
@@ -205,8 +209,8 @@ mod tests {
             response.headers().get(header::CACHE_CONTROL).unwrap(),
             "no-store"
         );
-        let body = body_text(response).await;
-        assert!(std::str::from_utf8(&body).unwrap().contains("not found"));
+        let body: serde_json::Value = serde_json::from_slice(&body_text(response).await).unwrap();
+        assert_eq!(body["error"].as_str(), Some("not found"));
     }
 
     #[tokio::test]

@@ -3,12 +3,15 @@ import {
   E2E_ADMIN_USER_GROUP_ID,
   E2E_API_KEY,
   E2E_API_KEY_SECRET,
+  E2E_CHANNEL_ETAG,
   E2E_CODEX_CREDENTIAL,
   E2E_CODEX_CREDENTIAL_ID,
   E2E_CODEX_GROUP_ID,
   E2E_MODEL,
   E2E_STANDARD_CHANNEL_ID,
   E2E_ROUTING_GROUP_ID,
+  E2E_SYSTEM_REQUEST_LOG,
+  E2E_USER,
   mockConsoleApi,
 } from "./mock-api";
 
@@ -166,11 +169,14 @@ test.describe("Console SPA smoke", () => {
     await expect(page.getByRole("heading", { name: "Profile" })).toBeVisible();
   });
 
-  test("an unknown deep link behind auth redirects to login when unauthenticated", async ({
+  test("a protected deep link redirects to login when refresh is unauthorized", async ({
     page,
   }) => {
-    // No API mock for refresh -> the SPA treats the session as anonymous.
+    await mockConsoleApi(page);
+    const refresh = page.waitForResponse((response) =>
+      response.url().endsWith("/console/v1/auth/refresh") && response.request().method() === "POST");
     await page.goto("/admin/users");
+    expect((await refresh).status()).toBe(401);
     await expect(page).toHaveURL(/\/login/);
   });
 
@@ -198,6 +204,9 @@ test.describe("Console SPA smoke", () => {
       password: "correct-horse-battery-staple",
     });
     await expect(page).toHaveURL(/\/account/);
+    await expect(page.getByLabel("Display name", { exact: true })).toHaveValue("New User");
+    await expect(page.getByText("new-user@example.test", { exact: true })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Users", exact: true })).toHaveCount(0);
   });
 
   test("the login UI switches to Simplified Chinese and retains the preference", async ({
@@ -206,6 +215,7 @@ test.describe("Console SPA smoke", () => {
     await mockConsoleApi(page);
     await page.goto("/login");
 
+    await expect(page.getByRole("button", { name: "Sign in" })).toBeVisible();
     await page.getByRole("button", { name: "Language" }).click();
     await page.getByRole("menuitemradio", { name: "简体中文" }).click();
     await expect(page.getByRole("button", { name: "登录" })).toBeVisible();
@@ -234,9 +244,9 @@ test.describe("Console SPA smoke", () => {
       "https://api.e2e.example.test/v1",
     );
     const keyValue = page.getByLabel("API key value");
-    await expect(keyValue).toHaveValue(`sk-${"•".repeat(24)}`);
+    await expect.poll(() => keyValue.evaluate((input: HTMLInputElement) => input.value === "sk-••••••••••••••••••••••••")).toBe(true);
     await page.getByRole("button", { name: "Show full API key" }).click();
-    await expect(keyValue).toHaveValue(E2E_API_KEY_SECRET);
+    await expect.poll(() => keyValue.evaluate((input: HTMLInputElement, secret) => input.value === secret, E2E_API_KEY_SECRET)).toBe(true);
   });
 
   test("a user can permanently delete an API key", async ({ page }) => {
@@ -290,9 +300,7 @@ test.describe("Console SPA smoke", () => {
     );
     await dialog.getByRole("button", { name: "Confirm" }).click();
     const request = await deleteRequest;
-    expect(request.headers()["if-match"]).toBe(
-      '"2026-01-02T00:00:00Z"',
-    );
+    expect(request.headers()["if-match"]).toBe(E2E_CHANNEL_ETAG);
     expect(request.postData()).toBeNull();
     await expect(page).toHaveURL(/\/admin\/routing\/channels$/);
     await expect(page.getByText("Channel deleted")).toBeVisible();
@@ -301,7 +309,7 @@ test.describe("Console SPA smoke", () => {
   test("users can only read sanitized Codex quota windows", async ({ page }) => {
     await mockConsoleApi(page);
     await page.goto("/login");
-    await page.getByLabel(/email/i).fill("admin@example.com");
+    await page.getByLabel(/email/i).fill(E2E_USER.email);
     await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
     await page.getByRole("button", { name: /sign in/i }).click();
     await page.getByRole("link", { name: "Codex quotas" }).click();
@@ -404,9 +412,14 @@ test.describe("Console SPA smoke", () => {
       .click();
     await requestPromise;
     await expect(page.getByText("Device signed out")).toBeVisible();
+    await expect(page.getByText("Firefox 128 · Windows")).not.toBeVisible();
+    await expect(page.getByRole("button", { name: "Sign out this device" })).toBeVisible();
 
     await page.getByRole("button", { name: "Show history" }).click();
-    await expect(page.getByText("Revoked session", { exact: true })).toBeVisible();
+    const firefox = page.locator('[data-slot="card-header"]').filter({
+      has: page.getByText("Firefox 128 · Windows", { exact: true }),
+    });
+    await expect(firefox.getByText("Revoked session", { exact: true })).toBeVisible();
   });
 
   test("users can enable Responses WebSocket in personal settings", async ({
@@ -754,7 +767,7 @@ test.describe("Console SPA smoke", () => {
     await expect(page.getByText("Host CPU", { exact: true })).toBeVisible();
   });
 
-  test("personal and system request logs expose the intended fields", async ({
+  test("personal log filters and details work; system logs show clipped upstream names", async ({
     page,
   }) => {
     await mockConsoleApi(page);
@@ -768,19 +781,10 @@ test.describe("Console SPA smoke", () => {
     await expect(
       page.getByRole("columnheader", { name: "Started" }),
     ).toBeVisible();
-    expect(await page.getByRole("columnheader").allTextContents()).toEqual([
-      "Started",
-      "Model",
-      "Operation / protocol",
-      "Channel group",
-      "Outcome",
-      "Tokens",
-      "Cost",
-      "Duration",
-      "View details",
-    ]);
+    await expect(page.getByRole("columnheader", { name: "Channel group" })).toBeVisible();
+    await expect(page.getByRole("columnheader", { name: "Channel", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("columnheader", { name: "User", exact: true })).toHaveCount(0);
     await expect(page.getByText("Responses", { exact: true })).toBeVisible();
-    await expect(page.getByText("upstream-a", { exact: true })).toHaveCount(0);
     await expect(page.getByLabel("Reasoning effort: High")).toBeVisible();
     await expect(page.getByLabel("Fast mode")).toBeVisible();
     await expect(page.getByLabel("Peak pricing")).toBeVisible();
@@ -818,25 +822,12 @@ test.describe("Console SPA smoke", () => {
     await expect(
       personalDetail.locator("dt").filter({ hasText: "Completed" }),
     ).toBeVisible();
-    expect(await personalDetail.locator("dt").allTextContents()).toEqual([
-      "Started",
-      "Model",
-      "Operation",
-      "Protocol",
-      "Channel group",
-      "Outcome",
-      "Tokens",
-      "Cost",
-      "Duration",
-      "HTTP",
-      "Error code",
-      "Error detail",
-      "Completed",
-    ]);
+    await expect(personalDetail.getByText("Channel group", { exact: true })).toBeVisible();
+    await expect(personalDetail.getByText("Channel", { exact: true })).toHaveCount(0);
+    await expect(personalDetail.getByText("User", { exact: true })).toHaveCount(0);
     await expect(
       personalDetail.getByText("Responses", { exact: true }),
     ).toBeVisible();
-    await expect(page.getByText("upstream-a", { exact: true })).toHaveCount(0);
     await page.keyboard.press("Escape");
     await expect(personalDetail).toBeHidden();
 
@@ -845,20 +836,21 @@ test.describe("Console SPA smoke", () => {
     await expect(
       page.getByRole("columnheader", { name: "User", exact: true }),
     ).toBeVisible();
-    expect(await page.getByRole("columnheader").allTextContents()).toEqual([
-      "Started",
-      "Model",
-      "Operation / protocol",
-      "Channel group",
-      "Channel",
-      "User",
-      "Outcome",
-      "Tokens",
-      "Cost",
-      "Duration",
-      "View details",
-    ]);
-    await expect(page.getByRole("cell", { name: "upstream-a" })).toBeVisible();
+    await expect(page.getByRole("columnheader", { name: "Channel", exact: true })).toBeVisible();
+    const channelName = E2E_SYSTEM_REQUEST_LOG.channel_name;
+    const channel = page.getByRole("cell", { name: channelName }).getByText(channelName, { exact: true });
+    await expect(channel).toBeVisible();
+    await expect.poll(() => channel.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return element.scrollWidth > element.clientWidth
+        && style.overflowX === "hidden" && style.textOverflow === "ellipsis";
+    })).toBe(true);
+    await channel.focus();
+    await page.keyboard.press("Shift+Tab");
+    await page.keyboard.press("Tab");
+    await expect(channel).toBeFocused();
+    await expect(page.getByText(channelName, { exact: true }).filter({ visible: true })).toHaveCount(2);
+    await channel.blur();
     await expect(page.getByRole("cell", { name: "Batch User" })).toBeVisible();
     await page.getByRole("cell", { name: "gateway-e2e-model" }).click();
     const systemDetail = page.getByRole("dialog");
@@ -866,25 +858,8 @@ test.describe("Console SPA smoke", () => {
     await expect(
       systemDetail.locator("dt").filter({ hasText: "Completed" }),
     ).toBeVisible();
-    expect(await systemDetail.locator("dt").allTextContents()).toEqual([
-      "Started",
-      "Model",
-      "Operation",
-      "Protocol",
-      "Channel group",
-      "Channel",
-      "User",
-      "Outcome",
-      "Tokens",
-      "Cost",
-      "Duration",
-      "HTTP",
-      "Error code",
-      "Error detail",
-      "Completed",
-    ]);
     await expect(
-      systemDetail.getByText("upstream-a", { exact: true }),
+      systemDetail.getByText(channelName, { exact: true }),
     ).toBeVisible();
     await expect(
       systemDetail.getByText("Batch User", { exact: true }),

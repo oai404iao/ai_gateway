@@ -34,7 +34,11 @@ jobs:
       - name: Test changed-area classifier
         run: scripts/test-ci-changed-areas.sh
       - name: Test release automation
-        run: scripts/test-release-automation.sh
+        run: |
+          python3 -m venv "$RUNNER_TEMP/release-checks"
+          . "$RUNNER_TEMP/release-checks/bin/activate"
+          python3 -m pip install PyYAML==6.0.3
+          scripts/test-release-automation.sh
       - name: Resolve changed files
         id: areas
         shell: bash

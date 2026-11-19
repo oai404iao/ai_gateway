@@ -39,15 +39,15 @@ describe("UserGroupDetailPage", () => {
       system_role: null,
       member_count: 3,
     };
-    let deleted = false;
+    const deletes: { id: string; ifMatch: string | null }[] = [];
     server.use(
       http.get("/console/v1/user-groups/:id", () =>
         HttpResponse.json(customGroup, {
           headers: { ETag: `"${customGroup.updated_at}"` },
         }),
       ),
-      http.delete("/console/v1/user-groups/:id", ({ request }) => {
-        deleted = request.headers.get("If-Match") === `"${customGroup.updated_at}"`;
+      http.delete("/console/v1/user-groups/:id", ({ request, params }) => {
+        deletes.push({ id: String(params.id), ifMatch: request.headers.get("if-match") });
         return HttpResponse.json({
           id: customGroup.id,
           correlation_id: "00000000-0000-0000-0000-000000000054",
@@ -65,10 +65,16 @@ describe("UserGroupDetailPage", () => {
       screen.getByRole("button", { name: "Delete user group" }),
     );
     const confirmation = await screen.findByRole("alertdialog");
+    await user.click(within(confirmation).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+    expect(deletes).toEqual([]);
+
+    await user.click(screen.getByRole("button", { name: "Delete user group" }));
     await user.click(
-      within(confirmation).getByRole("button", { name: "Delete user group" }),
+      within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete user group" }),
     );
 
-    await waitFor(() => expect(deleted).toBe(true));
+    await waitFor(() => expect(window.location.pathname).toBe("/admin/user-groups"));
+    expect(deletes).toEqual([{ id: customGroup.id, ifMatch: `"${customGroup.updated_at}"` }]);
   });
 });

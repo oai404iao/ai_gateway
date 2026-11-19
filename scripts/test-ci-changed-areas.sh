@@ -5,6 +5,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 classifier="$repo_root/scripts/ci-changed-areas.sh"
 
 docs_only=$'docs=true\nrust=false\nconsole=false\nimage=false'
+docs_and_rust=$'docs=true\nrust=true\nconsole=false\nimage=false'
 rust_only=$'docs=false\nrust=true\nconsole=false\nimage=false'
 console_only=$'docs=false\nrust=false\nconsole=true\nimage=false'
 rust_and_image=$'docs=false\nrust=true\nconsole=false\nimage=true'
@@ -49,6 +50,8 @@ assert_areas \
     "web/console/package.json"
 assert_areas "Docker image recipe" "$image_only" "Dockerfile"
 assert_areas "OpenAPI contract" "$all_areas" "docs/openapi/console-v1.yaml"
+assert_areas "Embedded request policy" "$docs_and_rust" "docs/reference/request-allowlists.json"
+assert_areas "Request policy documentation" "$docs_only" "docs/reference/request-allowlists.md"
 assert_areas "workflow" "$all_areas" ".github/workflows/ci.yml"
 assert_areas "system E2E" "$system_e2e" "e2e/run.py"
 assert_areas "shared upstream fixture" "$system_e2e" "mock/scenarios/responses.json"

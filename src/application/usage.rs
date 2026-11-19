@@ -1038,9 +1038,17 @@ fn sse_field(line: &[u8]) -> Option<(&[u8], &[u8])> {
 mod tests {
     use axum::body::Bytes;
 
-    use super::{ResponseUsage, SseTerminalOutcome, UsageCollector, UsageParserConfig};
+    use super::{ResponseUsage, SseTerminalOutcome, UsageCollector, UsageParserConfig, Value};
     use crate::domain::ApiFormat;
     use ai_gateway_connector_sdk::UsageFormat;
+
+    fn structured_error_detail(summary: &str) -> Value {
+        let json = summary
+            .split_once("\n\n")
+            .map_or(summary, |(_, detail)| detail);
+        serde_json::from_str(json)
+            .expect("the complete error summary must retain structured detail")
+    }
 
     #[test]
     fn extracts_chat_usage_from_split_nonstreaming_json_without_buffering_body() {
@@ -1215,11 +1223,13 @@ data: [DONE]
         let error = collector.error_details().unwrap();
         assert_eq!(error.code.as_deref(), Some("previous_response_not_found"));
         let summary = error.summary.unwrap();
-        assert!(
-            summary.starts_with("Previous response was not found. Retrying the full request.\n\n{")
+        let detail = structured_error_detail(&summary);
+        assert_eq!(detail["status"].as_u64(), Some(404));
+        assert_eq!(detail["error"]["code"], "previous_response_not_found");
+        assert_eq!(
+            detail["error"]["message"],
+            "Previous response was not found. Retrying the full request."
         );
-        assert!(summary.contains("\"status\": 404"));
-        assert!(summary.contains("\"previous_response_not_found\""));
     }
 
     #[test]
@@ -1249,9 +1259,10 @@ data: [DONE]
         let error = collector.error_details().unwrap();
         assert_eq!(error.code.as_deref(), Some("server_error"));
         let summary = error.summary.unwrap();
-        assert!(summary.starts_with("failed\n\n{"));
-        assert!(summary.contains("\"param\": null"));
-        assert!(summary.contains("\"sequence_number\": 3"));
+        let detail = structured_error_detail(&summary);
+        assert_eq!(detail["message"], "failed");
+        assert_eq!(detail.get("param"), Some(&Value::Null));
+        assert_eq!(detail["sequence_number"].as_u64(), Some(3));
     }
 
     #[test]
@@ -1277,9 +1288,16 @@ data: [DONE]
         let error = collector.error_details().unwrap();
         assert_eq!(error.code.as_deref(), Some("model_error"));
         let summary = error.summary.unwrap();
-        assert!(summary.starts_with("generation failed\n\n{"));
-        assert!(summary.contains("\"input_tokens\": 7"));
-        assert!(summary.contains("\"output_tokens\": 1"));
+        let detail = structured_error_detail(&summary);
+        assert_eq!(detail["response"]["error"]["message"], "generation failed");
+        assert_eq!(
+            detail["response"]["usage"]["input_tokens"].as_u64(),
+            Some(7)
+        );
+        assert_eq!(
+            detail["response"]["usage"]["output_tokens"].as_u64(),
+            Some(1)
+        );
     }
 
     #[test]
@@ -1299,9 +1317,10 @@ data: [DONE]
         let error = collector.error_details().unwrap();
         assert_eq!(error.code.as_deref(), Some("server_error"));
         let summary = error.summary.unwrap();
-        assert!(summary.starts_with("upstream failed\n\n{"));
-        assert!(summary.contains("\"type\": \"server_error\""));
-        assert!(summary.contains("\"code\": null"));
+        let detail = structured_error_detail(&summary);
+        assert_eq!(detail["error"]["message"], "upstream failed");
+        assert_eq!(detail["error"]["type"], "server_error");
+        assert_eq!(detail["error"].get("code"), Some(&Value::Null));
     }
 
     #[test]
@@ -1346,9 +1365,15 @@ data: [DONE]
         let error = collector.error_details().unwrap();
         assert_eq!(error.code.as_deref(), Some("insufficient_quota"));
         let summary = error.summary.unwrap();
-        assert!(summary.starts_with("quota exhausted\n\n{"));
-        assert!(summary.contains("\"param\": \"organization\""));
-        assert!(summary.contains("\"request_id\": \"req_123\""));
+        let (message, json) = summary.split_once("\n\n").unwrap();
+        assert_eq!(message, "quota exhausted");
+        let detail: Value = serde_json::from_str(json).unwrap();
+        assert!(
+            json.contains('\n'),
+            "structured detail is rendered on multiple lines"
+        );
+        assert_eq!(detail["error"]["param"], "organization");
+        assert_eq!(detail["request_id"], "req_123");
     }
 
     #[test]

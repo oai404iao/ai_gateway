@@ -40,7 +40,10 @@ replacement of the synthetic client Bearer credential with the configured
 upstream Bearer credential, `reqwest` forwarding, SSE streaming, downstream
 and upstream WebSocket upgrades, usage extraction, price-snapshot binding, and
 terminal request-log costs—without requiring PostgreSQL or modifying a shared
-control plane. The WebSocket case opens a client connection to the test's
+control plane. For SSE the smoke compares logged usage to the wire summary:
+a Chat finish or usage-only chunk, or a Responses `response.completed` event.
+An earlier delta with usage is not evidence of terminal usage.
+The WebSocket case opens a client connection to the test's
 random local Gateway listener, sends a deterministic `response.create` frame,
 and consumes events through `response.completed`.
 

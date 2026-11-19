@@ -24,7 +24,11 @@ use ai_gateway::{
     runtime_config::{RuntimeConfig, compile_control_plane_with_system_settings},
     upstream::UpstreamClientRegistry,
 };
-use axum::http::{HeaderMap, HeaderValue, header::AUTHORIZATION};
+use axum::http::{
+    HeaderMap, HeaderName, HeaderValue, Method,
+    header::{AUTHORIZATION, PROXY_AUTHORIZATION},
+    uri::Authority,
+};
 use futures_util::{SinkExt, StreamExt};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
@@ -391,8 +395,14 @@ async fn start_rejecting_upstream(status: axum::http::StatusCode) -> MockRespons
 
 struct HttpConnectProxy {
     address: SocketAddr,
-    request: Arc<Mutex<Option<String>>>,
+    request: Arc<Mutex<Option<CapturedConnectRequest>>>,
     task: JoinHandle<()>,
+}
+
+struct CapturedConnectRequest {
+    method: Method,
+    authority: Authority,
+    headers: HeaderMap,
 }
 
 impl Drop for HttpConnectProxy {
@@ -418,14 +428,28 @@ async fn start_http_connect_proxy() -> HttpConnectProxy {
                 break;
             }
         }
-        let request = String::from_utf8(bytes).unwrap();
-        *captured.lock().unwrap() = Some(request.clone());
-        let authority = request
-            .lines()
-            .next()
-            .and_then(|line| line.split_ascii_whitespace().nth(1))
-            .unwrap();
-        let mut upstream = TcpStream::connect(authority).await.unwrap();
+        let wire = std::str::from_utf8(&bytes).unwrap();
+        let (head, _) = wire.split_once("\r\n\r\n").unwrap();
+        let mut lines = head.split("\r\n");
+        let mut request_line = lines.next().unwrap().split_ascii_whitespace();
+        let method = request_line.next().unwrap().parse().unwrap();
+        let authority: Authority = request_line.next().unwrap().parse().unwrap();
+        assert_eq!(request_line.next(), Some("HTTP/1.1"));
+        assert_eq!(request_line.next(), None);
+        let mut headers = HeaderMap::new();
+        for line in lines {
+            let (name, value) = line.split_once(':').unwrap();
+            headers.append(
+                name.parse::<HeaderName>().unwrap(),
+                HeaderValue::from_str(value.trim()).unwrap(),
+            );
+        }
+        let mut upstream = TcpStream::connect(authority.as_str()).await.unwrap();
+        *captured.lock().unwrap() = Some(CapturedConnectRequest {
+            method,
+            authority,
+            headers,
+        });
         client
             .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             .await
@@ -2136,10 +2160,14 @@ async fn responses_websocket_uses_authenticated_http_connect_proxy() {
         .request
         .lock()
         .unwrap()
-        .clone()
+        .take()
         .expect("proxy should receive CONNECT");
-    assert!(request.starts_with(&format!("CONNECT {} HTTP/1.1\r\n", upstream.address)));
-    assert!(request.contains("Proxy-Authorization: Basic cHJveHktdXNlcjpwcm94eS1wYXNz\r\n"));
+    assert_eq!(request.method, Method::CONNECT);
+    assert_eq!(request.authority.as_str(), upstream.address.to_string());
+    assert_eq!(
+        request.headers[PROXY_AUTHORIZATION],
+        "Basic cHJveHktdXNlcjpwcm94eS1wYXNz"
+    );
 }
 
 #[tokio::test]

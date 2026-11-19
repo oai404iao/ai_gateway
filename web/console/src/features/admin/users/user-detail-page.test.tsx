@@ -158,15 +158,15 @@ describe("UserDetailPage", () => {
       display_name: "Delete Me",
       role: "user" as const,
     };
-    let deleted = false;
+    const deletes: { id: string; ifMatch: string | null }[] = [];
     server.use(
       http.get("/console/v1/users/:id", () =>
         HttpResponse.json(managedUser, {
           headers: { ETag: `"${managedUser.updated_at}"` },
         }),
       ),
-      http.delete("/console/v1/users/:id", ({ request }) => {
-        deleted = request.headers.get("If-Match") === `"${managedUser.updated_at}"`;
+      http.delete("/console/v1/users/:id", ({ request, params }) => {
+        deletes.push({ id: String(params.id), ifMatch: request.headers.get("if-match") });
         return HttpResponse.json({
           id: managedUser.id,
           correlation_id: "00000000-0000-0000-0000-000000000053",
@@ -181,11 +181,17 @@ describe("UserDetailPage", () => {
     expect(
       within(confirmation).getByText(/deletes every API key with its stored secret/i),
     ).toBeInTheDocument();
+    await user.click(within(confirmation).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+    expect(deletes).toEqual([]);
+
+    await user.click(screen.getByRole("button", { name: "Delete user" }));
     await user.click(
-      within(confirmation).getByRole("button", { name: "Delete user" }),
+      within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete user" }),
     );
 
-    await waitFor(() => expect(deleted).toBe(true));
+    await waitFor(() => expect(window.location.pathname).toBe("/admin/users"));
+    expect(deletes).toEqual([{ id: managedUser.id, ifMatch: `"${managedUser.updated_at}"` }]);
   });
 
   it("reauthenticates the administrator and shows a temporary password once", async () => {

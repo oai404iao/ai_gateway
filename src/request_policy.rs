@@ -748,7 +748,7 @@ mod tests {
     }
 
     #[test]
-    fn client_json_policy_preserves_chat_thinking_extensions_and_rejects_unknown_fields() {
+    fn client_json_policy_preserves_chat_thinking_extensions() {
         let original = Bytes::from_static(
             br#"{ "model" : "deepseek-chat", "messages" : [], "thinking" : {"type":"enabled"}, "enable_thinking" : true, "stream" : false }"#,
         );
@@ -760,15 +760,6 @@ mod tests {
         .unwrap();
         assert!(!allowed.changed);
         assert_eq!(allowed.body, original);
-
-        let error = apply_json_body_policy(
-            RequestPolicyLayer::Client,
-            RequestInterface::ChatCompletions,
-            Bytes::from_static(br#"{"model":"gpt-5","messages":[],"future_field":true}"#),
-        )
-        .unwrap_err();
-        assert_eq!(error.code(), "request_body_field_unsupported");
-        assert!(error.message().contains("future_field"));
     }
 
     #[test]
@@ -787,7 +778,7 @@ mod tests {
     }
 
     #[test]
-    fn standalone_web_search_policy_preserves_current_codex_fields_and_rejects_unknowns() {
+    fn standalone_web_search_policy_preserves_current_codex_fields() {
         let original = Bytes::from_static(
             br#"{"id":"session-123","model":"gpt-5-codex","reasoning":{"effort":"medium"},"input":"find it","commands":{"search_query":[{"q":"example"}]},"settings":{"external_web_access":true},"max_output_tokens":300}"#,
         );
@@ -799,33 +790,6 @@ mod tests {
         .unwrap();
         assert!(!client.changed);
         assert_eq!(client.body, original);
-
-        let error = apply_json_body_policy(
-            RequestPolicyLayer::Client,
-            RequestInterface::StandaloneWebSearch,
-            Bytes::from_static(
-                br#"{"id":"session-123","model":"gpt-5-codex","future_field":true}"#,
-            ),
-        )
-        .unwrap_err();
-        assert_eq!(error.code(), "request_body_field_unsupported");
-        assert!(error.message().contains("future_field"));
-    }
-
-    #[test]
-    fn image_turn_header_survives_public_images_policy() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            "x-codex-image-turn-id",
-            HeaderValue::from_static("caller-image-turn"),
-        );
-        for interface in REQUIRED_INTERFACES {
-            let client = filter_client_headers(interface, &headers).unwrap();
-            assert_eq!(client["x-codex-image-turn-id"], "caller-image-turn");
-            if interface == RequestInterface::ChatCompletions {
-                continue;
-            }
-        }
     }
 
     #[test]
@@ -843,7 +807,7 @@ mod tests {
                 apply_json_body_policy(
                     RequestPolicyLayer::Client,
                     interface,
-                    Bytes::from_static(br#"{"future_field":true}"#),
+                    Bytes::from_static(br#"{"model":"gpt-5","future_field":true}"#),
                 )
                 .unwrap_err()
             };
@@ -853,6 +817,7 @@ mod tests {
                 "{}",
                 interface.as_str()
             );
+            assert!(error.message().contains("future_field"));
         }
     }
 
@@ -889,6 +854,10 @@ mod tests {
         headers.insert("x-unknown", HeaderValue::from_static("drop"));
         headers.insert("x-stainless-lang", HeaderValue::from_static("rust"));
         headers.insert("traceparent", HeaderValue::from_static("trace"));
+        headers.insert(
+            "x-codex-image-turn-id",
+            HeaderValue::from_static("caller-image-turn"),
+        );
         headers.insert("originator", HeaderValue::from_static("codex_cli_rs"));
         headers.insert(
             "x-codex-turn-metadata",
@@ -920,6 +889,7 @@ mod tests {
         assert!(client.contains_key("x-hop"));
         assert!(client.contains_key("x-stainless-lang"));
         assert!(client.contains_key("traceparent"));
+        assert_eq!(client["x-codex-image-turn-id"], "caller-image-turn");
         assert!(client.contains_key("originator"));
         assert!(client.contains_key("x-codex-turn-metadata"));
         assert!(client.contains_key("x-codex-beta-features"));

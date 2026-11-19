@@ -67,13 +67,16 @@ test("theme preference also controls toast appearance and survives reload", asyn
   await expect(page.locator("html")).toHaveClass(/dark/);
   await expect(page.getByRole("heading", { name: "Profile", exact: true })).toBeVisible();
 
-  await page.getByRole("button", { name: /Initial Admin/ }).click();
-  await page.getByRole("menuitem", { name: "Sign out", exact: true }).click();
-  await expect(page).toHaveURL(/\/login/);
   const storage = await page.evaluate(() => ({
     local: Object.entries(localStorage),
     session: Object.entries(sessionStorage),
   }));
   expect(JSON.stringify(storage)).not.toContain("e2e-mock-access-token");
   expect(storage.local).toContainEqual(["console-theme", "dark"]);
+
+  await page.getByRole("button", { name: /Initial Admin/ }).click();
+  await page.getByRole("menuitem", { name: "Sign out", exact: true }).click();
+  await expect(page).toHaveURL(/\/login/);
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Sign in", exact: true })).toBeVisible();
 });

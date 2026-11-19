@@ -22,8 +22,10 @@ fi
 
 python3 - "$version" <<'PY'
 import json
+import os
 import pathlib
 import re
+import subprocess
 import sys
 import tomllib
 
@@ -54,17 +56,41 @@ if len(lock_versions) != 1:
     raise SystemExit("Cargo.lock must contain exactly one ai-gateway package")
 checks["Cargo.lock ai-gateway version"] = lock_versions[0]
 
-compose = (root / "docker-compose.prd.yaml").read_text(encoding="utf-8")
-match = re.search(r"AI_GATEWAY_VERSION:-([^}]+)", compose)
-if not match:
-    raise SystemExit("docker-compose.prd.yaml has no AI_GATEWAY_VERSION default")
-checks["docker-compose.prd.yaml version"] = match.group(1)
+def compose_config(env_file, compose_file="docker-compose.prd.yaml", source=None):
+    # Ignore host overrides and the private project .env when checking shipped defaults.
+    env = {key: os.environ[key] for key in ("PATH", "HOME") if key in os.environ}
+    return json.loads(subprocess.check_output(
+        ["docker", "compose", "--env-file", env_file, "-f", compose_file,
+         "config", "--format", "json"],
+        env=env,
+        input=source,
+        text=True,
+    ))
 
-env_example = (root / "deploy/compose/env.example").read_text(encoding="utf-8")
-match = re.search(r"^AI_GATEWAY_VERSION=(.+)$", env_example, re.MULTILINE)
-if not match:
-    raise SystemExit("deploy/compose/env.example has no AI_GATEWAY_VERSION")
-checks["deploy/compose/env.example version"] = match.group(1)
+
+gateway = compose_config("/dev/null")["services"]["gateway"]
+image_name = gateway["image"].rsplit("/", 1)[-1]
+checks["docker-compose.prd.yaml gateway image tag"] = (
+    image_name.partition(":")[2] if "@" not in image_name else None
+)
+checks["docker-compose.prd.yaml gateway build VERSION"] = gateway["build"]["args"].get("VERSION")
+
+env_example = "deploy/compose/env.example"
+assignments = re.findall(
+    r"^[^\S\r\n]*(?:export[^\S\r\n]+)?AI_GATEWAY_VERSION[^\S\r\n]*[=:]",
+    (root / env_example).read_text(encoding="utf-8-sig"),
+    re.MULTILINE,
+)
+if len(assignments) != 1:
+    raise SystemExit(f"{env_example} must set AI_GATEWAY_VERSION exactly once")
+env_probe = compose_config(env_example, "-", """\
+services:
+  version-check:
+    image: scratch
+    environment:
+      VERSION: ${AI_GATEWAY_VERSION-}
+""")
+checks[f"{env_example} version"] = env_probe["services"]["version-check"]["environment"]["VERSION"]
 
 errors = [
     f"{name} is {actual!r}, expected {version!r}"

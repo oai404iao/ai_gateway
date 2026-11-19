@@ -13,7 +13,7 @@ import threading
 from urllib.error import HTTPError
 from urllib.request import Request
 
-from run import HTTP, ROOT, check, load_plugin_fixture, request, wait_until
+from run import HTTP, ROOT, check, load_plugin_fixture, request, settled_request_logs, wait_until
 from mock.response_adapter import AdapterUpstream, USAGE, responses_events
 
 PLUGIN_ID = "example-response-adapter"
@@ -69,27 +69,48 @@ def wire_request(data, key, stream=False, operation="chat_completion"):
         response = HTTP.open(req, timeout=15)
     except HTTPError as error:
         response = error
-    except RemoteDisconnected:
+    except (RemoteDisconnected, ConnectionResetError):
         if not stream:
             raise
         return 0, b""
     with response:
-        try:
+        if stream:
+            wire = bytearray()
+            try:
+                while len(wire) <= MAX_WIRE:
+                    chunk = response.read1(MAX_WIRE + 1 - len(wire))
+                    if not chunk:
+                        break
+                    wire.extend(chunk)
+            except IncompleteRead as error:
+                wire.extend(error.partial)
+            except ConnectionResetError:
+                pass
+            wire = bytes(wire)
+        else:
             wire = response.read(MAX_WIRE + 1)
-        except IncompleteRead as error:
-            if not stream:
-                raise
-            wire = error.partial
-        except ConnectionResetError:
-            if not stream:
-                raise
-            wire = b""
         check(len(wire) <= MAX_WIRE, "adapter wire evidence limit exceeded")
         return response.status, wire
 
 
-def sse_data(wire):
-    return [line[6:] for line in wire.decode().splitlines() if line.startswith("data: ")]
+def sse_events(wire):
+    name, data = "", []
+    for line in wire.decode().replace("\r\n", "\n").replace("\r", "\n").splitlines(keepends=True):
+        if line == "\n":
+            if data:
+                yield name, "\n".join(data)
+            name, data = "", []
+        else:
+            field, _, value = line.removesuffix("\n").partition(":")
+            if field == "event":
+                name = value.removeprefix(" ")
+            elif field == "data":
+                data.append(value.removeprefix(" "))
+
+
+def chat_deltas(events):
+    return [choice["delta"]["content"] for event in events for choice in event.get("choices", [])
+            if "content" in choice.get("delta", {})]
 
 
 def verify_json(status, wire, label):
@@ -108,20 +129,20 @@ def verify_responses_json(value, label):
           "Responses JSON text, terminal or usage was not preserved")
 
 
-def verify_no_dispatch(status, before, after):
-    check(not 200 <= status < 300 and after == before,
-          "unsupported protocol dispatched upstream")
+def verify_no_dispatch(status, wire, arrived):
+    check(status == 503, "expected route rejection for unsupported protocol")
+    check(json.loads(wire)["error"]["code"] == "no_healthy_channel",
+          "unexpected unsupported protocol error")
+    check(not arrived, "unsupported protocol dispatched upstream")
 
 
 def verify_sse(status, wire, label):
     check(status == 200, "adapted SSE status mismatch")
-    values = sse_data(wire)
+    values = [value for _, value in sse_events(wire)]
     check(values and values[-1] == "[DONE]" and values.count("[DONE]") == 1,
           "SSE terminal missing or synthesized twice")
     events = [json.loads(value) for value in values[:-1]]
-    text = [choice["delta"]["content"] for event in events for choice in event.get("choices", [])
-            if "content" in choice.get("delta", {})]
-    check(text == [label + "1:raw-first", label + "2:raw-second"],
+    check(chat_deltas(events) == [label + "1:raw-first", label + "2:raw-second"],
           "SSE text or request-local state mismatch")
     check([event["usage"] for event in events if event.get("usage")] == [USAGE],
           "SSE usage changed")
@@ -131,7 +152,8 @@ def verify_sse(status, wire, label):
 
 def verify_responses_sse(status, wire, label, terminal="completed"):
     check(status == 200, "Responses SSE status mismatch")
-    values = sse_data(wire)
+    frames = list(sse_events(wire))
+    values = [value for _, value in frames]
     check("[DONE]" not in values, "Responses SSE synthesized DONE")
     events = [json.loads(value) for value in values]
     expected = responses_events(terminal)
@@ -139,31 +161,31 @@ def verify_responses_sse(status, wire, label, terminal="completed"):
     for index in (1, 2):
         expected[index]["delta"] = f"{label}{index}:" + ("raw-first" if index == 1 else "raw-second")
     check(events == expected, "Responses SSE text, usage or terminal mutated")
-    names = [line[7:] for line in wire.decode().splitlines() if line.startswith("event: ")]
+    names = [name for name, _ in frames]
     check(names == [event["type"] for event in expected], "Responses SSE event name mismatch")
 
 
-def verify_failed_wire(status, wire, stream=False, truncated=False):
-    if not stream:
-        check(status == 502, "invalid JSON adapter did not fail before headers")
-        value = json.loads(wire)
-        check(value["error"]["code"] == "response_transform_failed", "wrong adapter failure")
+def verify_failed_wire(status, wire, stream=False, *, truncated_label=None):
+    if truncated_label is not None:
+        check(status == 200, "truncation must follow successful SSE response headers")
+        values = [value for _, value in sse_events(wire)]
+        check("[DONE]" not in values, "truncated stream synthesized success")
+        text = chat_deltas(json.loads(value) for value in values)
+        expected = [truncated_label + "1:raw-first", truncated_label + "2:raw-second"]
+        check(bool(text) and text == expected[:len(text)], "truncated SSE leaked raw or incorrect deltas")
+    elif stream and status in (0, 200):
+        # A body failure on the first frame can close the connection before
+        # headers escape, or after headers but before any SSE payload.
+        check(not wire, "first-event adapter failure emitted a body")
     else:
-        check(not 200 <= status < 300 or "[DONE]" not in sse_data(wire),
-              "failed stream synthesized success")
-    if not truncated:
-        check(b"raw-json" not in wire and b"raw-first" not in wire and b"raw-second" not in wire,
+        check(status == 502, "unexpected HTTP status for adapter failure")
+        check(json.loads(wire)["error"]["code"] == "response_transform_failed", "wrong adapter failure")
+        check(all(raw not in wire for raw in (b"raw-json", b"raw-first", b"raw-second")),
               "invalid adapter fell back to raw content")
 
 
-def verify_adapter_settlement(data, key_id, baseline, channel_id, responses_channel_id):
-    logs = []
-    def ready():
-        nonlocal logs
-        logs = request(data["console"], f"/console/v1/request-logs?api_key_id={key_id}",
-                       token=data["token"])[0]
-        return len(logs) == 13 and all(log["billed_at"] for log in logs)
-    wait_until(ready)
+def verify_adapter_settlement(data, key_id, baseline, channel_id, responses_channel_id, transform_failures):
+    logs = settled_request_logs(data, key_id, 13)
     successes = [log for log in logs if log["outcome"] == "succeeded"]
     failures = [log for log in logs if log["outcome"] == "failed"
                 and log["error_code"] == "response_transform_failed"]
@@ -178,21 +200,22 @@ def verify_adapter_settlement(data, key_id, baseline, channel_id, responses_chan
           and all(log in response_logs and log["request_protocol"] == "sse"
                   for log in upstream_failures),
           "Responses adapter request was not independently settled")
-    known = 0
+    check({log["id"] for log in failures} == set(transform_failures), "adapter failure request IDs mismatch")
     for log in logs:
         check(log["client_model"] == "adapter-client" and log["upstream_model"] == "adapter-wire"
               and ((log["channel_id"] == channel_id and log["api_operation"] == "chat_completion")
                    or (log["channel_id"] == responses_channel_id and log["api_operation"] == "responses")),
               "adapter routing log mismatch")
         tokens = (log["input_tokens"], log["output_tokens"])
-        check(tokens in ((5, 2), (0, 0), (None, None)), "adapter replaced raw metering")
-        if log in successes or log in upstream_failures:
-            check(tokens == (5, 2), "successful adapter lost raw usage")
-        known += tokens == (5, 2)
+        if log["id"] in transform_failures:
+            protocol, known = transform_failures[log["id"]]
+            check(log["request_protocol"] == protocol, "adapter failure protocol mismatch")
+        else:
+            known = True
+        check(tokens in (((5, 2),) if known else ((0, 0), (None, None))),
+              "adapter scenario lost known usage or synthesized unknown usage")
         check(Decimal(log["cost_amount"]) == (Decimal("0.000009") if log in successes else 0),
               "adapter settlement cost mismatch")
-    # Invalid first SSE event has no usage; JSON failures and truncated SSE have raw usage.
-    check(known == 12, "failed adapter lost known usage or synthesized unknown usage")
     cost = Decimal("0.000009") * len(successes)
     me = request(data["console"], "/console/v1/me", token=data["token"])[0]
     key = request(data["console"], f"/console/v1/api-keys/{key_id}", token=data["token"])[0]
@@ -275,9 +298,8 @@ def exercise_response_adapter(resources, data, fixture):
             return result
         main_key, denied_key = key("response-adapter"), key("response-adapter-denied")
         settings(supported_protocols="non_stream")
-        before = len(upstream.evidence)
-        status, _ = wire_request(data, denied_key["secret"], stream=True)
-        verify_no_dispatch(status, before, len(upstream.evidence))
+        status, wire = wire_request(data, denied_key["secret"], stream=True)
+        verify_no_dispatch(status, wire, upstream.arrived.is_set())
         check(Decimal(api(f"/api-keys/{denied_key['id']}")[0]["quota_used_amount"]) == 0,
               "unsupported protocol charged quota")
         scenarios = [{"id": "plugin-response-capability-predispatch", "status": "passed", "dispatches": 0}]
@@ -317,6 +339,16 @@ def exercise_response_adapter(resources, data, fixture):
             verify_json(*future.result(timeout=20), "adapted:")
         verify_json(*wire_request(data, main_key["secret"]), "next:")
         scenarios.append({"id": "plugin-response-settings-inflight-pinned", "status": "passed"})
+        seen = {log["id"] for log in settled_request_logs(data, main_key["id"], 9)}
+        transform_failures = {}
+
+        def record_failure(protocol, known_usage):
+            ids = {log["id"] for log in settled_request_logs(data, main_key["id"], len(seen) + 1)}
+            check(seen < ids, "adapter failure did not append exactly one log")
+            [request_id] = ids - seen
+            seen.add(request_id)
+            transform_failures[request_id] = (protocol, known_usage)
+
         for mode, stream, scenario in (
             ("invalid", False, "plugin-response-invalid-json-failclosed"),
             ("metering_tamper", False, "plugin-response-metering-tamper-failclosed"),
@@ -324,12 +356,14 @@ def exercise_response_adapter(resources, data, fixture):
         ):
             settings(mode=mode)
             verify_failed_wire(*wire_request(data, main_key["secret"], stream), stream=stream)
+            record_failure("sse" if stream else "non_stream", known_usage=not stream)
             scenarios.append({"id": scenario, "status": "passed"})
         settings()
         upstream.truncated = True
-        verify_failed_wire(*wire_request(data, main_key["secret"], True), stream=True, truncated=True)
+        verify_failed_wire(*wire_request(data, main_key["secret"], True), truncated_label="adapted:")
+        record_failure("sse", known_usage=True)
         scenarios.append({"id": "plugin-response-truncation-no-success", "status": "passed"})
         check(len(upstream.evidence) == 13 and not upstream.errors, "adapter upstream evidence mismatch")
         settlement = verify_adapter_settlement(data, main_key["id"], baseline, capability["id"],
-                                               response_capability["id"])
+                                               response_capability["id"], transform_failures)
         return scenarios, settlement

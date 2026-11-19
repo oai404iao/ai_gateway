@@ -15,7 +15,7 @@ from urllib.error import HTTPError
 
 from run import (
     Resources, exercise_codex_oauth, exercise_plugin_lifecycle, load_plugin_fixture, plugin_toml, redact,
-    verify_oauth_plan, verify_settlement,
+    verify_oauth_plan, verify_settlement, websocket_warmup_id,
 )
 from mock.upstream import CONTRACT, MAX_REQUESTS, Scenario, Upstream
 from run import request
@@ -84,11 +84,16 @@ class ScenarioTests(unittest.TestCase):
         self.assertEqual(CONTRACT["version"], 1)
 
     def test_http_fixture_and_shutdown(self):
-        with Upstream("marker") as fixture:
-            body, _ = request(fixture.url, "/v1/responses", "POST", {"model": "e2e-wire"})
+        with Upstream("marker", secret="rotated") as fixture:
+            for token in (None, "stale"):
+                with self.assertRaisesRegex(RuntimeError, "HTTP 400"):
+                    request(fixture.url, "/v1/responses", "POST", {"model": "e2e-wire"}, token=token)
+            self.assertEqual(fixture.scenario.evidence, [])
+            self.assertEqual(fixture.post_count, 2)
+            body, _ = request(fixture.url, "/v1/responses", "POST", {"model": "e2e-wire"}, token="rotated")
             self.assertEqual(body["status"], "completed")
             with self.assertRaisesRegex(RuntimeError, "HTTP 400"):
-                request(fixture.url, "/unexpected", "POST", {"model": "e2e-wire"})
+                request(fixture.url, "/unexpected", "POST", {"model": "e2e-wire"}, token="rotated")
         self.assertFalse(fixture.thread.is_alive())
 
 
@@ -269,7 +274,7 @@ class HarnessTests(unittest.TestCase):
 
     def test_settlement_rejects_wrong_cost_and_balance(self):
         log = {
-            "billed_at": "2026-09-16T00:00:00Z", "outcome": "succeeded",
+            "id": "generation", "billed_at": "2026-09-16T00:00:00Z", "outcome": "succeeded",
             "response_status_code": 200, "client_model": "e2e-client",
             "upstream_model": "e2e-wire", "channel_id": "channel",
             "request_protocol": "sse", "api_operation": "responses",
@@ -287,7 +292,41 @@ class HarnessTests(unittest.TestCase):
 
             with patch("run.request", side_effect=fake_request):
                 with self.assertRaisesRegex(RuntimeError, expected):
-                    verify_settlement(data, 1)
+                    verify_settlement(data, ["sse"])
+
+    def test_settlement_matches_warmup_to_upstream_observed_request_not_zero_usage(self):
+        base = {
+            "billed_at": "2026-09-16T00:00:01Z", "outcome": "succeeded", "response_status_code": 200,
+            "client_model": "e2e-client", "upstream_model": "e2e-wire", "channel_id": "socket-channel",
+            "api_operation": "responses-ws", "request_protocol": "websocket", "input_tokens": 5,
+            "output_tokens": 2, "cost_amount": "0.000009",
+        }
+        def dated(kind, second, **changes):
+            return {**base, "id": kind, "started_at": f"2026-09-16T00:00:00.{second}Z", **changes}
+        logs = [dated("final", 4), dated("tool", 3),
+                dated("warmup", 2, input_tokens=0, output_tokens=0, cost_amount="0"),
+                dated("http", 1, request_protocol="sse", api_operation="responses", channel_id="channel")]
+        data = {"console": "http://localhost", "token": "test", "api_key_id": "key",
+                "channel_id": "channel", "websocket_channel_id": "socket-channel"}
+        protocols = ["sse"] + ["websocket"] * 3
+        for swap_with in (None, "http", "tool"):
+            with self.subTest(swap_with=swap_with):
+                rows = {log["id"]: dict(log) for log in logs}
+                if swap_with:
+                    for field in ("input_tokens", "output_tokens", "cost_amount"):
+                        rows["warmup"][field], rows[swap_with][field] = rows[swap_with][field], rows["warmup"][field]
+                def api(_base, path, **_kwargs):
+                    if "request-logs" in path:
+                        return list(rows.values()), {}
+                    return {"quota_used_amount": "0.000027", "balance_amount": "99.999973"}, {}
+                warmup_id = websocket_warmup_id({"http"}, rows.values(), ["warmup", "generation", "generation"])
+                self.assertEqual(warmup_id, "warmup")
+                with patch("run.request", side_effect=api):
+                    if swap_with:
+                        with self.assertRaisesRegex(RuntimeError, "usage mismatch"):
+                            verify_settlement(data, protocols, warmup_id)
+                    else:
+                        self.assertEqual(verify_settlement(data, protocols, warmup_id)["cost"], "0.000027")
 
 
 if __name__ == "__main__":

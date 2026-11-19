@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { assertRefreshRotation } from "./browser-checks.mjs";
+import { assertRefreshRotation, credentialsPersisted } from "./browser-checks.mjs";
 
 const require = createRequire(new URL("../web/console/package.json", import.meta.url));
 const { chromium, expect } = require("@playwright/test");
@@ -11,26 +11,51 @@ const browser = await chromium.launch();
 try {
   const context = await browser.newContext({ locale: "en-US" });
   const page = await context.newPage();
+  const secrets = [data.password];
+  function watchPost(path) {
+    return page.waitForResponse((response) => response.url() === `${data.console}/console/v1${path}` &&
+      response.request().method() === "POST");
+  }
+  async function rememberToken(response, field) {
+    assert.equal(response.status(), 200, "real browser authorization response");
+    const token = (await response.json())[field];
+    assert.ok(typeof token === "string" && token.length > 0, "authorization response must issue a token");
+    secrets.push(token);
+    return token;
+  }
+  async function assertMemoryOnly() {
+    assert.ok(!(await page.evaluate(credentialsPersisted, { secrets })),
+      "browser storage must not persist session or reauthorization credentials");
+  }
+  async function refreshCookie() {
+    const cookie = (await context.cookies()).find(({ name }) => name === "__Host-ai_gateway_refresh");
+    assert.ok(cookie?.httpOnly && cookie.secure && cookie.path === "/" && cookie.sameSite === "Lax",
+      "refresh cookie security attributes");
+    secrets.push(cookie.value);
+    return cookie;
+  }
+  async function navigateWithRefresh(url) {
+    const refreshing = watchPost("/auth/refresh");
+    if (url) await page.goto(url);
+    else await page.reload();
+    await rememberToken(await refreshing, "access_token");
+    const cookie = await refreshCookie();
+    await assertMemoryOnly();
+    return cookie;
+  }
   page.setDefaultTimeout(15_000);
   await page.goto(`${data.console}/login`);
   await page.getByLabel("Email", { exact: true }).fill("system-e2e@example.test");
   await page.getByLabel("Password", { exact: true }).fill(data.password);
+  const login = watchPost("/auth/login");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await rememberToken(await login, "access_token");
   await expect(page).toHaveURL(/\/account$/);
-  const cookies = await context.cookies();
-  const refresh = cookies.find((cookie) => cookie.name === "__Host-ai_gateway_refresh");
-  assert.ok(refresh?.httpOnly && refresh.secure && refresh.path === "/" &&
-    refresh.sameSite === "Lax", "refresh cookie security attributes");
-  const refreshing = page.waitForResponse((response) =>
-    response.url().endsWith("/console/v1/auth/refresh") && response.request().method() === "POST",
-  );
-  await page.reload();
-  assert.equal((await refreshing).status(), 200);
+  const refresh = await refreshCookie();
+  await assertMemoryOnly();
+  const rotated = await navigateWithRefresh();
   await expect(page.getByRole("heading", { name: "Profile", exact: true })).toBeVisible();
-  const rotated = (await context.cookies()).find((cookie) => cookie.name === refresh.name);
   assertRefreshRotation(refresh, rotated);
-  const storage = await page.evaluate(() => Object.entries(localStorage));
-  assert.ok(storage.every(([key]) => !/token|session|auth/i.test(key)), "auth must not persist in localStorage");
 
   const pluginUrl = `${data.console}/console/v1/plugins/codex`;
   const pluginSettingsUrl = `${pluginUrl}/settings`;
@@ -57,18 +82,22 @@ try {
     const saving = page.waitForResponse((response) =>
       response.url() === url && response.request().method() === method,
     );
+    const reauthorizing = watchPost("/plugins/reauth");
     await dialog.getByRole("button", { name: operation, exact: true }).click();
+    const authorization = await rememberToken(await reauthorizing, "token");
     const saved = await saving;
     assert.equal(saved.status(), method === "POST" ? 202 : 200, "real native plugin mutation");
-    assert.ok(saved.request().headers()["x-plugin-authorization"], "native mutation requires reauthorization");
+    assert.ok(saved.request().headers()["x-plugin-authorization"] === authorization,
+      "native mutation must use this reauthorization");
     await expect(dialog).toBeHidden();
+    await assertMemoryOnly();
     return saved;
   }
 
   await page.getByRole("button", { name: "Save plugin settings", exact: true }).click();
   const pluginSaved = await confirmPluginWrite("Save plugin settings", pluginSettingsUrl);
   assert.equal(pluginSaved.request().headers()["if-match"], settingsEtag);
-  await page.reload();
+  await navigateWithRefresh();
   await expect(clientVersion).toHaveValue("0.146.0-browser");
   await page.getByRole("button", { name: "Disable plugin", exact: true }).click();
   await confirmPluginWrite("Disable plugin", `${pluginUrl}/state`);
@@ -77,21 +106,20 @@ try {
   await page.getByRole("button", { name: "Enable selected version", exact: true }).click();
   await confirmPluginWrite("Enable selected version", `${pluginUrl}/state`);
   await expect(page.getByText("active", { exact: true })).toBeVisible();
-  await page.reload();
+  await navigateWithRefresh();
   await expect(clientVersion).toHaveValue("0.146.0-browser");
   const systemSettings = await context.request.get(`${data.console}/console/v1/system/settings`, {
     headers: { Authorization: `Bearer ${data.token}` },
   });
   assert.equal(systemSettings.status(), 200);
   assert.ok(!Object.hasOwn(await systemSettings.json(), "codex"), "provider settings must be independent");
-  const pluginStorage = await page.evaluate(() => Object.entries({ ...localStorage, ...sessionStorage }));
-  assert.ok(pluginStorage.every(([key]) => !/token|session|auth|password/i.test(key)),
-    "native authorization must not persist in browser storage");
+  await assertMemoryOnly();
 
   const credentialUrl = `${data.console}/console/v1/routing/upstream-credentials/${data.upstream_credential_id}`;
   const credentialLoaded = page.waitForResponse((response) => response.url() === credentialUrl && response.request().method() === "GET");
-  await page.goto(`${data.console}/admin/routing/upstream-credentials/${data.upstream_credential_id}`);
+  await navigateWithRefresh(`${data.console}/admin/routing/upstream-credentials/${data.upstream_credential_id}`);
   const credentialEtag = (await credentialLoaded).headers().etag;
+  assert.ok(credentialEtag, "credential GET must provide ETag");
   await expect(page.getByLabel("Name", { exact: true })).toHaveValue("System E2E shared identity");
   await expect(page.getByLabel("Credential secret", { exact: true })).toHaveValue("");
   await expect(page.getByRole("button", { name: "Delete credential", exact: true })).toBeDisabled();
@@ -104,9 +132,9 @@ try {
   assert.equal(credentialSaved.request().headers()["if-match"], credentialEtag);
   const credentialRead = await context.request.get(credentialUrl, { headers: { Authorization: `Bearer ${data.token}` } });
   const credential = await credentialRead.json();
-  assert.equal(credential.secret, data.upstream_rotated_secret);
+  assert.ok(credential.secret === data.upstream_rotated_secret, "rotated secret must persist");
   assert.equal(credential.channel_ids.length, 2);
-  await page.goto(`${data.console}/admin/routing/logical-channels/${data.logical_channel_id}`);
+  await navigateWithRefresh(`${data.console}/admin/routing/logical-channels/${data.logical_channel_id}`);
   await expect(page.getByLabel("Credential", { exact: true })).toContainText("System E2E shared identity");
   await expect(page.getByLabel("Upstream API key", { exact: true })).toHaveCount(0);
 
@@ -114,7 +142,7 @@ try {
   const loaded = page.waitForResponse((response) =>
     response.url() === protocolUrl && response.request().method() === "GET",
   );
-  await page.goto(`${data.console}/admin${data.protocol_path}`);
+  await navigateWithRefresh(`${data.console}/admin${data.protocol_path}`);
   const etag = (await loaded).headers().etag;
   assert.ok(etag, "protocol GET must provide ETag");
   const model = page.getByRole("combobox", { name: "Upstream model for tier 1 row 1" });
@@ -129,7 +157,7 @@ try {
   const saved = await saving;
   assert.equal(saved.status(), 200);
   assert.equal(saved.request().headers()["if-match"], etag);
-  await page.reload();
+  await navigateWithRefresh();
   await expect(model).toHaveValue("e2e-wire");
   await expect(page.getByRole("spinbutton", { name: "Weight for tier 1 row 1" })).toHaveValue("7");
 
@@ -148,7 +176,7 @@ try {
     const logs = await response.json();
     return logs.length === 1 && logs[0].billed_at !== null;
   }, { timeout: 30_000 }).toBe(true);
-  await page.goto(`${data.console}/admin/request-logs`);
+  await navigateWithRefresh(`${data.console}/admin/request-logs`);
   await expect(page.getByText("e2e-client", { exact: true }).first()).toBeVisible();
   console.log(JSON.stringify({
     id: "console-route-to-settlement", status: "passed",

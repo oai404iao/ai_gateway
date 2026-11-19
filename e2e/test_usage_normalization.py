@@ -14,7 +14,7 @@ from urllib.request import Request
 
 from run import HTTP
 from usage_normalization import (
-    CANONICAL, PLUGIN_ID, prepare_usage_fixture, verify_usage_passthrough, verify_usage_settlement,
+    PLUGIN_ID, prepare_usage_fixture, verify_usage_passthrough, verify_usage_settlement,
 )
 from mock.usage_normalization import (
     ANTHROPIC_USAGE, OPENAI_USAGE, MAX_REQUESTS, UsageUpstream, fixture_payload,
@@ -57,7 +57,8 @@ class UsageNormalizationTests(unittest.TestCase):
         self.assertFalse(upstream.thread.is_alive())
 
     def test_unknown_or_interface_misclassified_usage_and_wrong_charges_fail_oracle(self):
-        base = {**CANONICAL, "billed_at": "synthetic", "outcome": "succeeded",
+        base = {"input_tokens": 5, "cached_input_tokens": 3, "cache_write_tokens": 0,
+                "output_tokens": 2, "reasoning_tokens": 0, "billed_at": "synthetic", "outcome": "succeeded",
                 "response_status_code": 200, "error_code": None, "client_model": "usage-client",
                 "upstream_model": "usage-wire", "channel_id": "capability",
                 "api_operation": "responses", "cost_amount": "0.000006"}

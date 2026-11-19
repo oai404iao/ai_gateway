@@ -146,7 +146,12 @@ fn destination_wire_values_are_explicit_and_do_not_rename_credential_types() {
     let output = plan(&input).unwrap();
     assert_eq!(json!(output.accesses[0].connector), "codex");
     assert_eq!(output.capabilities.len(), 2);
-    assert_eq!(input.logical_channels[0].credential_id, Some(id(4)));
+    let upgraded = upgrade(&input).unwrap();
+    assert_eq!(upgraded.logical_channels.len(), 1);
+    let channel = &upgraded.logical_channels[0];
+    assert_eq!(channel.id, id(10));
+    assert_eq!(channel.access_id, id(1));
+    assert_eq!(channel.credential_id, Some(id(4)));
     assert!(output.api_key_grants.is_empty());
     assert!(output.rules.is_empty());
 }
@@ -362,15 +367,21 @@ fn disabled_drafts_and_tombstones_are_retained_without_implicit_routes() {
     let mut input = fixture(&[&[T::HttpSse, T::Websocket]]);
     input.channel_capabilities[0].settings.enabled = false;
     input.channel_capabilities[0].deleted_at = Some(at());
-    let before = json!(input.channel_capabilities);
     add_rule(&mut input, &[]);
-    let output = plan(&input).unwrap();
-    assert_eq!(output.capabilities.len(), 2);
-    assert_eq!(output.rules.len(), 1);
-    assert_eq!(output.rules[0].operation, Operation::Responses);
-    assert!(output.tiers.is_empty());
-    assert!(output.candidates.is_empty());
-    assert_eq!(json!(input.channel_capabilities), before);
+    let output = upgrade(&input).unwrap();
+    assert_eq!(output.channel_capabilities.len(), 2);
+    for capability in &output.channel_capabilities {
+        assert!(!capability.settings.enabled);
+        assert_eq!(capability.deleted_at, Some(at()));
+    }
+    assert_eq!(output.operation_rules.len(), 1);
+    assert_eq!(
+        output.operation_rules[0].operation,
+        crate::domain::ApiOperation::Responses
+    );
+    assert!(!output.operation_rules[0].enabled);
+    assert!(output.operation_tiers.is_empty());
+    assert!(output.operation_candidates.is_empty());
     input.operation_rules[0].enabled = true;
     assert_eq!(plan(&input).unwrap_err(), SplitError::Route);
 }

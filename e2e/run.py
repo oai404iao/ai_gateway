@@ -3,6 +3,7 @@
 
 import argparse
 from contextlib import contextmanager
+from datetime import datetime
 import hashlib
 import json
 import os
@@ -523,7 +524,6 @@ def seed(console, password, upstream):
         "logical_channel_id": channel["id"], "access_id": access["id"],
         "channel_group_id": group["id"], "protocol_path": path,
         "upstream_credential_id": credential["id"], "upstream_secret": upstream_secret,
-        "upstream_rotated_secret": secrets.token_urlsafe(24),
     }
 
 
@@ -631,36 +631,53 @@ def validate_pi_output(output, marker):
     check(any(part.get("text") == "E2E_TOOL_OK" for part in finals[-1]["content"]), "Pi final text mismatch")
 
 
-def verify_settlement(data, expected_count, zero_count=0, protocols=None):
-    def api(path):
-        return request(data["console"], "/console/v1" + path, token=data["token"])[0]
-
+def settled_request_logs(data, key_id, expected_count):
     settled = []
 
     def ready():
         nonlocal settled
-        logs = api(f"/request-logs?api_key_id={data['api_key_id']}")
+        logs, _ = request(data["console"], f"/console/v1/request-logs?api_key_id={key_id}", token=data["token"])
         if len(logs) != expected_count or any(log["billed_at"] is None for log in logs):
             return False
         settled = logs
         return True
 
     wait_until(ready)
-    check(sum(log["input_tokens"] == 0 and log["output_tokens"] == 0 for log in settled) == zero_count,
-          "zero-usage count mismatch")
-    if protocols:
-        check(Counter(log["request_protocol"] for log in settled) == Counter(protocols),
-              "unexpected request transport or HTTP fallback")
+    check(len({log["id"] for log in settled}) == expected_count, "duplicate settled request ID")
+    return settled
+
+
+def websocket_warmup_id(http_ids, settled, request_kinds):
+    # The CLI sends sequential creates. Match fixture arrival order against the
+    # new requests' start times, without using their usage to identify warmup.
+    phase = [log for log in settled if log["id"] not in http_ids]
+    check(len(phase) == len(request_kinds) and all(log["request_protocol"] == "websocket" for log in phase),
+          "unexpected WebSocket phase transport or count")
+    starts = {datetime.fromisoformat(log["started_at"]): log["id"] for log in phase}
+    check(len(starts) == len(phase), "ambiguous WebSocket start order")
+    return next((starts[time] for time, kind in zip(sorted(starts), request_kinds) if kind == "warmup"), None)
+
+
+def verify_settlement(data, protocols, warmup_id=None):
+    def api(path):
+        return request(data["console"], "/console/v1" + path, token=data["token"])[0]
+
+    settled = settled_request_logs(data, data["api_key_id"], len(protocols))
+    check(Counter(log["request_protocol"] for log in settled) == Counter(protocols),
+          "unexpected request transport or HTTP fallback")
+    check(warmup_id is None or any(log["id"] == warmup_id and log["request_protocol"] == "websocket"
+                                   for log in settled), "WebSocket warmup settlement missing")
     for log in settled:
         check(log["outcome"] == "succeeded" and log["response_status_code"] == 200, "request failed")
         check(log["client_model"] == "e2e-client" and log["upstream_model"] == "e2e-wire", "log model mismatch")
         websocket = log["request_protocol"] == "websocket"
         check(log["channel_id"] == data["websocket_channel_id" if websocket else "channel_id"], "log channel mismatch")
         check(log["api_operation"] == ("responses-ws" if websocket else "responses"), "log operation mismatch")
-        zero = log["input_tokens"] == 0 and log["output_tokens"] == 0
-        check(zero or (log["input_tokens"] == 5 and log["output_tokens"] == 2), "usage mismatch")
+        zero = log["id"] == warmup_id
+        check((log["input_tokens"], log["output_tokens"]) == ((0, 0) if zero else (5, 2)),
+              "usage mismatch for WebSocket warmup or generation")
         check(Decimal(log["cost_amount"]) == Decimal("0" if zero else "0.000009"), "cost mismatch")
-    expected = Decimal("0.000009") * (expected_count - zero_count)
+    expected = Decimal("0.000009") * (len(protocols) - (warmup_id is not None))
     check(Decimal(api("/me")["balance_amount"]) == Decimal("100") - expected, "balance mismatch")
     check(Decimal(api(f"/api-keys/{data['api_key_id']}")["quota_used_amount"]) == expected, "key usage mismatch")
     return {"logs": len(settled), "cost": str(expected), "billed": True}
@@ -725,9 +742,11 @@ def main():
             console, password = configure(resources, args.binary.resolve(), database, public_port, console_port)
             secret_values.append(password)
             marker = secrets.token_hex(24)
-            with Upstream(marker) as upstream:
+            rotated_secret = secrets.token_urlsafe(24)
+            with Upstream(marker, secret=rotated_secret) as upstream:
                 report["stage"] = "provision"
                 data = seed(console, password, upstream.url)
+                data["upstream_rotated_secret"] = rotated_secret
                 secret_values.extend([data["token"], data["api_key"], data["upstream_secret"], data["upstream_rotated_secret"]])
                 data["public"] = f"http://127.0.0.1:{public_port}"
                 report["stage"] = "plugin-lifecycle"
@@ -744,7 +763,8 @@ def main():
                 browser = resources.run(["node", str(ROOT / "e2e/browser.mjs")], "browser",
                                         env=browser_env, stdin=json.dumps(data).encode())
                 report["scenarios"].append(json.loads(browser))
-                verify_settlement(data, 1)
+                protocols = ["non_stream"]
+                verify_settlement(data, protocols)
                 report["stage"] = "codex"
                 report["codex_version"] = run_codex(resources, args.codex, data, marker)
                 check(upstream.scenario.tool_completed, "tool loop not completed")
@@ -753,9 +773,11 @@ def main():
                 report["scenarios"].append({"id": "responses-tool-cycle", "status": "passed"})
                 report["upstream"] = upstream.scenario.evidence
                 report["stage"] = "settlement"
-                report["settlement"] = verify_settlement(data, 3)
+                protocols += ["sse"] * 2
+                report["settlement"] = verify_settlement(data, protocols)
+                http_ids = {log["id"] for log in settled_request_logs(data, data["api_key_id"], len(protocols))}
             report["stage"] = "codex-websocket"
-            with WebSocketUpstream(marker) as upstream:
+            with WebSocketUpstream(marker, secret=rotated_secret) as upstream:
                 set_upstream(data, upstream.url, websocket=True)
                 run_codex(resources, args.codex, data, marker, websocket=True)
                 check(upstream.scenario.tool_completed and not upstream.errors
@@ -765,11 +787,16 @@ def main():
                       "WS tool cycle did not use one connection")
                 check(evidence[1]["previous_response_id"] == "resp_e2e_0", "WS continuation missing")
                 warmups = upstream.warmups
+                protocols += ["websocket"] * (2 + warmups)
+                warmup_id = websocket_warmup_id(
+                    http_ids, settled_request_logs(data, data["api_key_id"], len(protocols)), upstream.request_kinds,
+                )
+                verify_settlement(data, protocols, warmup_id)
                 report["upstream"].extend(evidence)
                 report["scenarios"].append({"id": "codex-ws-tool-cycle", "status": "passed",
                                             "warmups": warmups})
             report["stage"] = "pi-responses"
-            with Upstream(marker) as upstream:
+            with Upstream(marker, secret=rotated_secret) as upstream:
                 set_upstream(data, upstream.url)
                 report["pi_version"] = run_pi(resources, args.pi, data, marker)
                 check(upstream.scenario.tool_completed and not upstream.scenario.errors
@@ -777,22 +804,19 @@ def main():
                 report["upstream"].extend(upstream.scenario.evidence)
                 report["scenarios"].append({"id": "pi-responses-tool-cycle", "status": "passed"})
             report["stage"] = "settlement"
-            report["settlement"] = verify_settlement(
-                data, 7 + warmups, warmups,
-                ["non_stream"] + ["sse"] * 4 + ["websocket"] * (2 + warmups),
-            )
+            protocols += ["sse"] * 2
+            report["settlement"] = verify_settlement(data, protocols, warmup_id)
             report["stage"] = "durability-faults"
             from faults import exercise_faults
             faults, settlement = exercise_faults(
-                resources, args.binary.resolve(), data, 7 + warmups, warmups,
-                ["non_stream"] + ["sse"] * 4 + ["websocket"] * (2 + warmups),
+                resources, args.binary.resolve(), data, protocols, warmup_id,
             )
             report["scenarios"].extend(faults)
             report["settlement"] = settlement
             if args.backend == "sqlite":
                 report["stage"] = "sqlite-backup-restore"
                 from sqlite_recovery import exercise_backup
-                report["scenarios"].extend(exercise_backup(resources, args.binary.resolve(), data, settlement["logs"], warmups))
+                report["scenarios"].extend(exercise_backup(resources, args.binary.resolve(), data, protocols, warmup_id))
             report["stage"] = "response-adapter"
             scenarios, adapter_settlement = exercise_response_adapter(resources, data, response_fixture)
             report["scenarios"].extend(scenarios)

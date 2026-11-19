@@ -33,6 +33,10 @@ while IFS= read -r path; do
             console=true
             image=true
             ;;
+        docs/reference/request-allowlists.json)
+            docs=true
+            rust=true
+            ;;
         e2e/*.md | mock/*.md)
             docs=true
             ;;

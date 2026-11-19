@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BrowserRouter } from "react-router";
 import { http, HttpResponse } from "msw";
@@ -66,13 +66,9 @@ describe("RequestLogsView", () => {
     expect(screen.getByLabelText("Reasoning effort: High")).toHaveTextContent("High");
     expect(screen.getByLabelText("Fast mode")).toHaveTextContent("Fast");
     expect(screen.queryByLabelText("Peak pricing")).not.toBeInTheDocument();
-    const ttft = screen.getByLabelText("TTFT: 100 ms");
-    const totalDuration = screen.getByLabelText("Total duration: 1 s");
-    const tps = screen.getByLabelText("TPS: 4.4 tok/s");
-    expect(ttft.parentElement).toContainElement(totalDuration);
-    expect(ttft.parentElement).toContainElement(tps);
-    expect(ttft).toHaveClass("text-muted-foreground");
-    expect(tps).toHaveClass("text-muted-foreground");
+    expect(screen.getByLabelText("TTFT: 100 ms")).toBeVisible();
+    expect(screen.getByLabelText("Total duration: 1 s")).toBeVisible();
+    expect(screen.getByLabelText("TPS: 4.4 tok/s")).toBeVisible();
 
     const apiKey = await screen.findByRole("combobox", { name: "API key" });
     await user.click(apiKey);
@@ -200,7 +196,7 @@ describe("RequestLogsView", () => {
     });
   });
 
-  it("truncates long routing and user names with full-value tooltips", async () => {
+  it("shows the full long routing name in a tooltip on keyboard focus", async () => {
     seedAuthenticatedSession();
     const longGroupName =
       "channel-group-name-that-is-long-enough-to-overflow-the-column";
@@ -224,16 +220,18 @@ describe("RequestLogsView", () => {
     renderAppAt("/admin/request-logs");
 
     const groupName = await screen.findByText(longGroupName);
-    expect(groupName).toHaveClass("truncate", "max-w-44");
-    expect(screen.getByText(longChannelName)).toHaveClass("truncate", "max-w-36");
-    expect(screen.getByText(longUserName)).toHaveClass("truncate", "max-w-36");
+    expect(screen.getByRole("cell", { name: longChannelName })).toBeVisible();
+    expect(screen.getByRole("cell", { name: longUserName })).toBeVisible();
 
-    fireEvent.focus(groupName);
-    expect(
-      await screen.findByText(longGroupName, {
-        selector: '[data-slot="tooltip-content"]',
-      }),
-    ).toBeVisible();
+    const user = userEvent.setup();
+    act(() => groupName.focus());
+    await user.tab({ shift: true });
+    await user.tab();
+    expect(groupName).toHaveFocus();
+    await waitFor(() => {
+      const fullValue = screen.getAllByText(longGroupName).find((element) => element !== groupName);
+      expect(fullValue).toBeVisible();
+    });
   });
 
   it("loads administrator request-log details from the admin detail endpoint", async () => {
@@ -347,9 +345,8 @@ describe("RequestLogsView", () => {
     seedUserSession();
     const ownLog = {
       ...REQUEST_LOG,
-      user_name: null,
-      channel_id: null,
-      channel_name: null,
+      user_name: "unexpected-request-owner",
+      channel_name: "unexpected-upstream-channel",
     };
     server.use(
       http.get("/console/v1/me/request-logs", () =>
@@ -378,6 +375,8 @@ describe("RequestLogsView", () => {
       "View details",
     ]);
     expect(await screen.findByText(CHANNEL_GROUP.name)).toBeInTheDocument();
+    expect(screen.queryByText(ownLog.channel_name)).not.toBeInTheDocument();
+    expect(screen.queryByText(ownLog.user_name)).not.toBeInTheDocument();
 
     await user.click(screen.getByText(REQUEST_LOG.client_model));
     await screen.findByText("Completed", { selector: "dt" });
@@ -400,6 +399,8 @@ describe("RequestLogsView", () => {
     expect(groupLabel.parentElement).toHaveTextContent(CHANNEL_GROUP.name);
     expect(screen.queryByText("Channel", { selector: "dt" })).not.toBeInTheDocument();
     expect(screen.queryByText("User", { selector: "dt" })).not.toBeInTheDocument();
-    expect(screen.queryByText(CHANNEL.name, { selector: "dd" })).not.toBeInTheDocument();
+    const detail = within(screen.getByRole("dialog"));
+    expect(detail.queryByText(ownLog.channel_name)).not.toBeInTheDocument();
+    expect(detail.queryByText(ownLog.user_name)).not.toBeInTheDocument();
   });
 });

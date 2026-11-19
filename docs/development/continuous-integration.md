@@ -29,6 +29,7 @@
 | 变更路径 | 分类输出 |
 | --- | --- |
 | Markdown、普通 `docs/`、Agent 指令和 `.gitignore` | `docs` |
+| 编译进网关的 `docs/reference/request-allowlists.json` | `docs`、`rust` |
 | `src/`、`crates/`、`tests/`、`migrations/`、`tools/` | `rust` |
 | 根 `e2e/`、`mock/` 的非 Markdown 文件 | `docs`、`rust`、`console` |
 | `Cargo.toml`、`Cargo.lock`、`rust-toolchain.toml` | `rust`、`image` |
@@ -68,11 +69,10 @@ Docker image job 只依赖快速的路径分类，与 Rust、Console 和 E2E 并
 `.github/workflows/reusable-quality.yml` 是普通 CI 的可复用质量门禁，包含：
 
 - 文档检查；
-- Rust 1.97.1 format、默认 workspace 的
-  Clippy/测试，默认使用协议 2；另以真实协议 3 制品运行[Codex 转发契约测试](connector-plugins.md#验收边界)；
-- 非默认 `sqlite-backend` feature 的 Clippy、[SQLite schema/生命周期契约](sqlite-backend.md)
-  以及真实 PostgreSQL schema/类型/seed 对照、S3–S5 双后端契约和 S6 SQLite CLI/备份契约；
-  不代表完整双后端系统验收；
+- Rust 1.97.1 format；默认构建和启用 `sqlite-backend` 的构建并行执行完整 workspace
+  Clippy 和测试，两者均使用真实 PostgreSQL 和固定的协议 2 插件。后者还覆盖
+  [SQLite schema、生命周期与备份](sqlite-backend.md)及双后端契约；默认构建另以真实协议 3
+  制品运行 [Codex 转发契约测试](connector-plugins.md#验收边界)；
 - Console API 类型漂移、TypeScript、lint、组件测试和生产构建；
 - Chromium Playwright 模拟 API 的 UI E2E，并在失败时上传 trace/test results；
 - [系统 E2E](system-e2e.md)：真实浏览器、固定 Codex/Pi CLI、嵌入式 Gateway 和临时
@@ -98,8 +98,8 @@ Pull Request 只能恢复默认分支或 Release 已有 cache，不能创建 cac
   `actions/cache/save`。
 - PR Docker 构建只设置 `cache-from`，`cache-to` 为空。
 
-只有 `main` 相关 workflow 可以写入 cache。固定 Rust job 使用 `stable` shared
-key；普通 CI 写入 `ci-image-amd64`，独立的
+只有 `main` 相关 workflow 可以写入 cache。两组 Rust 检查分别使用 `stable` 和
+`sqlite-backend` shared key；普通 CI 写入 `ci-image-amd64`，独立的
 `.github/workflows/release-image-cache.yml` 只在分类器的 `image` 输出为 `true`
 时异步写入 `release-image-arm64`。因此普通 Rust/Console 源码合并仍由 AMD64
 image job 验证，但不会启动 ARM64 预热；依赖清单、工具链、Console 包管理文件、
@@ -116,8 +116,8 @@ Docker planner 在 cargo-chef recipe 生成前将 workspace 自身版本规范�
 依赖，并显示可用修复版本。
 
 `.github/workflows/security.yml` 在代码 PR、`main` push、每周定时任务和手动
-触发时运行 CodeQL `security-extended` 查询。Markdown、`docs/` 和 `.gitignore`
-等不改变可执行代码的路径不会触发 PR/push CodeQL：
+触发时运行 CodeQL `security-extended` 查询。仅修改 Markdown、`docs/` 或 `.gitignore`
+不会触发 PR/push CodeQL。扫描范围包括：
 
 - GitHub Actions workflow；
 - JavaScript/TypeScript Console；
@@ -141,7 +141,8 @@ bypass；正常变更仍必须走 CI 和项目合并策略。
 
 ## 本地验证
 
-先运行不启动服务的分类/发布自动化回归：
+先运行不启动服务的分类/发布自动化回归。发布自动化测试需要 Docker Compose CLI 和
+Python 环境中的 PyYAML（版本见 `ci.yml`）：
 
 ```bash
 shellcheck scripts/ci-changed-areas.sh scripts/test-ci-changed-areas.sh

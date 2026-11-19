@@ -96,7 +96,16 @@ fn policy_options_and_issuance_use_fixed_channels_and_current_origin() {
         plan.grants.iter().map(|g| g.channel_id).collect::<Vec<_>>(),
         [CHANNEL]
     );
-    assert_eq!(plan.formats, all_formats());
+    let mut formats = plan.formats;
+    formats.sort_unstable();
+    assert_eq!(
+        formats,
+        [
+            "open_ai_chat_completions",
+            "open_ai_images",
+            "open_ai_responses"
+        ]
+    );
     let (groups, channels) = options(&topology, Some(&policy));
     assert_eq!(
         groups[0].api_formats,

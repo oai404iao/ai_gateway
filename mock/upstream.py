@@ -11,6 +11,11 @@ MAX_BODY = 1024 * 1024
 MAX_REQUESTS = 8
 
 
+def require_bearer(headers, secret):
+    if headers.get_all("Authorization") != [f"Bearer {secret}"]:
+        raise ValueError("unexpected upstream credential")
+
+
 def response_events(response_id, item):
     response = {
         "id": response_id, "object": "response", "model": CONTRACT["wire_model"],
@@ -122,8 +127,10 @@ class Scenario:
 
 
 class Upstream:
-    def __init__(self, marker, response_gate=None):
+    def __init__(self, marker, *, secret, response_gate=None):
         self.scenario = Scenario(marker)
+        self.post_count = 0
+        fixture = self
         scenario = self.scenario
 
         class Handler(BaseHTTPRequestHandler):
@@ -131,9 +138,12 @@ class Upstream:
                 pass
 
             def do_POST(self):
+                with scenario.lock:
+                    fixture.post_count += 1
                 try:
                     if self.path != "/v1/responses":
                         raise ValueError("unexpected upstream path")
+                    require_bearer(self.headers, secret)
                     if self.headers.get("Transfer-Encoding"):
                         raise ValueError("chunked fixture requests are unsupported")
                     length = int(self.headers.get("Content-Length", "0"))

@@ -21,7 +21,7 @@ Changelog、运行本地门禁，再对同一个已合并 SHA 创建 tag；不�
 - `Cargo.lock`
 - `tools/forwarding-perf/Cargo.toml`
 - `web/console/package.json`
-- `docker-compose.prd.yaml` 中的默认 `AI_GATEWAY_VERSION`
+- `docker-compose.prd.yaml` 中 `gateway` 镜像 tag 和构建参数 `VERSION` 的默认版本
 - `deploy/compose/env.example`
 - `CHANGELOG.md` 中带日期的版本条目
 
@@ -37,7 +37,7 @@ Changelog、运行本地门禁，再对同一个已合并 SHA 创建 tag；不�
    `.github/dependabot.yml` 定期更新带版本 tag 的引用；固定到 `stable` 分支
    commit 的 Rust toolchain Action 需要在常规依赖维护时人工复核。
 
-版本一致性可单独检查：
+版本一致性可单独检查。需要 Docker Compose CLI 来解析实际配置，不需要启动 Docker daemon；本地环境覆盖不会影响默认版本的检查。
 
 ```bash
 # 在更新 Cargo.toml 后，从主 package 读取本次目标版本。

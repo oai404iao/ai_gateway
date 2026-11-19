@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { E2E_MODEL, mockConsoleApi } from "./mock-api";
+import { E2E_CAPABILITY_ETAG, E2E_CHANNEL_ETAG, E2E_MODEL, mockConsoleApi } from "./mock-api";
 
 async function prepare(page: Page) {
   await mockConsoleApi(page);
@@ -44,7 +44,8 @@ test.describe("canonical routing topology", () => {
     const capabilityWrite = page.waitForRequest((request) =>
       request.method() === "PUT" && request.url().includes("/routing/capabilities/"));
     await page.getByRole("button", { name: "Save capability" }).click();
-    expect((await capabilityWrite).headers()["if-match"]).toBeTruthy();
+    expect((await capabilityWrite).headers()["if-match"]).toBe(E2E_CAPABILITY_ETAG);
+    await expect(page.getByText("Capability saved", { exact: true })).toBeVisible();
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(page.getByRole("button", { name: "Save capability" })).toBeVisible();
     await expect.poll(() => page.evaluate(() =>
@@ -88,8 +89,9 @@ test.describe("canonical routing topology", () => {
     );
     await page.getByRole("button", { name: "Save channel", exact: true }).click();
     const request = await requestPromise;
-    expect(request.headers()["if-match"]).toBeTruthy();
+    expect(request.headers()["if-match"]).toBe(E2E_CHANNEL_ETAG);
     expect(request.postDataJSON().credential_id).toBeNull();
+    await expect(page.getByText("Channel saved", { exact: true })).toBeVisible();
   });
 
   test("unified credentials fit the desktop viewport", async ({ page }) => {
