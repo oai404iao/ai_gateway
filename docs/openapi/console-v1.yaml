@@ -1186,6 +1186,7 @@ paths:
     post:
       tags: [Catalog]
       operationId: applyCatalogModels
+      description: Applies all selections atomically. If a selected catalog offer or its local model has changed since preview (including creation or deletion), no selections are applied. Fetch and review a fresh preview before retrying.
       security: [{ bearerAuth: [] }]
       requestBody:
         required: true
@@ -1200,6 +1201,7 @@ paths:
               schema: { $ref: "#/components/schemas/ModelImportResponse" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/Unprocessable" }
         "502": { $ref: "#/components/responses/BadGateway" }
 
@@ -5509,12 +5511,17 @@ components:
         excluded_invalid_models: { type: integer }
         excluded_oversized_metadata: { type: integer }
 
+    ModelSyncPreviewToken:
+      type: string
+      pattern: '^[0-9a-f]{64}$'
+      description: Opaque version token. Return the token from the selected preview row unchanged.
+
     ModelSyncPreviewModel:
       type: object
       required:
         [provider_id, provider_name, model_id, display_name, input_unit_price,
          cached_input_unit_price, cache_write_unit_price, output_unit_price,
-         advanced_billing, action]
+         advanced_billing, action, preview_token]
       properties:
         provider_id: { type: string }
         provider_name: { type: string }
@@ -5526,6 +5533,7 @@ components:
         output_unit_price: { $ref: "#/components/schemas/Decimal" }
         advanced_billing: { $ref: "#/components/schemas/AdvancedBilling" }
         action: { $ref: "#/components/schemas/ModelSyncAction" }
+        preview_token: { $ref: "#/components/schemas/ModelSyncPreviewToken" }
 
     ModelImportResponse:
       type: object
@@ -6170,10 +6178,11 @@ components:
 
     ModelSyncSelection:
       type: object
-      required: [provider_id, model_id]
+      required: [provider_id, model_id, preview_token]
       properties:
         provider_id: { type: string }
         model_id: { type: string }
+        preview_token: { $ref: "#/components/schemas/ModelSyncPreviewToken" }
 
     ListQuery:
       type: object

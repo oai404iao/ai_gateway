@@ -2,6 +2,7 @@
 
 use std::{
     collections::{BTreeMap, HashSet},
+    fmt::Write,
     time::Duration,
 };
 
@@ -11,7 +12,9 @@ use reqwest::{Url, redirect::Policy};
 use rust_decimal::Decimal;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
+use uuid::Uuid;
 
 use crate::{
     domain::{AdvancedBilling, LongContextTier, RequestBillingMultiplier},
@@ -91,25 +94,6 @@ impl ModelsDevCatalog {
             .iter()
             .find(|model| model.provider_id == provider_id && model.model_id == model_id)
     }
-
-    pub fn select(
-        &self,
-        selections: &[ModelsDevSelection],
-    ) -> Result<Vec<ModelsDevModel>, ModelsDevError> {
-        let mut requested = HashSet::new();
-        let mut selected = Vec::with_capacity(selections.len());
-        for selection in selections {
-            let key = (&selection.provider_id, &selection.model_id);
-            if !requested.insert(key) {
-                return Err(ModelsDevError::InvalidSelection);
-            }
-            let model = self
-                .find(&selection.provider_id, &selection.model_id)
-                .ok_or(ModelsDevError::InvalidSelection)?;
-            selected.push(model.clone());
-        }
-        Ok(selected)
-    }
 }
 
 #[derive(Clone, Serialize)]
@@ -127,10 +111,17 @@ pub struct ModelsDevModel {
     pub source_payload: Value,
 }
 
-#[derive(Clone)]
-pub struct ModelsDevSelection {
-    pub provider_id: String,
-    pub model_id: String,
+impl ModelsDevModel {
+    /// Binds the published preview fields to one active local model revision or its absence.
+    pub fn preview_token(&self, local: Option<(Uuid, DateTime<Utc>)>) -> String {
+        let bytes = serde_json::to_vec(&("model-sync-v1", self, local))
+            .expect("catalog preview fields serialize");
+        let mut token = String::with_capacity(64);
+        for byte in Sha256::digest(bytes) {
+            write!(token, "{byte:02x}").expect("writing to a String cannot fail");
+        }
+        token
+    }
 }
 
 fn parse_catalog(
@@ -462,8 +453,6 @@ pub enum ModelsDevError {
     ResponseTooLarge,
     #[error("models.dev returned an invalid catalog")]
     InvalidCatalog,
-    #[error("requested models.dev selections are invalid or unavailable")]
-    InvalidSelection,
 }
 
 #[cfg(test)]

@@ -7,10 +7,8 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::{
-    models_dev::{
-        ModelsDevCatalog, ModelsDevClient, ModelsDevError, ModelsDevModel, ModelsDevSelection,
-    },
-    persistence::SyncedModelInput,
+    models_dev::{ModelsDevCatalog, ModelsDevClient, ModelsDevError, ModelsDevModel},
+    persistence::{ModelSourceVersions, SyncedModelInput},
 };
 
 use super::{ControlPlaneCoordinator, ControlPlaneError, ModelSyncResult};
@@ -42,9 +40,9 @@ impl ModelSyncService {
         &self,
         request: ModelSyncPreviewRequest,
     ) -> Result<ModelSyncPreview, ModelSyncError> {
-        let source_model_ids = self.coordinator.model_source_ids().await?;
         let catalog = self.client.fetch_catalog(&request.provider_ids).await?;
-        Ok(preview_from_catalog(catalog, &source_model_ids))
+        let versions = self.coordinator.model_source_versions().await?;
+        Ok(preview_from_catalog(catalog, &versions))
     }
 
     /// Applies administrator-selected catalog entries. A selected local
@@ -59,29 +57,39 @@ impl ModelSyncService {
         if request.selections.is_empty() || request.selections.len() > self.max_selections {
             return Err(ModelSyncError::InvalidSelection);
         }
+        let mut model_ids = HashSet::new();
+        for selection in &request.selections {
+            if selection.provider_id.is_empty()
+                || selection.model_id.is_empty()
+                || !model_ids.insert(&selection.model_id)
+                || selection.preview_token.len() != 64
+                || !selection
+                    .preview_token
+                    .bytes()
+                    .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+            {
+                return Err(ModelSyncError::InvalidSelection);
+            }
+        }
         let provider_ids = request
             .selections
             .iter()
             .map(|selection| selection.provider_id.clone())
             .collect::<Vec<_>>();
         let catalog = self.client.fetch_catalog(&provider_ids).await?;
-        let selections = request
+        let inputs = request
             .selections
-            .iter()
-            .map(|selection| ModelsDevSelection {
-                provider_id: selection.provider_id.clone(),
-                model_id: selection.model_id.clone(),
+            .into_iter()
+            .map(|selection| {
+                let model = catalog
+                    .find(&selection.provider_id, &selection.model_id)
+                    .ok_or(ModelSyncError::StalePreview)?;
+                Ok(SyncedModelInput {
+                    model: model.clone(),
+                    preview_token: selection.preview_token,
+                })
             })
-            .collect::<Vec<_>>();
-        let models = catalog.select(&selections).map_err(selection_error)?;
-        let mut source_model_ids = HashSet::new();
-        if models
-            .iter()
-            .any(|model| !source_model_ids.insert(model.model_id.clone()))
-        {
-            return Err(ModelSyncError::ConflictingSourceModelId);
-        }
-        let inputs = models.into_iter().map(import_input).collect();
+            .collect::<Result<_, ModelSyncError>>()?;
         self.coordinator
             .apply_catalog_models(actor, inputs)
             .await
@@ -91,19 +99,24 @@ impl ModelSyncService {
 
 fn preview_from_catalog(
     catalog: ModelsDevCatalog,
-    source_model_ids: &[String],
+    versions: &ModelSourceVersions,
 ) -> ModelSyncPreview {
-    let local_ids = source_model_ids.iter().collect::<HashSet<_>>();
     let models = catalog
         .models
         .into_iter()
         .map(|model| {
-            let action = if local_ids.contains(&model.model_id) {
+            let local = versions.get(&model.model_id).copied();
+            let action = if local.is_some() {
                 ModelSyncAction::PriceUpdate
             } else {
                 ModelSyncAction::Import
             };
-            ModelSyncPreviewModel { model, action }
+            let preview_token = model.preview_token(local);
+            ModelSyncPreviewModel {
+                model,
+                action,
+                preview_token,
+            }
         })
         .collect();
     ModelSyncPreview {
@@ -112,27 +125,6 @@ fn preview_from_catalog(
         excluded_missing_prices: catalog.excluded_missing_prices,
         excluded_invalid_models: catalog.excluded_invalid_models,
         excluded_oversized_metadata: catalog.excluded_oversized_metadata,
-    }
-}
-
-fn import_input(model: ModelsDevModel) -> SyncedModelInput {
-    SyncedModelInput {
-        source_model_id: model.model_id,
-        display_name: model.display_name,
-        provider_name: model.provider_name,
-        input_unit_price: model.input_unit_price,
-        cached_input_unit_price: model.cached_input_unit_price,
-        cache_write_unit_price: model.cache_write_unit_price,
-        output_unit_price: model.output_unit_price,
-        advanced_billing: model.advanced_billing,
-        source_payload: model.source_payload,
-    }
-}
-
-fn selection_error(error: ModelsDevError) -> ModelSyncError {
-    match error {
-        ModelsDevError::InvalidSelection => ModelSyncError::InvalidSelection,
-        other => ModelSyncError::Catalog(other),
     }
 }
 
@@ -154,6 +146,7 @@ pub struct ModelImportRequest {
 pub struct ModelSyncSelection {
     pub provider_id: String,
     pub model_id: String,
+    pub preview_token: String,
 }
 
 #[derive(Serialize)]
@@ -170,6 +163,7 @@ pub struct ModelSyncPreviewModel {
     #[serde(flatten)]
     pub model: ModelsDevModel,
     pub action: ModelSyncAction,
+    pub preview_token: String,
 }
 
 #[derive(Serialize)]
@@ -183,8 +177,8 @@ pub enum ModelSyncAction {
 pub enum ModelSyncError {
     #[error("requested catalog selection is invalid")]
     InvalidSelection,
-    #[error("selected catalog entries have duplicate source model ids")]
-    ConflictingSourceModelId,
+    #[error("catalog preview is stale")]
+    StalePreview,
     #[error("models.dev request failed")]
     Catalog(#[from] ModelsDevError),
     #[error("control-plane update failed")]

@@ -2873,6 +2873,30 @@ async fn currency_fields_are_not_console_settings() {
 }
 
 #[tokio::test]
+async fn catalog_apply_requires_a_preview_token_for_each_selection() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let missing = serde_json::json!({"provider_id":"vendor", "model_id":"model"});
+    let malformed =
+        serde_json::json!({"provider_id":"vendor", "model_id":"model", "preview_token":"invalid"});
+    let wrong_type =
+        serde_json::json!({"provider_id":"vendor", "model_id":"model", "preview_token":42});
+    for selection in [missing, malformed, wrong_type] {
+        let response = request(
+            &app,
+            "POST",
+            "/console/v1/catalog/models/import",
+            serde_json::json!({"selections":[selection]}),
+            &[],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(body_json(response).await["error"].is_string());
+    }
+    database.cleanup().await;
+}
+
+#[tokio::test]
 async fn removed_console_compatibility_paths_are_not_routed() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
@@ -4313,12 +4337,11 @@ async fn model_delete_hides_routing_clears_probes_and_preserves_history() {
             .all(|model| model["id"] != model_id.to_string())
     );
     assert!(
-        ControlPlaneRepository::new(database.pool.clone())
-            .model_source_ids()
+        !ControlPlaneRepository::new(database.pool.clone())
+            .model_source_versions()
             .await
             .unwrap()
-            .iter()
-            .all(|candidate| candidate != &source_model_id)
+            .contains_key(&source_model_id)
     );
 
     let historical_log = body_json(

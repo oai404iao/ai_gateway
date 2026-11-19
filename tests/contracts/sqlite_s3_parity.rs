@@ -227,27 +227,42 @@ async fn catalog_and_probe_contract(repositories: Repositories) {
         repository.control_plane_lists().await.unwrap().users.len(),
         1
     );
-    let input = |price: &str| ai_gateway::persistence::SyncedModelInput {
-        source_model_id: "catalog-parity".into(),
-        display_name: "Catalog Model".into(),
-        provider_name: "Provider".into(),
-        input_unit_price: decimal(price),
-        cached_input_unit_price: Decimal::ZERO,
-        cache_write_unit_price: Decimal::ZERO,
-        output_unit_price: Decimal::ZERO,
-        advanced_billing: AdvancedBilling::default(),
-        source_payload: json!({"id":"catalog-parity"}),
+    let input = |source: &str, price: &str, local| {
+        let model = ai_gateway::models_dev::ModelsDevModel {
+            model_id: source.into(),
+            provider_id: "provider".into(),
+            display_name: "Catalog Model".into(),
+            provider_name: "Provider".into(),
+            input_unit_price: decimal(price),
+            cached_input_unit_price: Decimal::ZERO,
+            cache_write_unit_price: Decimal::ZERO,
+            output_unit_price: Decimal::ZERO,
+            advanced_billing: AdvancedBilling::default(),
+            source_payload: json!({"id":source}),
+        };
+        ai_gateway::persistence::SyncedModelInput {
+            preview_token: model.preview_token(local),
+            model,
+        }
     };
+    let source = "catalog-parity";
     let mut created = repository
-        .prepare_catalog_models(admin, vec![input("1.000000000001")])
+        .prepare_catalog_models(admin, vec![input(source, "1.000000000001", None)])
         .await
         .unwrap();
     compile_runtime_config(created.runtime_records().await.unwrap()).unwrap();
     let (created, _) = created.commit().await.unwrap();
     assert_eq!(created[0].action, "import");
     let id = created[0].id;
+    let local = repository
+        .model_source_versions()
+        .await
+        .unwrap()
+        .get(source)
+        .copied();
+    assert_eq!(local, Some((id, created[0].updated_at)));
     let pending = repository
-        .prepare_catalog_models(admin, vec![input("2.75")])
+        .prepare_catalog_models(admin, vec![input(source, "2.75", local)])
         .await
         .unwrap();
     drop(pending);
@@ -256,7 +271,7 @@ async fn catalog_and_probe_contract(repositories: Repositories) {
         decimal("1.000000000001")
     );
     let (updated, _) = repository
-        .prepare_catalog_models(admin, vec![input("2.75")])
+        .prepare_catalog_models(admin, vec![input(source, "2.75", local)])
         .await
         .unwrap()
         .commit()
@@ -268,10 +283,16 @@ async fn catalog_and_probe_contract(repositories: Repositories) {
         repository.load().await.unwrap().models[0].input_unit_price,
         decimal("2.75")
     );
-    assert_eq!(
-        repository.model_source_ids().await.unwrap(),
-        ["catalog-parity"]
-    );
+    for stale in [None, local] {
+        let batch = vec![input("new-model", "3", None), input(source, "99", stale)];
+        assert!(matches!(
+            repository.prepare_catalog_models(admin, batch).await,
+            Err(RepositoryError::Conflict)
+        ));
+        let models = repository.load().await.unwrap().models;
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].input_unit_price, decimal("2.75"));
+    }
 }
 
 async fn commit_mutation(
@@ -2193,7 +2214,12 @@ async fn model_routing_lifecycle_contract(repositories: Repositories) {
     );
     assert!(listed.last_synced_at.is_none());
     assert_eq!(
-        repository.model_source_ids().await.unwrap(),
+        repository
+            .model_source_versions()
+            .await
+            .unwrap()
+            .into_keys()
+            .collect::<Vec<_>>(),
         ["parity-model"]
     );
 
@@ -2466,12 +2492,11 @@ async fn model_routing_lifecycle_contract(repositories: Repositories) {
             .all(|model| model.id != deleted.id)
     );
     assert!(
-        repository
-            .model_source_ids()
+        !repository
+            .model_source_versions()
             .await
             .unwrap()
-            .iter()
-            .all(|id| id != "parity-model")
+            .contains_key("parity-model")
     );
 }
 

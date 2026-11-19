@@ -367,7 +367,12 @@ async fn console_reads_expose_lists_details_audit_and_self_service_options() {
     assert!(options.channels.is_empty());
 
     assert_eq!(
-        repository.model_source_ids().await.unwrap(),
+        repository
+            .model_source_versions()
+            .await
+            .unwrap()
+            .into_keys()
+            .collect::<Vec<_>>(),
         vec!["gpt-test"]
     );
     let us = repository.user_settings(USER).await.unwrap().unwrap();
@@ -1011,24 +1016,31 @@ async fn catalog_catalog_models_import_and_refresh_existing_prices() {
     let (_directory, database, repository) = repository().await;
     seed_admin_and_user(&database).await;
 
-    let synced = |price: &str| ai_gateway::persistence::SyncedModelInput {
-        source_model_id: "catalog-model".into(),
-        display_name: "Catalog Model".into(),
-        provider_name: "Provider".into(),
-        input_unit_price: price.parse().unwrap(),
-        cached_input_unit_price: "0".parse().unwrap(),
-        cache_write_unit_price: "0".parse().unwrap(),
-        output_unit_price: "0".parse().unwrap(),
-        advanced_billing: serde_json::from_value(json!({
-            "long_context_tiers": [],
-            "request_multipliers": []
-        }))
-        .unwrap(),
-        source_payload: json!({"id": "catalog-model"}),
+    let synced = |price: &str, local| {
+        let model = ai_gateway::models_dev::ModelsDevModel {
+            model_id: "catalog-model".into(),
+            provider_id: "provider".into(),
+            display_name: "Catalog Model".into(),
+            provider_name: "Provider".into(),
+            input_unit_price: price.parse().unwrap(),
+            cached_input_unit_price: "0".parse().unwrap(),
+            cache_write_unit_price: "0".parse().unwrap(),
+            output_unit_price: "0".parse().unwrap(),
+            advanced_billing: serde_json::from_value(json!({
+                "long_context_tiers": [],
+                "request_multipliers": []
+            }))
+            .unwrap(),
+            source_payload: json!({"id": "catalog-model"}),
+        };
+        ai_gateway::persistence::SyncedModelInput {
+            preview_token: model.preview_token(local),
+            model,
+        }
     };
 
     let change = repository
-        .prepare_catalog_models(ADMIN, vec![synced("1.5")])
+        .prepare_catalog_models(ADMIN, vec![synced("1.5", None)])
         .await
         .unwrap();
     let (mutations, _) = change.commit().await.unwrap();
@@ -1038,7 +1050,13 @@ async fn catalog_catalog_models_import_and_refresh_existing_prices() {
     assert_eq!(loaded.models[0].input_unit_price, Decimal::new(15, 1));
 
     let change = repository
-        .prepare_catalog_models(ADMIN, vec![synced("2.75")])
+        .prepare_catalog_models(
+            ADMIN,
+            vec![synced(
+                "2.75",
+                Some((mutations[0].id, mutations[0].updated_at)),
+            )],
+        )
         .await
         .unwrap();
     let (mutations, _) = change.commit().await.unwrap();
@@ -1047,7 +1065,12 @@ async fn catalog_catalog_models_import_and_refresh_existing_prices() {
     let refreshed = repository.load().await.unwrap();
     assert_eq!(refreshed.models[0].input_unit_price, Decimal::new(275, 2));
     assert_eq!(
-        repository.model_source_ids().await.unwrap(),
+        repository
+            .model_source_versions()
+            .await
+            .unwrap()
+            .into_keys()
+            .collect::<Vec<_>>(),
         vec!["catalog-model"]
     );
 }

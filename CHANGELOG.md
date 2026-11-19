@@ -9,6 +9,9 @@ Versioning.
 
 ### Added
 
+- Correlate HTTP and Responses WebSocket retry, dispatch, and completion traces with the
+  logical request log ID. Candidate selection and send attempts are separate counts;
+  an additional attempt does not create a second customer charge.
 - Add a versioned C ABI connector SDK, SHA-pinned Linux plugin loader and
   administrator connector inventory. Third-party connectors can declare
   supported existing operations and use explicitly scoped static credentials.
@@ -20,6 +23,9 @@ Versioning.
 
 ### Changed
 
+- **Breaking:** Console catalog imports now require the selected rows' preview tokens.
+  If a selected catalog entry or its local model version is stale, the whole batch is
+  rejected. [Fetch a fresh preview](docs/user/billing.md#导入目录价格) before applying it.
 - **Breaking:** Codex now requires a separately installed compatible protocol-2
   plugin and a `[plugins].directory` configuration. Gateway images and archives do not
   bundle it; there is no built-in Codex fallback. `general` remains built in.
@@ -35,6 +41,11 @@ Versioning.
 - Reject `sec-websocket-*` custom authentication headers at configuration time
   because the host owns handshake fields. Explicit Cookie credentials remain
   supported; client/plugin Cookies remain blocked.
+
+### Fixed
+
+- Responses WebSocket continuations can reuse their eligible origin connection even after
+  session affinity has moved to another candidate.
 
 ### Removed
 

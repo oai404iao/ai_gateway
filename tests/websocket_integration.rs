@@ -12,7 +12,8 @@ use ai_gateway::{
     application::{ProxyService, RecordingRequestLogSink, SystemMetricsService},
     domain::{
         ApiFormat, ApiOperation, PassiveHealthSettings, RequestProtocol,
-        ResponsesWebSocketSettings, SystemRuntimeSettings, UpstreamTimeoutDefaults,
+        ResponsesWebSocketSettings, SessionAffinityKeySource, SessionAffinityRule,
+        SessionAffinitySettings, SystemRuntimeSettings, UpstreamTimeoutDefaults,
     },
     http,
     persistence::{
@@ -45,6 +46,9 @@ use tokio_tungstenite::{
     },
 };
 use uuid::Uuid;
+
+#[path = "support/proxy_trace.rs"]
+mod proxy_trace;
 
 const CLIENT_KEY: &str = "gateway-client-key";
 const UPSTREAM_KEY: &str = "upstream-key";
@@ -548,6 +552,7 @@ struct WebSocketControls {
     auto_disabled: bool,
     other_websocket_route: bool,
     other_route_authorized: bool,
+    session_affinity: bool,
     max_idle_connections: usize,
     idle_timeout: Duration,
     admitted_log_requests: usize,
@@ -568,6 +573,7 @@ impl Default for WebSocketControls {
             auto_disabled: false,
             other_websocket_route: false,
             other_route_authorized: true,
+            session_affinity: false,
             max_idle_connections: 128,
             idle_timeout: Duration::from_secs(5 * 60),
             admitted_log_requests: usize::MAX,
@@ -781,13 +787,39 @@ async fn gateway_harness_with_records(
     let runtime = Arc::new(RuntimeConfig::new(
         compile_control_plane_with_system_settings(
             records,
-            SystemRuntimeSettings::new_with_websocket(
+            SystemRuntimeSettings::new_with_all_and_websocket(
                 UpstreamTimeoutDefaults::new(
                     Duration::from_secs(1),
                     Duration::from_secs(2),
                     Duration::from_secs(2),
                 ),
+                Default::default(),
                 PassiveHealthSettings::default(),
+                Default::default(),
+                Default::default(),
+                if controls.session_affinity {
+                    let ttl = Duration::from_secs(300);
+                    SessionAffinitySettings::new(
+                        true,
+                        100,
+                        ttl,
+                        vec![SessionAffinityRule::new(
+                            "session".into(),
+                            [1; 32],
+                            vec![ApiFormat::OpenAiResponses].into(),
+                            vec![].into(),
+                            vec![SessionAffinityKeySource::RequestHeader(
+                                "x-session-id".parse().unwrap(),
+                            )]
+                            .into(),
+                            None,
+                            ttl,
+                        )]
+                        .into(),
+                    )
+                } else {
+                    SessionAffinitySettings::default()
+                },
                 ResponsesWebSocketSettings::new(
                     controls.system_enabled,
                     controls.max_idle_connections,
@@ -1282,8 +1314,9 @@ async fn responses_websocket_reports_missing_state_without_dispatching_increment
 async fn round_robin_gateway(
     first: &MockResponsesWebSocket,
     second: &MockResponsesWebSocket,
+    controls: WebSocketControls,
 ) -> GatewayHarness {
-    gateway_harness_with_records(first, None, Default::default(), |records| {
+    gateway_harness_with_records(first, None, controls, |records| {
         let mut alternate = records.channels[0].clone();
         alternate.id = Uuid::new_v4();
         alternate.base_url = second.base_url();
@@ -1303,7 +1336,7 @@ async fn round_robin_gateway(
 #[tokio::test]
 async fn full_creates_follow_routing_and_continuations_reuse_the_originating_socket() {
     let upstream = start_mock_upstream().await;
-    let gateway = round_robin_gateway(&upstream, &upstream).await;
+    let gateway = round_robin_gateway(&upstream, &upstream, Default::default()).await;
     let (mut websocket, _) = connect_async(websocket_request(
         gateway.server.address,
         CLIENT_KEY,
@@ -1330,10 +1363,48 @@ async fn full_creates_follow_routing_and_continuations_reuse_the_originating_soc
 }
 
 #[tokio::test]
+async fn continuation_uses_origin_socket_without_replacing_rebound_affinity() {
+    let upstream = start_mock_upstream().await;
+    let gateway = round_robin_gateway(
+        &upstream,
+        &upstream,
+        WebSocketControls {
+            session_affinity: true,
+            ..Default::default()
+        },
+    )
+    .await;
+    let (mut websocket, _) = connect_async(websocket_request(
+        gateway.server.address,
+        CLIENT_KEY,
+        "rebound-session",
+    ))
+    .await
+    .unwrap();
+    let first = response_create(&mut websocket, None).await;
+    let origin_id = completed_response_id(&first);
+    let clear = gateway.routing.clear_session_affinity_cache(None).unwrap();
+    assert_eq!(clear.cleared_entries, 1);
+    let second = response_create(&mut websocket, None).await;
+    assert_ne!(origin_id, completed_response_id(&second));
+
+    let continuation = response_create(&mut websocket, Some(origin_id)).await;
+    assert_eq!(completed_response_id(&continuation), "resp-3");
+    let full = response_create(&mut websocket, None).await;
+    assert_eq!(completed_response_id(&full), "resp-4");
+    let requests = upstream.requests();
+    assert_eq!(requests.len(), 4);
+    assert_ne!(requests[0].connection, requests[1].connection);
+    assert_eq!(requests[2].connection, requests[0].connection);
+    assert_eq!(requests[2].body["model"], requests[0].body["model"]);
+    assert_eq!(requests[3].connection, requests[1].connection);
+}
+
+#[tokio::test]
 async fn colliding_provider_ids_do_not_dispatch_a_continuation() {
     let first = start_mock_upstream().await;
     let second = start_mock_upstream().await;
-    let gateway = round_robin_gateway(&first, &second).await;
+    let gateway = round_robin_gateway(&first, &second, Default::default()).await;
     let (mut websocket, _) = connect_async(websocket_request(
         gateway.server.address,
         CLIENT_KEY,
@@ -1517,6 +1588,7 @@ async fn responses_websocket_reconnects_after_upstream_connection_limit() {
 
 #[tokio::test]
 async fn responses_websocket_wraps_upstream_upgrade_rejection_for_http_fallback() {
+    let trace = proxy_trace::capture();
     let upstream = start_rejecting_upstream(axum::http::StatusCode::SERVICE_UNAVAILABLE).await;
     let gateway = gateway_harness(&upstream).await;
     let (mut websocket, _) = connect_async(websocket_request(
@@ -1544,6 +1616,16 @@ async fn responses_websocket_wraps_upstream_upgrade_rejection_for_http_fallback(
     assert_eq!(logs.len(), 1);
     assert_eq!(logs[0].response_status_code, Some(426));
     assert_eq!(logs[0].error_code.as_deref(), Some("websocket_unavailable"));
+    let trace = std::fs::read_to_string(trace.path()).unwrap();
+    let id = format!("request_id={}", logs[0].id);
+    let correlated: Vec<_> = trace.lines().filter(|line| line.contains(&id)).collect();
+    let [completed] = correlated.as_slice() else {
+        panic!("expected only the terminal trace, without a create dispatch: {correlated:?}");
+    };
+    assert!(completed.contains("proxy_request_completed"));
+    assert!(completed.contains("candidate_attempt=1"));
+    assert!(completed.contains("attempt_phase=\"websocket_setup\""));
+    assert!(completed.contains("dispatch_attempts=0"));
 }
 
 #[tokio::test]
