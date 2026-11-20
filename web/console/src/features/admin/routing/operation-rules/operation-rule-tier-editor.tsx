@@ -43,14 +43,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { SELECTION_STRATEGIES, apiOperationLabel, selectionStrategyLabel } from "@/lib/permissions";
 
 type RouteCandidate = OperationTierInput["candidates"][number];
@@ -207,18 +199,7 @@ export function OperationRuleTierEditor({
 
                   <FieldSet data-invalid={Boolean(errorFor([...tierPath, "candidates"])) || undefined}>
                     <FieldLegend className="sr-only">{t("Capability/model candidates")}</FieldLegend>
-                    <Table className="min-w-[38rem] table-fixed">
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead className="w-[42%]">{t("Capability")}</TableHead>
-                          <TableHead>{t("Upstream model")}</TableHead>
-                          <TableHead className="w-24">{t("Weight")}</TableHead>
-                          <TableHead className="w-10">
-                            <span className="sr-only">{t("Actions")}</span>
-                          </TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
+                    <ol className="@container flex flex-col gap-3">
                         {tier.candidates.map((candidate, candidateIndex) => {
                           const candidatePath = [...tierPath, "candidates", candidateIndex];
                           const capability = capabilityById.get(candidate.capability_id);
@@ -239,10 +220,12 @@ export function OperationRuleTierEditor({
                             ]),
                           ];
                           const rowLabel = { tier: tierIndex + 1, row: candidateIndex + 1 };
+                          const rowId = `${idPrefix}-${tierIndex}-${candidateIndex}`;
                           return (
-                            <TableRow key={candidateIndex}>
-                              <TableCell className="align-top whitespace-normal">
+                            <li key={candidateIndex}
+                              className="grid min-w-0 items-start gap-3 rounded-md border p-3 @min-[32rem]:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_5rem_auto]">
                                 <Field data-invalid={Boolean(capabilityError) || undefined}>
+                                  <FieldLabel htmlFor={`${rowId}-capability`}>{t("Capability")}</FieldLabel>
                                   <Combobox
                                     items={capabilityIds}
                                     value={candidate.capability_id || null}
@@ -266,6 +249,7 @@ export function OperationRuleTierEditor({
                                     }}
                                   >
                                     <ComboboxInput
+                                      id={`${rowId}-capability`}
                                       aria-label={t("Capability for tier {tier} row {row}", rowLabel)}
                                       aria-invalid={Boolean(capabilityError)}
                                       placeholder={t("Choose a capability")}
@@ -305,9 +289,8 @@ export function OperationRuleTierEditor({
                                     <FieldError>{capabilityError}</FieldError>
                                   ) : null}
                                 </Field>
-                              </TableCell>
-                              <TableCell className="align-top whitespace-normal">
                                 <Field data-invalid={Boolean(modelError) || undefined}>
+                                  <FieldLabel htmlFor={`${rowId}-model`}>{t("Upstream model")}</FieldLabel>
                                   <Combobox
                                     items={visibleModels}
                                     value={candidate.upstream_model || null}
@@ -319,6 +302,7 @@ export function OperationRuleTierEditor({
                                     }
                                   >
                                     <ComboboxInput
+                                      id={`${rowId}-model`}
                                       aria-label={t("Upstream model for tier {tier} row {row}", rowLabel)}
                                       aria-invalid={Boolean(modelError)}
                                       disabled={!capability}
@@ -352,10 +336,10 @@ export function OperationRuleTierEditor({
                                   </Combobox>
                                   {modelError ? <FieldError>{modelError}</FieldError> : null}
                                 </Field>
-                              </TableCell>
-                              <TableCell className="align-top whitespace-normal">
                                 <Field data-invalid={Boolean(weightError) || undefined}>
+                                  <FieldLabel htmlFor={`${rowId}-weight`}>{t("Weight")}</FieldLabel>
                                   <Input
+                                    id={`${rowId}-weight`}
                                     type="number"
                                     min={1}
                                     max={2_147_483_647}
@@ -371,12 +355,11 @@ export function OperationRuleTierEditor({
                                   />
                                   {weightError ? <FieldError>{weightError}</FieldError> : null}
                                 </Field>
-                              </TableCell>
-                              <TableCell className="align-top">
                                 <Button
                                   type="button"
                                   variant="ghost"
-                                  size="icon-sm"
+                                  size="sm"
+                                  className="justify-self-start @min-[32rem]:mt-5"
                                   aria-label={t("Remove tier {tier} row {row}", rowLabel)}
                                   onClick={() =>
                                     patchTier(tierIndex, {
@@ -385,13 +368,12 @@ export function OperationRuleTierEditor({
                                   }
                                 >
                                   <X data-icon="inline-start" />
+                                  <span className="@min-[32rem]:sr-only">{t("Remove")}</span>
                                 </Button>
-                              </TableCell>
-                            </TableRow>
+                            </li>
                           );
                         })}
-                      </TableBody>
-                    </Table>
+                    </ol>
                     {tier.candidates.length === 0 ? (
                       <FieldDescription>
                         {t("Add at least one capability/model candidate.")}

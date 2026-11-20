@@ -1,527 +1,278 @@
-import { useMemo, useState } from "react";
-import {
-  Award,
-  ChevronLeft,
-  ChevronRight,
-  Crown,
-  Medal,
-  Sparkles,
-  Trophy,
-} from "lucide-react";
-import { Bar, BarChart, Cell, LabelList, XAxis, YAxis } from "recharts";
-import { PageHeader } from "@/components/shared/page-header";
-import { AsyncResource } from "@/components/shared/async-resource";
+import { useId, useRef, useState } from "react";
+import { ChevronLeft, ChevronRight } from "lucide-react";
+import type { SpendLeaderboardEntry, SpendLeaderboardPeriod, SpendLeaderboardReport } from "@/api/types";
+import { useI18n } from "@/app/i18n";
+import { ErrorAlert } from "@/components/shared/async-resource";
 import { EmptyState } from "@/components/shared/empty-state";
-import { ResourceTable, type Column } from "@/components/shared/resource-table";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { PageHeader } from "@/components/shared/page-header";
+import { TablePagination } from "@/components/shared/table-pagination";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardAction,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import {
-  ChartContainer,
-  ChartTooltip,
-  ChartTooltipContent,
-  type ChartConfig,
-} from "@/components/ui/chart";
-import { Progress } from "@/components/ui/progress";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { useI18n } from "@/app/i18n";
-import type {
-  SpendLeaderboardEntry,
-  SpendLeaderboardPeriod,
-} from "@/api/types";
-import { formatDateTime } from "@/lib/dates";
-import { formatCompactTokens, formatUsd } from "@/lib/formatters";
-import { cn } from "@/lib/utils";
+import { decimalPercentShare } from "@/lib/decimal";
 import { useSpendLeaderboard } from "./api";
 
-interface PodiumDatum {
-  rank: number;
-  rank_label: string;
-  display_name: string;
-  cost: number;
-  fill: string;
-  entry: SpendLeaderboardEntry | null;
-}
-
 const LEADERBOARD_LIMIT = 50;
+const PAGE_SIZES = [10, 20, 50] as const;
 const SHANGHAI_TIME_ZONE = "Asia/Shanghai";
-
-function numericAmount(value: string): number {
-  const amount = Number(value);
-  return Number.isFinite(amount) ? amount : 0;
-}
-
-function initials(value: string): string {
-  const result = value
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0])
-    .join("")
-    .toUpperCase();
-  return result || "U";
-}
-
-function formatShare(costAmount: string, totalAmount: string): string {
-  const total = numericAmount(totalAmount);
-  if (total <= 0) return "—";
-  return (numericAmount(costAmount) / total).toLocaleString(undefined, {
-    style: "percent",
-    maximumFractionDigits: 1,
-  });
-}
-
-function sharePercent(costAmount: string, totalAmount: string): number {
-  const total = numericAmount(totalAmount);
-  if (total <= 0) return 0;
-  return Math.min(100, (numericAmount(costAmount) / total) * 100);
-}
-
-function rankVariant(rank: number) {
-  if (rank === 1) return "warning" as const;
-  if (rank === 2) return "secondary" as const;
-  if (rank === 3) return "info" as const;
-  return "outline" as const;
-}
-
-function rankAccent(rank: number): string {
-  if (rank === 1) return "border-warning/40 bg-warning/10";
-  if (rank === 2) return "border-border bg-muted/60";
-  return "border-info/30 bg-info/10";
-}
-
-function rankAvatarAccent(rank: number): string {
-  if (rank === 1) return "ring-warning/40";
-  if (rank === 2) return "ring-muted-foreground/25";
-  return "ring-info/35";
-}
-
-function rankFill(rank: number): string {
-  if (rank === 1) return "var(--color-gold)";
-  if (rank === 2) return "var(--color-silver)";
-  return "var(--color-bronze)";
-}
+const PERIODS = [["day", "Daily ranking"], ["week", "Weekly ranking"], ["month", "Monthly ranking"]] as const;
+const HEADINGS = [
+  ["Rank", "w-[9%]"],
+  ["User", "w-[22%]"],
+  ["Recorded spend (USD)", "w-[19%] text-right"],
+  ["Share of period total", "w-[18%]"],
+  ["Priced requests", "w-[16%] text-right"],
+  ["Total tokens", "w-[16%] text-right"],
+] as const;
 
 function shanghaiDate(value: string): Date {
   return new Date(`${value}T00:00:00+08:00`);
 }
 
-function formatPeriod(
-  period: SpendLeaderboardPeriod,
-  periodStart: string,
-  periodEnd: string,
-  locale: string,
-): string {
-  const dateFormatter = new Intl.DateTimeFormat(locale, {
-    dateStyle: "medium",
-    timeZone: SHANGHAI_TIME_ZONE,
-  });
-  if (period === "day") {
-    return dateFormatter.format(shanghaiDate(periodStart));
-  }
+function formatPeriod({ period, period_start, period_end }: SpendLeaderboardReport, locale: string): string {
+  const start = shanghaiDate(period_start);
   if (period === "month") {
     return new Intl.DateTimeFormat(locale, {
-      month: "long",
-      year: "numeric",
-      timeZone: SHANGHAI_TIME_ZONE,
-    }).format(shanghaiDate(periodStart));
+      month: "long", year: "numeric", timeZone: SHANGHAI_TIME_ZONE,
+    }).format(start);
   }
-  const inclusiveEnd = shanghaiDate(periodEnd);
+  const dates = new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeZone: SHANGHAI_TIME_ZONE });
+  if (period === "day") return dates.format(start);
+  const inclusiveEnd = shanghaiDate(period_end);
   inclusiveEnd.setUTCDate(inclusiveEnd.getUTCDate() - 1);
-  return `${dateFormatter.format(shanghaiDate(periodStart))} – ${dateFormatter.format(inclusiveEnd)}`;
+  return `${dates.format(start)} – ${dates.format(inclusiveEnd)}`;
 }
 
-function PodiumUser({
-  datum,
-  rankLabel,
-}: {
-  datum: PodiumDatum;
-  rankLabel: string;
+function Rank({ value }: { value: number }) {
+  const { t } = useI18n();
+  return (
+    <span className="tabular-nums">
+      <span className="sr-only">{t("Rank {rank}", { rank: value })}</span>
+      {value === 1 ? <Badge aria-hidden="true" className="min-w-6 justify-center">1</Badge> :
+        <span aria-hidden="true" className="inline-block min-w-6 text-center">{value}</span>}
+    </span>
+  );
+}
+
+function Share({ value, compact = false }: { value: ReturnType<typeof decimalPercentShare>; compact?: boolean }) {
+  const { t, locale } = useI18n();
+  const format = new Intl.NumberFormat(locale, { style: "percent", maximumFractionDigits: 1 });
+  const share = value === null ? "—" : value.belowTenth
+    ? `<${format.format(0.001)}` : format.format(value.roundedRatio);
+  return (
+    <div className="flex items-center gap-2 text-xs tabular-nums">
+      {value !== null && (
+        <span aria-hidden="true" className="h-1 min-w-0 flex-1 rounded-full bg-muted">
+          <span className="block h-full rounded-full bg-muted-foreground"
+            style={{ width: `${Math.min(value.percent, 100)}%` }} />
+        </span>
+      )}
+      <span className={compact ? "ml-auto w-24 shrink-0 text-right" : "ml-auto w-12 shrink-0 text-right"}>
+        {compact && <span className="text-muted-foreground">{t("Share")} </span>}{share}
+      </span>
+    </div>
+  );
+}
+
+function RankingRows({ entries, total, labelId, formatAmount }: {
+  entries: SpendLeaderboardEntry[];
+  total: string;
+  labelId: string;
+  formatAmount: (value: string) => string;
 }) {
-  if (!datum.entry) {
-    return <div aria-hidden="true" className="min-h-28" />;
-  }
-  const Icon = datum.rank === 1 ? Crown : datum.rank === 2 ? Medal : Award;
+  const { t, locale } = useI18n();
+  const rows = entries.map((entry) => ({
+    entry,
+    amount: formatAmount(entry.cost_amount),
+    share: decimalPercentShare(entry.cost_amount, total),
+    requests: entry.priced_request_count.toLocaleString(locale),
+    tokens: entry.total_tokens.toLocaleString(locale),
+  }));
 
   return (
-    <div
-      className={cn(
-        "flex min-w-0 flex-col items-center gap-2 rounded-xl border p-2 text-center",
-        rankAccent(datum.rank),
-        datum.rank === 1 && "sm:-translate-y-2",
-      )}
-    >
-      <Avatar
-        size="lg"
-        className={cn(
-          "ring-4 ring-background shadow-lg",
-          rankAvatarAccent(datum.rank),
-        )}
-      >
-        <AvatarFallback>{initials(datum.entry.display_name)}</AvatarFallback>
-      </Avatar>
-      <div className="flex min-w-0 flex-col items-center gap-1">
-        <Badge variant={rankVariant(datum.rank)}>
-          <Icon data-icon="inline-start" />
-          <span className="sr-only">{rankLabel} </span>#{datum.rank}
-        </Badge>
-        <span className="max-w-full truncate font-medium">
-          {datum.entry.display_name}
-        </span>
-        <span className="text-xs text-muted-foreground tabular-nums">
-          {formatUsd(datum.entry.cost_amount)}
-        </span>
+    <>
+      <div className="hidden @min-[45rem]:block">
+        <Table aria-labelledby={labelId} className="table-fixed">
+          <TableHeader>
+            <TableRow>
+              {HEADINGS.map(([label, width]) => (
+                <TableHead key={label} scope="col" className={`h-auto py-2 whitespace-normal ${width}`}>{t(label)}</TableHead>
+              ))}
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.map(({ entry, amount, share, requests, tokens }) => (
+              <TableRow key={entry.user_id}>
+                <TableCell className="py-3"><Rank value={entry.rank} /></TableCell>
+                <TableCell className="font-medium whitespace-normal wrap-anywhere">{entry.display_name}</TableCell>
+                <TableCell className="text-right text-base font-semibold whitespace-normal wrap-anywhere tabular-nums">{amount}</TableCell>
+                <TableCell><Share value={share} /></TableCell>
+                <TableCell className="text-right whitespace-normal wrap-anywhere tabular-nums">{requests}</TableCell>
+                <TableCell className="text-right whitespace-normal wrap-anywhere tabular-nums">{tokens}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
       </div>
-    </div>
+      <ol role="list" aria-labelledby={labelId} className="divide-y @min-[45rem]:hidden">
+        {rows.map(({ entry, amount, share, requests, tokens }) => (
+          <li key={entry.user_id} className="flex min-w-0 flex-col gap-2 py-3">
+            <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1">
+              <div className="flex min-w-0 flex-[1_1_8rem] items-baseline gap-2">
+                <Rank value={entry.rank} />
+                <span className="min-w-0 font-medium wrap-anywhere">{entry.display_name}</span>
+              </div>
+              <span className="ml-auto max-w-full text-right text-base font-semibold wrap-anywhere tabular-nums">{amount}</span>
+            </div>
+            <Share value={share} compact />
+            <dl className="flex flex-wrap gap-x-4 gap-y-1 text-xs tabular-nums">
+              <div className="flex min-w-0 gap-1.5">
+                <dt className="text-muted-foreground">{t("Priced requests")}</dt><dd className="wrap-anywhere">{requests}</dd>
+              </div>
+              <div className="flex min-w-0 gap-1.5">
+                <dt className="text-muted-foreground">{t("Total tokens")}</dt><dd className="wrap-anywhere">{tokens}</dd>
+              </div>
+            </dl>
+          </li>
+        ))}
+      </ol>
+    </>
   );
 }
 
 export function SpendLeaderboardPage() {
   const [period, setPeriod] = useState<SpendLeaderboardPeriod>("day");
   const [periodStart, setPeriodStart] = useState<string | undefined>();
+  const [requestedPage, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number>(20);
   const { t, locale } = useI18n();
-  const { data, error, isLoading } = useSpendLeaderboard({
-    period,
-    period_start: periodStart,
-    limit: LEADERBOARD_LIMIT,
+  const rankingsHeading = useId();
+  const periodStatus = useRef<HTMLSpanElement>(null);
+  const { data, error, isLoading, isFetching, refetch } = useSpendLeaderboard({
+    period, period_start: periodStart, limit: LEADERBOARD_LIMIT,
   });
-
-  const podiumData = useMemo<PodiumDatum[]>(() => {
-    const topEntries = data?.entries.slice(0, 3) ?? [];
-    const entriesByRank = new Map(
-      topEntries.map((entry) => [entry.rank, entry]),
-    );
-    return [2, 1, 3].map((rank) => {
-      const entry = entriesByRank.get(rank) ?? null;
-      return {
-        rank,
-        rank_label: entry ? `#${rank}` : "",
-        display_name: entry?.display_name ?? "",
-        cost: entry ? numericAmount(entry.cost_amount) : 0,
-        fill: rankFill(rank),
-        entry,
-      };
-    });
-  }, [data]);
-
-  const chartConfig = {
-    cost: {
-      label: t("Cost"),
-      color: "var(--warning)",
-    },
-    gold: {
-      label: "#1",
-      color: "var(--warning)",
-    },
-    silver: {
-      label: "#2",
-      color: "var(--muted-foreground)",
-    },
-    bronze: {
-      label: "#3",
-      color: "var(--info)",
-    },
-  } satisfies ChartConfig;
-
-  const columns: Column<SpendLeaderboardEntry>[] = [
-    {
-      key: "rank",
-      header: t("Rank"),
-      className: "w-20",
-      render: (entry) => (
-        <Badge
-          variant={rankVariant(entry.rank)}
-          aria-label={t("Rank {rank}", { rank: entry.rank })}
-        >
-          #{entry.rank}
-        </Badge>
-      ),
-    },
-    {
-      key: "user",
-      header: t("User"),
-      render: (entry) => (
-        <div className="flex min-w-48 items-center gap-3">
-          <Avatar size="sm">
-            <AvatarFallback>{initials(entry.display_name)}</AvatarFallback>
-          </Avatar>
-          <span className="truncate font-medium">{entry.display_name}</span>
-        </div>
-      ),
-    },
-    {
-      key: "cost",
-      header: t("Cost"),
-      render: (entry) => (
-        <span className="font-medium tabular-nums">
-          {formatUsd(entry.cost_amount)}
-        </span>
-      ),
-    },
-    {
-      key: "share",
-      header: t("Share"),
-      className: "min-w-32",
-      render: (entry) => (
-        <div className="flex min-w-28 flex-col gap-1">
-          <span className="text-xs font-medium tabular-nums">
-            {formatShare(entry.cost_amount, data?.total_cost_amount ?? "0")}
-          </span>
-          <Progress
-            value={sharePercent(
-              entry.cost_amount,
-              data?.total_cost_amount ?? "0",
-            )}
-            aria-label={t("Share of spend")}
-          />
-        </div>
-      ),
-    },
-    {
-      key: "priced_requests",
-      header: t("Priced requests"),
-      render: (entry) => entry.priced_request_count.toLocaleString(),
-    },
-    {
-      key: "tokens",
-      header: t("Total tokens"),
-      render: (entry) => formatCompactTokens(entry.total_tokens),
-    },
-  ];
-
-  const selectedPeriodLabel = data
-    ? formatPeriod(data.period, data.period_start, data.period_end, locale)
-    : t("Loading…");
+  const periodLabel = data ? formatPeriod(data, locale) : t(isLoading ? "Loading…" : "Period unavailable");
+  const count = data?.entries.length ?? 0;
+  const pageCount = Math.max(1, Math.ceil(count / pageSize));
+  const page = Math.min(requestedPage, pageCount);
+  const hasSnapshot = Boolean(data?.refreshed_at || count);
+  const amounts = new Intl.NumberFormat(locale, { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+  const formatAmount = (value: string) => {
+    const magnitude = Math.abs(Number(value));
+    const display = magnitude > 0 && magnitude < 0.000001 ? value : amounts.format(value as Intl.StringNumericLiteral);
+    return `${display} USD`;
+  };
+  const changeStart = (start?: string) => {
+    setPeriodStart(start);
+    setPage(1);
+  };
 
   return (
-    <div className="flex flex-col gap-6">
-      <PageHeader
-        title="Spend leaderboard"
-        description="Periodically refreshed user-spend rankings."
-      />
-
-      <Card>
-        <CardHeader>
-          <CardTitle>{t("Ranking period")}</CardTitle>
-          <CardDescription>
-            {t(
-              "Daily rankings run from 00:00 to the following 00:00; weekly rankings run Monday through Sunday; monthly rankings run from the 1st through the final day. All periods use Asia/Shanghai and refresh every 15 minutes.",
-            )}
-          </CardDescription>
-          <CardAction>
-            <Badge variant="secondary">{t("Asia/Shanghai")}</Badge>
-          </CardAction>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-4">
-          <ToggleGroup
-            value={[period]}
-            onValueChange={(values) => {
-              const value = values[0] as SpendLeaderboardPeriod | undefined;
-              if (!value) return;
-              setPeriod(value);
-              setPeriodStart(undefined);
-            }}
-            variant="outline"
-            spacing={0}
-            aria-label={t("Ranking period")}
-          >
-            {(
-              [
-                ["day", "Daily"],
-                ["week", "Weekly"],
-                ["month", "Monthly"],
-              ] as const
-            ).map(([value, label]) => (
-              <ToggleGroupItem
-                key={value}
-                value={value}
-                aria-label={t(label)}
-              >
-                {t(label)}
-              </ToggleGroupItem>
-            ))}
-          </ToggleGroup>
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge variant={periodStart ? "outline" : "secondary"}>
-              {periodStart ? t("Historical period") : t("Current period")}
-            </Badge>
-            <span className="text-sm font-medium">{selectedPeriodLabel}</span>
-            {data?.refreshed_at ? (
-              <span className="text-sm text-muted-foreground">
-                {t("Snapshot refreshed {time}", {
-                  time: formatDateTime(data.refreshed_at),
-                })}
-              </span>
-            ) : null}
+    <div className="flex min-w-0 flex-col gap-4">
+      <PageHeader title="Spend leaderboard" actions={
+        <p className="pt-1.5 text-xs text-muted-foreground">{t("Shanghai time · Asia/Shanghai")}</p>
+      } />
+      <div className="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2">
+        <ToggleGroup value={[period]} variant="outline" spacing={0} aria-label={t("Ranking period")}
+          className="max-w-full items-stretch"
+          onValueChange={([value]) => {
+            const next = PERIODS.find(([type]) => type === value)?.[0];
+            if (!next || next === period) return;
+            setPeriod(next);
+            changeStart();
+          }}>
+          {PERIODS.map(([value, label]) => (
+            <ToggleGroupItem key={value} value={value} className="h-auto min-h-8 min-w-0 shrink py-1 text-center whitespace-normal">
+              {t(label)}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+        <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
+          <div className="flex min-w-0 max-w-full items-center gap-2">
+            <Button variant="outline" size="icon-sm" aria-label={t("Previous period")} title={t("Previous period")}
+              aria-disabled={!data?.previous_period_start} className="aria-disabled:opacity-50"
+              onClick={() => { if (data?.previous_period_start) changeStart(data.previous_period_start); }}>
+              <ChevronLeft />
+            </Button>
+            <span ref={periodStatus} tabIndex={-1} role="status" className="min-w-0 text-sm font-medium wrap-anywhere">{periodLabel}</span>
+            <Button variant="outline" size="icon-sm" aria-label={t("Next period")} title={t("Next period")}
+              aria-disabled={!data?.next_period_start} className="aria-disabled:opacity-50"
+              onClick={() => { if (data?.next_period_start) changeStart(data.next_period_start); }}>
+              <ChevronRight />
+            </Button>
           </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>{t("History")}</CardTitle>
-          <CardDescription>
-            {t("Browse earlier and later retained rankings for this period.")}
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-wrap gap-2">
-          <Button
-            variant="outline"
-            disabled={!data?.previous_period_start}
-            onClick={() => setPeriodStart(data?.previous_period_start ?? undefined)}
-          >
-            <ChevronLeft data-icon="inline-start" />
-            {t("Previous period")}
+          <Button variant={periodStart ? "outline" : "secondary"} size="sm" aria-disabled={!periodStart}
+            onClick={() => { if (periodStart) changeStart(); }}>
+            {periodStart ? t("Back to current period") : t("Current ranking period")}
           </Button>
-          <Button
-            variant={periodStart ? "outline" : "secondary"}
-            disabled={!periodStart}
-            onClick={() => setPeriodStart(undefined)}
-          >
-            {t("Current period")}
-          </Button>
-          <Button
-            variant="outline"
-            disabled={!data?.next_period_start}
-            onClick={() => setPeriodStart(data?.next_period_start ?? undefined)}
-          >
-            {t("Next period")}
-            <ChevronRight data-icon="inline-end" />
-          </Button>
-        </CardContent>
-      </Card>
+        </div>
+      </div>
 
-      <AsyncResource isLoading={isLoading} error={error}>
-        {data ? (
-          data.entries.length === 0 ? (
-            <Card>
-              <CardContent>
-                <EmptyState
-                  title={t("No spend data")}
-                  description={t(
-                    "No recorded request costs were found for this period.",
-                  )}
-                  className="py-12"
-                />
-              </CardContent>
-            </Card>
-          ) : (
-            <>
-              <Card>
-                <CardHeader>
-                  <CardTitle>{t("Top spenders")}</CardTitle>
-                  <CardDescription>
-                    {t(
-                      "The top three users take the podium; the table lists up to {count} users.",
-                      { count: LEADERBOARD_LIMIT },
-                    )}
-                  </CardDescription>
-                  <CardAction>
-                    <Badge variant="warning">
-                      <Sparkles data-icon="inline-start" />
-                      {t("Top 3")}
-                    </Badge>
-                  </CardAction>
-                </CardHeader>
-                <CardContent className="flex flex-col gap-6">
-                  <div className="grid grid-cols-3 gap-3">
-                    {podiumData.map((datum) => (
-                      <PodiumUser
-                        key={datum.rank}
-                        datum={datum}
-                        rankLabel={t("Rank")}
-                      />
-                    ))}
-                  </div>
-                  <div className="rounded-xl border bg-muted/30 px-2 py-4">
-                    <ChartContainer config={chartConfig} className="h-72 w-full">
-                      <BarChart
-                        accessibilityLayer
-                        data={podiumData}
-                        margin={{ top: 28, right: 12, left: 12, bottom: 0 }}
-                      >
-                        <XAxis dataKey="display_name" hide />
-                        <YAxis hide />
-                        <ChartTooltip
-                          cursor={false}
-                          content={
-                            <ChartTooltipContent
-                              labelKey="display_name"
-                              formatter={(value) => formatUsd(String(value))}
-                            />
-                          }
-                        />
-                        <Bar
-                          dataKey="cost"
-                          radius={[16, 16, 0, 0]}
-                          maxBarSize={128}
-                        >
-                          <LabelList
-                            dataKey="rank_label"
-                            position="top"
-                            className="fill-foreground text-xs font-semibold"
-                          />
-                          {podiumData.map((datum) => (
-                            <Cell key={datum.rank} fill={datum.fill} />
-                          ))}
-                        </Bar>
-                      </BarChart>
-                    </ChartContainer>
-                  </div>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <div className="flex flex-col gap-1 rounded-lg border bg-muted/30 p-3">
-                      <span className="text-xs text-muted-foreground">
-                        {t("Total recorded cost")}
-                      </span>
-                      <span className="text-xl font-medium tabular-nums">
-                        {formatUsd(data.total_cost_amount)}
-                      </span>
-                    </div>
-                    <div className="flex flex-col gap-1 rounded-lg border bg-muted/30 p-3">
-                      <span className="text-xs text-muted-foreground">
-                        {t("Users shown")}
-                      </span>
-                      <span className="text-xl font-medium tabular-nums">
-                        {data.entries.length.toLocaleString()}
-                      </span>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
+      {error && (
+        <div className="flex flex-col gap-2">
+          <ErrorAlert error={error} />
+          <Button variant="outline" className="self-start" disabled={isFetching} onClick={() => {
+            periodStatus.current?.focus();
+            void refetch();
+          }}>{t("Retry")}</Button>
+        </div>
+      )}
 
-              <Card>
-                <CardHeader>
-                  <CardTitle>{t("Leaderboard")}</CardTitle>
-                  <CardDescription>
-                    {t("Top {count} ranked users for the selected period.", {
-                      count: LEADERBOARD_LIMIT,
-                    })}
-                  </CardDescription>
-                  <CardAction>
-                    <Trophy className="size-4 text-muted-foreground" />
-                  </CardAction>
-                </CardHeader>
-                <CardContent>
-                  <ResourceTable
-                    columns={columns}
-                    rows={data.entries}
-                    rowKey={(entry) => entry.user_id}
-                  />
-                </CardContent>
-              </Card>
-            </>
-          )
-        ) : null}
-      </AsyncResource>
+      {isLoading && (
+        <Card role="status" aria-label={t("Loading…")}>
+          <CardHeader aria-hidden="true"><Skeleton className="h-16 w-full" /></CardHeader>
+          <CardContent aria-hidden="true" className="flex flex-col gap-3">
+            {[0, 1, 2].map((row) => <Skeleton key={row} className="h-14 w-full" />)}
+          </CardContent>
+        </Card>
+      )}
+
+      {data && (
+        <Card className="@container gap-0 pt-0">
+          {hasSnapshot && (
+            <CardHeader className="flex flex-wrap items-end justify-between gap-x-6 gap-y-2 border-b bg-muted/50 py-3">
+              <div className="flex min-w-0 flex-col gap-1">
+                <p className="text-xs text-muted-foreground">{t("Total recorded cost for the period")}</p>
+                <p className="text-3xl font-semibold tracking-tight wrap-anywhere tabular-nums sm:text-4xl">{formatAmount(data.total_cost_amount)}</p>
+              </div>
+              <div className="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground sm:text-right">
+                {data.refreshed_at && (
+                  <time dateTime={data.refreshed_at}>
+                    {t("Snapshot refreshed {time}", { time: new Intl.DateTimeFormat(locale, {
+                      dateStyle: "medium", timeStyle: "short", timeZone: SHANGHAI_TIME_ZONE, hourCycle: "h23",
+                    }).format(new Date(data.refreshed_at)) })}
+                  </time>
+                )}
+                <p>{t("Generated every 15 minutes")}</p>
+              </div>
+            </CardHeader>
+          )}
+          <CardContent className="flex min-w-0 flex-col gap-3 pt-3">
+            <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+              <h2 id={rankingsHeading} className="text-base font-medium">{t("User rankings")}</h2>
+              {count > 0 && <p className="text-xs text-muted-foreground">
+                {t("Showing {count} users, up to {limit}.", { count, limit: LEADERBOARD_LIMIT })}
+              </p>}
+            </div>
+            {count === 0 ? (
+              <EmptyState title={t(hasSnapshot ? "No priced requests in this period" : "No snapshot yet")} />
+            ) : (
+              <RankingRows entries={data.entries.slice((page - 1) * pageSize, page * pageSize)}
+                total={data.total_cost_amount} labelId={rankingsHeading} formatAmount={formatAmount} />
+            )}
+            {count > PAGE_SIZES[0] && (
+              <TablePagination page={page} pageSize={pageSize} pageCount={pageCount} totalItems={count}
+                pageSizeOptions={PAGE_SIZES} onPageChange={setPage} onPageSizeChange={(size) => {
+                  setPageSize(size);
+                  setPage(1);
+                }} />
+            )}
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

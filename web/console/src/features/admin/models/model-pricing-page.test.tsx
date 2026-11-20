@@ -33,7 +33,7 @@ describe("ModelPricingPage", () => {
     const user = userEvent.setup();
     renderAppAt(
       `/admin/models/${MODEL.id}/pricing?returnTo=${encodeURIComponent(
-        "/admin/models?view=models",
+        `/admin/models?view=models&model=${MODEL.id}&rule=selected-rule`,
       )}`,
     );
 
@@ -45,6 +45,8 @@ describe("ModelPricingPage", () => {
       expect(new URLSearchParams(window.location.search).get("view")).toBe(
         "models",
       );
+      expect(new URLSearchParams(window.location.search).get("model")).toBe(MODEL.id);
+      expect(new URLSearchParams(window.location.search).get("rule")).toBe("selected-rule");
     });
   });
 

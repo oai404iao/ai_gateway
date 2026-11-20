@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router";
 import { LogOut, Moon, Sun, Monitor, ChevronDown, User } from "lucide-react";
 import { toast } from "sonner";
@@ -149,7 +149,7 @@ function UserMenu() {
 function ExpandableNavItem({ item }: { item: NavItem }) {
   const { pathname } = useLocation();
   const { t } = useI18n();
-  const { state, setOpen: setSidebarOpen, isMobile, setOpenMobile } = useSidebar();
+  const { state, setOpen: setSidebarOpen, isMobile } = useSidebar();
   const active = pathname === item.path || pathname.startsWith(`${item.path}/`);
   const [open, setOpen] = useState(active);
 
@@ -182,9 +182,6 @@ function ExpandableNavItem({ item }: { item: NavItem }) {
               <SidebarMenuSubButton
                 isActive={pathname === child.path}
                 render={<NavLink to={child.path} end />}
-                onClick={() => {
-                  if (isMobile) setOpenMobile(false);
-                }}
               >
                 <span>{t(child.label)}</span>
               </SidebarMenuSubButton>
@@ -197,14 +194,44 @@ function ExpandableNavItem({ item }: { item: NavItem }) {
 }
 
 export function ConsoleLayout() {
-  const { user } = useSession();
-  const { pathname } = useLocation();
-  const { t } = useI18n();
-  const sections = visibleSections(user?.role ?? null);
-
   return (
     <SidebarProvider>
-      <Sidebar collapsible="icon">
+      <ConsoleShell />
+    </SidebarProvider>
+  );
+}
+
+function ConsoleShell() {
+  const { user } = useSession();
+  const { key, pathname } = useLocation();
+  const { t } = useI18n();
+  const { isMobile, openMobile, setOpenMobile } = useSidebar();
+  const previousLocationKey = useRef(key);
+  const closedByNavigation = useRef(false);
+  const sidebarTrigger = useRef<HTMLButtonElement>(null);
+  const pageContent = useRef<HTMLDivElement>(null);
+  const sections = visibleSections(user?.role ?? null);
+
+  useLayoutEffect(() => {
+    if (previousLocationKey.current === key) return;
+    previousLocationKey.current = key;
+    if (!isMobile || !openMobile) return;
+    closedByNavigation.current = true;
+    setOpenMobile(false);
+  }, [isMobile, key, openMobile, setOpenMobile]);
+
+  const mobileFinalFocus = () => {
+    if (!closedByNavigation.current) return sidebarTrigger.current;
+    closedByNavigation.current = false;
+    window.scrollTo(0, 0);
+    const heading = pageContent.current?.querySelector("h1");
+    if (heading && !heading.hasAttribute("tabindex")) heading.tabIndex = -1;
+    return heading ?? pageContent.current;
+  };
+
+  return (
+    <>
+      <Sidebar collapsible="icon" mobileFinalFocus={mobileFinalFocus}>
         <nav aria-label={t("Console navigation")} className="flex min-h-0 flex-1 flex-col">
         <BrandHeader />
         <SidebarContent>
@@ -244,16 +271,25 @@ export function ConsoleLayout() {
         <SidebarFooter />
         </nav>
       </Sidebar>
-      <SidebarInset className="min-w-0">
-        <header className="sticky top-0 z-10 flex h-14 items-center gap-2 border-b bg-background/95 px-4 backdrop-blur">
-          <SidebarTrigger aria-label={t("Toggle Sidebar")} />
+      <SidebarInset className="min-w-0 [--console-toolbar-height:3.5rem]">
+        <header className="sticky top-0 z-10 flex h-(--console-toolbar-height) items-center gap-2 border-b bg-background/95 px-4 backdrop-blur">
+          <SidebarTrigger
+            ref={sidebarTrigger}
+            aria-label={t("Toggle Sidebar")}
+            aria-haspopup={isMobile ? "dialog" : undefined}
+            aria-expanded={isMobile ? openMobile : undefined}
+          />
           <div className="ml-auto flex items-center gap-1">
             <LocaleToggle />
             <ThemeToggle />
             <UserMenu />
           </div>
         </header>
-        <div className="min-w-0 flex-1 p-4 md:p-6">
+        <div
+          ref={pageContent}
+          tabIndex={-1}
+          className="min-w-0 flex-1 [--console-content-padding:1rem] md:[--console-content-padding:1.5rem] p-(--console-content-padding)"
+        >
           <div className="mx-auto flex w-full max-w-6xl min-w-0 flex-col gap-6">
             <Suspense fallback={<RouteFallback />}>
               <Outlet />
@@ -261,6 +297,6 @@ export function ConsoleLayout() {
           </div>
         </div>
       </SidebarInset>
-    </SidebarProvider>
+    </>
   );
 }

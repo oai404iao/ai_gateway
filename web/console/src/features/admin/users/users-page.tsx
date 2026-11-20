@@ -1,17 +1,18 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { usePageOrigin, withReturnTo } from "@/lib/page-navigation";
 import { useListPagination } from "@/lib/use-list-pagination";
 import { Controller, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { CheckCheck, ListChecks, Plus } from "lucide-react";
+import { ListChecks, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -62,6 +63,7 @@ export function UsersPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [batchOpen, setBatchOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
+  const inviteTrigger = useRef<HTMLButtonElement>(null);
   const [submitting, setSubmitting] = useState(false);
   const [token, setToken] = useState<string | null>(null);
   const batchDialogTriggerId = "user-batch-edit-trigger";
@@ -114,9 +116,7 @@ export function UsersPage() {
     () => (users.data ?? []).filter((user) => selected.has(user.id)),
     [selected, users.data],
   );
-  const allSelected =
-    (users.data?.length ?? 0) > 0 &&
-    selectedUsers.length === users.data?.length;
+  const allUsers = users.data ?? [];
   const groupName = (id: string) =>
     groups.data?.find((group) => group.id === id)?.name ?? id;
   const policyName = (id: string | null) =>
@@ -129,6 +129,10 @@ export function UsersPage() {
       else next.add(user.id);
       return next;
     });
+  };
+
+  const addToSelection = (rows: ControlPlaneUser[]) => {
+    setSelected((current) => new Set([...current, ...rows.map((user) => user.id)]));
   };
 
   const onRoleChange = (
@@ -245,36 +249,10 @@ export function UsersPage() {
             "Console users, groups, policies, and balances. New users join by invitation.",
           )}
           actions={
-            <>
-              <Button
-                variant="outline"
-                disabled={(users.data?.length ?? 0) === 0}
-                onClick={() => {
-                  if (allSelected) setSelected(new Set());
-                  else {
-                    setSelected(
-                      new Set((users.data ?? []).map((user) => user.id)),
-                    );
-                  }
-                }}
-              >
-                <CheckCheck data-icon="inline-start" />
-                {allSelected ? t("Clear selection") : t("Select all")}
-              </Button>
-              <Button
-                id={batchDialogTriggerId}
-                variant="outline"
-                disabled={selectedUsers.length === 0}
-                onClick={() => setBatchOpen(true)}
-              >
-                <ListChecks data-icon="inline-start" />
-                {t("Batch edit ({count})", { count: selectedUsers.length })}
-              </Button>
-              <Button onClick={() => setInviteOpen(true)}>
-                <Plus data-icon="inline-start" />
-                {t("Invite user")}
-              </Button>
-            </>
+            <Button ref={inviteTrigger} onClick={() => setInviteOpen(true)}>
+              <Plus data-icon="inline-start" />
+              {t("Invite user")}
+            </Button>
           }
         />
         <Card>
@@ -292,12 +270,55 @@ export function UsersPage() {
             >
               <ResourceTable
                 columns={columns}
-                rows={users.data ?? []}
+                rows={allUsers}
                 rowKey={(user) => user.id}
                 linkColumnKey="name"
                 rowHref={(user) => withReturnTo(`/admin/users/${user.id}`, origin)}
                 onRowClick={(user) => navigate(withReturnTo(`/admin/users/${user.id}`, origin))}
                 pagination={pagination}
+                renderToolbar={(pageUsers) => (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={pageUsers.every((user) => selected.has(user.id))}
+                      onClick={() => addToSelection(pageUsers)}
+                    >
+                      {t("Select {count} on this page", { count: pageUsers.length })}
+                    </Button>
+                    {allUsers.length > pageUsers.length ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={selectedUsers.length === allUsers.length}
+                        onClick={() => addToSelection(allUsers)}
+                      >
+                        {t("Select all {count} users", { count: allUsers.length })}
+                      </Button>
+                    ) : null}
+                    <span role="status" className="text-sm text-muted-foreground">
+                      {t("{count} users selected", { count: selectedUsers.length })}
+                    </span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      disabled={selectedUsers.length === 0}
+                      onClick={() => setSelected(new Set())}
+                    >
+                      {t("Clear selection")}
+                    </Button>
+                    <Button
+                      id={batchDialogTriggerId}
+                      variant="outline"
+                      size="sm"
+                      disabled={selectedUsers.length === 0}
+                      onClick={() => setBatchOpen(true)}
+                    >
+                      <ListChecks data-icon="inline-start" />
+                      {t("Batch edit ({count})", { count: selectedUsers.length })}
+                    </Button>
+                  </div>
+                )}
               />
             </AsyncResource>
           </CardContent>
@@ -305,8 +326,11 @@ export function UsersPage() {
       </div>
 
       <Dialog open={inviteOpen} onOpenChange={setInviteOpen}>
-        <DialogContent>
-          <DialogHeader>
+        <DialogContent
+          className="flex max-h-[calc(100svh-2rem)] flex-col overflow-hidden"
+          finalFocus={inviteTrigger}
+        >
+          <DialogHeader className="shrink-0 pr-8">
             <DialogTitle>{t("Invite user")}</DialogTitle>
             <DialogDescription>
               {t("The invitation token is shown once and must be delivered out of band.")}
@@ -316,7 +340,7 @@ export function UsersPage() {
             onSubmit={form.handleSubmit(onSubmit, () =>
               toast.error(t("Review the highlighted invitation fields.")),
             )}
-            className="flex flex-col gap-4"
+            className="-mx-4 -mb-4 flex min-h-0 flex-col gap-4 overflow-y-auto overscroll-contain scroll-py-2 px-4 pt-1"
           >
             <FieldGroup>
               <Field data-invalid={Boolean(form.formState.errors.email)}>
@@ -463,7 +487,10 @@ export function UsersPage() {
                 description={t("Starting USD credit available after activation.")}
               />
             </FieldGroup>
-            <DialogFooter>
+            <DialogFooter className="mb-0 shrink-0">
+              <DialogClose render={<Button type="button" variant="outline" />}>
+                {t("Cancel")}
+              </DialogClose>
               <Button type="submit" disabled={submitting}>
                 {submitting ? <Spinner data-icon="inline-start" /> : null}
                 {t("Send invitation")}

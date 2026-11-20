@@ -15,6 +15,7 @@ import { useI18n } from "@/app/i18n";
 import { useSession } from "@/lib/use-session";
 import { ConsoleLayout } from "@/app/layouts/console-layout";
 import { AuthLayout } from "@/app/layouts/auth-layout";
+import { ModelWorkspaceLayout } from "@/features/admin/models/model-workspace-layout";
 
 // Page components are lazy-loaded so each route ships in its own chunk.
 // The shell (providers, layouts, sidebar) stays eager for instant first paint.
@@ -327,9 +328,11 @@ function appRouteElements() {
               />
               <Route path="/admin/model-setup" element={<WorkspaceRedirect to="/admin/models" />} />
               <Route path="/admin/routing/channels" element={<ChannelConfigurationPage />} />
-              <Route path="/admin/models" element={<ModelsPage />} />
-              <Route path="/admin/models/:id" element={<ModelDetailPage />} />
-              <Route path="/admin/models/:id/pricing" element={<ModelPricingPage />} />
+              <Route path="/admin/models" element={<ModelWorkspaceLayout />}>
+                <Route index element={<ModelsPage />} />
+                <Route path=":id" element={<ModelDetailPage />} />
+                <Route path=":id/pricing" element={<ModelPricingPage />} />
+              </Route>
               <Route path="/admin/catalog" element={<WorkspaceRedirect to="/admin/models?view=prices" />} />
               <Route
                 path="/admin/routing/channel-groups/*"

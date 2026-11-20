@@ -28,7 +28,9 @@ body/Header 策略归外部插件。转发变更需 deterministic tests 和经�
 - [认证与授权](console-auth.md)：JWT、会话、角色与归属边界。
 - [前端架构](console-ui.md)与[前端命令](../../web/console/README.md)：开发、构建和嵌入式交付。
 - [导航与页面交互](console-interaction-standard.md)：列表状态、返回、草稿和历史入口。
+- [Console 可用性设计记录](console-ux-review.md)：模型工作区设计、任务复现与 mock 浏览器验收单。
 - [统计口径](statistics.md)：个人与系统范围、费用与监控定义。
+- [花费排行榜设计记录](spend-leaderboard-design.md)：周期工具、费用排名单与 mock 浏览器验收。
 
 请求/响应形状先修改 [OpenAPI](../openapi/console-v1.yaml)，再生成前端类型并更新测试。
 不要从设计记录或生成类型反向定义契约。

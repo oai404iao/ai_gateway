@@ -1,0 +1,61 @@
+.workspace {
+  display: grid;
+  gap: 1.25rem;
+  min-width: 0;
+}
+
+.directory[data-detail-open] {
+  display: none;
+}
+
+@media (width >= 80rem) and (height >= 44rem) {
+  .clientView {
+    height: calc(100dvh - var(--console-toolbar-height, 3.5rem) - 2 * var(--console-content-padding, 1.5rem));
+  }
+
+  .workspace {
+    flex: 1;
+    min-height: 0;
+    grid-template: minmax(0, 1fr) / 21rem minmax(0, 1fr);
+  }
+
+  .directory[data-detail-open] {
+    display: flex;
+  }
+
+  .results,
+  .detail {
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+  }
+
+  .results {
+    flex: 1;
+    scrollbar-gutter: stable;
+  }
+
+  .detail {
+    padding: 0.125rem 0.25rem 0.25rem 0.125rem;
+    scrollbar-gutter: stable;
+  }
+
+  .back {
+    display: none;
+  }
+}
+
+@media (width < 80rem) or (height < 44rem) {
+  .row {
+    scroll-margin-top: calc(var(--console-toolbar-height, 3.5rem) + 0.5rem);
+  }
+
+  .detail:not([data-detail-open]),
+  .jump {
+    display: none;
+  }
+
+  .directory {
+    padding-bottom: var(--card-spacing);
+  }
+}

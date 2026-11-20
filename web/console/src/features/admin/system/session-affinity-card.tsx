@@ -79,6 +79,7 @@ interface SessionAffinityErrors {
 
 interface SessionAffinityCardProps {
   value: SystemSessionAffinitySettings;
+  disabled?: boolean;
   onChange: (value: SystemSessionAffinitySettings) => void;
   errors?: SessionAffinityErrors;
 }
@@ -231,6 +232,7 @@ function validateRule(
 
 export function SessionAffinityCard({
   value,
+  disabled,
   onChange,
   errors,
 }: SessionAffinityCardProps) {
@@ -340,6 +342,7 @@ export function SessionAffinityCard({
                 </FieldDescription>
               </FieldContent>
               <Switch
+                disabled={disabled}
                 id="session_affinity_enabled"
                 checked={value.enabled}
                 onCheckedChange={(checked) => update({ enabled: Boolean(checked) })}

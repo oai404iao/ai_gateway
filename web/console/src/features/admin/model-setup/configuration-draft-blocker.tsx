@@ -7,18 +7,27 @@ export function ConfigurationDraftBlocker({
   dirty,
   saving,
   bypass,
+  directorySearchParam,
 }: {
   dirty: boolean;
   saving: boolean;
   bypass: RefObject<boolean>;
+  directorySearchParam?: string;
 }) {
   const { t } = useI18n();
+  const editorSearch = (search: string) => {
+    const params = new URLSearchParams(search);
+    if (directorySearchParam) params.delete(directorySearchParam);
+    return params.toString();
+  };
   const blocker = useBlocker(
     ({ currentLocation, nextLocation }) =>
       (dirty || saving) &&
       !bypass.current &&
       (currentLocation.pathname !== nextLocation.pathname ||
-        currentLocation.search !== nextLocation.search ||
+        (directorySearchParam
+          ? editorSearch(currentLocation.search) !== editorSearch(nextLocation.search)
+          : currentLocation.search !== nextLocation.search) ||
         currentLocation.hash !== nextLocation.hash),
   );
   useEffect(() => {

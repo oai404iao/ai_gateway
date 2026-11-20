@@ -30,6 +30,7 @@ interface ResourceTableProps<T> {
   rowActionLabel?: string;
   empty?: ReactNode;
   groupBy?: (row: T) => string;
+  renderToolbar?: (visibleRows: T[]) => ReactNode;
   pagination?:
     | false
     | {
@@ -56,6 +57,7 @@ export function ResourceTable<T>({
   rowActionLabel,
   empty,
   groupBy,
+  renderToolbar,
   pagination,
 }: ResourceTableProps<T>) {
   const paginationEnabled = pagination !== false;
@@ -103,6 +105,7 @@ export function ResourceTable<T>({
   }
   return (
     <div className="flex min-w-0 flex-col gap-4">
+      {renderToolbar?.(visibleRows)}
       <div className="overflow-x-auto rounded-lg border">
         <Table>
           <TableHeader>

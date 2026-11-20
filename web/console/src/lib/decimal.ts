@@ -79,3 +79,19 @@ export function multiplyDecimal(
 
   return formatDecimal(coefficient, scale);
 }
+
+/** A percentage on a 0–100 scale, with exact half-up rounding for its text. */
+export function decimalPercentShare(amount: string, total: string) {
+  const numerator = parseDecimal(amount);
+  const denominator = parseDecimal(total);
+  if (denominator.coefficient === 0n) return null;
+
+  const scaled = numerator.coefficient * 1000n * powerOfTen(denominator.scale);
+  const divisor = denominator.coefficient * powerOfTen(numerator.scale);
+  const rounded = (2n * scaled + divisor) / (2n * divisor);
+  return {
+    percent: Number(scaled) / Number(divisor) / 10,
+    roundedRatio: Number(rounded) / 1000,
+    belowTenth: scaled > 0n && scaled < divisor,
+  };
+}
