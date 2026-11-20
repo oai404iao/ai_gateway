@@ -18,7 +18,7 @@ use axum::{
 use crate::{
     application::{ModelsResponse, ProxyError, ProxyService},
     domain::ApiOperation,
-    upstream::MAX_UPSTREAM_MESSAGE_BYTES,
+    upstream::{MAX_UPSTREAM_MESSAGE_BYTES, WEBSOCKET_MAX_MESSAGE_HEADER},
 };
 
 /// Builds the public HTTP router with a reusable data-plane service.
@@ -94,13 +94,17 @@ async fn responses_websocket(
 ) -> Result<Response, ProxyError> {
     let session = proxy.prepare_responses_websocket(&headers, &uri)?;
     let request_limit = proxy.websocket_request_limit();
-    Ok(websocket
+    let mut response = websocket
         .read_buffer_size(64 * 1024)
         .write_buffer_size(32 * 1024)
         .max_write_buffer_size(MAX_UPSTREAM_MESSAGE_BYTES.saturating_add(32 * 1024))
         .max_message_size(request_limit)
         .max_frame_size(request_limit)
-        .on_upgrade(move |socket| session.run(socket)))
+        .on_upgrade(move |socket| session.run(socket));
+    response
+        .headers_mut()
+        .insert(WEBSOCKET_MAX_MESSAGE_HEADER, request_limit.into());
+    Ok(response)
 }
 
 #[cfg(test)]

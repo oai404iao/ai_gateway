@@ -49,6 +49,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "json-patch",
+ "json-skimmer",
  "jsonptr",
  "jsonwebtoken",
  "libc",
@@ -87,6 +88,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "tungstenite 0.27.0",
+ "tungstenite 0.29.0",
  "urlencoding",
  "uuid",
  "webpki-roots 1.0.10",
@@ -1505,6 +1507,12 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.19",
 ]
+
+[[package]]
+name = "json-skimmer"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a17c31d2be00a974a679e9947a02ad81c485b492694f797ce7e174f02bd08ec1"
 
 [[package]]
 name = "jsonptr"

@@ -7,6 +7,7 @@ use serde_json::Value;
 use crate::{
     application::{ConnectorAttemptError, connector::PreparedUpstreamAttempt},
     domain::RequestProtocol,
+    request_policy::{RequestInterface, apply_client_fast_mode_filter},
     transforms::{
         HeaderPlan, JsonPatchPlan, TransformApplyError, apply_header_plan, apply_json_patch_plan,
     },
@@ -27,10 +28,21 @@ pub(super) fn prepare_json(
     plan: &JsonPatchPlan,
     connector: &PreparedUpstreamAttempt,
     protocol: RequestProtocol,
+    fast_filter: Option<RequestInterface>,
 ) -> Result<Bytes, JsonPreparationError> {
     let body = rewrite_model_alias(body.clone(), client_model, upstream_model)
         .map_err(JsonPreparationError::Model)?;
     let body = apply_json_patch_plan(body, plan).map_err(|_| JsonPreparationError::Transform)?;
+    // A channel transform may have added a tier after ingress filtering.
+    let body = if let Some(interface) = fast_filter
+        && !plan.is_empty()
+    {
+        apply_client_fast_mode_filter(interface, body, true)
+            .map_err(|_| JsonPreparationError::Transform)?
+            .body
+    } else {
+        body
+    };
     connector
         .adapt_json_body(body, protocol)
         .map_err(JsonPreparationError::Connector)

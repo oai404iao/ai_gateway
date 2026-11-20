@@ -970,7 +970,7 @@ async fn codex_images_upstream(
         .status(StatusCode::OK)
         .header("content-type", "application/json")
         .body(Body::from(format!(
-            r#"{{"created":1,"data":[{{"b64_json":"{TEST_PNG_BASE64}"}}],"usage":{{"input_tokens":7,"output_tokens":11,"input_tokens_details":{{"image_tokens":0,"text_tokens":7}},"output_tokens_details":{{"image_tokens":11,"text_tokens":0}}}}}}"#
+            r#"{{"created":1,"data":[{{"b64_json":"{TEST_PNG_BASE64}","generation_id":"gen-test"}}],"usage":{{"input_tokens":7,"output_tokens":11,"input_tokens_details":{{"image_tokens":0,"text_tokens":7}},"output_tokens_details":{{"image_tokens":11,"text_tokens":0}}}}}}"#
         )))
         .unwrap()
 }
@@ -4068,6 +4068,11 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
             .unwrap()
     };
 
+    let lite_input = serde_json::json!([
+        {"type":"additional_tools","role":"developer","tools":[{"type":"function","name":"get_weather","parameters":{"type":"object"}}]},
+        {"type":"message","role":"developer","content":[{"type":"input_text","text":"Answer briefly."}]},
+        {"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}
+    ]);
     let response = app
         .clone()
         .oneshot(request(
@@ -4076,6 +4081,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
                 "model": client_model.clone(),
                 "stream": true,
                 "store": true,
+                "service_tier": "priority",
                 "max_output_tokens": 1,
                 "metadata": {"client": "ignored by Codex"},
                 "client_metadata": {
@@ -4100,7 +4106,10 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
                         "app_server_extra": "preserve-me"
                     }).to_string()
                 },
-                "input": responses_message_input("hello")
+                "input": lite_input,
+                "reasoning": {"context":"all_turns"},
+                "access_programs": {"cyber":"standard"},
+                "request_country": "US"
             }),
         ))
         .await
@@ -4165,10 +4174,15 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     );
     assert_eq!(
         forwarded.routing_hint.as_deref(),
-        Some("model=gpt-5.6-sol;tier=priority")
+        Some("model=upstream-v1;tier=priority")
     );
     assert_eq!(forwarded.turn_state.as_deref(), Some("opaque-turn-state"));
     assert_eq!(forwarded.responses_lite.as_deref(), Some("true"));
+    assert_eq!(forwarded.body["input"], lite_input);
+    assert_eq!(forwarded.body["reasoning"]["context"], "all_turns");
+    assert!(forwarded.body.get("tools").is_none());
+    assert!(forwarded.body.get("request_country").is_none());
+    assert!(forwarded.body.get("access_programs").is_none());
     assert_eq!(forwarded.body["model"], "upstream-v1");
     assert_eq!(forwarded.body["stream"], true);
     assert_eq!(forwarded.body["store"], false);
@@ -4383,7 +4397,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
                         "model": client_model.clone(),
                         "reasoning": {"effort": "medium"},
                         "input": "Find the source.",
-                        "commands": {"search_query": [{"q": "example"}]},
+                        "commands": {"search_query": [{"q": "example"}], "literature_search_query": [{"q": "papers", "domains": ["arxiv.org"]}]},
                         "settings": {"external_web_access": true},
                         "max_output_tokens": 300
                     }))
@@ -4468,6 +4482,10 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         search_request.body["commands"]["search_query"][0]["q"],
         "example"
     );
+    assert_eq!(
+        search_request.body["commands"]["literature_search_query"],
+        serde_json::json!([{"q": "papers", "domains": ["arxiv.org"]}])
+    );
 
     let search_events = logs
         .events()
@@ -4527,7 +4545,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     assert_eq!(
         image_response_body,
         Bytes::from(format!(
-            r#"{{"created":1,"data":[{{"b64_json":"{TEST_PNG_BASE64}"}}],"usage":{{"input_tokens":7,"output_tokens":11,"input_tokens_details":{{"image_tokens":0,"text_tokens":7}},"output_tokens_details":{{"image_tokens":11,"text_tokens":0}}}}}}"#
+            r#"{{"created":1,"data":[{{"b64_json":"{TEST_PNG_BASE64}","generation_id":"gen-test"}}],"usage":{{"input_tokens":7,"output_tokens":11,"input_tokens_details":{{"image_tokens":0,"text_tokens":7}},"output_tokens_details":{{"image_tokens":11,"text_tokens":0}}}}}}"#
         ))
     );
 
@@ -4808,6 +4826,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
             "metadata": {"client": "ignored by Codex"},
             "client_metadata": {
                 "x-codex-installation-id": "websocket-client-installation-id",
+                "ws_request_header_x_openai_internal_codex_responses_lite": "true",
                 "session_id": "session-123",
                 "thread_id": "thread-456",
                 "x-codex-turn-metadata": serde_json::json!({
@@ -4825,7 +4844,9 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
                     "app_server_extra": "keep-websocket-extra"
                 }).to_string()
             },
-            "input": [{"type": "message", "role": "user", "content": []}]
+            "request_country": null,
+            "access_programs": {"cyber":"standard"},
+            "input": lite_input
         }),
     )
     .await;
@@ -4898,10 +4919,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         handshake.beta_features.as_deref(),
         Some("remote_compaction_v2")
     );
-    assert_eq!(
-        handshake.routing_hint.as_deref(),
-        Some("model=gpt-5.6-sol;tier=priority")
-    );
+    assert_eq!(handshake.routing_hint.as_deref(), Some("model=upstream-v1"));
     assert_eq!(handshake.turn_state.as_deref(), Some("opaque-turn-state"));
     assert_eq!(handshake.responses_lite.as_deref(), Some("true"));
     let handshake_turn_metadata: serde_json::Value =
@@ -4939,6 +4957,13 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     assert_eq!(websocket_requests[0]["store"], false);
     assert_eq!(websocket_requests[0]["prompt_cache_key"], "session-123");
     assert_eq!(websocket_requests[0]["generate"], false);
+    assert_eq!(websocket_requests[0]["input"], lite_input);
+    assert_eq!(
+        websocket_requests[0]["client_metadata"]["ws_request_header_x_openai_internal_codex_responses_lite"],
+        "true"
+    );
+    assert!(websocket_requests[0].get("request_country").is_none());
+    assert!(websocket_requests[0].get("access_programs").is_none());
     assert!(websocket_requests[0].get("max_output_tokens").is_none());
     assert!(websocket_requests[0].get("metadata").is_none());
     assert_eq!(

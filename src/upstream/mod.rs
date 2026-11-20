@@ -23,8 +23,9 @@ pub(crate) use content_coding::{
     DecodedBodyError, ResponseContentCodings, UPSTREAM_ACCEPT_ENCODING, decode_response_body,
 };
 pub(crate) use websocket::{
-    MAX_UPSTREAM_MESSAGE_BYTES, UpstreamWebSocket, UpstreamWebSocketError, UpstreamWebSocketKey,
-    WebSocketClientIdentity, WebSocketPoolSnapshot, connect_upstream_websocket,
+    InterruptControl, MAX_UPSTREAM_MESSAGE_BYTES, UpstreamWebSocket, UpstreamWebSocketError,
+    UpstreamWebSocketKey, WEBSOCKET_MAX_MESSAGE_HEADER, WebSocketClientIdentity,
+    WebSocketPoolSnapshot, connect_upstream_websocket, response_id_digest,
 };
 
 /// The only TLS configuration permitted for upstream clients.

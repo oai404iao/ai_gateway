@@ -5,6 +5,7 @@
 > 最近核对：2026-08-02；HTTP fallback 补充核对：2026-09-08（Codex CLI 0.130.0）、
 > 2026-09-15（Codex CLI 0.154.0）；
 > `previous_response_not_found` 恢复链路补充核对：2026-11-19（本地 `openai/codex@524e15989b79039e14d01cd197ed6e6580bd59f2`）。
+> Lite 消息、中断及大小回退核对：2026-11-20（[`openai/codex@a0a30c4`](https://github.com/openai/codex/tree/a0a30c40e8dbcc44af52e2df64dcce64368d4422)）。
 >
 > 参考版本：[`openai/codex@aa064463458adbef10400c74174107fc4b3550f0`](https://github.com/openai/codex/tree/aa064463458adbef10400c74174107fc4b3550f0)。
 >
@@ -81,6 +82,8 @@ WS 握手使用 Gateway Bearer Key。具体 Codex provider 字段由插件约束
 
 Codex 正常请求使用 `stream: true`，并发送 `tool_choice`、`parallel_tool_calls`、`reasoning`、
 `store` 和 `include` 等与 HTTP Responses 相同的非输入属性。
+
+在 2026-11-20 核对的 [Lite 请求构造](https://github.com/openai/codex/blob/a0a30c40e8dbcc44af52e2df64dcce64368d4422/codex-rs/core/src/client.rs#L1230-L1301) 中，基础指令是 `input` 中的消息；工具非空时作为 `additional_tools` 输入项，不再同时发送顶层 `tools`。HTTP 使用 `x-openai-internal-codex-responses-lite`；WS 可以只在每条 create 的 `client_metadata` 中标记 `ws_request_header_x_openai_internal_codex_responses_lite`。代理不应根据是否有握手 Header 决定是否转发这些输入项。
 
 ## 实现分层
 
@@ -171,6 +174,12 @@ Codex 区分两种提前工作：
 这些重试发生在 Codex 客户端。服务端网关不能在已经发送 `response.create` 后再自动复制请求，否则
 可能产生重复生成。
 
+最新核对版本还读取 101 响应的 `x-codex-websocket-max-message-bytes`。发送前发现超过该值，或本轮未收到任何文本事件就收到 Close 1009，都会触发消息过大分类和 HTTP fallback；普通 Close 不等同于 1009。[握手与帧分类](https://github.com/openai/codex/blob/a0a30c40e8dbcc44af52e2df64dcce64368d4422/codex-rs/codex-api/src/endpoint/responses_websocket.rs)
+
+Lite 客户端在已有 response ID 后可发送 `response.interrupt`（`mode: discard_partial_items`）。取消（Cancel）和转向后的收尾（Drain）使用相同的控制帧，均不是第二个 create。Cancel 关联 ACK 和终态；Drain 以原响应的匹配终态为准，即使没有 ACK，或中断被拒但原响应随后正常完成，也可以用该 ID 在原连接续写。`response.interrupt.failed` 指控制操作失败，不等于原响应生成失败。[稳定版 Drain 的四种情形](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/core/tests/suite/pending_input.rs#L1590-L1739) · [控制帧和 ACK](https://github.com/openai/codex/blob/a0a30c40e8dbcc44af52e2df64dcce64368d4422/codex-rs/codex-api/src/endpoint/responses_websocket.rs#L887-L993)
+
+`response.incomplete` 的 `incomplete_details.reason` 为 `interrupted` 时，客户端按完成事件解析 response ID 和 usage；不把其他原因的 incomplete 当作正常中断。[终态解析](https://github.com/openai/codex/blob/a0a30c40e8dbcc44af52e2df64dcce64368d4422/codex-rs/codex-api/src/sse/responses.rs#L469-L542)
+
 **上游状态过期时，单独的 404、Close 帧或提示文案都不是恢复协议。** 在补充核对的版本中，Codex 从 WS 文本帧读取顶层 `type: "error"`，在普通 HTTP 状态映射之前匹配 `error.code: "previous_response_not_found"`，生成 `ApiError::Retryable`。[错误解析与分类](https://github.com/openai/codex/blob/524e15989b79039e14d01cd197ed6e6580bd59f2/codex-rs/codex-api/src/endpoint/responses_websocket.rs#L768-L839)
 
 在本次响应尚未完成时收到此错误，Codex [丢弃失败的 socket](https://github.com/openai/codex/blob/524e15989b79039e14d01cd197ed6e6580bd59f2/codex-rs/codex-api/src/endpoint/responses_websocket.rs#L458-L473)。客户端若按[重试预算](https://github.com/openai/codex/blob/524e15989b79039e14d01cd197ed6e6580bd59f2/codex-rs/core/src/responses_retry.rs)再次使用 WS，会[重建连接并清除续写状态](https://github.com/openai/codex/blob/524e15989b79039e14d01cd197ed6e6580bd59f2/codex-rs/core/src/client.rs#L2016-L2052)，以[完整 input 而非旧 ID 加 delta](https://github.com/openai/codex/blob/524e15989b79039e14d01cd197ed6e6580bd59f2/codex-rs/core/src/client.rs#L2492-L2570)发送请求。是否重试或切换 HTTP 由客户端决定；[网关返回的具体错误帧](../user/websocket.md#继续上下文或恢复连接)不会触发网关自行重放。
@@ -256,8 +265,7 @@ websocket_connection_limit_reached 和 previous_response_not_found 是状态恢�
 
 插件补缺失身份和 prompt_cache_key，installation 使用凭证稳定 opaque UUID，
 workspaces 使用插件设置的合成工作区。合成握手 turn metadata 不增加逐 turn 的随机身份，
-以免破坏同 Session 池键。其余允许 metadata 保留；beta/routing/turn-state 等可按契约保留，
-但插件不凭空制造这些声明。
+以免破坏同 Session 池键。beta/turn-state 等按契约保留；`x-codex-routing-hint` 由最终选定的模型和有效服务层级派生，不采信客户端同名 Header。
 
 插件改目标为 Codex base URL 下 responses，准备 OAuth、可选 account、FedRAMP 及
 Codex identity；HTTP SSE 专用 Accept/Accept-Encoding/Content-Type 不进入 WS 握手。

@@ -40,6 +40,8 @@ Responses WS 路由时，HTTP Upgrade 统一返回 `426 websocket_unavailable`�
 握手 426 可供客户端改用 HTTP；升级后的 426 错误帧也由客户端决定是否及何时回退，**不保证立即回退**。Gateway 不把已发送的 WS 请求自动转换或重放为 HTTP。客户端实现与具体错误映射见
 [Codex 参考](../reference/codex-responses-websocket.md)。
 
+握手成功时，`x-codex-websocket-max-message-bytes` 告知客户端网关自身的单条消息字节上限，不代表上游限制。若上游随后在其握手中声明更小的上限，网关在派发前检查最终准备好的消息。超过任一限制，或上游在本次请求首条文本事件之前以 1009 拒绝消息时，网关用 Close 1009 通知客户端；收到文本事件之后的上游断开不作为大小回退信号。
+
 管理员也可以在用户详情页修改同一个 `websocket_enabled` 个人偏好。该操作走版本化用户资源，
 保存后立即重新发布数据面快照；用户仍可随后在自己的个人设置页再次调整。
 
@@ -54,8 +56,15 @@ Responses WS 路由时，HTTP Upgrade 统一返回 `426 websocket_unavailable`�
   WebSocket；
 - 将上游 Responses JSON 事件逐消息转发，Responses SSE 事件变换规则也用于同类型
   WebSocket 事件；
-- 在 `response.completed`、`response.failed`、`response.incomplete`、
-  `response.cancelled` 或 `error` 终态记录 usage、计费和请求日志。
+- 在确认本轮终态后记录 usage、计费和请求日志。普通 Responses 将 `response.cancelled` 和
+  `error` 视为终态；Codex 不以 `response.cancelled` 或未知的无状态码 `error` 通知结束本轮，
+  具体分类见 [Responses 事件语义](../reference/responses.md#http-与事件)。
+
+Responses Lite 可以仅在每条 create 的 `client_metadata.ws_request_header_x_openai_internal_codex_responses_lite` 中设置字符串 `"true"`，不需要额外的握手 Header。`input` 中的 `additional_tools` 和指令消息按请求内容转发，不转换成顶层 `tools` 或 `instructions`。
+
+收到 `response.created` 后，客户端可针对其中的响应 ID 发送一次 `{"type":"response.interrupt","response_id":"…","mode":"discard_partial_items"}`。它使用本轮已绑定的上游连接，不另行计费。`response.interrupt.failed` 只表示中断未被接受，不替代原请求的终态。网关继续转发，直到匹配的终态到达；在此之前不能并发发送第二个 create。匹配的终态按上游 usage 结算并释放并发槽，不等待确认。Codex 的 `response.incomplete` 且原因是 `interrupted` 也可以是成功终态。
+
+如果终态先到，等待取消确认的客户端仍能收到本轮的元数据、计时事件和确认；持续无上游活动直到空闲超时，网关会关闭连接。如果中断与正常完成交错，网关已释放该轮上游连接，则对同一下游连接上刚完成且 ID 匹配的响应一次性答复 `response.interrupt.failed`，不再派发中断。已结束等待的客户端可以直接发下一条 create，包括用刚完成的 ID 精确续写。先前响应迟到的确认和相关元数据不会进入新请求的事件流、计量或空闲计时。响应 ID 冲突、无法区分或超过连接跟踪上限的中断会使连接不可复用。
 
 ## 继续上下文或恢复连接
 

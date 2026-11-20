@@ -35,6 +35,7 @@ pub(super) struct HttpRequestInput<'a> {
     pub headers: &'a HeaderMap,
     pub body: &'a PreparedRequestBody,
     pub body_changed: bool,
+    pub filter_fast_mode: bool,
     pub client_model: &'a str,
     pub operation: ApiOperation,
     pub protocol: RequestProtocol,
@@ -76,6 +77,8 @@ impl HttpRequestInput<'_> {
                     transforms.request_json(),
                     connector,
                     self.protocol,
+                    self.filter_fast_mode
+                        .then(|| crate::request_policy::RequestInterface::for_http(self.operation)),
                 )
                 .map_err(|error| match error {
                     JsonPreparationError::Model(_) => PreparationError::Request(

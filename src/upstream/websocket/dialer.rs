@@ -48,7 +48,7 @@ pub(super) async fn connect(
     channel: &CompiledChannelUpstreamPolicy,
     connect_timeout: Duration,
     config: WebSocketConfig,
-) -> Result<UpstreamStream, UpstreamWebSocketError> {
+) -> Result<(UpstreamStream, Option<usize>), UpstreamWebSocketError> {
     let host = target
         .host_str()
         .ok_or(UpstreamWebSocketError::InvalidConfiguration)?;
@@ -70,10 +70,15 @@ pub(super) async fn connect(
         .map_err(|_| UpstreamWebSocketError::InvalidConfiguration)?;
     request.headers_mut().extend(headers);
     let connector = Connector::Rustls(tls_config());
-    let (stream, _) = client_async_tls_with_config(request, stream, Some(config), Some(connector))
-        .await
-        .map_err(map_websocket_error)?;
-    Ok(stream)
+    let (stream, response) =
+        client_async_tls_with_config(request, stream, Some(config), Some(connector))
+            .await
+            .map_err(map_websocket_error)?;
+    let request_limit = response
+        .headers()
+        .get(super::WEBSOCKET_MAX_MESSAGE_HEADER)
+        .and_then(|value| value.to_str().ok()?.parse().ok());
+    Ok((stream, request_limit))
 }
 
 fn proxy_bypasses_target(proxy: &CompiledProxy, host: &str) -> bool {

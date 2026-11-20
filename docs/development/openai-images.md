@@ -148,7 +148,8 @@ image parts
 
 最多五张图片；`mask`、第六张图片和无法等价忽略的字段均拒绝。公共 multipart 的 16 张上限
 与该 provider 上限相互独立。文本投影保留 `prompt`、`background`、`model`、`n`、`quality`、
-`size`，例如 `output_format=png` 的等价值按插件策略删除，其他不支持值 fail closed。
+`size` 和[兼容的 GIF 控制字段](../reference/openai-images.md#codex-插件)；
+`output_format=png` 等默认值按插件策略删除，其他不支持值 fail closed。
 使用 generation 相同的认证、image-turn 与隐私规则，不把完整 data URL JSON 放进单个缓冲。
 
 原始 multipart、适配后的 JSON 和图片内容均不得进入 tracing、请求日志、audit 或错误响应。

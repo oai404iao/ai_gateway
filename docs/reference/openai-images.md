@@ -2,7 +2,7 @@
 
 > 类型：外部参考与网关兼容边界。
 >
-> 最近核对：2026-08-06。外部模型与默认值沿用该次观察，不代表最新 catalog。
+> 最近核对：OpenAI 模型与默认值沿用 2026-08-06 观察；Codex GIF 字段于 2026-11-20 核对[固定源码](https://github.com/openai/codex/blob/a0a30c40e8dbcc44af52e2df64dcce64368d4422/codex-rs/codex-api/src/images.rs)。
 >
 > 权威来源：[Images API Reference](https://developers.openai.com/api/reference/resources/images)、
 > [Image generation guide](https://developers.openai.com/api/docs/guides/image-generation)、
@@ -108,6 +108,8 @@ Codex 是管理员安装启用的外部插件，不是内置 Images fallback。�
 | --- | --- |
 | generation | 改为 Codex `/images/generations`，按插件 wire type 过滤字段 |
 | edit | 回放流转为 JSON `images[].image_url` data URL，最多五张，不接受 mask |
+| 动画 | 支持 GIF 的插件保留 `output_format=gif`；同层可选 `frame_count`（2–16）、`frame_duration_ms`（20–2000）为整数，edit 表单用十进制文本；未提供的值不补全 |
+| 结果 | 上游返回的 `data[].generation_id` 随响应透传；网关不会合成 ID |
 | 默认值 | `output_format=png` 可在插件层删除；edit `moderation=auto` 在公共入口已删除 |
 | Header | 插件注入 OAuth/可选 account/FedRAMP、身份和 image-turn Header |
 | 隐私 | 保留合法 session/thread 等关联，补缺失值，installation/workspaces 按插件策略归一化 |

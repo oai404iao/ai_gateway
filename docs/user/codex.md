@@ -104,8 +104,10 @@ WebSocket、standalone search 和 Images 请求也不使用该请求编码。客
 Codex body/Header 在普通 Transform 之后还会应用独立 provider 白名单：纯遥测、空值和明确
 no-op 可以按契约删除；无法表达的非默认语义和未知 body 字段返回 `400`，未知 Header 被删除。
 Responses HTTP/WebSocket 会透传已经显式允许的 `x-codex-beta-features`、
-`x-codex-routing-hint`、`x-codex-turn-state` 和
-`x-openai-internal-codex-responses-lite`；Gateway 不生成这些 beta、路由或 turn-state 值。
+`x-codex-turn-state` 和 `x-openai-internal-codex-responses-lite`；客户端提供的
+`x-codex-routing-hint` 不透传。Gateway 根据最终请求的上游模型和有效 `service_tier` 生成
+`model=<model>[;tier=<tier>]`，用于 HTTP 请求和上游 WS 握手。支持 TTL 的插件版本中，Responses 的
+`prompt_cache_options` 仅支持 `{"ttl":"30m"}` 和 `{"ttl":"12h"}`；`null` 按未设置处理。
 此外，Codex OAuth 出站会把 `client_metadata["x-codex-installation-id"]` 和 turn metadata 中的
 `installation_id` 替换为按逻辑凭证稳定的 opaque UUID；turn metadata 的 `workspaces` 始终替换
 为 Console“插件管理”中配置的单一合成 Git 工作区。其 `path`、
@@ -153,8 +155,8 @@ account/FedRAMP、`originator`、版本、User-Agent；`x-codex-image-turn-id` �
 
 Codex Images edit 接收相同客户端模型的 multipart 请求，并在 replayable body 上流式读取图片，
 转换为 `/backend-api/codex/images/edits` 的 JSON `images[].image_url` data URL。该 adapter
-provider-specific 地限制最多五张输入图片、不接受 mask，并只转发 `prompt`、`background`、
-`model`、`n`、`quality` 和 `size`。`moderation=auto` 在客户端入口层作为兼容默认值删除；
+最多接受五张输入图片、不接受 mask；转发 `prompt`、`background`、
+`model`、`n`、`quality`、`size` 及[支持的 GIF 控制字段](../reference/openai-images.md#codex-插件)。`moderation=auto` 在客户端入口层作为兼容默认值删除；
 `output_format=png` 在 Codex 出口层作为 provider 等价值删除。其他无法等价忽略的取值或字段在
 联系上游前拒绝。认证、会话身份和 image turn Header、draining 和发送后不重试边界与 generation 相同。
 

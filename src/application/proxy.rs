@@ -487,6 +487,7 @@ impl ProxyService {
             headers: &client_headers,
             body: &original_body,
             body_changed: client_body_changed || fast_mode_filtered || client_body_decoded,
+            filter_fast_mode: api_key.filter_fast_mode(),
             client_model: &parsed.model,
             operation: api_operation,
             protocol: parsed.request_protocol,
@@ -1890,11 +1891,7 @@ async fn response_from_upstream(
             .then(|| upstream_response.content_length())
             .flatten();
     if response_has_no_body(status) || expected_body_bytes == Some(0) {
-        completion.finish(if upstream_status.is_success() {
-            RequestOutcome::Succeeded
-        } else {
-            RequestOutcome::UpstreamHttpError
-        });
+        completion.finish_transport(upstream_status.is_success());
         let mut response = Response::new(Body::empty());
         *response.status_mut() = status;
         *response.headers_mut() = headers;
@@ -2149,12 +2146,7 @@ fn timed_upstream_stream(
                 let next = match state.upstream.as_mut() {
                     Some(upstream) => timeout(state.idle_timeout, upstream.next()).await,
                     None => {
-                        if let Some(adapter) = &mut state.response_adapter
-                            && adapter.finish().is_err()
-                        {
-                            return Some((Err(fail_response_adapter(&mut state)), state));
-                        }
-                        return None;
+                        return finish_stream(&mut state).map(|error| (Err(error), state));
                     }
                 };
 
@@ -2179,7 +2171,6 @@ fn timed_upstream_stream(
                     }
                     Ok(None) => {
                         state.upstream.take();
-                        let default_outcome = completed_transport_outcome(state.upstream_succeeded);
                         if let Some(transformer) = &mut state.sse_transformer
                             && let Some(residual) = transformer.finish()
                         {
@@ -2190,30 +2181,10 @@ fn timed_upstream_stream(
                                 continue;
                             }
                             record_stream_bytes(&mut state, &residual);
-                            let outcome = state
-                                .completion
-                                .finalize_usage()
-                                .map(|terminal| {
-                                    sse_terminal_request_outcome(terminal, state.upstream_succeeded)
-                                })
-                                .unwrap_or(default_outcome);
-                            state.completion.finish(outcome);
+                            state.completion.finish_transport(state.upstream_succeeded);
                             return Some((Ok(residual), state));
                         }
-                        if let Some(adapter) = &mut state.response_adapter
-                            && adapter.finish().is_err()
-                        {
-                            return Some((Err(fail_response_adapter(&mut state)), state));
-                        }
-                        let outcome = state
-                            .completion
-                            .finalize_usage()
-                            .map(|terminal| {
-                                sse_terminal_request_outcome(terminal, state.upstream_succeeded)
-                            })
-                            .unwrap_or(default_outcome);
-                        state.completion.finish(outcome);
-                        return None;
+                        return finish_stream(&mut state).map(|error| (Err(error), state));
                     }
                     Err(_) => {
                         state.upstream.take();
@@ -2234,6 +2205,19 @@ fn timed_upstream_stream(
         },
     )
     .fuse()
+}
+
+fn finish_stream(state: &mut StreamState) -> Option<BodyStreamError> {
+    if let Some(adapter) = &mut state.response_adapter
+        && adapter.finish().is_err()
+    {
+        if state.completion.requires_responses_terminal() {
+            state.completion.finish_transport(state.upstream_succeeded);
+        }
+        return Some(fail_response_adapter(state));
+    }
+    state.completion.finish_transport(state.upstream_succeeded);
+    None
 }
 
 fn adapt_stream_frame(
@@ -2282,12 +2266,7 @@ fn record_stream_bytes(state: &mut StreamState, bytes: &Bytes) {
     if let Some(remaining) = &mut state.remaining_bytes {
         *remaining = remaining.saturating_sub(bytes.len() as u64);
         if *remaining == 0 {
-            let outcome = state
-                .completion
-                .finalize_usage()
-                .map(|terminal| sse_terminal_request_outcome(terminal, state.upstream_succeeded))
-                .unwrap_or_else(|| completed_transport_outcome(state.upstream_succeeded));
-            state.completion.finish(outcome);
+            state.completion.finish_transport(state.upstream_succeeded);
         }
     }
 }
@@ -2674,7 +2653,7 @@ impl CompletionGuard {
                 first_byte_at: None,
                 upstream_status: None,
                 client_visible_status: None,
-                usage: UsageCollector::new(api_format, false),
+                usage: UsageCollector::for_route(api_operation, channel.connector_kind()),
                 price_snapshot: rule.price_snapshot().clone(),
                 advanced_billing: rule.advanced_billing().clone(),
                 billing_multiplier: channel.billing_multiplier(),
@@ -2749,7 +2728,8 @@ impl CompletionGuard {
             context.first_byte_at = None;
             context.upstream_status = None;
             context.client_visible_status = None;
-            context.usage = UsageCollector::new(context.api_format, false);
+            context.usage =
+                UsageCollector::for_route(context.api_operation, channel.connector_kind());
             context.price_snapshot = rule.price_snapshot().clone();
             context.advanced_billing = rule.advanced_billing().clone();
             context.billing_multiplier = channel.billing_multiplier();
@@ -2871,10 +2851,16 @@ impl CompletionGuard {
         }
     }
 
-    fn observe_websocket_usage(&mut self, bytes: &Bytes) -> Option<SseTerminalOutcome> {
-        self.context
-            .as_mut()
-            .and_then(|context| context.usage.observe_websocket_event(bytes))
+    fn observe_websocket_usage(
+        &mut self,
+        bytes: &Bytes,
+        matching_interrupt: bool,
+    ) -> Option<SseTerminalOutcome> {
+        self.context.as_mut().and_then(|context| {
+            context
+                .usage
+                .observe_websocket_event(bytes, matching_interrupt)
+        })
     }
 
     fn observe_upstream_error_body(&mut self, bytes: &Bytes) {
@@ -2899,6 +2885,26 @@ impl CompletionGuard {
         } else {
             None
         }
+    }
+
+    fn finish_transport(&mut self, upstream_succeeded: bool) {
+        if let Some(terminal) = self.finalize_usage() {
+            self.finish(sse_terminal_request_outcome(terminal, upstream_succeeded));
+        } else if upstream_succeeded && self.requires_responses_terminal() {
+            self.finish_with_message(
+                RequestOutcome::UpstreamBodyError,
+                None,
+                "The upstream Responses stream ended before a terminal event.",
+            );
+        } else {
+            self.finish(completed_transport_outcome(upstream_succeeded));
+        }
+    }
+
+    fn requires_responses_terminal(&self) -> bool {
+        self.context.as_ref().is_some_and(|context| {
+            context.api_operation == ApiOperation::Responses && context.usage.is_sse()
+        })
     }
 
     fn record_first_byte(&mut self) {

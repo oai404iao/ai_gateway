@@ -4,7 +4,7 @@
 >
 > 状态：当前。
 >
-> 最近核对：2026-09-08。外部来源版本沿用原记录，未因本文重排更新。
+> 最近核对：2026-11-20（Codex Responses、Images 和 Search）。
 >
 > 机器可读权威契约：[request-allowlists.json](request-allowlists.json)。
 >
@@ -60,7 +60,7 @@ ignore 只适合遥测、空值/默认值、明确 no-op 或有来源依据的�
 
 - OpenAI 组织/项目、幂等与 HTTP 表示 Header；
 - session-id/thread-id/x-client-request-id/x-codex-window-id/x-session-id；
-- x-codex-image-turn-id 与 Codex turn metadata、beta、routing、turn-state 控制字段；
+- x-codex-image-turn-id 与 Codex turn metadata、beta、turn-state 控制字段；客户端 `x-codex-routing-hint` 不透传；
 - W3C trace/baggage 和官方 SDK x-stainless-*；
 - 旧 session_id/thread_id 仅为兼容既有配置，新配置使用连字符形式。
 
@@ -74,6 +74,7 @@ Forwarded、Via、常用 X-Forwarded-*、真实 IP、Cloudflare 转发元数据�
 自定义认证和插件生成 Header 不能与显式 ignore 集冲突。
 
 Session affinity 的 request_header 来源必须在客户端白名单内，否则控制面编译失败。
+已将 `x-codex-routing-hint` 配为 affinity 来源的部署，应在升级前改用稳定的会话标识（如 `session-id`）。
 未知 Header 的默认入口 ignore 与显式 ignore 的出站禁令不同，不能混为一谈。
 
 Content-Encoding 只有 HTTP Responses 接受 identity/zstd；zstd 在 policy 前解码，
@@ -98,10 +99,13 @@ request_body_field_unsupported；已知 ignore 字段使用非等价值为
 request_body_field_value_unsupported。multipart 使用相同字段分类，额外 framing、文本与文件限制
 见[Images](openai-images.md)。
 
+Responses HTTP 和 WS `response.create` 在入口静默删除顶层 `request_country` 和
+`access_programs`（任意 JSON 值）：公共客户端不决定上游请求的国家来源或访问资格。
+
 service_tier 在支持它的公共入口仍为 allow。用户组 filter_fast_mode 在白名单通过后静默删除它，
 不改变机器字段分类；变换、插件、日志、affinity 和请求倍率只观察过滤后的请求，不能重新引入。
 
-edit 的 output_format 在入口保留，由选中上游/插件决定后续动作；
+Images 的 `output_format`、`frame_count` 和 `frame_duration_ms` 在入口保留，由选中上游/插件决定后续动作；
 moderation=auto 的公共 ignore 与 Codex 插件删除 output_format=png 是不同层的规则。
 
 ## 执行顺序
@@ -142,19 +146,19 @@ commit 和日期格式。这些结构检查不能替代对外部语义的实际�
 
 ## 外部类型核对来源
 
-下列为原核对记录；Responses 和独立 Images/Search 的源码版本分别保存。
+Responses 和独立 Images/Search 的源码版本分别保存在机器契约中。
 > 权威来源：
 > [`openai/openai-node@854892a`](https://github.com/openai/openai-node/tree/854892a0580980449ce1ed04aa5e3831d3330383) 的
 > [Chat Completions](https://github.com/openai/openai-node/blob/854892a0580980449ce1ed04aa5e3831d3330383/src/resources/chat/completions/completions.ts)、
 > [Responses](https://github.com/openai/openai-node/blob/854892a0580980449ce1ed04aa5e3831d3330383/src/resources/responses/responses.ts) 与
 > [Images](https://github.com/openai/openai-node/blob/854892a0580980449ce1ed04aa5e3831d3330383/src/resources/images.ts) 请求类型；
-> [`openai/codex@fde2156`](https://github.com/openai/codex/tree/fde2156057c38c0227ce94c8514d04c7498df60d) 的
-> [Responses client and Header construction](https://github.com/openai/codex/blob/fde2156057c38c0227ce94c8514d04c7498df60d/codex-rs/core/src/client.rs)、
-> [default HTTP client identity](https://github.com/openai/codex/blob/fde2156057c38c0227ce94c8514d04c7498df60d/codex-rs/login/src/auth/default_client.rs)、
-> [Responses SSE turn state](https://github.com/openai/codex/blob/fde2156057c38c0227ce94c8514d04c7498df60d/codex-rs/codex-api/src/sse/responses.rs)、
-> [Responses WebSocket endpoint](https://github.com/openai/codex/blob/fde2156057c38c0227ce94c8514d04c7498df60d/codex-rs/codex-api/src/endpoint/responses_websocket.rs)、
-> [Images wire type](https://github.com/openai/codex/blob/fde2156057c38c0227ce94c8514d04c7498df60d/codex-rs/codex-api/src/images.rs) 与
-> [Search wire type](https://github.com/openai/codex/blob/fde2156057c38c0227ce94c8514d04c7498df60d/codex-rs/codex-api/src/search.rs)；
+> [`openai/codex@a0a30c4`](https://github.com/openai/codex/tree/a0a30c40e8dbcc44af52e2df64dcce64368d4422) 的
+> [Responses client and Header construction](https://github.com/openai/codex/blob/a0a30c40e8dbcc44af52e2df64dcce64368d4422/codex-rs/core/src/client.rs)、
+> [default HTTP client identity](https://github.com/openai/codex/blob/a0a30c40e8dbcc44af52e2df64dcce64368d4422/codex-rs/login/src/auth/default_client.rs)、
+> [Responses SSE turn state](https://github.com/openai/codex/blob/a0a30c40e8dbcc44af52e2df64dcce64368d4422/codex-rs/codex-api/src/sse/responses.rs)、
+> [Responses WebSocket endpoint](https://github.com/openai/codex/blob/a0a30c40e8dbcc44af52e2df64dcce64368d4422/codex-rs/codex-api/src/endpoint/responses_websocket.rs)、
+> [Images wire type](https://github.com/openai/codex/blob/a0a30c40e8dbcc44af52e2df64dcce64368d4422/codex-rs/codex-api/src/images.rs) 与
+> [Search wire type](https://github.com/openai/codex/blob/a0a30c40e8dbcc44af52e2df64dcce64368d4422/codex-rs/codex-api/src/search.rs)；
 > 请求压缩实现还与本地研究 checkout
 > `openai/codex@eb9dceba1a2e658142a456c5898836774835616b` 的
 > `codex-rs/http-client/src/request.rs` 交叉核对；
@@ -163,8 +167,9 @@ commit 和日期格式。这些结构检查不能替代对外部语义的实际�
 > Chat Completions 兼容扩展。
 
 独立 Images/Search 另以
-[`openai/codex@d648947`](https://github.com/openai/codex/tree/d6489472f3c15e87d2d7763a5fde033545c530f8)
-的 [Images Header 构造](https://github.com/openai/codex/blob/d6489472f3c15e87d2d7763a5fde033545c530f8/codex-rs/ext/image-generation/src/backend.rs)、
-[Search 请求构造](https://github.com/openai/codex/blob/d6489472f3c15e87d2d7763a5fde033545c530f8/codex-rs/ext/web-search/src/tool.rs)
-与 [Search 可选上下文](https://github.com/openai/codex/blob/d6489472f3c15e87d2d7763a5fde033545c530f8/codex-rs/ext/web-search/src/history.rs)
-核对，记录为 `sources.codex_standalone_commit`；Responses 的核对版本不因此更新。
+[`openai/codex@a0a30c4`](https://github.com/openai/codex/tree/a0a30c40e8dbcc44af52e2df64dcce64368d4422)
+的 [Images Header 构造](https://github.com/openai/codex/blob/a0a30c40e8dbcc44af52e2df64dcce64368d4422/codex-rs/ext/image-generation/src/backend.rs)、
+[Search 请求构造](https://github.com/openai/codex/blob/a0a30c40e8dbcc44af52e2df64dcce64368d4422/codex-rs/ext/web-search/src/tool.rs)
+与 [Search 可选上下文](https://github.com/openai/codex/blob/a0a30c40e8dbcc44af52e2df64dcce64368d4422/codex-rs/ext/web-search/src/history.rs)
+核对，记录为 `sources.codex_standalone_commit`。`literature_search_query` 位于 `commands` 内，
+无需也不允许作为新顶层字段。
