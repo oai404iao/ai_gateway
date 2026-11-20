@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BrowserRouter } from "react-router";
 import { http, HttpResponse } from "msw";
@@ -120,12 +120,17 @@ describe("channel capabilities", () => {
     expect(await screen.findByRole("checkbox", { name: "Select gpt-5-codex" })).toBeInTheDocument();
   });
 
-  it("preserves operation settings and sends If-Match on update", async () => {
-    let submitted: ChannelCapabilityInput | undefined;
+  it("saves complete visual overrides in the operation format with the capability ETag", async () => {
+    const updates: ChannelCapabilityInput[] = [];
+    let discoveries = 0;
     let ifMatch: string | null = null;
     server.use(
+      http.post("/console/v1/routing/channels/models/discover", () => {
+        discoveries++;
+        return HttpResponse.json({ models: [] });
+      }),
       http.put("/console/v1/routing/capabilities/:id", async ({ request }) => {
-        submitted = (await request.json()) as ChannelCapabilityInput;
+        updates.push(await request.json() as ChannelCapabilityInput);
         ifMatch = request.headers.get("if-match");
         return HttpResponse.json({ id: CHANNEL_CAPABILITY.id });
       }),
@@ -137,15 +142,62 @@ describe("channel capabilities", () => {
         LOGICAL_CHANNEL.name,
       ),
     );
-    await user.click(screen.getByRole("button", { name: "Save capability" }));
-    await waitFor(() =>
-      expect(submitted?.settings.available_models).toEqual(["gpt-5", "gpt-5-mini"]),
-    );
-    expect(submitted?.channel_id).toBe(LOGICAL_CHANNEL.id);
-    expect(submitted?.settings.operation).toBe("responses");
-    expect(submitted?.settings).not.toHaveProperty("transports");
+    const save = screen.getByRole("button", { name: "Save capability" });
+    const fetchModels = await screen.findByRole("button", { name: "Fetch models" });
+    await user.click(screen.getByText("Body and header transforms"));
+    expect(screen.queryByRole("combobox", { name: "Rule format" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Add request header rule" }));
+    await user.type(screen.getByLabelText("Header name"), "x-source");
+    await user.type(screen.getByLabelText("Header value"), "console");
+    await user.click(screen.getByRole("button", { name: "Add request body rule" }));
+    await user.click(save);
+    await user.click(fetchModels);
+    expect(updates).toHaveLength(0);
+    expect(discoveries).toBe(0);
+
+    await user.type(screen.getByLabelText("JSON pointer"), "/temperature");
+    fireEvent.change(screen.getByLabelText("Value (JSON)"), { target: { value: "0.5" } });
+    await user.click(save);
+    await waitFor(() => expect(updates).toHaveLength(1));
+    const [submitted] = updates;
+    expect(submitted.override_document).toEqual({
+      version: 1, api_format: "open_ai_responses",
+      request_headers: { set: { "x-source": "console" } },
+      request_json: [{ op: "add", path: "/temperature", value: 0.5 }],
+    });
+    expect(submitted.settings.available_models).toEqual(["gpt-5", "gpt-5-mini"]);
+    expect(submitted.channel_id).toBe(LOGICAL_CHANNEL.id);
+    expect(submitted.settings.operation).toBe("responses");
+    expect(submitted.settings).not.toHaveProperty("transports");
     expect(ifMatch).toBe(`"${CHANNEL_CAPABILITY.updated_at}"`);
     expect(window.location.pathname).toBe(`/admin/routing/logical-channels/${LOGICAL_CHANNEL.id}`);
+  });
+
+  it("rejects non-object raw overrides for both discovery and save", async () => {
+    const calls: string[] = [];
+    server.use(
+      http.post("/console/v1/routing/channels/models/discover", () => {
+        calls.push("discover");
+        return HttpResponse.json({ models: [] });
+      }),
+      http.put("/console/v1/routing/capabilities/:id", async ({ request }) => {
+        calls.push(JSON.stringify((await request.json() as ChannelCapabilityInput).override_document));
+        return HttpResponse.json({ id: CHANNEL_CAPABILITY.id });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAt(`/admin/routing/logical-channels/${LOGICAL_CHANNEL.id}?view=capabilities&capability=${CHANNEL_CAPABILITY.id}`);
+    const fetchModels = await screen.findByRole("button", { name: "Fetch models" });
+    await user.click(screen.getByText("Body and header transforms"));
+    await user.click(screen.getByRole("tab", { name: "JSON configuration" }));
+    const raw = screen.getByLabelText("Transform document JSON");
+    fireEvent.change(raw, { target: { value: "[]" } });
+    await user.click(fetchModels);
+    await user.click(screen.getByRole("button", { name: "Save capability" }));
+    expect(calls).toEqual([]);
+    fireEvent.change(raw, { target: { value: "{}" } });
+    await user.click(screen.getByRole("button", { name: "Save capability" }));
+    await waitFor(() => expect(calls).toEqual(["{}"]));
   });
 
   it("does not embed another channel's capability through a mismatched URL", async () => {

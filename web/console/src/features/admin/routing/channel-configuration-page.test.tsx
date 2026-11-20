@@ -40,7 +40,8 @@ describe("Channel configuration", () => {
     expect(new URLSearchParams(window.location.search).get("group")).toBe(ROUTING_GROUP.id);
     await user.click(within(row).getByText(LOGICAL_CHANNEL.name));
     expect(await screen.findByRole("button", { name: "Save channel" })).toBeInTheDocument();
-    await user.click(screen.getByRole("tab", { name: "Channel capabilities" }));
+    expect(screen.getByRole("tab", { name: "Channel capabilities" })).toBeEnabled();
+    await user.click(screen.getByRole("link", { name: "Choose a capability to configure body and header transforms." }));
     expect(await screen.findByRole("heading", { name: "Channel capabilities" })).toBeInTheDocument();
     expect(screen.queryByText("Images edit")).not.toBeInTheDocument();
     await user.click(screen.getByRole("link", { name: "New capability" }));

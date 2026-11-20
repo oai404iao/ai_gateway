@@ -199,8 +199,10 @@ const zhCN: Record<string, string> = {
   "Zstandard applies only to Responses HTTP JSON/SSE.": "Zstandard 仅适用于 Responses 的 HTTP JSON/SSE。",
   "Status statistics": "状态统计",
   "No template": "不使用模板",
-  "Override document": "覆盖文档",
-  "Capability-level JSON transform overrides. Must be a JSON object.": "接口能力级 JSON 转换覆盖，必须是 JSON 对象。",
+  "Choose a capability to configure body and header transforms.": "选择接口能力，配置请求体和标头转换。",
+  "Body and header transforms": "请求体和标头转换",
+  "Transforms apply only to this channel operation. Template rules run before these overrides.":
+    "转换仅作用于当前渠道的此项接口能力。先执行模板规则，再执行下方的覆盖规则。",
   "Probe test model": "探测测试模型",
   "Probe pricing model": "探测计价模型",
   "Both probe fields are set or cleared together.": "两个探测字段必须同时设置或同时清空。",
@@ -2131,7 +2133,10 @@ const zhCN: Record<string, string> = {
   "Transform scope": "转换作用范围",
   "Templates run first, then channel overrides. Upstream authentication is applied last and cannot be changed by transform rules.":
     "模板规则先执行，随后执行渠道覆写规则。上游认证最后注入，不能通过转换规则修改。",
-  "The channel group fixes this transform's API format.": "此转换规则的 API 格式由渠道组固定。",
+  "The operation fixes this transform's API format.": "此转换规则的 API 格式由接口操作决定。",
+  "The transform's API format must match the operation.": "转换规则的 API 格式必须与接口操作一致。",
+  "This operation does not support request-body rules.": "此接口操作不支持请求体转换规则。",
+  "This operation does not support streaming response rules.": "此接口操作不支持流式响应转换规则。",
   "Rule format": "规则格式",
   "Choose the API format before adding streaming response rules.":
     "添加流式响应规则前，请先选择 API 格式。",

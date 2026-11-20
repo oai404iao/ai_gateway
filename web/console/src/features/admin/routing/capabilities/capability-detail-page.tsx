@@ -21,7 +21,7 @@ import {
 } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { Textarea } from "@/components/ui/textarea";
+import { TransformDocumentEditor } from "@/features/admin/transforms/transform-document-editor";
 import {
   Select,
   SelectContent,
@@ -147,7 +147,8 @@ export function CapabilityDetailPage({ capabilityId, channelId, embedded = false
   const connector = connectors.data?.find((item) => item.id === selectedAccess?.connector_kind);
   const operationSupported = connector?.operations.includes(form.watch("operation")) ?? false;
   const busy = create.isPending || update.isPending || remove.isPending || recover.isPending;
-  const draft = useConfigurationDraft(busy, form.formState.isDirty);
+  const [transformError, setTransformError] = useState<string | null>(null);
+  const draft = useConfigurationDraft(busy, form.formState.isDirty || Boolean(transformError));
   const parentId = channelId ?? capability?.channel_id ?? params.get("channel");
   const parentPath = parentId
     ? `/admin/routing/logical-channels/${parentId}?view=capabilities`
@@ -164,7 +165,7 @@ export function CapabilityDetailPage({ capabilityId, channelId, embedded = false
   );
 
   const discoverModels = async () => {
-    if (!selectedChannel || !selectedAccess) return;
+    if (!selectedChannel || !selectedAccess || transformError) return;
     const values = form.getValues();
     if (!isJson(values.override_document)) {
       form.setError("override_document", { message: "invalid JSON" });
@@ -200,6 +201,7 @@ export function CapabilityDetailPage({ capabilityId, channelId, embedded = false
   }, [capability, form]);
 
   const submit = form.handleSubmit(async (values) => {
+    if (transformError) return;
     const settings: CapabilitySettings = {
       operation: values.operation,
       enabled: values.enabled,
@@ -368,6 +370,48 @@ export function CapabilityDetailPage({ capabilityId, channelId, embedded = false
                     </Select>
                     {!operationSupported && <FieldDescription>{t("The connector does not support this operation.")}</FieldDescription>}
                   </Field>
+                  <details className="rounded-lg border p-4">
+                    <summary className="cursor-pointer text-sm font-medium">
+                      {t("Body and header transforms")}
+                    </summary>
+                    <FieldGroup className="mt-4">
+                      <FieldDescription>
+                        {t("Transforms apply only to this channel operation. Template rules run before these overrides.")}
+                      </FieldDescription>
+                      <Field>
+                        <FieldLabel htmlFor="capability-template">{t("Config template")}</FieldLabel>
+                        <Select
+                          value={form.watch("config_template_id") || NONE}
+                          onValueChange={(value) =>
+                            form.setValue("config_template_id", value === NONE ? "" : value, {
+                              shouldDirty: true,
+                            })
+                          }
+                        >
+                          <SelectTrigger id="capability-template">
+                            <SelectValue placeholder={t("No template")} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectGroup>
+                              <SelectItem value={NONE}>{t("No template")}</SelectItem>
+                              {templates.data?.map((template) => (
+                                <SelectItem key={template.id} value={template.id}>
+                                  {template.name}
+                                </SelectItem>
+                              ))}
+                            </SelectGroup>
+                          </SelectContent>
+                        </Select>
+                      </Field>
+                      <TransformDocumentEditor
+                        value={form.watch("override_document")}
+                        onChange={(value) => form.setValue("override_document", value, { shouldDirty: true })}
+                        operation={form.watch("operation")}
+                        onVisualValidationChange={setTransformError}
+                      />
+                    </FieldGroup>
+                  </details>
+                  {transformError && <FieldError>{transformError}</FieldError>}
                   <StringListField
                     id="capability-models"
                     label={t("Available models")}
@@ -378,7 +422,7 @@ export function CapabilityDetailPage({ capabilityId, channelId, embedded = false
                     }
                   />
                   {selectedAccess && supportsModelDiscovery(selectedAccess) && (
-                    <Button type="button" variant="outline" disabled={discover.isPending}
+                    <Button type="button" variant="outline" disabled={discover.isPending || Boolean(transformError)}
                       onClick={() => void discoverModels()}>
                       {t("Fetch models")}
                     </Button>
@@ -452,31 +496,6 @@ export function CapabilityDetailPage({ capabilityId, channelId, embedded = false
                       }
                     />
                   </Field>
-                  <Field>
-                    <FieldLabel htmlFor="capability-template">{t("Config template")}</FieldLabel>
-                    <Select
-                      value={form.watch("config_template_id") || NONE}
-                      onValueChange={(value) =>
-                        form.setValue("config_template_id", value === NONE ? "" : value, {
-                          shouldDirty: true,
-                        })
-                      }
-                    >
-                      <SelectTrigger id="capability-template">
-                        <SelectValue placeholder={t("No template")} />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectGroup>
-                          <SelectItem value={NONE}>{t("No template")}</SelectItem>
-                          {templates.data?.map((template) => (
-                            <SelectItem key={template.id} value={template.id}>
-                              {template.name}
-                            </SelectItem>
-                          ))}
-                        </SelectGroup>
-                      </SelectContent>
-                    </Select>
-                  </Field>
                   <DecimalField
                     id="capability-multiplier"
                     label={t("Billing multiplier")}
@@ -486,24 +505,6 @@ export function CapabilityDetailPage({ capabilityId, channelId, embedded = false
                     }
                     error={form.formState.errors.billing_multiplier?.message}
                   />
-                  <Field
-                    data-invalid={Boolean(form.formState.errors.override_document)}
-                  >
-                    <FieldLabel htmlFor="capability-overrides">
-                      {t("Override document")}
-                    </FieldLabel>
-                    <Textarea
-                      id="capability-overrides"
-                      rows={6}
-                      className="font-mono text-xs"
-                      {...form.register("override_document")}
-                      aria-invalid={Boolean(form.formState.errors.override_document)}
-                    />
-                    <FieldDescription>
-                      {t("Capability-level JSON transform overrides. Must be a JSON object.")}
-                    </FieldDescription>
-                    <FieldError errors={[form.formState.errors.override_document]} />
-                  </Field>
                   <Field data-invalid={Boolean(form.formState.errors.test_model)}>
                     <FieldLabel htmlFor="capability-test-model">{t("Probe test model")}</FieldLabel>
                     <Input
@@ -529,7 +530,7 @@ export function CapabilityDetailPage({ capabilityId, channelId, embedded = false
                     <FieldError errors={[form.formState.errors.test_pricing_model_id]} />
                   </Field>
                 </FieldGroup>
-                <Button type="submit" disabled={busy || !operationSupported}>
+                <Button type="submit" disabled={busy || !operationSupported || Boolean(transformError)}>
                   {t("Save capability")}
                 </Button>
               </form>
