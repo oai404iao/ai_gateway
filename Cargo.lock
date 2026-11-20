@@ -30,7 +30,7 @@ dependencies = [
 
 [[package]]
 name = "ai-gateway"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "ai-gateway-connector-host",
  "ai-gateway-connector-sdk",
@@ -127,7 +127,7 @@ dependencies = [
 
 [[package]]
 name = "ai-gateway-perf"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "ai-gateway",
  "arc-swap",
