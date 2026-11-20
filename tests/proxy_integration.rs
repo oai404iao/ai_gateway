@@ -2235,27 +2235,6 @@ async fn standalone_web_search_preserves_raw_body_and_only_forwards_allowed_head
 }
 
 #[tokio::test]
-async fn standalone_web_search_rejects_unknown_top_level_fields_before_upstream_contact() {
-    let harness = harness(StatusCode::OK, Vec::new()).await;
-
-    let response = authorized_post(
-        &client(),
-        harness.url("/v1/alpha/search"),
-        CLIENT_KEY,
-        br#"{"id":"session-search-123","model":"responses-model","commands":{},"future_field":true}"#
-            .to_vec(),
-    )
-    .send()
-    .await
-    .unwrap();
-
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let body: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
-    assert_eq!(body["error"]["code"], "request_body_field_unsupported");
-    assert!(harness.upstream_requests().is_empty());
-}
-
-#[tokio::test]
 async fn deepseek_chat_nonstream_usage_preserves_total_output_and_reasoning() {
     let upstream_body = br#"{
         "id":"b6de8b7e-d52a-4e36-9032-7362d940c5fd",
@@ -2978,60 +2957,74 @@ async fn images_edit_preserves_multipart_spools_large_input_and_collects_usage()
 }
 
 #[tokio::test]
-async fn client_body_allowlists_reject_unknown_fields_before_upstream_contact() {
-    let harness = harness(StatusCode::OK, Vec::new()).await;
+async fn json_operations_strip_unknown_top_level_fields_before_dispatch() {
+    let harness = harness(StatusCode::OK, b"{}".to_vec()).await;
     let client = client();
-    for (path, body) in [
+    for (path, expected) in [
         (
             "/v1/chat/completions",
-            br#"{"model":"same-model","messages":[],"future_field":true}"#.as_slice(),
+            serde_json::json!({"model":"same-model","messages":[{"role":"user","content":"hello","future_field":1}]}),
         ),
         (
             "/v1/responses",
-            br#"{"model":"responses-model","input":[],"future_field":true}"#.as_slice(),
+            serde_json::json!({"model":"responses-model","input":[{"role":"user","content":"hello","future_field":1}]}),
+        ),
+        (
+            "/v1/alpha/search",
+            serde_json::json!({"id":"session-search-123","model":"responses-model","commands":{"open":[{"ref_id":"turn0search0","future_field":1}]}}),
         ),
         (
             "/v1/images/generations",
-            br#"{"model":"gpt-image-2","prompt":"test","future_field":true}"#.as_slice(),
+            serde_json::json!({"model":"gpt-image-2","prompt":"test"}),
         ),
     ] {
-        let response = authorized_post(&client, harness.url(path), CLIENT_KEY, body.to_vec())
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
-        let value: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
-        assert_eq!(
-            value["error"]["code"], "request_body_field_unsupported",
-            "{path}"
-        );
+        let mut body = expected.clone();
+        body["future_field"] = serde_json::json!({"discard":true});
+        if path == "/v1/alpha/search" {
+            body["stream"] = serde_json::json!("not-a-boolean");
+            body["service_tier"] = serde_json::json!("priority");
+        }
+        let response = authorized_post(
+            &client,
+            harness.url(path),
+            CLIENT_KEY,
+            serde_json::to_vec(&body).unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        response.bytes().await.unwrap();
+        let requests = harness.upstream_requests();
+        let forwarded: Value = serde_json::from_slice(&requests.last().unwrap().body).unwrap();
+        assert_eq!(forwarded, expected, "{path}");
+        if path == "/v1/alpha/search" {
+            let logs = harness.logs();
+            let log = logs.last().unwrap();
+            assert_eq!(log.request_protocol.as_str(), "non_stream");
+            assert!(!log.fast_mode);
+        }
     }
+}
 
-    let boundary = "unknown-edit-field-boundary";
-    let response = authorized_multipart_post(
-        &client,
-        harness.url("/v1/images/edits"),
+#[tokio::test]
+async fn stripping_unknown_fields_does_not_hide_duplicate_models() {
+    let harness = harness(StatusCode::OK, b"{}".to_vec()).await;
+    let response = authorized_post(
+        &client(),
+        harness.url("/v1/chat/completions"),
         CLIENT_KEY,
-        boundary,
-        multipart_edit_body(
-            boundary,
-            "gpt-image-2",
-            &[("prompt", "test"), ("future_field", "true")],
-            b"image",
-        ),
+        br#"{"model":"first","future_field":1,"model":"same-model"}"#.to_vec(),
     )
     .send()
     .await
     .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let value: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
-    assert_eq!(value["error"]["code"], "request_body_field_unsupported");
     assert!(harness.upstream_requests().is_empty());
-    assert!(harness.logs().is_empty());
 }
 
 #[tokio::test]
-async fn images_edit_ignores_only_declared_client_compatibility_fields() {
+async fn images_edit_strips_unknown_and_explicitly_ignored_parts_before_dispatch() {
     let harness = harness(StatusCode::OK, br#"{"data":[]}"#.to_vec()).await;
     let boundary = "gateway-edit-client-policy-boundary";
     let prompt = "change the clothes to blue";
@@ -3043,6 +3036,7 @@ async fn images_edit_ignores_only_declared_client_compatibility_fields() {
             ("prompt", prompt),
             ("output_format", "png"),
             ("moderation", "auto"),
+            ("future_field", "discard"),
         ],
         image,
     );
@@ -3080,6 +3074,7 @@ async fn images_edit_ignores_only_declared_client_compatibility_fields() {
         );
     }
     assert!(!parts.contains_key("moderation"));
+    assert!(!parts.contains_key("future_field"));
     assert_eq!(parts.len(), 4);
     assert_eq!(parts["model"].as_ref(), b"gpt-image-2");
     assert_eq!(parts["prompt"].as_ref(), prompt.as_bytes());

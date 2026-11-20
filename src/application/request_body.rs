@@ -175,7 +175,7 @@ impl ImageEditBodyPolicy {
             boundary: boundary.into(),
             content_type: headers[CONTENT_TYPE].clone(),
             text_fields: inspection.text_fields.into(),
-            ignored_part_fields: Arc::from([]),
+            ignored_part_fields: inspection.ignored_file_fields.into_iter().collect(),
             wire_model: Arc::clone(&model),
             model,
             image_count: inspection.image_count,
@@ -331,7 +331,7 @@ impl ImageEditRequestBody {
             .iter()
             .cloned()
             .collect::<BTreeSet<_>>();
-        let mut changed = false;
+        let mut changed = !ignored.is_empty();
         for (field, present) in [
             ("image", self.image_count > 0),
             ("mask", self.mask_count > 0),
@@ -672,6 +672,7 @@ struct MultipartTextField {
 
 struct MultipartInspection {
     text_fields: Vec<MultipartTextField>,
+    ignored_file_fields: BTreeSet<String>,
     model: String,
     image_count: usize,
     image_bytes: usize,
@@ -690,6 +691,7 @@ async fn inspect_multipart(
     let mut mask_count = 0_usize;
     let mut model = None;
     let mut text_fields = Vec::new();
+    let mut ignored_file_fields = BTreeSet::new();
     let mut text_bytes = 0_usize;
     while let Some(mut field) = multipart
         .next_field()
@@ -722,14 +724,14 @@ async fn inspect_multipart(
             } else {
                 name.as_str()
             };
-            body_field_disposition(
+            let disposition = body_field_disposition(
                 RequestPolicyLayer::Client,
                 RequestInterface::ImagesEdit,
                 policy_name,
                 None,
             )
             .map_err(ImageEditBodyError::RequestPolicy)?;
-            if !is_image && !is_mask {
+            if disposition == FieldDisposition::Allow && !is_image && !is_mask {
                 return Err(ImageEditBodyError::UnexpectedFileField);
             }
             let mut length = 0_usize;
@@ -743,7 +745,9 @@ async fn inspect_multipart(
                     return Err(ImageEditBodyError::FileTooLarge);
                 }
             }
-            if is_image {
+            if disposition == FieldDisposition::Ignore {
+                ignored_file_fields.insert(name);
+            } else if is_image {
                 image_count = image_count.saturating_add(1);
                 image_bytes = image_bytes.saturating_add(length);
                 if image_count > MAX_IMAGE_EDIT_IMAGES {
@@ -796,6 +800,7 @@ async fn inspect_multipart(
     }
     Ok(MultipartInspection {
         text_fields,
+        ignored_file_fields,
         model: model.ok_or(ImageEditBodyError::MissingModel)?,
         image_count,
         image_bytes,
@@ -1793,7 +1798,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn multipart_unknown_file_field_uses_request_policy_contract() {
+    async fn multipart_discards_unknown_files_and_text_before_forwarding() {
         let boundary = "unknown-file-boundary";
         let bytes = Bytes::from(format!(
             "--{boundary}\r\n\
@@ -1806,20 +1811,41 @@ mod tests {
              --{boundary}\r\n\
              Content-Disposition: form-data; name=\"future_file\"; filename=\"future.bin\"\r\n\
              Content-Type: application/octet-stream\r\n\r\n\
-             future\r\n\
+             private-file-payload\r\n\
+             --{boundary}\r\n\
+             Content-Disposition: form-data; name=\"future_text\"\r\n\r\n\
+             private-text-payload\r\n\
              --{boundary}--\r\n"
         ));
-        let (_directory, policy) = policy(1_024, 128 * 1_024);
-        let error = policy
+        let (directory, policy) = policy(16, 128 * 1_024);
+        let captured = policy
+            .capture(&headers(boundary, bytes.len()), Body::from(bytes.clone()))
+            .await
+            .unwrap();
+        let (filtered, changed) = captured
+            .apply_field_policy(RequestPolicyLayer::Client, RequestInterface::ImagesEdit)
+            .unwrap();
+        assert!(changed);
+        assert_eq!(
+            filtered.request_value(),
+            serde_json::json!({"model":"gpt-image-2"})
+        );
+        let replayable = filtered.into_openai_replayable().await.unwrap();
+        let replayed = replay(&replayable).await;
+        let wire = std::str::from_utf8(&replayed).unwrap();
+        assert!(wire.contains("filename=\"image.png\""));
+        assert!(wire.contains("\r\n\r\nimage\r\n"));
+        assert!(!wire.contains("future"));
+        assert!(!wire.contains("private"));
+
+        let limited =
+            ImageEditBodyPolicy::new(128 * 1_024, 5, 16, directory.path().join("limited"));
+        let error = limited
             .capture(&headers(boundary, bytes.len()), Body::from(bytes))
             .await
             .err()
-            .expect("unknown multipart file fields must fail");
-        let ImageEditBodyError::RequestPolicy(error) = error else {
-            panic!("unknown file field must use the shared request policy");
-        };
-        assert_eq!(error.code(), "request_body_field_unsupported");
-        assert!(error.message().contains("future_file"));
+            .expect("ignored file fields are subject to the file limit");
+        assert_eq!(error, ImageEditBodyError::FileTooLarge);
     }
 
     #[tokio::test]

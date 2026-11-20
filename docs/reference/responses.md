@@ -50,7 +50,7 @@ Response 在途。`previous_response_id` 的增量缓存属于具体连接，断
 
 ### HTTP 与事件
 
-- HTTP 和 WS 分别检查顶层白名单；未知字段本地 `400`，允许字段内部由上游或插件解释。
+- HTTP 请求与 WS `response.create` 分别检查顶层白名单；未知字段在入口静默删除，允许字段内部由上游或插件解释。`response.interrupt` 控制帧不接受额外字段。
 - 不在 `input` 与 Chat `messages` 之间转换。模型别名只改顶层 `model`；无任何 body
   修改时保留原始字节。
 - HTTP `Content-Encoding: zstd` 在大小限制内解码后才检查策略；其他 JSON 操作不因此获得 zstd 入口。

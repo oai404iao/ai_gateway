@@ -10,7 +10,7 @@ Console 配置步骤见[用户文档](../user/README.md)。
 | 你要做什么 | 从这里开始 |
 | --- | --- |
 | 判断 SDK 能否接入、哪些路径已实现 | [OpenAI 兼容性总览](openai-compatibility.md) |
-| 排查本地未知字段错误或 Header 丢失 | [请求白名单](request-allowlists.md)及其[机器契约](request-allowlists.json) |
+| 排查上游未收到的字段或 Header | [请求白名单](request-allowlists.md)及其[机器契约](request-allowlists.json) |
 | 接入 messages、工具调用或 Chat SSE | [Chat Completions](chat-completions.md) |
 | 接入 Responses JSON、SSE 或 WebSocket | [Responses](responses.md) |
 | 接入图片生成或 multipart 编辑 | [Images](openai-images.md) |

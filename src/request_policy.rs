@@ -227,17 +227,33 @@ pub(crate) enum FieldDisposition {
     Ignore,
 }
 
+// A map would collapse repeated members during filtering, hiding duplicates from
+// the request parser (notably model and WebSocket type/previous_response_id).
+struct RawMembers;
+
+impl<'de> serde::de::Visitor<'de> for RawMembers {
+    type Value = Vec<(String, &'de RawValue)>;
+
+    fn expecting(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fmt.write_str("a JSON request object")
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut members = Vec::new();
+        while let Some(member) = map.next_entry()? {
+            members.push(member);
+        }
+        Ok(members)
+    }
+}
+
 pub(crate) fn apply_json_body_policy(
     layer: RequestPolicyLayer,
     interface: RequestInterface,
     body: Bytes,
 ) -> Result<AppliedJsonBody, RequestPolicyError> {
     let policy = body_policy(layer, interface);
-    let raw_fields = serde_json::from_slice::<BTreeMap<String, &RawValue>>(&body)
-        .map_err(|_| RequestPolicyError::invalid_body(layer, interface))?;
-    let mut ignored_fields = Vec::new();
-    let mut changed = false;
-    for (field, raw_value) in &raw_fields {
+    filter_json_members(layer, interface, body, |field, raw_value| {
         let inspected_value = policy
             .ignore
             .get(field)
@@ -247,37 +263,41 @@ pub(crate) fn apply_json_body_policy(
                     .map_err(|_| RequestPolicyError::invalid_body(layer, interface))
             })
             .transpose()?;
-        let disposition = field_disposition_for_policy(
-            layer,
-            interface,
-            policy,
-            field,
-            inspected_value.as_ref(),
-        )?;
-        if disposition == FieldDisposition::Ignore {
-            ignored_fields.push(field.clone());
-            changed = true;
-        }
-    }
-    if !changed {
+        field_disposition_for_policy(layer, interface, policy, field, inspected_value.as_ref())
+    })
+}
+
+fn filter_json_members(
+    layer: RequestPolicyLayer,
+    interface: RequestInterface,
+    body: Bytes,
+    disposition: impl Fn(&str, &RawValue) -> Result<FieldDisposition, RequestPolicyError>,
+) -> Result<AppliedJsonBody, RequestPolicyError> {
+    let invalid_body = |_| RequestPolicyError::invalid_body(layer, interface);
+    let mut json = serde_json::Deserializer::from_slice(&body);
+    let members =
+        serde::Deserializer::deserialize_map(&mut json, RawMembers).map_err(invalid_body)?;
+    json.end().map_err(invalid_body)?;
+    let count = members.len();
+    let retained = members
+        .into_iter()
+        .filter_map(|(key, value)| match disposition(&key, value) {
+            Ok(FieldDisposition::Allow) => Some(Ok((key, value))),
+            Ok(FieldDisposition::Ignore) => None,
+            Err(error) => Some(Err(error)),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if retained.len() == count {
         return Ok(AppliedJsonBody {
             body,
             changed: false,
         });
     }
-    let mut value = serde_json::from_slice::<Value>(&body)
-        .map_err(|_| RequestPolicyError::invalid_body(layer, interface))?;
-    let object = value
-        .as_object_mut()
-        .ok_or_else(|| RequestPolicyError::invalid_body(layer, interface))?;
-    for field in ignored_fields {
-        object.remove(&field);
-    }
-    let body = serde_json::to_vec(&value)
-        .map(Bytes::from)
-        .map_err(|_| RequestPolicyError::invalid_body(layer, interface))?;
+    let mut output = Vec::new();
+    serde::Serializer::collect_map(&mut serde_json::Serializer::new(&mut output), retained)
+        .map_err(invalid_body)?;
     Ok(AppliedJsonBody {
-        body,
+        body: output.into(),
         changed: true,
     })
 }
@@ -293,23 +313,12 @@ pub(crate) fn apply_client_fast_mode_filter(
             changed: false,
         });
     }
-    let mut value = serde_json::from_slice::<Value>(&body)
-        .map_err(|_| RequestPolicyError::invalid_body(RequestPolicyLayer::Client, interface))?;
-    let object = value
-        .as_object_mut()
-        .ok_or_else(|| RequestPolicyError::invalid_body(RequestPolicyLayer::Client, interface))?;
-    if object.remove("service_tier").is_none() {
-        return Ok(AppliedJsonBody {
-            body,
-            changed: false,
-        });
-    }
-    let body = serde_json::to_vec(&value)
-        .map(Bytes::from)
-        .map_err(|_| RequestPolicyError::invalid_body(RequestPolicyLayer::Client, interface))?;
-    Ok(AppliedJsonBody {
-        body,
-        changed: true,
+    filter_json_members(RequestPolicyLayer::Client, interface, body, |field, _| {
+        Ok(if field == "service_tier" {
+            FieldDisposition::Ignore
+        } else {
+            FieldDisposition::Allow
+        })
     })
 }
 
@@ -626,9 +635,9 @@ fn validate_contract(contract: &RequestPolicyContract) -> Result<(), String> {
             .get(interface.as_str())
             .ok_or_else(|| format!("missing request interface `{}`", interface.as_str()))?;
         validate_body_policy(&policy.client_body)?;
-        if policy.client_body.unknown != UnknownAction::Reject {
+        if policy.client_body.unknown != UnknownAction::Ignore {
             return Err(format!(
-                "unknown client body fields must be rejected for `{}`",
+                "unknown client body fields must be ignored for `{}`",
                 interface.as_str()
             ));
         }
@@ -827,31 +836,29 @@ mod tests {
     }
 
     #[test]
-    fn every_client_interface_rejects_unknown_top_level_body_fields() {
+    fn every_client_interface_strips_unknown_top_level_body_fields() {
         for interface in REQUIRED_INTERFACES {
-            let error = if interface == RequestInterface::ImagesEdit {
-                body_field_disposition(
-                    RequestPolicyLayer::Client,
-                    interface,
-                    "future_field",
-                    Some(&Value::String("value".into())),
-                )
-                .unwrap_err()
-            } else {
-                apply_json_body_policy(
-                    RequestPolicyLayer::Client,
-                    interface,
-                    Bytes::from_static(br#"{"model":"gpt-5","future_field":true}"#),
-                )
-                .unwrap_err()
-            };
-            assert_eq!(
-                error.code(),
-                "request_body_field_unsupported",
-                "{}",
-                interface.as_str()
-            );
-            assert!(error.message().contains("future_field"));
+            if interface == RequestInterface::ImagesEdit {
+                assert_eq!(
+                    body_field_disposition(
+                        RequestPolicyLayer::Client,
+                        interface,
+                        "future_field",
+                        None
+                    )
+                    .unwrap(),
+                    FieldDisposition::Ignore
+                );
+                continue;
+            }
+            let applied = apply_json_body_policy(
+                RequestPolicyLayer::Client,
+                interface,
+                Bytes::from_static(br#"{"model":"gpt-5","future_field":{"number":1e400}}"#),
+            )
+            .unwrap();
+            assert!(applied.changed);
+            assert_eq!(&applied.body[..], br#"{"model":"gpt-5"}"#);
         }
     }
 

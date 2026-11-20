@@ -108,8 +108,8 @@ Unix 目录和文件权限分别收紧为 `0700`、`0600`；只保留匿名句�
 
 ### 字段与变换
 
-入口按 `images_edit.client_body` 检查顶层字段；未知字段返回
-`request_body_field_unsupported`。兼容字段 `moderation=auto` 删除，其他 moderation 值拒绝。
+入口按 `images_edit.client_body` 检查顶层字段；未知 part 不转发。
+兼容字段 `moderation=auto` 删除，其他 moderation 值拒绝。
 非 multipart Content-Type、非法 boundary/framing、非 identity Content-Encoding 和 streaming
 均 fail closed。公开接口不接收 JSON/data-URL edit。
 

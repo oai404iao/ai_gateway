@@ -81,7 +81,7 @@ Images generation 与 edit 同属 Images，也必须分别配置。
 顶层 `model` 为非空且不超过 300 字符的字符串，可选 `stream` 为布尔值。
 Images edit 改用合法 multipart；大小和 framing 限制见[Images](openai-images.md)。
 
-所有操作检查顶层字段，未知字段拒绝；允许字段内部不递归验证。字段全集只维护在
+各操作在公共入口静默删除未列出的顶层字段；允许字段内部不递归验证。字段全集只维护在
 [`request-allowlists.json`](request-allowlists.json)，不要从本页摘要反向生成名单。
 Chat 的 `thinking`、`enable_thinking` 是入口兼容扩展，不意味着网关解释其值。
 
@@ -148,7 +148,7 @@ WS 升级后的逻辑错误通过错误事件表达；下面 HTTP 状态不能�
 | HTTP | `code` | 排查方向 |
 | --- | --- | --- |
 | `400` | `invalid_request` | body、model 或变换无效 |
-| `400` | `request_body_field_unsupported` | 未知公共顶层字段 |
+| `400` | `request_body_field_unsupported` | 公共策略显式标为 `reject` 的顶层字段 |
 | `400` | `request_body_field_value_unsupported` | ignore 字段不是可删除的等价值 |
 | `400` | `codex_request_body_field_unsupported` / `codex_request_body_field_value_unsupported` | 插件无法表达字段或值 |
 | `400` | `image_streaming_unsupported` | Images 请求流式 |

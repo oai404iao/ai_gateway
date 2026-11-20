@@ -74,7 +74,7 @@
   "interfaces": {
     "chat_completions": {
       "client_body": {
-        "unknown": "reject",
+        "unknown": "ignore",
         "allow": [
           "audio",
           "enable_thinking",
@@ -122,7 +122,7 @@
     },
     "responses_http": {
       "client_body": {
-        "unknown": "reject",
+        "unknown": "ignore",
         "allow": [
           "background",
           "client_metadata",
@@ -165,7 +165,7 @@
     },
     "responses_websocket": {
       "client_body": {
-        "unknown": "reject",
+        "unknown": "ignore",
         "allow": [
           "background",
           "client_metadata",
@@ -211,7 +211,7 @@
     },
     "standalone_web_search": {
       "client_body": {
-        "unknown": "reject",
+        "unknown": "ignore",
         "allow": [
           "commands",
           "id",
@@ -227,7 +227,7 @@
     },
     "images_generation": {
       "client_body": {
-        "unknown": "reject",
+        "unknown": "ignore",
         "allow": [
           "background",
           "frame_count",
@@ -252,7 +252,7 @@
     },
     "images_edit": {
       "client_body": {
-        "unknown": "reject",
+        "unknown": "ignore",
         "allow": [
           "background",
           "frame_count",

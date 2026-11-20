@@ -57,7 +57,7 @@ curl "$GATEWAY_BASE_URL/v1/images/edits" \
 
 ### generation
 
-- 只接受 JSON，通过 Gateway Key、准入、公共白名单和独立操作路由；未知顶层字段本地拒绝。
+- 只接受 JSON，通过 Gateway Key、准入、公共白名单和独立操作路由；未知顶层字段在入口静默删除。
 - 提取 `model`、可选 `stream`；没有策略删除、Fast 过滤、别名或变换/适配时保留原始字节。
 - 请求 JSON 使用全局 `request_limits.proxy_body_bytes`，不因图片响应较大提高该上限。
 - 响应逐块转发；从解码后 JSON 增量采集已支持的顶层 usage，不为 base64 全量缓冲。
@@ -66,7 +66,7 @@ curl "$GATEWAY_BASE_URL/v1/images/edits" \
 ### edit
 
 入口必须带合法 multipart boundary，一个非空 `model` 和至少一个 `image`/`image[]`。
-字段依 `images_edit.client_body` 分类；`moderation=auto` 显式忽略，其他 moderation 值报错。
+字段依 `images_edit.client_body` 分类；未列出的 part 不转发，`moderation=auto` 显式忽略，其他 moderation 值报错。
 文本值、文件内容不得出现在日志、错误和审计中。
 
 | 限制 | 当前边界 |

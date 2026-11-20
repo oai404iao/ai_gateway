@@ -2164,7 +2164,7 @@ async fn responses_websocket_preserves_permission_errors_during_upgrade() {
 }
 
 #[tokio::test]
-async fn responses_websocket_rejects_unknown_client_body_fields_before_upstream_contact() {
+async fn responses_websocket_strips_unknown_create_fields_before_dispatch() {
     let upstream = start_mock_upstream().await;
     let gateway = gateway_harness(&upstream).await;
     let (mut websocket, _) = connect_async(websocket_request(
@@ -2175,31 +2175,24 @@ async fn responses_websocket_rejects_unknown_client_body_fields_before_upstream_
     .await
     .unwrap();
 
-    websocket
-        .send(Message::Text(
-            json!({
-                "type": "response.create",
-                "model": CLIENT_MODEL,
-                "input": [],
-                "future_field": true
-            })
-            .to_string()
-            .into(),
-        ))
-        .await
-        .unwrap();
-    let message = timeout(Duration::from_secs(2), websocket.next())
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
-    let Message::Text(text) = message else {
-        panic!("expected a JSON WebSocket error");
-    };
-    let value: Value = serde_json::from_str(&text).unwrap();
-    assert_eq!(value["error"]["code"], "request_body_field_unsupported");
-    assert!(upstream.handshakes().is_empty());
-    assert!(upstream.requests().is_empty());
+    let input = json!([{"role":"user", "content":"hello", "future_field":true}]);
+    let events = send_websocket_body(
+        &mut websocket,
+        json!({
+            "type": "response.create",
+            "model": CLIENT_MODEL,
+            "input": input,
+            "future_field": true
+        }),
+    )
+    .await;
+    assert_eq!(events.last().unwrap()["type"], "response.completed");
+    close_and_wait(websocket).await;
+    let requests = upstream.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].body["type"], "response.create");
+    assert_eq!(requests[0].body["input"], input);
+    assert!(requests[0].body.get("future_field").is_none());
 }
 
 #[tokio::test]

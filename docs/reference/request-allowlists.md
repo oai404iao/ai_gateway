@@ -10,16 +10,16 @@
 >
 > 权威来源：[openai-node 固定请求类型](https://github.com/openai/openai-node/tree/854892a0580980449ce1ed04aa5e3831d3330383)及文末各源码记录。
 
-如果请求在联系上游前返回未知字段错误，先查本页。这里解释策略如何执行，不复制全部字段表；
+如果上游没有收到客户端字段，或网关在派发前拒绝了字段值，先查本页。这里解释策略如何执行，不复制全部字段表；
 新增字段必须修改机器契约及测试，不能只在 Markdown 中声明支持。
 
-## 先判断在哪一层失败
+## 先判断是哪一层处理字段
 
 | 例子 | 公共入口 | 后续处理 |
 | --- | --- | --- |
 | Chat 顶层 thinking / enable_thinking | 允许，不解释值 | 目标上游决定是否支持 |
 | Responses 顶层 max_output_tokens | 允许 | 普通上游可保留，Codex 插件可按自己的契约删除 |
-| 未声明顶层字段 | 400 request_body_field_unsupported | 不联系上游 |
+| 未声明顶层字段 | 静默删除后继续 | 不转发该字段 |
 | edit moderation=auto | 删除后继续 | 不发送该 part |
 | edit moderation=low | 400 request_body_field_value_unsupported | 不能把非等价值静默删除 |
 | X-Forwarded-For | 显式忽略 | 变换/插件/鉴权之后仍不得重新引入 |
@@ -45,11 +45,10 @@
 | allow | 保留；其他阶段仍可能改写 | 进入后续处理，不保证最终原样出站 |
 | ignore | 删除；accepted_values 存在时只接受声明的等价值 | 删除 |
 | reject | 本地 400，不派发 | 由对应策略处理 |
-| 未列出 | 默认 reject | 默认 ignore |
+| 未列出 | 默认删除 | 默认 ignore |
 
-ignore 只适合遥测、空值/默认值、明确 no-op 或有来源依据的兼容行为，不能用于吞掉会改变生成
-语义的未知字段。JSON 字节保真要求所有后续阶段也未修改 body；模型别名、Fast 过滤和插件适配
-都可能触发重写。
+显式 ignore 可为遥测或兼容字段限定可删除的值；未列出的字段则不解释其值。
+只有入口和后续阶段均未修改 body 才保留原始 JSON 字节；删除字段、模型别名、Fast 过滤和插件适配都可能触发重写。
 
 ## 客户端入口策略
 
@@ -94,10 +93,10 @@ Content-Encoding 只有 HTTP Responses 接受 identity/zstd；zstd 在 policy �
 | images_generation | POST /v1/images/generations | images_generation |
 | images_edit | multipart POST /v1/images/edits | images_edit |
 
-client_body.allow/ignore/reject 决定完整顶层分类。未知字段为
-request_body_field_unsupported；已知 ignore 字段使用非等价值为
-request_body_field_value_unsupported。multipart 使用相同字段分类，额外 framing、文本与文件限制
-见[Images](openai-images.md)。
+公共入口只按各自的 `client_body` 处理顶层字段，不递归过滤。未列出的字段静默删除；显式 `reject`
+仍返回 `request_body_field_unsupported`，受限 `ignore` 值不符仍返回 `request_body_field_value_unsupported`。
+WS 的 body 策略适用于 `response.create`，不放宽 `response.interrupt` 的严格帧格式。
+multipart edit 重建时省略未列出的 part，framing、大小和必填字段限制仍生效，见[Images](openai-images.md)。
 
 Responses HTTP 和 WS `response.create` 在入口静默删除顶层 `request_country` 和
 `access_programs`（任意 JSON 值）：公共客户端不决定上游请求的国家来源或访问资格。

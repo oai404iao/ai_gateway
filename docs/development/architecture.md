@@ -72,12 +72,10 @@ Browser or Console client
 4. 按操作和 Content-Type 读取请求体。Chat Completions、Responses、standalone web search 与
    Images generation 在 `proxy_body_bytes` 内读取 JSON；Images edit 在独立总大小/单文件限制内接收 multipart，
    超过内存阈值后写入匿名临时文件。两者都要求路由用 `model` 为非空、最多 300 字符；
-   Images streaming fail closed。请求日志还会宽松提取客户端显式提供的
-   `reasoning.effort`、`reasoning_effort` 和 `service_tier = "priority"`，但这些元数据不会
-   增加转发校验。
+   Images streaming fail closed。
 5. 使用嵌入的 [`request-allowlists.json`](../reference/request-allowlists.json) 执行客户端入口
    白名单：未列出的 Header 被忽略，常见反向代理/CDN 转发元数据作为显式 Header `ignore`
-   条目删除，未列出的顶层 JSON/multipart 字段返回 `400`；显式 body `ignore` 字段只在值满足
+   条目删除，未列出的顶层 JSON/multipart 字段静默删除；显式 body `ignore` 字段只在值满足
    契约时删除。当前只校验顶层字段，允许字段内部的嵌套结构仍由上游解释。随后按 API Key
    快照中的用户组策略执行可选 Fast 过滤：启用时删除顶层 `service_tier`，因此后续日志元数据、
    请求倍率、Session affinity、Transform 和 Connector 都只观察过滤后的请求。

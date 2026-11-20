@@ -289,8 +289,10 @@ Axum HTTP
   Common reverse-proxy/CDN forwarding metadata must remain explicit client Header `ignore` entries
   and every transform-capable outbound path must consume that same policy again immediately before
   dispatch. Custom upstream authentication and Connector-generated Headers must not conflict with
-  the explicit ignore set. Unknown client/Codex body fields fail closed; unknown Headers are
-  ignored. Only top-level fields are checked. When neither policy deletes/overrides a field and no
+  the explicit ignore set. Strip unlisted public top-level fields (including `response.create`
+  fields and multipart parts) and ignore unknown client Headers. Preserve explicit field/value
+  rejections and strict `response.interrupt` framing. The Codex plugin independently rejects
+  fields unknown to its outbound policy. When neither policy deletes/overrides a field and no
   transform or model alias applies, preserve the original request bytes without reserialization.
 - User-group `filter_fast_mode` runs immediately after the client body
   allowlist and silently removes top-level `service_tier`. Request-log
@@ -299,7 +301,7 @@ Axum HTTP
   later in the pipeline.
 - Keep multipart Images edits behind `ReplayableRequestBody::{Memory, TempFile}` and the dedicated `image_edit_*` limits. Never raise the global JSON body limit to accommodate images, require complete input images/data-URL JSON to remain in memory beyond the configured threshold, retain named upload files, or put multipart values in logs/errors/audit.
 - Multipart edit request JSON transforms fail closed; ordinary connectors replay exact bytes or
-  rebuild only the model/explicitly ignored client fields, while Codex adapts at most five images
+  rebuild to replace the model or omit ignored parts, while Codex adapts at most five images
   to streamed base64 data URLs and rejects masks or non-equivalent provider fields.
 - Keep the fixed request order: client body allowlist → user-group Fast
   filtering → client Header allowlist → template defaults → channel overrides
