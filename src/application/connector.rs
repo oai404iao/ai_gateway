@@ -219,7 +219,8 @@ impl PreparedUpstreamAttempt {
                 let adapted = attempt
                     .adapt_body(body.clone(), request_protocol)
                     .map_err(ConnectorAttemptError::from)?;
-                validate_plugin_body(&body, &adapted)?;
+                let validated = validate_plugin_body(&body, &adapted)?;
+                attempt.bind_response_routing(&validated)?;
                 Ok(adapted)
             }
         }
@@ -373,7 +374,7 @@ fn connector_protocol(protocol: RequestProtocol) -> ConnectorProtocol {
     }
 }
 
-fn validate_plugin_body(before: &[u8], after: &[u8]) -> Result<(), ConnectorAttemptError> {
+fn validate_plugin_body(before: &[u8], after: &[u8]) -> Result<Value, ConnectorAttemptError> {
     let before: Value =
         serde_json::from_slice(before).map_err(|_| ConnectorAttemptError::InvalidTarget)?;
     let after: Value =
@@ -385,7 +386,7 @@ fn validate_plugin_body(before: &[u8], after: &[u8]) -> Result<(), ConnectorAtte
     {
         return Err(ConnectorAttemptError::InvalidTarget);
     }
-    Ok(())
+    Ok(after)
 }
 
 pub(crate) fn plugin_header_metadata(headers: &HeaderMap) -> Value {

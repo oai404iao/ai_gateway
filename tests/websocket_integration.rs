@@ -157,7 +157,17 @@ async fn start_mock_upstream_with_script(
                 let first_error = Arc::clone(&first_error);
                 let next_response = Arc::clone(&next_response);
                 tokio::spawn(async move {
-                    let callback = move |request: &Request, response: Response| {
+                    let callback = move |request: &Request, mut response: Response| {
+                        if request
+                            .headers()
+                            .get("x-session-id")
+                            .is_some_and(|session| session == "size_advertised")
+                        {
+                            response.headers_mut().insert(
+                                "x-codex-websocket-max-message-bytes",
+                                HeaderValue::from_static("64"),
+                            );
+                        }
                         handshakes.lock().unwrap().push(CapturedHandshake {
                             uri: request.uri().to_string(),
                             headers: request.headers().clone(),
@@ -223,6 +233,25 @@ async fn start_mock_upstream_with_script(
                         }
                         let response_number = next_response.fetch_add(1, Ordering::SeqCst);
                         let response_id = format!("resp-{response_number}");
+                        if let Some(id) = body["client_metadata"]["delayed_ack"].as_str() {
+                            websocket
+                                .send(Message::text(
+                                    json!({"type":"response.interrupt.accepted", "response_id":id})
+                                        .to_string(),
+                                ))
+                                .await
+                                .unwrap();
+                        }
+                        if body["client_metadata"]["close_size"] == true {
+                            websocket
+                                .close(Some(tungstenite::protocol::CloseFrame {
+                                    code: tungstenite::protocol::frame::coding::CloseCode::Size,
+                                    reason: "private upstream reason".into(),
+                                }))
+                                .await
+                                .unwrap();
+                            break;
+                        }
                         if shared_tool_cycle {
                             for event in shared_tool_events(&response_id, response_number == 1) {
                                 websocket
@@ -244,26 +273,81 @@ async fn start_mock_upstream_with_script(
                             ))
                             .await
                             .unwrap();
+                        let mut ack_after = None;
+                        let interrupt_order = body["client_metadata"]["interrupt"].as_str();
+                        if let Some(order) = interrupt_order {
+                            let Some(Ok(Message::Text(text))) = websocket.next().await else {
+                                break;
+                            };
+                            let control: Value = serde_json::from_str(&text).unwrap();
+                            assert_eq!(
+                                control,
+                                json!({"type":"response.interrupt", "mode":"discard_partial_items", "response_id": response_id})
+                            );
+                            let ack = Message::text(json!({"type": "response.interrupt.accepted", "response_id": response_id}).to_string());
+                            match order {
+                                "ack_first" => websocket.send(ack).await.unwrap(),
+                                "no_ack" => {},
+                                "ack_idle" => {},
+                                "foreign_terminal" => websocket.send(ack).await.unwrap(),
+                                "ack_last" => ack_after = Some(ack),
+                                "late_failed_ack" => ack_after = Some(Message::text(json!({"type":"response.interrupt.failed", "response_id":response_id}).to_string())),
+                                "failed_ack" | "early_failed_ack" => {
+                                    websocket.send(Message::text(json!({"type":"response.interrupt.failed", "response_id":response_id}).to_string())).await.unwrap();
+                                }
+                                "wrong_ack" => {
+                                    websocket.send(Message::text(json!({"type":"response.interrupt.accepted", "response_id":"wrong"}).to_string())).await.unwrap();
+                                    continue;
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        let mut terminal = json!({
+                            "type":"response.completed",
+                            "response": {
+                                "id": response_id,
+                                "usage": {
+                                    "input_tokens": 5,
+                                    "input_tokens_details": {"cached_tokens": 1},
+                                    "output_tokens": 2,
+                                    "output_tokens_details": {"reasoning_tokens": 1},
+                                    "total_tokens": 7
+                                }
+                            }
+                        });
+                        if matches!(
+                            interrupt_order,
+                            Some("ack_last" | "late_failed_ack" | "early_failed_ack")
+                        ) {
+                            terminal["type"] = json!("response.incomplete");
+                            terminal["response"]["status"] = json!("incomplete");
+                            terminal["response"]["incomplete_details"] =
+                                json!({"reason":"interrupted"});
+                        }
+                        if interrupt_order == Some("foreign_terminal") {
+                            terminal["response"]["id"] = json!("foreign");
+                        }
                         websocket
-                            .send(Message::Text(
-                                json!({
-                                    "type": "response.completed",
-                                    "response": {
-                                        "id": response_id,
-                                        "usage": {
-                                            "input_tokens": 5,
-                                            "input_tokens_details": {"cached_tokens": 1},
-                                            "output_tokens": 2,
-                                            "output_tokens_details": {"reasoning_tokens": 1},
-                                            "total_tokens": 7
-                                        }
-                                    }
-                                })
-                                .to_string()
-                                .into(),
-                            ))
+                            .send(Message::text(terminal.to_string()))
                             .await
                             .unwrap();
+                        if let Some(ack) = ack_after {
+                            if interrupt_order == Some("ack_last") {
+                                for _ in 0..4 {
+                                    tokio::time::sleep(Duration::from_millis(75)).await;
+                                    websocket.send(Message::text(json!({"type":"responsesapi.websocket_timing", "response_id":response_id}).to_string())).await.unwrap();
+                                }
+                            }
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                            websocket
+                                .send(Message::text(
+                                    json!({"type":"response.metadata", "response_id":response_id, "metadata":{"type":"safety_buffering"}})
+                                        .to_string(),
+                                ))
+                                .await
+                                .unwrap();
+                            websocket.send(ack).await.unwrap();
+                        }
                         last_response_id = (body["client_metadata"]["forget_state"] != true)
                             .then_some(response_id);
                         if body["client_metadata"]["force_residual"] == true {
@@ -1292,6 +1376,344 @@ async fn responses_websocket_forwards_transforms_reuses_connection_and_logs_requ
 }
 
 #[tokio::test]
+async fn responses_websocket_preserves_size_fallback_without_replay() {
+    let upstream = start_mock_upstream().await;
+    let gateway = gateway_harness(&upstream).await;
+    for session in ["size_local", "size_advertised", "size_close"] {
+        let (mut ws, upgrade) = connect_async(websocket_request(
+            gateway.server.address,
+            CLIENT_KEY,
+            session,
+        ))
+        .await
+        .unwrap();
+        assert_eq!(
+            upgrade.headers()["x-codex-websocket-max-message-bytes"],
+            "1048576"
+        );
+        let body = if session == "size_local" {
+            "x".repeat(1_048_577)
+        } else if session == "size_advertised" {
+            let create =
+                json!({"type":"response.create", "model":CLIENT_MODEL, "input":[]}).to_string();
+            assert!(
+                create.len() <= 64,
+                "only the final transformed create exceeds the upstream limit"
+            );
+            create
+        } else {
+            json!({"type":"response.create", "model":CLIENT_MODEL, "input":[], "client_metadata":{"close_size":true}}).to_string()
+        };
+        ws.send(Message::text(body)).await.unwrap();
+        let message = timeout(Duration::from_secs(2), ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let Message::Close(Some(frame)) = message else {
+            panic!("expected immediate close: {message:?}");
+        };
+        assert_eq!(u16::from(frame.code), 1009);
+        assert_eq!(frame.reason.as_str(), "request too large");
+        assert_eq!(
+            upstream.requests().len(),
+            usize::from(session == "size_close")
+        );
+    }
+}
+
+#[tokio::test]
+async fn responses_websocket_interrupt_tracks_terminal_and_correlates_optional_ack() {
+    for order in [
+        "ack_first",
+        "ack_last",
+        "wrong_ack",
+        "failed_ack",
+        "no_ack",
+        "ack_idle",
+        "foreign_terminal",
+        "late_failed_ack",
+        "early_failed_ack",
+        "second_create",
+    ] {
+        let upstream = start_mock_upstream().await;
+        let gateway =
+            gateway_harness_with_records(&upstream, None, Default::default(), |records| {
+                if matches!(order, "ack_idle" | "ack_last") {
+                    records.channels[0].stream_idle_timeout_ms = Some(250);
+                }
+            })
+            .await;
+        let (mut ws, _) =
+            connect_async(websocket_request(gateway.server.address, CLIENT_KEY, order))
+                .await
+                .unwrap();
+        let create = json!({"type":"response.create", "model":CLIENT_MODEL,
+            "input":[{"type":"additional_tools", "id":"at_test", "role":"developer", "tools":[
+                {"type":"function", "name":"lookup", "parameters":{"type":"object"}}
+            ]}, {"type":"message", "role":"developer", "content":[{"type":"input_text", "text":"Be concise."}]}],
+            "reasoning":{"context":"all_turns"}, "parallel_tool_calls":false,
+            "client_metadata":{"interrupt":order, "ws_request_header_x_openai_internal_codex_responses_lite":"true"}
+        });
+        ws.send(Message::text(create.to_string())).await.unwrap();
+        let created = timeout(Duration::from_secs(2), ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let created: Value = serde_json::from_str(created.to_text().unwrap()).unwrap();
+        assert_eq!(created["type"], "response.created");
+        let id = created["response"]["id"].as_str().unwrap();
+        let forwarded = &upstream.requests()[0].body;
+        for field in [
+            "client_metadata",
+            "input",
+            "reasoning",
+            "parallel_tool_calls",
+        ] {
+            assert_eq!(forwarded[field], create[field]);
+        }
+        assert!(forwarded.get("tools").is_none());
+        let control = if order == "second_create" {
+            create
+        } else {
+            json!({"type":"response.interrupt","response_id":id,"mode":"discard_partial_items"})
+        };
+        ws.send(Message::text(control.to_string())).await.unwrap();
+        if matches!(order, "wrong_ack" | "foreign_terminal" | "second_create") {
+            if matches!(order, "foreign_terminal" | "second_create") {
+                let error = timeout(Duration::from_secs(2), ws.next())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+                let error: Value = serde_json::from_str(error.to_text().unwrap()).unwrap();
+                if order == "second_create" {
+                    assert_eq!(error["error"]["code"], "websocket_request_in_progress");
+                } else {
+                    assert_eq!(
+                        error,
+                        json!({"type":"response.interrupt.accepted", "response_id":id})
+                    );
+                }
+            }
+            assert!(matches!(
+                timeout(Duration::from_secs(2), ws.next()).await.unwrap(),
+                Some(Ok(Message::Close(_)))
+            ));
+            if order == "foreign_terminal" {
+                assert!(
+                    gateway.logs.events()[0]
+                        .billing
+                        .as_ref()
+                        .unwrap()
+                        .usage
+                        .is_none()
+                );
+            }
+            let (mut reconnected, _) =
+                connect_async(websocket_request(gateway.server.address, CLIENT_KEY, order))
+                    .await
+                    .unwrap();
+            assert_previous_response_not_found(&response_create(&mut reconnected, Some(id)).await);
+            assert_eq!(upstream.requests().len(), 1);
+            continue;
+        }
+        let expected: &[&str] = if matches!(order, "no_ack" | "ack_idle") {
+            &["response.completed"]
+        } else if order == "late_failed_ack" {
+            &[
+                "response.incomplete",
+                "response.metadata",
+                "response.interrupt.failed",
+            ]
+        } else if order == "early_failed_ack" {
+            &["response.interrupt.failed", "response.incomplete"]
+        } else if order == "failed_ack" {
+            &["response.interrupt.failed", "response.completed"]
+        } else if order == "ack_last" {
+            &[
+                "response.incomplete",
+                "responsesapi.websocket_timing",
+                "responsesapi.websocket_timing",
+                "responsesapi.websocket_timing",
+                "responsesapi.websocket_timing",
+                "response.metadata",
+                "response.interrupt.accepted",
+            ]
+        } else {
+            &["response.interrupt.accepted", "response.completed"]
+        };
+        for kind in expected {
+            let message = timeout(Duration::from_secs(2), ws.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            let event: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+            assert_eq!(event["type"], *kind);
+        }
+        if order == "ack_idle" {
+            assert!(matches!(
+                timeout(Duration::from_secs(2), ws.next()).await.unwrap(),
+                Some(Ok(Message::Close(_)))
+            ));
+            assert_eq!(gateway.logs.events().len(), 1);
+            continue;
+        }
+        assert_eq!(
+            completed_response_id(&response_create(&mut ws, Some(id)).await),
+            "resp-2"
+        );
+        assert_eq!(upstream.handshakes().len(), 1);
+        assert_eq!(gateway.logs.events().len(), 2);
+        assert_eq!(
+            gateway.logs.events()[0].outcome,
+            ai_gateway::domain::RequestLogOutcome::Succeeded
+        );
+        assert_eq!(
+            gateway.logs.events()[0]
+                .billing
+                .as_ref()
+                .unwrap()
+                .usage
+                .as_ref()
+                .unwrap()
+                .output_tokens,
+            2
+        );
+    }
+}
+
+#[tokio::test]
+async fn interrupt_crossing_successful_completion_is_answered_locally_once() {
+    let upstream = start_mock_upstream().await;
+    let gateway = gateway_harness(&upstream).await;
+    let (mut ws, _) = connect_async(websocket_request(
+        gateway.server.address,
+        CLIENT_KEY,
+        "crossing",
+    ))
+    .await
+    .unwrap();
+    ws.send(Message::text(
+        json!({"type":"response.create", "model":CLIENT_MODEL,"input":[]}).to_string(),
+    ))
+    .await
+    .unwrap();
+    let next = ws.next().await.unwrap().unwrap();
+    let created: Value = serde_json::from_str(next.to_text().unwrap()).unwrap();
+    assert_eq!(created["type"], "response.created");
+    let id = created["response"]["id"].as_str().unwrap();
+    timeout(Duration::from_secs(2), async {
+        while gateway.logs.events().is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    ws.send(Message::text(
+        json!({"type":"response.interrupt", "response_id":id, "mode":"discard_partial_items"})
+            .to_string(),
+    ))
+    .await
+    .unwrap();
+    for kind in ["response.completed", "response.interrupt.failed"] {
+        let frame = timeout(Duration::from_secs(2), ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let event: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+        assert_eq!(event["type"], kind);
+        if kind == "response.interrupt.failed" {
+            assert_eq!(event["response_id"], id);
+        }
+    }
+    assert_eq!(upstream.requests().len(), 1);
+    assert_eq!(gateway.logs.events().len(), 1);
+    assert_eq!(
+        completed_response_id(&response_create(&mut ws, Some(id)).await),
+        "resp-2"
+    );
+    assert_eq!(upstream.handshakes().len(), 1);
+}
+
+#[tokio::test]
+async fn completed_drains_release_concurrency_and_do_not_need_an_ack_for_exact_continuation() {
+    let upstream = start_mock_upstream().await;
+    let gateway = gateway_harness_with_records(&upstream, None, Default::default(), |records| {
+        records.api_keys[0].max_concurrent_requests = Some(1);
+        records.channels[0].stream_idle_timeout_ms = Some(250);
+    })
+    .await;
+    let (mut ws, _) = connect_async(websocket_request(
+        gateway.server.address,
+        CLIENT_KEY,
+        "drain",
+    ))
+    .await
+    .unwrap();
+    let (mut other, _) = connect_async(websocket_request(
+        gateway.server.address,
+        CLIENT_KEY,
+        "other",
+    ))
+    .await
+    .unwrap();
+    let mut previous = None;
+    for round in 0..2 {
+        let mut create = json!({"type":"response.create","model":CLIENT_MODEL,"input":[],"client_metadata":{"interrupt":"no_ack"}});
+        if let Some(id) = previous {
+            create["previous_response_id"] = id;
+        }
+        ws.send(Message::text(create.to_string())).await.unwrap();
+        let created = timeout(Duration::from_secs(2), ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let created: Value = serde_json::from_str(created.to_text().unwrap()).unwrap();
+        assert_eq!(created["type"], "response.created");
+        let id = created["response"]["id"].clone();
+        ws.send(Message::text(
+            json!({"type":"response.interrupt", "mode":"discard_partial_items", "response_id":id})
+                .to_string(),
+        ))
+        .await
+        .unwrap();
+        let terminal = timeout(Duration::from_secs(2), ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let terminal: Value = serde_json::from_str(terminal.to_text().unwrap()).unwrap();
+        assert_eq!(terminal["type"], "response.completed");
+        assert_eq!(terminal["response"]["id"], id);
+        previous = Some(id);
+        if round == 0 {
+            assert_eq!(
+                completed_response_id(&response_create(&mut other, None).await),
+                "resp-2"
+            );
+        }
+    }
+    let mut create = json!({"type":"response.create", "model":CLIENT_MODEL,"input":[], "previous_response_id":previous, "client_metadata":{"delayed_ack":"resp-1"}});
+    let events = send_websocket_body(&mut ws, create.clone()).await;
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0]["type"], "response.created");
+    assert_eq!(completed_response_id(&events), "resp-4");
+    create["previous_response_id"] = json!("resp-4");
+    create["client_metadata"] = json!({"delayed_ack":"resp-3", "close_size":true});
+    ws.send(Message::text(create.to_string())).await.unwrap();
+    assert!(
+        matches!(timeout(Duration::from_secs(2), ws.next()).await.unwrap(), Some(Ok(Message::Close(Some(frame)))) if u16::from(frame.code) == 1009)
+    );
+    assert_eq!(upstream.handshakes().len(), 2);
+    assert_eq!(gateway.logs.events().len(), 5);
+}
+
+#[tokio::test]
 async fn responses_websocket_reports_missing_state_without_dispatching_incremental_input() {
     let upstream = start_mock_upstream().await;
     let gateway = gateway_harness_with_controls(
@@ -1655,12 +2077,17 @@ async fn responses_websocket_wraps_upstream_upgrade_rejection_for_http_fallback(
 #[tokio::test]
 async fn responses_websocket_filters_fast_mode_before_forwarding_logging_and_billing() {
     let upstream = start_mock_upstream().await;
-    let gateway = gateway_harness_with_controls(
+    let gateway = gateway_harness_with_records(
         &upstream,
         None,
         WebSocketControls {
             filter_fast_mode: true,
             ..WebSocketControls::default()
+        },
+        |records| {
+            records.channels[0].override_document["request_json"] = json!([
+                {"op":"add","path":"/service_tier","value":"priority"}
+            ]);
         },
     )
     .await;

@@ -1838,6 +1838,11 @@ async fn user_group_fast_filter_removes_service_tier_from_forwarding_logs_and_bi
         },
         TransformDocuments {
             filter_fast_mode: true,
+            responses_search_supported: false,
+            responses_override: serde_json::json!({
+                "version":1,"api_format":"open_ai_responses",
+                "request_json":[{"op":"add","path":"/service_tier","value":"priority"}]
+            }),
             ..Default::default()
         },
         OutboundTestPolicy::default(),
@@ -2102,7 +2107,10 @@ async fn standalone_web_search_forwards_alias_headers_opaque_results_and_logs_op
         "model": "search-alias",
         "reasoning": {"effort": "medium"},
         "input": "Find the current source.",
-        "commands": {"search_query": [{"q": "example"}]},
+        "commands": {
+            "search_query": [{"q": "example"}],
+            "literature_search_query": [{"q": "plasma biomarkers", "recency": 30, "domains": ["pubmed.ncbi.nlm.nih.gov"]}]
+        },
         "settings": {"external_web_access": true},
         "max_output_tokens": 300
     });
@@ -2400,10 +2408,10 @@ async fn range_requests_force_identity_content_coding_upstream() {
 
 #[tokio::test]
 async fn images_generation_preserves_json_and_collects_top_level_usage() {
-    let upstream_body = br#"{"created":1,"data":[{"b64_json":"aW1hZ2U="}],"usage":{"input_tokens":7,"output_tokens":11,"input_tokens_details":{"image_tokens":0,"text_tokens":7},"output_tokens_details":{"image_tokens":11,"text_tokens":0}}}"#.to_vec();
+    let upstream_body = br#"{"created":1,"data":[{"b64_json":"aW1hZ2U=","generation_id":"gen-abc"}],"usage":{"input_tokens":7,"output_tokens":11,"input_tokens_details":{"image_tokens":0,"text_tokens":7},"output_tokens_details":{"image_tokens":11,"text_tokens":0}}}"#.to_vec();
     let harness = harness(StatusCode::OK, upstream_body.clone()).await;
     let request_body =
-        br#"{ "model" : "gpt-image-2", "prompt":"draw a blue whale", "size":"auto" }"#.to_vec();
+        br#"{ "model" : "gpt-image-2", "prompt":"draw a blue whale", "size":"auto", "output_format":"gif", "frame_count":2, "frame_duration_ms":20 }"#.to_vec();
 
     let response = authorized_post(
         &client(),
@@ -2901,7 +2909,13 @@ async fn images_edit_preserves_multipart_spools_large_input_and_collects_usage()
     let request_body = multipart_edit_body(
         boundary,
         "gpt-image-2",
-        &[("prompt", "add a red hat"), ("quality", "high")],
+        &[
+            ("prompt", "add a red hat"),
+            ("quality", "high"),
+            ("output_format", "gif"),
+            ("frame_count", "16"),
+            ("frame_duration_ms", "2000"),
+        ],
         &image,
     );
 
@@ -3616,6 +3630,109 @@ async fn plugin_json_response_rejects_oversized_upstream_without_raw_fallback() 
         harness.logs()[0].error_code.as_deref(),
         Some("response_transform_failed")
     );
+}
+
+#[tokio::test]
+async fn responses_sse_eof_before_terminal_fails_without_changing_the_body() {
+    const DELTA: &str = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n";
+    for (body, expected) in [
+        (Body::empty(), ""),
+        (Body::from(DELTA), DELTA),
+        (
+            Body::from_stream(futures_util::stream::iter([Ok::<_, std::io::Error>(DELTA)])),
+            DELTA,
+        ),
+    ] {
+        let event = assert_responses_sse_passthrough(body, expected).await;
+        assert_eq!(event.outcome.as_str(), "failed");
+        assert_eq!(event.error_code.as_deref(), Some("upstream_body_error"));
+    }
+}
+
+#[tokio::test]
+async fn responses_sse_terminal_after_oversized_delta_preserves_bytes_and_usage() {
+    let expected = format!(
+        "data: {{\"type\":\"response.output_text.delta\",\"delta\":\"{}\"}}\r\n\r\ndata: {{\"type\":\"response.completed\",\"response\":{{\"id\":\"r\",\"usage\":{{\"input_tokens\":6,\"output_tokens\":2,\"total_tokens\":8}}}}}}\r\n\r\n",
+        "x".repeat(8 * 1024 * 1024)
+    );
+    let event = assert_responses_sse_passthrough(Body::from(expected.clone()), &expected).await;
+    assert_eq!(event.outcome.as_str(), "succeeded");
+    let usage = event.billing.unwrap().usage.unwrap();
+    assert_eq!((usage.input_tokens, usage.output_tokens), (6, 2));
+}
+
+#[tokio::test]
+async fn oversized_responses_terminal_preserves_output_and_meters_its_own_usage() {
+    let response = serde_json::json!({
+        "id":"r", "output":[{"type":"message","content":[{"type":"output_text","text":"x".repeat(8 * 1024 * 1024)}]}],
+        "usage":{"input_tokens":6,"output_tokens":2,"total_tokens":8}
+    });
+    for frame in [
+        format!(
+            "data: {{\"type\":\"response.completed\",\r\ndata: \"response\":{response}}}\r\n\r\n"
+        ),
+        format!(
+            "data: {{\"response\":{response},\r\ndata: \"type\":\"response.completed\"}}\r\n\r\n"
+        ),
+    ] {
+        let event = assert_responses_sse_passthrough(Body::from(frame.clone()), &frame).await;
+        assert_eq!(event.outcome.as_str(), "succeeded");
+        let usage = event.billing.unwrap().usage.unwrap();
+        assert_eq!((usage.input_tokens, usage.output_tokens), (6, 2));
+    }
+    let truncated = format!("data: {{\"type\":\"response.completed\",\"response\":{response}");
+    let event = assert_responses_sse_passthrough(Body::from(truncated.clone()), &truncated).await;
+    assert_eq!(event.error_code.as_deref(), Some("upstream_body_error"));
+    assert!(event.billing.unwrap().usage.is_none());
+}
+
+async fn assert_responses_sse_passthrough(
+    body: Body,
+    expected: &str,
+) -> ai_gateway::domain::RequestLogEvent {
+    let upstream = start_server(Router::new().route(
+        "/v1/responses",
+        post({
+            let body = Arc::new(Mutex::new(Some(body)));
+            move || {
+                let body = body.lock().unwrap().take().unwrap();
+                async move {
+                    Response::builder()
+                        .header("content-type", "text/event-stream")
+                        .body(body)
+                        .unwrap()
+                }
+            }
+        }),
+    ))
+    .await;
+    let logs = RecordingRequestLogSink::default();
+    let configured = proxy_service_with_policy(
+        &format!("http://{}", upstream.address),
+        logs.clone(),
+        None,
+        None,
+        None,
+        Default::default(),
+    );
+    let gateway = start_server(http::router(configured.proxy)).await;
+    let response = authorized_post(
+        &client(),
+        format!("http://{}/v1/responses", gateway.address),
+        CLIENT_KEY,
+        br#"{"model":"responses-model","stream":true}"#.to_vec(),
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response.bytes().await.unwrap().as_ref() == expected.as_bytes(),
+        "SSE passthrough changed the response body"
+    );
+    let mut events = logs.events();
+    assert_eq!(events.len(), 1);
+    events.pop().unwrap()
 }
 
 #[tokio::test]

@@ -97,8 +97,8 @@ Models 的 client_version 会影响返回目录，不能误用网关软件版本
 | HTTP Responses | Responses wire format，流式，`stream=true`、`store=false`；不以 HTTP previous_response_id 恢复连接增量 |
 | WS Responses | `response.create`，可用 previous_response_id、generate、client_metadata |
 | Search | id/model，及可选 reasoning/input/commands/settings/max_output_tokens；非流式 JSON |
-| Images generation | 核对工具使用 gpt-image-2；prompt/background/model，及可选 n/quality/size |
-| Images edit | JSON `images[].image_url` data URL，不是公共 multipart |
+| Images generation | 核对工具使用 gpt-image-2；支持可选 GIF 输出及同层帧控制，见 [Images](openai-images.md#codex-插件) |
+| Images edit | 原生 JSON `images[]` 引用支持 `image_url` 或 `file_id`；网关只从公共 multipart 生成 data URL，不接受客户端 JSON 引用 |
 
 核对的 ResponsesApiRequest 不声明 `max_output_tokens`；这不是 OpenAI Responses 全局禁令。
 Search 响应 output 为最终文本，encrypted_output/results 是可选 opaque 数据。
@@ -171,7 +171,8 @@ WS 使用下游握手身份的稳定 seed。缺失 x-client-request-id 可使用
 插件将 flat/client_metadata 和 turn metadata 的 installation ID 替换为凭证稳定 opaque UUID，
 workspaces 替换为插件设置的合成 Git 工作区。客户端本地路径、remote、commit、dirty 状态和
 原始安装指纹不能直接发给订阅后端。不可解析 turn metadata 安全替换，其他允许 metadata 保留。
-插件不凭空生成 beta、routing-hint、turn-state、attestation 或 sandbox 声明。
+Responses 的 routing hint 仅从最终上游模型和有效 `service_tier` 生成，不使用客户端 Header。
+插件不凭空生成 beta、turn-state、attestation 或 sandbox 声明。
 
 Search body id 表示其 Codex Session。可分别从 Responses prompt_cache_key 和 Search id
 提取各操作的粘性键，但缓存还包含操作规则 ID：即使键值相同，也不会共享凭证绑定。

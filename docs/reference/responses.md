@@ -60,7 +60,9 @@ Response 在途。`previous_response_id` 的增量缓存属于具体连接，断
   JSON patch，但没有 SSE 文本 envelope。显式响应适配仍限定同格式。
 - 内置 Responses usage 支持 `input_tokens`、`output_tokens`、缓存命中/写入和 reasoning
   细分；插件供应商解析见[usage 规范化](../development/usage-normalization.md)。
-- `response.completed` / `response.failed` 可在 EOF 前确定日志终态。
+- `response.completed` / `response.failed` 可在 EOF 前确定日志终态。2xx SSE 在没有终态时结束，仍按上游响应体错误记日志，不向流中补写成功或失败事件。
+- Codex 流的无状态码 `error` 按错误码区分：例如额度耗尽或过载可结束本轮，未知通知和 `response.cancelled` 仍转发，但不终结请求，也不提供计费用量。
+  `response.incomplete` 的原因是 `interrupted` 时与 `response.completed` 一样检查完成对象：`id` 必须是字符串，若提供 usage、usage metadata 或 `end_turn`，其结构也必须有效。其他 incomplete 原因不记为成功。客户端的重试建议不授权网关重放请求。
 
 ### WebSocket 状态与复用
 

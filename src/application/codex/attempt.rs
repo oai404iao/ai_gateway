@@ -1,9 +1,9 @@
 //! Credential-bound host context for externally implemented Codex attempts.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use ai_gateway_connector_host::{Plugin, PluginError};
-use axum::http::{HeaderMap, Uri};
+use axum::http::{HeaderMap, HeaderValue, Uri};
 use bytes::Bytes;
 use reqwest::Url;
 use serde_json::{Value, json};
@@ -19,6 +19,7 @@ pub(crate) struct PreparedCodexAttempt {
     plugin: Arc<Plugin>,
     operation: ApiOperation,
     request_context: Value,
+    routing_hint: OnceLock<Option<HeaderValue>>,
     preserves_affinity_on_failure: bool,
     successful_response_is_sse: bool,
     changes_request_body: bool,
@@ -64,6 +65,7 @@ impl PreparedCodexAttempt {
             plugin,
             operation,
             request_context,
+            routing_hint: OnceLock::new(),
             preserves_affinity_on_failure: capabilities.preserves_affinity_on_failure,
             successful_response_is_sse: capabilities.successful_response_is_sse,
             changes_request_body: capabilities.changes_request_body,
@@ -111,6 +113,18 @@ impl PreparedCodexAttempt {
             .map_err(|_| CodexAttemptError::InvalidTarget)
     }
 
+    pub(crate) fn bind_response_routing(&self, body: &Value) -> Result<(), CodexAttemptError> {
+        if matches!(
+            self.operation,
+            ApiOperation::Responses | ApiOperation::ResponsesWebSocket
+        ) {
+            self.routing_hint
+                .set(response_routing_hint(body))
+                .map_err(|_| CodexAttemptError::InvalidRequestBody)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn inject_headers(
         &self,
         headers: &mut HeaderMap,
@@ -132,6 +146,11 @@ impl PreparedCodexAttempt {
             self.credential.is_fedramp(),
         ) {
             return Err(CodexAttemptError::InvalidCredentials);
+        }
+        // The hint must describe the validated body, never a caller, transform, or plugin header.
+        updated.remove("x-codex-routing-hint");
+        if let Some(Some(hint)) = self.routing_hint.get() {
+            updated.insert("x-codex-routing-hint", hint.clone());
         }
         *headers = updated;
         Ok(())
@@ -162,6 +181,20 @@ impl PreparedCodexAttempt {
     }
 }
 
+fn response_routing_hint(body: &Value) -> Option<HeaderValue> {
+    let component = |s: &&str| {
+        !s.is_empty()
+            && s.bytes()
+                .all(|b| b.is_ascii_graphic() && !matches!(b, b';' | b'='))
+    };
+    let model = body["model"].as_str().filter(component)?;
+    let hint = match &body["service_tier"] {
+        Value::Null => format!("model={model}"),
+        tier => format!("model={model};tier={}", tier.as_str().filter(component)?),
+    };
+    HeaderValue::from_str(&hint).ok()
+}
+
 fn plugin_error(error: PluginError) -> CodexAttemptError {
     match error.code() {
         Some("streaming_required") => CodexAttemptError::StreamingRequired,
@@ -187,5 +220,31 @@ fn plugin_error(error: PluginError) -> CodexAttemptError {
             param: "headers",
         },
         _ => CodexAttemptError::InvalidTarget,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hint_uses_only_unambiguous_wire_model_and_tier() {
+        for (body, expected) in [
+            (json!({"model":"wire"}), Some("model=wire")),
+            (
+                json!({"model":"wire","service_tier":"priority"}),
+                Some("model=wire;tier=priority"),
+            ),
+            (json!({"model":"wire;tier=priority"}), None),
+            (json!({"model":"wire","service_tier":"x\r\ny"}), None),
+            (json!({"model":"wire","service_tier":123}), None),
+        ] {
+            assert_eq!(
+                response_routing_hint(&body)
+                    .as_ref()
+                    .and_then(|h| h.to_str().ok()),
+                expected
+            );
+        }
     }
 }

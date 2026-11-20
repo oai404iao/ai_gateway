@@ -1,10 +1,10 @@
 {
   "version": 4,
-  "verified_at": "2026-09-08",
+  "verified_at": "2026-11-20",
   "sources": {
     "openai_node_commit": "854892a0580980449ce1ed04aa5e3831d3330383",
-    "codex_commit": "fde2156057c38c0227ce94c8514d04c7498df60d",
-    "codex_standalone_commit": "d6489472f3c15e87d2d7763a5fde033545c530f8"
+    "codex_commit": "a0a30c40e8dbcc44af52e2df64dcce64368d4422",
+    "codex_standalone_commit": "a0a30c40e8dbcc44af52e2df64dcce64368d4422"
   },
   "client_headers": {
     "unknown": "ignore",
@@ -39,7 +39,6 @@
       "x-client-request-id",
       "x-codex-beta-features",
       "x-codex-image-turn-id",
-      "x-codex-routing-hint",
       "x-codex-turn-metadata",
       "x-codex-turn-state",
       "x-codex-window-id",
@@ -157,7 +156,10 @@
           "truncation",
           "user"
         ],
-        "ignore": {},
+        "ignore": {
+          "access_programs": {},
+          "request_country": {}
+        },
         "reject": []
       }
     },
@@ -200,7 +202,10 @@
           "type",
           "user"
         ],
-        "ignore": {},
+        "ignore": {
+          "access_programs": {},
+          "request_country": {}
+        },
         "reject": []
       }
     },
@@ -225,6 +230,8 @@
         "unknown": "reject",
         "allow": [
           "background",
+          "frame_count",
+          "frame_duration_ms",
           "model",
           "moderation",
           "n",
@@ -248,6 +255,8 @@
         "unknown": "reject",
         "allow": [
           "background",
+          "frame_count",
+          "frame_duration_ms",
           "image",
           "image[]",
           "input_fidelity",

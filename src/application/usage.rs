@@ -18,7 +18,10 @@ use axum::body::Bytes;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::domain::{ApiFormat, ApiOperation};
+use crate::domain::{ApiFormat, ApiOperation, ConnectorKind};
+
+mod oversized_sse;
+use oversized_sse::ResponsesProjection;
 
 const MAX_USAGE_OBJECT_BYTES: usize = 64 * 1_024;
 const MAX_SSE_FRAME_BYTES: usize = 8 * 1_024 * 1_024;
@@ -224,6 +227,7 @@ impl AnthropicUsageSnapshot {
 
 pub struct UsageCollector {
     api_format: ApiFormat,
+    codex_responses: bool,
     parser: UsageParserConfig,
     partial: AnthropicUsageSnapshot,
     mode: CollectorMode,
@@ -246,6 +250,10 @@ pub(crate) enum SseTerminalOutcome {
     Completed,
     Failed,
 }
+
+pub(crate) const WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE: &str =
+    "websocket_connection_limit_reached";
+pub(crate) const PREVIOUS_RESPONSE_NOT_FOUND_CODE: &str = "previous_response_not_found";
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ResponseErrorDetails {
@@ -270,6 +278,16 @@ impl ResponseErrorDetails {
 }
 
 impl UsageCollector {
+    pub(crate) fn for_route(operation: ApiOperation, connector: ConnectorKind) -> Self {
+        let mut collector = Self::new(operation.api_format(), false);
+        collector.codex_responses = connector == ConnectorKind::CodexOauth
+            && matches!(
+                operation,
+                ApiOperation::Responses | ApiOperation::ResponsesWebSocket
+            );
+        collector
+    }
+
     #[must_use]
     pub fn new(api_format: ApiFormat, sse: bool) -> Self {
         Self::with_parser(
@@ -282,6 +300,7 @@ impl UsageCollector {
     pub(crate) fn with_parser(api_format: ApiFormat, sse: bool, parser: UsageParserConfig) -> Self {
         Self {
             api_format,
+            codex_responses: false,
             parser,
             partial: AnthropicUsageSnapshot::default(),
             mode: if sse {
@@ -299,11 +318,18 @@ impl UsageCollector {
     }
 
     pub(crate) fn reset(&mut self, sse: bool) {
+        let codex_responses = self.codex_responses;
         *self = Self::with_parser(self.api_format, sse, self.parser.clone());
+        self.codex_responses = codex_responses;
     }
 
     pub(crate) fn set_parser(&mut self, parser: UsageParserConfig) {
-        *self = Self::with_parser(self.api_format, false, parser);
+        self.parser = parser;
+        self.reset(false);
+    }
+
+    pub(crate) fn is_sse(&self) -> bool {
+        matches!(self.mode, CollectorMode::Sse(_))
     }
 
     /// Retains a bounded prefix of an ordinary response body for diagnostics.
@@ -323,17 +349,28 @@ impl UsageCollector {
         if let Some(error_body) = &mut self.error_body {
             error_body.push(bytes);
         }
-        let api_format = self.api_format;
-        let usage_objects = matches!(self.mode, CollectorMode::Json(_));
-        let (values, terminal_outcome, error) = match &mut self.mode {
-            CollectorMode::Json(scanner) => (scanner.push(bytes), None, None),
-            CollectorMode::Sse(scanner) => scanner.push(bytes, api_format),
-        };
-        if self.sse_terminal_outcome.is_none() {
-            self.sse_terminal_outcome = terminal_outcome;
-            self.response_error = error;
+        if let CollectorMode::Json(scanner) = &mut self.mode {
+            let values = scanner.push(bytes);
+            self.record(values, true, false);
+            return;
         }
-        self.record(values, usage_objects, terminal_outcome.is_some());
+        for part in bytes.split_inclusive(|byte| matches!(byte, b'\r' | b'\n')) {
+            let CollectorMode::Sse(scanner) = &mut self.mode else {
+                unreachable!()
+            };
+            if let Some(observation) =
+                scanner.push_line_part(part, self.api_format, self.codex_responses)
+            {
+                self.response_error = observation.error;
+                self.sse_terminal_outcome = observation.terminal_outcome;
+                if let Some(value) = observation.value {
+                    self.record_value(&value, false, self.sse_terminal_outcome.is_some());
+                }
+                if self.sse_terminal_outcome.is_some() {
+                    break;
+                }
+            }
+        }
     }
 
     /// Observes one complete Responses WebSocket event JSON object.
@@ -341,7 +378,11 @@ impl UsageCollector {
     /// WebSocket messages already provide event boundaries, so this path avoids
     /// synthesizing an SSE envelope while preserving the same bounded usage and
     /// structured-error extraction semantics.
-    pub fn observe_websocket_event(&mut self, bytes: &Bytes) -> Option<SseTerminalOutcome> {
+    pub fn observe_websocket_event(
+        &mut self,
+        bytes: &Bytes,
+        matching_interrupt: bool,
+    ) -> Option<SseTerminalOutcome> {
         if self.sse_terminal_outcome.is_some() {
             return None;
         }
@@ -354,22 +395,31 @@ impl UsageCollector {
         let Ok(probe) = serde_json::from_slice::<EventTypeProbe<'_>>(bytes) else {
             return None;
         };
-        let terminal_outcome = match probe.kind {
-            Some("response.completed") => Some(SseTerminalOutcome::Completed),
-            Some("error" | "response.failed" | "response.incomplete" | "response.cancelled") => {
-                Some(SseTerminalOutcome::Failed)
-            }
-            _ => None,
-        }?;
+        let kind = probe.kind?;
+        if !matches!(
+            kind,
+            "response.completed"
+                | "response.failed"
+                | "response.incomplete"
+                | "response.cancelled"
+                | "error"
+        ) {
+            return None;
+        }
         let Ok(value) = serde_json::from_slice::<Value>(bytes) else {
             return None;
         };
-        if self.sse_terminal_outcome.is_none() {
-            self.sse_terminal_outcome = Some(terminal_outcome);
-            self.response_error = (terminal_outcome == SseTerminalOutcome::Failed)
-                .then(|| extract_response_error(Some(&value)));
+        let observation = observe_responses_json(
+            value,
+            self.codex_responses,
+            EventTransport::WebSocket { matching_interrupt },
+        );
+        let terminal_outcome = observation.terminal_outcome?;
+        self.sse_terminal_outcome = Some(terminal_outcome);
+        self.response_error = observation.error;
+        if let Some(value) = observation.value {
+            self.record_value(&value, false, true);
         }
-        self.record(vec![value], false, true);
         Some(terminal_outcome)
     }
 
@@ -384,7 +434,7 @@ impl UsageCollector {
         let usage_objects = matches!(self.mode, CollectorMode::Json(_));
         let (values, terminal_outcome, error) = match &mut self.mode {
             CollectorMode::Json(scanner) => (scanner.finalize(), None, None),
-            CollectorMode::Sse(scanner) => scanner.finalize(api_format),
+            CollectorMode::Sse(scanner) => scanner.finalize(api_format, self.codex_responses),
         };
         if self.sse_terminal_outcome.is_none() {
             self.sse_terminal_outcome = terminal_outcome;
@@ -396,22 +446,26 @@ impl UsageCollector {
     fn record(&mut self, values: Vec<Value>, usage_objects: bool, terminal: bool) {
         let last = values.len().saturating_sub(1);
         for (index, value) in values.into_iter().enumerate() {
-            let Some(source) = (if usage_objects {
-                Some(&value)
-            } else {
-                usage_object(&value)
-            }) else {
-                continue;
-            };
-            let usage = self.parser.parse(source, &mut self.partial);
-            if is_terminal_usage_event(self.api_format, &value) || (terminal && index == last) {
-                self.terminal_usage_seen = true;
-                self.terminal = usage;
-            } else if usage.is_none() {
-                self.terminal = None;
-            }
-            self.latest = usage;
+            self.record_value(&value, usage_objects, terminal && index == last);
         }
+    }
+
+    fn record_value(&mut self, value: &Value, usage_objects: bool, terminal: bool) {
+        let Some(source) = (if usage_objects {
+            Some(value)
+        } else {
+            usage_object(value)
+        }) else {
+            return;
+        };
+        let usage = self.parser.parse(source, &mut self.partial);
+        if is_terminal_usage_event(self.api_format, value) || terminal {
+            self.terminal_usage_seen = true;
+            self.terminal = usage;
+        } else if usage.is_none() {
+            self.terminal = None;
+        }
+        self.latest = usage;
     }
 
     #[must_use]
@@ -666,59 +720,87 @@ impl JsonObjectCapture {
 #[derive(Default)]
 struct SseUsageScanner {
     bytes: Vec<u8>,
-    disabled: bool,
+    oversized: bool,
+    projection: Option<Box<ResponsesProjection>>,
+    line_has_data: bool,
+    after_cr: bool,
 }
 
 impl SseUsageScanner {
-    fn push(
+    fn push_line_part(
         &mut self,
-        bytes: &Bytes,
+        part: &[u8],
         api_format: ApiFormat,
-    ) -> (
-        Vec<Value>,
-        Option<SseTerminalOutcome>,
-        Option<ResponseErrorDetails>,
-    ) {
-        if self.disabled {
-            return (Vec::new(), None, None);
+        codex_responses: bool,
+    ) -> Option<SseFrameObservation> {
+        // A split CRLF is one line ending, including while skipping an oversized frame.
+        if std::mem::take(&mut self.after_cr) && part == b"\n" {
+            return None;
         }
-        if self.bytes.len().saturating_add(bytes.len()) > MAX_SSE_FRAME_BYTES {
+        self.after_cr = part.ends_with(b"\r");
+        let line_ended = self.after_cr || part.ends_with(b"\n");
+        self.line_has_data |= part.len() > usize::from(line_ended);
+        let mut observation = None;
+        if !self.oversized {
+            if self.bytes.len().saturating_add(part.len()) <= MAX_SSE_FRAME_BYTES {
+                self.bytes.extend_from_slice(part);
+            } else {
+                if api_format == ApiFormat::OpenAiResponses {
+                    let mut projection = Box::<ResponsesProjection>::default();
+                    for buffered in self
+                        .bytes
+                        .split_inclusive(|byte| matches!(byte, b'\r' | b'\n'))
+                    {
+                        projection.push_line_part(buffered);
+                    }
+                    self.projection = Some(projection);
+                }
+                self.bytes.clear();
+                self.oversized = true;
+                observation = Some(SseFrameObservation {
+                    value: Some(serde_json::json!({"usage":null})),
+                    ..Default::default()
+                });
+            }
+        }
+        if let Some(projection) = &mut self.projection {
+            projection.push_line_part(part);
+        }
+        if line_ended && !std::mem::take(&mut self.line_has_data) {
+            if !std::mem::take(&mut self.oversized) {
+                observation = Some(observe_sse_frame(&self.bytes, api_format, codex_responses));
+            } else if let Some(projected) = self
+                .projection
+                .take()
+                .and_then(|p| p.finish(codex_responses))
+            {
+                observation = Some(projected);
+            }
             self.bytes.clear();
-            self.disabled = true;
-            return (vec![serde_json::json!({"usage":null})], None, None);
         }
-        self.bytes.extend_from_slice(bytes);
-        let mut values = Vec::new();
-        let mut terminal_outcome = None;
-        let mut error = None;
-        while let Some(end) = sse_frame_end(&self.bytes) {
-            let frame = self.bytes.drain(..end).collect::<Vec<_>>();
-            let observation = observe_sse_frame(&frame, api_format);
-            if let Some(value) = observation.value {
-                values.push(value);
-            }
-            if observation.terminal_outcome.is_some() {
-                terminal_outcome = observation.terminal_outcome;
-                error = observation.error;
-                break;
-            }
-        }
-        (values, terminal_outcome, error)
+        observation
     }
 
     fn finalize(
         &mut self,
         api_format: ApiFormat,
+        codex_responses: bool,
     ) -> (
         Vec<Value>,
         Option<SseTerminalOutcome>,
         Option<ResponseErrorDetails>,
     ) {
-        if self.disabled {
-            return (Vec::new(), None, None);
-        }
-        let frame = std::mem::take(&mut self.bytes);
-        let observation = observe_sse_frame(&frame, api_format);
+        self.line_has_data = false;
+        self.after_cr = false;
+        let observation = if std::mem::take(&mut self.oversized) {
+            self.projection
+                .take()
+                .and_then(|p| p.finish(codex_responses))
+                .unwrap_or_default()
+        } else {
+            let frame = std::mem::take(&mut self.bytes);
+            observe_sse_frame(&frame, api_format, codex_responses)
+        };
         (
             observation.value.into_iter().collect(),
             observation.terminal_outcome,
@@ -727,34 +809,18 @@ impl SseUsageScanner {
     }
 }
 
-fn sse_frame_end(bytes: &[u8]) -> Option<usize> {
-    let mut line_start = 0;
-    let mut index = 0;
-    while index < bytes.len() {
-        let line_end = match bytes[index] {
-            b'\r' if bytes.get(index + 1) == Some(&b'\n') => index + 2,
-            b'\r' | b'\n' => index + 1,
-            _ => {
-                index += 1;
-                continue;
-            }
-        };
-        if index == line_start {
-            return Some(line_end);
-        }
-        line_start = line_end;
-        index = line_end;
-    }
-    None
-}
-
+#[derive(Default)]
 struct SseFrameObservation {
     value: Option<Value>,
     terminal_outcome: Option<SseTerminalOutcome>,
     error: Option<ResponseErrorDetails>,
 }
 
-fn observe_sse_frame(frame: &[u8], api_format: ApiFormat) -> SseFrameObservation {
+fn observe_sse_frame(
+    frame: &[u8],
+    api_format: ApiFormat,
+    codex_responses: bool,
+) -> SseFrameObservation {
     let mut event = None;
     let mut data = Vec::new();
     let mut has_data = false;
@@ -781,6 +847,21 @@ fn observe_sse_frame(frame: &[u8], api_format: ApiFormat) -> SseFrameObservation
     let value: Option<Value> = has_data
         .then(|| serde_json::from_slice(&data).ok())
         .flatten();
+    observe_sse_payload(value, event, &data, api_format, codex_responses)
+}
+
+fn observe_sse_payload(
+    value: Option<Value>,
+    event: Option<&[u8]>,
+    data: &[u8],
+    api_format: ApiFormat,
+    codex_responses: bool,
+) -> SseFrameObservation {
+    if codex_responses {
+        return value
+            .map(|value| observe_responses_json(value, true, EventTransport::Sse))
+            .unwrap_or_default();
+    }
     let event_type = value
         .as_ref()
         .and_then(|value| value.get("type"))
@@ -789,36 +870,36 @@ fn observe_sse_frame(frame: &[u8], api_format: ApiFormat) -> SseFrameObservation
         .as_ref()
         .and_then(|value| value.get("error"))
         .is_some_and(|error| !error.is_null());
-    let failed = event == Some(b"error".as_slice())
+    let event_name = event.and_then(|name| std::str::from_utf8(name).ok());
+    let terminal_outcome = if error_envelope
+        || event_name == Some("error")
         || event_type == Some("error")
-        || error_envelope
-        || (api_format == ApiFormat::OpenAiResponses
-            && (matches!(
-                event,
-                Some(b"response.failed" | b"response.incomplete" | b"response.cancelled")
-            ) || matches!(
-                event_type,
-                Some("response.failed" | "response.incomplete" | "response.cancelled")
-            )));
-    let completed = data.as_slice() == b"[DONE]"
-        || (api_format == ApiFormat::OpenAiResponses
-            && (event == Some(b"response.completed".as_slice())
-                || event_type == Some("response.completed")));
-    let terminal_outcome = if failed {
+    {
         Some(SseTerminalOutcome::Failed)
-    } else if completed {
+    } else if api_format == ApiFormat::OpenAiResponses {
+        let terminals = [event_type, event_name].map(|name| {
+            name.and_then(|kind| responses_terminal(kind, &Value::Null, false, EventTransport::Sse))
+        });
+        if terminals.contains(&Some(SseTerminalOutcome::Failed)) {
+            Some(SseTerminalOutcome::Failed)
+        } else if data == b"[DONE]" || terminals.contains(&Some(SseTerminalOutcome::Completed)) {
+            Some(SseTerminalOutcome::Completed)
+        } else {
+            None
+        }
+    } else if data == b"[DONE]" {
         Some(SseTerminalOutcome::Completed)
     } else {
         None
     };
-    let error = failed.then(|| {
+    let error = (terminal_outcome == Some(SseTerminalOutcome::Failed)).then(|| {
         value.as_ref().map_or_else(
-            || ResponseErrorDetails::from_message(None, &String::from_utf8_lossy(data.as_slice())),
+            || ResponseErrorDetails::from_message(None, &String::from_utf8_lossy(data)),
             |value| extract_response_error(Some(value)),
         )
     });
-    let value = if completed
-        && data.as_slice() != b"[DONE]"
+    let value = if terminal_outcome == Some(SseTerminalOutcome::Completed)
+        && data != b"[DONE]"
         && !value.as_ref().is_some_and(Value::is_object)
     {
         Some(serde_json::json!({"usage":null}))
@@ -830,6 +911,168 @@ fn observe_sse_frame(frame: &[u8], api_format: ApiFormat) -> SseFrameObservation
         terminal_outcome,
         error,
     }
+}
+
+enum EventTransport {
+    Sse,
+    WebSocket { matching_interrupt: bool },
+}
+
+fn observe_responses_json(
+    value: Value,
+    codex: bool,
+    transport: EventTransport,
+) -> SseFrameObservation {
+    let Some(terminal) = value
+        .get("type")
+        .and_then(Value::as_str)
+        .and_then(|kind| responses_terminal(kind, &value, codex, transport))
+    else {
+        return SseFrameObservation::default();
+    };
+    if codex && terminal == SseTerminalOutcome::Completed {
+        let Some(response) = value.get("response").filter(|response| !response.is_null()) else {
+            return SseFrameObservation::default();
+        };
+        if CodexCompletion::deserialize(response).is_err() {
+            return SseFrameObservation {
+                terminal_outcome: Some(SseTerminalOutcome::Failed),
+                error: Some(extract_response_error(Some(&value))),
+                value: None,
+            };
+        }
+    }
+    SseFrameObservation {
+        terminal_outcome: Some(terminal),
+        error: (terminal == SseTerminalOutcome::Failed)
+            .then(|| extract_response_error(Some(&value))),
+        value: Some(value),
+    }
+}
+
+fn responses_terminal(
+    kind: &str,
+    value: &Value,
+    codex: bool,
+    transport: EventTransport,
+) -> Option<SseTerminalOutcome> {
+    let interrupted = matches!(
+        transport,
+        EventTransport::WebSocket {
+            matching_interrupt: true
+        }
+    ) || codex;
+    match kind {
+        "response.completed" => Some(SseTerminalOutcome::Completed),
+        "response.incomplete"
+            if interrupted
+                && value
+                    .pointer("/response/incomplete_details/reason")
+                    .and_then(Value::as_str)
+                    == Some("interrupted") =>
+        {
+            Some(SseTerminalOutcome::Completed)
+        }
+        "response.failed" | "response.incomplete" => Some(SseTerminalOutcome::Failed),
+        "response.cancelled" if !codex => Some(SseTerminalOutcome::Failed),
+        "error" if !codex => Some(SseTerminalOutcome::Failed),
+        "error" => {
+            let code = value.pointer("/error/code").and_then(Value::as_str);
+            let failed_status = value
+                .get("status")
+                .or_else(|| value.get("status_code"))
+                .and_then(Value::as_u64)
+                .is_some_and(|s| (100..600).contains(&s) && !(200..300).contains(&s));
+            ((matches!(transport, EventTransport::WebSocket { .. })
+                && (failed_status
+                    || matches!(
+                        code,
+                        Some(
+                            WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE
+                                | PREVIOUS_RESPONSE_NOT_FOUND_CODE
+                        )
+                    )))
+                || code.is_some_and(codex_statusless_failure))
+            .then_some(SseTerminalOutcome::Failed)
+        }
+        _ => None,
+    }
+}
+
+// These wire types validate completion, independently of the configured metering parser.
+#[derive(Deserialize)]
+#[allow(dead_code)]
+struct CodexCompletion<'a> {
+    id: &'a str,
+    usage: Option<CodexCompletionUsage>,
+    #[serde(borrow)]
+    usage_metadata: Option<CodexUsageMetadata<'a>>,
+    end_turn: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[allow(dead_code)]
+struct CodexUsageMetadata<'a> {
+    amount: Option<&'a str>,
+    metadata: Option<serde::de::IgnoredAny>,
+}
+
+#[derive(Deserialize)]
+#[allow(dead_code)]
+struct CodexCompletionUsage {
+    input_tokens: i64,
+    input_tokens_details: Option<CodexInputTokensDetails>,
+    output_tokens: i64,
+    output_tokens_details: Option<CodexOutputTokensDetails>,
+    total_tokens: i64,
+    codex_rollout_budget_units: Option<serde_json::Number>,
+}
+
+#[derive(Deserialize)]
+#[allow(dead_code)]
+struct CodexInputTokensDetails {
+    cached_tokens: i64,
+    #[serde(default)]
+    cache_write_tokens: i64,
+}
+
+#[derive(Deserialize)]
+#[allow(dead_code)]
+struct CodexOutputTokensDetails {
+    reasoning_tokens: i64,
+}
+
+fn codex_statusless_failure(code: &str) -> bool {
+    matches!(
+        code,
+        "policy_capacity_unavailable"
+            | "server_is_overloaded"
+            | "insufficient_quota"
+            | "credit_balance_exhausted"
+            | "usage_not_included"
+            | "invalid_prompt"
+            | "misalignment_policy_violation"
+            | "api_key_spend_limit_exceeded"
+            | "project_spend_limit_exceeded"
+            | "organization_spend_limit_exceeded"
+            | "inference_hook_denied"
+            | "context_length_exceeded"
+            | "invalid_access_program"
+            | "unsupported_access_program"
+            | "content_policy_violation"
+            | "cyber_policy"
+            | "bio_policy"
+            | "access_program_not_enabled"
+            | "budget_reached"
+            | "audio_too_large"
+            | "audio_too_short"
+            | "invalid_audio"
+            | "invalid_audio_data"
+            | "invalid_audio_format"
+            | "missing_audio_sample_rate"
+            | "flex_unavailable"
+            | "model_not_found"
+    )
 }
 
 fn extract_response_error(value: Option<&Value>) -> ResponseErrorDetails {
@@ -1175,7 +1418,7 @@ data: [DONE]
         let mut collector = UsageCollector::new(ApiFormat::OpenAiResponses, false);
         let terminal = collector.observe_websocket_event(&Bytes::from_static(
             br#"{"type":"response.completed","response":{"usage":{"input_tokens":9,"output_tokens":2,"input_tokens_details":{"cached_tokens":1},"output_tokens_details":{"reasoning_tokens":1}}}}"#,
-        ));
+        ), false);
         assert_eq!(terminal, Some(SseTerminalOutcome::Completed));
         assert_eq!(
             collector.latest(),
@@ -1217,7 +1460,7 @@ data: [DONE]
         assert_eq!(
             collector.observe_websocket_event(&Bytes::from_static(
                 br#"{"type":"error","status":404,"error":{"code":"previous_response_not_found","message":"Previous response was not found. Retrying the full request."}}"#,
-            )),
+            ), false),
             Some(SseTerminalOutcome::Failed)
         );
         let error = collector.error_details().unwrap();
@@ -1230,6 +1473,282 @@ data: [DONE]
             detail["error"]["message"],
             "Previous response was not found. Retrying the full request."
         );
+    }
+
+    #[test]
+    fn codex_sse_and_websocket_distinguish_notifications_from_terminals() {
+        use crate::domain::{ApiOperation, ConnectorKind};
+        for websocket in [false, true] {
+            let operation = if websocket {
+                ApiOperation::ResponsesWebSocket
+            } else {
+                ApiOperation::Responses
+            };
+            for (kind, error, reason, expected) in [
+                ("response.failed", None, None, SseTerminalOutcome::Failed),
+                (
+                    "response.incomplete",
+                    None,
+                    Some("content_filter"),
+                    SseTerminalOutcome::Failed,
+                ),
+                (
+                    "response.incomplete",
+                    None,
+                    Some("max_output_tokens"),
+                    SseTerminalOutcome::Failed,
+                ),
+                (
+                    "response.incomplete",
+                    None,
+                    Some("interrupted"),
+                    SseTerminalOutcome::Completed,
+                ),
+                (
+                    "response.completed",
+                    None,
+                    None,
+                    SseTerminalOutcome::Completed,
+                ),
+                (
+                    "error",
+                    Some("api_key_spend_limit_exceeded"),
+                    None,
+                    SseTerminalOutcome::Failed,
+                ),
+                (
+                    "error",
+                    Some("policy_capacity_unavailable"),
+                    None,
+                    SseTerminalOutcome::Failed,
+                ),
+            ] {
+                let mut usage = UsageCollector::for_route(operation, ConnectorKind::CodexOauth);
+                usage.set_parser(UsageParserConfig::for_operation(operation));
+                usage.reset(!websocket);
+                let mut observe = |value: Value| {
+                    if websocket {
+                        usage.observe_websocket_event(&Bytes::from(value.to_string()), false)
+                    } else {
+                        usage.observe(&Bytes::from(format!("data: {value}\n\n")));
+                        usage.sse_terminal_outcome()
+                    }
+                };
+                assert_eq!(
+                    observe(
+                        serde_json::json!({"type":"error","error":{"code":"new_notification"}})
+                    ),
+                    None
+                );
+                assert_eq!(
+                    observe(serde_json::json!({"type":"response.cancelled"})),
+                    None
+                );
+                let mut event = serde_json::json!({"type":kind,"response":{"id":"r","incomplete_details":{"reason":reason},"usage":{"input_tokens":4,"output_tokens":3,"total_tokens":7}}});
+                if let Some(code) = error {
+                    event["error"] = serde_json::json!({"code":code});
+                }
+                assert_eq!(observe(event), Some(expected));
+                assert_eq!(usage.latest().unwrap().input_tokens, 4);
+                assert_eq!(
+                    usage.error_details().is_some(),
+                    expected == SseTerminalOutcome::Failed
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn codex_wrapped_websocket_failures_remain_terminal_without_known_provider_code() {
+        use crate::domain::{ApiOperation, ConnectorKind};
+        for fields in [
+            r#""status":429"#,
+            r#""status_code":404"#,
+            r#""error":{"code":"websocket_connection_limit_reached"}"#,
+            r#""error":{"code":"previous_response_not_found"}"#,
+        ] {
+            let mut collector = UsageCollector::for_route(
+                ApiOperation::ResponsesWebSocket,
+                ConnectorKind::CodexOauth,
+            );
+            assert_eq!(
+                collector.observe_websocket_event(
+                    &Bytes::from(format!(r#"{{"type":"error",{fields}}}"#)),
+                    false
+                ),
+                Some(SseTerminalOutcome::Failed)
+            );
+        }
+    }
+
+    #[test]
+    fn general_websocket_completes_interrupted_response_only_for_matching_interrupt() {
+        let event = Bytes::from_static(br#"{"type":"response.incomplete","response":{"id":"r","incomplete_details":{"reason":"interrupted"}}}"#);
+        for (matching_interrupt, expected) in [
+            (false, SseTerminalOutcome::Failed),
+            (true, SseTerminalOutcome::Completed),
+        ] {
+            let mut usage = UsageCollector::new(ApiFormat::OpenAiResponses, false);
+            assert_eq!(
+                usage.observe_websocket_event(&event, matching_interrupt),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn codex_completion_requires_a_response_with_an_id() {
+        use crate::domain::{ApiOperation, ConnectorKind};
+        for (event, expected) in [
+            (r#"{"type":"response.completed"}"#, None),
+            (
+                r#"{"type":"response.completed","response":{}}"#,
+                Some(SseTerminalOutcome::Failed),
+            ),
+            (
+                r#"{"type":"response.incomplete","response":{"incomplete_details":{"reason":"interrupted"}}}"#,
+                Some(SseTerminalOutcome::Failed),
+            ),
+            (
+                r#"{"type":"response.completed","response":{"id":"r"}}"#,
+                Some(SseTerminalOutcome::Completed),
+            ),
+        ] {
+            let mut collector =
+                UsageCollector::for_route(ApiOperation::Responses, ConnectorKind::CodexOauth);
+            collector.reset(true);
+            collector.observe(&Bytes::from(format!("data: {event}\n\n")));
+            assert_eq!(collector.sse_terminal_outcome(), expected);
+            assert!(collector.latest().is_none());
+        }
+    }
+
+    #[test]
+    fn codex_terminal_validates_completion_fields_independently_of_metering() {
+        use serde_json::json;
+        let usage = json!({"input_tokens":3,"output_tokens":1,"total_tokens":4});
+        for kind in ["response.completed", "response.incomplete"] {
+            for (fields, expected) in [
+                (
+                    json!({"usage":null,"end_turn":null}),
+                    SseTerminalOutcome::Completed,
+                ),
+                (
+                    json!({"usage":usage,"end_turn":false,"usage_metadata":{"amount":"0.1","metadata":[2]}}),
+                    SseTerminalOutcome::Completed,
+                ),
+                (
+                    json!({"usage":{"input_tokens":3,"output_tokens":1}}),
+                    SseTerminalOutcome::Failed,
+                ),
+                (
+                    json!({"usage":{"input_tokens":3,"output_tokens":1,"total_tokens":"4"}}),
+                    SseTerminalOutcome::Failed,
+                ),
+                (
+                    json!({"usage":{"input_tokens":3,"output_tokens":1,"total_tokens":4,"input_tokens_details":{}}}),
+                    SseTerminalOutcome::Failed,
+                ),
+                (
+                    json!({"usage":{"input_tokens":3,"output_tokens":1,"total_tokens":4,"output_tokens_details":{"reasoning_tokens":false}}}),
+                    SseTerminalOutcome::Failed,
+                ),
+                (
+                    json!({"usage":{"input_tokens":3,"output_tokens":1,"total_tokens":4,"codex_rollout_budget_units":"1"}}),
+                    SseTerminalOutcome::Failed,
+                ),
+                (json!({"end_turn":"false"}), SseTerminalOutcome::Failed),
+                (
+                    json!({"usage_metadata":{"amount":0.1}}),
+                    SseTerminalOutcome::Failed,
+                ),
+            ] {
+                let mut response = fields;
+                response["id"] = json!("r");
+                response["incomplete_details"] = json!({"reason":"interrupted"});
+                let event = json!({"type":kind,"response":response});
+                let observation =
+                    super::observe_responses_json(event.clone(), true, super::EventTransport::Sse);
+                assert_eq!(observation.terminal_outcome, Some(expected), "{event}");
+                assert_eq!(
+                    observation.value.is_some(),
+                    expected == SseTerminalOutcome::Completed
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ignored_codex_notifications_never_supply_billable_usage() {
+        use crate::domain::{ApiOperation, ConnectorKind};
+        for websocket in [false, true] {
+            let mut collector = UsageCollector::for_route(
+                if websocket {
+                    ApiOperation::ResponsesWebSocket
+                } else {
+                    ApiOperation::Responses
+                },
+                ConnectorKind::CodexOauth,
+            );
+            collector.reset(!websocket);
+            for event in [
+                r#"{"type":"response.cancelled","response":{"usage":{"input_tokens":88,"output_tokens":11,"total_tokens":99}}}"#,
+                r#"{"type":"error","error":{"code":"future_notification"},"usage":{"input_tokens":88,"output_tokens":11,"total_tokens":99}}"#,
+                r#"{"type":"response.completed","response":{"id":"final"}}"#,
+            ] {
+                if websocket {
+                    collector.observe_websocket_event(&Bytes::from_static(event.as_bytes()), false);
+                } else {
+                    collector.observe(&Bytes::from(format!("data: {event}\n\n")));
+                }
+                assert_eq!(collector.latest(), None);
+            }
+            assert_eq!(
+                collector.sse_terminal_outcome(),
+                Some(SseTerminalOutcome::Completed)
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_oversized_sse_frame_is_skipped_until_its_blank_line() {
+        let oversized = Bytes::from(format!(
+            "data: {{\"delta\":\"{}",
+            "x".repeat(super::MAX_SSE_FRAME_BYTES)
+        ));
+        let terminal = br#"data: {"type":"response.completed","response":{"id":"r","usage":{"input_tokens":3,"output_tokens":1,"total_tokens":4}}}"#;
+        for ending in [b"\r\n".as_slice(), b"\r", b"\n"] {
+            let mut collector = UsageCollector::new(ApiFormat::OpenAiResponses, true);
+            collector.observe(&oversized);
+            // This terminal-looking data belongs to the same oversized event.
+            for byte in [ending, terminal, ending, ending].concat() {
+                collector.observe(&Bytes::from(vec![byte]));
+                assert_eq!(collector.sse_terminal_outcome(), None);
+            }
+            collector.observe(&Bytes::from([terminal, ending, ending].concat()));
+            assert_eq!(
+                collector.sse_terminal_outcome(),
+                Some(SseTerminalOutcome::Completed)
+            );
+            assert_eq!(collector.latest().unwrap().input_tokens, 3);
+        }
+    }
+
+    #[test]
+    fn done_sentinel_is_not_a_codex_responses_terminal() {
+        use crate::domain::{ApiOperation, ConnectorKind};
+        for (connector, outcome) in [
+            (ConnectorKind::CodexOauth, None),
+            (
+                ConnectorKind::OpenAiCompatible,
+                Some(SseTerminalOutcome::Completed),
+            ),
+        ] {
+            let mut usage = UsageCollector::for_route(ApiOperation::Responses, connector);
+            usage.reset(true);
+            usage.observe(&Bytes::from_static(b"data: [DONE]\n\n"));
+            assert_eq!(usage.sse_terminal_outcome(), outcome);
+        }
     }
 
     #[test]
@@ -1773,9 +2292,12 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":11
         }
         let mut usage =
             UsageCollector::with_parser(ApiFormat::OpenAiResponses, false, parser.clone());
-        usage.observe_websocket_event(&Bytes::from(format!(
-            "{{\"type\":\"response.completed\",\"response\":{raw}}}"
-        )));
+        usage.observe_websocket_event(
+            &Bytes::from(format!(
+                "{{\"type\":\"response.completed\",\"response\":{raw}}}"
+            )),
+            false,
+        );
         assert_eq!(usage.latest().unwrap().input_tokens, 5);
         usage.reset(true);
         usage.observe(&Bytes::from(format!(

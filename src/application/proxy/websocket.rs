@@ -25,6 +25,10 @@ use zeroize::Zeroizing;
 
 use crate::{
     admission::AdmissionError,
+    application::usage::{
+        PREVIOUS_RESPONSE_NOT_FOUND_CODE, SseTerminalOutcome,
+        WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE,
+    },
     domain::{
         ApiFormat, ApiKeyPermission, ApiOperation, CompiledApiKey, CompiledChannel,
         RequestLogSource, RequestProtocol,
@@ -36,9 +40,9 @@ use crate::{
     routing::{SelectionResult, SessionAffinityMatch},
     transforms::apply_websocket_event_plan,
     upstream::{
-        MAX_UPSTREAM_MESSAGE_BYTES, ResolvedUpstreamPolicy, UpstreamWebSocket,
+        InterruptControl, MAX_UPSTREAM_MESSAGE_BYTES, ResolvedUpstreamPolicy, UpstreamWebSocket,
         UpstreamWebSocketError, UpstreamWebSocketKey, WebSocketClientIdentity,
-        connect_upstream_websocket,
+        connect_upstream_websocket, response_id_digest,
     },
 };
 
@@ -56,8 +60,6 @@ use lifecycle::WebSocketSessionGuard;
 const OPENAI_RESPONSES_FORMAT: ApiFormat = ApiFormat::OpenAiResponses;
 const OPENAI_RESPONSES_WEBSOCKET_BETA: &str = "responses_websockets=2026-02-06";
 const DOWNSTREAM_CONTROL_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
-const WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE: &str = "websocket_connection_limit_reached";
-const PREVIOUS_RESPONSE_NOT_FOUND_CODE: &str = "previous_response_not_found";
 const PREVIOUS_RESPONSE_NOT_FOUND_MESSAGE: &str =
     "Previous response was not found. Retrying the full request.";
 
@@ -182,6 +184,8 @@ impl ProxyService {
 
 impl ResponsesWebSocketSession {
     pub(crate) async fn run(self, mut client: WebSocket) {
+        let mut next_text = None;
+        let mut just_completed = None;
         loop {
             if self.proxy.websocket_lifecycle.is_draining() {
                 if !self.proxy.websocket_lifecycle.is_force_closing() {
@@ -189,13 +193,17 @@ impl ResponsesWebSocketSession {
                 }
                 break;
             }
-            let incoming = tokio::select! {
-                incoming = client.recv() => incoming,
-                _ = self.proxy.websocket_lifecycle.shutdown_requested() => {
-                    if !self.proxy.websocket_lifecycle.is_force_closing() {
-                        close_client(&mut client, close_code::AWAY, "server shutting down").await;
+            let incoming = if let Some(text) = next_text.take() {
+                Some(Ok(ClientMessage::Text(text)))
+            } else {
+                tokio::select! {
+                    incoming = client.recv() => incoming,
+                    _ = self.proxy.websocket_lifecycle.shutdown_requested() => {
+                        if !self.proxy.websocket_lifecycle.is_force_closing() {
+                            close_client(&mut client, close_code::AWAY, "server shutting down").await;
+                        }
+                        break;
                     }
-                    break;
                 }
             };
             let Some(incoming) = incoming else {
@@ -209,6 +217,15 @@ impl ResponsesWebSocketSession {
                                 .await;
                         }
                         break;
+                    }
+                    // Completion may already be on the wire when the peer interrupts its created ID.
+                    if let Some(id) = matching_interrupt_id(&text, just_completed.take()) {
+                        send_json(
+                            &mut client,
+                            json!({"type":"response.interrupt.failed", "response_id":id}),
+                        )
+                        .await;
+                        continue;
                     }
                     let bytes: Bytes = text.into();
                     let mut pinned = None;
@@ -224,6 +241,8 @@ impl ResponsesWebSocketSession {
                     };
                     match action {
                         SessionAction::Continue => {}
+                        SessionAction::JustCompleted(id) => just_completed = Some(id),
+                        SessionAction::Next(text) => next_text = Some(text),
                         SessionAction::Close => break,
                     }
                 }
@@ -242,7 +261,11 @@ impl ResponsesWebSocketSession {
                     break;
                 }
                 Ok(ClientMessage::Ping(_) | ClientMessage::Pong(_)) => {}
-                Ok(ClientMessage::Close(_)) | Err(_) => break,
+                Err(error) => {
+                    close_if_message_too_large(&mut client, error).await;
+                    break;
+                }
+                Ok(ClientMessage::Close(_)) => break,
             }
         }
     }
@@ -791,6 +814,9 @@ impl ResponsesWebSocketSession {
             {
                 return reject_previous_response_not_found(client, &mut completion).await;
             }
+            if active.connection.request_too_large(request.len()) {
+                return reject_upstream_size_limit(client, &mut completion).await;
+            }
             completion.set_upstream_status(200);
             completion.begin_dispatch();
             match tokio::time::timeout(
@@ -876,6 +902,9 @@ impl ResponsesWebSocketSession {
             transforms.request_json(),
             &connector,
             RequestProtocol::WebSocket,
+            api_key
+                .filter_fast_mode()
+                .then_some(RequestInterface::ResponsesWebSocket),
         )
         .map_err(|error| match error {
             JsonPreparationError::Model(error) => error,
@@ -968,6 +997,8 @@ impl PinnedUpstream {
 
 enum SessionAction {
     Continue,
+    JustCompleted([u8; 32]),
+    Next(ClientUtf8Bytes),
     Close,
 }
 
@@ -1008,12 +1039,6 @@ impl ParsedWebSocketRequest {
             response_id_digest(probe.previous_response_id.as_deref()) == self.previous_response_id
         })
     }
-}
-
-fn response_id_digest(id: Option<&str>) -> Option<[u8; 32]> {
-    use sha2::{Digest, Sha256};
-    id.filter(|id| !id.is_empty())
-        .map(|id| Sha256::digest(id.as_bytes()).into())
 }
 
 fn parse_websocket_request(
@@ -1101,10 +1126,12 @@ async fn relay_upstream_response(
 ) -> SessionAction {
     let idle = tokio::time::sleep(idle_timeout);
     tokio::pin!(idle);
+    let mut created_id = None;
+    let mut interrupt = InterruptState::None;
+    let mut received_text = false;
     loop {
         tokio::select! {
             incoming = upstream.connection.next() => {
-                reset_idle(idle.as_mut(), idle_timeout);
                 let message = match incoming {
                     Some(Ok(message)) => message,
                     Some(Err(error)) => {
@@ -1147,15 +1174,36 @@ async fn relay_upstream_response(
                 match message {
                     UpstreamMessage::Text(text) => {
                         let original: Bytes = text.into();
+                        let event = inspect_event(&original);
+                        if event.control.is_some_and(|control| upstream.connection.discard_detached_control(control, event.response_id)) {
+                            continue;
+                        }
+                        if upstream.connection.has_detached_interrupt(event.response_id) {
+                            completion.finish_with_message(RequestOutcome::UpstreamBodyError, Some("ambiguous_response_id"), "The upstream reused a response ID with an outstanding interrupt.");
+                            close_client(client, close_code::ERROR, "ambiguous response identity").await;
+                            return SessionAction::Close;
+                        }
+                        reset_idle(idle.as_mut(), idle_timeout);
+                        received_text = true;
                         completion.record_first_byte();
-                        let terminal = completion.observe_websocket_usage(&original);
-                        let event = terminal
-                            .map(|_| inspect_event(&original))
-                            .unwrap_or_default();
+                        if event.created && interrupt == InterruptState::None {
+                            created_id = event.response_id;
+                        }
+                        let ack = event.control.filter(|control| *control != InterruptControl::Metadata);
+                        if !interrupt.accepts_event(&event, created_id, matches!(connector, PreparedConnectorAttempt::Codex { .. })) {
+                            completion.finish_with_message(
+                                RequestOutcome::UpstreamBodyError,
+                                Some("invalid_interrupt_event"),
+                                "Unexpected upstream interruption event.",
+                            );
+                            close_client(client, close_code::ERROR, "unexpected interruption event").await;
+                            return SessionAction::Close;
+                        }
+                        let active_interrupt = interrupt != InterruptState::None && event.response_id == created_id;
+                        let terminal = completion.observe_websocket_usage(&original, active_interrupt);
                         if let Some(status) =
-                            event.status.filter(|status| {
-                                (100..600).contains(status) && !(200..300).contains(status)
-                            })
+                            event.status.filter(|status| terminal.is_some()
+                                && (100..600).contains(status) && !(200..300).contains(status))
                         {
                             completion.set_client_visible_status(status);
                             if let Ok(status_code) = StatusCode::from_u16(status) {
@@ -1165,7 +1213,7 @@ async fn relay_upstream_response(
                         if event.state_error.is_none() {
                             completion.observe_upstream_error_body(&original);
                         }
-                        let transformed = match if event.state_error.is_some() {
+                        let transformed = match if event.state_error.is_some() || ack.is_some() {
                             Ok(original)
                         } else {
                             apply_websocket_event_plan(original, response_plan)
@@ -1203,7 +1251,7 @@ async fn relay_upstream_response(
                                 return SessionAction::Close;
                             }
                         };
-                        let succeeded = matches!(terminal, Some(crate::application::usage::SseTerminalOutcome::Completed))
+                        let succeeded = terminal == Some(SseTerminalOutcome::Completed)
                             && event.state_error.is_none();
                         if succeeded {
                             // Register ownership before the client can act on this terminal frame.
@@ -1222,6 +1270,11 @@ async fn relay_upstream_response(
                             return SessionAction::Close;
                         }
                         if let Some(terminal) = terminal {
+                            if succeeded && interrupt == InterruptState::Pending {
+                                completion.finish(RequestOutcome::Succeeded);
+                                drop(completion);
+                                return relay_late_interrupt_ack(client, upstream, created_id.expect("validated interrupt response ID"), response_plan, idle_timeout).await;
+                            }
                             upstream.reusable = succeeded;
                             let outcome = if event.state_error.is_some() {
                                 RequestOutcome::WebSocketStateLost
@@ -1229,7 +1282,13 @@ async fn relay_upstream_response(
                                 sse_terminal_request_outcome(terminal, true)
                             };
                             completion.finish(outcome);
+                            if succeeded && interrupt == InterruptState::None && let Some(id) = created_id && event.response_id == Some(id) {
+                                return SessionAction::JustCompleted(id);
+                            }
                             return SessionAction::Continue;
+                        }
+                        if ack.is_some() {
+                            interrupt = InterruptState::Answered;
                         }
                     }
                     UpstreamMessage::Binary(_) => {
@@ -1248,6 +1307,9 @@ async fn relay_upstream_response(
                             None,
                         ).await;
                         return SessionAction::Close;
+                    }
+                    UpstreamMessage::Close(Some(frame)) if u16::from(frame.code) == close_code::SIZE && !received_text => {
+                        return reject_upstream_size_limit(client, &mut completion).await;
                     }
                     UpstreamMessage::Close(_) => {
                         upstream.reusable = false;
@@ -1274,10 +1336,31 @@ async fn relay_upstream_response(
             downstream = client.recv() => {
                 match downstream {
                     Some(Ok(ClientMessage::Ping(_) | ClientMessage::Pong(_))) => {}
-                    Some(Ok(ClientMessage::Close(_))) | Some(Err(_)) | None => {
+                    Some(Err(error)) => {
+                        close_if_message_too_large(client, error).await;
+                        completion.finish(RequestOutcome::Cancelled);
+                        return SessionAction::Close;
+                    }
+                    Some(Ok(ClientMessage::Close(_))) | None => {
                         upstream.reusable = false;
                         completion.finish(RequestOutcome::Cancelled);
                         return SessionAction::Close;
+                    }
+                    Some(Ok(ClientMessage::Text(text))) if interrupt == InterruptState::None && matching_interrupt_id(&text, created_id).is_some() => {
+                        if upstream.connection.request_too_large(text.len()) {
+                            return reject_upstream_size_limit(client, &mut completion).await;
+                        }
+                        let bytes: Bytes = text.into();
+                        let message = UpstreamMessage::Text(UpstreamUtf8Bytes::try_from(bytes).expect("validated UTF-8"));
+                        if !matches!(tokio::time::timeout(idle_timeout, upstream.connection.send(message)).await, Ok(Ok(()))) {
+                            completion.finish_with_message(
+                                RequestOutcome::UpstreamBodyError,
+                                Some("response_interrupt_send_failed"),
+                                "Could not send the interruption to the upstream.",
+                            );
+                            return SessionAction::Close;
+                        }
+                        interrupt = InterruptState::Pending;
                     }
                     Some(Ok(ClientMessage::Text(_) | ClientMessage::Binary(_))) => {
                         upstream.reusable = false;
@@ -1324,6 +1407,159 @@ fn reset_idle(mut idle: std::pin::Pin<&mut Sleep>, duration: Duration) {
     idle.as_mut().reset(tokio::time::Instant::now() + duration);
 }
 
+async fn send_interrupt_event(
+    client: &mut WebSocket,
+    bytes: Bytes,
+    metadata: bool,
+    response_plan: &crate::transforms::SseEventPatchPlan,
+    timeout: Duration,
+) -> bool {
+    let bytes = if metadata {
+        let Ok(bytes) = apply_websocket_event_plan(bytes, response_plan) else {
+            return false;
+        };
+        bytes
+    } else {
+        bytes
+    };
+    let Ok(text) = ClientUtf8Bytes::try_from(bytes) else {
+        return false;
+    };
+    matches!(
+        tokio::time::timeout(timeout, client.send(ClientMessage::Text(text))).await,
+        Ok(Ok(()))
+    )
+}
+
+async fn relay_late_interrupt_ack(
+    client: &mut WebSocket,
+    upstream: &mut PinnedUpstream,
+    response_id: [u8; 32],
+    response_plan: &crate::transforms::SseEventPatchPlan,
+    idle_timeout: Duration,
+) -> SessionAction {
+    let deadline = tokio::time::sleep(idle_timeout);
+    tokio::pin!(deadline);
+    loop {
+        tokio::select! {
+            incoming = upstream.connection.next() => {
+                let Some(Ok(UpstreamMessage::Text(text))) = incoming else {
+                    return SessionAction::Close;
+                };
+                let bytes: Bytes = text.into();
+                let event = inspect_event(&bytes);
+                if event.control.is_some_and(|control| upstream.connection.discard_detached_control(control, event.response_id)) {
+                    continue;
+                }
+                let Some(control) = event.control.filter(|control| control.matches(event.response_id, response_id, true)) else {
+                    close_client(client, close_code::ERROR, "unexpected interruption event").await;
+                    return SessionAction::Close;
+                };
+                if !send_interrupt_event(client, bytes, control == InterruptControl::Metadata, response_plan, idle_timeout).await {
+                    return SessionAction::Close;
+                }
+                reset_idle(deadline.as_mut(), idle_timeout);
+                if control != InterruptControl::Metadata {
+                    upstream.reusable = true;
+                    return SessionAction::Continue;
+                }
+            }
+            downstream = client.recv() => match downstream {
+                Some(Ok(ClientMessage::Text(text))) => {
+                    // Drain and Cancel use the same interrupt. A new create after a matching
+                    // terminal ends the caller's wait, but its old ACK can still arrive late.
+                    upstream.reusable = upstream.connection.detach_interrupt(response_id);
+                    return SessionAction::Next(text);
+                }
+                Some(Ok(ClientMessage::Ping(_) | ClientMessage::Pong(_))) => {},
+                Some(Err(error)) => { close_if_message_too_large(client, error).await; return SessionAction::Close; }
+                _ => return SessionAction::Close,
+            },
+            _ = &mut deadline => {
+                close_client(client, close_code::ERROR, "interruption acknowledgement timed out").await;
+                return SessionAction::Close;
+            }
+        }
+    }
+}
+
+async fn close_if_message_too_large(client: &mut WebSocket, error: axum::Error) {
+    if matches!(
+        error.into_inner().downcast_ref::<tungstenite_axum::Error>(),
+        Some(tungstenite_axum::Error::Capacity(
+            tungstenite_axum::error::CapacityError::MessageTooLong { .. }
+        ))
+    ) {
+        close_client(client, close_code::SIZE, "request too large").await;
+    }
+}
+
+async fn reject_upstream_size_limit(
+    client: &mut WebSocket,
+    completion: &mut CompletionGuard,
+) -> SessionAction {
+    completion.set_client_visible_status(413);
+    completion.finish_with_message(
+        RequestOutcome::ClientRequestError,
+        Some("websocket_message_too_large"),
+        "The request exceeds the upstream WebSocket message limit.",
+    );
+    close_client(client, close_code::SIZE, "request too large").await;
+    SessionAction::Close
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InterruptState {
+    None,
+    Pending,
+    Answered,
+}
+
+impl InterruptState {
+    fn accepts_event(
+        self,
+        event: &EventInspection,
+        created_id: Option<[u8; 32]>,
+        codex: bool,
+    ) -> bool {
+        if self != Self::None && !event.parsed {
+            false
+        } else if matches!(
+            event.control,
+            Some(InterruptControl::Accepted | InterruptControl::Rejected)
+        ) {
+            self == Self::Pending && event.response_id == created_id
+        } else if self != Self::None
+            && (event.completion || (!codex && event.cancelled) || event.response_id.is_some())
+        {
+            event.response_id == created_id
+        } else {
+            true
+        }
+    }
+}
+
+fn matching_interrupt_id(
+    text: &str,
+    created_id: Option<[u8; 32]>,
+) -> Option<std::borrow::Cow<'_, str>> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Interrupt<'a> {
+        #[serde(rename = "type")]
+        kind: &'a str,
+        mode: &'a str,
+        #[serde(borrow)]
+        response_id: std::borrow::Cow<'a, str>,
+    }
+    let id = created_id?;
+    let frame = serde_json::from_str::<Interrupt<'_>>(text).ok()?;
+    (frame.kind == "response.interrupt"
+        && frame.mode == "discard_partial_items"
+        && response_id_digest(Some(&frame.response_id)) == Some(id))
+    .then_some(frame.response_id)
+}
+
 #[derive(Clone, Copy, Default, Eq, PartialEq)]
 enum WebSocketStateError {
     #[default]
@@ -1344,6 +1580,11 @@ impl WebSocketStateError {
 
 #[derive(Default)]
 struct EventInspection {
+    parsed: bool,
+    created: bool,
+    completion: bool,
+    cancelled: bool,
+    control: Option<InterruptControl>,
     status: Option<u16>,
     state_error: WebSocketStateError,
     response_id: Option<[u8; 32]>,
@@ -1353,6 +1594,8 @@ struct EventInspection {
 struct EventInspectionProbe<'a> {
     #[serde(borrow, rename = "type")]
     kind: Option<&'a str>,
+    #[serde(default, borrow)]
+    response_id: Option<std::borrow::Cow<'a, str>>,
     #[serde(default, alias = "status_code")]
     status: Option<u16>,
     #[serde(default, borrow)]
@@ -1388,10 +1631,22 @@ fn inspect_event(bytes: &[u8]) -> EventInspection {
     } else {
         WebSocketStateError::None
     };
+    let control = InterruptControl::from_kind(probe.kind);
+    let completion = matches!(
+        probe.kind,
+        Some("response.completed" | "response.incomplete" | "response.failed")
+    );
     EventInspection {
+        parsed: true,
+        created: probe.kind == Some("response.created"),
+        completion,
+        cancelled: probe.kind == Some("response.cancelled"),
+        control,
         status: probe.status,
         state_error,
-        response_id: if probe.kind == Some("response.completed") {
+        response_id: if control.is_some() {
+            response_id_digest(probe.response_id.as_deref())
+        } else if completion || probe.response.is_some() {
             probe
                 .response
                 .and_then(|response| {
@@ -1399,7 +1654,7 @@ fn inspect_event(bytes: &[u8]) -> EventInspection {
                 })
                 .and_then(|response| response_id_digest(response.id.as_deref()))
         } else {
-            None
+            response_id_digest(probe.response_id.as_deref())
         },
     }
 }

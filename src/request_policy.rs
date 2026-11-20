@@ -778,6 +778,40 @@ mod tests {
     }
 
     #[test]
+    fn responses_strip_client_country_and_access_selection_before_routing() {
+        for interface in [
+            RequestInterface::ResponsesHttp,
+            RequestInterface::ResponsesWebSocket,
+        ] {
+            for value in [
+                Value::Null,
+                serde_json::json!({"unexpected": true}),
+                serde_json::json!("US"),
+            ] {
+                let mut expected =
+                    serde_json::json!({"model":"gpt-5","input":[{"request_country":"quoted"}]});
+                if interface == RequestInterface::ResponsesWebSocket {
+                    expected["type"] = "response.create".into();
+                }
+                let mut request = expected.clone();
+                request["request_country"] = value.clone();
+                request["access_programs"] = value;
+                let result = apply_json_body_policy(
+                    RequestPolicyLayer::Client,
+                    interface,
+                    serde_json::to_vec(&request).unwrap().into(),
+                )
+                .unwrap();
+                assert!(result.changed);
+                assert_eq!(
+                    serde_json::from_slice::<Value>(&result.body).unwrap(),
+                    expected
+                );
+            }
+        }
+    }
+
+    #[test]
     fn standalone_web_search_policy_preserves_current_codex_fields() {
         let original = Bytes::from_static(
             br#"{"id":"session-123","model":"gpt-5-codex","reasoning":{"effort":"medium"},"input":"find it","commands":{"search_query":[{"q":"example"}]},"settings":{"external_web_access":true},"max_output_tokens":300}"#,
@@ -893,7 +927,7 @@ mod tests {
         assert!(client.contains_key("originator"));
         assert!(client.contains_key("x-codex-turn-metadata"));
         assert!(client.contains_key("x-codex-beta-features"));
-        assert!(client.contains_key("x-codex-routing-hint"));
+        assert!(!client.contains_key("x-codex-routing-hint"));
         assert!(client.contains_key("x-codex-turn-state"));
         assert!(client.contains_key("x-openai-internal-codex-responses-lite"));
         assert!(client.contains_key("x-responsesapi-include-timing-metrics"));

@@ -34,6 +34,7 @@ const COMMAND_CAPACITY: usize = 8;
 const MESSAGE_CAPACITY: usize = 16;
 const REAPER_INTERVAL: Duration = Duration::from_secs(30);
 pub(crate) const MAX_UPSTREAM_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
+pub(crate) const WEBSOCKET_MAX_MESSAGE_HEADER: &str = "x-codex-websocket-max-message-bytes";
 
 /// Opaque identity for the downstream handshake headers and request URI.
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
@@ -295,6 +296,8 @@ mod credential_tests {
         let (incoming, messages) = mpsc::channel(1);
         (
             UpstreamWebSocket {
+                detached_interrupts: Vec::new(),
+                request_limit: None,
                 commands,
                 messages,
                 pump: tokio::spawn(std::future::pending()),
@@ -304,6 +307,39 @@ mod credential_tests {
             },
             incoming,
         )
+    }
+
+    #[tokio::test]
+    async fn late_interrupt_ack_racing_pool_checkout_is_consumed_but_unrelated_tail_is_not_clean() {
+        let (mut leased, incoming) = socket();
+        let digest = response_id_digest(Some("interrupted")).unwrap();
+        assert!(leased.detach_interrupt(digest));
+        let metadata = Message::text(r#"{"type":"response.metadata","response_id":"interrupted"}"#);
+        let ack =
+            Message::text(r#"{"type":"response.interrupt.accepted","response_id":"interrupted"}"#);
+        for message in [&metadata, &ack] {
+            incoming.try_send(Ok(message.clone())).unwrap();
+            assert!(leased.is_clean());
+        }
+        assert!(!leased.has_detached_interrupt(Some(digest)));
+        assert!(leased.detach_interrupt(digest));
+        incoming
+            .try_send(Ok(Message::text(
+                r#"{"type":"response.interrupt.accepted","response_id":"foreign"}"#,
+            )))
+            .unwrap();
+        assert!(!leased.is_clean());
+    }
+
+    #[tokio::test]
+    async fn detached_interrupts_do_not_overwrite_an_older_identity() {
+        let (mut leased, _incoming) = socket();
+        for i in 0..MAX_DETACHED_INTERRUPTS {
+            assert!(leased.detach_interrupt([i as u8; 32]));
+        }
+        assert!(!leased.detach_interrupt([255; 32]));
+        assert!(leased.discard_detached_control(InterruptControl::Accepted, Some([0; 32])));
+        assert!(leased.detach_interrupt([255; 32]));
     }
 
     #[tokio::test]
@@ -434,6 +470,9 @@ enum WebSocketCommand {
 
 /// One exclusively leased upstream WebSocket backed by a control-frame pump.
 pub(crate) struct UpstreamWebSocket {
+    /// Completed turns whose controls must not enter a subsequent logical request.
+    detached_interrupts: Vec<[u8; 32]>,
+    request_limit: Option<usize>,
     commands: mpsc::Sender<WebSocketCommand>,
     messages: mpsc::Receiver<Result<Message, UpstreamWebSocketError>>,
     pump: tokio::task::JoinHandle<()>,
@@ -442,8 +481,71 @@ pub(crate) struct UpstreamWebSocket {
     response_claim: Option<Arc<ResponseClaim>>,
 }
 
+const MAX_DETACHED_INTERRUPTS: usize = 8;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InterruptControl {
+    Accepted,
+    Rejected,
+    Metadata,
+}
+
+impl InterruptControl {
+    pub(crate) fn from_kind(kind: Option<&str>) -> Option<Self> {
+        match kind? {
+            "response.interrupt.accepted" => Some(Self::Accepted),
+            "response.interrupt.failed" => Some(Self::Rejected),
+            "response.metadata"
+            | "codex.response.metadata"
+            | "codex.rate_limits"
+            | "responsesapi.websocket_timing" => Some(Self::Metadata),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn matches(
+        self,
+        id: Option<[u8; 32]>,
+        expected: [u8; 32],
+        before_response: bool,
+    ) -> bool {
+        id == Some(expected) || self == Self::Metadata && before_response && id.is_none()
+    }
+}
+
+pub(crate) fn response_id_digest(id: Option<&str>) -> Option<[u8; 32]> {
+    id.filter(|id| !id.is_empty())
+        .map(|id| Sha256::digest(id.as_bytes()).into())
+}
+
 impl UpstreamWebSocket {
-    fn new(stream: dialer::UpstreamStream) -> Self {
+    fn discard_queued_interrupt_control(&mut self, message: Message) -> bool {
+        // Pool checkout holds a process-wide lock. Fail closed on oversized or noisy tails.
+        let Message::Text(text) = &message else {
+            return false;
+        };
+        if self.detached_interrupts.is_empty() || text.len() > 4096 {
+            return false;
+        }
+        #[derive(serde::Deserialize)]
+        struct Probe<'a> {
+            #[serde(rename = "type")]
+            kind: &'a str,
+            #[serde(borrow)]
+            response_id: Option<std::borrow::Cow<'a, str>>,
+        }
+        let Ok(probe) = serde_json::from_str::<Probe<'_>>(text) else {
+            return false;
+        };
+        let Some(control) = InterruptControl::from_kind(Some(probe.kind)) else {
+            return false;
+        };
+        self.discard_detached_control(control, response_id_digest(probe.response_id.as_deref()))
+    }
+}
+
+impl UpstreamWebSocket {
+    fn new(stream: dialer::UpstreamStream, request_limit: Option<usize>) -> Self {
         let (commands, mut command_rx) = mpsc::channel(COMMAND_CAPACITY);
         let (message_tx, messages) = mpsc::channel(MESSAGE_CAPACITY);
         let closed = Arc::new(AtomicBool::new(false));
@@ -505,6 +607,8 @@ impl UpstreamWebSocket {
             pump_closed.store(true, Ordering::Release);
         });
         Self {
+            detached_interrupts: Vec::new(),
+            request_limit,
             commands,
             messages,
             pump,
@@ -512,6 +616,10 @@ impl UpstreamWebSocket {
             created_at: Instant::now(),
             response_claim: None,
         }
+    }
+
+    pub fn request_too_large(&self, bytes: usize) -> bool {
+        self.request_limit.is_some_and(|limit| bytes > limit)
     }
 
     pub async fn send(&self, message: Message) -> Result<(), UpstreamWebSocketError> {
@@ -532,17 +640,59 @@ impl UpstreamWebSocket {
         self.messages.recv().await
     }
 
+    pub(crate) fn detach_interrupt(&mut self, response_id: [u8; 32]) -> bool {
+        if self.detached_interrupts.len() == MAX_DETACHED_INTERRUPTS
+            || self.detached_interrupts.contains(&response_id)
+        {
+            return false;
+        }
+        self.detached_interrupts.push(response_id);
+        true
+    }
+
+    pub(crate) fn has_detached_interrupt(&self, id: Option<[u8; 32]>) -> bool {
+        id.is_some_and(|id| self.detached_interrupts.contains(&id))
+    }
+
+    pub(crate) fn discard_detached_control(
+        &mut self,
+        control: InterruptControl,
+        id: Option<[u8; 32]>,
+    ) -> bool {
+        let Some(id) = id else {
+            // Unscoped metadata cannot be attributed to this new turn while an older tail is live.
+            return control == InterruptControl::Metadata && !self.detached_interrupts.is_empty();
+        };
+        let Some(index) = self.detached_interrupts.iter().position(|old| *old == id) else {
+            return false;
+        };
+        if control != InterruptControl::Metadata {
+            self.detached_interrupts.swap_remove(index);
+        }
+        true
+    }
+
     #[must_use]
     pub fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Acquire)
     }
 
     fn is_clean(&mut self) -> bool {
-        !self.is_closed()
-            && matches!(
-                self.messages.try_recv(),
-                Err(mpsc::error::TryRecvError::Empty)
-            )
+        if self.is_closed() {
+            return false;
+        }
+        for consumed in 0..=4 {
+            match self.messages.try_recv() {
+                Err(mpsc::error::TryRecvError::Empty) => return true,
+                Ok(Ok(message)) => {
+                    if consumed == 4 || !self.discard_queued_interrupt_control(message) {
+                        return false;
+                    }
+                }
+                _ => return false,
+            }
+        }
+        false
     }
 
     fn age(&self, now: Instant) -> Duration {
@@ -571,7 +721,7 @@ pub(crate) async fn connect_upstream_websocket(
         .max_message_size(Some(max_message_bytes))
         .max_frame_size(Some(max_message_bytes));
     config.extensions.permessage_deflate = Some(DeflateConfig::default());
-    let connected = tokio::time::timeout(
+    let (connected, request_limit) = tokio::time::timeout(
         policy.timeouts().response_header(),
         dialer::connect(
             target,
@@ -583,7 +733,7 @@ pub(crate) async fn connect_upstream_websocket(
     )
     .await
     .map_err(|_| UpstreamWebSocketError::HandshakeTimeout)??;
-    Ok(UpstreamWebSocket::new(connected))
+    Ok(UpstreamWebSocket::new(connected, request_limit))
 }
 
 struct IdleWebSocket {
