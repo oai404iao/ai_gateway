@@ -7,6 +7,8 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-20
+
 ### Added
 
 - [Onboard a model across providers](docs/user/routing.md#多个上游接入同一模型) in one reviewed Console transaction, or independently append a wire model to selected capabilities and add routing candidates to an existing priced model.
@@ -28,8 +30,8 @@ Versioning.
 - **Breaking:** Console catalog imports now require the selected rows' preview tokens.
   If a selected catalog entry or its local model version is stale, the whole batch is
   rejected. [Fetch a fresh preview](docs/user/billing.md#导入目录价格) before applying it.
-- **Breaking:** Codex now requires a separately installed compatible protocol-2
-  plugin and a `[plugins].directory` configuration. Gateway images and archives do not
+- **Breaking:** Codex now requires a separately installed compatible plugin (command
+  protocol 3 or legacy protocol 2) and a `[plugins].directory` configuration. Gateway images and archives do not
   bundle it; there is no built-in Codex fallback. `general` remains built in.
 - Preserve credential and financial identities while migrating connector IDs
   and static credential ownership in PostgreSQL 0070 / SQLite 0010.
@@ -44,8 +46,12 @@ Versioning.
   because the host owns handshake fields. Explicit Cookie credentials remain
   supported; client/plugin Cookies remain blocked.
 
+- Strip unknown top-level client request fields before forwarding; explicit rejections
+  and connector-specific outbound policies still apply.
+
 ### Fixed
 
+- Restore visual Body and Header transform editing for individual channel capabilities.
 - Responses WebSocket continuations can reuse their eligible origin connection even after
   session affinity has moved to another candidate.
 
