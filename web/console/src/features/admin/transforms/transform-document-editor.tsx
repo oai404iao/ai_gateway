@@ -38,8 +38,8 @@ import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { useI18n } from "@/app/i18n";
-import type { ApiFormat } from "@/api/types";
-import { apiFormatLabel, API_FORMATS } from "@/lib/permissions";
+import type { ApiFormat, ApiOperation } from "@/api/types";
+import { apiFormatLabel, API_FORMATS, operationApiFormat } from "@/lib/permissions";
 
 type HeaderRuleKind = "set" | "remove" | "rename";
 type PatchRuleKind =
@@ -102,7 +102,7 @@ interface ParseFailure {
 interface TransformDocumentEditorProps {
   value: string;
   onChange: (value: string) => void;
-  fixedApiFormat?: ApiFormat;
+  operation?: ApiOperation;
   defaultApiFormat?: ApiFormat;
   preserveWhenBlank?: boolean;
   onVisualValidationChange?: (message: string | null) => void;
@@ -344,18 +344,16 @@ function parsePatchRules(value: unknown, version: 1 | 2): PatchRule[] | null {
   return rules;
 }
 
-function parseSseRules(value: unknown, apiFormat: ApiFormat, version: 1 | 2): SseRule[] | null {
+function parseSseRules(value: unknown, version: 1 | 2): SseRule[] | null {
   if (value === undefined) return [];
   if (!Array.isArray(value)) return null;
 
-  const allowedEvents = new Set(sseEvents(apiFormat));
   const rules: SseRule[] = [];
   for (const item of value) {
     if (
       !isRecord(item) ||
       !hasOnlyKeys(item, ["event", "json"]) ||
-      typeof item.event !== "string" ||
-      !allowedEvents.has(item.event)
+      typeof item.event !== "string"
     ) {
       return null;
     }
@@ -369,8 +367,9 @@ function parseSseRules(value: unknown, apiFormat: ApiFormat, version: 1 | 2): Ss
 function parseVisualDocument(
   value: string,
   fallbackApiFormat: ApiFormat,
+  operation?: ApiOperation,
 ): ParseSuccess | ParseFailure {
-  if (!value.trim()) return { document: emptyDocument(fallbackApiFormat) };
+  if (!value.trim() && !operation) return { document: emptyDocument(fallbackApiFormat) };
 
   let decoded: unknown;
   try {
@@ -407,8 +406,12 @@ function parseVisualDocument(
   const requestHeaders = parseHeaderRules(decoded.request_headers);
   const responseHeaders = parseHeaderRules(decoded.response_headers);
   const requestJson = parsePatchRules(decoded.request_json, decoded.version);
-  const sse = parseSseRules(decoded.sse, decoded.api_format, decoded.version);
-  if (!requestHeaders || !responseHeaders || !requestJson || !sse) {
+  const sse = parseSseRules(decoded.sse, decoded.version);
+  const events = sseEvents(decoded.api_format);
+  if (
+    !requestHeaders || !responseHeaders || !requestJson || !sse ||
+    (!operation && sse.some((rule) => !events.includes(rule.event)))
+  ) {
     return {
       error:
         "This JSON cannot be represented in the visual editor. Use JSON configuration to edit it.",
@@ -593,7 +596,22 @@ function validatePatchRules(
   return null;
 }
 
-function validateVisualDocument(document: VisualDocument, apiFormat: ApiFormat): string | null {
+function supportsRequestJson(operation?: ApiOperation): boolean {
+  return operation !== "images_edit" && operation !== "web_search";
+}
+
+function supportsStreaming(apiFormat: ApiFormat, operation?: ApiOperation): boolean {
+  return apiFormat !== "open_ai_images" && operation !== "web_search";
+}
+
+function validateVisualDocument(document: VisualDocument, apiFormat: ApiFormat, operation?: ApiOperation): string | null {
+  if (document.apiFormat !== apiFormat) return "The transform's API format must match the operation.";
+  if (document.requestJson.length && !supportsRequestJson(operation)) {
+    return "This operation does not support request-body rules.";
+  }
+  if (document.sse.length && !supportsStreaming(apiFormat, operation)) {
+    return "This operation does not support streaming response rules.";
+  }
   const requestHeadersError = validateHeaderRules(document.requestHeaders, "request");
   if (requestHeadersError) return requestHeadersError;
   const requestPatchError = validatePatchRules(document.requestJson, "request", apiFormat);
@@ -1092,44 +1110,53 @@ function ReferenceExample({
 export function TransformDocumentEditor({
   value,
   onChange,
-  fixedApiFormat,
+  operation,
   defaultApiFormat,
   preserveWhenBlank = false,
   onVisualValidationChange,
 }: TransformDocumentEditorProps) {
   const { t } = useI18n();
+  const fixedApiFormat = operation && operationApiFormat(operation);
   const fallbackApiFormat = fixedApiFormat ?? defaultApiFormat ?? API_FORMATS[0];
-  const initial = parseVisualDocument(value, fallbackApiFormat);
+  const parsed = useMemo(
+    () => parseVisualDocument(value, fallbackApiFormat, operation),
+    [value, fallbackApiFormat, operation],
+  );
   const [mode, setMode] = useState<EditorMode>("visual");
   const [document, setDocument] = useState<VisualDocument>(() =>
-    "document" in initial ? initial.document : emptyDocument(fallbackApiFormat),
+    "document" in parsed ? parsed.document : emptyDocument(fallbackApiFormat),
   );
   const [visualError, setVisualError] = useState<string | null>(
-    "error" in initial ? initial.error : null,
+    "error" in parsed ? parsed.error : null,
   );
-  const emittedValue = useRef<string | null>(null);
-  const previousFallbackApiFormat = useRef<ApiFormat>(fallbackApiFormat);
+  const emittedValue = useRef<{ value: string; format: ApiFormat; operation?: ApiOperation } | null>(null);
 
   useEffect(() => {
-    const fallbackChanged = previousFallbackApiFormat.current !== fallbackApiFormat;
-    previousFallbackApiFormat.current = fallbackApiFormat;
-    if (value === emittedValue.current && !fallbackChanged) return;
+    const emitted = emittedValue.current;
+    if (emitted?.value === value && emitted.format === fallbackApiFormat && emitted.operation === operation) {
+      return;
+    }
+    emittedValue.current = null;
 
-    const parsed = parseVisualDocument(value, fallbackApiFormat);
     if ("error" in parsed) {
       setVisualError(parsed.error);
-      onVisualValidationChange?.(null);
+      onVisualValidationChange?.(operation ? parsed.error : null);
       return;
     }
     setDocument({
       ...parsed.document,
       apiFormat: fixedApiFormat ?? parsed.document.apiFormat,
     });
-    setVisualError(null);
-    onVisualValidationChange?.(null);
-  }, [fallbackApiFormat, fixedApiFormat, onVisualValidationChange, value]);
+    const error = fixedApiFormat
+      ? validateVisualDocument(parsed.document, fixedApiFormat, operation)
+      : null;
+    setVisualError(error);
+    onVisualValidationChange?.(error);
+  }, [fallbackApiFormat, fixedApiFormat, operation, onVisualValidationChange, parsed, value]);
 
   const apiFormat = fixedApiFormat ?? document.apiFormat;
+  const allowRequestJson = supportsRequestJson(operation);
+  const allowStreaming = supportsStreaming(apiFormat, operation);
   const activeDocumentVersion = documentVersion(document);
   const availableSseEvents = useMemo(
     () => sseEvents(apiFormat).filter((event) => !document.sse.some((rule) => rule.event === event)),
@@ -1139,13 +1166,13 @@ export function TransformDocumentEditor({
   const commitVisualDocument = (next: VisualDocument, writeNoop = true) => {
     setDocument(next);
     const nextApiFormat = fixedApiFormat ?? next.apiFormat;
-    const error = validateVisualDocument(next, nextApiFormat);
+    const error = validateVisualDocument(next, nextApiFormat, operation);
     setVisualError(error);
     onVisualValidationChange?.(error);
     if (error || (!writeNoop && !hasRules(next))) return;
 
     const nextValue = serializeDocument(next, nextApiFormat);
-    emittedValue.current = nextValue;
+    emittedValue.current = { value: nextValue, format: fallbackApiFormat, operation };
     onChange(nextValue);
   };
 
@@ -1157,7 +1184,7 @@ export function TransformDocumentEditor({
       ...parsed.document,
       apiFormat: fixedApiFormat ?? parsed.document.apiFormat,
     };
-    emittedValue.current = nextValue;
+    emittedValue.current = { value: nextValue, format: fallbackApiFormat, operation };
     setDocument(nextDocument);
     setVisualError(null);
     onVisualValidationChange?.(null);
@@ -1318,7 +1345,14 @@ export function TransformDocumentEditor({
         </TabsTrigger>
       </TabsList>
 
-      <TabsContent value="visual" className="flex flex-col gap-4">
+      {visualError && mode !== "reference" ? (
+        <Alert variant="destructive">
+          <CircleAlert />
+          <AlertTitle>{t("Review the transform rules")}</AlertTitle>
+          <AlertDescription>{t(visualError)}</AlertDescription>
+        </Alert>
+      ) : null}
+      {"document" in parsed && <TabsContent value="visual" className="flex flex-col gap-4">
         {preserveWhenBlank && !value.trim() ? (
           <Alert>
             <CircleAlert />
@@ -1328,13 +1362,6 @@ export function TransformDocumentEditor({
                 "The existing document is not returned by the API. Adding or applying a visual rule replaces it; leave this editor untouched to preserve it.",
               )}
             </AlertDescription>
-          </Alert>
-        ) : null}
-        {visualError ? (
-          <Alert variant="destructive">
-            <CircleAlert />
-            <AlertTitle>{t("Review the transform rules")}</AlertTitle>
-            <AlertDescription>{t(visualError)}</AlertDescription>
           </Alert>
         ) : null}
 
@@ -1387,7 +1414,7 @@ export function TransformDocumentEditor({
                 )}
                 <FieldDescription>
                   {fixedApiFormat
-                    ? t("The channel group fixes this transform's API format.")
+                    ? t("The operation fixes this transform's API format.")
                     : t("Choose the API format before adding streaming response rules.")}
                 </FieldDescription>
               </Field>
@@ -1446,15 +1473,16 @@ export function TransformDocumentEditor({
                 <div className="flex flex-col gap-1.5">
                   <CardTitle>{t("Request body (JSON Patch)")}</CardTitle>
                   <CardDescription>
-                    {t(
+                    {allowRequestJson ? t(
                       "Apply JSON Patch or version 2 array and object operations to the upstream JSON request. Model and stream remain protected.",
-                    )}
+                    ) : t("This operation does not support request-body rules.")}
                   </CardDescription>
                 </div>
                 <Button
                   type="button"
                   variant="outline"
                   size="sm"
+                  disabled={!allowRequestJson}
                   onClick={() =>
                     commitVisualDocument({
                       ...document,
@@ -1467,12 +1495,14 @@ export function TransformDocumentEditor({
                 </Button>
               </CardHeader>
               <CardContent className="flex flex-col gap-4">
-              <PatchRulesEditor
-                idPrefix="request-json"
-                rules={document.requestJson}
-                scope="request"
-                onChange={(requestJson) => commitVisualDocument({ ...document, requestJson })}
-              />
+                {(allowRequestJson || document.requestJson.length > 0) && (
+                  <PatchRulesEditor
+                    idPrefix="request-json"
+                    rules={document.requestJson}
+                    scope="request"
+                    onChange={(requestJson) => commitVisualDocument({ ...document, requestJson })}
+                  />
+                )}
               </CardContent>
             </Card>
           </div>
@@ -1516,16 +1546,16 @@ export function TransformDocumentEditor({
                 <div className="flex flex-col gap-1.5">
                   <CardTitle>{t("Response body (streaming SSE)")}</CardTitle>
                   <CardDescription>
-                    {t(
+                    {allowStreaming || !operation ? t(
                       "Patch supported JSON Server-Sent Events. Non-streaming JSON response bodies always pass through unchanged.",
-                    )}
+                    ) : t("This operation does not support streaming response rules.")}
                   </CardDescription>
                 </div>
                 <Button
                   type="button"
                   variant="outline"
                   size="sm"
-                  disabled={availableSseEvents.length === 0}
+                  disabled={!allowStreaming || availableSseEvents.length === 0}
                   onClick={() => {
                     const event = availableSseEvents[0];
                     if (!event) return;
@@ -1541,7 +1571,7 @@ export function TransformDocumentEditor({
               </CardHeader>
               <CardContent className="flex flex-col gap-4">
                 {document.sse.length === 0
-                  ? sectionEmpty(
+                  ? allowStreaming && sectionEmpty(
                       t("No response-body rules"),
                       t("Add a supported streaming event and JSON Patch operations."),
                     )
@@ -1624,6 +1654,7 @@ export function TransformDocumentEditor({
                             variant="outline"
                             size="sm"
                             className="self-start"
+                            disabled={!allowStreaming}
                             onClick={() =>
                               commitVisualDocument({
                                 ...document,
@@ -1666,7 +1697,7 @@ export function TransformDocumentEditor({
             </AlertDescription>
           </Alert>
         </div>
-      </TabsContent>
+      </TabsContent>}
 
       <TabsContent value="json">
         <FieldGroup>
@@ -1683,8 +1714,6 @@ export function TransformDocumentEditor({
               value={value}
               onChange={(event) => {
                 emittedValue.current = null;
-                setVisualError(null);
-                onVisualValidationChange?.(null);
                 onChange(event.target.value);
               }}
               className="font-mono text-xs"
@@ -1728,42 +1757,44 @@ export function TransformDocumentEditor({
             document={proxyHeaderFilterExample}
             onApply={() => applyExample(proxyHeaderFilterExample)}
           />
-          <ReferenceExample
-            title={t("Request body example")}
-            description={t("Replace a value that the client request already contains.")}
-            document={requestBodyExample}
-            onApply={() => applyExample(requestBodyExample)}
-          />
-          <ReferenceExample
-            title={t("Array rewrite example")}
-            description={t("Prepend a system message only when the target path is an array.")}
-            document={arrayRewriteExample}
-            onApply={() => applyExample(arrayRewriteExample)}
-          />
-          <ReferenceExample
-            title={t("Current-value reference example")}
-            description={t("Keep the original target value inside a replacement object.")}
-            document={currentValueExample}
-            onApply={() => applyExample(currentValueExample)}
-          />
-          <ReferenceExample
-            title={t("Conditional merge example")}
-            description={t("Shallow-merge safe metadata only when the target is an object.")}
-            document={conditionalMergeExample}
-            onApply={() => applyExample(conditionalMergeExample)}
-          />
+          {allowRequestJson && <>
+            <ReferenceExample
+              title={t("Request body example")}
+              description={t("Replace a value that the client request already contains.")}
+              document={requestBodyExample}
+              onApply={() => applyExample(requestBodyExample)}
+            />
+            <ReferenceExample
+              title={t("Array rewrite example")}
+              description={t("Prepend a system message only when the target path is an array.")}
+              document={arrayRewriteExample}
+              onApply={() => applyExample(arrayRewriteExample)}
+            />
+            <ReferenceExample
+              title={t("Current-value reference example")}
+              description={t("Keep the original target value inside a replacement object.")}
+              document={currentValueExample}
+              onApply={() => applyExample(currentValueExample)}
+            />
+            <ReferenceExample
+              title={t("Conditional merge example")}
+              description={t("Shallow-merge safe metadata only when the target is an object.")}
+              document={conditionalMergeExample}
+              onApply={() => applyExample(conditionalMergeExample)}
+            />
+          </>}
           <ReferenceExample
             title={t("Response header example")}
             description={t("Expose a safe marker to clients in the upstream response.")}
             document={responseHeaderExample}
             onApply={() => applyExample(responseHeaderExample)}
           />
-          <ReferenceExample
+          {allowStreaming && <ReferenceExample
             title={t("Streaming response example")}
             description={t("Add a non-envelope field to a supported streaming event.")}
             document={responseBodyExample}
             onApply={() => applyExample(responseBodyExample)}
-          />
+          />}
         </div>
       </TabsContent>
     </Tabs>

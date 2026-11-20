@@ -4,16 +4,20 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { I18nProvider } from "@/app/i18n-provider";
 import { STORAGE_KEY, setCurrentLocale } from "@/app/i18n";
-import type { ApiFormat } from "@/api/types";
+import type { ApiFormat, ApiOperation } from "@/api/types";
 import { TransformDocumentEditor } from "@/features/admin/transforms/transform-document-editor";
+
+interface EditorOptions {
+  initialValue?: string;
+  defaultApiFormat?: ApiFormat;
+  operation?: ApiOperation;
+}
 
 function EditorHarness({
   initialValue = "{}",
   defaultApiFormat,
-}: {
-  initialValue?: string;
-  defaultApiFormat?: ApiFormat;
-}) {
+  operation,
+}: EditorOptions) {
   const [value, setValue] = useState(initialValue);
   const [validation, setValidation] = useState<string | null>(null);
   return (
@@ -22,6 +26,7 @@ function EditorHarness({
         value={value}
         onChange={setValue}
         defaultApiFormat={defaultApiFormat}
+        operation={operation}
         onVisualValidationChange={setValidation}
       />
       <output data-testid="transform-document">{value}</output>
@@ -30,7 +35,7 @@ function EditorHarness({
   );
 }
 
-function renderEditor(options: { initialValue?: string; defaultApiFormat?: ApiFormat } = {}) {
+function renderEditor(options: EditorOptions = {}) {
   render(
     <I18nProvider>
       <EditorHarness {...options} />
@@ -160,6 +165,47 @@ describe("TransformDocumentEditor", () => {
         },
       ],
     });
+  });
+
+  it.each(["images_edit", "web_search"] as const)("restricts body rules for %s while allowing removal", async (operation) => {
+    const user = userEvent.setup();
+    const api_format = operation === "images_edit" ? "open_ai_images" : "open_ai_responses";
+    const initialValue = JSON.stringify({ version: 1, api_format, request_json: [{ op: "remove", path: "/foo" }] });
+    renderEditor({ operation, initialValue });
+
+    expect(screen.getByTestId("transform-document")).toHaveTextContent(initialValue);
+    expect(screen.getByTestId("transform-validation")).toHaveTextContent("This operation does not support request-body rules.");
+    expect(screen.getByRole("button", { name: "Add request body rule" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add streaming response rule" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Delete rule" }));
+    expect(screen.getByTestId("transform-validation")).toBeEmptyDOMElement();
+    expect(JSON.parse(screen.getByTestId("transform-document").textContent ?? "")).toEqual({});
+
+    await user.click(screen.getByRole("tab", { name: "Reference" }));
+    expect(screen.queryByText("Request body example")).not.toBeInTheDocument();
+    expect(screen.queryByText("Streaming response example")).not.toBeInTheDocument();
+    expect(screen.getByText("Request header example")).toBeVisible();
+  });
+
+  it("validates raw capability JSON without replacing the input or editing a stale visual document", async () => {
+    const user = userEvent.setup();
+    renderEditor({ operation: "web_search" });
+    await user.click(screen.getByRole("tab", { name: "JSON configuration" }));
+    const raw = screen.getByLabelText("Transform document JSON");
+    const invalidFormat = JSON.stringify({ version: 1, api_format: "open_ai_chat_completions" });
+    fireEvent.change(raw, { target: { value: invalidFormat } });
+    expect(raw).toHaveValue(invalidFormat);
+    expect(screen.getByTestId("transform-validation")).toHaveTextContent("The transform's API format must match the operation.");
+
+    fireEvent.change(raw, { target: { value: JSON.stringify({ version: 1, api_format: "open_ai_responses", sse: [{ event: "response.completed", json: [] }] }) } });
+    expect(screen.getByTestId("transform-validation")).toHaveTextContent("This operation does not support streaming response rules.");
+    fireEvent.change(raw, { target: { value: "" } });
+    expect(screen.getByTestId("transform-validation")).toHaveTextContent("Transform JSON is not valid.");
+    await user.click(screen.getByRole("tab", { name: "Visual editor" }));
+    expect(screen.queryByRole("button", { name: "Add request header rule" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "JSON configuration" }));
+    fireEvent.change(screen.getByLabelText("Transform document JSON"), { target: { value: "{}" } });
+    expect(screen.getByTestId("transform-validation")).toBeEmptyDOMElement();
   });
 
   it("applies the proxy and CDN request-header filter template", async () => {

@@ -64,17 +64,25 @@ test.describe("canonical routing topology", () => {
     await expect(page.getByRole("heading", { name: "Channel capabilities" })).toHaveCount(0);
 
     await page.getByText("Upstream A", { exact: true }).click();
-    await page.getByRole("tab", { name: "Channel capabilities" }).click();
+    await page.getByRole("link", { name: "Choose a capability to configure body and header transforms." }).click();
     await expect(page.getByRole("heading", { name: "Channel capabilities" })).toBeVisible();
     await expect(page.getByRole("columnheader", { name: "Transports" })).toHaveCount(0);
     await page.getByRole("cell", { name: "Chat Completions", exact: true }).click();
     await expect(page.getByRole("button", { name: "Save capability" })).toBeVisible();
     await expect(page).toHaveURL(/\/admin\/routing\/logical-channels\/.*capability=/);
     await expect(page.getByRole("combobox", { name: "Logical channel" })).toBeDisabled();
+    await page.getByText("Body and header transforms", { exact: true }).click();
+    await page.getByRole("button", { name: "Add request header rule" }).click();
+    await page.getByLabel("Header name", { exact: true }).fill("x-test");
+    await page.getByLabel("Header value", { exact: true }).fill("browser");
     const capabilityWrite = page.waitForRequest((request) =>
       request.method() === "PUT" && request.url().includes("/routing/capabilities/"));
     await page.getByRole("button", { name: "Save capability" }).click();
-    expect((await capabilityWrite).headers()["if-match"]).toBe(E2E_CAPABILITY_ETAG);
+    const write = await capabilityWrite;
+    expect(write.headers()["if-match"]).toBe(E2E_CAPABILITY_ETAG);
+    expect(write.postDataJSON().override_document).toMatchObject({
+      api_format: "open_ai_chat_completions", request_headers: { set: { "x-test": "browser" } },
+    });
     await expect(page.getByText("Capability saved", { exact: true })).toBeVisible();
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(page.getByRole("button", { name: "Save capability" })).toBeVisible();

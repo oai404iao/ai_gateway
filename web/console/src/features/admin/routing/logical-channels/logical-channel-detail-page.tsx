@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useParams, useSearchParams } from "react-router";
+import { Link, useParams, useSearchParams } from "react-router";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -170,6 +170,13 @@ export function LogicalChannelDetailPage() {
               <CardTitle>{t("Channel settings")}</CardTitle>
               <CardDescription>
                 {t("Credentials are reusable identities. Rebinding changes connection identity without touching routes.")}
+                {!isNew && (
+                  <Link className="block underline underline-offset-4" to={withReturnTo(
+                    `/admin/routing/logical-channels/${id}?view=capabilities`, returnTo,
+                  )}>
+                    {t("Choose a capability to configure body and header transforms.")}
+                  </Link>
+                )}
               </CardDescription>
             </CardHeader>
             <CardContent>
