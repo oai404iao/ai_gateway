@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Controller, useFieldArray, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import {
   CalendarDays,
   Calculator,
   CheckCircle2,
+  ChevronDown,
   Clock3,
   Plus,
   RotateCcw,
@@ -22,7 +23,6 @@ import {
   CardAction,
   CardContent,
   CardDescription,
-  CardFooter,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
@@ -44,7 +44,6 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 import { Input } from "@/components/ui/input";
-import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { DecimalField } from "@/components/shared/decimal-field";
@@ -68,6 +67,7 @@ import {
 } from "@/lib/decimal";
 import { formatDateTime } from "@/lib/dates";
 import { formatCompactTokens } from "@/lib/formatters";
+import { cn } from "@/lib/utils";
 
 const UTC_TIME_PATTERN = /^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/;
 const MINUTES_PER_DAY = 24 * 60;
@@ -149,12 +149,17 @@ function pricingFormForModel(model: ControlPlaneModel): PricingForm {
     cache_write_unit_price: model.cache_write_unit_price,
     output_unit_price: model.output_unit_price,
     price_effective_at: toLocalInput(model.price_effective_at),
+    time_multipliers: (model.advanced_billing.time_multipliers ?? []).map(normalizeWindow),
+  };
+}
+
+function calculatorFormForModel(model: ControlPlaneModel): CalculatorForm {
+  return {
     reference_input_unit_price: model.input_unit_price,
     reference_cached_input_unit_price: model.cached_input_unit_price,
     reference_cache_write_unit_price: model.cache_write_unit_price,
     reference_output_unit_price: model.output_unit_price,
     calculator_multiplier: "1",
-    time_multipliers: (model.advanced_billing.time_multipliers ?? []).map(normalizeWindow),
   };
 }
 
@@ -203,11 +208,6 @@ const schema = z
     cache_write_unit_price: decimalSchema,
     output_unit_price: decimalSchema,
     price_effective_at: z.string().min(1, "Price effective time is required."),
-    reference_input_unit_price: decimalSchema,
-    reference_cached_input_unit_price: decimalSchema,
-    reference_cache_write_unit_price: decimalSchema,
-    reference_output_unit_price: decimalSchema,
-    calculator_multiplier: multiplierSchema,
     time_multipliers: z
       .array(timeWindowSchema)
       .max(32, "A model can have at most 32 UTC price windows."),
@@ -262,6 +262,16 @@ const schema = z
 
 type PricingForm = z.infer<typeof schema>;
 
+const calculatorSchema = z.object({
+  reference_input_unit_price: decimalSchema,
+  reference_cached_input_unit_price: decimalSchema,
+  reference_cache_write_unit_price: decimalSchema,
+  reference_output_unit_price: decimalSchema,
+  calculator_multiplier: multiplierSchema,
+});
+
+type CalculatorForm = z.infer<typeof calculatorSchema>;
+
 const empty: PricingForm = {
   price_unit_tokens: 1_000_000,
   input_unit_price: "0",
@@ -269,12 +279,15 @@ const empty: PricingForm = {
   cache_write_unit_price: "0",
   output_unit_price: "0",
   price_effective_at: "",
+  time_multipliers: [],
+};
+
+const emptyCalculator: CalculatorForm = {
   reference_input_unit_price: "0",
   reference_cached_input_unit_price: "0",
   reference_cache_write_unit_price: "0",
   reference_output_unit_price: "0",
   calculator_multiplier: "1",
-  time_multipliers: [],
 };
 
 function toLocalInput(iso: string): string {
@@ -302,47 +315,70 @@ export function ModelPricingPage() {
   const { data, etag, isLoading, error, refetch } = useModel(id);
   const update = useUpdateModel(id);
   const { t } = useI18n();
+  const pricingFormId = useId();
+  const calculatorPanelId = useId();
+  const pricingForm = useRef<HTMLFormElement>(null);
   const baselineEtag = useRef("");
+  const [calculatorOpen, setCalculatorOpen] = useState(false);
+  const [focusError, setFocusError] = useState(false);
   const [reloadRequired, setReloadRequired] = useState(false);
   const [isReloading, setIsReloading] = useState(false);
   const form = useForm<PricingForm>({
     resolver: zodResolver(schema),
     defaultValues: empty,
+    shouldFocusError: false,
   });
+  const calculator = useForm<CalculatorForm>({
+    resolver: zodResolver(calculatorSchema),
+    defaultValues: emptyCalculator,
+  });
+  const { reset: resetForm, formState: { isSubmitting } } = form;
+  const { reset: resetCalculator } = calculator;
+  const resetPricing = useCallback((model: ControlPlaneModel, version: string) => {
+    resetForm(pricingFormForModel(model));
+    resetCalculator(calculatorFormForModel(model));
+    baselineEtag.current = version;
+    setReloadRequired(false);
+  }, [resetForm, resetCalculator]);
   const windows = useFieldArray({
     control: form.control,
     name: "time_multipliers",
   });
-  const formIsDirty = form.formState.isDirty;
-  const { navigate, navigationGuard, markSaved } = useConfigurationDraft(form.formState.isSubmitting, formIsDirty);
+  const pricingIsDirty = form.formState.isDirty;
+  const formIsDirty = pricingIsDirty || calculator.formState.isDirty;
+  const { navigate, navigationGuard, markSaved } = useConfigurationDraft(isSubmitting, formIsDirty);
 
   useEffect(() => {
-    if (!data || formIsDirty) return;
-    form.reset(pricingFormForModel(data.data));
-    baselineEtag.current = etag;
-    setReloadRequired(false);
-  }, [data, etag, form, formIsDirty]);
-
-  const fillBasePrices = () => {
-    const values = form.getValues();
-    try {
-      for (const field of PRICE_FIELDS) {
-        form.setValue(
-          field.key,
-          multiplyDecimal(values[field.referenceKey], values.calculator_multiplier),
-          { shouldDirty: true, shouldValidate: true },
-        );
-      }
-      toast.success(t("Calculated prices filled"));
-    } catch {
-      toast.error(t("Reference prices and multiplier must be valid non-negative decimals."));
+    if (!focusError || isSubmitting) return;
+    const invalid = pricingForm.current?.querySelector<HTMLElement>(
+      'input[aria-invalid="true"], [aria-invalid="true"][role="group"] button, [data-window-error]',
+    );
+    if (invalid) {
+      invalid.focus({ preventScroll: true });
+      invalid.scrollIntoView({ block: "center" });
     }
-  };
+    setFocusError(false);
+  }, [focusError, isSubmitting]);
+
+  useEffect(() => {
+    if (data && !formIsDirty) resetPricing(data.data, etag);
+  }, [data, etag, resetPricing, formIsDirty]);
+
+  const fillBasePrices = calculator.handleSubmit((values) => {
+    for (const field of PRICE_FIELDS) {
+      form.setValue(
+        field.key,
+        multiplyDecimal(values[field.referenceKey], values.calculator_multiplier),
+        { shouldDirty: true, shouldValidate: true },
+      );
+    }
+    toast.success(t("Calculated prices filled"), { position: "top-center" });
+  });
 
   const copyBaseToReference = () => {
     const values = form.getValues();
     for (const field of PRICE_FIELDS) {
-      form.setValue(field.referenceKey, values[field.key], {
+      calculator.setValue(field.referenceKey, values[field.key], {
         shouldDirty: true,
         shouldValidate: true,
       });
@@ -384,9 +420,7 @@ export function ModelPricingPage() {
     try {
       const refreshed = await refetch();
       if (refreshed.isSuccess && refreshed.data) {
-        baselineEtag.current = refreshed.data.etag;
-        form.reset(pricingFormForModel(refreshed.data.data));
-        setReloadRequired(false);
+        resetPricing(refreshed.data.data, refreshed.data.etag);
         toast.success(t("Latest model pricing loaded"));
       } else {
         toast.error(t("The latest model pricing could not be reloaded."));
@@ -423,9 +457,7 @@ export function ModelPricingPage() {
       await update.mutateAsync({ input, ifMatch: baselineEtag.current });
       const refreshed = await refetch();
       if (refreshed.isSuccess && refreshed.data) {
-        baselineEtag.current = refreshed.data.etag;
-        form.reset(pricingFormForModel(refreshed.data.data));
-        setReloadRequired(false);
+        resetPricing(refreshed.data.data, refreshed.data.etag);
         toast.success(t("Model pricing updated"));
         markSaved();
         if (searchParams.has("returnTo")) navigate(returnTo, { replace: true });
@@ -439,9 +471,7 @@ export function ModelPricingPage() {
       if (mutationError instanceof ApiError && mutationError.isConflict) {
         const refreshed = await refetch();
         if (refreshed.isSuccess && refreshed.data) {
-          baselineEtag.current = refreshed.data.etag;
-          form.reset(pricingFormForModel(refreshed.data.data));
-          setReloadRequired(false);
+          resetPricing(refreshed.data.data, refreshed.data.etag);
           toast.error(t("This pricing model was changed elsewhere. Reloading."));
         } else {
           setReloadRequired(true);
@@ -453,24 +483,14 @@ export function ModelPricingPage() {
         toast.error(mutationError instanceof Error ? mutationError.message : t("Save failed"));
       }
     }
-  });
+  }, () => setFocusError(true));
 
   const timeWindowErrors = form.formState.errors.time_multipliers as
     | { message?: string; root?: { message?: string } }
     | undefined;
   const timeWindowCollectionError =
     timeWindowErrors?.message ?? timeWindowErrors?.root?.message;
-  const dirtyFields = form.formState.dirtyFields;
-  const formDisabled = form.formState.isSubmitting || isReloading;
-  const pricingIsDirty = Boolean(
-    dirtyFields.price_unit_tokens ||
-      dirtyFields.input_unit_price ||
-      dirtyFields.cached_input_unit_price ||
-      dirtyFields.cache_write_unit_price ||
-      dirtyFields.output_unit_price ||
-      dirtyFields.price_effective_at ||
-      dirtyFields.time_multipliers,
-  );
+  const formDisabled = isSubmitting || update.isPending || isReloading;
   const watchedWindows = form.watch("time_multipliers");
   const configuredWeekdays = ALL_WEEKDAYS.filter((weekday) =>
     watchedWindows.some((window) => window.weekdays.includes(weekday)),
@@ -497,10 +517,14 @@ export function ModelPricingPage() {
       hasData={Boolean(data)}
       editCard={
         data ? (
-          <form
-            className="grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(20rem,1fr)] lg:items-start"
-            onSubmit={submit}
-          >
+          <div className="grid gap-6 [&_:is(input,button,[tabindex])]:scroll-my-24 lg:grid-cols-[minmax(0,2fr)_minmax(20rem,1fr)] lg:items-start">
+            <form
+              id={pricingFormId}
+              ref={pricingForm}
+              className="contents"
+              noValidate
+              onSubmit={submit}
+            >
             <fieldset className="contents" disabled={formDisabled}>
             <Card className="min-w-0 lg:col-start-1 lg:row-start-1">
               <CardHeader>
@@ -590,7 +614,9 @@ export function ModelPricingPage() {
                   </Button>
                 </div>
                 {timeWindowCollectionError ? (
-                  <FieldError>{t(timeWindowCollectionError)}</FieldError>
+                  <FieldError tabIndex={-1} data-window-error="">
+                    {t(timeWindowCollectionError)}
+                  </FieldError>
                 ) : null}
               </CardHeader>
               <CardContent className="flex flex-col gap-4">
@@ -650,7 +676,7 @@ export function ModelPricingPage() {
                     return (
                       <Card key={window.id} size="sm">
                         <CardHeader>
-                          <CardTitle>{windowLabel}</CardTitle>
+                          <CardTitle className="wrap-anywhere">{windowLabel}</CardTitle>
                           <CardDescription>{t("Weekly UTC price window")}</CardDescription>
                           <CardAction className="flex items-center gap-2">
                             <Badge variant="secondary">{selectedWeekdaySummary}</Badge>
@@ -810,102 +836,130 @@ export function ModelPricingPage() {
               </CardContent>
             </Card>
 
-            <Card className="min-w-0 lg:sticky lg:top-6 lg:col-start-2 lg:row-span-2 lg:row-start-1">
-              <CardHeader>
-                <CardTitle>{t("Multiplier calculator")}</CardTitle>
-                <CardDescription>
-                  {t(
-                    "Multiply four reference prices and fill the base-price fields. Calculation changes stay local until you save.",
-                  )}
-                </CardDescription>
-                <CardAction>
-                  <Button type="button" variant="outline" size="sm" onClick={copyBaseToReference}>
-                    {t("Copy base prices")}
-                  </Button>
-                </CardAction>
-              </CardHeader>
-              <CardContent className="flex flex-col gap-5">
-                <FieldGroup>
-                  {PRICE_FIELDS.map((field) => (
-                    <Controller
-                      key={field.referenceKey}
-                      control={form.control}
-                      name={field.referenceKey}
-                      render={({ field: controlled, fieldState }) => (
-                        <DecimalField
-                          label={t(`Reference ${field.label.toLowerCase()}`)}
-                          value={controlled.value}
-                          onChange={controlled.onChange}
-                          error={fieldState.error ? t(fieldState.error.message ?? "") : undefined}
-                          required
-                        />
-                      )}
-                    />
-                  ))}
-                  <Controller
-                    control={form.control}
-                    name="calculator_multiplier"
-                    render={({ field, fieldState }) => (
-                      <DecimalField
-                        label={t("Calculator multiplier")}
-                        value={field.value}
-                        onChange={field.onChange}
-                        error={fieldState.error ? t(fieldState.error.message ?? "") : undefined}
-                        description={t("For example, 1.2 adds a 20% markup and 0.5 halves prices.")}
-                        required
-                      />
-                    )}
-                  />
-                </FieldGroup>
-                <Button type="button" variant="secondary" onClick={fillBasePrices}>
-                  <Calculator data-icon="inline-start" />
-                  {t("Calculate and fill base prices")}
-                </Button>
-                <Separator />
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex flex-col gap-1">
-                    <h2 className="text-sm font-medium">{t("Review and save")}</h2>
-                    <p className="text-xs text-muted-foreground">
-                      {t("Confirm the effective price unit and weekly schedule before saving.")}
-                    </p>
-                  </div>
-                  <Badge
-                    variant={pricingIsDirty || reloadRequired ? "default" : "secondary"}
-                    aria-live="polite"
+            </fieldset>
+            </form>
+
+            <div className="flex min-w-0 flex-col gap-6 lg:col-start-2 lg:row-span-2 lg:row-start-1">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="hidden lg:block"><h2>{t("Multiplier calculator")}</h2></CardTitle>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="justify-between lg:hidden"
+                    aria-expanded={calculatorOpen}
+                    aria-controls={calculatorPanelId}
+                    onClick={() => setCalculatorOpen(!calculatorOpen)}
                   >
-                    {reloadRequired
-                      ? t("Reload required")
-                      : pricingIsDirty
-                        ? t("Unsaved changes")
-                        : t("Saved")}
-                  </Badge>
-                </div>
-                <dl className="grid grid-cols-2 gap-4">
-                  <DetailField label={t("Model")} value={data.data.source_model_id} mono />
-                  <DetailField
-                    label={t("Price unit tokens")}
-                    value={formatCompactTokens(form.watch("price_unit_tokens"))}
-                  />
-                  <DetailField label={t("Price windows")} value={watchedWindows.length} />
-                  <DetailField label={t("Window start weekdays")} value={weekdaySummary} />
-                  <DetailField
-                    label={t("Effective")}
-                    value={formatDateTime(fromLocalInput(form.watch("price_effective_at")))}
-                    className="col-span-2"
-                  />
-                </dl>
-              </CardContent>
-              <CardFooter className="flex-col items-stretch gap-2">
+                    {t("Multiplier calculator")}
+                    <ChevronDown data-icon="inline-end" className="group-aria-expanded/button:rotate-180" />
+                  </Button>
+                </CardHeader>
+                <CardContent
+                  id={calculatorPanelId}
+                  className={cn(!calculatorOpen && "hidden lg:block")}
+                >
+                  <form onSubmit={fillBasePrices}>
+                    <fieldset className="flex min-w-0 flex-col gap-5" disabled={formDisabled}>
+                      <p className="text-sm text-muted-foreground">
+                        {t(
+                          "Multiply four reference prices and fill the base-price fields. Calculation changes stay local until you save.",
+                        )}
+                      </p>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="self-start"
+                        onClick={copyBaseToReference}
+                      >
+                        {t("Copy base prices")}
+                      </Button>
+                      <FieldGroup>
+                        {PRICE_FIELDS.map((field) => (
+                          <Controller
+                            key={field.referenceKey}
+                            control={calculator.control}
+                            name={field.referenceKey}
+                            render={({ field: controlled, fieldState }) => (
+                              <DecimalField
+                                label={t(`Reference ${field.label.toLowerCase()}`)}
+                                value={controlled.value}
+                                onChange={controlled.onChange}
+                                error={fieldState.error ? t(fieldState.error.message ?? "") : undefined}
+                                required
+                              />
+                            )}
+                          />
+                        ))}
+                        <Controller
+                          control={calculator.control}
+                          name="calculator_multiplier"
+                          render={({ field, fieldState }) => (
+                            <DecimalField
+                              label={t("Calculator multiplier")}
+                              value={field.value}
+                              onChange={field.onChange}
+                              error={fieldState.error ? t(fieldState.error.message ?? "") : undefined}
+                              description={t("For example, 1.2 adds a 20% markup and 0.5 halves prices.")}
+                              required
+                            />
+                          )}
+                        />
+                      </FieldGroup>
+                      <Button type="submit" variant="secondary" className="h-auto min-h-8 whitespace-normal">
+                        <Calculator data-icon="inline-start" />
+                        {t("Calculate and fill base prices")}
+                      </Button>
+                    </fieldset>
+                  </form>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>{t("Review and save")}</CardTitle>
+                  <CardDescription>
+                    {t("Confirm the effective price unit and weekly schedule before saving.")}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <dl className="grid grid-cols-2 gap-4">
+                    <DetailField label={t("Model")} value={data.data.source_model_id} mono />
+                    <DetailField
+                      label={t("Price unit tokens")}
+                      value={formatCompactTokens(form.watch("price_unit_tokens"))}
+                    />
+                    <DetailField label={t("Price windows")} value={watchedWindows.length} />
+                    <DetailField label={t("Window start weekdays")} value={weekdaySummary} />
+                    <DetailField
+                      label={t("Effective")}
+                      value={formatDateTime(fromLocalInput(form.watch("price_effective_at")))}
+                      className="col-span-2"
+                    />
+                  </dl>
+                </CardContent>
+              </Card>
+            </div>
+
+            <div className="bottom-0 z-10 flex flex-wrap items-center justify-between gap-2 border-t bg-background py-2 pb-[max(--spacing(2),env(safe-area-inset-bottom))] lg:col-span-2 [@media(min-height:24rem)]:sticky">
+              <Badge
+                variant={pricingIsDirty || reloadRequired ? "default" : "secondary"}
+                aria-live="polite"
+              >
+                {reloadRequired
+                  ? t("Reload required")
+                  : pricingIsDirty
+                    ? t("Unsaved changes")
+                    : t("Saved")}
+              </Badge>
+              <div className="flex flex-wrap gap-2">
                 <Button
                   type="submit"
-                  disabled={
-                    form.formState.isSubmitting ||
-                    update.isPending ||
-                    reloadRequired ||
-                    !pricingIsDirty
-                  }
+                  form={pricingFormId}
+                  disabled={formDisabled || reloadRequired || !pricingIsDirty}
                 >
-                  {form.formState.isSubmitting || update.isPending ? (
+                  {isSubmitting || update.isPending ? (
                     <Spinner data-icon="inline-start" />
                   ) : (
                     <CheckCircle2 data-icon="inline-start" />
@@ -930,24 +984,16 @@ export function ModelPricingPage() {
                   <Button
                     type="button"
                     variant="ghost"
-                    disabled={
-                      !pricingIsDirty ||
-                      form.formState.isSubmitting ||
-                      update.isPending
-                    }
-                    onClick={() => {
-                      baselineEtag.current = etag;
-                      form.reset(pricingFormForModel(data.data));
-                    }}
+                    disabled={formDisabled || !pricingIsDirty}
+                    onClick={() => resetPricing(data.data, etag)}
                   >
                     <RotateCcw data-icon="inline-start" />
                     {t("Discard pricing changes")}
                   </Button>
                 )}
-              </CardFooter>
-            </Card>
-            </fieldset>
-          </form>
+              </div>
+            </div>
+          </div>
         ) : null
       }
     />

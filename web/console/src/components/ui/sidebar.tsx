@@ -156,11 +156,13 @@ function Sidebar({
   className,
   children,
   dir,
+  mobileFinalFocus,
   ...props
 }: React.ComponentProps<"div"> & {
   side?: "left" | "right"
   variant?: "sidebar" | "floating" | "inset"
   collapsible?: "offcanvas" | "icon" | "none"
+  mobileFinalFocus?: React.ComponentProps<typeof SheetContent>["finalFocus"]
 }) {
   const { isMobile, state, openMobile, setOpenMobile } = useSidebar()
 
@@ -183,6 +185,7 @@ function Sidebar({
     return (
       <Sheet open={openMobile} onOpenChange={setOpenMobile} {...props}>
         <SheetContent
+          finalFocus={mobileFinalFocus}
           dir={dir}
           data-sidebar="sidebar"
           data-slot="sidebar"

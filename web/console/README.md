@@ -90,14 +90,16 @@ credentials**, **Channel configuration**, and **Model configuration**.
 Channel configuration combines group management, logical channels grouped by
 their group, and capabilities scoped to the selected channel.
 
-`/admin/models` lists client models on the left and embeds the existing
-operation-route editor on the right. Select a model, add an unused operation,
+`/admin/models` has a searchable client-model directory and an embedded
+operation-route editor. Wide, tall windows scroll the two panes independently;
+single-pane layouts return to the original list position. Select a model, add an unused operation,
 then configure explicit `(capability, upstream model)` candidates and priority
 tiers. The first operation save creates a missing model routing profile before
 saving the rule; these are separate commands, and retries reuse the profile.
 Existing rules retain ETag updates and draft navigation protection. Price sync
 is a separate tab; model metadata, copying, and pricing retain dedicated editors.
-Regression coverage lives beside these pages and in `e2e/routing-topology.spec.ts`.
+Regression coverage lives beside these pages and in `e2e/ux-model-workspace.spec.ts`
+and `e2e/routing-topology.spec.ts`.
 
 ## Plugin administration
 

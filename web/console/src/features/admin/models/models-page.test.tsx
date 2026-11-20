@@ -24,6 +24,7 @@ describe("ModelsPage", () => {
   it.each([
     [999, "999"],
     [1_000, "1K"],
+    [1_001, "1,001"],
     [1_000_000, "1M"],
     [1_000_000_000, "1B"],
   ])("shows base prices per %i tokens as %s in the list and details", async (tokens, unit) => {
@@ -35,7 +36,7 @@ describe("ModelsPage", () => {
     const user = userEvent.setup();
     renderAppAt("/admin/models");
     const model = await screen.findByRole("button", { name: new RegExp(MODEL.display_name) });
-    expect(within(model).getByText(`Base prices · USD / ${unit} tokens`)).toBeInTheDocument();
+    expect(within(model).getByText(`USD / ${unit} tokens`)).toBeInTheDocument();
     expect(within(model).getByText("Input price")).toBeInTheDocument();
     expect(within(model).getByText("Cache hit price")).toBeInTheDocument();
     expect(within(model).getByText("Output price")).toBeInTheDocument();

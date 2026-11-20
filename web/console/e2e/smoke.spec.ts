@@ -59,7 +59,7 @@ test.describe("Console SPA smoke", () => {
     );
 
     const basePrices = page.getByText("Base prices", { exact: true });
-    const calculator = page.getByText("Multiplier calculator", { exact: true });
+    const calculator = page.getByRole("heading", { name: "Multiplier calculator", exact: true, level: 2 });
     await expect(basePrices).toBeVisible();
     await expect(calculator).toBeVisible();
     const baseBox = await basePrices.boundingBox();
@@ -876,23 +876,21 @@ test.describe("Console SPA smoke", () => {
     ).toHaveCount(0);
   });
 
-  test("users can open the spend leaderboard podium", async ({
+  test("regular users can read the spend leaderboard in rank order", async ({
     page,
   }) => {
     await mockConsoleApi(page);
     await page.goto("/login");
-    await page.getByLabel(/email/i).fill("admin@example.com");
+    await page.getByLabel(/email/i).fill("batch-user@example.test");
     await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
     await page.getByRole("button", { name: /sign in/i }).click();
     await page.getByRole("link", { name: "Spend leaderboard" }).click();
 
     await expect(page).toHaveURL(/\/leaderboard/);
-    await expect(page.getByText("Top spenders")).toBeVisible();
-    await expect(page.getByText("Ada Lovelace").first()).toBeVisible();
-    await expect(page.getByText("Diego Rivera").first()).toBeVisible();
-    await expect(page.getByText("Lin Qiao").first()).toBeVisible();
-    await expect(page.getByText("Leaderboard", { exact: true })).toBeVisible();
-    await expect(page.getByText("1,912.06 USD")).toBeVisible();
+    const rankings = page.getByRole("table", { name: "User rankings" });
+    await expect(rankings.locator("tbody tr")).toHaveText([/Ada Lovelace.*721\.95 USD/, /Diego Rivera.*602\.12 USD/, /Lin Qiao.*385\.12 USD/]);
+    await expect(rankings.getByText("37.8%", { exact: true })).toBeInViewport();
+    await expect(page.getByText("1,912.06 USD")).toBeInViewport();
   });
 
   test("users choose API key targets and per-key limits", async ({ page }) => {

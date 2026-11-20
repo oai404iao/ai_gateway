@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
-import { ArrowDown, ArrowUp, Search, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowDown, ArrowUp, ChevronDown, Search, X } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   Select,
   SelectContent,
@@ -42,6 +43,7 @@ import { formatDecimal, formatDurationMs, formatTokens, formatUsd } from "@/lib/
 import { API_FORMATS, apiFormatLabel, outcomeLabel, outcomeVariant } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/app/i18n";
+import { useIsMobile } from "@/hooks/use-mobile";
 
 const LIMITS = [25, 50, 100] as const;
 const OUTCOMES = ["succeeded", "failed", "rejected", "cancelled"] as const;
@@ -250,7 +252,7 @@ function reasoningEffortLabel(value: string): string {
   return `${value.charAt(0).toUpperCase()}${value.slice(1)}`;
 }
 
-function RequestModel({ log }: { log: RequestLogView }) {
+function RequestModel({ log, nameClassName }: { log: RequestLogView; nameClassName?: string }) {
   const { t } = useI18n();
   const effort = log.reasoning_effort
     ? reasoningEffortLabel(log.reasoning_effort)
@@ -258,7 +260,7 @@ function RequestModel({ log }: { log: RequestLogView }) {
 
   return (
     <span className="flex flex-wrap items-center gap-1.5">
-      <span className="font-medium">{log.client_model}</span>
+      <span className={cn("font-medium wrap-anywhere", nameClassName)}>{log.client_model}</span>
       {effort ? (
         <Badge
           variant="warning"
@@ -360,6 +362,9 @@ export function RequestLogsView({
 }: RequestLogsViewProps) {
   const { t } = useI18n();
   const isSystemView = scope === "system";
+  const isMobile = useIsMobile();
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const filterToggle = useRef<HTMLButtonElement>(null);
   const [draft, setDraft] = useState<RequestLogFilterDraft>(emptyFilters);
   const [filters, setFilters] = useState<ListQuery>(() => toQuery(emptyFilters));
   const query = useLogs(filters);
@@ -403,6 +408,22 @@ export function RequestLogsView({
     const ownerName = key.user_id ? userNamesById.get(key.user_id) : undefined;
     return isSystemView && ownerName ? `${key.name} · ${ownerName}` : key.name;
   };
+  const appliedApiKey = apiKeys.find((key) => key.id === filters.api_key_id);
+  const filterLabels: [string, string | undefined][] = [
+    ["User", isSystemView && filters.user_id ? (userNamesById.get(filters.user_id) ?? filters.user_id) : undefined],
+    ["API key", appliedApiKey ? apiKeyLabel(appliedApiKey) : filters.api_key_id],
+    ["Model", filters.model],
+    ["API format", filters.api_format && apiFormatLabel(filters.api_format)],
+    ["Operation", filters.api_operation && requestOperationLabel(filters.api_operation, t)],
+    ["Outcome", filters.outcome && outcomeLabel(filters.outcome)],
+    ["Billing", filters.billed === undefined ? undefined : t(filters.billed ? "Billed" : "Unbilled")],
+    ["From", filters.started_after && formatDateTime(filters.started_after)],
+    ["To", filters.started_before && formatDateTime(filters.started_before)],
+    ["Results", filters.limit !== undefined && filters.limit !== emptyFilters.limit
+      ? t("Last {count}", { count: filters.limit })
+      : undefined],
+  ];
+  const appliedConditions = filterLabels.flatMap(([label, value]) => value ? [{ label, value }] : []);
 
   const updateDraft = (partial: Partial<RequestLogFilterDraft>) => {
     setDraft((previous) => ({ ...previous, ...partial }));
@@ -414,10 +435,19 @@ export function RequestLogsView({
     }
     setFilters(next);
   };
-  const applyFilters = () => runQuery(toQuery(draft));
+  const closeMobileFilters = () => {
+    if (!isMobile) return;
+    setFiltersOpen(false);
+    filterToggle.current?.focus();
+  };
+  const applyFilters = () => {
+    runQuery(toQuery(draft));
+    closeMobileFilters();
+  };
   const clearFilters = () => {
     setDraft(emptyFilters);
     runQuery(toQuery(emptyFilters));
+    closeMobileFilters();
   };
 
   const columns: Column<RequestLogView>[] = [
@@ -434,7 +464,8 @@ export function RequestLogsView({
     {
       key: "model",
       header: t("Model"),
-      render: (log) => <RequestModel log={log} />,
+      className: "min-w-36 max-w-56 whitespace-normal",
+      render: (log) => <RequestModel log={log} nameClassName="line-clamp-2" />,
     },
     {
       key: "operation-protocol",
@@ -502,11 +533,59 @@ export function RequestLogsView({
       render: (log) => <RequestDuration log={log} />,
     },
   ];
+  const compactColumns: Column<RequestLogView>[] = [
+    {
+      key: "request",
+      header: t("Request log"),
+      className: "w-full whitespace-normal",
+      render: (log) => (
+        <div className="flex flex-col items-start gap-1">
+          <time dateTime={log.started_at} className="text-xs text-muted-foreground">
+            {formatDateTime(log.started_at)}
+          </time>
+          <span className="line-clamp-2 font-medium wrap-anywhere">{log.client_model}</span>
+          <Badge variant={outcomeVariant(log.outcome)}>{outcomeLabel(log.outcome)}</Badge>
+        </div>
+      ),
+    },
+  ];
 
   return (
-    <div className="flex flex-col gap-6">
+    <Collapsible
+      className="flex flex-col gap-6"
+      open={!isMobile || filtersOpen}
+      onOpenChange={setFiltersOpen}
+    >
       <PageHeader title={title} description={description} />
-      <Card size="sm">
+      {isMobile ? (
+        <div className="flex flex-col gap-3">
+          <CollapsibleTrigger
+            ref={filterToggle}
+            render={<Button variant="outline" className="self-start scroll-mt-20" />}
+          >
+            {t("Filters ({count})", { count: appliedConditions.length })}
+            <ChevronDown data-icon="inline-end" className={cn(filtersOpen && "rotate-180")} />
+          </CollapsibleTrigger>
+          {appliedConditions.length > 0 ? (
+            <div className="flex flex-wrap items-start gap-2">
+              <ul aria-label={t("Applied filters")} className="flex min-w-0 flex-wrap gap-2">
+                {appliedConditions.map(({ label, value }) => (
+                  <li key={label} className="min-w-0 max-w-full">
+                    <Badge variant="secondary" className="block h-auto whitespace-normal wrap-anywhere">
+                      {t(label)}: {value}
+                    </Badge>
+                  </li>
+                ))}
+              </ul>
+              <Button type="button" variant="ghost" size="sm" onClick={clearFilters}>
+                <X data-icon="inline-start" />
+                {t("Clear filters")}
+              </Button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      <CollapsibleContent render={<Card size="sm" />}>
         <CardHeader className="border-b">
           <CardTitle>{t("Filters")}</CardTitle>
           <CardDescription>
@@ -780,7 +859,7 @@ export function RequestLogsView({
             </FieldGroup>
           </form>
         </CardContent>
-      </Card>
+      </CollapsibleContent>
       <Card>
         <CardHeader>
           <CardTitle>{t("Requests")}</CardTitle>
@@ -799,7 +878,7 @@ export function RequestLogsView({
             emptyDescription={t("There are no logged requests matching these filters.")}
           >
             <ResourceTable
-              columns={columns}
+              columns={isMobile ? compactColumns : columns}
               rows={query.data ?? []}
               rowKey={(log) => log.id}
               onRowClick={(log) => setSelectedId(log.id)}
@@ -868,6 +947,6 @@ export function RequestLogsView({
           ) : null}
         </SheetContent>
       </Sheet>
-    </div>
+    </Collapsible>
   );
 }

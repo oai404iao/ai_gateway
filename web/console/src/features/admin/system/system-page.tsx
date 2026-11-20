@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Navigate, useParams } from "react-router";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
@@ -16,6 +16,7 @@ import {
   FieldError,
   FieldGroup,
   FieldLabel,
+  FieldSet,
 } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import {
@@ -30,6 +31,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { AsyncResource } from "@/components/shared/async-resource";
+import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { PageHeader } from "@/components/shared/page-header";
 import { DetailField } from "@/components/shared/detail-field";
 import { StringListField } from "@/components/shared/string-list-field";
@@ -37,7 +39,7 @@ import { ApiError } from "@/api/errors";
 import { useReload, useSystemSettings, useUpdateSystemSettings } from "@/features/admin/api";
 import { SessionAffinityCard } from "@/features/admin/system/session-affinity-card";
 import { useI18n } from "@/app/i18n";
-import type { ScheduledTestingMode, SystemSettingsInput } from "@/api/types";
+import type { ScheduledTestingMode, SystemSettings, SystemSettingsInput } from "@/api/types";
 import { SETTINGS_SECTIONS, type SettingsSection } from "./settings-sections";
 
 function statusCodesAreValid(value: string): boolean {
@@ -277,6 +279,7 @@ const systemSettingsSchema = z
   });
 
 type SystemSettingsValues = z.infer<typeof systemSettingsSchema>;
+type SystemSettingsVersion = { data: SystemSettings; etag: string };
 
 const defaultValues: SystemSettingsValues = {
   api_hosts: [],
@@ -334,40 +337,65 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
   const updateSettings = useUpdateSystemSettings();
   const reload = useReload();
   const [correlation, setCorrelation] = useState<string | null>(null);
+  const [baseline, setBaseline] = useState<SystemSettingsVersion>();
+  const [conflict, setConflict] = useState(false);
+  const [discardOpen, setDiscardOpen] = useState(false);
+  const [reloadingLatest, setReloadingLatest] = useState(false);
   const form = useForm<SystemSettingsValues>({
     resolver: zodResolver(systemSettingsSchema),
     defaultValues,
   });
-  const draft = useConfigurationDraft(updateSettings.isPending, form.formState.isDirty);
+  const { reset, formState: { isDirty, isSubmitting } } = form;
+  const reloadRequired = conflict || Boolean(baseline && settings.error);
+  const fieldsLocked = isSubmitting || reloadingLatest;
+  const writeBlocked = reloadRequired || settings.isFetching || updateSettings.isPending || reloadingLatest;
+  const draft = useConfigurationDraft(fieldsLocked, isDirty);
 
+  const loadVersion = useCallback((version: SystemSettingsVersion) => {
+    const data = version.data;
+    reset({
+      api_hosts: data.api_hosts,
+      upstream: data.upstream,
+      request_retry: {
+        ...data.request_retry,
+        retryable_status_codes: data.request_retry.retryable_status_codes.join(", "),
+      },
+      passive_health: data.passive_health,
+      automatic_disable: {
+        ...data.automatic_disable,
+        error_status_codes: data.automatic_disable.error_status_codes.join(", "),
+      },
+      scheduled_testing: data.scheduled_testing,
+      session_affinity: data.session_affinity,
+      websocket: data.websocket,
+    });
+    setBaseline(version);
+  }, [reset]);
   useEffect(() => {
-    if (settings.data) {
-      form.reset({
-        api_hosts: settings.data.data.api_hosts,
-        upstream: settings.data.data.upstream,
-        request_retry: {
-          enabled: settings.data.data.request_retry.enabled,
-          max_retries: settings.data.data.request_retry.max_retries,
-          retryable_status_codes:
-            settings.data.data.request_retry.retryable_status_codes.join(", "),
-        },
-        passive_health: settings.data.data.passive_health,
-        automatic_disable: {
-          enabled: settings.data.data.automatic_disable.enabled,
-          error_status_codes: settings.data.data.automatic_disable.error_status_codes.join(", "),
-          error_message_keywords: settings.data.data.automatic_disable.error_message_keywords,
-        },
-        scheduled_testing: settings.data.data.scheduled_testing,
-        session_affinity: settings.data.data.session_affinity,
-        websocket: settings.data.data.websocket,
-      });
+    if (settings.data && settings.data !== baseline && !isDirty && !writeBlocked && !isSubmitting) {
+      loadVersion(settings.data);
     }
-  }, [form, settings.data]);
+  }, [settings.data, baseline, isDirty, writeBlocked, isSubmitting, loadVersion]);
+
+  const reloadLatest = async () => {
+    setDiscardOpen(false);
+    setReloadingLatest(true);
+    try {
+      const result = await settings.refetch();
+      if (result.isSuccess) {
+        loadVersion(result.data);
+        setConflict(false);
+        draft.markSaved();
+      }
+    } finally {
+      setReloadingLatest(false);
+    }
+  };
 
   const errorMessage = (message: string | undefined) => (message ? t(message) : undefined);
 
   const save = async (values: SystemSettingsValues) => {
-    if (!settings.data) return;
+    if (!baseline || writeBlocked) return;
     try {
       const input: SystemSettingsInput = {
         api_hosts: values.api_hosts,
@@ -391,7 +419,7 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
       };
       const result = await updateSettings.mutateAsync({
         input,
-        ifMatch: settings.data.etag,
+        ifMatch: baseline.etag,
       });
       setCorrelation(result.correlation_id);
       form.reset(values);
@@ -399,8 +427,7 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
       toast.success(t("System settings saved and applied."));
     } catch (error) {
       if (error instanceof ApiError && error.isConflict) {
-        toast.error(t("System settings changed elsewhere. Reloading."));
-        await settings.refetch();
+        setConflict(true);
       } else {
         toast.error(error instanceof Error ? error.message : t("Save failed"));
       }
@@ -432,13 +459,39 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
           )}
         </AlertDescription>
       </Alert> : null}
-      <AsyncResource isLoading={settings.isLoading} error={settings.error}>
-        {settings.data && section !== "maintenance" ? (
+      <AsyncResource
+        isLoading={settings.isLoading}
+        error={baseline && section !== "maintenance" ? null : settings.error}
+      >
+        {baseline && section !== "maintenance" ? (
           <form
             data-slot="system-settings-columns"
             onSubmit={form.handleSubmit(save)}
             className="flex flex-col gap-6"
           >
+            {reloadRequired ? (
+              <Alert variant="destructive">
+                {conflict ? (
+                  <AlertTitle>{t("System settings changed elsewhere. Your draft was not saved.")}</AlertTitle>
+                ) : null}
+                <AlertDescription>
+                  {settings.error
+                    ? t("The latest version could not be loaded. Your draft has been kept.")
+                    : t("Load the latest version before editing again. This will discard your draft.")}
+                </AlertDescription>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="justify-self-start"
+                  disabled={fieldsLocked || settings.isFetching}
+                  onClick={() => isDirty ? setDiscardOpen(true) : void reloadLatest()}
+                >
+                  {reloadingLatest ? <Spinner data-icon="inline-start" /> : null}
+                  {t("Load latest version")}
+                </Button>
+              </Alert>
+            ) : null}
+            <FieldSet disabled={fieldsLocked} className="min-w-0 gap-6">
             {section === "general" ? (
             <Card>
               <CardHeader>
@@ -640,6 +693,7 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
                     </FieldContent>
                     <Switch
                       id="request_retry_enabled"
+                      disabled={fieldsLocked}
                       checked={form.watch("request_retry.enabled")}
                       onCheckedChange={(checked) =>
                         form.setValue("request_retry.enabled", Boolean(checked), {
@@ -808,9 +862,11 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
                     </FieldContent>
                     <Switch
                       id="automatic_disable_enabled"
+                      disabled={fieldsLocked}
                       checked={form.watch("automatic_disable.enabled")}
                       onCheckedChange={(checked) =>
                         form.setValue("automatic_disable.enabled", Boolean(checked), {
+                          shouldDirty: true,
                           shouldValidate: true,
                         })
                       }
@@ -852,6 +908,7 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
                     value={form.watch("automatic_disable.error_message_keywords")}
                     onChange={(value) =>
                       form.setValue("automatic_disable.error_message_keywords", value, {
+                        shouldDirty: true,
                         shouldValidate: true,
                       })
                     }
@@ -888,7 +945,7 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
                         form.setValue(
                           "scheduled_testing.mode",
                           value as ScheduledTestingMode,
-                          { shouldValidate: true },
+                          { shouldDirty: true, shouldValidate: true },
                         )
                       }
                     >
@@ -964,9 +1021,11 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
                     </FieldContent>
                     <Switch
                       id="scheduled_testing_auto_recover"
+                      disabled={fieldsLocked}
                       checked={form.watch("scheduled_testing.auto_recover")}
                       onCheckedChange={(checked) =>
                         form.setValue("scheduled_testing.auto_recover", Boolean(checked), {
+                          shouldDirty: true,
                           shouldValidate: true,
                         })
                       }
@@ -1003,6 +1062,7 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
                       </FieldContent>
                       <Switch
                         id="websocket_enabled"
+                        disabled={fieldsLocked}
                         checked={form.watch("websocket.enabled")}
                         onCheckedChange={(checked) =>
                           form.setValue("websocket.enabled", Boolean(checked), {
@@ -1115,6 +1175,7 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
             {section === "affinity" ? <div>
               <SessionAffinityCard
                 value={form.watch("session_affinity")}
+                disabled={fieldsLocked}
                 onChange={(session_affinity) =>
                   form.setValue("session_affinity", session_affinity, {
                     shouldDirty: true,
@@ -1133,10 +1194,11 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
               />
             </div> : null}
 
+            </FieldSet>
             <Button
               type="submit"
               className="w-fit"
-              disabled={updateSettings.isPending}
+              disabled={fieldsLocked || writeBlocked}
             >
               {updateSettings.isPending ? (
                 <Spinner data-icon="inline-start" />
@@ -1148,6 +1210,16 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
           </form>
         ) : null}
       </AsyncResource>
+
+      <ConfirmDialog
+        open={discardOpen}
+        onOpenChange={setDiscardOpen}
+        title={t("Discard unsaved changes?")}
+        description={t("Load the latest version before editing again. This will discard your draft.")}
+        confirmLabel={t("Discard changes")}
+        destructive
+        onConfirm={() => void reloadLatest()}
+      />
 
       {section === "maintenance" ? <Card>
         <CardHeader>

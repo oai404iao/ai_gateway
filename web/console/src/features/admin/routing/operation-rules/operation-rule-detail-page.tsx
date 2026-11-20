@@ -131,7 +131,8 @@ export function OperationRuleDetailPage({
   const capabilities = useChannelCapabilities();
   const channels = useLogicalChannels();
   const profiles = useRoutingProfiles();
-  const models = useModels();
+  const canCreateProfile = isNew && !modelId;
+  const models = useModels(canCreateProfile);
   const rules = useOperationRules();
   const createProfile = useCreateRoutingProfile();
   const [newProfileModel, setNewProfileModel] = useState("");
@@ -143,7 +144,7 @@ export function OperationRuleDetailPage({
   const [submitting, setSubmitting] = useState(false);
   const rule = query.data?.data;
   const busy = submitting || create.isPending || update.isPending || createProfile.isPending;
-  const draft = useConfigurationDraft(busy);
+  const draft = useConfigurationDraft(busy, undefined, embedded ? "q" : undefined);
   const parentModelId = modelId ?? profiles.data?.find((profile) => profile.id === rule?.model_routing_profile_id)?.model_id;
   const returnTo = useReturnPath(parentModelId
     ? `/admin/models?model=${parentModelId}` : "/admin/routing/operation-rules");
@@ -280,8 +281,9 @@ export function OperationRuleDetailPage({
         "Candidates reference an explicit capability and upstream model. Tiers, priorities, and weights are never inferred from legacy channels.",
       )}
       backPath={returnTo}
-      isLoading={(!isNew && query.isLoading) || capabilities.isLoading || channels.isLoading || profiles.isLoading || models.isLoading || rules.isLoading}
-      error={query.error ?? capabilities.error ?? channels.error ?? profiles.error ?? models.error ?? rules.error}
+      isLoading={(!isNew && query.isLoading) || capabilities.isLoading || channels.isLoading || profiles.isLoading || (canCreateProfile && models.isLoading) || rules.isLoading}
+      error={query.error ?? capabilities.error ?? channels.error ?? (embedded ? null :
+        profiles.error ?? (canCreateProfile ? models.error : null) ?? rules.error)}
       hasData={isNew || Boolean(rule)}
       detailCard={
         rule ? (
@@ -336,7 +338,7 @@ export function OperationRuleDetailPage({
                   <FieldError>{fieldError("model_routing_profile_id")}</FieldError>
                 ) : null}
               </Field>}
-              {isNew && !modelId ? (
+              {canCreateProfile ? (
                 <Field>
                   <FieldLabel htmlFor="profile-model">{t("Create profile for pricing model")}</FieldLabel>
                   <Select value={newProfileModel} onValueChange={(value) => setNewProfileModel(value ?? "")}

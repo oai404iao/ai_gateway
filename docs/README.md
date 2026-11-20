@@ -32,6 +32,8 @@
 - [查找维护者专题](development/README.md)：连接器、Console、持久化、测试、CI 与发布。
 - [开发 Console UI](../web/console/README.md) 或 [实现原生连接器](../crates/connector-sdk/README.md)。
 - [Console 视觉规范](../design.md)：Nova 主题、图标、动画与布局原语边界。
+- [花费排行榜设计提案](development/spend-leaderboard-design.md)：桌面与手机的费用排名设计稿。
+- [Console 可用性设计记录](development/console-ux-review.md)：从模型长列表复现到交互设计和验收。
 
 ## 查阅契约与历史
 

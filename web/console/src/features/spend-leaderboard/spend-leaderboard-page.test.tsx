@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BrowserRouter } from "react-router";
 import { http, HttpResponse } from "msw";
@@ -45,18 +45,23 @@ describe("SpendLeaderboardPage", () => {
     expect(
       await screen.findByRole("heading", { name: "Spend leaderboard" }),
     ).toBeInTheDocument();
-    expect(await screen.findByText("Top spenders")).toBeInTheDocument();
-    expect(screen.getAllByText("Ada Lovelace").length).toBeGreaterThan(1);
-    expect(screen.getByText("Asia/Shanghai")).toBeInTheDocument();
-    expect(
-      screen.getByText(/Daily rankings run from 00:00 to the following 00:00/),
-    ).toBeInTheDocument();
+    const list = await screen.findByRole("list", { name: "User rankings" });
+    const rows = within(list).getAllByRole("listitem");
+    expect(rows).toHaveLength(4);
+    expect(rows[0]).toHaveTextContent("Rank 1");
+    expect(rows[0]).toHaveTextContent("Ada Lovelace");
+    expect(rows[0]).toHaveTextContent("721.95 USD");
+    expect(rows[0]).toHaveTextContent("37.8%");
+    expect(rows[1]).toHaveTextContent("Diego Rivera");
+    expect(screen.getByText("1,912.06 USD")).toBeInTheDocument();
+    expect(screen.getByText("Shanghai time · Asia/Shanghai")).toBeInTheDocument();
     await waitFor(() => {
       expect(queries.at(-1)?.get("period")).toBe("day");
       expect(queries.at(-1)?.has("period_start")).toBe(false);
+      expect(queries.at(-1)?.get("limit")).toBe("50");
     });
 
-    await user.click(screen.getByRole("button", { name: "Weekly" }));
+    await user.click(screen.getByRole("button", { name: "Weekly ranking" }));
     await waitFor(() => {
       expect(queries.at(-1)?.get("period")).toBe("week");
       expect(queries.at(-1)?.has("period_start")).toBe(false);
@@ -66,6 +71,8 @@ describe("SpendLeaderboardPage", () => {
     await waitFor(() => {
       expect(queries.at(-1)?.get("period_start")).toBe("2026-07-13");
     });
-    expect(screen.getByText("Historical period")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Back to current period" }));
+    expect(await screen.findByRole("button", { name: "Current ranking period" })).toHaveAttribute("aria-disabled", "true");
+    expect(await screen.findByText("Jul 20, 2026 – Jul 26, 2026")).toBeInTheDocument();
   });
 });

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -87,10 +87,25 @@ export function CatalogPage({ embedded = false }: { embedded?: boolean } = {}) {
   const applyCatalogModels = useApplyCatalogModels();
   const [providerIds, setProviderIds] = useState("");
   const [selected, setSelected] = useState<Set<ModelSyncPreviewModel>>(new Set());
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const searchInput = useRef<HTMLInputElement>(null);
   const previewData = preview.data?.models;
+  const query = search.trim().toLowerCase();
+  const previewRows = previewData ?? [];
+  const matching = query ? previewRows.filter((model) => [
+    model.display_name, model.model_id, model.provider_name, model.provider_id,
+  ].some((value) => value.toLowerCase().includes(query))) : previewRows;
+  const hiddenSelections = query ? selected.size - matching.filter((model) => selected.has(model)).length : 0;
   const { t } = useI18n();
 
+  const updateSearch = (value: string) => {
+    setSearch(value);
+    setPage(1);
+  };
+
   const fetchPreview = async () => {
+    setPage(1);
     try {
       await preview.mutateAsync({
         provider_ids: providerIds
@@ -248,25 +263,46 @@ export function CatalogPage({ embedded = false }: { embedded?: boolean } = {}) {
         <Card>
           <CardHeader>
             <CardTitle>{t("Preview results")}</CardTitle>
-            <CardDescription>
-              {t("{count} catalog models.", { count: previewData.length })}
+            <CardDescription role="status">
+              {query ? t("{count} of {total} catalog models match.", { count: matching.length, total: previewData.length }) :
+                t("{count} catalog models.", { count: previewData.length })}
             </CardDescription>
           </CardHeader>
-          <CardContent>
+          <CardContent className="flex min-w-0 flex-col gap-4">
+            {previewData.length > 0 && (
+              <Field className="max-w-md">
+                <FieldLabel htmlFor="catalog-model-search">{t("Search name, model ID, or provider")}</FieldLabel>
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <Input id="catalog-model-search" ref={searchInput} type="search"
+                    className="min-w-40 flex-1 [&::-webkit-search-cancel-button]:hidden"
+                    value={search} onChange={(event) => updateSearch(event.target.value)} />
+                  {search && <Button variant="outline" size="sm" onClick={() => {
+                    updateSearch("");
+                    searchInput.current?.focus();
+                  }}>{t("Clear search")}</Button>}
+                </div>
+                {hiddenSelections > 0 && (
+                  <p role="status" className="text-xs text-muted-foreground">
+                    {t("Selected models outside these results: {count}", { count: hiddenSelections })}
+                  </p>
+                )}
+              </Field>
+            )}
             <AsyncResource
               isLoading={false}
               error={null}
-              isEmpty={previewData.length === 0}
-              emptyTitle={t("No catalog models")}
-              emptyDescription={t("No models matched the preview request.")}
+              isEmpty={matching.length === 0}
+              emptyTitle={t(previewData.length ? "No matching models" : "No catalog models")}
+              emptyDescription={t(previewData.length ? "Change or clear the search." : "No models matched the preview request.")}
             >
               <ResourceTable
                 columns={columns}
-                rows={previewData}
+                rows={matching}
                 rowKey={(model) => JSON.stringify([model.provider_id, model.model_id])}
                 onRowClick={toggle}
+                pagination={{ page, onPageChange: setPage }}
               />
-              <p className="mt-2 text-xs text-muted-foreground">
+              <p className="text-xs text-muted-foreground">
                 {t(
                   "Select rows to import new models or update existing model prices and catalog billing rules.",
                 )}{" "}

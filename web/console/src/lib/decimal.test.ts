@@ -1,11 +1,20 @@
 import { describe, expect, it } from "vitest";
 import {
+  decimalPercentShare,
   isNonNegativeDecimal,
   isNonNegativeRustDecimal,
   multiplyDecimal,
 } from "@/lib/decimal";
 
 describe("decimal helpers", () => {
+  it("rounds decimal shares at exact tenths of a percent without rounding tiny or zero values together", () => {
+    expect(decimalPercentShare("9.95", "100")?.roundedRatio).toBe(0.1);
+    expect(decimalPercentShare("9.94999", "100")?.roundedRatio).toBe(0.099);
+    expect(decimalPercentShare("0.099999", "100")?.belowTenth).toBe(true);
+    expect(decimalPercentShare("0.1", "100")?.belowTenth).toBe(false);
+    expect(decimalPercentShare("0", "100")?.belowTenth).toBe(false);
+    expect(decimalPercentShare("0", "0.000")).toBeNull();
+  });
   it("multiplies exact price strings without floating-point artifacts", () => {
     expect(multiplyDecimal("0.15", "0.5")).toBe("0.075");
     expect(multiplyDecimal("0.1", "0.2")).toBe("0.02");

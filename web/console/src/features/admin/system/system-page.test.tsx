@@ -48,19 +48,28 @@ describe("SystemPage", () => {
 
   it("reloads the complete settings and ETag after an edit conflict", async () => {
     seedAuthenticatedSession();
-    let conflict = false;
-    let savedEtag: string | null = null;
+    const { updated_at: oldVersion, ...original } = SYSTEM_SETTINGS;
+    const latest = {
+      ...original,
+      api_hosts: ["https://latest.example.test/v1"],
+      upstream: { ...original.upstream, connect_timeout_seconds: 14 },
+      request_retry: { ...original.request_retry, retryable_status_codes: [429, 503] },
+    };
+    const writes: { etag: string | null; body: unknown }[] = [];
     server.use(
-      http.get("/console/v1/system/settings", () =>
-        HttpResponse.json(
-          { ...SYSTEM_SETTINGS, upstream: { ...SYSTEM_SETTINGS.upstream, connect_timeout_seconds: conflict ? 14 : 10 } },
-          { headers: { ETag: conflict ? '"new-version"' : '"old-version"' } },
-        ),
-      ),
-      http.put("/console/v1/system/settings", ({ request }) => {
-        savedEtag = request.headers.get("if-match");
-        conflict = true;
-        return HttpResponse.json({ error: "conflict", message: "Changed elsewhere" }, { status: 409 });
+      http.get("/console/v1/system/settings", () => {
+        const changed = writes.length > 0;
+        return HttpResponse.json(
+          { ...(changed ? latest : original), updated_at: changed ? "2026-02-01T00:00:00Z" : oldVersion },
+          { headers: { ETag: changed ? '"new-version"' : '"old-version"' } },
+        );
+      }),
+      http.put("/console/v1/system/settings", async ({ request }) => {
+        writes.push({ etag: request.headers.get("if-match"), body: await request.json() });
+        if (writes.length === 1) {
+          return HttpResponse.json({ error: "conflict", message: "Changed elsewhere" }, { status: 409 });
+        }
+        return HttpResponse.json({ id: "settings", correlation_id: "settings-updated" });
       }),
     );
     const user = userEvent.setup();
@@ -68,11 +77,34 @@ describe("SystemPage", () => {
     const timeout = await screen.findByLabelText("Connect timeout (seconds)");
     await user.clear(timeout);
     await user.type(timeout, "12");
-    await user.click(screen.getByRole("button", { name: "Save system settings" }));
-    expect(savedEtag).toBe('"old-version"');
+    const save = screen.getByRole("button", { name: "Save system settings" });
+    await user.click(save);
+    expect(await screen.findByText("System settings changed elsewhere. Your draft was not saved.")).toBeInTheDocument();
+    expect(writes).toEqual([{
+      etag: '"old-version"',
+      body: { ...original, upstream: { ...original.upstream, connect_timeout_seconds: 12 } },
+    }]);
+    expect(timeout).toHaveValue(12);
+    expect(save).toBeDisabled();
+
+    const loadLatest = screen.getByRole("button", { name: "Load latest version" });
+    await user.click(loadLatest);
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(timeout).toHaveValue(12);
+    expect(writes).toHaveLength(1);
+
+    await user.click(loadLatest);
+    await user.click(screen.getByRole("button", { name: "Discard changes" }));
     await waitFor(() => expect(timeout).toHaveValue(14));
-    await user.click(screen.getByRole("button", { name: "Save system settings" }));
-    expect(savedEtag).toBe('"new-version"');
+    await user.clear(timeout);
+    await user.type(timeout, "15");
+    await user.click(save);
+    expect(await screen.findByText("System settings saved and applied.")).toBeInTheDocument();
+    expect(writes).toHaveLength(2);
+    expect(writes[1]).toEqual({
+      etag: '"new-version"',
+      body: { ...latest, upstream: { ...latest.upstream, connect_timeout_seconds: 15 } },
+    });
   });
 
   it("persists database-backed forwarding settings with its ETag", async () => {
@@ -179,9 +211,12 @@ describe("SystemPage", () => {
   it("parses retryable upstream statuses into candidate failover policy", async () => {
     seedAuthenticatedSession();
     let received: SystemSettingsInput | undefined;
+    let releaseResponse!: () => void;
+    const responsePending = new Promise<void>((resolve) => { releaseResponse = resolve; });
     server.use(
       http.put("/console/v1/system/settings", async ({ request }) => {
         received = (await request.json()) as SystemSettingsInput;
+        await responsePending;
         return HttpResponse.json({
           id: "00000000-0000-0000-0000-0000000000f1",
           correlation_id: "11111111-0000-0000-0000-000000000002",
@@ -200,11 +235,20 @@ describe("SystemPage", () => {
       screen.getByRole("button", { name: /save system settings/i }),
     );
 
-    await waitFor(() =>
-      expect(received?.request_retry.retryable_status_codes).toEqual([
-        429, 502,
-      ]),
-    );
+    const retry = screen.getByRole("switch", { name: "Enable automatic retry" });
+    try {
+      await waitFor(() =>
+        expect(received?.request_retry.retryable_status_codes).toEqual([
+          429, 502,
+        ]),
+      );
+      expect(statuses).toBeDisabled();
+      expect(retry).toHaveAttribute("aria-disabled", "true");
+    } finally {
+      releaseResponse();
+    }
+    await waitFor(() => expect(statuses).toBeEnabled());
+    expect(retry).not.toHaveAttribute("aria-disabled", "true");
   });
 
   it("redirects the removed provider settings category to general settings", async () => {
