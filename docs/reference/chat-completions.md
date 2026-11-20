@@ -44,7 +44,7 @@ curl "$GATEWAY_BASE_URL/v1/chat/completions" \
 ## ai-gateway 行为
 
 **请求处理**：`open_ai_chat_completions` 格式与其他格式隔离。
-顶层字段按 `chat_completions.client_body` 检查，未知字段本地返回 `400`；
+顶层字段按 `chat_completions.client_body` 检查，未知字段在入口静默删除；
 `messages`、tools 等允许字段内部不递归校验。`thinking`、`enable_thinking` 已列入入口
 白名单，但网关不解释值，也不替目标上游实现思考模式。
 

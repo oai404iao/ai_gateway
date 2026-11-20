@@ -32,13 +32,13 @@ hop-by-hop headers 后，按渠道配置最后注入上游认证。
 
 ## 请求字段与压缩
 
-所有公开数据面请求先应用客户端入口白名单：未列出的 Header 被忽略，未列出的顶层 JSON 或
-multipart 字段返回 `400 request_body_field_unsupported`。当前只检查顶层字段，允许字段内部的
+公开请求的客户端入口白名单忽略未列出的 Header，并静默删除未列出的顶层 JSON 字段或 multipart part，
+而不是将其透传给上游。当前只检查顶层字段，允许字段内部的
 嵌套结构仍由上游解释。完整字段和动作见
 [`请求字段与 Header 白名单`](../reference/request-allowlists.md)。
 
 `POST /v1/responses` 支持客户端以 `Content-Encoding: zstd` 发送 JSON body；网关会先解码，
-再执行模型解析、入口白名单和路由。压缩后的请求和解压后的 JSON 都不能超过
+再执行入口白名单、模型解析和路由。压缩后的请求和解压后的 JSON 都不能超过
 `request_limits.proxy_body_bytes`。其他 JSON 数据面路由只接受 identity，Images edit 继续只
 接受未编码 multipart body。
 
@@ -76,9 +76,8 @@ Codex Connect 的 Images / Search 同时像 Responses 一样保留 `session-id`�
 multipart edit 最多接受 64 个 part、16 张输入图片和一个 mask；普通文本字段最多
 单项 `64 KiB`、合计 `1 MiB`；boundary 最多 70 bytes，preamble、单个 part Header block 和
 boundary padding 分别最多 `8 KiB`、`16 KiB` 与 `1 KiB`，防止畸形 framing 放大 parser
-内存。不需要模型别名时，普通 OpenAI-compatible 渠道收到原始 multipart 字节；需要别名时，
-网关流式等价重建并只替换 `model` part。客户端 policy 删除兼容字段时也会通过同一 replayable
-路径重建 multipart。edit 不应用请求 JSON Transform；若选中渠道配置了该类规则，返回
+内存。不需要模型别名且没有字段被删除时，普通 OpenAI-compatible 渠道收到原始 multipart 字节；
+否则网关流式重建，按需替换 `model` part、略过被删除的 part。edit 不应用请求 JSON Transform；若选中渠道配置了该类规则，返回
 `400 image_edit_json_transform_unsupported`。Header 和响应 Header 变换仍照常执行。当前不接受
 JSON/data URL 形式的公开客户端 edit 请求。
 

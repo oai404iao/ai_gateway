@@ -354,13 +354,6 @@ impl ResponsesWebSocketSession {
                 return SessionAction::Close;
             }
         };
-        let parsed = match parse_websocket_request(&original_body, api_key.filter_fast_mode()) {
-            Ok(parsed) => parsed,
-            Err(error) => {
-                send_proxy_error(client, error).await;
-                return SessionAction::Close;
-            }
-        };
         let applied = match apply_json_body_policy(
             RequestPolicyLayer::Client,
             RequestInterface::ResponsesWebSocket,
@@ -384,6 +377,14 @@ impl ResponsesWebSocketSession {
             }
         };
         let original_body = filtered.body;
+
+        let parsed = match parse_websocket_request(&original_body) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                send_proxy_error(client, error).await;
+                return SessionAction::Close;
+            }
+        };
 
         let affinity = match_session_affinity(
             snapshot.system_settings().session_affinity(),
@@ -1041,10 +1042,7 @@ impl ParsedWebSocketRequest {
     }
 }
 
-fn parse_websocket_request(
-    body: &[u8],
-    filter_fast_mode: bool,
-) -> Result<ParsedWebSocketRequest, ProxyError> {
+fn parse_websocket_request(body: &[u8]) -> Result<ParsedWebSocketRequest, ProxyError> {
     let probe = serde_json::from_slice::<WebSocketRequestProbe<'_>>(body).map_err(|_| {
         ProxyError::invalid_request(
             "WebSocket message must be a response.create JSON object.",
@@ -1076,11 +1074,7 @@ fn parse_websocket_request(
             OPENAI_RESPONSES_FORMAT,
             &probe.reasoning_effort,
             &probe.reasoning,
-            if filter_fast_mode {
-                &serde_json::Value::Null
-            } else {
-                &probe.service_tier
-            },
+            &probe.service_tier,
         ),
         previous_response_id: response_id_digest(probe.previous_response_id.as_deref()),
     })
