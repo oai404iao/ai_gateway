@@ -57,6 +57,7 @@ import type {
 import { usePageOrigin, useReturnPath, withReturnTo } from "@/lib/page-navigation";
 import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
 import { useConnectorPlugins } from "@/features/admin/connectors/api";
+import { modelDiscoveryInput, supportsModelDiscovery } from "./model-discovery-input";
 
 const NONE = "__none__";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -170,18 +171,8 @@ export function CapabilityDetailPage({ capabilityId, channelId, embedded = false
       return;
     }
     try {
-      await discover.mutateAsync({
-        api_format: values.operation === "chat_completion" ? "open_ai_chat_completions"
-          : values.operation.startsWith("images_") ? "open_ai_images" : "open_ai_responses",
-        base_url: selectedAccess.base_url,
-        credential_id: selectedChannel.credential_id,
-        proxy_id: selectedAccess.proxy_id,
-        connect_timeout_ms: selectedAccess.connect_timeout_ms,
-        response_header_timeout_ms: selectedAccess.response_header_timeout_ms,
-        stream_idle_timeout_ms: selectedAccess.stream_idle_timeout_ms,
-        config_template_id: values.config_template_id || null,
-        override_document: JSON.parse(values.override_document),
-      });
+      await discover.mutateAsync(modelDiscoveryInput(selectedChannel, selectedAccess,
+        values.operation, values.config_template_id || null, JSON.parse(values.override_document)));
       setPickingModels(true);
     } catch (error) {
       toast.error(t(controlPlaneMutationErrorMessage(error)));
@@ -386,7 +377,7 @@ export function CapabilityDetailPage({ capabilityId, channelId, embedded = false
                       form.setValue("available_models", value, { shouldDirty: true })
                     }
                   />
-                  {selectedAccess && ["general", "codex"].includes(selectedAccess.connector_kind) && (
+                  {selectedAccess && supportsModelDiscovery(selectedAccess) && (
                     <Button type="button" variant="outline" disabled={discover.isPending}
                       onClick={() => void discoverModels()}>
                       {t("Fetch models")}

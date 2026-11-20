@@ -9,6 +9,8 @@ Versioning.
 
 ### Added
 
+- [Onboard a model across providers](docs/user/routing.md#多个上游接入同一模型) in one reviewed Console transaction, or independently append a wire model to selected capabilities and add routing candidates to an existing priced model.
+
 - Correlate HTTP and Responses WebSocket retry, dispatch, and completion traces with the
   logical request log ID. Candidate selection and send attempts are separate counts;
   an additional attempt does not create a second customer charge.

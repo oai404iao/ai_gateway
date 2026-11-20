@@ -177,6 +177,7 @@ pub fn router(state: ConsoleState) -> Router {
             get(get_api_key_policy).put(update_api_key_policy),
         )
         .route("/console/v1/models", get(list_models).post(create_model))
+        .route("/console/v1/models/onboarding", post(onboard_model))
         .route(
             "/console/v1/catalog/models/sync/preview",
             post(preview_models_sync),
@@ -1549,6 +1550,49 @@ async fn create_model(
     Json(input): Json<ModelInput>,
 ) -> Result<(StatusCode, Json<MutationResponse>), ConsoleError> {
     mutate_created(&state, principal, ControlPlaneMutation::CreateModel(input)).await
+}
+
+#[derive(Serialize)]
+struct ModelOnboardingResponse {
+    model_id: Uuid,
+}
+
+async fn onboard_model(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    input: Result<
+        Json<crate::persistence::ModelOnboardingInput<crate::application::ModelSyncSelection>>,
+        JsonRejection,
+    >,
+) -> Result<Response, ConsoleError> {
+    use crate::persistence::{ModelOnboardingInput, OnboardingModel};
+
+    let Json(input) = match input {
+        Ok(input) => input,
+        Err(JsonRejection::JsonDataError(_)) => return Err(ConsoleError::Validation),
+        Err(other) => return Ok(other.into_response()),
+    };
+    let model = match input.model {
+        OnboardingModel::Existing { id, updated_at } => {
+            OnboardingModel::Existing { id, updated_at }
+        }
+        OnboardingModel::Create(model) => OnboardingModel::Create(model),
+        OnboardingModel::Catalog(ref selection) => {
+            input.validate()?;
+            OnboardingModel::Catalog(state.model_sync.resolve_new(selection).await?)
+        }
+    };
+    let model_id = state
+        .coordinator
+        .onboard_model(
+            principal.user_id(),
+            ModelOnboardingInput {
+                model,
+                operations: input.operations,
+            },
+        )
+        .await?;
+    Ok(Json(ModelOnboardingResponse { model_id }).into_response())
 }
 
 async fn preview_models_sync(

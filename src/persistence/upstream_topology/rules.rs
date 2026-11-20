@@ -1,4 +1,4 @@
-//! Atomic operation-rule graph replacement. The caller owns validation,
+//! Atomic operation-rule graph writes. The caller owns snapshot validation,
 //! audit, commit, and publication of the complete pending runtime snapshot.
 
 use std::collections::HashSet;
@@ -11,8 +11,32 @@ use uuid::Uuid;
 use super::{OperationRuleInput, OperationRuleRecord, UpstreamTopologyRecords};
 use crate::{
     domain::SelectionStrategy,
-    persistence::{MutationResult, RepositoryError},
+    persistence::{MutationResult, RepositoryError, model_onboarding::RuleAddition},
 };
+
+#[derive(Clone, Copy, PartialEq)]
+enum TierWrite {
+    Replace,
+    Append,
+}
+
+impl TierWrite {
+    fn retained_tier(
+        self,
+        before: &UpstreamTopologyRecords,
+        rule_id: Uuid,
+        priority: i32,
+    ) -> Option<Uuid> {
+        match self {
+            Self::Replace => None,
+            Self::Append => before
+                .operation_tiers
+                .iter()
+                .find(|t| t.rule_id == rule_id && t.priority == priority)
+                .map(|t| t.id),
+        }
+    }
+}
 
 fn validate_graph(input: &OperationRuleInput) -> Result<(), RepositoryError> {
     if input.enabled && input.routing_tiers.is_empty() {
@@ -139,6 +163,30 @@ pub async fn pg_save(
     input: &OperationRuleInput,
     expected: Option<DateTime<Utc>>,
 ) -> Result<MutationResult, RepositoryError> {
+    pg_write(transaction, id, input, expected, TierWrite::Replace).await
+}
+
+pub(in crate::persistence) async fn pg_append(
+    transaction: &mut Transaction<'_, Postgres>,
+    addition: RuleAddition,
+) -> Result<MutationResult, RepositoryError> {
+    pg_write(
+        transaction,
+        addition.id,
+        &addition.input,
+        addition.expected,
+        TierWrite::Append,
+    )
+    .await
+}
+
+async fn pg_write(
+    transaction: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+    input: &OperationRuleInput,
+    expected: Option<DateTime<Utc>>,
+    tiers: TierWrite,
+) -> Result<MutationResult, RepositoryError> {
     sqlx::query("SELECT id FROM model_routing_profiles WHERE id=$1 FOR UPDATE")
         .bind(input.model_routing_profile_id)
         .execute(&mut **transaction)
@@ -168,10 +216,12 @@ pub async fn pg_save(
         if changed != 1 {
             return Err(RepositoryError::Conflict);
         }
-        sqlx::query("DELETE FROM model_capability_tiers WHERE rule_id=$1")
-            .bind(id)
-            .execute(&mut **transaction)
-            .await?;
+        if tiers == TierWrite::Replace {
+            sqlx::query("DELETE FROM model_capability_tiers WHERE rule_id=$1")
+                .bind(id)
+                .execute(&mut **transaction)
+                .await?;
+        }
     } else {
         sqlx::query(
             "INSERT INTO model_operation_rules (id,model_routing_profile_id,operation,enabled)
@@ -194,18 +244,23 @@ pub async fn pg_save(
         .await?;
     }
     for tier in &input.routing_tiers {
-        let tier_id = Uuid::new_v4();
-        sqlx::query(
-            "INSERT INTO model_capability_tiers (id,rule_id,operation,priority,strategy)
+        let tier_id = if let Some(retained) = tiers.retained_tier(&before, id, tier.priority) {
+            retained
+        } else {
+            let tier_id = Uuid::new_v4();
+            sqlx::query(
+                "INSERT INTO model_capability_tiers (id,rule_id,operation,priority,strategy)
              VALUES ($1,$2,$3,$4,$5)",
-        )
-        .bind(tier_id)
-        .bind(id)
-        .bind(input.operation.as_str())
-        .bind(tier.priority)
-        .bind(&tier.selection_strategy)
-        .execute(&mut **transaction)
-        .await?;
+            )
+            .bind(tier_id)
+            .bind(id)
+            .bind(input.operation.as_str())
+            .bind(tier.priority)
+            .bind(&tier.selection_strategy)
+            .execute(&mut **transaction)
+            .await?;
+            tier_id
+        };
         for candidate in &tier.candidates {
             sqlx::query(
                 "INSERT INTO model_capability_candidates (tier_id,operation,capability_id,upstream_model,weight)
@@ -226,6 +281,32 @@ pub async fn sqlite_save(
     id: Uuid,
     input: &OperationRuleInput,
     expected: Option<DateTime<Utc>>,
+) -> Result<MutationResult, RepositoryError> {
+    sqlite_write(transaction, id, input, expected, TierWrite::Replace).await
+}
+
+#[cfg(feature = "sqlite-backend")]
+pub(in crate::persistence) async fn sqlite_append(
+    transaction: &mut Transaction<'_, sqlx::Sqlite>,
+    addition: RuleAddition,
+) -> Result<MutationResult, RepositoryError> {
+    sqlite_write(
+        transaction,
+        addition.id,
+        &addition.input,
+        addition.expected,
+        TierWrite::Append,
+    )
+    .await
+}
+
+#[cfg(feature = "sqlite-backend")]
+async fn sqlite_write(
+    transaction: &mut Transaction<'_, sqlx::Sqlite>,
+    id: Uuid,
+    input: &OperationRuleInput,
+    expected: Option<DateTime<Utc>>,
+    tiers: TierWrite,
 ) -> Result<MutationResult, RepositoryError> {
     use crate::persistence::sqlite::{SqliteTimestamp, SqliteUuid};
     let before = super::sqlite_load(transaction).await?;
@@ -248,10 +329,12 @@ pub async fn sqlite_save(
         if changed != 1 {
             return Err(RepositoryError::Conflict);
         }
-        sqlx::query("DELETE FROM model_capability_tiers WHERE rule_id=?")
-            .bind(SqliteUuid(id))
-            .execute(&mut **transaction)
-            .await?;
+        if tiers == TierWrite::Replace {
+            sqlx::query("DELETE FROM model_capability_tiers WHERE rule_id=?")
+                .bind(SqliteUuid(id))
+                .execute(&mut **transaction)
+                .await?;
+        }
     } else {
         sqlx::query(
             "INSERT INTO model_operation_rules (id,model_routing_profile_id,operation,enabled)
@@ -274,18 +357,23 @@ pub async fn sqlite_save(
         .await?;
     }
     for tier in &input.routing_tiers {
-        let tier_id = Uuid::new_v4();
-        sqlx::query(
-            "INSERT INTO model_capability_tiers (id,rule_id,operation,priority,strategy)
+        let tier_id = if let Some(retained) = tiers.retained_tier(&before, id, tier.priority) {
+            retained
+        } else {
+            let tier_id = Uuid::new_v4();
+            sqlx::query(
+                "INSERT INTO model_capability_tiers (id,rule_id,operation,priority,strategy)
              VALUES (?,?,?,?,?)",
-        )
-        .bind(SqliteUuid(tier_id))
-        .bind(SqliteUuid(id))
-        .bind(input.operation.as_str())
-        .bind(tier.priority)
-        .bind(&tier.selection_strategy)
-        .execute(&mut **transaction)
-        .await?;
+            )
+            .bind(SqliteUuid(tier_id))
+            .bind(SqliteUuid(id))
+            .bind(input.operation.as_str())
+            .bind(tier.priority)
+            .bind(&tier.selection_strategy)
+            .execute(&mut **transaction)
+            .await?;
+            tier_id
+        };
         for candidate in &tier.candidates {
             sqlx::query(
                 "INSERT INTO model_capability_candidates (tier_id,operation,capability_id,upstream_model,weight)

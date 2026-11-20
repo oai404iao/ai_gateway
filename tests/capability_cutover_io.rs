@@ -1000,6 +1000,7 @@ async fn exercise_capability_batch_and_recovery(
         "automatic_disable": {"enabled": true, "error_status_codes": [429]},
         "session_affinity": {"enabled": false, "max_entries": 100000, "default_ttl_seconds": 3600, "rules": []}
     })).unwrap()).await.unwrap();
+    exercise_catalog_append(repository).await;
     let before = repository.topology().await.unwrap();
     let capability = before
         .channel_capabilities
@@ -1017,6 +1018,7 @@ async fn exercise_capability_batch_and_recovery(
         enabled: Some(true),
         auto_disable_allowed: Some(true),
         billing_multiplier: Some(rust_decimal::Decimal::from(2)),
+        append_model: None,
     };
     let invalid = repository
         .prepare_channels_batch(
@@ -1091,6 +1093,7 @@ async fn exercise_capability_batch_and_recovery(
                     enabled: Some(false),
                     auto_disable_allowed: None,
                     billing_multiplier: None,
+                    append_model: None,
                 },
             },
         )
@@ -1168,6 +1171,109 @@ async fn exercise_capability_batch_and_recovery(
         .filter(|row| row.id != recovered.id)
         .collect::<Vec<_>>();
     assert_eq!(sorted(&unchanged_before), sorted(&unchanged_after));
+}
+
+async fn exercise_catalog_append(repository: &ai_gateway::persistence::ControlPlaneRepository) {
+    use ai_gateway::persistence::{
+        ChannelBatchUpdateInput, ChannelBatchUpdateTarget, RepositoryError,
+    };
+
+    let initial = repository.topology().await.unwrap();
+    let caps: Vec<_> = initial
+        .channel_capabilities
+        .iter()
+        .filter(|cap| cap.deleted_at.is_none())
+        .take(2)
+        .collect();
+    assert_eq!(caps.len(), 2);
+    let targets: Vec<_> = caps
+        .iter()
+        .map(|cap| ChannelBatchUpdateTarget {
+            id: cap.id,
+            updated_at: cap.updated_at,
+        })
+        .collect();
+    let changes =
+        |name: &str| serde_json::from_value(serde_json::json!({"append_model": name})).unwrap();
+    for invalid in [" \t", &"a".repeat(301)] {
+        let batch = ChannelBatchUpdateInput {
+            items: targets.clone(),
+            changes: changes(invalid),
+        };
+        assert!(matches!(
+            repository.prepare_channels_batch(USER, batch).await,
+            Err(RepositoryError::Validation)
+        ));
+    }
+    let name = "wire-new";
+    let batch = |items| ChannelBatchUpdateInput {
+        items,
+        changes: changes(name),
+    };
+    let (first, _) = repository
+        .prepare_channels_batch(USER, batch(vec![targets[1].clone()]))
+        .await
+        .unwrap()
+        .commit()
+        .await
+        .unwrap();
+    let first = &first[0];
+    assert!(matches!(
+        repository
+            .prepare_channels_batch(USER, batch(targets.clone()))
+            .await,
+        Err(RepositoryError::Conflict)
+    ));
+    let after_conflict = repository.topology().await.unwrap();
+    let get = |id| {
+        after_conflict
+            .channel_capabilities
+            .iter()
+            .find(|row| row.id == id)
+            .unwrap()
+    };
+    assert_eq!(get(targets[0].id).revision, caps[0].revision);
+    assert_eq!(
+        get(targets[0].id).settings.available_models,
+        caps[0].settings.available_models
+    );
+
+    let mut current = targets;
+    current[1].updated_at = first.updated_at;
+    let (updated, _) = repository
+        .prepare_channels_batch(USER, batch(current.clone()))
+        .await
+        .unwrap()
+        .commit()
+        .await
+        .unwrap();
+    assert_eq!(updated.len(), 1);
+    assert_eq!(updated[0].id, current[0].id);
+    current[0].updated_at = updated[0].updated_at;
+    let appended = repository.topology().await.unwrap();
+    for (i, cap) in caps.iter().enumerate() {
+        let row = appended
+            .channel_capabilities
+            .iter()
+            .find(|row| row.id == cap.id)
+            .unwrap();
+        let mut expected = cap.settings.available_models.clone();
+        expected.push(name.into());
+        assert_eq!(row.settings.available_models, expected);
+        assert_eq!(row.updated_at, current[i].updated_at);
+    }
+    assert!(
+        repository
+            .prepare_channels_batch(USER, batch(current))
+            .await
+            .unwrap()
+            .commit()
+            .await
+            .unwrap()
+            .0
+            .is_empty()
+    );
+    assert_topology(&appended, &repository.topology().await.unwrap());
 }
 
 async fn exercise_canonical_model_lifecycle(

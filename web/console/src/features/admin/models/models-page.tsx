@@ -165,9 +165,12 @@ export function ModelsPage() {
         title={t("Model configuration")}
         description={t("Select a client model, add an operation, then configure its routing rules.")}
         actions={
-          <NavigationLink to={withReturnTo("/admin/models/new", origin)} variant="default" size="default">
-            <Plus data-icon="inline-start" />{t("New client model")}
-          </NavigationLink>
+          <>
+            <NavigationLink to={withReturnTo("/admin/models/new", origin)} variant="outline">{t("New client model")}</NavigationLink>
+            <NavigationLink to="/admin/models/onboarding" variant="default" size="default">
+              <Plus data-icon="inline-start" />{t("Onboard model")}
+            </NavigationLink>
+          </>
         }
       />
       <Tabs value={view} className="min-h-0 flex-1"
@@ -303,6 +306,7 @@ export function ModelsPage() {
                         onClick={() => updateParams({ rule: "new" })}>
                         <Plus data-icon="inline-start" />{t("Add operation")}
                       </Button>
+                      <NavigationLink to={`/admin/models/${selected.id}/onboarding`}>{t("Bulk configure routes")}</NavigationLink>
                     </div>
                     {selectedRule || adding ? (
                       <div className="shrink-0">

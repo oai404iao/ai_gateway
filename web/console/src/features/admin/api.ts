@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiGetDetail, apiPost, apiPut, apiSend } from "@/api/client";
+import { CONNECTORS_KEY } from "./connectors/api";
 import type {
   AdminApiKeyView,
   ApiKeyCreateInput,
@@ -20,6 +21,8 @@ import type {
   ModelImportRequest,
   ModelImportResponse,
   ModelInput,
+  ModelOnboardingInput,
+  ModelOnboardingResponse,
   ModelRuleCreateInput,
   ModelSyncPreview,
   ModelSyncPreviewRequest,
@@ -480,6 +483,30 @@ export const useUpdateApiKeyPolicy = makeUpdate<ApiKeyPolicyInput>(
 const MODELS_KEY = ["console", "models"] as const;
 const modelDetailKey = (id: string) => ["console", "models", id] as const;
 export const useModels = makeList<ControlPlaneModel>("/models", MODELS_KEY);
+
+const onboardingKeys = [MODELS_KEY, CAPABILITIES_KEY, ROUTING_PROFILES_KEY, OPERATION_RULES_KEY];
+
+export function useReloadOnboarding() {
+  const client = useQueryClient();
+  return async () => {
+    await Promise.all([...onboardingKeys, LOGICAL_CHANNELS_KEY, ACCESSES_KEY, ROUTING_GROUPS_KEY, CREDENTIALS_KEY, CONNECTORS_KEY].map((queryKey) =>
+      client.refetchQueries({ queryKey, exact: true, type: "all" }, { throwOnError: true }),
+    ));
+    return {
+      models: client.getQueryData<ControlPlaneModel[]>(MODELS_KEY)!,
+      profiles: client.getQueryData<RoutingProfileView[]>(ROUTING_PROFILES_KEY)!,
+      rules: client.getQueryData<OperationRuleView[]>(OPERATION_RULES_KEY)!,
+    };
+  };
+}
+
+export function useOnboardModel() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (input: ModelOnboardingInput) => apiPost<ModelOnboardingResponse>("/models/onboarding", input),
+    onSuccess: () => Promise.all(onboardingKeys.map((queryKey) => client.invalidateQueries({ queryKey }))),
+  });
+}
 export const useModel = makeDetail<ControlPlaneModel>("/models", modelDetailKey);
 export const useCreateModel = makeCreate<ModelInput, MutationResponse>("/models", MODELS_KEY);
 export function useUpdateModel(id: string) {

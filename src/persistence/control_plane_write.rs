@@ -147,6 +147,91 @@ impl PostgresControlPlaneRepository {
         Ok(self.prepared(transaction, vec![result], Audit::Admin(actor)))
     }
 
+    pub async fn prepare_model_onboarding(
+        &self,
+        actor: Uuid,
+        input: ModelOnboardingInput<crate::models_dev::ModelsDevModel>,
+    ) -> Result<(Uuid, PostgresPreparedControlPlaneChange<'_>), RepositoryError> {
+        let mut tx = self.admin_write(actor).await?;
+        let mut results = Vec::new();
+        let model_id = match input.model {
+            OnboardingModel::Existing { id, updated_at } => {
+                let current: Option<DateTime<Utc>> = sqlx::query_scalar(
+                    "SELECT updated_at FROM models WHERE id=$1 AND deleted_at IS NULL FOR UPDATE",
+                )
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?;
+                if current != Some(updated_at) {
+                    return Err(RepositoryError::Conflict);
+                }
+                id
+            }
+            OnboardingModel::Create(model) => {
+                let result = self
+                    .apply_control_plane_mutation(
+                        &mut tx,
+                        ControlPlaneMutation::CreateModel(*model),
+                    )
+                    .await
+                    .map_err(StorageError::create_only)?;
+                let id = result.id;
+                results.push(result);
+                id
+            }
+            OnboardingModel::Catalog(model) => {
+                let result =
+                    super::postgres_control_plane::import_model(&mut tx, model, Utc::now()).await?;
+                let id = result.id;
+                results.push(result);
+                id
+            }
+        };
+        let profile: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM model_routing_profiles WHERE model_id=$1 FOR UPDATE",
+        )
+        .bind(model_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let profile_id = if let Some(id) = profile {
+            id
+        } else {
+            let result = self
+                .apply_control_plane_mutation(
+                    &mut tx,
+                    ControlPlaneMutation::CreateRule(ModelRuleCreateInput { model_id }),
+                )
+                .await?;
+            let id = result.id;
+            results.push(result);
+            id
+        };
+        // Even a target already present in its tier is version-guarded until commit.
+        sqlx::query("SELECT id FROM channel_capabilities WHERE id=ANY($1) ORDER BY id FOR UPDATE")
+            .bind(super::model_onboarding::capability_ids(&input.operations))
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("SELECT id FROM model_operation_rules WHERE model_routing_profile_id=$1 ORDER BY id FOR UPDATE")
+            .bind(profile_id).execute(&mut *tx).await?;
+        let topology = pg_load(&mut tx).await?;
+        let additions =
+            super::model_onboarding::route_mutations(profile_id, input.operations, &topology)?;
+        for (id, (mut version, names)) in additions.registrations {
+            for name in names {
+                let input = super::model_onboarding::register_model(id, version, name);
+                let updates = self.update_channels_batch(&mut tx, input).await?;
+                if let Some(last) = updates.last() {
+                    version = last.updated_at;
+                }
+                results.extend(updates);
+            }
+        }
+        for rule in additions.rules {
+            results.push(super::upstream_topology::rules::pg_append(&mut tx, rule).await?);
+        }
+        Ok((model_id, self.prepared(tx, results, Audit::Admin(actor))))
+    }
+
     pub async fn prepare_channels_batch(
         &self,
         actor: Uuid,

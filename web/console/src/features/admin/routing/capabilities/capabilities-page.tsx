@@ -7,15 +7,21 @@ import { apiOperationLabel } from "@/lib/permissions";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { CapabilityBatchDialog } from "./capability-batch-dialog";
+import { AppendModelDialog } from "./append-model-dialog";
+import type { ChannelCapabilityView } from "@/api/types";
+import { useReturnPath } from "@/lib/page-navigation";
 
 export function CapabilitiesPage({ channelId }: { channelId?: string } = {}) {
   const query = useChannelCapabilities();
+  const parentPath = useReturnPath("/admin/routing/channels");
   const channels = useLogicalChannels();
   const { t } = useI18n();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [editing, setEditing] = useState(false);
+  const [appendTargets, setAppendTargets] = useState<ChannelCapabilityView[] | null>(null);
   const visibleCapabilities = query.data?.filter((capability) => !channelId || capability.channel_id === channelId);
   const selectedCapabilities = (visibleCapabilities ?? []).filter((capability) => selected.has(capability.id));
+  const invalidSelection = selectedCapabilities.length === 0 || selectedCapabilities.length > 100;
   const channelNames = useMemo(
     () => new Map((channels.data ?? []).map((channel) => [channel.id, channel.name])),
     [channels.data],
@@ -24,6 +30,7 @@ export function CapabilitiesPage({ channelId }: { channelId?: string } = {}) {
     <>
     <AdminListPage
       embedded={!!channelId}
+      backTo={channelId ? undefined : parentPath}
       linkColumnKey="operation"
       title={t("Channel capabilities")}
       description={channelId ? channelNames.get(channelId) ?? channelId : t(
@@ -40,7 +47,10 @@ export function CapabilitiesPage({ channelId }: { channelId?: string } = {}) {
       createPath={channelId
         ? `/admin/routing/logical-channels/${channelId}?view=capabilities&capability=new`
         : "/admin/routing/capabilities/new"}
-      headerActions={<Button variant="outline" disabled={selectedCapabilities.length === 0 || selectedCapabilities.length > 100} onClick={() => setEditing(true)}>{t("Batch edit capabilities")} ({selectedCapabilities.length}/100)</Button>}
+      headerActions={<>
+        <Button variant="outline" disabled={invalidSelection} onClick={() => setAppendTargets(selectedCapabilities)}>{t("Append upstream model")}</Button>
+        <Button variant="outline" disabled={invalidSelection} onClick={() => setEditing(true)}>{t("Batch edit capabilities")} ({selectedCapabilities.length}/100)</Button>
+      </>}
       columns={[
         {
           key: "select",
@@ -96,6 +106,16 @@ export function CapabilitiesPage({ channelId }: { channelId?: string } = {}) {
       ]}
     />
     {editing && <CapabilityBatchDialog capabilities={selectedCapabilities} onClose={() => setEditing(false)} onApplied={() => setSelected(new Set())} />}
+    {appendTargets && <AppendModelDialog capabilities={appendTargets} channels={channels.data ?? []}
+      onClose={() => setAppendTargets(null)} onApplied={() => setSelected(new Set())}
+      refresh={async () => {
+        const { data } = await query.refetch({ throwOnError: true });
+        const ids = new Set(appendTargets.map(({ id }) => id));
+        const next = (data ?? []).filter(({ id }) => ids.has(id));
+        if (next.length !== ids.size) return false;
+        setAppendTargets(next);
+        return true;
+      }} />}
     </>
   );
 }

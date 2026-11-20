@@ -14,6 +14,36 @@ async function prepare(page: Page) {
 }
 
 test.describe("canonical routing topology", () => {
+  test("the cross-channel catalog action stays usable on narrow and short screens", async ({ page }) => {
+    await prepare(page);
+    await page.goto("/admin/routing/channels");
+    await page.getByRole("link", { name: "All channel capabilities" }).click();
+    await page.getByRole("checkbox", { name: /Select Upstream A/ }).check();
+    const trigger = page.getByRole("button", { name: "Append upstream model" });
+    await trigger.focus();
+    await page.keyboard.press("Enter");
+    const dialog = page.getByRole("dialog", { name: "Append upstream model" });
+    await expect(dialog).toBeVisible();
+    await dialog.getByLabel("Upstream model", { exact: true }).fill("gpt-5");
+    await expect(dialog.getByText("Already listed")).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "Apply changes" })).toBeDisabled();
+    await dialog.getByLabel("Upstream model", { exact: true }).fill("new-wire");
+    for (const [width, height] of [[1440, 900], [390, 844], [320, 640], [640, 320]]) {
+      await page.setViewportSize({ width, height });
+      const confirm = dialog.getByRole("button", { name: "Apply changes" });
+      await dialog.getByRole("button", { name: "Cancel" }).focus();
+      await page.keyboard.press("Tab");
+      await expect(confirm).toBeFocused();
+      await expect(confirm, `${width}×${height}`).toBeInViewport();
+      await expect.poll(() => dialog.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+    }
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+    await expect(dialog).toHaveCount(0);
+    await page.getByRole("link", { name: "Back to channels" }).click();
+    await expect(page).toHaveURL(/\/admin\/routing\/channels$/);
+  });
+
   test("the routing navigation exposes the canonical editors", async ({ page }) => {
     await prepare(page);
 

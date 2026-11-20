@@ -130,6 +130,9 @@ const ApiKeyPolicyDetailPage = lazy(() =>
 const ModelsPage = lazy(() =>
   import("@/features/admin/models/models-page").then((m) => ({ default: m.ModelsPage })),
 );
+const ModelOnboardingPage = lazy(() =>
+  import("@/features/admin/model-setup/model-onboarding-page").then((m) => ({ default: m.ModelOnboardingPage })),
+);
 const ModelDetailPage = lazy(() =>
   import("@/features/admin/models/model-detail-page").then((m) => ({
     default: m.ModelDetailPage,
@@ -330,6 +333,8 @@ function appRouteElements() {
               <Route path="/admin/routing/channels" element={<ChannelConfigurationPage />} />
               <Route path="/admin/models" element={<ModelWorkspaceLayout />}>
                 <Route index element={<ModelsPage />} />
+                <Route path="onboarding" element={<ModelOnboardingPage />} />
+                <Route path=":id/onboarding" element={<ModelOnboardingPage />} />
                 <Route path=":id" element={<ModelDetailPage />} />
                 <Route path=":id/pricing" element={<ModelPricingPage />} />
               </Route>

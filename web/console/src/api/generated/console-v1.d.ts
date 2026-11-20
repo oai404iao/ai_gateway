@@ -632,6 +632,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/models/onboarding": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Administrator-only. In one transaction create or reuse one priced model and routing profile, explicitly register selected upstream names, and append candidates to per-operation tiers. Existing pricing, rule enablement, tier policies, candidate weights and grants are unchanged. A new rule is enabled; new tiers use weighted_random and new candidates have weight 1. An exact pair already in the target tier is skipped. Stale previews must be refreshed before retrying. */
+        post: operations["onboardModel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/models/{id}": {
         parameters: {
             query?: never;
@@ -3617,6 +3634,40 @@ export interface components {
         ChannelModelDiscoveryResponse: {
             models: string[];
         };
+        ModelOnboardingResponse: {
+            /** Format: uuid */
+            model_id: string;
+        };
+        ModelOnboardingInput: {
+            /** @description Reuse a versioned local price without editing it, create a new priced model, or import a new catalog entry using its reviewed preview token. Creation never updates existing prices. */
+            model: {
+                existing: {
+                    /** Format: uuid */
+                    id: string;
+                    updated_at: components["schemas"]["DateTime"];
+                };
+            } | {
+                create: components["schemas"]["ModelInput"];
+            } | {
+                catalog: components["schemas"]["ModelSyncSelection"];
+            };
+            /** @description Each operation occurs once; at most 100 candidate additions in total. */
+            operations: components["schemas"]["OnboardingOperationInput"][];
+        };
+        OnboardingOperationInput: {
+            operation: components["schemas"]["ApiOperation"];
+            /** @description Reviewed rule version, or null if no rule existed. */
+            rule_updated_at: components["schemas"]["DateTimeNullable"];
+            candidates: {
+                /** Format: uuid */
+                capability_id: string;
+                updated_at: components["schemas"]["DateTime"];
+                upstream_model: string;
+                priority: number;
+                /** @description Explicitly append this name to this capability if missing. False requires the upstream name to be present already. */
+                register_model: boolean;
+            }[];
+        };
         CapabilityBatchUpdateTarget: {
             /** Format: uuid */
             id: string;
@@ -3625,6 +3676,8 @@ export interface components {
         };
         /** @description At least one property must be supplied. */
         CapabilityBatchChanges: {
+            /** @description Append a nonblank upstream model to each selected catalog. Exact duplicates are left unchanged; a duplicate-only append is not included in updated_ids. */
+            append_model?: string;
             enabled?: boolean;
             auto_disable_allowed?: boolean;
             /** @description Non-negative multiplier applied to the applicable pricing-model rates for settlement. */
@@ -5245,6 +5298,41 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             422: components["responses"]["Unprocessable"];
+        };
+    };
+    onboardModel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelOnboardingInput"];
+            };
+        };
+        responses: {
+            /** @description The full plan committed. Read the model and routing lists for the resulting configuration. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelOnboardingResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+            /** @description Catalog lookup failed; no changes were made. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     getModel: {

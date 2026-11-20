@@ -24,6 +24,7 @@ interface AdminListPageProps<T> {
   createLabel?: string;
   createPath?: string;
   headerActions?: React.ReactNode;
+  backTo?: string;
   groupBy?: (row: T) => string;
   embedded?: boolean;
   linkColumnKey?: string;
@@ -39,6 +40,7 @@ export function AdminListPage<T>({
   createLabel,
   createPath,
   headerActions,
+  backTo,
   groupBy,
   embedded,
   linkColumnKey,
@@ -51,6 +53,7 @@ export function AdminListPage<T>({
   return (
     <div className="flex min-w-0 flex-col gap-6">
       <PageHeader
+        backTo={backTo}
         title={title}
         description={description}
         embedded={embedded}

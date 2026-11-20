@@ -201,6 +201,76 @@ describe("channel capabilities", () => {
     expect(await screen.findByRole("button", { name: "Batch edit capabilities (0/100)" })).toBeDisabled();
   });
 
+  it("previews each catalog, fetches from the chosen capability and appends only on confirmation", async () => {
+    const other = { ...CHANNEL_CAPABILITY, id: "00000000-0000-4000-8000-000000000089",
+      settings: { ...CHANNEL_CAPABILITY.settings, operation: "images_edit", available_models: ["new-wire"] },
+      override_document: { request: {} }, updated_at: "2026-08-02T00:00:00Z" };
+    let discovery: ChannelModelDiscoveryInput | undefined;
+    let submitted: CapabilityBatchUpdateInput | undefined;
+    server.use(
+      http.get("/console/v1/routing/capabilities", () => HttpResponse.json([CHANNEL_CAPABILITY, other])),
+      http.post("/console/v1/routing/channels/models/discover", async ({ request }) => {
+        discovery = await request.json() as ChannelModelDiscoveryInput;
+        return HttpResponse.json({ models: ["new-wire"] });
+      }),
+      http.post("/console/v1/routing/capabilities/batch", async ({ request }) => {
+        submitted = await request.json() as CapabilityBatchUpdateInput;
+        return HttpResponse.json({ updated_ids: [CHANNEL_CAPABILITY.id], correlation_id: "audit" });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAt("/admin/routing/capabilities");
+    await user.click(await screen.findByRole("checkbox", { name: "Select Primary channel / Responses" }));
+    await user.click(screen.getByRole("checkbox", { name: "Select Primary channel / Images edit" }));
+    await user.click(screen.getByRole("button", { name: "Append upstream model" }));
+    expect(screen.getByRole("button", { name: "Apply changes" })).toBeDisabled();
+    expect(await screen.findByRole("button", { name: "Fetch models" })).toBeDisabled();
+    await user.click(screen.getByRole("combobox", { name: "Discovery source" }));
+    await user.click(await screen.findByRole("option", { name: "Primary channel / Images edit" }));
+    await user.click(screen.getByRole("button", { name: "Fetch models" }));
+    await user.click(await screen.findByRole("combobox", { name: "Discovered models" }));
+    await user.click(await screen.findByRole("option", { name: "new-wire" }));
+    expect(discovery).toMatchObject({ credential_id: LOGICAL_CHANNEL.credential_id,
+      api_format: "open_ai_images", override_document: other.override_document });
+    expect(screen.getByText("Already listed")).toBeVisible();
+    expect(screen.getByText("Will append")).toBeVisible();
+    expect(submitted).toBeUndefined();
+    await user.click(screen.getByRole("button", { name: "Apply changes" }));
+    await waitFor(() => expect(submitted).toEqual({
+      items: [CHANNEL_CAPABILITY, other].map(({ id, updated_at }) => ({ id, updated_at })), changes: { append_model: "new-wire" },
+    }));
+    expect(await screen.findByText("Model added to 1 capabilities.")).toBeVisible();
+  });
+
+  it("keeps the typed model on conflict and requires a refreshed, explicit confirmation", async () => {
+    const requests: CapabilityBatchUpdateInput[] = [];
+    const nextVersion = "2026-09-01T00:00:00Z";
+    server.use(
+      http.get("/console/v1/routing/capabilities", () => HttpResponse.json([{
+        ...CHANNEL_CAPABILITY, updated_at: requests.length ? nextVersion : CHANNEL_CAPABILITY.updated_at,
+      }])),
+      http.post("/console/v1/routing/capabilities/batch", async ({ request }) => {
+        requests.push(await request.json() as CapabilityBatchUpdateInput);
+        return requests.length === 1 ? HttpResponse.json({ error: "conflict" }, { status: 409 })
+          : HttpResponse.json({ updated_ids: [CHANNEL_CAPABILITY.id], correlation_id: "audit" });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAt("/admin/routing/capabilities");
+    await user.click(await screen.findByRole("checkbox", { name: "Select Primary channel / Responses" }));
+    await user.click(screen.getByRole("button", { name: "Append upstream model" }));
+    const input = screen.getByLabelText("Upstream model");
+    await user.type(input, "gpt-5");
+    expect(screen.getByRole("button", { name: "Apply changes" })).toBeDisabled();
+    await user.type(input, "-new");
+    await user.click(screen.getByRole("button", { name: "Apply changes" }));
+    await user.click(await screen.findByRole("button", { name: "Refresh preview" }));
+    expect(input).toHaveValue("gpt-5-new");
+    expect(requests).toHaveLength(1);
+    await user.click(await screen.findByRole("button", { name: "Apply changes" }));
+    await waitFor(() => expect(requests.map((r) => r.items[0].updated_at)).toEqual([CHANNEL_CAPABILITY.updated_at, nextVersion]));
+  });
+
   it("recovers automatic-disable state using the capability ETag, without enabling it", async () => {
     let recovered = false;
     let ifMatch: string | null = null;

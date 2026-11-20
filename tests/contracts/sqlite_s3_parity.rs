@@ -34,6 +34,9 @@ use uuid::Uuid;
 
 use super::*;
 
+#[path = "model_onboarding.rs"]
+mod model_onboarding;
+
 const PASSWORD_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA";
 const RESET_PASSWORD_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$cmVzZXQ";
 const CHOSEN_PASSWORD_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$Y2hvc2Vu";
@@ -3336,6 +3339,7 @@ async fn channel_lifecycle_contract(repositories: Repositories) {
             enabled: Some(false),
             auto_disable_allowed: Some(true),
             billing_multiplier: Some(decimal("2")),
+            append_model: None,
         },
     };
     assert!(matches!(
@@ -3373,6 +3377,7 @@ async fn channel_lifecycle_contract(repositories: Repositories) {
                     enabled: Some(true),
                     auto_disable_allowed: Some(true),
                     billing_multiplier: None,
+                    append_model: None,
                 },
             },
         )
@@ -4382,6 +4387,7 @@ async fn authorization_and_etag_rollback_contract(repositories: Repositories) {
                         enabled: Some(false),
                         auto_disable_allowed: None,
                         billing_multiplier: None,
+                        append_model: None,
                     },
                 },
             )
@@ -4423,6 +4429,7 @@ async fn authorization_and_etag_rollback_contract(repositories: Repositories) {
                         enabled: Some(false),
                         auto_disable_allowed: None,
                         billing_multiplier: None,
+                        append_model: None,
                     },
                 },
             )
@@ -5263,6 +5270,7 @@ async fn missing_and_soft_deleted_resource_contract(repositories: Repositories) 
                         enabled: Some(true),
                         auto_disable_allowed: None,
                         billing_multiplier: None,
+                        append_model: None,
                     },
                 },
             )
@@ -5280,6 +5288,7 @@ async fn missing_and_soft_deleted_resource_contract(repositories: Repositories) 
                         enabled: None,
                         auto_disable_allowed: None,
                         billing_multiplier: None,
+                        append_model: None,
                     },
                 },
             )
