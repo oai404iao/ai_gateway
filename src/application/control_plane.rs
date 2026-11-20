@@ -439,6 +439,21 @@ impl ControlPlaneCoordinator {
         Ok(self.repository.model_source_versions().await?)
     }
 
+    pub async fn onboard_model(
+        &self,
+        actor: Uuid,
+        input: crate::persistence::ModelOnboardingInput<crate::models_dev::ModelsDevModel>,
+    ) -> Result<Uuid, ControlPlaneError> {
+        let _guard = self.serial.lock().await;
+        let (model_id, change) = self
+            .repository
+            .prepare_model_onboarding(actor, input)
+            .await?;
+        let (_, correlation_id) = self.commit_change(change).await?;
+        tracing::info!(%model_id, %correlation_id, "model onboarding committed");
+        Ok(model_id)
+    }
+
     /// Applies a bounded, already validated external catalog selection and
     /// publishes it with one audit correlation id. A selected existing source
     /// model receives a new models.dev price snapshot; a new source model is

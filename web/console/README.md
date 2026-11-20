@@ -94,11 +94,15 @@ their group, and capabilities scoped to the selected channel.
 operation-route editor. Wide, tall windows scroll the two panes independently;
 single-pane layouts return to the original list position. Select a model, add an unused operation,
 then configure explicit `(capability, upstream model)` candidates and priority
-tiers. The first operation save creates a missing model routing profile before
+tiers. The single-operation editor creates a missing model routing profile before
 saving the rule; these are separate commands, and retries reuse the profile.
 Existing rules retain ETag updates and draft navigation protection. Price sync
 is a separate tab; model metadata, copying, and pricing retain dedicated editors.
-Regression coverage lives beside these pages and in `e2e/ux-model-workspace.spec.ts`
+For multiple providers or operations, use **Onboard model** or the selected model's
+**Bulk configure routes** action. These submit one reviewed transaction. For catalog-only
+changes, use **Append upstream model** in the capability list.
+See the [onboarding interaction design](../../docs/development/model-onboarding-ux.md) and
+browser coverage in `e2e/model-onboarding.spec.ts`, `e2e/ux-model-workspace.spec.ts`
 and `e2e/routing-topology.spec.ts`.
 
 ## Plugin administration

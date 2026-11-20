@@ -139,7 +139,7 @@ workspace/member 身份、Token、代理、运行状态、错误或 reset-credit
 - 用户批量修改：`POST /console/v1/users/batch`
 - API Key Policy：`/console/v1/api-key-policies`
 - 全局 API Key：`/console/v1/api-keys`
-- 模型：`/console/v1/models`
+- 模型：`/console/v1/models`；[批量配路由与联合上架](routing.md#多个上游接入同一模型)使用 `POST /console/v1/models/onboarding`。
 - models.dev：`POST /console/v1/catalog/models/sync/preview`、`POST /console/v1/catalog/models/import`，流程见[导入目录价格](billing.md#导入目录价格)。
 - 路由：`/console/v1/routing/groups`、`/accesses`、`/logical-channels`、`/capabilities`、`/profiles`、`/operation-rules`
 - 能力批量修改/恢复：`POST /console/v1/routing/capabilities/batch`、`POST /console/v1/routing/capabilities/{id}/recover`
@@ -153,7 +153,7 @@ workspace/member 身份、Token、代理、运行状态、错误或 reset-credit
 
 管理员 Console 的“模型与路由”分为上游接入、上游凭证、渠道配置和模型配置四个入口。
 `/admin/routing/channels` 提供组配置、按组列出的逻辑渠道及选中渠道的能力配置。
-`/admin/models` 左侧选择客户端计价模型，右侧新增操作或直接编辑已有操作路由；首次保存操作
+`/admin/models` 左侧选择客户端计价模型，右侧新增操作或直接编辑已有操作路由；在单条操作编辑器首次保存操作
 时会先为该模型创建缺失的 routing profile，再保存操作规则。两次写入不是跨资源原子事务，
 规则保存失败时已创建的 profile 保留供重试复用。价格同步位于该页面的独立页签。
 原有资源详情 URL 仍可直接访问，更新继续携带详情 `ETag`。

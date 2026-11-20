@@ -19,6 +19,20 @@ pub struct StorageError {
 }
 
 impl StorageError {
+    pub(super) fn create_only(error: super::RepositoryError) -> super::RepositoryError {
+        match error {
+            super::RepositoryError::Storage(ref storage)
+                if storage
+                    .source
+                    .as_database_error()
+                    .is_some_and(|e| e.is_unique_violation()) =>
+            {
+                super::RepositoryError::Conflict
+            }
+            other => other,
+        }
+    }
+
     #[must_use]
     pub fn kind(&self) -> StorageFailureKind {
         self.kind

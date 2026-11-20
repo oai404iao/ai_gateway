@@ -1099,6 +1099,29 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/Unprocessable" }
 
+  /models/onboarding:
+    post:
+      tags: [Models]
+      operationId: onboardModel
+      description: Administrator-only. In one transaction create or reuse one priced model and routing profile, explicitly register selected upstream names, and append candidates to per-operation tiers. Existing pricing, rule enablement, tier policies, candidate weights and grants are unchanged. A new rule is enabled; new tiers use weighted_random and new candidates have weight 1. An exact pair already in the target tier is skipped. Stale previews must be refreshed before retrying.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ModelOnboardingInput" }
+      responses:
+        "200":
+          description: The full plan committed. Read the model and routing lists for the resulting configuration.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelOnboardingResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "502": { description: Catalog lookup failed; no changes were made. }
+
   /models/{id}:
     get:
       tags: [Models]
@@ -6045,6 +6068,74 @@ components:
           type: array
           items: { type: string }
 
+    ModelOnboardingResponse:
+      type: object
+      required: [model_id]
+      properties:
+        model_id: { type: string, format: uuid }
+
+    ModelOnboardingInput:
+      type: object
+      additionalProperties: false
+      required: [model, operations]
+      properties:
+        model:
+          description: Reuse a versioned local price without editing it, create a new priced model, or import a new catalog entry using its reviewed preview token. Creation never updates existing prices.
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [existing]
+              properties:
+                existing:
+                  type: object
+                  additionalProperties: false
+                  required: [id, updated_at]
+                  properties:
+                    id: { type: string, format: uuid }
+                    updated_at: { $ref: "#/components/schemas/DateTime" }
+            - type: object
+              additionalProperties: false
+              required: [create]
+              properties:
+                create: { $ref: "#/components/schemas/ModelInput" }
+            - type: object
+              additionalProperties: false
+              required: [catalog]
+              properties:
+                catalog: { $ref: "#/components/schemas/ModelSyncSelection" }
+        operations:
+          type: array
+          minItems: 1
+          maxItems: 6
+          description: Each operation occurs once; at most 100 candidate additions in total.
+          items: { $ref: "#/components/schemas/OnboardingOperationInput" }
+
+    OnboardingOperationInput:
+      type: object
+      additionalProperties: false
+      required: [operation, rule_updated_at, candidates]
+      properties:
+        operation: { $ref: "#/components/schemas/ApiOperation" }
+        rule_updated_at:
+          allOf: [{ $ref: "#/components/schemas/DateTimeNullable" }]
+          description: Reviewed rule version, or null if no rule existed.
+        candidates:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: object
+            additionalProperties: false
+            required: [capability_id, updated_at, upstream_model, priority, register_model]
+            properties:
+              capability_id: { type: string, format: uuid }
+              updated_at: { $ref: "#/components/schemas/DateTime" }
+              upstream_model: { type: string, minLength: 1, maxLength: 300 }
+              priority: { type: integer, minimum: 0, maximum: 2147483647 }
+              register_model:
+                type: boolean
+                description: Explicitly append this name to this capability if missing. False requires the upstream name to be present already.
+
     CapabilityBatchUpdateTarget:
       type: object
       required: [id, updated_at]
@@ -6058,6 +6149,11 @@ components:
       type: object
       description: At least one property must be supplied.
       properties:
+        append_model:
+          type: string
+          minLength: 1
+          maxLength: 300
+          description: Append a nonblank upstream model to each selected catalog. Exact duplicates are left unchanged; a duplicate-only append is not included in updated_ids.
         enabled: { type: boolean }
         auto_disable_allowed: { type: boolean }
         billing_multiplier:

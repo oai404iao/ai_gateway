@@ -34,6 +34,7 @@
 - [Console 视觉规范](../design.md)：Nova 主题、图标、动画与布局原语边界。
 - [花费排行榜设计提案](development/spend-leaderboard-design.md)：桌面与手机的费用排名设计稿。
 - [Console 可用性设计记录](development/console-ux-review.md)：从模型长列表复现到交互设计和验收。
+- [模型上架交互设计](development/model-onboarding-ux.md)：登记、跨渠道路由、单次确认的桌面与窄屏流程。
 
 ## 查阅契约与历史
 

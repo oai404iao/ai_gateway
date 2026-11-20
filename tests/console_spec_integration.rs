@@ -300,6 +300,21 @@ async fn app_with_options(
     proxy_test_endpoint: Option<reqwest::Url>,
     catalog: Option<Arc<ai_gateway_connector_host::DirectoryPluginCatalog>>,
 ) -> App {
+    app_with_catalog_config(
+        pool,
+        proxy_test_endpoint,
+        catalog,
+        &ModelsSyncConfig::default(),
+    )
+    .await
+}
+
+async fn app_with_catalog_config(
+    pool: PgPool,
+    proxy_test_endpoint: Option<reqwest::Url>,
+    catalog: Option<Arc<ai_gateway_connector_host::DirectoryPluginCatalog>>,
+    models_sync: &ModelsSyncConfig,
+) -> App {
     let user_id = Uuid::new_v4();
     let password_hash = hash_console_password(test_password().to_owned())
         .await
@@ -343,7 +358,7 @@ async fn app_with_options(
     .unwrap();
     let model_sync = ModelSyncService::new(
         coordinator.clone(),
-        ModelsDevClient::new(&ModelsSyncConfig::default()).unwrap(),
+        ModelsDevClient::new(models_sync).unwrap(),
         100,
     );
     let auth = ConsoleAuthService::from_pem(
@@ -1718,7 +1733,7 @@ async fn canonical_topology_contract_has_versioned_immutable_capability_identity
     let detail = body_json(request(&app, "GET", &path, serde_json::json!({}), &[]).await).await;
     let batch = serde_json::json!({
         "items": [{"id": capability, "updated_at": detail["updated_at"]}],
-        "changes": {"enabled": false, "auto_disable_allowed": true, "billing_multiplier": "1.5"}
+        "changes": {"enabled": false, "auto_disable_allowed": true, "billing_multiplier": "1.5", "append_model": "image-wire-next"}
     });
     let mut invalid_batch = batch.clone();
     invalid_batch["items"]
@@ -1743,6 +1758,18 @@ async fn canonical_topology_contract_has_versioned_immutable_capability_identity
     let updated = body_json(updated).await;
     assert_eq!(updated["updated_ids"], serde_json::json!([capability]));
     assert!(updated["correlation_id"].is_string());
+    let appended = body_json(request(&app, "GET", &path, serde_json::json!({}), &[]).await).await;
+    assert_eq!(
+        appended["settings"]["available_models"],
+        serde_json::json!(["image-wire", "image-wire-next"])
+    );
+    let duplicate = serde_json::json!({
+        "items": [{"id": capability, "updated_at": appended["updated_at"]}],
+        "changes": {"append_model": "image-wire-next"}
+    });
+    let noop = request(&app, "POST", batch_path, duplicate, &[]).await;
+    assert_eq!(noop.status(), StatusCode::OK);
+    assert_eq!(body_json(noop).await["updated_ids"], serde_json::json!([]));
     assert_eq!(
         request(&app, "POST", batch_path, batch, &[]).await.status(),
         StatusCode::CONFLICT
@@ -2844,6 +2871,166 @@ async fn currency_fields_are_not_console_settings() {
     assert_eq!(model.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
     database.cleanup().await;
+}
+
+#[tokio::test]
+async fn onboard_reviewed_catalog_model_across_two_providers_and_operations() {
+    use serde_json::json;
+    let database = TestDatabase::new().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let catalog = tokio::spawn(async move {
+        let router = Router::new().route(
+            "/api.json",
+            get(|| async {
+                Json(
+                    json!({"vendor":{"id":"vendor","name":"Vendor","models":{"wire-v2":{
+                        "id":"wire-v2","name":"V2","cost":{"input":1.25,"output":2.5}
+                    }}}}),
+                )
+            }),
+        );
+        axum::serve(listener, router).await.unwrap();
+    });
+    let app = app_with_catalog_config(
+        database.pool.clone(),
+        None,
+        None,
+        &ModelsSyncConfig {
+            api_url: format!("http://{address}/api.json"),
+            ..Default::default()
+        },
+    )
+    .await;
+    let a = seed_test_topology(&app, "chat_completion").await;
+    let access = create_resource(&app, "/console/v1/routing/accesses", json!({
+        "name":"Provider B", "base_url":"https://provider-b.test", "connector_kind":"general", "enabled":true
+    })).await;
+    let b = create_resource(
+        &app,
+        "/console/v1/routing/logical-channels",
+        json!({
+            "name":"B", "access_id":access,"group_id":a.group,"credential_id":null,"enabled":true
+        }),
+    )
+    .await;
+    let path = "/console/v1/models/onboarding";
+    let mut operations = Vec::new();
+    for operation in ["chat_completion", "responses"] {
+        let mut candidates = Vec::new();
+        for channel in [a.channel, b] {
+            let cap = if channel == a.channel && operation == "chat_completion" {
+                a.capability
+            } else {
+                create_resource(
+                    &app,
+                    "/console/v1/routing/capabilities",
+                    capability_input(channel, operation),
+                )
+                .await
+            };
+            let detail = body_json(
+                request(
+                    &app,
+                    "GET",
+                    &format!("/console/v1/routing/capabilities/{cap}"),
+                    json!({}),
+                    &[],
+                )
+                .await,
+            )
+            .await;
+            candidates.push(json!({"capability_id":cap,"updated_at":detail["updated_at"], "upstream_model":"wire-v2", "register_model":true, "priority":0}));
+        }
+        operations
+            .push(json!({"operation":operation,"rule_updated_at":null,"candidates":candidates}));
+    }
+    let preview = body_json(
+        request(
+            &app,
+            "POST",
+            "/console/v1/catalog/models/sync/preview",
+            json!({"provider_ids":["vendor"]}),
+            &[],
+        )
+        .await,
+    )
+    .await;
+    let selection = json!({"provider_id":"vendor", "model_id":"wire-v2", "preview_token":preview["models"][0]["preview_token"]});
+    let input = json!({"model":{"catalog":selection}, "operations":operations});
+    assert_eq!(
+        request_with_token(&app, "", "POST", path, input.clone(), &[])
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let mut stale = input.clone();
+    stale["model"]["catalog"]["preview_token"] = json!("f".repeat(64));
+    assert_eq!(
+        request(&app, "POST", path, stale, &[]).await.status(),
+        StatusCode::CONFLICT
+    );
+    let mut stale = input.clone();
+    stale["operations"][1]["candidates"][1]["updated_at"] = json!("2000-01-01T00:00:00Z");
+    assert_eq!(
+        request(&app, "POST", path, stale, &[]).await.status(),
+        StatusCode::CONFLICT
+    );
+    let response = request(&app, "POST", path, input.clone(), &[]).await;
+    let status = response.status();
+    let result = body_json(response).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let id: Uuid = serde_json::from_value(result["model_id"].clone()).unwrap();
+    let model = body_json(
+        request(
+            &app,
+            "GET",
+            &format!("/console/v1/models/{id}"),
+            json!({}),
+            &[],
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(model["source_model_id"], "wire-v2");
+    assert_eq!(
+        model["input_unit_price"]
+            .as_str()
+            .unwrap()
+            .parse::<rust_decimal::Decimal>()
+            .unwrap(),
+        rust_decimal::Decimal::new(125, 2)
+    );
+    assert!(model["last_synced_at"].is_string());
+    let rules = body_json(
+        request(
+            &app,
+            "GET",
+            "/console/v1/routing/operation-rules",
+            json!({}),
+            &[],
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(rules.as_array().unwrap().len(), 2);
+    for rule in rules.as_array().unwrap() {
+        let actual = rule["routing_tiers"][0]["candidates"].as_array().unwrap();
+        let expected = operations
+            .iter()
+            .find(|op| op["operation"] == rule["operation"])
+            .unwrap();
+        assert_eq!(actual.len(), 2);
+        for item in expected["candidates"].as_array().unwrap() {
+            assert!(actual.contains(&json!({"capability_id":item["capability_id"], "upstream_model":"wire-v2", "weight":1})));
+        }
+    }
+    assert_eq!(
+        request(&app, "POST", path, input, &[]).await.status(),
+        StatusCode::CONFLICT
+    );
+    database.cleanup().await;
+    catalog.abort();
 }
 
 #[tokio::test]

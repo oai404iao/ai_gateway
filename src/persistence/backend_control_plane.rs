@@ -417,6 +417,25 @@ impl ControlPlaneRepository {
         }
     }
 
+    pub async fn prepare_model_onboarding(
+        &self,
+        actor: Uuid,
+        input: super::ModelOnboardingInput<crate::models_dev::ModelsDevModel>,
+    ) -> Result<(Uuid, PreparedControlPlaneChange<'_>), RepositoryError> {
+        input.validate()?;
+        match &self.backend {
+            Backend::Postgres(repository) => repository
+                .prepare_model_onboarding(actor, input)
+                .await
+                .map(|(id, change)| (id, PreparedControlPlaneChange::from_postgres(change))),
+            #[cfg(feature = "sqlite-backend")]
+            Backend::Sqlite(repository) => repository
+                .prepare_model_onboarding(actor, input)
+                .await
+                .map(|(id, change)| (id, PreparedControlPlaneChange::from_sqlite(change))),
+        }
+    }
+
     pub async fn prepare_user_settings(
         &self,
         user_id: Uuid,

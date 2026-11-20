@@ -59,15 +59,7 @@ impl ModelSyncService {
         }
         let mut model_ids = HashSet::new();
         for selection in &request.selections {
-            if selection.provider_id.is_empty()
-                || selection.model_id.is_empty()
-                || !model_ids.insert(&selection.model_id)
-                || selection.preview_token.len() != 64
-                || !selection
-                    .preview_token
-                    .bytes()
-                    .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
-            {
+            if !selection.valid() || !model_ids.insert(&selection.model_id) {
                 return Err(ModelSyncError::InvalidSelection);
             }
         }
@@ -94,6 +86,25 @@ impl ModelSyncService {
             .apply_catalog_models(actor, inputs)
             .await
             .map_err(ModelSyncError::from)
+    }
+
+    /// Resolve the create-only catalog preview before acquiring the database writer.
+    pub async fn resolve_new(
+        &self,
+        selection: &ModelSyncSelection,
+    ) -> Result<ModelsDevModel, ModelSyncError> {
+        if !selection.valid() {
+            return Err(ModelSyncError::InvalidSelection);
+        }
+        let catalog = self
+            .client
+            .fetch_catalog(std::slice::from_ref(&selection.provider_id))
+            .await?;
+        let model = catalog
+            .find(&selection.provider_id, &selection.model_id)
+            .filter(|model| model.preview_token(None) == selection.preview_token)
+            .ok_or(ModelSyncError::StalePreview)?;
+        Ok(model.clone())
     }
 }
 
@@ -147,6 +158,18 @@ pub struct ModelSyncSelection {
     pub provider_id: String,
     pub model_id: String,
     pub preview_token: String,
+}
+
+impl ModelSyncSelection {
+    fn valid(&self) -> bool {
+        !self.provider_id.is_empty()
+            && !self.model_id.is_empty()
+            && self.preview_token.len() == 64
+            && self
+                .preview_token
+                .bytes()
+                .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    }
 }
 
 #[derive(Serialize)]

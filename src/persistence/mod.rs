@@ -13,6 +13,7 @@ mod control_plane_write;
 mod health;
 mod metering;
 mod migrations;
+mod model_onboarding;
 mod plugins;
 mod postgres_control_plane;
 #[cfg(feature = "sqlite-backend")]
@@ -45,6 +46,7 @@ pub use codex::{
 pub use health::DatabaseHealth;
 pub use metering::{MeteringReconciliationCounts, MeteringWriteOutcome};
 pub use migrations::{MIGRATOR, MigrationRunError, run_migrations};
+pub use model_onboarding::{ModelOnboardingInput, OnboardingModel, OnboardingOperation};
 pub use plugins::{
     PluginArtifactInput, PluginArtifactRecord, PluginInstallJob, PluginJobCompletion,
     PluginRuntimeRecords, PluginSaveInput, PluginSettingsInput, PluginSettingsRecord,

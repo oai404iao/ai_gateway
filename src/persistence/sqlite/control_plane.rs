@@ -1202,6 +1202,89 @@ impl SqliteControlPlaneRepository {
         Ok(self.prepared(transaction, vec![result], AuditKind::Admin(actor)))
     }
 
+    pub(crate) async fn prepare_model_onboarding(
+        &self,
+        actor: Uuid,
+        input: crate::persistence::ModelOnboardingInput<ModelsDevModel>,
+    ) -> Result<(Uuid, SqlitePreparedControlPlaneChange), RepositoryError> {
+        use crate::persistence::{
+            OnboardingModel, StorageError, model_onboarding::route_mutations, sqlite_load,
+        };
+        let mut tx = self.admin_write(actor).await?;
+        let mut results = Vec::new();
+        let model_id = match input.model {
+            OnboardingModel::Existing { id, updated_at } => {
+                let current: Option<SqliteTimestamp> = sqlx::query_scalar(
+                    "SELECT updated_at FROM models WHERE id=? AND deleted_at IS NULL",
+                )
+                .bind(SqliteUuid(id))
+                .fetch_optional(&mut *tx)
+                .await?;
+                if current.map(|t| t.0) != Some(updated_at) {
+                    return Err(RepositoryError::Conflict);
+                }
+                id
+            }
+            OnboardingModel::Create(model) => {
+                let result = apply_control_plane_mutation(
+                    &mut tx,
+                    ControlPlaneMutation::CreateModel(*model),
+                )
+                .await
+                .map_err(StorageError::create_only)?;
+                let id = result.id;
+                results.push(result);
+                id
+            }
+            OnboardingModel::Catalog(model) => {
+                let result = import_model(&mut tx, model, Utc::now())
+                    .await
+                    .map_err(StorageError::create_only)?;
+                let id = result.id;
+                results.push(result);
+                id
+            }
+        };
+        let profile: Option<SqliteUuid> =
+            sqlx::query_scalar("SELECT id FROM model_routing_profiles WHERE model_id=?")
+                .bind(SqliteUuid(model_id))
+                .fetch_optional(&mut *tx)
+                .await?;
+        let profile_id = if let Some(id) = profile {
+            id.0
+        } else {
+            let result = apply_control_plane_mutation(
+                &mut tx,
+                ControlPlaneMutation::CreateRule(ModelRuleCreateInput { model_id }),
+            )
+            .await?;
+            let id = result.id;
+            results.push(result);
+            id
+        };
+        let topology = sqlite_load(&mut tx).await?;
+        let additions = route_mutations(profile_id, input.operations, &topology)?;
+        for (id, (mut version, names)) in additions.registrations {
+            for name in names {
+                let input = crate::persistence::model_onboarding::register_model(id, version, name);
+                let updates = update_channels_batch(&mut tx, input).await?;
+                if let Some(last) = updates.last() {
+                    version = last.updated_at;
+                }
+                results.extend(updates);
+            }
+        }
+        for rule in additions.rules {
+            results.push(
+                crate::persistence::upstream_topology::rules::sqlite_append(&mut tx, rule).await?,
+            );
+        }
+        Ok((
+            model_id,
+            self.prepared(tx, results, AuditKind::Admin(actor)),
+        ))
+    }
+
     pub async fn prepare_channels_batch(
         &self,
         actor: Uuid,
@@ -2318,22 +2401,7 @@ async fn update_channels_batch(
     transaction: &mut Transaction<'static, Sqlite>,
     input: ChannelBatchUpdateInput,
 ) -> Result<Vec<MutationResult>, RepositoryError> {
-    const MAX_BATCH_SIZE: usize = 100;
-
-    if input.items.is_empty()
-        || input.items.len() > MAX_BATCH_SIZE
-        || input.changes.is_empty()
-        || input
-            .changes
-            .billing_multiplier
-            .is_some_and(|multiplier| multiplier.is_sign_negative())
-    {
-        return Err(RepositoryError::Validation);
-    }
-    let mut ids = HashSet::with_capacity(input.items.len());
-    if input.items.iter().any(|item| !ids.insert(item.id)) {
-        return Err(RepositoryError::Validation);
-    }
+    input.validate()?;
 
     let mut results = Vec::with_capacity(input.items.len());
     for item in input.items {
@@ -2347,10 +2415,15 @@ async fn update_channels_batch(
         if current_updated_at != item.updated_at {
             return Err(RepositoryError::Conflict);
         }
+        let model = input.changes.model_to_append(&before);
+        if model.is_none() && !input.changes.has_scalar_changes() {
+            continue;
+        }
         let updated_at = sqlx::query_scalar::<_, SqliteTimestamp>(
             "UPDATE channel_capabilities SET \
                  enabled=COALESCE(?,enabled), \
                  auto_disable_allowed=COALESCE(?,auto_disable_allowed), \
+                 available_models=CASE WHEN ? IS NULL THEN available_models ELSE json_insert(available_models,'$[#]',?) END, \
                  billing_multiplier=COALESCE(?,billing_multiplier), \
                  revision=ag_md5_uuid(hex(randomblob(32))),updated_at=ag_now() \
              WHERE id=? AND updated_at=? AND deleted_at IS NULL \
@@ -2358,6 +2431,8 @@ async fn update_channels_batch(
         )
         .bind(input.changes.enabled)
         .bind(input.changes.auto_disable_allowed)
+        .bind(model)
+        .bind(model)
         .bind(
             input
                 .changes

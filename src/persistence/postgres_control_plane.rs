@@ -843,6 +843,26 @@ pub struct ChannelBatchUpdateInput {
     pub items: Vec<ChannelBatchUpdateTarget>,
     pub changes: ChannelBatchChanges,
 }
+impl ChannelBatchUpdateInput {
+    pub(crate) fn validate(&self) -> Result<(), RepositoryError> {
+        let changes = &self.changes;
+        let mut ids = HashSet::new();
+        if !(1..=100).contains(&self.items.len())
+            || self.items.iter().any(|item| !ids.insert(item.id))
+            || (!changes.has_scalar_changes() && changes.append_model.is_none())
+            || changes
+                .billing_multiplier
+                .is_some_and(|m| m.is_sign_negative())
+            || changes
+                .append_model
+                .as_ref()
+                .is_some_and(|model| model.trim().is_empty() || model.chars().count() > 300)
+        {
+            return Err(RepositoryError::Validation);
+        }
+        Ok(())
+    }
+}
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChannelBatchUpdateTarget {
@@ -858,12 +878,27 @@ pub struct ChannelBatchChanges {
     pub auto_disable_allowed: Option<bool>,
     #[serde(default)]
     pub billing_multiplier: Option<rust_decimal::Decimal>,
+    #[serde(default, deserialize_with = "deserialize_present_model")]
+    pub append_model: Option<String>,
+}
+fn deserialize_present_model<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    String::deserialize(deserializer).map(Some)
 }
 impl ChannelBatchChanges {
-    pub(crate) fn is_empty(&self) -> bool {
-        self.enabled.is_none()
-            && self.auto_disable_allowed.is_none()
-            && self.billing_multiplier.is_none()
+    pub(crate) fn has_scalar_changes(&self) -> bool {
+        self.enabled.is_some()
+            || self.auto_disable_allowed.is_some()
+            || self.billing_multiplier.is_some()
+    }
+
+    pub(crate) fn model_to_append(&self, before: &Value) -> Option<&str> {
+        self.append_model.as_deref().filter(|model| {
+            !before["available_models"]
+                .as_array()
+                .is_some_and(|models| models.iter().any(|entry| entry.as_str() == Some(*model)))
+        })
     }
 }
 #[derive(Clone, Deserialize)]
@@ -5138,22 +5173,7 @@ impl PostgresControlPlaneRepository {
         transaction: &mut Transaction<'_, Postgres>,
         input: ChannelBatchUpdateInput,
     ) -> Result<Vec<MutationResult>, RepositoryError> {
-        const MAX_BATCH_SIZE: usize = 100;
-
-        if input.items.is_empty()
-            || input.items.len() > MAX_BATCH_SIZE
-            || input.changes.is_empty()
-            || input
-                .changes
-                .billing_multiplier
-                .is_some_and(|multiplier| multiplier.is_sign_negative())
-        {
-            return Err(RepositoryError::Validation);
-        }
-        let mut ids = HashSet::with_capacity(input.items.len());
-        if input.items.iter().any(|item| !ids.insert(item.id)) {
-            return Err(RepositoryError::Validation);
-        }
+        input.validate()?;
 
         let mut results = Vec::with_capacity(input.items.len());
         for item in input.items {
@@ -5167,10 +5187,15 @@ impl PostgresControlPlaneRepository {
             if current_updated_at != item.updated_at {
                 return Err(RepositoryError::Conflict);
             }
+            let model = input.changes.model_to_append(&before);
+            if model.is_none() && !input.changes.has_scalar_changes() {
+                continue;
+            }
             let updated_at = sqlx::query_scalar(
                 "UPDATE channel_capabilities SET \
                  enabled=COALESCE($2,enabled), \
                  auto_disable_allowed=COALESCE($3,auto_disable_allowed), \
+                 available_models=CASE WHEN $6::text IS NULL THEN available_models ELSE array_append(available_models,$6) END, \
                  billing_multiplier=COALESCE($4,billing_multiplier),revision=gen_random_uuid() \
                  WHERE id=$1 AND updated_at=$5 AND deleted_at IS NULL \
                  RETURNING updated_at",
@@ -5180,6 +5205,7 @@ impl PostgresControlPlaneRepository {
             .bind(input.changes.auto_disable_allowed)
             .bind(input.changes.billing_multiplier)
             .bind(item.updated_at)
+            .bind(model)
             .fetch_optional(&mut **transaction)
             .await?
             .ok_or(RepositoryError::Conflict)?;
@@ -6844,7 +6870,7 @@ async fn model_soft_delete(
     })
 }
 
-async fn import_model(
+pub(super) async fn import_model(
     transaction: &mut Transaction<'_, Postgres>,
     input: ModelsDevModel,
     synced_at: DateTime<Utc>,

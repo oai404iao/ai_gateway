@@ -47,7 +47,7 @@ pub use control_plane::{
 };
 pub use model_sync::{
     ModelImportRequest, ModelSyncError, ModelSyncPreview, ModelSyncPreviewRequest,
-    ModelSyncResponse, ModelSyncService,
+    ModelSyncResponse, ModelSyncSelection, ModelSyncService,
 };
 pub use proxy::{ModelsResponse, ProxyError, ProxyService};
 pub use proxy_test::{ProxyTestError, ProxyTestInput, ProxyTestResponse, ProxyTestService};
