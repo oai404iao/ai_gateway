@@ -143,9 +143,8 @@ describe("CodexOauthPage", () => {
     expect(row.getByText("Member user-123")).toBeVisible();
   });
 
-  it("opens quota-window history and jumps to system costs for both projections", async () => {
+  it("shows period spend for each quota window without a system-wide cost link", async () => {
     seedAuthenticatedSession();
-    const costQueries: URLSearchParams[] = [];
     server.use(
       ...baseHandlers([CREDENTIAL]),
       http.get(
@@ -187,29 +186,6 @@ describe("CodexOauthPage", () => {
             ],
           }),
       ),
-      http.get("/console/v1/system/statistics/costs", ({ request }) => {
-        costQueries.push(new URL(request.url).searchParams);
-        return HttpResponse.json({
-          started_at: "2026-07-29T09:00:00.000Z",
-          ended_at: "2026-07-29T12:00:00.000Z",
-          granularity: "hour",
-          summary: {
-            request_count: 0,
-            priced_request_count: 0,
-            total_tokens: 0,
-            input_tokens: 0,
-            cached_input_tokens: 0,
-            cache_write_tokens: 0,
-            output_tokens: 0,
-            average_rpm: 0,
-            average_tpm: 0,
-            cost_amount: "0",
-          },
-          buckets: [],
-          models: [],
-          channels: [],
-        });
-      }),
     );
     const user = userEvent.setup();
     renderPage();
@@ -227,17 +203,10 @@ describe("CodexOauthPage", () => {
     ).toBeInTheDocument();
     expect(within(dialog).getByText("Manual reset credit")).toBeInTheDocument();
     expect(within(dialog).getByText("4.947917 USD")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "View costs" }));
-
-    await waitFor(() =>
-      expect(window.location.pathname).toBe("/admin/cost-statistics"),
-    );
-    await waitFor(() => expect(costQueries.length).toBeGreaterThan(0));
-    const query = costQueries.at(-1);
-    expect(query?.get("started_after")).toBe("2026-07-29T09:00:17.000Z");
-    expect(query?.get("started_before")).toBe("2026-07-29T11:50:43.000Z");
-    expect(query?.get("codex_credential_id")).toBe(CREDENTIAL_ID);
-    expect(query?.has("channel_id")).toBe(false);
+    expect(within(dialog).queryByRole("button", { name: "View costs" })).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole("tab", {name: /Secondary window/}));
+    expect(within(dialog).getByText("OpenAI official reset")).toBeVisible();
+    expect(within(dialog).getByText("24.50 USD")).toBeVisible();
   });
 
   it("shows credential action tooltips on focus and dismisses them on blur", async () => {

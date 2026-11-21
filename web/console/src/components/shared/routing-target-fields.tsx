@@ -175,14 +175,7 @@ export function RoutingTargetFields({
     const nextGroups = checked
       ? [...new Set([...selectedGroupIds, groupId])]
       : selectedGroupIds.filter((id) => id !== groupId);
-    const nextChannels = checked
-      ? selectedChannelIds.filter(
-          (channelId) =>
-            channels.find((channel) => channel.id === channelId)?.channel_group_id !==
-            groupId,
-        )
-      : selectedChannelIds;
-    onChange(nextGroups, nextChannels);
+    onChange(nextGroups, selectedChannelIds);
   };
 
   const toggleChannel = (channelId: string, checked: boolean) => {
@@ -262,7 +255,7 @@ export function RoutingTargetFields({
           {t("Channel groups ({count})", { count: visibleGroups.length })}
         </FieldLegend>
         <FieldDescription>
-          {t("Group selection fixes the current logical channels. All current and future capabilities of those channels are authorized; later group members are not.")}
+          {t("Group access follows membership: channels are included when they join and excluded when they leave. Individually selected channels stay selected if they move.")}
         </FieldDescription>
         {visibleGroups.length > 0 ? (
           <FieldGroup data-slot="checkbox-group" className="gap-3">
@@ -343,13 +336,8 @@ export function RoutingTargetFields({
                       <FieldGroup data-slot="checkbox-group" className="gap-3">
                         {category.items.map((channel) => {
                           const checked = selectedChannelSet.has(channel.id);
-                          const coveredByGroup = selectedGroupSet.has(
-                            channel.channel_group_id,
-                          );
                           const available = channelAvailable(channel);
-                          const disabled =
-                            (coveredByGroup && !checked) ||
-                            (!allowUnavailableSelection && !available && !checked);
+                          const disabled = !allowUnavailableSelection && !available && !checked;
                           const inputId = `${idPrefix}-channel-${channel.id}`;
                           return (
                             <Field

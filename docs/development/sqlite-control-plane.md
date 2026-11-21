@@ -57,7 +57,7 @@ AuthRepository 和 ControlPlaneRepository 保留 new(PgPool)，
 新拓扑写入使用[当前资源契约](upstream-identity-capabilities.md)，不保留旧渠道 CRUD、
 删除影响 token、pool 或自动投影作为第二套配置来源。
 
-权限/版本/所有权在存储检查；保留秘密脱敏、自助 Key 的 Policy 固定渠道交集、
+权限/版本/所有权在存储检查；保留秘密脱敏、自助 Key 签发或修改目标时的 Policy 范围校验、
 墓碑和不可逆撤销。能力删除自动修剪候选、空层及停用规则；
 逻辑渠道/组按依赖顺序删除，不使用旧级联影响确认流程。
 
@@ -100,7 +100,7 @@ sqlite_s3_parity.rs 以相同 case/断言调用真实 PG 与 SQLite：
 
 - 会话重放、身份/管理员、邀请和注册码，耗尽 reader 时仍正确分类过期会话；
 - 普通 mutation、批量、设置、目录、拓扑/路由和资源生命周期；
-- 所有权、权限、ETag、固定渠道授权、软删除及拒绝无副作用；
+- 所有权、权限、ETag、组与直接渠道授权、软删除及拒绝无副作用；
 - 真实 coordinator 的 compile/commit/publish、编译/审计失败回滚；
 - 大额整数、负余额加半个最小单位仅舍入最终结果。
 

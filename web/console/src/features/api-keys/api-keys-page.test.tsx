@@ -8,7 +8,7 @@ import { BrowserRouter } from "react-router";
 import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
 import { server, seedAuthenticatedSession } from "@/test/msw";
-import { CHANNEL, CHANNEL_GROUP, NEW_API_KEY_SECRET, OWN_API_KEY } from "@/test/fixtures";
+import { API_KEY_OPTIONS, CHANNEL, CHANNEL_GROUP, NEW_API_KEY_SECRET, OWN_API_KEY } from "@/test/fixtures";
 import type { ApiKeyView, SelfApiKeyCreateInput, SelfApiKeyUpdateInput } from "@/api/types";
 
 function TestApp({ children }: PropsWithChildren) {
@@ -150,6 +150,22 @@ describe("ApiKeysPage", () => {
 
     expect(await screen.findByText(/api key created/i)).toBeInTheDocument();
     expect(screen.queryByText(/save it now/i)).not.toBeInTheDocument();
+  });
+
+  it("offers explicitly permitted empty groups without inferring a group from a permitted channel", async () => {
+    seedAuthenticatedSession();
+    server.use(http.get("/console/v1/me/api-key-options", () => HttpResponse.json({
+      ...API_KEY_OPTIONS,
+      groups: [{ id: "empty", name: "Empty group", enabled: true, api_formats: [] }],
+    })));
+    const user = userEvent.setup();
+    renderAppAt("/api-keys?create=1");
+    const group = await screen.findByRole("checkbox", { name: "Empty group" });
+    await user.click(group);
+    expect(group).toBeChecked();
+    expect(screen.queryByRole("checkbox", { name: CHANNEL_GROUP.name })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Show individual channels/ }));
+    expect(screen.getByRole("checkbox", { name: `${CHANNEL.name} (${CHANNEL_GROUP.name})` })).toBeVisible();
   });
 
   it("masks, reveals, and copies the complete API key", async () => {

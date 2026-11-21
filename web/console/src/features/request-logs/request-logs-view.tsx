@@ -3,8 +3,9 @@ import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Columns3, ListFilter, Pa
 import { useSearchParams } from "react-router";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
-import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { Combobox, ComboboxContent, ComboboxEmpty, ComboboxInput, ComboboxItem, ComboboxList } from "@/components/ui/combobox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuGroup, DropdownMenuCheckboxItem } from "@/components/ui/dropdown-menu";
 import {
@@ -31,7 +32,7 @@ import { PageHeader } from "@/components/shared/page-header";
 import { AsyncResource } from "@/components/shared/async-resource";
 import { DetailField } from "@/components/shared/detail-field";
 import { ResourceTable, type Column } from "@/components/shared/resource-table";
-import { useRequestLog } from "@/features/request-logs/api";
+import { useModelOptions, useRequestLog } from "@/features/request-logs/api";
 import type {
   ApiKeyView,
   ControlPlaneUser,
@@ -40,7 +41,7 @@ import type {
 } from "@/api/types";
 import { dateTimeLocalToIso, formatDateTime, formatDateTimeLocalInput, formatRelative } from "@/lib/dates";
 import { formatDecimal, formatDurationMs, formatTokens, formatUsd } from "@/lib/formatters";
-import { API_FORMATS, API_OPERATIONS, apiFormatLabel, outcomeLabel, outcomeVariant } from "@/lib/permissions";
+import { API_FORMATS, API_OPERATIONS, apiFormatLabel, apiOperationLabel, outcomeLabel, outcomeVariant } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/app/i18n";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -151,7 +152,6 @@ interface RequestLogsViewProps {
   scope: "own" | "system";
   users?: ControlPlaneUser[];
   apiKeys?: RequestLogApiKeyOption[];
-  modelOptions?: string[];
 }
 
 function optionalText(value: string): string | undefined {
@@ -178,26 +178,6 @@ function requestProtocolLabel(
       return "SSE";
     case "websocket":
       return t("WebSocket");
-  }
-}
-
-function requestOperationLabel(
-  operation: RequestLogView["api_operation"],
-  t: (value: string) => string,
-) {
-  switch (operation) {
-    case "chat_completion":
-      return t("Chat Completions");
-    case "responses":
-      return t("Responses");
-    case "responses-ws":
-      return "Responses WebSocket";
-    case "web_search":
-      return t("Standalone web search");
-    case "images_generation":
-      return t("Image generation");
-    case "images_edit":
-      return t("Image edit");
   }
 }
 
@@ -278,28 +258,39 @@ function reasoningEffortLabel(value: string): string {
   return `${value.charAt(0).toUpperCase()}${value.slice(1)}`;
 }
 
-function RequestModel({ log, nameClassName }: { log: RequestLogView; nameClassName?: string }) {
+function RequestModel({ log, compact = false }: { log: RequestLogView; compact?: boolean }) {
   const { t } = useI18n();
   const effort = log.reasoning_effort
     ? reasoningEffortLabel(log.reasoning_effort)
     : null;
 
+  const sameModel = log.client_model === log.upstream_model;
+
   return (
-    <span className="flex flex-wrap items-center gap-1.5">
-      <span className={cn("font-medium wrap-anywhere", nameClassName)}>{log.client_model}</span>
-      {effort ? (
-        <Badge
-          variant="warning"
-          aria-label={`${t("Reasoning effort")}: ${effort}`}
-          title={`${t("Reasoning effort")}: ${effort}`}
-        >
-          {effort}
-        </Badge>
-      ) : null}
-      {log.fast_mode ? (
-        <Badge variant="success" aria-label={t("Fast mode")} title={t("Fast mode")}>
-          Fast
-        </Badge>
+    <span className="flex min-w-0 flex-col items-start gap-0.5 wrap-anywhere">
+      <span className={cn(compact && "line-clamp-2")}>
+        <span className="text-xs text-muted-foreground">{sameModel ? t("Requested & upstream") : t("Requested model")}: </span>
+        <span className="font-medium">{log.client_model}</span>
+      </span>
+      {!sameModel && (
+        <span className={cn("text-xs", compact && "line-clamp-2")}>
+          <span className="text-muted-foreground">{t("Upstream model")}: </span>
+          <span>{log.upstream_model ?? t("Not recorded")}</span>
+        </span>
+      )}
+      {effort || log.fast_mode ? (
+        <span className="flex flex-wrap gap-1.5">
+          {effort && (
+            <Badge variant="warning" aria-label={`${t("Reasoning effort")}: ${effort}`} title={`${t("Reasoning effort")}: ${effort}`}>
+              {effort}
+            </Badge>
+          )}
+          {log.fast_mode && (
+            <Badge variant="success" aria-label={t("Fast mode")} title={t("Fast mode")}>
+              Fast
+            </Badge>
+          )}
+        </span>
       ) : null}
     </span>
   );
@@ -409,12 +400,12 @@ export function RequestLogsView({
   scope,
   users = [],
   apiKeys = [],
-  modelOptions = [],
 }: RequestLogsViewProps) {
   const { t } = useI18n();
   const isSystemView = scope === "system";
   const isMobile = useIsMobile();
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const modelOptions = useModelOptions(filtersOpen);
   const filterToggle = useRef<HTMLButtonElement>(null);
   const [params, setParams] = useSearchParams();
   const filterParams = new URLSearchParams(params);
@@ -445,36 +436,11 @@ export function RequestLogsView({
   const prefix = idSearch.trim().toLowerCase();
   const matchingRows = (query.data ?? []).filter(row => row.id.toLowerCase().startsWith(prefix));
   const index = matchingRows.findIndex(row => row.id === selectedId);
-  const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
   const detail = useRequestLog(basePath, selectedId);
-
-  useEffect(() => {
-    const loggedModels =
-      query.data?.flatMap((log) => [log.client_model, log.upstream_model ?? ""]) ?? [];
-    const nextModels = loggedModels.filter(Boolean);
-    if (nextModels.length === 0) return;
-
-    setDiscoveredModels((current) => {
-      const merged = [...new Set([...current, ...nextModels])].sort((left, right) =>
-        left.localeCompare(right),
-      );
-      return merged.length === current.length &&
-        merged.every((model, index) => model === current[index])
-        ? current
-        : merged;
-    });
-  }, [query.data]);
 
   const availableApiKeys = useMemo(
     () => apiKeys.filter((key) => !draft.user_id || key.user_id === draft.user_id),
     [apiKeys, draft.user_id],
-  );
-  const availableModels = useMemo(
-    () =>
-      [...new Set([...modelOptions, ...discoveredModels, draft.model])]
-        .filter(Boolean)
-        .sort((left, right) => left.localeCompare(right)),
-    [discoveredModels, draft.model, modelOptions],
   );
   const userNamesById = useMemo(
     () => new Map(users.map((user) => [user.id, user.display_name])),
@@ -488,9 +454,9 @@ export function RequestLogsView({
   const filterLabels: [string, string | undefined][] = [
     ["User", isSystemView && filters.user_id ? (userNamesById.get(filters.user_id) ?? t("Unavailable")) : undefined],
     ["API key", appliedApiKey ? apiKeyLabel(appliedApiKey) : filters.api_key_id && t("Unavailable")],
-    ["Model", filters.model],
+    ["Requested model", filters.model],
     ["API format", filters.api_format && apiFormatLabel(filters.api_format)],
-    ["Operation", filters.api_operation && requestOperationLabel(filters.api_operation, t)],
+    ["Operation", filters.api_operation && apiOperationLabel(filters.api_operation)],
     ["Outcome", filters.outcome && outcomeLabel(filters.outcome)],
     ["Billing", filters.billed === undefined ? undefined : t(filters.billed ? "Billed" : "Unbilled")],
     ["From", filters.started_after && formatDateTime(filters.started_after)],
@@ -549,7 +515,7 @@ export function RequestLogsView({
       className: "min-w-36 max-w-56 whitespace-normal",
       render: (log) => (
         <div aria-current={selectedId === log.id || undefined}>
-          <RequestModel log={log} nameClassName="line-clamp-2" />
+          <RequestModel log={log} compact />
         </div>
       ),
     },
@@ -559,7 +525,7 @@ export function RequestLogsView({
       render: (log) => (
         <span className="flex flex-col items-start gap-1">
           <span className="font-medium">
-            {requestOperationLabel(log.api_operation, t)}
+            {apiOperationLabel(log.api_operation)}
           </span>
           <Badge variant="outline">
             {requestProtocolLabel(log.request_protocol, t)}
@@ -629,7 +595,7 @@ export function RequestLogsView({
           <time dateTime={log.started_at} className="text-xs text-muted-foreground">
             {formatDateTime(log.started_at)}
           </time>
-          <span className="line-clamp-2 font-medium wrap-anywhere">{log.client_model}</span>
+          <RequestModel log={log} compact />
           <Badge variant={outcomeVariant(log.outcome)}>{outcomeLabel(log.outcome)}</Badge>
         </div>
       ),
@@ -767,27 +733,32 @@ export function RequestLogsView({
                 </Select>
               </Field>
               <Field className={cn(!isSystemView && "xl:col-span-2")}>
-                <FieldLabel htmlFor="request-log-model">{t("Model")}</FieldLabel>
-                <Select
-                  value={draft.model || "__all__"}
-                  onValueChange={(value) =>
-                    updateDraft({ model: value === "__all__" ? "" : value })
-                  }
+                <FieldLabel htmlFor="request-log-model">{t("Requested model")}</FieldLabel>
+                <Combobox
+                  items={modelOptions.data ?? []}
+                  inputValue={draft.model}
+                  value={draft.model || null}
+                  onInputValueChange={(model) => updateDraft({ model })}
                 >
-                  <SelectTrigger id="request-log-model" aria-describedby="request-log-model-help" className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                      <SelectItem value="__all__">{t("All models")}</SelectItem>
-                      {availableModels.map((model) => (
-                        <SelectItem key={model} value={model}>
-                          {model}
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
+                  <ComboboxInput
+                    id="request-log-model"
+                    aria-label={t("Requested model")}
+                    aria-describedby="request-log-model-help"
+                    placeholder={t("All models")}
+                    spellCheck={false}
+                  />
+                  <ComboboxContent>
+                    <ComboboxEmpty>
+                      {modelOptions.isLoading ? t("Loading…") : modelOptions.isError ? t("Unavailable") : t("No matching suggestions")}
+                    </ComboboxEmpty>
+                    <ComboboxList>
+                      {(model: string) => <ComboboxItem key={model} value={model}>{model}</ComboboxItem>}
+                    </ComboboxList>
+                  </ComboboxContent>
+                </Combobox>
+                <FieldDescription id="request-log-model-help">
+                  {t("Choose a priced model or enter the exact model ID from the request.")}
+                </FieldDescription>
               </Field>
               <Field>
                 <FieldLabel htmlFor="request-log-format">{t("API format")}</FieldLabel>
@@ -836,7 +807,7 @@ export function RequestLogsView({
                       <SelectItem value="__all__">{t("All operations")}</SelectItem>
                       {API_OPERATIONS.map((operation) => (
                         <SelectItem key={operation} value={operation}>
-                          {requestOperationLabel(operation, t)}
+                          {apiOperationLabel(operation)}
                         </SelectItem>
                       ))}
                     </SelectGroup>
@@ -960,7 +931,6 @@ export function RequestLogsView({
                 </div>
               </Field>
             </FieldGroup>
-            <p id="request-log-model-help" className="text-xs text-muted-foreground">{t("Model matches either the client model or the upstream model exactly.")}</p>
           </form>
       </CollapsibleContent>
       <div className={cn("grid min-w-0 items-start", selectedId && !isMobile && "grid-cols-[minmax(0,1fr)_minmax(16rem,31%)]")}>
@@ -994,7 +964,7 @@ export function RequestLogsView({
               <DetailField label={t("Model")} value={<RequestModel log={detail.data} />} />
               <DetailField
                 label={t("Operation")}
-                value={requestOperationLabel(detail.data.api_operation, t)}
+                value={apiOperationLabel(detail.data.api_operation)}
               />
               <DetailField
                 label={t("Protocol")}

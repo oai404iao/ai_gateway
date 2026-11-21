@@ -11,8 +11,6 @@ import {
   CHANNEL_GROUP,
   ROUTING_GROUP,
   LOGICAL_CHANNEL,
-  UPSTREAM_ACCESS,
-  CHANNEL_CAPABILITY,
   COST_STATISTICS_REPORT,
   OWN_API_KEY,
   MODEL,
@@ -84,6 +82,13 @@ describe("StatisticsPage", () => {
     await user.click(await screen.findByRole("option", {name: OWN_API_KEY.name}));
     await user.click(screen.getByRole("button", {name: "Apply"}));
     await waitFor(() => expect(ownQueries.at(-1)?.get("api_key_id")).toBe(OWN_API_KEY.id));
+    const modelLink = screen.getByRole("link", {name: `Related requests for ${MODEL.source_model_id} · Chat Completions`});
+    const modelUrl = new URL((modelLink as HTMLAnchorElement).href);
+    expect(modelUrl.pathname).toBe("/usage/request-logs");
+    expect(Object.fromEntries(modelUrl.searchParams)).toMatchObject({
+      model: MODEL.source_model_id, api_format: "open_ai_chat_completions", api_key_id: OWN_API_KEY.id,
+      started_after: ownQueries.at(-1)?.get("started_after"),
+    });
     expect(screen.queryByRole("combobox", { name: "Channel" })).not.toBeInTheDocument();
     expect(screen.queryByText("Channel details")).not.toBeInTheDocument();
     expect(ownQueries.length).toBeGreaterThan(0);
@@ -240,12 +245,12 @@ describe("StatisticsPage", () => {
     await user.click(channelSelect);
     await user.click(
       await screen.findByRole("option", {
-        name: `${ROUTING_GROUP.name} · ${LOGICAL_CHANNEL.name} · ${CHANNEL_CAPABILITY.settings.operation}`,
+        name: `${ROUTING_GROUP.name} · ${LOGICAL_CHANNEL.name}`,
       }),
     );
     await user.click(screen.getByRole("button", { name: "Apply" }));
     await waitFor(() => {
-      expect(queries.at(-1)?.get("channel_id")).toBe(CHANNEL_CAPABILITY.id);
+      expect(queries.at(-1)?.get("channel_id")).toBe(LOGICAL_CHANNEL.id);
     });
 
     const todayStart = new Date(queries.at(-1)?.get("started_after") ?? "");
@@ -257,6 +262,7 @@ describe("StatisticsPage", () => {
     await user.click(screen.getByRole("button", { name: "This week" }));
     await waitFor(() => {
       expect(queries.at(-1)?.get("granularity")).toBe("day");
+      expect(queries.at(-1)?.get("channel_id")).toBe(LOGICAL_CHANNEL.id);
       const startedAt = new Date(queries.at(-1)?.get("started_after") ?? "");
       expect(startedAt.getDay()).toBe(1);
       expect(startedAt.getHours()).toBe(0);
@@ -270,30 +276,12 @@ describe("StatisticsPage", () => {
     });
   });
 
-  it("hydrates a Codex credential filter from the URL and keeps it separate from channel filters", async () => {
+  it("requires explicitly removing an obsolete credential filter before fetching costs", async () => {
     seedAuthenticatedSession();
     const user = userEvent.setup();
     const credentialId = "00000000-0000-0000-0000-00000000d001";
     const queries: URLSearchParams[] = [];
     server.use(
-      http.get("/console/v1/routing/accesses", () => HttpResponse.json([
-        {...UPSTREAM_ACCESS, name: "Subscriptions", connector_kind: "codex"},
-      ])),
-      http.get("/console/v1/routing/logical-channels", () =>
-        HttpResponse.json([
-          {
-            ...LOGICAL_CHANNEL,
-            credential_id: credentialId,
-            name: "Codex Plus",
-          },
-          {
-            ...LOGICAL_CHANNEL,
-            id: "00000000-0000-0000-0000-00000000d002",
-            credential_id: credentialId,
-            name: "Codex Images",
-          },
-        ]),
-      ),
       http.get("/console/v1/system/statistics/costs", ({ request }) => {
         queries.push(new URL(request.url).searchParams);
         return HttpResponse.json(COST_STATISTICS_REPORT);
@@ -304,21 +292,17 @@ describe("StatisticsPage", () => {
         "2026-07-29T09:00:00.000Z",
       )}&started_before=${encodeURIComponent(
         "2026-07-29T12:00:00.000Z",
-      )}&granularity=hour&codex_credential_id=${credentialId}`,
+      )}&granularity=hour&api_key_id=${OWN_API_KEY.id}&codex_credential_id=${credentialId}`,
     );
 
-    await waitFor(() => expect(queries.length).toBeGreaterThan(0));
-    const query = queries.at(-1);
-    expect(query?.get("codex_credential_id")).toBe(credentialId);
-    expect(query?.has("channel_id")).toBe(false);
-    const credentialFilter = screen.getByRole("combobox", { name: "Codex credential" });
-    const credentialName = "Subscriptions · Codex Images, Subscriptions · Codex Plus";
-    await waitFor(() => expect(credentialFilter).toHaveTextContent(credentialName));
-    credentialFilter.focus();
-    await user.keyboard("{ArrowDown}");
-    const options = await screen.findAllByRole("option");
-    expect(options.map((option) => option.textContent)).toEqual(["All Codex credentials", credentialName]);
-    await user.keyboard("{Escape}");
-    expect(screen.getByRole("combobox", { name: "Channel" })).toBeInTheDocument();
+    const remove = await screen.findByRole("button", {name: "Remove credential filter"});
+    expect(queries).toHaveLength(0);
+    await user.click(remove);
+    await waitFor(() => expect(queries).toHaveLength(1));
+    expect(Object.fromEntries(queries[0])).toEqual({
+      started_after: "2026-07-29T09:00:00.000Z", started_before: "2026-07-29T12:00:00.000Z",
+      granularity: "hour", api_key_id: OWN_API_KEY.id,
+    });
+    expect(screen.queryByRole("combobox", {name: "Codex credential"})).not.toBeInTheDocument();
   });
 });

@@ -169,7 +169,6 @@ fn filter(now: DateTime<Utc>) -> CostStatisticsFilter {
         user_id: None,
         api_key_id: None,
         channel_id: None,
-        codex_credential_id: None,
         include_channel_details: true,
     }
 }
@@ -614,7 +613,7 @@ async fn query_contract(db: &Backend, now: DateTime<Utc>) -> Value {
             ..filter(now)
         },
         CostStatisticsFilter {
-            channel_id: Some(CHANNEL),
+            channel_id: Some(LOGICAL_CHANNEL),
             ..filter(now)
         },
         CostStatisticsFilter {

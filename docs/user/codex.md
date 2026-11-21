@@ -24,7 +24,7 @@ Responses WS、独立 Search、Images generation、Images edit 能力。Token、
 4. 建立计价模型/profile，并为需要的每个操作分别保存能力/模型候选。Search 不隐式借用
    Responses 规则；Images generation/edit 也各有规则。新增凭证不会自动加入候选。
 5. 显式给 API Key/Policy 添加所需组或逻辑渠道；Key 需要 `proxy` 权限。
-   新导入渠道不会自动加入已有组授权；已授权渠道的全部能力无需逐项重新授权。
+   新建或移入已选组的渠道自动获得组授权；已授权渠道的全部能力无需逐项重新授权。
 6. 客户端 Codex provider 的 base URL 指向 Gateway `/v1`；独立搜索仍需客户端
    `supports_standalone_web_search = true`。需要操作内会话粘性时配置 Session affinity；缓存按模型规则隔离，
    Responses 与 Search 使用独立规则，相同 Session Key 不保证两者选中同一账号。跨操作使用同一账号

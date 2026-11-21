@@ -41,7 +41,9 @@ use crate::{
         SystemSettingsInput, SystemSettingsRecord, SystemSettingsView, UserBatchUpdateInput,
         UserGroupInput, UserInput, UserSettingsInput, UserSettingsView, UserUpdateInput,
         deleted_api_key_secret, generate_api_key_secret, system_settings_audit_value,
-        system_settings_view, validate_system_settings_input,
+        system_settings_view,
+        upstream_topology::authorization::{self, GrantOwner},
+        validate_system_settings_input,
     },
 };
 
@@ -913,8 +915,9 @@ impl SqliteControlPlaneRepository {
         user_id: Uuid,
     ) -> Result<SelfApiKeyOptions, RepositoryError> {
         let mut reader = self.read().await?;
+        let mut transaction = reader.begin().await?;
         let policy = sqlx::query_as::<_, SelfApiKeyPolicyRow>(
-            "SELECT p.id,p.name,p.allowed_group_ids,p.allowed_channel_ids,p.enabled \
+            "SELECT p.id,p.name,p.allowed_group_ids,p.enabled \
              FROM users AS u \
              JOIN user_groups AS g ON g.id=u.user_group_id AND g.deleted_at IS NULL \
              JOIN api_key_policies AS p \
@@ -922,16 +925,12 @@ impl SqliteControlPlaneRepository {
              WHERE u.id=? AND u.status='active' AND u.deleted_at IS NULL",
         )
         .bind(SqliteUuid(user_id))
-        .fetch_optional(&mut *reader)
+        .fetch_optional(&mut *transaction)
         .await?
         .map(SelfApiKeyPolicyRow::into_policy)
         .transpose()?;
-        let mut transaction = reader.begin().await?;
         let topology = crate::persistence::upstream_topology::sqlite_load(&mut transaction).await?;
-        let (groups, channels) = crate::persistence::upstream_topology::authorization::options(
-            &topology,
-            policy.as_ref(),
-        );
+        let (groups, channels) = authorization::options(&topology, policy.as_ref());
         Ok(SelfApiKeyOptions {
             policy_id: policy.as_ref().map(|p| p.id),
             policy_name: policy.as_ref().map(|p| p.name.clone()),
@@ -946,6 +945,7 @@ impl SqliteControlPlaneRepository {
 struct SelfApiKeyPolicyRow {
     id: SqliteUuid,
     name: String,
+    allowed_group_ids: String,
     enabled: bool,
 }
 
@@ -954,6 +954,7 @@ impl SelfApiKeyPolicyRow {
         Ok(SelfApiKeyPolicy {
             id: self.id.0,
             name: self.name,
+            allowed_group_ids: uuid_list(&self.allowed_group_ids)?,
             enabled: self.enabled,
         })
     }
@@ -1930,7 +1931,7 @@ async fn load_optional_self_api_key_policy(
         return Err(RepositoryError::DefaultApiKeyPolicyRequired);
     }
     let row = sqlx::query_as::<_, SelfApiKeyPolicyRow>(
-        "SELECT p.id,p.name,p.allowed_group_ids,p.allowed_channel_ids,p.enabled \
+        "SELECT p.id,p.name,p.allowed_group_ids,p.enabled \
          FROM users AS u \
          JOIN user_groups AS g ON g.id=u.user_group_id AND g.deleted_at IS NULL \
          JOIN api_key_policies AS p \
@@ -1941,22 +1942,6 @@ async fn load_optional_self_api_key_policy(
     .fetch_optional(&mut **transaction)
     .await?;
     row.map(SelfApiKeyPolicyRow::into_policy).transpose()
-}
-
-async fn resolve_self_api_key_targets(
-    transaction: &mut Transaction<'static, Sqlite>,
-    selected_group_ids: &[Uuid],
-    selected_channel_ids: &[Uuid],
-    policy: Option<&SelfApiKeyPolicy>,
-) -> Result<crate::persistence::upstream_topology::authorization::AuthorizationPlan, RepositoryError>
-{
-    let topology = crate::persistence::upstream_topology::sqlite_load(transaction).await?;
-    crate::persistence::upstream_topology::authorization::resolve(
-        &topology,
-        selected_group_ids,
-        selected_channel_ids,
-        Some(policy),
-    )
 }
 
 async fn create_own_api_key(
@@ -1974,13 +1959,6 @@ async fn create_own_api_key(
         false,
     )?;
     let policy = load_optional_self_api_key_policy(transaction, user_id).await?;
-    let allowed_api_formats = resolve_self_api_key_targets(
-        transaction,
-        &input.allowed_group_ids,
-        &input.allowed_channel_ids,
-        policy.as_ref(),
-    )
-    .await?;
     let id = Uuid::new_v4();
     let secret = generate_api_key_secret();
     let updated_at = sqlx::query_scalar::<_, SqliteTimestamp>(
@@ -1995,7 +1973,7 @@ async fn create_own_api_key(
     .bind(&input.name)
     .bind(&secret)
     .bind(input.expires_at.map(SqliteTimestamp))
-    .bind(json_text(&allowed_api_formats.formats)?)
+    .bind(json_text(&authorization::all_formats())?)
     .bind(json_text(&["proxy", "models.read"])?)
     .bind(value_to_text(&json!(input.allowed_group_ids))?)
     .bind(value_to_text(&json!(input.allowed_channel_ids))?)
@@ -2004,14 +1982,13 @@ async fn create_own_api_key(
     .bind(input.quota_limit_amount.map(amount_24_8).transpose()?)
     .fetch_one(&mut **transaction)
     .await?;
-    crate::persistence::upstream_topology::authorization::sqlite_write(
+    authorization::sqlite_write(
         transaction,
         id,
-        false,
+        GrantOwner::SelfKey(policy.as_ref()),
         &json!({}),
         &input.allowed_group_ids,
         &input.allowed_channel_ids,
-        Some(allowed_api_formats),
     )
     .await?;
     Ok(MutationResult {
@@ -2058,17 +2035,8 @@ async fn update_own_api_key(
         input.quota_limit_amount,
         !targets_changed,
     )?;
-    let allowed_api_formats = if targets_changed {
-        let policy = load_optional_self_api_key_policy(transaction, user_id).await?;
-        Some(
-            resolve_self_api_key_targets(
-                transaction,
-                &input.allowed_group_ids,
-                &input.allowed_channel_ids,
-                policy.as_ref(),
-            )
-            .await?,
-        )
+    let policy = if targets_changed {
+        load_optional_self_api_key_policy(transaction, user_id).await?
     } else {
         None
     };
@@ -2087,12 +2055,7 @@ async fn update_own_api_key(
     .bind(&input.status)
     .bind(input.expires_at.map(SqliteTimestamp))
     .bind(targets_changed)
-    .bind(json_text(
-        &allowed_api_formats
-            .as_ref()
-            .map(|plan| plan.formats.clone())
-            .unwrap_or_default(),
-    )?)
+    .bind(json_text(&authorization::all_formats())?)
     .bind(value_to_text(&json!(input.allowed_group_ids))?)
     .bind(value_to_text(&json!(input.allowed_channel_ids))?)
     .bind(input.requests_per_minute)
@@ -2104,15 +2067,14 @@ async fn update_own_api_key(
     .fetch_optional(&mut **transaction)
     .await?
     .ok_or(RepositoryError::Conflict)?;
-    if let Some(plan) = allowed_api_formats {
-        crate::persistence::upstream_topology::authorization::sqlite_write(
+    if targets_changed {
+        authorization::sqlite_write(
             transaction,
             id,
-            false,
+            GrantOwner::SelfKey(policy.as_ref()),
             &before,
             &input.allowed_group_ids,
             &input.allowed_channel_ids,
-            Some(plan),
         )
         .await?;
     }
@@ -2679,8 +2641,7 @@ async fn apply_control_plane_mutation(
             expected_updated_at,
         } => model_soft_delete(transaction, id, deleted_by, expected_updated_at).await,
         ControlPlaneMutation::CreateApiKey(mut input) => {
-            input.allowed_api_formats =
-                crate::persistence::upstream_topology::authorization::all_formats();
+            input.allowed_api_formats = authorization::all_formats();
             ensure_api_key_owner_exists(transaction, input.user_id).await?;
             validate_admin_api_key_input(
                 &input.name,
@@ -2715,14 +2676,13 @@ async fn apply_control_plane_mutation(
             .bind(input.quota_limit_amount.map(amount_24_8).transpose()?)
             .fetch_one(&mut **transaction)
             .await?;
-            crate::persistence::upstream_topology::authorization::sqlite_write(
+            authorization::sqlite_write(
                 transaction,
                 id,
-                false,
+                GrantOwner::AdminKey,
                 &json!({}),
                 &input.allowed_group_ids,
                 &input.allowed_channel_ids,
-                None,
             )
             .await?;
             Ok(MutationResult {
@@ -2750,8 +2710,7 @@ async fn apply_control_plane_mutation(
             mut input,
             expected_updated_at,
         } => {
-            input.allowed_api_formats =
-                crate::persistence::upstream_topology::authorization::all_formats();
+            input.allowed_api_formats = authorization::all_formats();
             validate_admin_api_key_input(
                 &input.name,
                 &input.allowed_api_formats,
@@ -2791,14 +2750,13 @@ async fn apply_control_plane_mutation(
             .fetch_optional(&mut **transaction)
             .await?
             .ok_or(RepositoryError::Conflict)?;
-            crate::persistence::upstream_topology::authorization::sqlite_write(
+            authorization::sqlite_write(
                 transaction,
                 id,
-                false,
+                GrantOwner::AdminKey,
                 &before,
                 &input.allowed_group_ids,
                 &input.allowed_channel_ids,
-                None,
             )
             .await?;
             Ok(MutationResult {
@@ -3462,14 +3420,13 @@ async fn api_key_policy_insert(
         .await?
         .ok_or(RepositoryError::Conflict)?
     };
-    crate::persistence::upstream_topology::authorization::sqlite_write(
+    authorization::sqlite_write(
         transaction,
         id,
-        true,
+        GrantOwner::Policy,
         &before,
         &input.allowed_group_ids,
         &input.allowed_channel_ids,
-        None,
     )
     .await?;
     Ok(MutationResult {

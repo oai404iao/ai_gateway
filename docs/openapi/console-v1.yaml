@@ -381,6 +381,22 @@ paths:
               schema: { $ref: "#/components/schemas/ApiHostsView" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /model-options:
+    get:
+      tags: [RequestLogs]
+      operationId: listModelOptions
+      description: Request-model filter suggestions for any authenticated Console user. Lists non-deleted pricing model identifiers, including disabled models; not a list of models authorized for inference.
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Sorted client-facing model identifiers, without routing or pricing details.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /me/api-keys/{id}:
     get:
       tags: [Self]
@@ -1543,7 +1559,7 @@ paths:
     post:
       tags: [RoutingTopology]
       operationId: createLogicalChannel
-      description: Binds one access and at most one credential to a group. It never creates capabilities, routes, or grants.
+      description: Binds one access and at most one credential to a group. Keys authorizing this group include the new channel; capabilities and routes are configured separately.
       security: [{ bearerAuth: [] }]
       requestBody:
         required: true
@@ -1582,7 +1598,7 @@ paths:
     put:
       tags: [RoutingTopology]
       operationId: updateLogicalChannel
-      description: Replaces the group/access/credential binding. `credential_id` is required and nullable; omitting it is rejected. Rebinding invalidates connection identity.
+      description: Replaces the group/access/credential binding. Moving a channel changes its group-derived access on snapshot publication. Direct channel grants are independent. `credential_id` is required and nullable; rebinding invalidates connection identity.
       security: [{ bearerAuth: [] }]
       parameters:
         - $ref: "#/components/parameters/PathId"
@@ -2625,6 +2641,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/CostStatisticsReport" }
+        "400": { $ref: "#/components/responses/InvalidQuery" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "422": { $ref: "#/components/responses/Unprocessable" }
 
@@ -2663,10 +2680,8 @@ paths:
       description: |
         Administrator-only system-wide cost analytics. Administrators can
         aggregate all users or filter by `user_id`, `api_key_id`, and
-        `channel_id`, or by one Codex credential across both of its managed
-        Responses and Images channels; channel-level details are included in
-        the response. `channel_id` and `codex_credential_id` are mutually
-        exclusive.
+        logical `channel_id`. Each logical channel includes requests across
+        its capabilities, regardless of protocol or credential.
         Aggregates request counts, token totals and usage categories, RPM/TPM,
         and cost by UTC hour or day. All monetary amounts are settled in USD,
         and the response includes continuous zero-valued buckets across the
@@ -2680,13 +2695,13 @@ paths:
         - $ref: "#/components/parameters/RequestLogUserId"
         - $ref: "#/components/parameters/RequestLogApiKeyId"
         - $ref: "#/components/parameters/StatisticsChannelId"
-        - $ref: "#/components/parameters/StatisticsCodexCredentialId"
       responses:
         "200":
           description: System-wide cost and usage statistics.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/CostStatisticsReport" }
+        "400": { $ref: "#/components/responses/InvalidQuery" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/Unprocessable" }
@@ -3114,7 +3129,7 @@ components:
       name: model
       in: query
       required: false
-      description: Exact client-model or upstream-model identifier.
+      description: Exact client-requested model identifier. Does not match an upstream alias.
       schema: { type: string, maxLength: 300 }
     RequestLogApiFormat:
       name: api_format
@@ -3195,16 +3210,7 @@ components:
       name: channel_id
       in: query
       required: false
-      description: Administrator-only exact channel filter.
-      schema: { type: string, format: uuid }
-    StatisticsCodexCredentialId:
-      name: codex_credential_id
-      in: query
-      required: false
-      description: >
-        Administrator-only Codex credential filter that includes both managed
-        Responses and Images projection channels. Mutually exclusive with
-        `channel_id`.
+      description: Administrator-only logical channel identifier, not a capability identifier.
       schema: { type: string, format: uuid }
     CodexQuotaHistoryLimit:
       name: limit
@@ -3225,6 +3231,11 @@ components:
       schema: { type: string }
 
   responses:
+    InvalidQuery:
+      description: Malformed or unrecognized query parameter.
+      content:
+        text/plain:
+          schema: { type: string }
     Unauthorized:
       description: Unauthorized.
       content:
@@ -4125,6 +4136,7 @@ components:
 
     ApiKeyView:
       type: object
+      description: Access is the union of current members of the selected groups and independently granted logical channels. Group membership changes take effect when the updated snapshot is published; the key need not be edited.
       required:
         [id, name, secret, status, expires_at, allowed_api_formats, permissions,
          allowed_group_ids, allowed_channel_ids, requests_per_minute, max_concurrent_requests,
@@ -4169,7 +4181,7 @@ components:
 
     ApiKeyPolicyView:
       type: object
-      description: Group and logical-channel selectors with a fixed logical-channel grant set. A newly selected group expands only to its current channels; retained groups never acquire later members. All current and future capabilities of each granted channel share that authorization. Group-origin grants require continued membership in that group.
+      description: Defines selectable targets for self-service keys, not a live restriction on already issued keys. Group selections follow their current logical channels. A direct channel grant alone does not authorize selecting its whole group.
       required:
         [id, name, allowed_group_ids, allowed_channel_ids, enabled, created_at, updated_at]
       properties:
@@ -4197,11 +4209,11 @@ components:
           description: Whether the resolved user/group API Key Policy currently contributes ordinary targets.
         groups:
           type: array
-          description: Ordinary groups contributed by the enabled API Key Policy; groups with no ordinary channel are excluded.
+          description: Groups explicitly selected in the enabled policy, including empty groups.
           items: { $ref: "#/components/schemas/SelfApiKeyGroupOption" }
         channels:
           type: array
-          description: Individual channels contributed by the enabled API Key Policy.
+          description: Logical channels selectable directly, from either the policy's current group members or its direct grants.
           items: { $ref: "#/components/schemas/SelfApiKeyChannelOption" }
 
     SelfApiKeyGroupOption:
@@ -5112,11 +5124,11 @@ components:
           type: string
           format: uuid
           nullable: true
-          description: Administrator-only; all self-service responses return null.
+          description: Historical dispatch identity (may identify a capability). Administrator-only; all self-service responses return null.
         channel_name:
           type: string
           nullable: true
-          description: Administrator-only current display name; all self-service responses return null.
+          description: Historical channel label for that dispatch identity. Administrator-only; all self-service responses return null.
         outcome: { type: string }
         response_status_code: { type: integer, nullable: true }
         streamed:
@@ -5315,7 +5327,7 @@ components:
           items: { $ref: "#/components/schemas/CostStatisticsModel" }
         channels:
           type: array
-          description: Administrator-only channel breakdown; empty for regular users.
+          description: Logical channel totals across capabilities. Empty on the personal endpoint, including for administrators.
           items: { $ref: "#/components/schemas/CostStatisticsChannel" }
 
     CostStatisticsSummary:
@@ -5360,6 +5372,7 @@ components:
 
     CostStatisticsBucketModel:
       type: object
+      description: Bucket totals grouped by the client-requested model and API format.
       required: [api_format, model, request_count, total_tokens, cost_amount]
       properties:
         api_format: { $ref: "#/components/schemas/ApiFormat" }
@@ -5372,6 +5385,7 @@ components:
 
     CostStatisticsModel:
       type: object
+      description: Totals grouped by the client-requested model and API format.
       required:
         [api_format, model, request_count, total_tokens, input_tokens,
          cached_input_tokens, cache_write_tokens, output_tokens, success_rate,
@@ -5405,15 +5419,12 @@ components:
     CostStatisticsChannel:
       type: object
       required:
-        [id, channel_group_id, channel_group_name, name, api_format, request_count,
+        [id, name, request_count,
          total_tokens, input_tokens, cached_input_tokens, cache_write_tokens,
          output_tokens, success_rate, cost_amount]
       properties:
         id: { type: string, format: uuid }
-        channel_group_id: { type: string, format: uuid }
-        channel_group_name: { type: string }
         name: { type: string }
-        api_format: { $ref: "#/components/schemas/ApiFormat" }
         request_count: { type: integer }
         total_tokens: { type: integer }
         input_tokens:

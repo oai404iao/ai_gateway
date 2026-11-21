@@ -102,6 +102,7 @@ pub fn router(state: ConsoleState) -> Router {
             get(get_own_api_key_options),
         )
         .route("/console/v1/me/api-hosts", get(get_api_hosts))
+        .route("/console/v1/model-options", get(list_model_options))
         .route(
             "/console/v1/me/api-keys/{id}",
             get(get_own_api_key)
@@ -745,8 +746,6 @@ struct CostStatisticsQuery {
     api_key_id: Option<Uuid>,
     #[serde(default)]
     channel_id: Option<Uuid>,
-    #[serde(default)]
-    codex_credential_id: Option<Uuid>,
 }
 
 #[derive(Deserialize)]
@@ -1541,6 +1540,19 @@ async fn list_models(
     Ok(Json(
         serde_json::to_value(state.coordinator.lists().await?.models)
             .expect("Console model DTO serializes"),
+    ))
+}
+
+async fn list_model_options(
+    State(state): State<ConsoleState>,
+) -> Result<Json<Vec<String>>, ConsoleError> {
+    Ok(Json(
+        state
+            .coordinator
+            .model_source_versions()
+            .await?
+            .into_keys()
+            .collect(),
     ))
 }
 
@@ -2625,11 +2637,10 @@ async fn get_own_cost_statistics(
     Extension(principal): Extension<ConsolePrincipal>,
     Query(query): Query<CostStatisticsQuery>,
 ) -> Result<Json<crate::persistence::CostStatisticsReport>, ConsoleError> {
-    if query.user_id.is_some() || query.channel_id.is_some() || query.codex_credential_id.is_some()
-    {
+    if query.user_id.is_some() || query.channel_id.is_some() {
         return Err(ConsoleError::Validation);
     }
-    cost_statistics(&state, query, Some(principal.user_id()), None, None, false).await
+    cost_statistics(&state, query, Some(principal.user_id()), false).await
 }
 
 async fn get_system_cost_statistics(
@@ -2637,30 +2648,15 @@ async fn get_system_cost_statistics(
     Query(query): Query<CostStatisticsQuery>,
 ) -> Result<Json<crate::persistence::CostStatisticsReport>, ConsoleError> {
     let user_id = query.user_id;
-    let channel_id = query.channel_id;
-    let codex_credential_id = query.codex_credential_id;
-    cost_statistics(
-        &state,
-        query,
-        user_id,
-        channel_id,
-        codex_credential_id,
-        true,
-    )
-    .await
+    cost_statistics(&state, query, user_id, true).await
 }
 
 async fn cost_statistics(
     state: &ConsoleState,
     query: CostStatisticsQuery,
     user_id: Option<Uuid>,
-    channel_id: Option<Uuid>,
-    codex_credential_id: Option<Uuid>,
     include_channel_details: bool,
 ) -> Result<Json<crate::persistence::CostStatisticsReport>, ConsoleError> {
-    if channel_id.is_some() && codex_credential_id.is_some() {
-        return Err(ConsoleError::Validation);
-    }
     let ended_at = query.started_before.unwrap_or_else(Utc::now);
     let started_at = query
         .started_after
@@ -2680,8 +2676,7 @@ async fn cost_statistics(
                 granularity,
                 user_id,
                 api_key_id: query.api_key_id,
-                channel_id,
-                codex_credential_id,
+                channel_id: query.channel_id,
                 include_channel_details,
             })
             .await?,

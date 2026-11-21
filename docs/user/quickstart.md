@@ -197,7 +197,7 @@ cargo build --locked --release --features embedded-console-ui
 | 启动报插件目录权限错误 | 是否使用运行用户可管理、无符号链接的绝对私有目录 |
 | 数据库认证失败 | 是否误用了已有 volume 的旧密码；不要删卷修复认证 |
 | Console 401 | 管理员邮箱/密码、JWT 文件、Access JWT 是否过期 |
-| `model_not_found` | 客户端模型名、同操作规则、Key 固定渠道授权 |
+| `model_not_found` | 客户端模型名、同操作规则、Key 是否授权候选渠道或其当前组 |
 | `no_healthy_channel` | 接入、凭证、组、渠道和能力是否启用，目录和候选是否匹配 |
 | `request_log_unavailable` | 本地 request spool 的容量、同步能力和错误锁定；不要删除证据 |
 

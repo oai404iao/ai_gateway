@@ -731,10 +731,7 @@ export const COST_STATISTICS_REPORT: CostStatisticsReport = {
   channels: [
     {
       id: CHANNEL.id,
-      channel_group_id: CHANNEL_GROUP.id,
-      channel_group_name: CHANNEL_GROUP.name,
       name: CHANNEL.name,
-      api_format: "open_ai_chat_completions",
       request_count: 18_878,
       total_tokens: 263_000_000,
       input_tokens: 210_000_000,

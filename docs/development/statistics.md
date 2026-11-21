@@ -24,7 +24,7 @@
 | 个人使用情况 | 当前 JWT 用户，管理员也只看自己 | request_metering_facts，365 天客户端活动 |
 | 渠道组状态 | 任意已登录用户 | request_logs，已纳入统计能力的成功率/TTFT/TPS |
 | 个人花费 | 当前 JWT 用户，不接受系统级筛选 | 事实，按时间/Key 聚合；channels 固定空数组 |
-| 系统花费 | 管理员 | 事实，可筛 user/Key/channel/Codex credential，含渠道明细 |
+| 系统花费 | 管理员 | 事实，可筛用户、Key 和逻辑渠道，含渠道明细 |
 | 花费排行榜 | 任意已登录用户 | spend_leaderboard_* 快照，上海自然日/周/月 |
 
 个人概览（`/`）和用量报表（`/statistics`）不因管理员角色而切换读源或增加系统级筛选。
@@ -60,7 +60,7 @@
 只纳入当前未删除组/渠道/能力且统计开关开启的记录。
 不能将旧迁移 0041 的渠道组开关语义作为当前设置入口。
 
-模型标识统一上游优先：COALESCE(upstream_model,client_model)，保留 api_format。
+渠道组状态衡量上游健康，因此使用 COALESCE(upstream_model,client_model)，保留 api_format。
 指标定义：
 
 | 指标 | 口径 |
@@ -92,8 +92,7 @@ SQLite 使用相邻秩与 PG 插值公式实现百分位，见[精确查询](sql
 
 个人端点仅接受时间、粒度和 api_key_id，不接受 user/channel 等系统筛选；
 管理员访问个人端点仍只看本人，channels 为空。
-系统端点可按 user_id、api_key_id、channel_id 或 codex_credential_id 限定，
-channel_id 与 codex_credential_id 互斥。
+系统端点可组合 user_id、api_key_id 和逻辑 channel_id。一个渠道包括它的全部能力，其他渠道复用同一凭证不扩大范围。
 费用查询不默认排除 scheduled_test，不能把个人贡献图/排行榜的 client-only 过滤搬过来。
 
 “今天/本周/本月”快捷范围按浏览器本地时间生成，转 RFC 3339 发送；
@@ -108,16 +107,16 @@ channel_id 与 codex_credential_id 互斥。
 | 总 Token | input_tokens + output_tokens；缓存已包含在输入，不重复相加 |
 | 平均 RPM / TPM | 请求数 / 区间分钟，或总 Token / 区间分钟 |
 | USD 花费 | 确定 cost_amount 的精确和；无币种选择或换算 |
-| 模型 | 上游模型优先，保留 API format |
-| 渠道 | 系统视图按请求历史渠道/组身份与 API format 聚合，并返回请求、成功率、各 Token 和费用 |
+| 模型 | 按 client_model 和 API format 聚合（包括时间桶内的模型行）；与日志的精确模型筛选一致 |
+| 渠道 | 系统视图按逻辑渠道聚合，请求身份通过不可变注册表归属；不再按能力、组或格式拆行 |
 
-展示渠道/组名称不重写请求时 UUID。个人响应不返回渠道明细。
+渠道费用行使用逻辑渠道的名称，重命名不拆分费用。无法映射到逻辑渠道的旧记录保留其注册身份和名称，不按同名渠道推断；历史日志中的派发身份不重写为逻辑渠道 ID。个人响应不返回渠道明细。
 费用来源是事实而非日志或回执，不把 amount_state/结算资格过滤偷偷加入统计。
 金额必须精确聚合；SQLite 禁止原生 SUM/浮点，最终报告遵守既有 Decimal 结果边界。
 
 ## 凭证窗口费用
 
-系统花费与 quota 当前/历史窗口通过 request_credential_identities 使用请求时凭证归属。
+quota 当前/历史窗口通过 request_credential_identities 使用请求时凭证归属。
 新请求不因渠道后来改绑转移费用；旧未知才回退冻结注册表，明确无认证不回退。
 不再仅按固定 Responses/Images 两个 managed channel，也不按当前绑定扫描。
 凭证窗口汇总不按网关 user/Key 过滤，本人可见性另由用户组授权的渠道组限制。
@@ -126,9 +125,6 @@ channel_id 与 codex_credential_id 互斥。
 当前用 min(now,scheduled_reset_at)。只有 cost 非 NULL 才贡献金额。
 主/次窗口重叠，不可相加；这是 Gateway 价格快照 USD，不是 OpenAI 账单，
 也不要求已有普通结算回执。
-
-凭证页可跳到系统花费，URL 带周期边界、适合粒度和 codex_credential_id；
-未结束窗口到当前时间但不超过计划 reset。统计页从 URL 恢复筛选。
 
 ## 花费排行榜
 
@@ -166,11 +162,11 @@ API 只读周期/条目快照，不在页面请求时扫描事实。
 | GET /me/usage | 当前用户固定 365 天，无 user 参数 |
 | GET /statistics/channel-group-status | window=24h/3d/7d，任意登录用户 |
 | GET /statistics/costs | started_after/before、granularity、可选 api_key_id；个人范围 |
-| GET /system/statistics/costs | 管理员；再加 user_id/channel_id/codex_credential_id |
+| GET /system/statistics/costs | 管理员；再加 user_id、逻辑 channel_id |
 | GET /statistics/spend-leaderboard | period=day/week/month（默认 day）、可选 period_start、limit |
 | GET /system/load | 管理员，实时单实例指标，不是统计历史 |
 
-无效时间/粒度/周期/limit、个人端点系统筛选或互斥筛选按 OpenAPI 返回 422。
+无效时间/粒度/周期/limit、个人端点系统筛选按 OpenAPI 返回 422；系统花费接口拒绝未知参数。
 响应类型由 OpenAPI 生成，不能在前端手改。
 
 维护验证重点：

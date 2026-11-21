@@ -187,7 +187,24 @@ try {
     return logs.length === 1 && logs[0].billed_at !== null;
   }, { timeout: 30_000 }).toBe(true);
   await navigateWithRefresh(`${data.console}/admin/request-logs`);
-  await expect(page.getByText("e2e-client", { exact: true }).first()).toBeVisible();
+  const modelCell = page.getByRole("cell").filter({ has: page.getByText("e2e-client", { exact: true }) });
+  await expect(modelCell.getByText("e2e-wire", { exact: true })).toBeVisible();
+  const filters = page.getByRole("button", { name: /^Filters \(/ });
+  const modelFilter = page.getByRole("combobox", { name: "Requested model", exact: true });
+  await filters.click();
+  await modelFilter.fill("e2e-wire");
+  await modelFilter.press("Tab");
+  const wireOnly = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === "/console/v1/request-logs" && url.searchParams.get("model") === "e2e-wire";
+  });
+  await page.getByRole("button", { name: "Apply", exact: true }).click();
+  assert.deepEqual(await (await wireOnly).json(), []);
+  await filters.click();
+  await modelFilter.fill("e2e-c");
+  await page.getByRole("option", { name: "e2e-client", exact: true }).click();
+  await page.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(modelCell.getByText("e2e-wire", { exact: true })).toBeVisible();
   console.log(JSON.stringify({
     id: "console-route-to-settlement", status: "passed",
     browser: browser.version(), refresh_rotated: true, etag_checked: true,

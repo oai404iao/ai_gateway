@@ -777,7 +777,9 @@ export async function mockConsoleApi(page: Page): Promise<void> {
       });
     }
     if (path === "/console/v1/me/request-logs" && method === "GET") {
-      return route.fulfill({ status: 200, json: [{ ...E2E_PERSONAL_REQUEST_LOG, user_id: session.user.id }] });
+      const model = url.searchParams.get("model");
+      const log = { ...E2E_PERSONAL_REQUEST_LOG, user_id: session.user.id };
+      return route.fulfill({ status: 200, json: !model || model === log.client_model ? [log] : [] });
     }
     if (
       path === `/console/v1/me/request-logs/${E2E_PERSONAL_REQUEST_LOG.id}` &&
@@ -883,6 +885,9 @@ export async function mockConsoleApi(page: Page): Promise<void> {
     }
     if (path === "/console/v1/api-key-policies" && method === "GET") {
       return route.fulfill({ status: 200, json: [E2E_API_KEY_POLICY] });
+    }
+    if (path === "/console/v1/model-options" && method === "GET") {
+      return route.fulfill({ status: 200, json: [E2E_MODEL, E2E_SEARCH_MODEL, E2E_IMAGE_MODEL].map((model) => model.source_model_id).sort() });
     }
     if (path === "/console/v1/models" && method === "GET") {
       return route.fulfill({
@@ -1181,7 +1186,8 @@ export async function mockConsoleApi(page: Page): Promise<void> {
       return route.fulfill({ status: 200, json: E2E_PROXY_TEST_RESULT });
     }
     if (path === "/console/v1/request-logs" && method === "GET") {
-      return route.fulfill({ status: 200, json: [E2E_SYSTEM_REQUEST_LOG] });
+      const model = url.searchParams.get("model");
+      return route.fulfill({ status: 200, json: !model || model === E2E_SYSTEM_REQUEST_LOG.client_model ? [E2E_SYSTEM_REQUEST_LOG] : [] });
     }
     if (
       path === `/console/v1/request-logs/${E2E_SYSTEM_REQUEST_LOG.id}` &&

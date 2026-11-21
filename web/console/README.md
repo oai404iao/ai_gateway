@@ -95,11 +95,10 @@ API, including when served by Vite. Fixtures and network mocks belong to tests.
 
 ## Model configuration
 
-Key/Policy grants target fixed logical channels. Credentials are independent
-of groups; each channel explicitly binds its access and credential. Adding a
-capability shares the channel's grant, but adding a channel to a group does not
-silently grant access. Deployment requires the coordinated migrations in the
-[cutover record](../../docs/development/upstream-identity-capabilities.md).
+Key and Policy forms save group and individual channel selections separately.
+A selected group follows its current membership; a directly selected channel
+stays selected if it moves. Sharing an upstream credential does not share a
+grant. See the [authorization and topology contract](../../docs/development/upstream-identity-capabilities.md).
 
 The management area provides **Upstream accesses**, **Upstream credentials**,
 **Channel configuration**, and **Model configuration**.

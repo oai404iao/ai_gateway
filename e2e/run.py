@@ -459,6 +459,10 @@ def seed(console, password, upstream):
     group, _ = api("/routing/groups", "POST", {
         "name": "system-e2e", "enabled": True,
     })
+    key, _ = api("/api-keys", "POST", {
+        "user_id": user, "name": "system-e2e",
+        "permissions": ["proxy", "models.read"], "allowed_group_ids": [group["id"]], "allowed_channel_ids": [],
+    })
     upstream_secret = secrets.token_urlsafe(24)
     credential, _ = api("/routing/upstream-credentials", "POST", {
         "name": "System E2E shared identity", "kind": "bearer", "secret": upstream_secret,
@@ -476,10 +480,6 @@ def seed(console, password, upstream):
         "group_id": group["id"], "access_id": access["id"],
         "name": "system-e2e-disabled-reference", "enabled": False,
         "credential_id": credential["id"],
-    })
-    key, _ = api("/api-keys", "POST", {
-        "user_id": user, "name": "system-e2e",
-        "permissions": ["proxy"], "allowed_group_ids": [group["id"]], "allowed_channel_ids": [],
     })
     capability_settings = {
         "operation": "responses",
@@ -525,6 +525,28 @@ def seed(console, password, upstream):
         "channel_group_id": group["id"], "protocol_path": path,
         "upstream_credential_id": credential["id"], "upstream_secret": upstream_secret,
     }
+
+
+def exercise_group_membership(data):
+    def visible():
+        models, _ = request(data["public"], "/v1/models", token=data["api_key"])
+        return any(model["id"] == "e2e-client" for model in models["data"])
+
+    token = data["token"]
+    console = data["console"]
+    path = f"/console/v1/routing/logical-channels/{data['logical_channel_id']}"
+    def move(group_id):
+        channel, headers = request(console, path, token=token)
+        update = {k: channel[k] for k in ("access_id", "credential_id", "name", "enabled")}
+        request(console, path, "PUT", {**update, "group_id": group_id}, token, headers["ETag"])
+
+    check(visible(), "a group key must see channels created after issuance")
+    other, _ = request(console, "/console/v1/routing/groups", "POST", {"name": "outside-key", "enabled": True}, token)
+    move(other["id"])
+    check(not visible(), "a group key must lose a channel moved out of its scope")
+    move(data["channel_group_id"])
+    check(visible(), "a group key must regain a channel moved back into scope")
+    return {"id": "dynamic-group-membership", "status": "passed"}
 
 
 def set_upstream(data, url, websocket=False):
@@ -749,6 +771,8 @@ def main():
                 data["upstream_rotated_secret"] = rotated_secret
                 secret_values.extend([data["token"], data["api_key"], data["upstream_secret"], data["upstream_rotated_secret"]])
                 data["public"] = f"http://127.0.0.1:{public_port}"
+                report["stage"] = "group-membership"
+                report["scenarios"].append(exercise_group_membership(data))
                 report["stage"] = "plugin-lifecycle"
                 report["scenarios"].append(exercise_plugin_lifecycle(data, resources.plugin))
                 report["stage"] = "codex-plugin-oauth"

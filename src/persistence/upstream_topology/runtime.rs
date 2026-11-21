@@ -598,59 +598,58 @@ fn build_model_rules(
     Ok(rules)
 }
 
-/// Routing still uses capability identities. Expand fixed logical-channel grants
-/// against this snapshot only; never re-expand a group's current membership.
+/// Routing authorizes capability IDs. Groups follow current membership, whereas
+/// direct access requires a channel-origin grant, not a dormant legacy selector.
 fn fold_grants(
     mut api_keys: Vec<ApiKeyRecord>,
     grants: &[super::ApiKeyChannelGrantRecord],
     live: &[LiveCapability<'_>],
     known_channels: &HashSet<Uuid>,
 ) -> Result<Vec<ApiKeyRecord>, CanonicalGraphError> {
-    let mut grants_by_key = HashMap::<Uuid, Vec<&super::ApiKeyChannelGrantRecord>>::new();
+    let mut capabilities_by_group = HashMap::<Uuid, Vec<Uuid>>::new();
+    let mut capabilities_by_channel = HashMap::<Uuid, Vec<Uuid>>::new();
+    for capability in live {
+        capabilities_by_group
+            .entry(capability.group.id)
+            .or_default()
+            .push(capability.capability.id);
+        capabilities_by_channel
+            .entry(capability.logical.id)
+            .or_default()
+            .push(capability.capability.id);
+    }
+    let mut direct_channels = HashMap::<Uuid, Vec<Uuid>>::new();
     for grant in grants {
         if !known_channels.contains(&grant.channel_id)
             || grant.origin_kind == GrantOriginKind::Capability
         {
             return Err(CanonicalGraphError::UnknownGrantTarget);
         }
-        grants_by_key
-            .entry(grant.api_key_id)
-            .or_default()
-            .push(grant);
+        if grant.origin_kind == GrantOriginKind::Channel && grant.origin_id == grant.channel_id {
+            direct_channels
+                .entry(grant.api_key_id)
+                .or_default()
+                .push(grant.channel_id);
+        }
     }
     for key in &mut api_keys {
-        let mut allowed = HashSet::new();
-        for grant in grants_by_key.get(&key.id).into_iter().flatten() {
-            for capability in live
-                .iter()
-                .filter(|capability| capability.logical.id == grant.channel_id)
-            {
-                if grant_matches_origin(grant, capability) {
-                    allowed.insert(capability.capability.id);
-                }
+        let mut allowed = Vec::new();
+        for group_id in key.allowed_group_ids.drain(..) {
+            if let Some(ids) = capabilities_by_group.get(&group_id) {
+                allowed.extend_from_slice(ids);
             }
         }
-        let mut allowed = allowed.into_iter().collect::<Vec<_>>();
+        for channel_id in direct_channels.get(&key.id).into_iter().flatten() {
+            if let Some(ids) = capabilities_by_channel.get(channel_id) {
+                allowed.extend_from_slice(ids);
+            }
+        }
         allowed.sort_unstable();
-        key.allowed_group_ids.clear();
+        allowed.dedup();
         key.allowed_channel_ids = allowed;
-        key.allowed_api_formats = crate::domain::ApiFormat::ALL
-            .iter()
-            .map(|format| format.as_str().to_owned())
-            .collect();
+        key.allowed_api_formats = super::authorization::all_formats();
     }
     Ok(api_keys)
-}
-
-fn grant_matches_origin(
-    grant: &super::ApiKeyChannelGrantRecord,
-    capability: &LiveCapability<'_>,
-) -> bool {
-    match grant.origin_kind {
-        GrantOriginKind::Group => capability.group.id == grant.origin_id,
-        GrantOriginKind::Channel => capability.logical.id == grant.origin_id,
-        GrantOriginKind::Capability => false,
-    }
 }
 
 fn validate_policy_grants(
@@ -839,9 +838,9 @@ mod tests {
             status: "active".into(),
             expires_at: None,
             allowed_api_formats: formats.iter().map(|value| (*value).to_owned()).collect(),
-            permissions: vec!["proxy".into()],
-            allowed_group_ids: vec![Uuid::from_u128(999)],
-            allowed_channel_ids: vec![Uuid::from_u128(998)],
+            permissions: vec!["proxy".into(), "models.read".into()],
+            allowed_group_ids: vec![],
+            allowed_channel_ids: vec![],
             requests_per_minute: None,
             max_concurrent_requests: None,
             quota_limit_amount: None,
@@ -1010,7 +1009,10 @@ mod tests {
     }
 
     #[test]
-    fn channel_grants_cover_every_capability_without_a_separate_format_gate() {
+    fn group_membership_and_direct_grants_govern_model_visibility_and_routing() {
+        use crate::domain::{ApiFormat, RequestProtocol};
+        use crate::routing::{PassiveHealthPolicy, RoutingRuntime, SelectionResult};
+
         let mut records = topology(vec![
             capability(
                 100,
@@ -1041,6 +1043,7 @@ mod tests {
             upstream_model: "wire-model".into(),
             weight: 1,
         }];
+        records.routing_groups.push(group(4));
         records.api_key_grants = vec![
             ApiKeyChannelGrantRecord {
                 api_key_id: Uuid::from_u128(300),
@@ -1057,26 +1060,72 @@ mod tests {
                 created_at: at(),
             },
             ApiKeyChannelGrantRecord {
-                api_key_id: Uuid::from_u128(300),
+                api_key_id: Uuid::from_u128(302),
                 channel_id: Uuid::from_u128(3),
                 origin_kind: GrantOriginKind::Group,
-                origin_id: Uuid::from_u128(404),
+                origin_id: Uuid::from_u128(1),
                 created_at: at(),
             },
         ];
-        let mut base = base();
-        base.api_keys = vec![api_key(300, &["open_ai_responses"])];
-        let resolved = resolve_runtime(&records, base, &[profile()], &[]).expect("resolve");
-        let key = resolved.api_keys.first().expect("key");
-        assert!(key.allowed_group_ids.is_empty());
-        assert_eq!(
-            key.allowed_channel_ids,
-            vec![Uuid::from_u128(100), Uuid::from_u128(101)]
-        );
-        assert_eq!(
-            key.allowed_api_formats,
-            super::super::authorization::all_formats()
-        );
+        let routing = RoutingRuntime::new(PassiveHealthPolicy::default());
+        for current_group in [4, 1, 4] {
+            records.logical_channels[0].group_id = Uuid::from_u128(current_group);
+            let mut base = base();
+            let mut direct = api_key(300, &["open_ai_responses"]);
+            direct.allowed_group_ids = vec![Uuid::from_u128(1)];
+            let mut group_only = api_key(301, &["open_ai_responses"]);
+            group_only.allowed_group_ids = direct.allowed_group_ids.clone();
+            let mut dormant = api_key(302, &["open_ai_responses"]);
+            dormant.allowed_channel_ids = vec![Uuid::from_u128(3)];
+            base.api_keys = vec![direct, group_only, dormant];
+            let resolved = resolve_runtime(&records, base, &[profile()], &[]).expect("resolve");
+            let all_capabilities = [Uuid::from_u128(100), Uuid::from_u128(101)];
+            assert_eq!(resolved.api_keys[0].allowed_channel_ids, all_capabilities);
+            assert_eq!(
+                resolved.api_keys[1].allowed_channel_ids,
+                if current_group == 1 {
+                    &all_capabilities[..]
+                } else {
+                    &[]
+                }
+            );
+            assert!(resolved.api_keys[2].allowed_channel_ids.is_empty());
+            assert_eq!(
+                resolved.api_keys[0].allowed_api_formats,
+                super::super::authorization::all_formats()
+            );
+
+            let snapshot = crate::runtime_config::compile_control_plane(resolved).unwrap();
+            for (secret, authorized) in [
+                ("secret-300", true),
+                ("secret-301", current_group == 1),
+                ("secret-302", false),
+            ] {
+                let key = snapshot.authenticate(secret).unwrap();
+                let models = snapshot.models_for(&key, ApiFormat::OpenAiResponses);
+                let selection = routing.select_operation_with_affinity_excluding(
+                    &snapshot,
+                    &key,
+                    ApiOperation::Responses,
+                    RequestProtocol::NonStream,
+                    "client-model",
+                    None,
+                    &[],
+                );
+                if authorized {
+                    assert_eq!(models.as_slice(), &[std::sync::Arc::from("client-model")]);
+                    assert!(
+                        matches!(selection, SelectionResult::Selected(route) if route.channel.id() == Uuid::from_u128(100))
+                    );
+                } else {
+                    assert!(models.is_empty());
+                    assert!(matches!(
+                        selection,
+                        SelectionResult::UnknownOrInaccessibleModel
+                    ));
+                }
+            }
+        }
     }
 
     #[test]
