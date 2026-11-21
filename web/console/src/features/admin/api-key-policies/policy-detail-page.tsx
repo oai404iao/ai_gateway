@@ -157,7 +157,6 @@ export function ApiKeyPolicyDetailPage() {
   return (
     <AdminDetailShell
       title={isNew ? t("New API key policy") : state.name || t("Policy")}
-      description={t("Controls which channel groups and channels users may assign to API keys.")}
       backPath={returnTo}
       navigationGuard={draft.navigationGuard}
       isLoading={isLoading || groups.isLoading || channels.isLoading || capabilities.isLoading}

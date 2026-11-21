@@ -10,7 +10,7 @@ async function prepare(page: Page) {
     .getByLabel("Password", { exact: true })
     .fill("correct-horse-battery-staple");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
-  await expect(page).toHaveURL(/\/account/);
+  await expect(page).toHaveURL("/");
 }
 
 test.describe("canonical routing topology", () => {
@@ -47,7 +47,8 @@ test.describe("canonical routing topology", () => {
   test("the routing navigation exposes the canonical editors", async ({ page }) => {
     await prepare(page);
 
-    await page.getByRole("link", { name: "Channel configuration" }).click();
+    await page.getByRole("navigation", { name: "Console navigation" }).getByRole("link", { name: "Management" }).click();
+    await page.getByRole("navigation", { name: "Management navigation" }).getByRole("link", { name: "Channel configuration" }).click();
     await expect(page).toHaveURL(/\/admin\/routing\/channels$/);
     await page.getByRole("tab", { name: "Group configuration" }).click();
     await expect(
@@ -91,7 +92,7 @@ test.describe("canonical routing topology", () => {
     )).toBe(true);
     await page.setViewportSize({ width: 1440, height: 1000 });
 
-    await page.getByRole("link", { name: "Model configuration" }).click();
+    await page.getByRole("navigation", { name: "Management navigation" }).getByRole("link", { name: "Model configuration" }).click();
     await page.getByRole("button", { name: new RegExp(E2E_MODEL.display_name) }).click();
     await expect(page.getByRole("region", { name: "Operation routing" }).getByText("Cache hit price")).toBeVisible();
     await page.getByRole("button", { name: /Chat Completions/ }).click();
@@ -135,7 +136,8 @@ test.describe("canonical routing topology", () => {
   test("unified credentials fit the desktop viewport", async ({ page }) => {
     await prepare(page);
     await page.setViewportSize({ width: 1280, height: 900 });
-    await page.getByRole("link", { name: "Upstream credentials" }).click();
+    await page.getByRole("navigation", { name: "Console navigation" }).getByRole("link", { name: "Management" }).click();
+    await page.getByRole("navigation", { name: "Management navigation" }).getByRole("link", { name: "Upstream credentials" }).click();
     await page.getByRole("tab", { name: "Codex", exact: true }).click();
     await expect(page.getByText("Personal Plus", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Connect account" })).toBeEnabled();

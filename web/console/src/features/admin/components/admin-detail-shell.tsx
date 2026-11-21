@@ -1,4 +1,4 @@
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { PageHeader } from "@/components/shared/page-header";
 import { AsyncResource } from "@/components/shared/async-resource";
@@ -79,9 +79,6 @@ export function AdminDetailShell({
                 <Card>
                   <CardHeader>
                     <CardTitle className="text-destructive">{t("Danger zone")}</CardTitle>
-                    <CardDescription>
-                      {t("These actions are permanent and audited.")}
-                    </CardDescription>
                   </CardHeader>
                   <CardContent>{dangerZone}</CardContent>
                 </Card>

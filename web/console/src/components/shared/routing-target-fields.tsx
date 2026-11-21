@@ -7,7 +7,6 @@ import {
   Card,
   CardAction,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
@@ -165,7 +164,7 @@ export function RoutingTargetFields({
     .map((id) => ({
       id,
       label: groupById.get(id)?.name ??
-        visibleChannels.find((channel) => channel.channel_group_id === id)?.channel_group_name ?? id,
+        visibleChannels.find((channel) => channel.channel_group_id === id)?.channel_group_name ?? t("Unavailable group"),
       items: visibleChannels.filter((channel) => channel.channel_group_id === id),
     }));
   const disabledTargetCount =
@@ -201,9 +200,7 @@ export function RoutingTargetFields({
       data-invalid={Boolean(error) || undefined}
     >
       <FieldLegend>{legend ?? t("Routing targets")}</FieldLegend>
-      <FieldDescription>
-        {description ?? t("Select channel groups or individual logical channels.")}
-      </FieldDescription>
+      {description && <FieldDescription>{description}</FieldDescription>}
 
       <div className="flex flex-wrap gap-2">
         <Badge variant="secondary">
@@ -316,9 +313,6 @@ export function RoutingTargetFields({
         <Card size="sm">
           <CardHeader className="flex flex-col items-start">
             <CardTitle>{t("Logical channels")}</CardTitle>
-            <CardDescription>
-              {t("Use individual channels only when the whole group should not be selected.")}
-            </CardDescription>
             <CardAction>
               <CollapsibleTrigger render={<Button type="button" variant="outline" size="sm" />}>
                 {channelsOpen
@@ -348,7 +342,6 @@ export function RoutingTargetFields({
                       </FieldLegend>
                       <FieldGroup data-slot="checkbox-group" className="gap-3">
                         {category.items.map((channel) => {
-                          const group = groupById.get(channel.channel_group_id);
                           const checked = selectedChannelSet.has(channel.id);
                           const coveredByGroup = selectedGroupSet.has(
                             channel.channel_group_id,
@@ -358,10 +351,6 @@ export function RoutingTargetFields({
                             (coveredByGroup && !checked) ||
                             (!allowUnavailableSelection && !available && !checked);
                           const inputId = `${idPrefix}-channel-${channel.id}`;
-                          const groupName =
-                            channel.channel_group_name ??
-                            group?.name ??
-                            channel.channel_group_id;
                           return (
                             <Field
                               key={channel.id}
@@ -373,7 +362,7 @@ export function RoutingTargetFields({
                                 id={inputId}
                                 checked={checked}
                                 disabled={disabled}
-                                aria-label={`${channel.name} (${groupName})`}
+                                aria-label={`${channel.name} (${category.label})`}
                                 aria-invalid={Boolean(error)}
                                 onCheckedChange={(nextChecked) =>
                                   toggleChannel(channel.id, Boolean(nextChecked))
@@ -394,7 +383,6 @@ export function RoutingTargetFields({
                                     ) : null}
                                   </span>
                                 </FieldLabel>
-                                <FieldDescription>{groupName}</FieldDescription>
                               </FieldContent>
                             </Field>
                           );

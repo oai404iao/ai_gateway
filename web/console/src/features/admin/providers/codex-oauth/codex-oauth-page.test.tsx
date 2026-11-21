@@ -14,7 +14,7 @@ import type {
   CodexOauthCompleteInput,
   CodexOauthStartInput,
 } from "@/api/types";
-import { ROUTING_GROUP } from "@/test/fixtures";
+import { PROXY, ROUTING_GROUP } from "@/test/fixtures";
 import { seedAuthenticatedSession, server } from "@/test/msw";
 
 const GROUP_ID = "00000000-0000-0000-0000-00000000c001";
@@ -126,10 +126,21 @@ describe("CodexOauthPage", () => {
     renderPage();
 
     expect(await screen.findByText("Personal Plus")).toBeInTheDocument();
-    expect(
-      screen.getByText("Personal credential (no workspace ID)"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("Personal Codex account")).toBeVisible();
     expect(screen.queryByText("Workspace account-123")).not.toBeInTheDocument();
+  });
+
+  it("names the maintenance proxy and keeps workspace and member IDs in account details", async () => {
+    seedAuthenticatedSession();
+    const user = userEvent.setup();
+    server.use(...baseHandlers([{ ...CREDENTIAL, proxy_id: PROXY.id }]));
+    renderPage();
+    const row = within(await screen.findByRole("row", { name: /Personal Plus/ }));
+    expect(await row.findByText(PROXY.name)).toBeVisible();
+    expect(row.getByText("Workspace account-123")).not.toBeVisible();
+    await user.click(row.getByText("Workspace account"));
+    expect(row.getByText("Workspace account-123")).toBeVisible();
+    expect(row.getByText("Member user-123")).toBeVisible();
   });
 
   it("opens quota-window history and jumps to system costs for both projections", async () => {

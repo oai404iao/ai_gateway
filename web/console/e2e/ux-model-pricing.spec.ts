@@ -60,7 +60,7 @@ async function signIn(page: Page) {
   await page.locator('input[type="email"]').fill("admin@example.com");
   await page.locator('input[type="password"]').fill("synthetic-password");
   await page.locator('button[type="submit"]').click();
-  await expect(page).toHaveURL(/\/account$/);
+  await expect(page).toHaveURL("/");
 }
 
 async function expectUnobscured(control: Locator) {
@@ -98,7 +98,9 @@ test("mobile can save base pricing from the first screen without opening the cal
   await save.click();
   await expect(page).toHaveURL(new URL(workspace, baseURL).href);
   await expect(page.getByRole("heading", { name: E2E_MODEL.display_name })).toBeVisible();
-  await expect(page.getByRole("group", { name: "操作路由" }).getByRole("button", { pressed: true })).toHaveCount(1);
+  const selected = page.getByRole("group", { name: "操作路由", exact: true }).getByRole("button", { pressed: true });
+  await expect(selected).toHaveCount(1);
+  await expect(selected).toHaveAccessibleName(/Chat Completions/);
   expect(writes).toHaveLength(1);
   expect(writes[0]).toMatchObject({
     ifMatch: originalEtag,

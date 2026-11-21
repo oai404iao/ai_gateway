@@ -183,12 +183,9 @@ export function ChannelGroupStatusPanel() {
 
   return (
     <div className="flex flex-col gap-6">
-      <Card>
+      <Card variant="section">
         <CardHeader>
           <CardTitle>{t("Model overview")}</CardTitle>
-          <CardDescription>
-            {t("Metrics aggregated across monitored channel groups.")}
-          </CardDescription>
           <CardAction>
             <ToggleGroup
               value={[window]}
@@ -232,7 +229,7 @@ export function ChannelGroupStatusPanel() {
       </Card>
 
       {data?.groups.map((group) => (
-        <Card key={`${group.id}:${group.api_format}`}>
+        <Card variant="section" key={`${group.id}:${group.api_format}`}>
           <CardHeader>
             <CardTitle className="flex flex-wrap items-center gap-2">
               <span>{group.name}</span>

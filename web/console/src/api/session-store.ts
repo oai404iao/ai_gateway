@@ -1,10 +1,7 @@
 import { createStore } from "zustand/vanilla";
 import type { ConsoleUser } from "@/api/types";
 
-// In-memory only. Access tokens, refresh tokens, and API keys are never
-// persisted to localStorage, sessionStorage, URLs, or query caches.
-// The refresh token lives only in the HttpOnly; Secure; SameSite=Lax cookie
-// managed by the browser, so the SPA never reads it.
+// Bearer tokens are memory-only. The browser manages the HttpOnly refresh cookie.
 
 export type SessionStatus = "loading" | "authenticated" | "unauthenticated";
 
@@ -22,6 +19,10 @@ export const sessionStore = createStore<SessionState>(() => ({
 
 export function getSession(): SessionState {
   return sessionStore.getState();
+}
+
+export function sessionScope(user: ConsoleUser | null): string {
+  return user ? `${user.id}:${user.role}:${user.password_change_required}` : "signed-out";
 }
 
 export function setSession(session: Partial<SessionState>): void {

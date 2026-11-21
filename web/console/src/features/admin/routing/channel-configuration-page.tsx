@@ -19,7 +19,7 @@ export function ChannelConfigurationPage() {
     <div className="flex flex-col gap-6">
       <PageHeader title={t("Channel configuration")}
         actions={<NavigationLink to={withReturnTo("/admin/routing/capabilities", origin)}>{t("All channel capabilities")}</NavigationLink>}
-        description={t("Filter channels by group. Open a channel to configure its operation capabilities.")} />
+      />
       <Tabs value={view} onValueChange={(value) => setParams((current) => {
         const next = new URLSearchParams(current);
         next.set("view", String(value));

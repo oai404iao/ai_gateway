@@ -78,7 +78,7 @@ async function prepare(page: Page) {
   await page.locator("input[type=email]").fill("admin@example.com");
   await page.locator("input[type=password]").fill("synthetic-password");
   await page.locator("button[type=submit]").click();
-  await expect(page).toHaveURL(/\/account$/);
+  await expect(page).toHaveURL("/");
   return writes;
 }
 
@@ -134,6 +134,7 @@ for (const [width, height] of [[1440, 900], [1280, 720]]) {
     await expect(heading(page)).toBeFocused();
     await testInfo.attach("desktop deep selection", { body: await page.screenshot(), contentType: "image/png" });
     await detail.getByRole("button", { name: /Responses/ }).click();
+    await detail.getByRole("button", { name: "Inspect tier 5", exact: true }).click();
     const bottom = detail.getByRole("spinbutton", { name: "Weight for tier 5 row 2" });
     await expect(bottom).toBeAttached();
     await detail.getByRole("heading", { name: model.display_name }).hover();
@@ -320,7 +321,9 @@ test("rule conflicts send the original ETag; a failed directory refresh keeps ca
   await expect(weight).toHaveValue("4");
   await page.clock.setFixedTime(new Date("2026-09-01T12:01:00Z"));
   modelRefreshFails = true;
-  await page.getByRole("link", { name: "Users", exact: true }).click();
+  const nav = page.getByRole("navigation", { name: "Management navigation" });
+  await nav.getByRole("button", { name: "Members and access", exact: true }).click();
+  await nav.getByRole("link", { name: "Users", exact: true }).click();
   await page.getByRole("alertdialog").getByRole("button", { name: "Discard changes" }).click();
   await expect(page).toHaveURL(/\/admin\/users$/);
   await expect(page.getByRole("heading", { name: "Users", exact: true, level: 1 })).toBeVisible();

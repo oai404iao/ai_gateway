@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useParams } from "react-router";
+import { useParams, useSearchParams } from "react-router";
 import { Controller, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Field, FieldError, FieldSet, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import {
@@ -18,7 +18,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
-import { AdminDetailShell } from "@/features/admin/components/admin-detail-shell";
+import { PageHeader } from "@/components/shared/page-header";
+import { AsyncResource } from "@/components/shared/async-resource";
 import { useReturnPath } from "@/lib/page-navigation";
 import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
 import { ApiKeyValue } from "@/components/shared/api-key-value";
@@ -41,6 +42,7 @@ import {
 import { ApiError } from "@/api/errors";
 import type { ApiKeyView } from "@/api/types";
 import { formatList, formatUsd } from "@/lib/formatters";
+import { resourceLabels } from "@/lib/resource-labels";
 import {
   dateTimeLocalToIso,
   formatDateTime,
@@ -99,6 +101,9 @@ function ApiKeyDetail({ id }: { id: string }) {
   const [baseline, setBaseline] = useState<KeyVersion>();
   const [conflict, setConflict] = useState(false);
   const [discardOpen, setDiscardOpen] = useState(false);
+  const [params] = useSearchParams();
+  const [editing, setEditing] = useState(() => params.get("edit") === "1");
+  const [discardEditor, setDiscardEditor] = useState(false);
   const options = useOwnApiKeyOptions();
   const update = useUpdateOwnApiKey(id);
   const revoke = useRevokeOwnApiKey();
@@ -178,6 +183,7 @@ function ApiKeyDetail({ id }: { id: string }) {
       });
       form.reset(values);
       markSaved();
+      setEditing(false);
       toast.success(t("API key updated"));
     } catch (error) {
       if (error instanceof ApiError && error.isConflict) {
@@ -227,30 +233,25 @@ function ApiKeyDetail({ id }: { id: string }) {
 
   const targetGroups = useMemo<RoutingTargetGroup[]>(() => {
     const available = options.data?.groups ?? [];
-    const missing = (key?.allowed_group_ids ?? [])
+    const missing = resourceLabels((key?.allowed_group_ids ?? [])
       .filter((groupId) => !available.some((group) => group.id === groupId))
-      .map((groupId) => ({
-        id: groupId,
-        name: groupId,
-        enabled: false,
-      }));
-    return [...available, ...missing];
-  }, [key?.allowed_group_ids, options.data?.groups]);
+      .map(id => ({id, name: t("Unavailable channel group")})));
+    return [...available, ...Array.from(missing, ([id, name]) => ({id, name, enabled: false}))];
+  }, [key?.allowed_group_ids, options.data?.groups, t]);
   const targetChannels = useMemo<RoutingTargetChannel[]>(() => {
     const available = options.data?.channels ?? [];
-    const missing = (key?.allowed_channel_ids ?? [])
+    const missing = resourceLabels((key?.allowed_channel_ids ?? [])
       .filter((channelId) =>
         !available.some((channel) => channel.id === channelId))
-      .map((channelId) => ({
-        id: channelId,
+      .map(id => ({id, name: t("Unknown channel")})));
+    return [...available, ...Array.from(missing, ([id, name]) => ({
+        id, name,
         channel_group_id: "",
         channel_group_name: t("No longer allowed"),
         channel_group_enabled: false,
-        name: channelId,
         enabled: false,
         auto_disabled: false,
-      }));
-    return [...available, ...missing];
+      }))];
   }, [
     key?.allowed_channel_ids,
     options.data?.channels,
@@ -262,34 +263,35 @@ function ApiKeyDetail({ id }: { id: string }) {
     form.formState.errors.allowed_group_ids?.message ??
     form.formState.errors.allowed_channel_ids?.message;
   const allowedGroupNames = (key?.allowed_group_ids ?? []).map(
-    (groupId) => targetGroups.find((group) => group.id === groupId)?.name ?? groupId,
+    (groupId) => targetGroups.find((group) => group.id === groupId)?.name ?? t("Unavailable channel group"),
   );
   const allowedChannelNames = (key?.allowed_channel_ids ?? []).map((channelId) => {
     const channel = targetChannels.find((channel) => channel.id === channelId);
-    return channel ? `${channel.name} (${channel.channel_group_name ?? channel.channel_group_id})` : channelId;
+    if (!channel) return t("Unknown channel");
+    const groupName = channel.channel_group_name ?? targetGroups.find(group => group.id === channel.channel_group_id)?.name;
+    return groupName ? `${channel.name} (${groupName})` : channel.name;
   });
 
   return (
-    <>
-      <AdminDetailShell
+    <div className="flex min-w-0 flex-col gap-4">
+      {navigationGuard}
+      <PageHeader
         title={key && !missing ? key.name : t("API key")}
-        description={t("View, rename, enable, disable, revoke, or delete this key.")}
-        backPath={returnTo}
-        isLoading={isLoading}
-        error={pageError}
-        hasData={Boolean(key)}
-        navigationGuard={navigationGuard}
-        detailCard={key ? (
-            <Card>
-              <CardHeader>
-                <CardTitle>{t("Details")}</CardTitle>
-                <CardDescription>
+        backTo={returnTo}
+        actions={key && !pageError && key.status !== "revoked" && <Button onClick={() => setEditing(true)}>{t("Edit")}</Button>}
+      />
+      <AsyncResource isLoading={isLoading} error={pageError}>
+        {key && <>
+            <section className="grid min-w-0 gap-4 border-y py-5 md:grid-cols-[minmax(12rem,1fr)_minmax(0,2fr)]">
+              <header>
+                <h2 className="text-sm font-semibold">{t("Details")}</h2>
+                <p className="mt-1 text-xs text-muted-foreground">
                   {t("Channel authorization covers all capabilities. Permissions are fixed at creation.")}
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <dl className="grid min-w-0 grid-cols-1 gap-4">
+                </p>
+              </header>
+                <dl className="grid min-w-0 grid-cols-2 gap-4">
                   <DetailField
+                    className="col-span-2"
                     label={t("API key")}
                     value={<ApiKeyValue value={key.secret} className="min-w-0 w-full" />}
                   />
@@ -322,16 +324,17 @@ function ApiKeyDetail({ id }: { id: string }) {
                   />
                   <DetailField label={t("Created")} value={formatDateTime(key.created_at)} />
                 </dl>
-              </CardContent>
-            </Card>
-        ) : null}
-        editCard={key && key.status !== "revoked" ? (
-            <Card>
-              <CardHeader>
-                <CardTitle>{t("Edit")}</CardTitle>
-                <CardDescription>{t("Renaming or disabling takes effect immediately.")}</CardDescription>
-              </CardHeader>
-              <CardContent className="flex flex-col gap-4">
+            </section>
+        {key.status !== "revoked" && <Sheet open={editing} onOpenChange={open => {
+          if (submitting) return;
+          if (!open && isDirty) setDiscardEditor(true); else setEditing(open);
+        }}>
+            <SheetContent className="overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-2xl">
+              <SheetHeader className="border-b pr-12">
+                <SheetTitle>{t("Edit API key")}</SheetTitle>
+                <SheetDescription>{t("Renaming or disabling takes effect immediately.")}</SheetDescription>
+              </SheetHeader>
+              <div className="flex flex-col gap-4 px-4 pb-4">
                 {reloadRequired && (
                   <Alert variant="destructive">
                     <AlertTitle>{t("This version of the API key can no longer be saved.")}</AlertTitle>
@@ -490,11 +493,12 @@ function ApiKeyDetail({ id }: { id: string }) {
                     {t("Save changes")}
                   </Button>
                 </form>
-              </CardContent>
-            </Card>
-        ) : null}
-        dangerZone={key ? (
-          <div className="flex flex-col gap-3">
+              </div>
+            </SheetContent>
+          </Sheet>}
+          <section className="grid gap-4 border-b pb-5 md:grid-cols-[minmax(12rem,1fr)_minmax(0,2fr)]">
+            <h2 className="text-sm font-semibold">{t("Danger zone")}</h2>
+            <div className="flex min-w-0 flex-col gap-3">
                 <p className="text-sm text-muted-foreground">
                   {t("Revocation keeps the Key visible. Deletion also erases its secret and hides it permanently.")}
                 </p>
@@ -520,9 +524,13 @@ function ApiKeyDetail({ id }: { id: string }) {
                   {t("Delete API key")}
                 </Button>
               </div>
-          </div>
-        ) : null}
-      />
+            </div>
+          </section>
+        </>}
+      </AsyncResource>
+      <ConfirmDialog open={discardEditor} onOpenChange={setDiscardEditor} title={t("Discard unsaved changes?")}
+        description={t("Your edits on this page will be lost.")} confirmLabel={t("Discard changes")} destructive
+        onConfirm={() => { if (baseline) loadVersion(baseline); setDiscardEditor(false); setEditing(false); }} />
 
       <ConfirmDialog
         open={discardOpen}
@@ -566,6 +574,6 @@ function ApiKeyDetail({ id }: { id: string }) {
         destructive
         onConfirm={() => void confirmDelete()}
       />
-    </>
+    </div>
   );
 }

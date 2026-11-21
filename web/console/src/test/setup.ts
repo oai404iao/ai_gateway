@@ -2,7 +2,7 @@ import "@testing-library/jest-dom/vitest";
 import "@/test/msw";
 
 // jsdom does not implement matchMedia (used by the theme provider and the
-// sidebar use-mobile hook), IntersectionObserver, or ResizeObserver. Stub
+// responsive navigation hook), IntersectionObserver, or ResizeObserver. Stub
 // them minimally.
 if (!window.matchMedia) {
   window.matchMedia = (query: string) => ({

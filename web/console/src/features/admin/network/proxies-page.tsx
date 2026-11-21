@@ -11,9 +11,9 @@ export function ProxiesPage() {
   return (
     <AdminListPage
       title={t("Proxies")}
-      description={t("HTTP/SOCKS egress proxies reused by upstream reqwest clients.")}
       query={{ data, isLoading, error }}
       rowKey={(proxy) => proxy.id}
+      rowName={(proxy) => proxy.name}
       detailPath={(proxy) => `/admin/network/proxies/${proxy.id}`}
       createLabel={t("New proxy")}
       createPath="/admin/network/proxies/new"

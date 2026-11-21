@@ -11,9 +11,9 @@ export function ConfigTemplatesPage() {
   return (
     <AdminListPage
       title={t("Transform Templates")}
-      description={t("Reusable constrained transform and network configuration documents.")}
       query={{ data, isLoading, error }}
       rowKey={(template) => template.id}
+      rowName={(template) => template.name}
       detailPath={(template) => `/admin/transforms/templates/${template.id}`}
       createLabel={t("New template")}
       createPath="/admin/transforms/templates/new"

@@ -79,8 +79,11 @@ async function setup(page: Page) {
   await page.getByLabel(/email/i).fill("admin@example.com");
   await page.getByLabel(/^password$/i).fill(password);
   await page.getByRole("button", { name: /sign in/i }).click();
-  await expect(page).toHaveURL(/\/account/);
-  await page.getByRole("link", { name: "Plugins", exact: true }).click();
+  await expect(page).toHaveURL("/");
+  await page.getByRole("navigation", { name: "Console navigation" }).getByRole("link", { name: "Management" }).click();
+  const nav = page.getByRole("navigation", { name: "Management navigation" });
+  await nav.getByRole("button", { name: "System settings", exact: true }).click();
+  await nav.getByRole("link", { name: "Plugins", exact: true }).click();
   return issuedTokens;
 }
 
@@ -137,6 +140,8 @@ test("plugin version switch and disable require explicit confirmation; general i
   await expect(page.getByRole("button", { name: "Enable selected version" })).toBeDisabled();
   await page.reload();
   await expect(installedVersion).toContainText("1.1.0");
+  await expect(page.getByText("b".repeat(64), { exact: true })).toBeHidden();
+  await page.getByText("Artifact digest", { exact: true }).click();
   await expect(page.getByText("b".repeat(64), { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Disable plugin" }).click();
   await authorize(page, "Disable plugin");

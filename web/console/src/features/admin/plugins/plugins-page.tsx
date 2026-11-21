@@ -5,6 +5,7 @@ import { RefreshCw, Upload } from "lucide-react";
 import { useI18n } from "@/app/i18n";
 import { AsyncResource } from "@/components/shared/async-resource";
 import { PageHeader } from "@/components/shared/page-header";
+import { formatDateTime } from "@/lib/dates";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -35,7 +36,7 @@ export function PluginsPage() {
   const running = job.data?.status === "queued" || job.data?.status === "running";
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader title="Plugins" description="Manage installed native plugins independently from system settings."
+      <PageHeader title="Plugins"
         actions={<Button variant="outline" disabled={Boolean(action) || running}
           onClick={() => setAction({ title: "Discover plugins", run: async (token) => {
             const result = await discoverPlugins(token);
@@ -67,8 +68,8 @@ export function PluginsPage() {
       </Card>
       {jobId ? (
         <Card>
-          <CardHeader><CardTitle>{t("Plugin operation")}</CardTitle>
-            <CardDescription className="break-all">{jobId}</CardDescription></CardHeader>
+          <CardHeader><CardTitle>{t(job.data ? (job.data.operation === "install" ? "Installation" : "Discovery") : "Plugin operation")}</CardTitle>
+            {job.data && <CardDescription>{t("Updated")} · {formatDateTime(job.data.updated_at)}</CardDescription>}</CardHeader>
           <CardContent aria-live="polite">
             <AsyncResource isLoading={job.isPending} error={job.error}>
               {job.data ? <div className="flex flex-col gap-2">

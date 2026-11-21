@@ -58,7 +58,7 @@ describe("CompletePasswordResetPage", () => {
 
     await waitFor(() => {
       expect(submitted).toEqual({ new_password: "new-permanent-password" });
-      expect(window.location.pathname).toBe("/account");
+      expect(window.location.pathname).toBe("/");
     });
   });
 });

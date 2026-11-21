@@ -70,6 +70,7 @@ describe("RequestLogsView", () => {
     expect(screen.getByLabelText("Total duration: 1 s")).toBeVisible();
     expect(screen.getByLabelText("TPS: 4.4 tok/s")).toBeVisible();
 
+    await user.click(screen.getByRole("button", { name: "Filters (0)" }));
     const apiKey = await screen.findByRole("combobox", { name: "API key" });
     await user.click(apiKey);
     await user.click(
@@ -161,6 +162,7 @@ describe("RequestLogsView", () => {
     expect(screen.queryByText(CHANNEL.id)).not.toBeInTheDocument();
     expect(screen.queryByText(CONTROL_PLANE_USER.id)).not.toBeInTheDocument();
 
+    await user.click(screen.getByRole("button", { name: "Filters (0)" }));
     const userSelect = await screen.findByRole("combobox", { name: "User" });
     await user.click(userSelect);
     await user.click(
@@ -278,7 +280,10 @@ describe("RequestLogsView", () => {
     const user = userEvent.setup();
     renderAppAt("/admin/request-logs");
 
-    await user.click(await screen.findByText("detail-model"));
+    const model = await screen.findByText("detail-model");
+    expect(screen.queryByText(log.id.slice(0, 8))).not.toBeInTheDocument();
+    await user.click(model);
+    expect(await screen.findByLabelText("Request ID")).toHaveTextContent(log.id);
     await screen.findByText("Completed", { selector: "dt" });
     expect([...document.querySelectorAll("dt")].map((label) => label.textContent)).toEqual([
       "Started",
@@ -399,8 +404,27 @@ describe("RequestLogsView", () => {
     expect(groupLabel.parentElement).toHaveTextContent(CHANNEL_GROUP.name);
     expect(screen.queryByText("Channel", { selector: "dt" })).not.toBeInTheDocument();
     expect(screen.queryByText("User", { selector: "dt" })).not.toBeInTheDocument();
-    const detail = within(screen.getByRole("dialog"));
+    const detail = within(screen.getByRole("complementary", { name: "Request log" }));
     expect(detail.queryByText(ownLog.channel_name)).not.toBeInTheDocument();
     expect(detail.queryByText(ownLog.user_name)).not.toBeInTheDocument();
+  });
+
+  it("opens an owner-scoped deep link outside the fetched slice and preserves its exact report bounds", async () => {
+    seedAuthenticatedSession();
+    const end = "2026-07-21T12:59:59.999999Z";
+    let listQuery: URLSearchParams | undefined;
+    server.use(
+      http.get("/console/v1/me/request-logs", ({ request }) => {
+        listQuery = new URL(request.url).searchParams;
+        return HttpResponse.json([]);
+      }),
+      http.get(`/console/v1/me/request-logs/${REQUEST_LOG.id}`, () => HttpResponse.json(REQUEST_LOG)),
+    );
+    renderAppAt(`/usage/request-logs?${new URLSearchParams({ id: REQUEST_LOG.id, model: "report-model", started_before: end, api_format: "open_ai_responses", user_id: CONTROL_PLANE_USER.id })}`);
+    const detail = within(await screen.findByRole("complementary", { name: "Request log" }));
+    expect(await detail.findByText(REQUEST_LOG.client_model)).toBeVisible();
+    expect(Object.fromEntries(listQuery!)).toEqual({limit: "50", model: "report-model", started_before: end, api_format: "open_ai_responses"});
+    await userEvent.click(detail.getByRole("button", {name: "Close inspector"}));
+    expect(new URLSearchParams(window.location.search).get("id")).toBeNull();
   });
 });

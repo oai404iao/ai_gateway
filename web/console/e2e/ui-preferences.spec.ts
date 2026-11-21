@@ -41,6 +41,8 @@ test("pending content stops and resumes its skeleton when motion preference chan
   await page.getByLabel(/email/i).fill("admin@example.com");
   await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
   await page.getByRole("button", { name: /sign in/i }).click();
+  await expect(page).toHaveURL("/");
+  await page.goto("/account");
   const skeleton = page.locator('[data-slot="skeleton"]').first();
   await expect(skeleton).toBeVisible();
   await expect(skeleton).toHaveCSS("opacity", "1");
@@ -57,7 +59,7 @@ test("theme preference also controls toast appearance and survives reload", asyn
   await page.getByLabel(/email/i).fill("admin@example.com");
   await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
   await page.getByRole("button", { name: /sign in/i }).click();
-  await expect(page).toHaveURL(/\/account/);
+  await expect(page).toHaveURL("/");
 
   await page.getByRole("button", { name: "Toggle theme" }).click();
   await page.getByRole("menuitemradio", { name: "Dark", exact: true }).click();
@@ -65,7 +67,7 @@ test("theme preference also controls toast appearance and survives reload", asyn
   await expect(page.locator("[data-sonner-toaster]")).toHaveAttribute("data-sonner-theme", "dark");
   await page.reload();
   await expect(page.locator("html")).toHaveClass(/dark/);
-  await expect(page.getByRole("heading", { name: "Profile", exact: true })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Console navigation" }).getByRole("link", { name: "Overview" })).toHaveAttribute("aria-current", "page");
 
   const storage = await page.evaluate(() => ({
     local: Object.entries(localStorage),
@@ -74,7 +76,7 @@ test("theme preference also controls toast appearance and survives reload", asyn
   expect(JSON.stringify(storage)).not.toContain("e2e-mock-access-token");
   expect(storage.local).toContainEqual(["console-theme", "dark"]);
 
-  await page.getByRole("button", { name: /Initial Admin/ }).click();
+  await page.getByRole("button", { name: "Account menu" }).click();
   await page.getByRole("menuitem", { name: "Sign out", exact: true }).click();
   await expect(page).toHaveURL(/\/login/);
   await page.reload();

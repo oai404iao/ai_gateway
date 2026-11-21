@@ -144,7 +144,6 @@ export function ConfigTemplateDetailPage() {
   return (
     <AdminDetailShell
       title={isNew ? t("New template") : state.name || t("Template")}
-      description={t("A reusable constrained transform document.")}
       backPath={returnTo}
       navigationGuard={draft.navigationGuard}
       isLoading={isLoading}
@@ -155,7 +154,7 @@ export function ConfigTemplateDetailPage() {
           <Card>
             <CardHeader>
               <CardTitle>{data.data.name}</CardTitle>
-              <CardDescription>{data.data.description ?? "—"}</CardDescription>
+              {data.data.description && <CardDescription>{data.data.description}</CardDescription>}
             </CardHeader>
             <CardContent>
               <dl className="grid grid-cols-1 gap-4">

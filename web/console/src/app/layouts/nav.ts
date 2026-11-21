@@ -1,120 +1,132 @@
 import {
-  KeyRound,
-  ScrollText,
-  Users,
-  ShieldCheck,
-  Network,
-  FileText,
-  RefreshCw,
-  SlidersHorizontal,
-  ChartNoAxesCombined,
   Activity,
-  Gauge,
-  Trophy,
-  TicketCheck,
-  UsersRound,
-  Settings2,
   Boxes,
-  Route,
+  ChartNoAxesCombined,
+  FileText,
+  Gauge,
+  KeyRound,
+  LayoutDashboard,
+  ListTree,
+  Network,
   Puzzle,
+  Route,
+  Settings2,
+  ShieldCheck,
+  SlidersHorizontal,
+  TicketCheck,
+  Trophy,
+  UserRound,
+  Users,
+  UsersRound,
   type LucideIcon,
 } from "lucide-react";
-import type { UserRole } from "@/api/types";
-import { SETTINGS_SECTIONS } from "@/features/admin/system/settings-sections";
+import {
+  healthSections,
+  maintenance,
+  transportSections,
+  type SettingsSection,
+} from "@/features/admin/system/settings-sections";
 
 export interface NavItem {
   label: string;
   path: string;
   icon: LucideIcon;
-  end?: boolean;
-  children?: { label: string; path: string }[];
+  related?: string[];
 }
-
-export interface NavSection {
-  title: string;
-  items: NavItem[];
-  roles?: UserRole[];
+export const overview = { label: "Overview", path: "/", icon: LayoutDashboard };
+export const usage = { label: "Usage", path: "/statistics", icon: ChartNoAxesCombined };
+export const logs = { label: "Request logs", path: "/usage/request-logs", icon: ListTree };
+export const keys = { label: "API keys", path: "/api-keys", icon: KeyRound };
+export const workspace = [overview, usage, logs, keys];
+export const services = [
+  { label: "Channel group status", path: "/channel-group-status", icon: Activity },
+  { label: "Codex quotas", path: "/codex-quotas", icon: Gauge },
+  { label: "Spend leaderboard", path: "/leaderboard", icon: Trophy },
+];
+export const accountPages = [
+  { label: "Profile", path: "/account", icon: UserRound },
+  { label: "Personal settings", path: "/account/settings", icon: Settings2 },
+  { label: "Login sessions", path: "/account/sessions", icon: ShieldCheck },
+];
+export const models = {
+  label: "Model configuration",
+  path: "/admin/models",
+  icon: Route,
+  related: ["/admin/routing/operation-rules"],
+};
+export const users = { label: "Users", path: "/admin/users", icon: Users };
+export const globalLogs = { label: "Global request logs", path: "/admin/request-logs", icon: ListTree };
+export const audit = { label: "Audit Logs", path: "/admin/audit-logs", icon: ShieldCheck };
+export interface NavGroup {
+  label: string;
+  items: (NavGroup | NavItem)[];
 }
-
-export const NAV_SECTIONS: NavSection[] = [
+function settingsLink(section: { id: SettingsSection; label: string }): NavItem {
+  return { label: section.label, path: `/admin/system/${section.id}`, icon: Settings2 };
+}
+export const managementGroups: NavGroup[] = [
   {
-    title: "Personal",
+    label: "Model routing",
     items: [
-      { label: "Personal settings", path: "/account/settings", icon: Settings2 },
-      { label: "Login sessions", path: "/account/sessions", icon: ShieldCheck },
-      { label: "API Keys", path: "/api-keys", icon: KeyRound },
-      { label: "Request Logs", path: "/usage/request-logs", icon: ScrollText },
-      { label: "Codex quotas", path: "/codex-quotas", icon: Gauge },
-      {
-        label: "Channel group status",
-        path: "/channel-group-status",
-        icon: Activity,
-      },
-      { label: "Statistics", path: "/statistics", icon: ChartNoAxesCombined },
-      { label: "Spend leaderboard", path: "/leaderboard", icon: Trophy },
-    ],
-  },
-  {
-    title: "Administration",
-    roles: ["admin"],
-    items: [
-      { label: "Users", path: "/admin/users", icon: Users },
-      { label: "User Groups", path: "/admin/user-groups", icon: UsersRound },
-      {
-        label: "Registration Codes",
-        path: "/admin/registration-invitation-codes",
-        icon: TicketCheck,
-      },
-      { label: "API Key Policies", path: "/admin/api-key-policies", icon: SlidersHorizontal },
-    ],
-  },
-  {
-    title: "Model routing",
-    roles: ["admin"],
-    items: [
+      models,
       { label: "Upstream accesses", path: "/admin/routing/accesses", icon: Network },
+      {
+        label: "Channel configuration",
+        path: "/admin/routing/channels",
+        icon: Boxes,
+        related: ["/admin/routing/groups", "/admin/routing/logical-channels", "/admin/routing/capabilities"],
+      },
       { label: "Upstream credentials", path: "/admin/routing/upstream-credentials", icon: KeyRound },
-      { label: "Channel configuration", path: "/admin/routing/channels", icon: Boxes },
-      { label: "Model configuration", path: "/admin/models", icon: Route },
-    ],
-  },
-  {
-    title: "Operations",
-    roles: ["admin"],
-    items: [
       { label: "Proxies", path: "/admin/network/proxies", icon: Network },
       { label: "Templates", path: "/admin/transforms/templates", icon: FileText },
     ],
   },
   {
-    title: "System",
-    roles: ["admin"],
+    label: "Members and access",
     items: [
-      { label: "Request Logs", path: "/admin/request-logs", icon: ScrollText },
-      {
-        label: "Cost statistics",
-        path: "/admin/cost-statistics",
-        icon: ChartNoAxesCombined,
-      },
-      { label: "Audit Logs", path: "/admin/audit-logs", icon: ShieldCheck },
+      users,
+      { label: "User Groups", path: "/admin/user-groups", icon: UsersRound },
+      { label: "Registration Codes", path: "/admin/registration-invitation-codes", icon: TicketCheck },
+      { label: "API Key Policies", path: "/admin/api-key-policies", icon: SlidersHorizontal },
+    ],
+  },
+  {
+    label: "Operations",
+    items: [
+      globalLogs,
+      { label: "Cost statistics", path: "/admin/cost-statistics", icon: ChartNoAxesCombined },
+      audit,
       { label: "System load", path: "/admin/system-load", icon: Gauge },
+    ],
+  },
+  {
+    label: "System settings",
+    items: [
+      { label: "Connections and protocols", items: transportSections.map(settingsLink) },
+      { label: "Routing and health", items: healthSections.map(settingsLink) },
+      settingsLink(maintenance),
       { label: "Plugins", path: "/admin/plugins", icon: Puzzle },
-      {
-        label: "System settings",
-        path: "/admin/system",
-        icon: RefreshCw,
-        children: SETTINGS_SECTIONS.map((section) => ({
-          label: section.label,
-          path: `/admin/system/${section.id}`,
-        })),
-      },
     ],
   },
 ];
+export function pageMatches(item: NavItem, path: string) {
+  return [item.path, ...(item.related ?? [])].some((base) => path === base || path.startsWith(`${base}/`));
+}
 
-export function visibleSections(role: UserRole | null): NavSection[] {
-  if (!role) return [];
-  return NAV_SECTIONS.filter(
-    (section) => !section.roles || section.roles.includes(role),
+export function navPages(
+  items: (NavItem | NavGroup)[],
+  parents: string[] = [],
+): { item: NavItem; parents: string[] }[] {
+  return items.flatMap((entry) =>
+    "items" in entry ? navPages(entry.items, [...parents, entry.label]) : [{ item: entry, parents }],
   );
+}
+
+export function finderPages(admin: boolean) {
+  return navPages([
+    { label: "Main gateway", items: workspace },
+    { label: "Services", items: services },
+    { label: "My account", items: accountPages },
+    ...(admin ? [{ label: "Management", items: managementGroups }] : []),
+  ]);
 }

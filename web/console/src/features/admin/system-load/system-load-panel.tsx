@@ -134,13 +134,13 @@ function BacklogRow({
 }: {
   label: string;
   value: React.ReactNode;
-  description: string;
+  description?: string;
 }) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-3">
       <div className="flex flex-col gap-1">
         <span className="font-medium">{label}</span>
-        <span className="text-xs text-muted-foreground">{description}</span>
+        {description && <span className="text-xs text-muted-foreground">{description}</span>}
       </div>
       <span className="text-sm font-medium tabular-nums">{value}</span>
     </div>
@@ -318,9 +318,6 @@ export function SystemLoadPanel() {
               <Card>
                 <CardHeader>
                   <CardTitle>{t("Bounded queues")}</CardTitle>
-                  <CardDescription>
-                    {t("Depth and capacity for process-local asynchronous work queues.")}
-                  </CardDescription>
                 </CardHeader>
                 <CardContent className="flex flex-col gap-4">
                   {queues.map((item, index) => (
@@ -335,11 +332,6 @@ export function SystemLoadPanel() {
               <Card className="xl:col-span-2">
                 <CardHeader>
                   <CardTitle>{t("Responses WebSocket pool")}</CardTitle>
-                  <CardDescription>
-                    {t(
-                      "Process-local downstream sessions, upstream connection reuse, and cumulative pool outcomes.",
-                    )}
-                  </CardDescription>
                   <CardAction>
                     <Badge variant={data.websocket.enabled ? "success" : "secondary"}>
                       {t(data.websocket.enabled ? "Enabled" : "Disabled")}
@@ -351,13 +343,11 @@ export function SystemLoadPanel() {
                     <BacklogRow
                       label={t("Active downstream sessions")}
                       value={data.websocket.active_downstream_sessions.toLocaleString()}
-                      description={t("Accepted client WebSocket connections still open.")}
                     />
                     <Separator />
                     <BacklogRow
                       label={t("Leased upstream connections")}
                       value={data.websocket.leased_upstream_connections.toLocaleString()}
-                      description={t("Upstream WebSockets currently serving a logical request.")}
                     />
                     <Separator />
                     <div className="flex flex-col gap-2">
@@ -399,9 +389,6 @@ export function SystemLoadPanel() {
               <Card>
                 <CardHeader>
                   <CardTitle>{t("Request-log durability")}</CardTitle>
-                  <CardDescription>
-                    {t("Local spool, PostgreSQL ingress, and billing settlement pressure.")}
-                  </CardDescription>
                   <CardAction>
                     <Badge variant={pipelineFailures > 0 ? "destructive" : "success"}>
                       {t(pipelineFailures > 0 ? "Failures recorded" : "No failures")}
@@ -450,9 +437,6 @@ export function SystemLoadPanel() {
               <Card>
                 <CardHeader>
                   <CardTitle>{t("Runtime state")}</CardTitle>
-                  <CardDescription>
-                    {t("Process-local admission, routing, and operating-system counters.")}
-                  </CardDescription>
                 </CardHeader>
                 <CardContent>
                   <dl className="grid gap-4 sm:grid-cols-2">
@@ -480,9 +464,6 @@ export function SystemLoadPanel() {
                 <Card>
                   <CardHeader>
                     <CardTitle>{t("Images edit body spool")}</CardTitle>
-                    <CardDescription>
-                      {t("Temporary disk-backed request bodies for multipart Images edits.")}
-                    </CardDescription>
                     <CardAction>
                       <Badge variant={imageSpoolFailures > 0 ? "destructive" : "success"}>
                         {t(imageSpoolFailures > 0 ? "Failures recorded" : "No failures")}
@@ -501,7 +482,6 @@ export function SystemLoadPanel() {
                     <BacklogRow
                       label={t("Available spool capacity")}
                       value={formatBytes(data.image_body_spool.available_bytes)}
-                      description={t("Free bytes reported by the configured spool filesystem.")}
                     />
                     <Separator />
                     <BacklogRow
@@ -515,9 +495,6 @@ export function SystemLoadPanel() {
                     <BacklogRow
                       label={t("Spool storage failures")}
                       value={imageSpoolFailures.toLocaleString()}
-                      description={t(
-                        "Failures while capturing or replaying temporary edit bodies.",
-                      )}
                     />
                   </CardContent>
                 </Card>
@@ -526,9 +503,6 @@ export function SystemLoadPanel() {
               <Card>
                 <CardHeader>
                   <CardTitle>{t("Database pools")}</CardTitle>
-                  <CardDescription>
-                    {t("Current checked-out connections compared with configured capacity.")}
-                  </CardDescription>
                 </CardHeader>
                 <CardContent className="flex flex-col gap-4">
                   <PoolRow label={t("Control plane")} pool={data.database.control_plane} />

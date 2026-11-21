@@ -1,14 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router";
 import { usePageOrigin, withReturnTo } from "@/lib/page-navigation";
-import { useListPagination } from "@/lib/use-list-pagination";
 import { Controller, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { ListChecks, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
@@ -33,7 +30,8 @@ import { Spinner } from "@/components/ui/spinner";
 import { AsyncResource } from "@/components/shared/async-resource";
 import { DecimalField } from "@/components/shared/decimal-field";
 import { PageHeader } from "@/components/shared/page-header";
-import { ResourceTable, type Column } from "@/components/shared/resource-table";
+import type { Column } from "@/components/shared/resource-table";
+import { ResourceDirectory } from "@/features/admin/components/resource-directory";
 import { SecretOnceDialog } from "@/components/shared/secret-once-dialog";
 import { StatusBadge } from "@/components/shared/status-badge";
 import {
@@ -51,9 +49,7 @@ import { useI18n } from "@/app/i18n";
 import type { ControlPlaneUser, UserRole } from "@/api/types";
 
 export function UsersPage() {
-  const navigate = useNavigate();
   const origin = usePageOrigin();
-  const pagination = useListPagination();
   const users = useUsers();
   const groups = useUserGroups();
   const policies = useApiKeyPolicies();
@@ -118,9 +114,9 @@ export function UsersPage() {
   );
   const allUsers = users.data ?? [];
   const groupName = (id: string) =>
-    groups.data?.find((group) => group.id === id)?.name ?? id;
+    groups.data?.find((group) => group.id === id)?.name ?? t("Unavailable");
   const policyName = (id: string | null) =>
-    id ? policies.data?.find((policy) => policy.id === id)?.name ?? id : t("None");
+    id ? policies.data?.find((policy) => policy.id === id)?.name ?? t("Unavailable") : t("None");
 
   const toggleUser = (user: ControlPlaneUser) => {
     setSelected((current) => {
@@ -245,9 +241,6 @@ export function UsersPage() {
       <div className="flex flex-col gap-6">
         <PageHeader
           title={t("Users")}
-          description={t(
-            "Console users, groups, policies, and balances. New users join by invitation.",
-          )}
           actions={
             <Button ref={inviteTrigger} onClick={() => setInviteOpen(true)}>
               <Plus data-icon="inline-start" />
@@ -255,28 +248,22 @@ export function UsersPage() {
             </Button>
           }
         />
-        <Card>
-          <CardHeader>
-            <CardTitle>{t("Users")}</CardTitle>
-            <CardDescription>{t("Select a name to view or edit.")}</CardDescription>
-          </CardHeader>
-          <CardContent>
             <AsyncResource
               isLoading={users.isLoading || groups.isLoading || policies.isLoading}
               error={users.error ?? groups.error ?? policies.error}
               isEmpty={users.data?.length === 0}
               emptyTitle={t("No records")}
-              emptyDescription={t("There are no records to show yet.")}
             >
-              <ResourceTable
+              <ResourceDirectory
                 columns={columns}
                 rows={allUsers}
                 rowKey={(user) => user.id}
+                rowName={(user) => user.display_name}
+                searchText={(user) => [user.display_name, user.email, groupName(user.user_group_id), roleLabel(user.role), policyName(user.effective_api_key_policy_id)].join(" ")}
                 linkColumnKey="name"
+                selectionColumnKey="selected"
                 rowHref={(user) => withReturnTo(`/admin/users/${user.id}`, origin)}
-                onRowClick={(user) => navigate(withReturnTo(`/admin/users/${user.id}`, origin))}
-                pagination={pagination}
-                renderToolbar={(pageUsers) => (
+                renderToolbar={(pageUsers, matches) => (
                   <div className="flex flex-wrap items-center gap-2">
                     <Button
                       variant="outline"
@@ -286,14 +273,14 @@ export function UsersPage() {
                     >
                       {t("Select {count} on this page", { count: pageUsers.length })}
                     </Button>
-                    {allUsers.length > pageUsers.length ? (
+                    {matches.length > pageUsers.length ? (
                       <Button
                         variant="outline"
                         size="sm"
-                        disabled={selectedUsers.length === allUsers.length}
-                        onClick={() => addToSelection(allUsers)}
+                        disabled={matches.every((user) => selected.has(user.id))}
+                        onClick={() => addToSelection(matches)}
                       >
-                        {t("Select all {count} users", { count: allUsers.length })}
+                        {t("Select all {count} users", { count: matches.length })}
                       </Button>
                     ) : null}
                     <span role="status" className="text-sm text-muted-foreground">
@@ -321,8 +308,6 @@ export function UsersPage() {
                 )}
               />
             </AsyncResource>
-          </CardContent>
-        </Card>
       </div>
 
       <Dialog open={inviteOpen} onOpenChange={setInviteOpen}>

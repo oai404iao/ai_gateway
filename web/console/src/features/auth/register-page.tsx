@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Navigate, useNavigate } from "react-router";
+import { Navigate } from "react-router";
 import { NavigationLink } from "@/components/shared/navigation-link";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -9,7 +9,7 @@ import { ApiError } from "@/api/errors";
 import { registerAccount } from "@/api/session";
 import { useI18n } from "@/app/i18n";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { AuthFormPage } from "./auth-form-page";
 import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
@@ -17,7 +17,6 @@ import { useSession } from "@/lib/use-session";
 
 export function RegisterPage() {
   const { isAuthenticated } = useSession();
-  const navigate = useNavigate();
   const { t } = useI18n();
   const schema = z
     .object({
@@ -53,7 +52,7 @@ export function RegisterPage() {
     },
   });
 
-  if (isAuthenticated) return <Navigate to="/account" replace />;
+  if (isAuthenticated) return <Navigate to="/" replace />;
 
   const onSubmit = async (values: FormValues) => {
     setSubmitting(true);
@@ -65,14 +64,10 @@ export function RegisterPage() {
         password: values.password,
       });
       toast.success(t("Account created"));
-      navigate("/account", { replace: true });
     } catch (error) {
       if (error instanceof ApiError && error.code === "invalid_registration_code") {
         toast.error(t("The invitation code is invalid, expired, disabled, or exhausted."));
-      } else if (
-        error instanceof ApiError &&
-        error.code === "registration_email_conflict"
-      ) {
+      } else if (error instanceof ApiError && error.code === "registration_email_conflict") {
         toast.error(t("An account with this email already exists."));
       } else {
         toast.error(error instanceof Error ? error.message : t("Registration failed"));
@@ -83,98 +78,77 @@ export function RegisterPage() {
   };
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>{t("Create account")}</CardTitle>
-        <CardDescription>
-          {t("Use a registration invitation code to create your Console account.")}
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4">
-          <FieldGroup>
-            <Field data-invalid={Boolean(errors.invitation_code)}>
-              <FieldLabel htmlFor="registration_invitation_code">
-                {t("Invitation code")}
-              </FieldLabel>
-              <Input
-                id="registration_invitation_code"
-                autoComplete="off"
-                aria-invalid={Boolean(errors.invitation_code)}
-                {...register("invitation_code")}
-              />
-              {errors.invitation_code ? (
-                <FieldError>{errors.invitation_code.message}</FieldError>
-              ) : null}
-            </Field>
-            <Field data-invalid={Boolean(errors.email)}>
-              <FieldLabel htmlFor="registration_email">{t("Email")}</FieldLabel>
-              <Input
-                id="registration_email"
-                type="email"
-                autoComplete="email"
-                aria-invalid={Boolean(errors.email)}
-                {...register("email")}
-              />
-              {errors.email ? <FieldError>{errors.email.message}</FieldError> : null}
-            </Field>
-            <Field data-invalid={Boolean(errors.display_name)}>
-              <FieldLabel htmlFor="registration_display_name">
-                {t("Display name")}
-              </FieldLabel>
-              <Input
-                id="registration_display_name"
-                autoComplete="name"
-                aria-invalid={Boolean(errors.display_name)}
-                {...register("display_name")}
-              />
-              {errors.display_name ? (
-                <FieldError>{errors.display_name.message}</FieldError>
-              ) : null}
-            </Field>
-            <Field data-invalid={Boolean(errors.password)}>
-              <FieldLabel htmlFor="registration_password">{t("Password")}</FieldLabel>
-              <Input
-                id="registration_password"
-                type="password"
-                autoComplete="new-password"
-                aria-invalid={Boolean(errors.password)}
-                {...register("password")}
-              />
-              {errors.password ? <FieldError>{errors.password.message}</FieldError> : null}
-            </Field>
-            <Field data-invalid={Boolean(errors.confirm_password)}>
-              <FieldLabel htmlFor="registration_confirm_password">
-                {t("Confirm password")}
-              </FieldLabel>
-              <Input
-                id="registration_confirm_password"
-                type="password"
-                autoComplete="new-password"
-                aria-invalid={Boolean(errors.confirm_password)}
-                {...register("confirm_password")}
-              />
-              {errors.confirm_password ? (
-                <FieldError>{errors.confirm_password.message}</FieldError>
-              ) : null}
-            </Field>
-          </FieldGroup>
-          <Button type="submit" disabled={submitting}>
-            {submitting ? <Spinner data-icon="inline-start" /> : null}
-            {t("Create account")}
-          </Button>
-        </form>
-        <p className="mt-4 text-center text-xs text-muted-foreground">
-          {t("Already have an account?")}{" "}
-          <NavigationLink
-            variant="link"
-            size="xs"
-            to="/login"
-          >
-            {t("Sign in")}
-          </NavigationLink>
-        </p>
-      </CardContent>
-    </Card>
+    <AuthFormPage title={t("Create account")}>
+      <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4">
+        <FieldGroup>
+          <Field data-invalid={Boolean(errors.invitation_code)}>
+            <FieldLabel htmlFor="registration_invitation_code">{t("Invitation code")}</FieldLabel>
+            <Input
+              id="registration_invitation_code"
+              autoComplete="off"
+              aria-invalid={Boolean(errors.invitation_code)}
+              {...register("invitation_code")}
+            />
+            {errors.invitation_code ? (
+              <FieldError>{errors.invitation_code.message}</FieldError>
+            ) : null}
+          </Field>
+          <Field data-invalid={Boolean(errors.email)}>
+            <FieldLabel htmlFor="registration_email">{t("Email")}</FieldLabel>
+            <Input
+              id="registration_email"
+              type="email"
+              autoComplete="email"
+              aria-invalid={Boolean(errors.email)}
+              {...register("email")}
+            />
+            {errors.email ? <FieldError>{errors.email.message}</FieldError> : null}
+          </Field>
+          <Field data-invalid={Boolean(errors.display_name)}>
+            <FieldLabel htmlFor="registration_display_name">{t("Display name")}</FieldLabel>
+            <Input
+              id="registration_display_name"
+              autoComplete="name"
+              aria-invalid={Boolean(errors.display_name)}
+              {...register("display_name")}
+            />
+            {errors.display_name ? <FieldError>{errors.display_name.message}</FieldError> : null}
+          </Field>
+          <Field data-invalid={Boolean(errors.password)}>
+            <FieldLabel htmlFor="registration_password">{t("Password")}</FieldLabel>
+            <Input
+              id="registration_password"
+              type="password"
+              autoComplete="new-password"
+              aria-invalid={Boolean(errors.password)}
+              {...register("password")}
+            />
+            {errors.password ? <FieldError>{errors.password.message}</FieldError> : null}
+          </Field>
+          <Field data-invalid={Boolean(errors.confirm_password)}>
+            <FieldLabel htmlFor="registration_confirm_password">{t("Confirm password")}</FieldLabel>
+            <Input
+              id="registration_confirm_password"
+              type="password"
+              autoComplete="new-password"
+              aria-invalid={Boolean(errors.confirm_password)}
+              {...register("confirm_password")}
+            />
+            {errors.confirm_password ? (
+              <FieldError>{errors.confirm_password.message}</FieldError>
+            ) : null}
+          </Field>
+        </FieldGroup>
+        <Button type="submit" disabled={submitting}>
+          {submitting ? <Spinner data-icon="inline-start" /> : null}
+          {t("Create account")}
+        </Button>
+      </form>
+      <p className="mt-4 text-center text-xs text-muted-foreground">
+        <NavigationLink variant="link" size="xs" to="/login">
+          {t("Sign in")}
+        </NavigationLink>
+      </p>
+    </AuthFormPage>
   );
 }

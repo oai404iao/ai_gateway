@@ -106,7 +106,7 @@ export function ResourceTable<T>({
   return (
     <div className="flex min-w-0 flex-col gap-4">
       {renderToolbar?.(visibleRows)}
-      <div className="overflow-x-auto rounded-lg border">
+      <div className="min-w-0 border-y">
         <Table>
           <TableHeader>
             <TableRow>

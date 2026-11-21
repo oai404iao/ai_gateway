@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import { Navigate, useParams } from "react-router";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useForm } from "react-hook-form";
+import { useForm, useFormState, useWatch, get, type Control } from "react-hook-form";
 import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
 import { z } from "zod";
 import { toast } from "sonner";
@@ -40,6 +40,7 @@ import { useReload, useSystemSettings, useUpdateSystemSettings } from "@/feature
 import { SessionAffinityCard } from "@/features/admin/system/session-affinity-card";
 import { useI18n } from "@/app/i18n";
 import type { ScheduledTestingMode, SystemSettings, SystemSettingsInput } from "@/api/types";
+import { settingsLabels } from "./settings-labels";
 import { SETTINGS_SECTIONS, type SettingsSection } from "./settings-sections";
 
 function statusCodesAreValid(value: string): boolean {
@@ -279,6 +280,27 @@ const systemSettingsSchema = z
   });
 
 type SystemSettingsValues = z.infer<typeof systemSettingsSchema>;
+
+function SettingsChanges({ control }: { control: Control<SystemSettingsValues> }) {
+  const { t } = useI18n();
+  const values = useWatch({ control });
+  const { defaultValues: original } = useFormState({ control });
+  const changes = Object.entries(settingsLabels).flatMap(([field, label]) => {
+    const before: unknown = get(original, field), after: unknown = get(values, field);
+    return JSON.stringify(before) === JSON.stringify(after) ? [] : [{ label, before, after }];
+  });
+  if (!changes.length) return null;
+  const display = (value: unknown) => typeof value === "boolean" ? t(value ? "Yes" : "No") : String(value);
+  return <aside aria-label={t("Pending settings changes")} className="min-w-0 border-t bg-muted/25 px-3 py-3 lg:border-t-0 lg:border-l">
+    <h2 className="text-sm font-semibold">{t("Pending settings changes")}</h2>
+    <ul className="mt-2 grid divide-y text-xs">{changes.map(({ label, before, after }) =>
+      <li key={label} className="grid gap-1 py-2"><span>{t(label)}</span>
+        {(["number", "boolean"].includes(typeof before) && typeof after === typeof before) ?
+          <span><del className="text-muted-foreground">{display(before)}</del> → <strong>{typeof after === "number" && !Number.isFinite(after) ? "—" : display(after)}</strong></span> : <span className="text-muted-foreground">{t("Modified")}</span>}
+      </li>)}</ul>
+    <p className="mt-2 text-xs text-muted-foreground">{t("Saving applies to new requests immediately.")}</p>
+  </aside>;
+}
 type SystemSettingsVersion = { data: SystemSettings; etag: string };
 
 const defaultValues: SystemSettingsValues = {
@@ -332,6 +354,7 @@ export function SystemPage() {
 }
 
 function SystemSettingsForm({ section, label }: { section: SettingsSection; label: string }) {
+  const formId = useId();
   const { t } = useI18n();
   const settings = useSystemSettings();
   const updateSettings = useUpdateSystemSettings();
@@ -417,11 +440,10 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
         session_affinity: values.session_affinity,
         websocket: values.websocket,
       };
-      const result = await updateSettings.mutateAsync({
+      await updateSettings.mutateAsync({
         input,
         ifMatch: baseline.etag,
       });
-      setCorrelation(result.correlation_id);
       form.reset(values);
       draft.markSaved();
       toast.success(t("System settings saved and applied."));
@@ -445,26 +467,22 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
   };
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex min-w-0 flex-col gap-4">
       {draft.navigationGuard}
       <PageHeader
-        title={`${t("System settings")} · ${t(label)}`}
-        description={t("Database-backed runtime settings for future requests.")}
+        title={label}
+        actions={section !== "maintenance" && baseline && <Button type="submit" form={formId} disabled={fieldsLocked || writeBlocked}>
+          {updateSettings.isPending ? <Spinner data-icon="inline-start" /> : <Save data-icon="inline-start" />}
+          {t("Save system settings")}
+        </Button>}
       />
-      {section !== "maintenance" ? <Alert>
-        <AlertTitle>{t("Applies immediately")}</AlertTitle>
-        <AlertDescription>
-          {t(
-            "Saving validates the full routing configuration and publishes a new runtime snapshot. Requests already in flight retain their original settings.",
-          )}
-        </AlertDescription>
-      </Alert> : null}
       <AsyncResource
         isLoading={settings.isLoading}
         error={baseline && section !== "maintenance" ? null : settings.error}
       >
         {baseline && section !== "maintenance" ? (
           <form
+            id={formId}
             data-slot="system-settings-columns"
             onSubmit={form.handleSubmit(save)}
             className="flex flex-col gap-6"
@@ -491,22 +509,15 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
                 </Button>
               </Alert>
             ) : null}
-            <FieldSet disabled={fieldsLocked} className="min-w-0 gap-6">
+            <div className="grid min-w-0 items-start gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(14rem,.35fr)]">
+            <FieldSet disabled={fieldsLocked} className="min-w-0 gap-3">
             {section === "general" ? (
-            <Card>
-              <CardHeader>
-                <CardTitle>{t("API hosts")}</CardTitle>
-                <CardDescription>
-                  {t(
-                    "HTTP(S) base URLs shown on users' API Keys pages for copying into OpenAI-compatible clients.",
-                  )}
-                </CardDescription>
-              </CardHeader>
+            <Card variant="section">
               <CardContent>
                 <FieldGroup>
                   <StringListField
                     id="api_hosts"
-                    label={t("API hosts")}
+                    label={t(settingsLabels["api_hosts"])}
                     value={form.watch("api_hosts")}
                     onChange={(value) =>
                       form.setValue("api_hosts", value, {
@@ -526,12 +537,11 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
             ) : null}
 
             {section === "upstream" ? (
-            <Card>
+            <Card variant="section">
               <CardHeader>
-                <CardTitle>{t("Default upstream timeouts")}</CardTitle>
                 <CardDescription>
                   {t(
-                    "Used only when a channel does not define an explicit timeout. Images and standalone web search use longer response header timeouts; every response header timeout must exceed connect timeout.",
+                    "Channel overrides take precedence. Header timeouts must exceed the connect timeout.",
                   )}
                 </CardDescription>
               </CardHeader>
@@ -539,7 +549,7 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
                 <FieldGroup>
                   <Field data-invalid={Boolean(form.formState.errors.upstream?.connect_timeout_seconds)}>
                     <FieldLabel htmlFor="connect_timeout_seconds">
-                      {t("Connect timeout (seconds)")}
+                      {t(settingsLabels["upstream.connect_timeout_seconds"])}
                     </FieldLabel>
                     <Input
                       id="connect_timeout_seconds"
@@ -560,7 +570,7 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
                     )}
                   >
                     <FieldLabel htmlFor="response_header_timeout_seconds">
-                      {t("Response header timeout (seconds)")}
+                      {t(settingsLabels["upstream.response_header_timeout_seconds"])}
                     </FieldLabel>
                     <Input
                       id="response_header_timeout_seconds"
@@ -587,7 +597,7 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
                     )}
                   >
                     <FieldLabel htmlFor="images_response_header_timeout_seconds">
-                      {t("Images response header timeout (seconds)")}
+                      {t(settingsLabels["upstream.images_response_header_timeout_seconds"])}
                     </FieldLabel>
                     <Input
                       id="images_response_header_timeout_seconds"
@@ -616,7 +626,7 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
                     )}
                   >
                     <FieldLabel htmlFor="standalone_web_search_response_header_timeout_seconds">
-                      {t("Web search response header timeout (seconds)")}
+                      {t(settingsLabels["upstream.standalone_web_search_response_header_timeout_seconds"])}
                     </FieldLabel>
                     <Input
                       id="standalone_web_search_response_header_timeout_seconds"
@@ -644,7 +654,7 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
                   </Field>
                   <Field data-invalid={Boolean(form.formState.errors.upstream?.stream_idle_timeout_seconds)}>
                     <FieldLabel htmlFor="stream_idle_timeout_seconds">
-                      {t("Stream idle timeout (seconds)")}
+                      {t(settingsLabels["upstream.stream_idle_timeout_seconds"])}
                     </FieldLabel>
                     <Input
                       id="stream_idle_timeout_seconds"
@@ -669,7 +679,7 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
             ) : null}
 
             {section === "reliability" ? (
-            <Card>
+            <Card variant="section">
               <CardHeader>
                 <CardTitle>{t("Request failover")}</CardTitle>
                 <CardDescription>
@@ -683,7 +693,7 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
                   <Field orientation="horizontal">
                     <FieldContent>
                       <FieldLabel htmlFor="request_retry_enabled">
-                        {t("Enable automatic retry")}
+                        {t(settingsLabels["request_retry.enabled"])}
                       </FieldLabel>
                       <FieldDescription>
                         {t(
@@ -707,7 +717,7 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
                     data-invalid={Boolean(form.formState.errors.request_retry?.max_retries)}
                   >
                     <FieldLabel htmlFor="request_retry_max_retries">
-                      {t("Maximum retries")}
+                      {t(settingsLabels["request_retry.max_retries"])}
                     </FieldLabel>
                     <Input
                       id="request_retry_max_retries"
@@ -740,7 +750,7 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
                     )}
                   >
                     <FieldLabel htmlFor="request_retry_status_codes">
-                      {t("Retryable upstream status codes")}
+                      {t(settingsLabels["request_retry.retryable_status_codes"])}
                     </FieldLabel>
                     <Input
                       id="request_retry_status_codes"
@@ -774,7 +784,7 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
             ) : null}
 
             {section === "reliability" ? (
-            <Card>
+            <Card variant="section">
               <CardHeader>
                 <CardTitle>{t("Passive health")}</CardTitle>
                 <CardDescription>
@@ -791,7 +801,7 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
                     )}
                   >
                     <FieldLabel htmlFor="connection_failure_threshold">
-                      {t("Connection failure threshold")}
+                      {t(settingsLabels["passive_health.connection_failure_threshold"])}
                     </FieldLabel>
                     <Input
                       id="connection_failure_threshold"
@@ -804,9 +814,6 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
                         valueAsNumber: true,
                       })}
                     />
-                    <FieldDescription>
-                      {t("Only connection failures before upstream response headers count.")}
-                    </FieldDescription>
                     {form.formState.errors.passive_health?.connection_failure_threshold ? (
                       <FieldError>
                         {errorMessage(
@@ -816,7 +823,7 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
                     ) : null}
                   </Field>
                   <Field data-invalid={Boolean(form.formState.errors.passive_health?.cooldown_seconds)}>
-                    <FieldLabel htmlFor="cooldown_seconds">{t("Cooldown (seconds)")}</FieldLabel>
+                    <FieldLabel htmlFor="cooldown_seconds">{t(settingsLabels["passive_health.cooldown_seconds"])}</FieldLabel>
                     <Input
                       id="cooldown_seconds"
                       type="number"
@@ -838,27 +845,17 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
             ) : null}
 
             {section === "reliability" ? (
-            <Card>
+            <Card variant="section">
               <CardHeader>
                 <CardTitle>{t("Automatic channel disable")}</CardTitle>
-                <CardDescription>
-                  {t(
-                    "Matching upstream HTTP errors can temporarily remove opted-in channels from routing.",
-                  )}
-                </CardDescription>
               </CardHeader>
               <CardContent>
                 <FieldGroup>
                   <Field orientation="horizontal">
                     <FieldContent>
                       <FieldLabel htmlFor="automatic_disable_enabled">
-                        {t("Enable automatic disable")}
+                        {t(settingsLabels["automatic_disable.enabled"])}
                       </FieldLabel>
-                      <FieldDescription>
-                        {t(
-                          "When disabled, channel-level automatic-disable permission has no effect.",
-                        )}
-                      </FieldDescription>
                     </FieldContent>
                     <Switch
                       id="automatic_disable_enabled"
@@ -878,7 +875,7 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
                     )}
                   >
                     <FieldLabel htmlFor="automatic_disable_error_status_codes">
-                      {t("HTTP error status codes")}
+                      {t(settingsLabels["automatic_disable.error_status_codes"])}
                     </FieldLabel>
                     <Input
                       id="automatic_disable_error_status_codes"
@@ -904,7 +901,7 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
                   <StringListField
                     id="automatic_disable_error_message_keywords"
                     variant="tokens"
-                    label={t("Error message keywords")}
+                    label={t(settingsLabels["automatic_disable.error_message_keywords"])}
                     value={form.watch("automatic_disable.error_message_keywords")}
                     onChange={(value) =>
                       form.setValue("automatic_disable.error_message_keywords", value, {
@@ -926,19 +923,18 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
             ) : null}
 
             {section === "testing" ? (
-            <Card>
+            <Card variant="section">
               <CardHeader>
-                <CardTitle>{t("Scheduled channel tests")}</CardTitle>
                 <CardDescription>
                   {t(
-                    "Direct non-streaming test requests use each channel's selected test model. Their token usage and costs are logged and billed to a system-owned administrator API key.",
+                    "Tests use the channel’s test model and are billed to the system administrator key.",
                   )}
                 </CardDescription>
               </CardHeader>
               <CardContent>
                 <FieldGroup>
                   <Field>
-                    <FieldLabel>{t("Test mode")}</FieldLabel>
+                    <FieldLabel htmlFor="scheduled_testing_mode">{t(settingsLabels["scheduled_testing.mode"])}</FieldLabel>
                     <Select
                       value={form.watch("scheduled_testing.mode")}
                       onValueChange={(value) =>
@@ -949,7 +945,7 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
                         )
                       }
                     >
-                      <SelectTrigger>
+                      <SelectTrigger id="scheduled_testing_mode">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -971,7 +967,7 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
                     )}
                   >
                     <FieldLabel htmlFor="scheduled_testing_interval_minutes">
-                      {t("Test interval (minutes)")}
+                      {t(settingsLabels["scheduled_testing.interval_minutes"])}
                     </FieldLabel>
                     <Input
                       id="scheduled_testing_interval_minutes"
@@ -995,7 +991,7 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
                   <Field
                     data-invalid={Boolean(form.formState.errors.scheduled_testing?.prompt)}
                   >
-                    <FieldLabel htmlFor="scheduled_testing_prompt">{t("Test prompt")}</FieldLabel>
+                    <FieldLabel htmlFor="scheduled_testing_prompt">{t(settingsLabels["scheduled_testing.prompt"])}</FieldLabel>
                     <Textarea
                       id="scheduled_testing_prompt"
                       rows={3}
@@ -1011,13 +1007,8 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
                   <Field orientation="horizontal">
                     <FieldContent>
                       <FieldLabel htmlFor="scheduled_testing_auto_recover">
-                        {t("Automatically recover")}
+                        {t(settingsLabels["scheduled_testing.auto_recover"])}
                       </FieldLabel>
-                      <FieldDescription>
-                        {t(
-                          "Restore a temporarily disabled channel after its scheduled test succeeds.",
-                        )}
-                      </FieldDescription>
                     </FieldContent>
                     <Switch
                       id="scheduled_testing_auto_recover"
@@ -1038,9 +1029,8 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
 
 
             {section === "websocket" ? <div>
-              <Card>
+              <Card variant="section">
                 <CardHeader>
-                  <CardTitle>{t("Responses WebSocket")}</CardTitle>
                   <CardDescription>
                     {t(
                       "WebSocket forwarding requires the system, user, and selected Responses channel to be enabled. Pool settings apply process-wide.",
@@ -1052,7 +1042,7 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
                     <Field orientation="horizontal">
                       <FieldContent>
                         <FieldLabel htmlFor="websocket_enabled">
-                          {t("Enable Responses WebSocket")}
+                          {t(settingsLabels["websocket.enabled"])}
                         </FieldLabel>
                         <FieldDescription>
                           {t(
@@ -1080,7 +1070,7 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
                         )}
                       >
                         <FieldLabel htmlFor="websocket_max_idle_connections">
-                          {t("Maximum idle connections")}
+                          {t(settingsLabels["websocket.max_idle_connections"])}
                         </FieldLabel>
                         <Input
                           id="websocket_max_idle_connections"
@@ -1112,7 +1102,7 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
                         )}
                       >
                         <FieldLabel htmlFor="websocket_idle_timeout_seconds">
-                          {t("Idle timeout (seconds)")}
+                          {t(settingsLabels["websocket.idle_timeout_seconds"])}
                         </FieldLabel>
                         <Input
                           id="websocket_idle_timeout_seconds"
@@ -1141,7 +1131,7 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
                         )}
                       >
                         <FieldLabel htmlFor="websocket_max_connection_age_seconds">
-                          {t("Maximum connection age (seconds)")}
+                          {t(settingsLabels["websocket.max_connection_age_seconds"])}
                         </FieldLabel>
                         <Input
                           id="websocket_max_connection_age_seconds"
@@ -1155,9 +1145,6 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
                             valueAsNumber: true,
                           })}
                         />
-                        <FieldDescription>
-                          {t("Must be greater than the idle timeout.")}
-                        </FieldDescription>
                         {form.formState.errors.websocket?.max_connection_age_seconds ? (
                           <FieldError>
                             {errorMessage(
@@ -1195,18 +1182,8 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
             </div> : null}
 
             </FieldSet>
-            <Button
-              type="submit"
-              className="w-fit"
-              disabled={fieldsLocked || writeBlocked}
-            >
-              {updateSettings.isPending ? (
-                <Spinner data-icon="inline-start" />
-              ) : (
-                <Save data-icon="inline-start" />
-              )}
-              {t("Save system settings")}
-            </Button>
+            {isDirty && <SettingsChanges control={form.control} />}
+            </div>
           </form>
         ) : null}
       </AsyncResource>
@@ -1221,7 +1198,7 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
         onConfirm={() => void reloadLatest()}
       />
 
-      {section === "maintenance" ? <Card>
+      {section === "maintenance" ? <Card variant="section">
         <CardHeader>
           <CardTitle>{t("Reload control plane")}</CardTitle>
           <CardDescription>
@@ -1237,9 +1214,9 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
               {t("Reload now")}
             </Button>
             {correlation ? (
-              <dl>
-                <DetailField label={t("Correlation id")} value={correlation} mono />
-              </dl>
+              <details className="text-sm"><summary>{t("Operation details")}</summary>
+                <dl className="mt-2"><DetailField label={t("Correlation id")} value={correlation} mono /></dl>
+              </details>
             ) : null}
           </div>
         </CardContent>

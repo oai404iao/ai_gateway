@@ -7,6 +7,11 @@ Versioning.
 
 ## [Unreleased]
 
+### Changed
+
+- The [Console](docs/user/console.md) now opens on a personal usage overview for both users and administrators. Use the shared navigation to follow model trends into request logs, manage API keys, or change account settings. Global reports and gateway configuration remain in the administrator-only management area.
+- Browse management pages by task or search for a setting directly. Resource lists and selectors show names by default; full request IDs remain available in log details for troubleshooting.
+
 ## [0.13.0] - 2026-11-20
 
 ### Added

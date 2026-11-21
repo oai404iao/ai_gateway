@@ -142,9 +142,6 @@ export function LogicalChannelDetailPage() {
     <>
       <AdminDetailShell
         title={isNew ? t("New channel") : channel?.name ?? t("Logical channel")}
-        description={t(
-          "A channel binds authentication to one access. Shared accesses and credentials are never deleted with it.",
-        )}
         backPath={editingCapability
           ? `/admin/routing/logical-channels/${id}?${capabilityListParams}` : returnTo}
         backLabel={editingCapability ? t("Back to capabilities") : undefined}

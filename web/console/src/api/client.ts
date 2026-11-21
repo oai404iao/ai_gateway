@@ -1,5 +1,5 @@
 import { ApiError, NetworkError, readApiError } from "@/api/errors";
-import { clearSession, getAccessToken, setSession } from "@/api/session-store";
+import { clearSession, getAccessToken, getSession, sessionScope, setSession } from "@/api/session-store";
 
 const API_PREFIX = "/console/v1";
 const REFRESH_PATH = `${API_PREFIX}/auth/refresh`;
@@ -46,6 +46,7 @@ export async function consoleFetch(
   options: RequestOptions = {},
 ): Promise<Response> {
   const url = path.startsWith("http") ? path : `${API_PREFIX}${path}`;
+  const scope = sessionScope(getSession().user);
   const init: RequestInit = {
     method: options.method ?? "GET",
     headers: buildHeaders(options),
@@ -65,12 +66,12 @@ export async function consoleFetch(
     );
   }
 
-  if (response.status === 401 && !options.skipAuthRetry) {
+  if (response.status === 401 && !options.skipAuthRetry && scope === sessionScope(getSession().user)) {
     const refreshed = await refreshAccessToken();
-    if (refreshed) {
+    // A shared refresh cookie can now belong to a different account in another tab.
+    if (refreshed && scope === sessionScope(getSession().user)) {
       return consoleFetch(path, { ...options, skipAuthRetry: true });
     }
-    clearSession();
   }
 
   return response;
@@ -146,6 +147,8 @@ export function apiDelete(path: string, signal?: AbortSignal): Promise<void> {
  */
 export function refreshAccessToken(): Promise<string | null> {
   if (refreshPromise) return refreshPromise;
+  const original = getSession();
+  const stillCurrent = () => getAccessToken() === original.accessToken && getSession().status === original.status;
   refreshPromise = (async () => {
     try {
       const response = await fetch(REFRESH_PATH, {
@@ -154,13 +157,14 @@ export function refreshAccessToken(): Promise<string | null> {
         headers: { "Content-Type": "application/json" },
       });
       if (!response.ok) {
-        clearSession();
+        if (stillCurrent()) clearSession();
         return null;
       }
       const data = (await response.json()) as {
         access_token: string;
         user: import("@/api/types").ConsoleUser;
       };
+      if (!stillCurrent()) return null;
       setSession({
         status: "authenticated",
         accessToken: data.access_token,
@@ -168,7 +172,7 @@ export function refreshAccessToken(): Promise<string | null> {
       });
       return data.access_token;
     } catch {
-      clearSession();
+      if (stillCurrent()) clearSession();
       return null;
     } finally {
       refreshPromise = null;

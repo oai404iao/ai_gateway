@@ -13,12 +13,13 @@ import { NavigationLink } from "@/components/shared/navigation-link";
 import { EmptyState } from "@/components/shared/empty-state";
 import { useI18n } from "@/app/i18n";
 import { useSession } from "@/lib/use-session";
+import { sessionScope } from "@/api/session-store";
 import { ConsoleLayout } from "@/app/layouts/console-layout";
 import { AuthLayout } from "@/app/layouts/auth-layout";
 import { ModelWorkspaceLayout } from "@/features/admin/models/model-workspace-layout";
 
 // Page components are lazy-loaded so each route ships in its own chunk.
-// The shell (providers, layouts, sidebar) stays eager for instant first paint.
+// The shell (providers and navigation) stays eager for instant first paint.
 const LoginPage = lazy(() =>
   import("@/features/auth/login-page").then((m) => ({ default: m.LoginPage })),
 );
@@ -68,6 +69,9 @@ const AdminRequestLogsPage = lazy(() =>
   import("@/features/request-logs/admin-request-logs-page").then((m) => ({
     default: m.AdminRequestLogsPage,
   })),
+);
+const GatewayOverviewPage = lazy(() =>
+  import("@/features/statistics/gateway-overview-page").then((m) => ({ default: m.GatewayOverviewPage })),
 );
 const StatisticsPage = lazy(() =>
   import("@/features/statistics/statistics-page").then((m) => ({
@@ -230,9 +234,9 @@ const PluginDetailPage = lazy(() =>
 );
 
 function RequireAuth() {
-  const { isAuthenticated } = useSession();
+  const { isAuthenticated, user } = useSession();
   if (!isAuthenticated) return <Navigate to="/login" replace />;
-  return <Outlet />;
+  return <Outlet key={sessionScope(user)} />;
 }
 
 function WorkspaceRedirect({ to }: { to: string }) {
@@ -246,7 +250,7 @@ function WorkspaceRedirect({ to }: { to: string }) {
 
 function RequirePasswordChange() {
   const { user } = useSession();
-  if (!user?.password_change_required) return <Navigate to="/account" replace />;
+  if (!user?.password_change_required) return <Navigate to="/" replace />;
   return <Outlet />;
 }
 
@@ -260,7 +264,7 @@ function RequireFullSession() {
 
 function RequireAdmin() {
   const { user } = useSession();
-  if (user?.role !== "admin") return <Navigate to="/account" replace />;
+  if (user?.role !== "admin") return <Navigate to="/" replace />;
   return <Outlet />;
 }
 
@@ -298,7 +302,7 @@ function appRouteElements() {
 
         <Route element={<RequireFullSession />}>
           <Route element={<ConsoleLayout />}>
-            <Route index element={<Navigate to="/statistics" replace />} />
+            <Route index element={<GatewayOverviewPage />} />
             <Route path="/account" element={<ProfilePage />} />
             <Route path="/account/settings" element={<PersonalSettingsPage />} />
             <Route path="/account/sessions" element={<SessionsPage />} />

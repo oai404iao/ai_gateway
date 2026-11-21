@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDown, ArrowUp, ChevronDown, Search, X } from "lucide-react";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Columns3, ListFilter, PanelRight, Search, X } from "lucide-react";
+import { useSearchParams } from "react-router";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuGroup, DropdownMenuCheckboxItem } from "@/components/ui/dropdown-menu";
 import {
   Select,
   SelectContent,
@@ -22,7 +23,6 @@ import {
 import {
   Sheet,
   SheetContent,
-  SheetDescription,
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
@@ -38,23 +38,16 @@ import type {
   ListQuery,
   RequestLogView,
 } from "@/api/types";
-import { dateTimeLocalToIso, formatDateTime, formatRelative } from "@/lib/dates";
+import { dateTimeLocalToIso, formatDateTime, formatDateTimeLocalInput, formatRelative } from "@/lib/dates";
 import { formatDecimal, formatDurationMs, formatTokens, formatUsd } from "@/lib/formatters";
-import { API_FORMATS, apiFormatLabel, outcomeLabel, outcomeVariant } from "@/lib/permissions";
+import { API_FORMATS, API_OPERATIONS, apiFormatLabel, outcomeLabel, outcomeVariant } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/app/i18n";
 import { useIsMobile } from "@/hooks/use-mobile";
 
 const LIMITS = [25, 50, 100] as const;
 const OUTCOMES = ["succeeded", "failed", "rejected", "cancelled"] as const;
-const API_OPERATIONS = [
-  "chat_completion",
-  "responses",
-  "responses-ws",
-  "web_search",
-  "images_generation",
-  "images_edit",
-] as const satisfies readonly RequestLogView["api_operation"][];
+const uuid = /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i;
 
 type ApiFormatFilter = NonNullable<ListQuery["api_format"]>;
 type ApiOperationFilter = NonNullable<ListQuery["api_operation"]>;
@@ -113,13 +106,46 @@ const REQUEST_LOG_FILTER_KEYS = [
   "billed",
 ] as const satisfies readonly (keyof ListQuery)[];
 
-function sameRequestLogQuery(left: ListQuery, right: ListQuery): boolean {
-  return REQUEST_LOG_FILTER_KEYS.every((key) => left[key] === right[key]);
+function readFilters(search: string, system: boolean): ListQuery {
+  const params = new URLSearchParams(search);
+  const identifier = (key: string) => {
+    const value = params.get(key);
+    return value && uuid.test(value) ? value : undefined;
+  };
+  const instant = (key: string) => {
+    const value = params.get(key);
+    if (!value || !/(?:Z|[+-]\d\d:\d\d)$/i.test(value) || !Number.isFinite(Date.parse(value))) return undefined;
+    return value;
+  };
+  return {
+    limit: LIMITS.find(v => String(v) === params.get("limit")) ?? 50,
+    user_id: system ? identifier("user_id") : undefined, api_key_id: identifier("api_key_id"),
+    model: params.get("model")?.trim() || undefined,
+    api_format: API_FORMATS.find(v => v === params.get("api_format")),
+    api_operation: API_OPERATIONS.find(v => v === params.get("api_operation")),
+    outcome: OUTCOMES.find(v => v === params.get("outcome")),
+    started_after: instant("started_after"), started_before: instant("started_before"),
+    billed: params.get("billed") === "true" ? true : params.get("billed") === "false" ? false : undefined,
+  };
+}
+
+function filterDraft(query: ListQuery): RequestLogFilterDraft {
+  return {
+    limit: LIMITS.find(value => value === query.limit) ?? 50,
+    user_id: query.user_id ?? "",
+    api_key_id: query.api_key_id ?? "",
+    model: query.model ?? "",
+    api_format: query.api_format ?? "",
+    api_operation: query.api_operation ?? "",
+    outcome: query.outcome ?? "",
+    started_after: formatDateTimeLocalInput(query.started_after, true),
+    started_before: formatDateTimeLocalInput(query.started_before, true),
+    billed: query.billed === undefined ? "" : query.billed ? "true" : "false",
+  };
 }
 
 interface RequestLogsViewProps {
   title: string;
-  description: string;
   basePath: string;
   useLogs: UseRequestLogs;
   scope: "own" | "system";
@@ -350,9 +376,34 @@ function toQuery(draft: RequestLogFilterDraft): ListQuery {
   };
 }
 
+function Inspector({ mobile, onClose, closeRef, controls, children }: {
+  mobile: boolean; onClose: () => void; closeRef: RefObject<HTMLButtonElement | null>;
+  controls: ReactNode; children: ReactNode;
+}) {
+  const { t } = useI18n();
+  if (mobile) return (
+    <Sheet open onOpenChange={open => { if (!open) onClose(); }}>
+      <SheetContent className="overflow-y-auto data-[side=right]:w-full">
+        <SheetHeader className="border-b pr-12"><SheetTitle>{t("Request log")}</SheetTitle>
+          {controls}</SheetHeader>
+        {children}
+      </SheetContent>
+    </Sheet>
+  );
+  return (
+    <aside aria-label={t("Request log")} className="sticky top-3 min-w-0 self-start border-l bg-background"
+      onKeyDown={e => { if (e.key === "Escape") { e.stopPropagation(); onClose(); } }}>
+      <header className="flex items-center gap-2 border-b bg-muted/30 px-3 py-2">
+        <PanelRight className="size-4 text-primary" /><h2 className="mr-auto text-sm font-medium">{t("Request inspector")}</h2>
+        {controls}<Button ref={closeRef} variant="ghost" size="icon-sm" aria-label={t("Close inspector")} onClick={onClose}><X /></Button>
+      </header>
+      <div className="max-h-[calc(100dvh-6rem)] overflow-y-auto">{children}</div>
+    </aside>
+  );
+}
+
 export function RequestLogsView({
   title,
-  description,
   basePath,
   useLogs,
   scope,
@@ -365,10 +416,35 @@ export function RequestLogsView({
   const isMobile = useIsMobile();
   const [filtersOpen, setFiltersOpen] = useState(false);
   const filterToggle = useRef<HTMLButtonElement>(null);
-  const [draft, setDraft] = useState<RequestLogFilterDraft>(emptyFilters);
-  const [filters, setFilters] = useState<ListQuery>(() => toQuery(emptyFilters));
+  const [params, setParams] = useSearchParams();
+  const filterParams = new URLSearchParams(params);
+  filterParams.delete("id");
+  const search = filterParams.toString();
+  const filters = useMemo(() => readFilters(search, isSystemView), [search, isSystemView]);
+  const [draft, setDraft] = useState(() => filterDraft(filters));
+  useEffect(() => { setDraft(filterDraft(filters)); }, [filters]);
   const query = useLogs(filters);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const requestedId = params.get("id");
+  const selectedId = requestedId && uuid.test(requestedId) ? requestedId : null;
+  const [idSearch, setIdSearch] = useState("");
+  const [hiddenColumns, setHiddenColumns] = useState<Set<string>>(() => new Set());
+  const returnFocus = useRef<HTMLElement | null>(null);
+  const inspectorClose = useRef<HTMLButtonElement>(null);
+  const setSelectedId = (id: string | null) => {
+    if (!selectedId && id) returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const next = new URLSearchParams(params);
+    if (id) next.set("id", id); else next.delete("id");
+    setParams(next, { replace: true, preventScrollReset: true });
+    if (!id) requestAnimationFrame(() => {
+      const opener = returnFocus.current;
+      (opener?.isConnected && opener !== document.body ? opener : filterToggle.current)?.focus();
+    });
+  };
+  const inspectorOpen = Boolean(selectedId);
+  useEffect(() => { if (inspectorOpen && !isMobile) inspectorClose.current?.focus({ preventScroll: true }); }, [inspectorOpen, isMobile]);
+  const prefix = idSearch.trim().toLowerCase();
+  const matchingRows = (query.data ?? []).filter(row => row.id.toLowerCase().startsWith(prefix));
+  const index = matchingRows.findIndex(row => row.id === selectedId);
   const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
   const detail = useRequestLog(basePath, selectedId);
 
@@ -410,8 +486,8 @@ export function RequestLogsView({
   };
   const appliedApiKey = apiKeys.find((key) => key.id === filters.api_key_id);
   const filterLabels: [string, string | undefined][] = [
-    ["User", isSystemView && filters.user_id ? (userNamesById.get(filters.user_id) ?? filters.user_id) : undefined],
-    ["API key", appliedApiKey ? apiKeyLabel(appliedApiKey) : filters.api_key_id],
+    ["User", isSystemView && filters.user_id ? (userNamesById.get(filters.user_id) ?? t("Unavailable")) : undefined],
+    ["API key", appliedApiKey ? apiKeyLabel(appliedApiKey) : filters.api_key_id && t("Unavailable")],
     ["Model", filters.model],
     ["API format", filters.api_format && apiFormatLabel(filters.api_format)],
     ["Operation", filters.api_operation && requestOperationLabel(filters.api_operation, t)],
@@ -429,25 +505,31 @@ export function RequestLogsView({
     setDraft((previous) => ({ ...previous, ...partial }));
   };
   const runQuery = (next: ListQuery) => {
-    if (sameRequestLogQuery(filters, next)) {
-      void query.refetch();
-      return;
+    if (REQUEST_LOG_FILTER_KEYS.every(key => filters[key] === next[key])) void query.refetch();
+    const nextParams = new URLSearchParams();
+    for (const key of REQUEST_LOG_FILTER_KEYS) {
+      const value = next[key];
+      if (value !== undefined && value !== null && !(key === "limit" && value === 50)) nextParams.set(key, String(value));
     }
-    setFilters(next);
+    setParams(nextParams, { replace: true, preventScrollReset: true });
   };
-  const closeMobileFilters = () => {
-    if (!isMobile) return;
+  const closeFilters = () => {
     setFiltersOpen(false);
     filterToggle.current?.focus();
   };
   const applyFilters = () => {
-    runQuery(toQuery(draft));
-    closeMobileFilters();
+    const next = toQuery(draft);
+    for (const k of ["started_after", "started_before"] as const) {
+      if (draft[k] === formatDateTimeLocalInput(filters[k], true)) next[k] = filters[k];
+    }
+    runQuery(next);
+    closeFilters();
   };
   const clearFilters = () => {
+    setIdSearch("");
     setDraft(emptyFilters);
     runQuery(toQuery(emptyFilters));
-    closeMobileFilters();
+    closeFilters();
   };
 
   const columns: Column<RequestLogView>[] = [
@@ -465,7 +547,11 @@ export function RequestLogsView({
       key: "model",
       header: t("Model"),
       className: "min-w-36 max-w-56 whitespace-normal",
-      render: (log) => <RequestModel log={log} nameClassName="line-clamp-2" />,
+      render: (log) => (
+        <div aria-current={selectedId === log.id || undefined}>
+          <RequestModel log={log} nameClassName="line-clamp-2" />
+        </div>
+      ),
     },
     {
       key: "operation-protocol",
@@ -552,20 +638,43 @@ export function RequestLogsView({
 
   return (
     <Collapsible
-      className="flex flex-col gap-6"
-      open={!isMobile || filtersOpen}
+      className="flex min-w-0 flex-col gap-3"
+      open={filtersOpen}
       onOpenChange={setFiltersOpen}
     >
-      <PageHeader title={title} description={description} />
-      {isMobile ? (
-        <div className="flex flex-col gap-3">
+      <PageHeader title={title} />
+      <div className="flex min-w-0 items-center gap-1 overflow-x-auto border-b" role="group" aria-label={t("Outcome")}>
+        {(["", "succeeded", "failed", "rejected", "cancelled"] as const).map(value => (
+          <button key={value} type="button" aria-pressed={(filters.outcome ?? "") === value}
+            className="shrink-0 border-b-2 border-transparent px-2 py-2 text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring aria-pressed:border-primary aria-pressed:text-foreground"
+            onClick={() => runQuery({ ...filters, outcome: value || undefined })}>
+            {value ? outcomeLabel(value) : t("All")}
+          </button>
+        ))}
+      </div>
+        <div className="flex min-w-0 flex-col gap-2">
+          <div className="flex items-center gap-2 border-b pb-2">
+          <form className="mr-auto flex min-w-0 max-w-72 flex-1 items-center gap-1" onSubmit={e => {
+            e.preventDefault(); const id = idSearch.trim(); if (uuid.test(id)) setSelectedId(id);
+          }}>
+            <Search className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+            <Input aria-label={t("Find request ID")} placeholder={t("Find request ID")} value={idSearch} type="search" autoComplete="off" spellCheck={false}
+              className="h-8 border-0 bg-transparent px-1 shadow-none" onChange={e => setIdSearch(e.target.value)} />
+            {uuid.test(idSearch.trim()) ? <Button type="submit" size="sm" variant="ghost">{t("View details")}</Button> : null}
+          </form>
           <CollapsibleTrigger
             ref={filterToggle}
             render={<Button variant="outline" className="self-start scroll-mt-20" />}
           >
             {t("Filters ({count})", { count: appliedConditions.length })}
-            <ChevronDown data-icon="inline-end" className={cn(filtersOpen && "rotate-180")} />
+            <ListFilter data-icon="inline-end" />
           </CollapsibleTrigger>
+          {!isMobile && <DropdownMenu><DropdownMenuTrigger render={<Button variant="outline" size="sm" />}><Columns3 />{t("Display columns")}</DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="min-w-44"><DropdownMenuGroup>{columns.map(col => (
+              <DropdownMenuCheckboxItem key={col.key} checked={!hiddenColumns.has(col.key)} disabled={col.key === "model"} closeOnClick={false}
+                onCheckedChange={checked => setHiddenColumns(prev => { const next = new Set(prev); if (checked) next.delete(col.key); else next.add(col.key); return next; })}>{col.header}</DropdownMenuCheckboxItem>
+            ))}</DropdownMenuGroup></DropdownMenuContent></DropdownMenu>}
+          </div>
           {appliedConditions.length > 0 ? (
             <div className="flex flex-wrap items-start gap-2">
               <ul aria-label={t("Applied filters")} className="flex min-w-0 flex-wrap gap-2">
@@ -584,17 +693,7 @@ export function RequestLogsView({
             </div>
           ) : null}
         </div>
-      ) : null}
-      <CollapsibleContent render={<Card size="sm" />}>
-        <CardHeader className="border-b">
-          <CardTitle>{t("Filters")}</CardTitle>
-          <CardDescription>
-            {t(
-              "Filter by exact model, request operation, outcome, format, time range, and settlement state.",
-            )}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
+      <CollapsibleContent className="border-b pb-3">
           <form
             className="flex flex-col gap-4"
             onSubmit={(event) => {
@@ -628,7 +727,8 @@ export function RequestLogsView({
                     </SelectTrigger>
                     <SelectContent>
                       <SelectGroup>
-                        <SelectItem value="__all__">{t("All users")}</SelectItem>
+                      <SelectItem value="__all__">{t("All users")}</SelectItem>
+                      {draft.user_id && !userNamesById.has(draft.user_id) && <SelectItem value={draft.user_id} disabled>{t("Unavailable")}</SelectItem>}
                         {users.map((user) => (
                           <SelectItem key={user.id} value={user.id}>
                             {user.display_name}
@@ -655,7 +755,8 @@ export function RequestLogsView({
                   </SelectTrigger>
                   <SelectContent>
                     <SelectGroup>
-                      <SelectItem value="__all__">{t("All API keys")}</SelectItem>
+                    <SelectItem value="__all__">{t("All API keys")}</SelectItem>
+                    {draft.api_key_id && !availableApiKeys.some(key => key.id === draft.api_key_id) && <SelectItem value={draft.api_key_id} disabled>{t("Unavailable")}</SelectItem>}
                       {availableApiKeys.map((key) => (
                         <SelectItem key={key.id} value={key.id}>
                           {apiKeyLabel(key)}
@@ -673,7 +774,7 @@ export function RequestLogsView({
                     updateDraft({ model: value === "__all__" ? "" : value })
                   }
                 >
-                  <SelectTrigger id="request-log-model" className="w-full">
+                  <SelectTrigger id="request-log-model" aria-describedby="request-log-model-help" className="w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -795,6 +896,7 @@ export function RequestLogsView({
                 <Input
                   id="request-log-started-after"
                   type="datetime-local"
+                  step="1"
                   value={draft.started_after}
                   onChange={(event) => updateDraft({ started_after: event.target.value })}
                 />
@@ -804,6 +906,7 @@ export function RequestLogsView({
                 <Input
                   id="request-log-started-before"
                   type="datetime-local"
+                  step="1"
                   value={draft.started_before}
                   onChange={(event) => updateDraft({ started_before: event.target.value })}
                 />
@@ -857,47 +960,36 @@ export function RequestLogsView({
                 </div>
               </Field>
             </FieldGroup>
+            <p id="request-log-model-help" className="text-xs text-muted-foreground">{t("Model matches either the client model or the upstream model exactly.")}</p>
           </form>
-        </CardContent>
       </CollapsibleContent>
-      <Card>
-        <CardHeader>
-          <CardTitle>{t("Requests")}</CardTitle>
-          <CardDescription>
-            {t(
-              "The gateway does not store request bodies or successful response bodies. Bounded upstream error details may be retained.",
-            )}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
+      <div className={cn("grid min-w-0 items-start", selectedId && !isMobile && "grid-cols-[minmax(0,1fr)_minmax(16rem,31%)]")}>
+        <section aria-label={t("Requests")} className="min-w-0 [&_tr:has([aria-current=true])]:bg-accent/60">
           <AsyncResource
             isLoading={query.isLoading}
             error={query.error}
-            isEmpty={query.data?.length === 0}
+            isEmpty={matchingRows.length === 0}
             emptyTitle={t("No request logs")}
             emptyDescription={t("There are no logged requests matching these filters.")}
           >
             <ResourceTable
-              columns={isMobile ? compactColumns : columns}
-              rows={query.data ?? []}
+              columns={isMobile ? compactColumns : columns.filter(col => !hiddenColumns.has(col.key))}
+              rows={matchingRows}
               rowKey={(log) => log.id}
               onRowClick={(log) => setSelectedId(log.id)}
               rowActionLabel={t("View details")}
             />
           </AsyncResource>
-        </CardContent>
-      </Card>
-
-      <Sheet open={Boolean(selectedId)} onOpenChange={(open) => !open && setSelectedId(null)}>
-        <SheetContent className="overflow-y-auto sm:max-w-md">
-          <SheetHeader>
-            <SheetTitle>{t("Request log")}</SheetTitle>
-            <SheetDescription>
-              {detail.data ? formatDateTime(detail.data.started_at) : t("Loading…")}
-            </SheetDescription>
-          </SheetHeader>
+          <p className="mt-3 text-xs text-muted-foreground">{t("The gateway does not store request bodies or successful response bodies. Bounded upstream error details may be retained.")}</p>
+        </section>
+      {selectedId && <Inspector mobile={isMobile} closeRef={inspectorClose} onClose={() => setSelectedId(null)} controls={<div className="flex items-center gap-0.5">
+        <Button size="icon-sm" variant="ghost" aria-label={t("Previous request")} disabled={index < 1} onClick={() => setSelectedId(matchingRows[index-1].id)}><ChevronLeft /></Button>
+        <Button size="icon-sm" variant="ghost" aria-label={t("Next request")} disabled={index < 0 || index + 1 >= matchingRows.length} onClick={() => setSelectedId(matchingRows[index+1].id)}><ChevronRight /></Button>
+      </div>}>
+        <p className="px-4 pt-3 font-mono text-xs break-all text-muted-foreground select-all" aria-label={t("Request ID")}>{selectedId}</p>
+        <AsyncResource isLoading={detail.isLoading} error={detail.error}>
           {detail.data ? (
-            <dl className="grid grid-cols-1 gap-3 p-4">
+            <dl className="grid grid-cols-2 gap-x-3 gap-y-4 p-4 [&>div]:min-w-0 [&>div:has(.whitespace-pre-wrap)]:col-span-2">
               <DetailField label={t("Started")} value={formatDateTime(detail.data.started_at)} />
               <DetailField label={t("Model")} value={<RequestModel log={detail.data} />} />
               <DetailField
@@ -945,8 +1037,9 @@ export function RequestLogsView({
               <DetailField label={t("Completed")} value={formatDateTime(detail.data.completed_at)} />
             </dl>
           ) : null}
-        </SheetContent>
-      </Sheet>
+        </AsyncResource>
+      </Inspector>}
+      </div>
     </Collapsible>
   );
 }

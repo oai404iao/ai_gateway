@@ -10,11 +10,9 @@ export function GroupsPage({ embedded = false }: { embedded?: boolean } = {}) {
     <AdminListPage
       embedded={embedded}
       title={t("Channel groups")}
-      description={t(
-        "Canonical organization for logical channels. A group holds no format, connector, route, or grant.",
-      )}
       query={query}
       rowKey={(group) => group.id}
+      rowName={(group) => group.name}
       detailPath={(group) => `/admin/routing/groups/${group.id}`}
       createLabel={t("New group")}
       createPath="/admin/routing/groups/new"

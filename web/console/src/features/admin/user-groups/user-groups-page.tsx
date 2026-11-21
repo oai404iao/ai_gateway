@@ -11,14 +11,14 @@ export function UserGroupsPage() {
   const { t } = useI18n();
 
   const policyName = (id: string | null) =>
-    id ? policies.data?.find((policy) => policy.id === id)?.name ?? id : t("None");
+    id ? policies.data?.find((policy) => policy.id === id)?.name ?? t("Unavailable") : t("None");
 
   return (
     <AdminListPage
       title={t("User Groups")}
-      description={t("Assign one group to each user and inherit its default API policy.")}
-      query={groups}
+      query={{ data: groups.data, isLoading: groups.isLoading || policies.isLoading, error: groups.error ?? policies.error }}
       rowKey={(group) => group.id}
+      rowName={(group) => group.name}
       detailPath={(group) => `/admin/user-groups/${group.id}`}
       createLabel={t("New user group")}
       createPath="/admin/user-groups/new"

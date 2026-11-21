@@ -7,11 +7,11 @@ async function login(page: Page, email = "admin@example.com") {
   await page.getByLabel("Email", { exact: true }).fill(email);
   await page.getByLabel("Password", { exact: true }).fill("synthetic-password");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
-  await expect(page).toHaveURL(/\/account$/);
+  await expect(page).toHaveURL(/\/$/);
 }
 
-function sidebar(page: Page) {
-  return page.getByRole("navigation", { name: "Console navigation" });
+function dock(page: Page) {
+  return page.getByRole("navigation", { name: "Mobile navigation" });
 }
 
 async function expectFirstViewport(locator: Locator) {
@@ -27,24 +27,26 @@ async function expectFirstViewport(locator: Locator) {
 test.describe("mobile navigation", () => {
   test.use({ viewport: { width: 390, height: 844 } });
 
-  test("closes only after ordinary and settings links commit; Escape returns to the opener", async ({ page }) => {
+  test("opens management and settings from the page finder; Escape returns to the opener", async ({ page }) => {
     await login(page);
     await page.goto("/admin/models");
     await expect(page.getByRole("heading", { level: 1, name: "Model configuration" })).toBeVisible();
-    const toggle = page.getByRole("button", { name: "Toggle Sidebar" });
+    const toggle = dock(page).getByRole("button", { name: "More pages" });
+    const finder = page.getByRole("dialog", { name: "Find page" });
     await toggle.click();
-    await expect(sidebar(page)).toBeVisible();
+    await expect(finder).toBeVisible();
     await page.keyboard.press("Escape");
-    await expect(sidebar(page)).toBeHidden();
+    await expect(finder).toBeHidden();
     await expect(toggle).toBeFocused();
     await expect(page).toHaveURL(/\/admin\/models$/);
 
     await toggle.press("Enter");
-    await sidebar(page).getByRole("link", { name: "Users", exact: true }).click();
+    await finder.getByRole("combobox").fill("/admin/users");
+    await finder.getByRole("option", { name: /Users/ }).click();
     await expect(page).toHaveURL(/\/admin\/users$/);
-    await expect(sidebar(page)).toBeHidden();
+    await expect(finder).toBeHidden();
     const heading = page.getByRole("heading", { level: 1, name: "Users" });
-    await expect(heading).toBeFocused();
+    await expect(page.getByRole("main")).toBeFocused();
     await expectFirstViewport(heading);
     const user = page.getByRole("link", { name: E2E_USER.display_name });
     await user.click();
@@ -52,34 +54,34 @@ test.describe("mobile navigation", () => {
     await expect(page.getByRole("heading", { level: 1, name: E2E_USER.display_name })).toBeVisible();
 
     await toggle.click();
-    await sidebar(page).getByRole("button", { name: "System settings" }).click();
-    await sidebar(page).getByRole("link", { name: "Upstream timeouts" }).click();
+    await finder.getByRole("combobox").fill("/admin/system/upstream");
+    await finder.getByRole("option", { name: /Upstream timeouts/ }).click();
     await expect(page).toHaveURL(/\/admin\/system\/upstream$/);
-    await expect(sidebar(page)).toBeHidden();
-    await expect(page.getByRole("heading", { level: 1, name: /Upstream timeouts/ })).toBeFocused();
+    await expect(finder).toBeHidden();
+    await expect(page.getByRole("heading", { level: 1, name: /Upstream timeouts/ })).toBeVisible();
+    await expect(page.getByRole("main")).toBeFocused();
   });
 
-  test("canceling a dirty navigation keeps the sidebar and the draft; confirming moves to content", async ({ page }) => {
+  test("canceling a dirty navigation keeps the draft; confirming a dock link moves to its content", async ({ page }) => {
     await login(page);
     await page.goto("/admin/system/upstream");
     const timeout = page.getByLabel("Connect timeout (seconds)");
     await timeout.fill("23");
-    await page.getByRole("button", { name: "Toggle Sidebar" }).click();
-    const destination = sidebar(page).getByRole("link", { name: "General settings" });
+    const destination = dock(page).getByRole("link", { name: "Request logs" });
     await destination.click();
     const guard = page.getByRole("alertdialog", { name: "Discard unsaved changes?" });
     await guard.getByRole("button", { name: "Cancel", exact: true }).click();
     await expect(guard).toBeHidden();
-    await expect(sidebar(page)).toBeVisible();
+    await expect(dock(page)).toBeVisible();
     await expect(destination).toBeFocused();
     await expect(page).toHaveURL(/\/admin\/system\/upstream$/);
     await expect(timeout).toHaveValue("23");
 
     await destination.press("Enter");
     await guard.getByRole("button", { name: "Discard changes" }).click();
-    await expect(page).toHaveURL(/\/admin\/system\/general$/);
-    await expect(sidebar(page)).toBeHidden();
-    await expect(page.getByRole("heading", { level: 1, name: /General settings/ })).toBeFocused();
+    await expect(page).toHaveURL(/\/usage\/request-logs$/);
+    await expect(page.getByRole("heading", { level: 1, name: /Request logs/i })).toBeVisible();
+    await expect(page.getByRole("main")).toBeFocused();
   });
 });
 
@@ -165,6 +167,7 @@ test.describe("mobile request logs", () => {
 
       await detailButton.press("Enter");
       const detail = page.getByRole("dialog", { name: "Request log" });
+      await expect(detail.getByLabel("Request ID", { exact: true })).toHaveText(first.id);
       await expect(detail.getByText(first.error_summary)).toBeVisible();
       await expect(detail.getByText(first.channel_name, { exact: true })).toHaveCount(personal ? 0 : 1);
       await expect(detail.getByText(first.user_name, { exact: true })).toHaveCount(personal ? 0 : 1);
@@ -187,6 +190,7 @@ test("desktop request logs retain the comparison table without growing for long 
   );
   await page.goto("/admin/request-logs");
   await expect(page.locator("html")).toHaveClass(/\bdark\b/);
+  await page.getByRole("button", { name: "Filters (0)" }).click();
   await expect(page.getByRole("combobox", { name: "User", exact: true })).toBeVisible();
   const table = page.getByRole("table");
   await expect(table.getByRole("columnheader", { name: "Operation / protocol" })).toBeVisible();
@@ -197,4 +201,11 @@ test("desktop request logs retain the comparison table without growing for long 
   expect(await cell.evaluate((node) => node.getBoundingClientRect().width)).toBeLessThan(226);
   expect(await cell.evaluate((node) => node.getBoundingClientRect().height)).toBeLessThan(120);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(1440);
+  await table.getByRole("button", { name: "View details" }).click();
+  const inspector = page.getByRole("complementary", { name: "Request log" });
+  await expect(inspector).toBeVisible();
+  await expect(table).toBeVisible();
+  await inspector.getByRole("button", { name: "Close inspector" }).press("Escape");
+  await expect(inspector).toBeHidden();
+  await expect(table.getByRole("button", { name: "View details" })).toBeFocused();
 });

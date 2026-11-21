@@ -8,6 +8,15 @@ Console 面向登录用户和管理员，使用独立监听器上的 JWT，不�
 
 首次部署先按[快速开始](quickstart.md)生成 Ed25519 密钥并创建管理员。浏览器生产访问必须经过 HTTPS 反向代理；嵌入 UI 需要 `embedded-console-ui` 构建和 `[console].ui_enabled = true`，只在 Console listener 提供。未匹配的 `/console/v1/*` 返回 JSON 404，不会回退为 SPA。
 
+## 登录后从哪里开始
+
+正常登录后，普通用户和管理员都进入个人概览（`/`）。桌面使用顶部导航，手机使用底部导航；未列出的页面可通过页首查找或手机上的「更多」打开。右上角头像提供个人资料、个人设置、登录会话和退出入口。
+
+- 查看自己的调用：在概览看近期用量，进入用量报表（`/statistics`）查看明细，或打开个人请求日志（`/usage/request-logs`）排查单次调用。管理员在这里看到的也是自己的数据。
+- 管理自己的密钥：进入 API 密钥（`/api-keys`）创建或维护 Key；可选渠道仍由账户的 Policy 决定。
+- 查看服务情况：在「服务」查看渠道组状态、账户有权查看的 Codex 额度或花费排行榜。
+- 管理网关：只有管理员有「管理」入口。目录按任务展开：例如修改上游超时，选「系统设置 → 连接与协议 → 上游超时」；查健康策略，展开「路由与健康」。在手机上先点当前页上方的管理目录，也可用「查找页面」直达。查全体用户的费用或请求，请到「运维」打开[全局花费或请求日志](observability.md#先选择视图)。
+
 ## Console 认证
 
 Console 登录接口：
@@ -123,6 +132,7 @@ Policy 不保存额度、RPM、并发、格式、权限或最大活动 Key 数�
 
 用户组还可以授权只读查看指定渠道组内渠道所引用 Codex 账号的额度窗口。同一凭证仅展示一次，
 返回的 `channel_ids` 只含可见组中的引用渠道，不因其他渠道复用该凭证而扩大可见范围。
+页面使用「Codex 账户」而非管理员命名；多个账户优先以套餐区分，仍有重名时才附加短后缀。
 普通用户接口只返回凭证 UUID（`name` 固定使用同一个 UUID）、Provider 报告的
 `plan_type`、当前主/次窗口、凭证级周期花费以及窗口周期历史，不返回管理员 label、邮箱、可选
 workspace/member 身份、Token、代理、运行状态、错误或 reset-credit 信息。周期花费汇总该
@@ -147,11 +157,11 @@ workspace/member 身份、Token、代理、运行状态、错误或 reset-credit
 - 变换模板：`/console/v1/transforms/templates`
 - 观测事实：`GET /console/v1/request-logs`、`GET /console/v1/audit-logs`
 - 花费排行榜：`GET /console/v1/statistics/spend-leaderboard`
-- 系统负载：`GET /console/v1/system/load`（当前实例的 CPU、内存、运行时、队列、日志积压、Responses WebSocket Session/连接池和数据库连接池压力；Console 页面位于“运维”下的 `/admin/system-load`）
+- 系统负载：`GET /console/v1/system/load`（当前实例的 CPU、内存、运行时、队列、日志积压、Responses WebSocket Session/连接池和数据库连接池压力；管理页面为 `/admin/system-load`）
 - 系统转发设置：`GET` / `PUT /console/v1/system/settings`（管理员；`PUT` 使用 `If-Match`，保存后立即发布快照）
 - 手动重载：`POST /console/v1/system/reload`
 
-管理员 Console 的“模型与路由”分为上游接入、上游凭证、渠道配置和模型配置四个入口。
+在管理区可分别配置上游接入、上游凭证、渠道和模型。
 `/admin/routing/channels` 提供组配置、按组列出的逻辑渠道及选中渠道的能力配置。
 `/admin/models` 左侧选择客户端计价模型，右侧新增操作或直接编辑已有操作路由；在单条操作编辑器首次保存操作
 时会先为该模型创建缺失的 routing profile，再保存操作规则。两次写入不是跨资源原子事务，

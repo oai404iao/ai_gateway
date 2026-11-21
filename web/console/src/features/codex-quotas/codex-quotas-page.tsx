@@ -2,7 +2,6 @@ import { useState } from "react";
 import { History } from "lucide-react";
 import type {
   CodexQuotaResetReason,
-  SelfCodexQuotaCredentialView,
   SelfCodexQuotaWindowPeriod,
 } from "@/api/types";
 import { useI18n } from "@/app/i18n";
@@ -46,6 +45,7 @@ import {
 } from "@/features/codex-quotas/api";
 import { formatDateTime } from "@/lib/dates";
 import { formatEstimatedQuotaTotal, formatUsd } from "@/lib/formatters";
+import { resourceLabels } from "@/lib/resource-labels";
 
 function windowDuration(seconds: number | null): string {
   if (seconds === null) return "—";
@@ -88,13 +88,12 @@ function QuotaWindow({
   const { t } = useI18n();
   return (
     <div className="flex min-w-44 flex-col gap-1">
-      <div className="flex items-center justify-between gap-3 text-xs">
-        <span>{t(label)}</span>
+      <div className="text-right text-xs">
         <span className="tabular-nums">
           {percent === null ? "—" : `${percent}%`}
         </span>
       </div>
-      <Progress value={percent ?? 0} />
+      <Progress aria-label={t(label)} value={percent ?? 0} />
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
         <span>{windowDuration(seconds)}</span>
         <span>
@@ -125,7 +124,7 @@ function QuotaHistoryDialog({
   credential,
   onClose,
 }: {
-  credential: SelfCodexQuotaCredentialView | null;
+  credential: { id: string; label: string } | null;
   onClose: () => void;
 }) {
   const { t } = useI18n();
@@ -143,13 +142,11 @@ function QuotaHistoryDialog({
         <DialogHeader>
           <DialogTitle>
             {t("Quota window history for {name}", {
-              name: credential?.name ?? "",
+              name: credential?.label ?? "",
             })}
           </DialogTitle>
           <DialogDescription>
-            {t(
-              "This view is read-only and contains quota windows plus the provider-reported subscription tier. Period spend covers all priced requests routed through the credential, not only your requests.",
-            )}
+            {t("Period spend includes all priced requests using this credential.")}
           </DialogDescription>
         </DialogHeader>
         <AsyncResource
@@ -197,7 +194,7 @@ function QuotaWindowPeriodsTable({
     );
   }
   return (
-    <div className="overflow-x-auto rounded-xl border">
+    <div className="min-w-0 border-y">
       <Table>
         <TableHeader>
           <TableRow>
@@ -264,17 +261,16 @@ function QuotaWindowPeriodsTable({
 export function CodexQuotasPage() {
   const { t } = useI18n();
   const quotas = useOwnCodexQuotas();
-  const [historyCredential, setHistoryCredential] =
-    useState<SelfCodexQuotaCredentialView | null>(null);
+  const [historyCredential, setHistoryCredential] = useState<{id: string; label: string} | null>(null);
+  const accounts = quotas.data ?? [];
+  const accountLabels = resourceLabels(accounts.map(account => ({
+    id: account.id,
+    name: accounts.length > 1 && account.plan_type ? `${t("Codex account")} · ${account.plan_type}` : t("Codex account"),
+  })));
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader
-        title={t("Codex quotas")}
-        description={t(
-          "Read-only account quota and total spend across referencing channels. Visibility is granted through your user group's channel groups; it does not grant channel access.",
-        )}
-      />
+      <PageHeader title={t("Codex quotas")} />
       <AsyncResource
         isLoading={quotas.isLoading}
         error={quotas.error}
@@ -285,13 +281,13 @@ export function CodexQuotasPage() {
         )}
       >
         <div className="flex flex-col gap-6">
-            <Card className="min-w-0">
+            <Card variant="section" className="min-w-0">
               <CardHeader>
                 <CardTitle>{t("Credentials")}</CardTitle>
-                <CardDescription>{t("Each account is shown once, even when several channels use it.")}</CardDescription>
+                <CardDescription>{t("Spend includes all callers. Quota visibility does not grant channel access.")}</CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="overflow-x-auto rounded-xl border">
+                <div className="min-w-0 border-y">
                   <Table>
                     <TableHeader>
                       <TableRow>
@@ -306,9 +302,11 @@ export function CodexQuotasPage() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {quotas.data?.map((credential) => (
+                      {accounts.map((credential) => {
+                        const label = accountLabels.get(credential.id)!;
+                        return (
                         <TableRow key={credential.id}>
-                          <TableCell>{credential.name}</TableCell>
+                          <TableCell>{label}</TableCell>
                           <TableCell>
                             <Badge variant="secondary">
                               {credential.plan_type ?? t("Unknown")}
@@ -344,16 +342,17 @@ export function CodexQuotasPage() {
                               size="sm"
                               variant="outline"
                               aria-label={t("View quota history for {name}", {
-                                name: credential.name,
+                                name: label,
                               })}
-                              onClick={() => setHistoryCredential(credential)}
+                              onClick={() => setHistoryCredential({ id: credential.id, label })}
                             >
                               <History data-icon="inline-start" />
                               {t("Quota history")}
                             </Button>
                           </TableCell>
                         </TableRow>
-                      ))}
+                        );
+                      })}
                     </TableBody>
                   </Table>
                 </div>

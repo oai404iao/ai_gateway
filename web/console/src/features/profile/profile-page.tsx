@@ -3,15 +3,24 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { toast } from "sonner";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
-import { Separator } from "@/components/ui/separator";
-import { PageHeader } from "@/components/shared/page-header";
+import { AccountPage } from "./account-page";
+import { accountInitials } from "@/lib/account-initials";
 import { AsyncResource } from "@/components/shared/async-resource";
-import { DetailField } from "@/components/shared/detail-field";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { useChangePassword, useProfile, useUpdateProfile } from "@/features/profile/api";
 import { formatUsd } from "@/lib/formatters";
@@ -52,8 +61,11 @@ export function ProfilePage() {
   });
   const [savingProfile, setSavingProfile] = useState(false);
   const [savingPassword, setSavingPassword] = useState(false);
-  const draft = useConfigurationDraft(savingProfile || savingPassword,
-    profileForm.formState.isDirty || passwordForm.formState.isDirty);
+  const [passwordOpen, setPasswordOpen] = useState(false);
+  const draft = useConfigurationDraft(
+    savingProfile || savingPassword,
+    profileForm.formState.isDirty || passwordForm.formState.isDirty,
+  );
 
   const onProfile = async (values: ProfileValues) => {
     setSavingProfile(true);
@@ -85,120 +97,170 @@ export function ProfilePage() {
   };
 
   return (
-    <div className="flex flex-col gap-6">
+    <AccountPage>
       {draft.navigationGuard}
-      <PageHeader title={t("Profile")} description={t("Your Console identity and security settings.")} />
       <AsyncResource isLoading={isLoading} error={error}>
         {profile ? (
-          <Card>
-            <CardHeader>
-              <CardTitle>{t("Account")}</CardTitle>
-              <CardDescription>{t("Read-only account facts.")}</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <DetailField label={t("Email")} value={profile.email ?? "—"} />
-                <DetailField label={t("Role")} value={roleLabel(profile.role)} />
-                <DetailField label={t("Status")} value={<StatusBadge value={profile.status} />} />
-                <DetailField
-                  label={t("Balance")}
-                  value={formatUsd(profile.balance_amount)}
-                />
-                <DetailField label={t("Created")} value={formatTs(profile.created_at)} />
-                <DetailField label={t("Updated")} value={formatTs(profile.updated_at)} />
+          <section>
+            <header className="mb-4 flex items-center gap-3">
+              <Avatar size="lg" aria-hidden="true">
+                <AvatarFallback>
+                  {accountInitials(profile.display_name)}
+                </AvatarFallback>
+              </Avatar>
+              <div className="min-w-0 break-words">
+                <h2 className="text-lg font-semibold">{profile.display_name}</h2>
+                <p className="text-sm text-muted-foreground">{profile.email ?? "—"}</p>
+              </div>
+            </header>
+            <form
+              onSubmit={profileForm.handleSubmit(onProfile)}
+              className="flex flex-col gap-2 border-b py-4 sm:flex-row sm:items-start sm:justify-between"
+            >
+              <div className="flex flex-col gap-1">
+                <FieldLabel htmlFor="display_name">{t("Display name")}</FieldLabel>
+                <p className="text-xs text-muted-foreground">
+                  {t("Shown to administrators and in audit records.")}
+                </p>
+              </div>
+              <div className="flex min-w-0 items-start gap-2">
+                <Field data-invalid={Boolean(profileForm.formState.errors.display_name)}>
+                  <Input
+                    id="display_name"
+                    aria-invalid={Boolean(profileForm.formState.errors.display_name)}
+                    {...profileForm.register("display_name")}
+                  />
+                  {profileForm.formState.errors.display_name ? (
+                    <FieldError>{profileForm.formState.errors.display_name.message}</FieldError>
+                  ) : null}
+                </Field>
+                <Button
+                  type="submit"
+                  variant="outline"
+                  disabled={savingProfile || !profileForm.formState.isDirty}
+                >
+                  {savingProfile ? <Spinner data-icon="inline-start" /> : null}
+                  {t("Save display name")}
+                </Button>
+              </div>
+            </form>
+            <dl className="divide-y text-sm *:flex *:items-center *:justify-between *:gap-3 *:py-3 [&_dt]:text-muted-foreground">
+              <div>
+                <dt>{t("Role")}</dt>
+                <dd>{roleLabel(profile.role)}</dd>
+              </div>
+              <div>
+                <dt>{t("Status")}</dt>
+                <dd>
+                  <StatusBadge value={profile.status} />
+                </dd>
+              </div>
+              <div>
+                <dt>{t("Balance")}</dt>
+                <dd>{formatUsd(profile.balance_amount)}</dd>
+              </div>
+            </dl>
+            <details className="border-t py-2 text-xs text-muted-foreground">
+              <summary className="w-fit cursor-pointer py-1">{t("Profile timestamps")}</summary>
+              <dl className="mt-2 grid gap-2">
+                <div className="flex justify-between gap-3">
+                  <dt>{t("Created")}</dt>
+                  <dd>{formatTs(profile.created_at)}</dd>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <dt>{t("Updated")}</dt>
+                  <dd>{formatTs(profile.updated_at)}</dd>
+                </div>
               </dl>
-            </CardContent>
-          </Card>
+            </details>
+          </section>
         ) : null}
       </AsyncResource>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>{t("Display name")}</CardTitle>
-          <CardDescription>{t("Shown to administrators and in audit records.")}</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={profileForm.handleSubmit(onProfile)} className="flex flex-col gap-4">
-            <FieldGroup>
-              <Field data-invalid={Boolean(profileForm.formState.errors.display_name)}>
-                <FieldLabel htmlFor="display_name">{t("Display name")}</FieldLabel>
-                <Input
-                  id="display_name"
-                  aria-invalid={Boolean(profileForm.formState.errors.display_name)}
-                  {...profileForm.register("display_name")}
-                />
-                {profileForm.formState.errors.display_name ? (
-                  <FieldError>{profileForm.formState.errors.display_name.message}</FieldError>
-                ) : null}
-              </Field>
-            </FieldGroup>
-            <Button type="submit" className="self-start" disabled={savingProfile}>
-              {savingProfile ? <Spinner data-icon="inline-start" /> : null}
-              {t("Save display name")}
-            </Button>
-          </form>
-        </CardContent>
-      </Card>
-
-      <Separator />
-
-      <Card>
-        <CardHeader>
-          <CardTitle>{t("Change password")}</CardTitle>
-          <CardDescription>
-            {t("Changing your password immediately signs out every active session.")}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={passwordForm.handleSubmit(onPassword)} className="flex flex-col gap-4">
-            <FieldGroup>
-              <Field data-invalid={Boolean(passwordForm.formState.errors.current_password)}>
-                <FieldLabel htmlFor="current_password">{t("Current password")}</FieldLabel>
-                <Input
-                  id="current_password"
-                  type="password"
-                  autoComplete="current-password"
-                  aria-invalid={Boolean(passwordForm.formState.errors.current_password)}
-                  {...passwordForm.register("current_password")}
-                />
-                {passwordForm.formState.errors.current_password ? (
-                  <FieldError>{passwordForm.formState.errors.current_password.message}</FieldError>
-                ) : null}
-              </Field>
-              <Field data-invalid={Boolean(passwordForm.formState.errors.new_password)}>
-                <FieldLabel htmlFor="new_password">{t("New password")}</FieldLabel>
-                <Input
-                  id="new_password"
-                  type="password"
-                  autoComplete="new-password"
-                  aria-invalid={Boolean(passwordForm.formState.errors.new_password)}
-                  {...passwordForm.register("new_password")}
-                />
-                {passwordForm.formState.errors.new_password ? (
-                  <FieldError>{passwordForm.formState.errors.new_password.message}</FieldError>
-                ) : null}
-              </Field>
-              <Field data-invalid={Boolean(passwordForm.formState.errors.confirm_password)}>
-                <FieldLabel htmlFor="confirm_password">{t("Confirm new password")}</FieldLabel>
-                <Input
-                  id="confirm_password"
-                  type="password"
-                  autoComplete="new-password"
-                  aria-invalid={Boolean(passwordForm.formState.errors.confirm_password)}
-                  {...passwordForm.register("confirm_password")}
-                />
-                {passwordForm.formState.errors.confirm_password ? (
-                  <FieldError>{passwordForm.formState.errors.confirm_password.message}</FieldError>
-                ) : null}
-              </Field>
-            </FieldGroup>
-            <Button type="submit" className="self-start" disabled={savingPassword}>
-              {savingPassword ? <Spinner data-icon="inline-start" /> : null}
+      <section>
+        <h2 className="mb-2 text-lg font-semibold">{t("Security")}</h2>
+        <Dialog
+          open={passwordOpen}
+          onOpenChange={(open) => {
+            if (savingPassword) return;
+            if (!open) passwordForm.reset();
+            setPasswordOpen(open);
+          }}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b py-3">
+            <h3 className="text-sm font-medium">{t("Password")}</h3>
+            <DialogTrigger render={<Button variant="outline" />}>
               {t("Change password")}
-            </Button>
-          </form>
-        </CardContent>
-      </Card>
-    </div>
+            </DialogTrigger>
+          </div>
+          <DialogContent className="max-h-[90dvh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>{t("Change password")}</DialogTitle>
+              <DialogDescription>
+                {t("Changing your password immediately signs out every active session.")}
+              </DialogDescription>
+            </DialogHeader>
+            <form onSubmit={passwordForm.handleSubmit(onPassword)} className="flex flex-col gap-4">
+              <FieldGroup>
+                <Field data-invalid={Boolean(passwordForm.formState.errors.current_password)}>
+                  <FieldLabel htmlFor="current_password">{t("Current password")}</FieldLabel>
+                  <Input
+                    id="current_password"
+                    type="password"
+                    autoComplete="current-password"
+                    aria-invalid={Boolean(passwordForm.formState.errors.current_password)}
+                    {...passwordForm.register("current_password")}
+                  />
+                  {passwordForm.formState.errors.current_password ? (
+                    <FieldError>
+                      {passwordForm.formState.errors.current_password.message}
+                    </FieldError>
+                  ) : null}
+                </Field>
+                <Field data-invalid={Boolean(passwordForm.formState.errors.new_password)}>
+                  <FieldLabel htmlFor="new_password">{t("New password")}</FieldLabel>
+                  <Input
+                    id="new_password"
+                    type="password"
+                    autoComplete="new-password"
+                    aria-invalid={Boolean(passwordForm.formState.errors.new_password)}
+                    {...passwordForm.register("new_password")}
+                  />
+                  {passwordForm.formState.errors.new_password ? (
+                    <FieldError>{passwordForm.formState.errors.new_password.message}</FieldError>
+                  ) : null}
+                </Field>
+                <Field data-invalid={Boolean(passwordForm.formState.errors.confirm_password)}>
+                  <FieldLabel htmlFor="confirm_password">{t("Confirm new password")}</FieldLabel>
+                  <Input
+                    id="confirm_password"
+                    type="password"
+                    autoComplete="new-password"
+                    aria-invalid={Boolean(passwordForm.formState.errors.confirm_password)}
+                    {...passwordForm.register("confirm_password")}
+                  />
+                  {passwordForm.formState.errors.confirm_password ? (
+                    <FieldError>
+                      {passwordForm.formState.errors.confirm_password.message}
+                    </FieldError>
+                  ) : null}
+                </Field>
+              </FieldGroup>
+              <DialogFooter>
+                <DialogClose
+                  render={<Button type="button" variant="outline" disabled={savingPassword} />}
+                >
+                  {t("Cancel")}
+                </DialogClose>
+                <Button type="submit" disabled={savingPassword}>
+                  {savingPassword ? <Spinner data-icon="inline-start" /> : null}
+                  {t("Change password")}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+      </section>
+    </AccountPage>
   );
 }

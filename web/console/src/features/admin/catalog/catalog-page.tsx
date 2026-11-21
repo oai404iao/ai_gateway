@@ -173,7 +173,7 @@ export function CatalogPage({ embedded = false }: { embedded?: boolean } = {}) {
       render: (model) => (
         <span className="flex flex-col">
           <span className="font-medium">{model.display_name}</span>
-          <span className="text-xs text-muted-foreground font-mono">{model.model_id}</span>
+          {model.model_id !== model.display_name && <span className="text-xs text-muted-foreground font-mono">{model.model_id}</span>}
         </span>
       ),
     },
@@ -217,16 +217,10 @@ export function CatalogPage({ embedded = false }: { embedded?: boolean } = {}) {
       <PageHeader
         embedded={embedded}
         title={t("Price sync")}
-        description={t(
-          "Preview, import, or explicitly update models.dev prices and catalog billing rules.",
-        )}
       />
       <Card>
         <CardHeader>
-          <CardTitle>{t("Preview")}</CardTitle>
-          <CardDescription>
-            {t("Fetch the models.dev catalog, optionally filtered by provider ids.")}
-          </CardDescription>
+          <CardTitle>models.dev</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="flex flex-col gap-4">

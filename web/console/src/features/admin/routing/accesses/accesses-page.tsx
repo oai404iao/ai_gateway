@@ -8,9 +8,10 @@ export function AccessesPage() {
   const { t } = useI18n();
   return <AdminListPage
     title={t("Upstream accesses")}
-    description={t("Connector, Base URL and network settings. Credentials and capabilities are configured separately.")}
     query={query}
     rowKey={(access) => access.id}
+    rowName={(access) => access.name}
+    searchText={(access) => `${access.name} ${access.connector_kind} ${access.base_url}`}
     detailPath={(access) => `/admin/routing/accesses/${access.id}`}
     createLabel={t("New access")}
     createPath="/admin/routing/accesses/new"

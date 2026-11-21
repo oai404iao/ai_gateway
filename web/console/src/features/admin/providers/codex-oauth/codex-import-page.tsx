@@ -78,6 +78,7 @@ import {
   parseCodexImportDocuments,
 } from "./codex-import";
 import { CodexImportProxyManager } from "./codex-import-proxy-manager";
+import { CodexAccountIdentity } from "./codex-account-identity";
 import { useImportCodexCredential } from "./api";
 
 const NO_PROXY = "__none__";
@@ -355,9 +356,6 @@ export default function CodexImportPage() {
       <PageHeader
         backTo={returnTo}
         title={t("Advanced Codex import")}
-        description={t(
-          "Parse native, CLIProxyAPI, and Sub2API JSON into editable drafts, configure proxies, then import.",
-        )}
         actions={
           <>
             <Button
@@ -393,9 +391,7 @@ export default function CodexImportPage() {
         <CardHeader>
           <CardTitle>{t("1. Load JSON")}</CardTitle>
           <CardDescription>
-            {t(
-              "Paste JSON, upload one or more .json files, or combine both sources. Format detection is automatic.",
-            )}
+            {t("Native, CLIProxyAPI, and Sub2API JSON formats are detected automatically.")}
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
@@ -642,15 +638,7 @@ export default function CodexImportPage() {
                                 </Badge>
                               ) : null}
                             </div>
-                            <p className="mt-2 break-all text-xs text-muted-foreground">
-                              {credential.account_id ||
-                                t("Personal credential (no workspace ID)")}
-                            </p>
-                            {credential.user_id ? (
-                              <p className="mt-1 break-all text-xs text-muted-foreground">
-                                {t("Member {id}", { id: credential.user_id })}
-                              </p>
-                            ) : null}
+                            <CodexAccountIdentity accountId={credential.account_id} userId={credential.user_id} />
                             {errors.map((error) => (
                               <p
                                 className="mt-1 text-xs text-destructive"

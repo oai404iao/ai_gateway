@@ -7,7 +7,7 @@ import { toast } from "sonner";
 import { ApiError } from "@/api/errors";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { AuthFormPage } from "./auth-form-page";
 import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
@@ -44,7 +44,7 @@ export function CompletePasswordResetPage() {
     try {
       await completePasswordReset({ new_password: values.new_password });
       toast.success(t("Password updated"));
-      navigate("/account", { replace: true });
+      navigate("/", { replace: true });
     } catch (error) {
       toast.error(
         error instanceof ApiError && error.code === "new_password_matches_temporary"
@@ -69,74 +69,65 @@ export function CompletePasswordResetPage() {
   };
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>{t("Set a new password")}</CardTitle>
-        <CardDescription>
-          {t("Your temporary password only grants access to this password-change flow.")}
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <form onSubmit={form.handleSubmit(onSubmit)} className="flex flex-col gap-4">
-          <Alert>
-            <AlertTitle>{t("Password change required")}</AlertTitle>
-            <AlertDescription>
-              {sessionUser?.temporary_password_expires_at
-                ? t("The temporary password expires at {time}.", {
-                    time: new Date(
-                      sessionUser.temporary_password_expires_at,
-                    ).toLocaleString(),
-                  })
-                : t("Choose a permanent password before continuing.")}
-            </AlertDescription>
-          </Alert>
-          <FieldGroup>
-            <Field data-invalid={Boolean(form.formState.errors.new_password)}>
-              <FieldLabel htmlFor="new_password">{t("New password")}</FieldLabel>
-              <Input
-                id="new_password"
-                type="password"
-                autoComplete="new-password"
-                aria-invalid={Boolean(form.formState.errors.new_password)}
-                {...form.register("new_password")}
-              />
-              {form.formState.errors.new_password ? (
-                <FieldError>{form.formState.errors.new_password.message}</FieldError>
-              ) : null}
-            </Field>
-            <Field data-invalid={Boolean(form.formState.errors.confirm_password)}>
-              <FieldLabel htmlFor="confirm_password">
-                {t("Confirm new password")}
-              </FieldLabel>
-              <Input
-                id="confirm_password"
-                type="password"
-                autoComplete="new-password"
-                aria-invalid={Boolean(form.formState.errors.confirm_password)}
-                {...form.register("confirm_password")}
-              />
-              {form.formState.errors.confirm_password ? (
-                <FieldError>{form.formState.errors.confirm_password.message}</FieldError>
-              ) : null}
-            </Field>
-          </FieldGroup>
-          <div className="flex flex-wrap gap-2">
-            <Button type="submit" disabled={submitting || signingOut}>
-              {submitting ? <Spinner data-icon="inline-start" /> : null}
-              {t("Save new password")}
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              disabled={submitting || signingOut}
-              onClick={() => void onSignOut()}
-            >
-              {signingOut ? <Spinner data-icon="inline-start" /> : null}
-              {t("Sign out")}
-            </Button>
-          </div>
-        </form>
-      </CardContent>
-    </Card>
+    <AuthFormPage
+      title={t("Set a new password")}
+      description={t("Your temporary password only grants access to this password-change flow.")}
+    >
+      <form onSubmit={form.handleSubmit(onSubmit)} className="flex flex-col gap-4">
+        <Alert>
+          <AlertTitle>{t("Password change required")}</AlertTitle>
+          <AlertDescription>
+            {sessionUser?.temporary_password_expires_at
+              ? t("The temporary password expires at {time}.", {
+                  time: new Date(sessionUser.temporary_password_expires_at).toLocaleString(),
+                })
+              : t("Choose a permanent password before continuing.")}
+          </AlertDescription>
+        </Alert>
+        <FieldGroup>
+          <Field data-invalid={Boolean(form.formState.errors.new_password)}>
+            <FieldLabel htmlFor="new_password">{t("New password")}</FieldLabel>
+            <Input
+              id="new_password"
+              type="password"
+              autoComplete="new-password"
+              aria-invalid={Boolean(form.formState.errors.new_password)}
+              {...form.register("new_password")}
+            />
+            {form.formState.errors.new_password ? (
+              <FieldError>{form.formState.errors.new_password.message}</FieldError>
+            ) : null}
+          </Field>
+          <Field data-invalid={Boolean(form.formState.errors.confirm_password)}>
+            <FieldLabel htmlFor="confirm_password">{t("Confirm new password")}</FieldLabel>
+            <Input
+              id="confirm_password"
+              type="password"
+              autoComplete="new-password"
+              aria-invalid={Boolean(form.formState.errors.confirm_password)}
+              {...form.register("confirm_password")}
+            />
+            {form.formState.errors.confirm_password ? (
+              <FieldError>{form.formState.errors.confirm_password.message}</FieldError>
+            ) : null}
+          </Field>
+        </FieldGroup>
+        <div className="flex flex-wrap gap-2">
+          <Button type="submit" disabled={submitting || signingOut}>
+            {submitting ? <Spinner data-icon="inline-start" /> : null}
+            {t("Save new password")}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={submitting || signingOut}
+            onClick={() => void onSignOut()}
+          >
+            {signingOut ? <Spinner data-icon="inline-start" /> : null}
+            {t("Sign out")}
+          </Button>
+        </div>
+      </form>
+    </AuthFormPage>
   );
 }

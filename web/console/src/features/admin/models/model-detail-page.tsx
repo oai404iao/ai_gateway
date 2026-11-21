@@ -309,7 +309,6 @@ export function ModelDetailPage() {
             ? t("New client model")
             : state.display_name || t("Client model")
       }
-      description={t("A client-visible model identifier with its USD billing price.")}
       backPath={returnTo}
       isLoading={
         isLoading ||
@@ -352,7 +351,7 @@ export function ModelDetailPage() {
           <Card>
             <CardHeader>
               <CardTitle>{data.data.display_name}</CardTitle>
-              <CardDescription className="font-mono">{data.data.source_model_id}</CardDescription>
+              {data.data.source_model_id !== data.data.display_name && <CardDescription className="font-mono">{data.data.source_model_id}</CardDescription>}
             </CardHeader>
             <CardContent>
               <dl className="grid grid-cols-1 gap-4">

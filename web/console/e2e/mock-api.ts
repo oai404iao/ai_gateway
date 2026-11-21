@@ -1,6 +1,6 @@
 import type { Page, Route } from "@playwright/test";
 import type { ConsoleProfile, ConsoleSession, ConsoleUser, RegisterInput } from "../src/api/types";
-import { CONNECTOR_PLUGINS, SYSTEM_SETTINGS } from "../src/test/fixtures";
+import { CONNECTOR_PLUGINS, OWN_COST_STATISTICS_REPORT, SYSTEM_SETTINGS } from "../src/test/fixtures";
 
 /**
  * Network-layer Console API mocks for e2e tests. Each handler returns
@@ -777,13 +777,13 @@ export async function mockConsoleApi(page: Page): Promise<void> {
       });
     }
     if (path === "/console/v1/me/request-logs" && method === "GET") {
-      return route.fulfill({ status: 200, json: [E2E_PERSONAL_REQUEST_LOG] });
+      return route.fulfill({ status: 200, json: [{ ...E2E_PERSONAL_REQUEST_LOG, user_id: session.user.id }] });
     }
     if (
       path === `/console/v1/me/request-logs/${E2E_PERSONAL_REQUEST_LOG.id}` &&
       method === "GET"
     ) {
-      return route.fulfill({ status: 200, json: E2E_PERSONAL_REQUEST_LOG });
+      return route.fulfill({ status: 200, json: { ...E2E_PERSONAL_REQUEST_LOG, user_id: session.user.id } });
     }
     if (path === "/console/v1/users" && method === "GET") {
       return route.fulfill({ status: 200, json: [E2E_USER, E2E_ADMIN_USER] });
@@ -992,7 +992,7 @@ export async function mockConsoleApi(page: Page): Promise<void> {
     if (path === "/console/v1/statistics/costs" && method === "GET") {
       return route.fulfill({
         status: 200,
-        json: { ...E2E_COST_STATISTICS, channels: [] },
+        json: OWN_COST_STATISTICS_REPORT,
       });
     }
     if (

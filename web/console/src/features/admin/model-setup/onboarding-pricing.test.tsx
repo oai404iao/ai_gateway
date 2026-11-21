@@ -21,7 +21,7 @@ describe("onboarding pricing", () => {
     await user.click(await screen.findByRole("option", { name: "Copy local pricing" }));
     screen.getByRole("combobox", { name: "Copy pricing from model" }).focus();
     await user.keyboard("{ArrowDown}");
-    await user.click(await screen.findByRole("option", { name: MODEL.source_model_id }));
+    await user.click(await screen.findByRole("option", { name: `${MODEL.display_name} (${MODEL.source_model_id})` }));
     await user.click(screen.getByRole("button", { name: "Review routing candidates" }));
     expect(onReview.mock.lastCall?.[0].model).toEqual({ create: expect.objectContaining({ source_model_id: "next-model", price_unit_tokens: 1001,
       output_unit_price: model.output_unit_price, advanced_billing: model.advanced_billing }) });

@@ -36,15 +36,14 @@ export function LogicalChannelsPage({ embedded = false }: { embedded?: boolean }
     <AdminListPage
       embedded={embedded}
       title={t("Logical channels")}
-      description={t(
-        "Each channel binds one group, one upstream access, and at most one credential.",
-      )}
       query={{
         data: query.data?.filter((channel) => groupId === "all" || channel.group_id === groupId),
         isLoading: query.isLoading || groups.isLoading || accesses.isLoading || credentials.isLoading,
         error: query.error ?? groups.error ?? accesses.error ?? credentials.error,
       }}
       rowKey={(channel) => channel.id}
+      rowName={(channel) => channel.name}
+      searchText={(channel) => [channel.name, groupNames.get(channel.group_id), accessNames.get(channel.access_id), credentialNames.get(channel.credential_id ?? "")].join(" ")}
       detailPath={(channel) => `/admin/routing/logical-channels/${channel.id}`}
       createLabel={t("New channel")}
       createPath="/admin/routing/logical-channels/new"
@@ -73,19 +72,19 @@ export function LogicalChannelsPage({ embedded = false }: { embedded?: boolean }
         {
           key: "group",
           header: t("Group"),
-          render: (channel) => groupNames.get(channel.group_id) ?? channel.group_id,
+          render: (channel) => groupNames.get(channel.group_id) ?? t("Unavailable channel group"),
         },
         {
           key: "access",
           header: t("Upstream access"),
-          render: (channel) => accessNames.get(channel.access_id) ?? channel.access_id,
+          render: (channel) => accessNames.get(channel.access_id) ?? t("Upstream access unavailable"),
         },
         {
           key: "credential",
           header: t("Credential"),
           render: (channel) =>
             channel.credential_id
-              ? credentialNames.get(channel.credential_id) ?? channel.credential_id
+              ? credentialNames.get(channel.credential_id) ?? t("Credential unavailable")
               : t("No authentication"),
         },
         {
