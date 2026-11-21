@@ -718,12 +718,7 @@ test.describe("Console SPA smoke", () => {
     ).toBeVisible();
     await expect(page.getByRole("cell", { name: "4.75 USD" })).toBeVisible();
     await expect(page.getByRole("cell", { name: "4.947917 USD" })).toBeVisible();
-    await page.getByRole("button", { name: "View costs" }).click();
-    await expect(page).toHaveURL(
-      new RegExp(
-        `/admin/cost-statistics\\?.*codex_credential_id=${E2E_CODEX_CREDENTIAL_ID}`,
-      ),
-    );
+    await expect(page.getByRole("button", { name: "View costs" })).toHaveCount(0);
   });
 
   test("all users can open the Channel group status page", async ({ page }) => {
@@ -770,6 +765,15 @@ test.describe("Console SPA smoke", () => {
     ).toBeVisible();
     await expect(page.getByRole("combobox", { name: "Channel" })).toBeVisible();
     await expect(page.getByText("Channel details", { exact: true })).toBeVisible();
+    await expect(page.getByRole("combobox", { name: "Codex credential" })).toHaveCount(0);
+    await page.getByRole("combobox", { name: "Channel" }).click();
+    await page.getByRole("option", { name: "Standard group · Upstream A", exact: true }).click();
+    const filteredCost = page.waitForRequest(req => {
+      const url = new URL(req.url());
+      return url.pathname === "/console/v1/system/statistics/costs" && url.searchParams.get("channel_id") === E2E_STANDARD_CHANNEL_ID;
+    });
+    await page.getByRole("button", {name: "Apply"}).click();
+    await filteredCost;
 
     await page.getByRole("link", { name: "System load" }).click();
     await expect(page).toHaveURL(/\/admin\/system-load/);
@@ -948,6 +952,7 @@ test.describe("Console SPA smoke", () => {
     await page
       .getByRole("checkbox", { name: "chat-primary", exact: true })
       .check();
+    await page.getByRole("checkbox", { name: "upstream-a (chat-primary)" }).check();
     await page.getByLabel("Requests / minute").fill("45");
     await page.getByLabel("Max concurrent requests").fill("3");
     await page.getByLabel("Quota limit amount").fill("12.50");
@@ -963,7 +968,7 @@ test.describe("Console SPA smoke", () => {
       name: "browser key",
       expires_at: null,
       allowed_group_ids: ["00000000-0000-0000-0000-000000000021"],
-      allowed_channel_ids: [],
+      allowed_channel_ids: ["00000000-0000-0000-0000-000000000022"],
       requests_per_minute: 45,
       max_concurrent_requests: 3,
       quota_limit_amount: "12.50",

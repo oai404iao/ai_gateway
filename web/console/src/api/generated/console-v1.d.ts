@@ -242,6 +242,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/model-options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Request-model filter suggestions for any authenticated Console user. Lists non-deleted pricing model identifiers, including disabled models; not a list of models authorized for inference. */
+        get: operations["listModelOptions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/me/api-keys/{id}": {
         parameters: {
             query?: never;
@@ -835,7 +852,7 @@ export interface paths {
         /** @description Administrator-only canonical logical channels, excluding tombstones. */
         get: operations["listLogicalChannels"];
         put?: never;
-        /** @description Binds one access and at most one credential to a group. It never creates capabilities, routes, or grants. */
+        /** @description Binds one access and at most one credential to a group. Keys authorizing this group include the new channel; capabilities and routes are configured separately. */
         post: operations["createLogicalChannel"];
         delete?: never;
         options?: never;
@@ -851,7 +868,7 @@ export interface paths {
             cookie?: never;
         };
         get: operations["getLogicalChannel"];
-        /** @description Replaces the group/access/credential binding. `credential_id` is required and nullable; omitting it is rejected. Rebinding invalidates connection identity. */
+        /** @description Replaces the group/access/credential binding. Moving a channel changes its group-derived access on snapshot publication. Direct channel grants are independent. `credential_id` is required and nullable; rebinding invalidates connection identity. */
         put: operations["updateLogicalChannel"];
         post?: never;
         /** @description Soft-deletes the logical channel. Shared credentials and accesses are never deleted with it. */
@@ -1436,10 +1453,8 @@ export interface paths {
         /**
          * @description Administrator-only system-wide cost analytics. Administrators can
          *     aggregate all users or filter by `user_id`, `api_key_id`, and
-         *     `channel_id`, or by one Codex credential across both of its managed
-         *     Responses and Images channels; channel-level details are included in
-         *     the response. `channel_id` and `codex_credential_id` are mutually
-         *     exclusive.
+         *     logical `channel_id`. Each logical channel includes requests across
+         *     its capabilities, regardless of protocol or credential.
          *     Aggregates request counts, token totals and usage categories, RPM/TPM,
          *     and cost by UTC hour or day. All monetary amounts are settled in USD,
          *     and the response includes continuous zero-valued buckets across the
@@ -2330,6 +2345,7 @@ export interface components {
             /** Format: double */
             utilization_percent: number | null;
         };
+        /** @description Access is the union of current members of the selected groups and independently granted logical channels. Group membership changes take effect when the updated snapshot is published; the key need not be edited. */
         ApiKeyView: {
             /** Format: uuid */
             id: string;
@@ -2358,7 +2374,7 @@ export interface components {
             user_id: string;
             user_status: string;
         };
-        /** @description Group and logical-channel selectors with a fixed logical-channel grant set. A newly selected group expands only to its current channels; retained groups never acquire later members. All current and future capabilities of each granted channel share that authorization. Group-origin grants require continued membership in that group. */
+        /** @description Defines selectable targets for self-service keys, not a live restriction on already issued keys. Group selections follow their current logical channels. A direct channel grant alone does not authorize selecting its whole group. */
         ApiKeyPolicyView: {
             /** Format: uuid */
             id: string;
@@ -2375,9 +2391,9 @@ export interface components {
             policy_name: string | null;
             /** @description Whether the resolved user/group API Key Policy currently contributes ordinary targets. */
             policy_enabled: boolean;
-            /** @description Ordinary groups contributed by the enabled API Key Policy; groups with no ordinary channel are excluded. */
+            /** @description Groups explicitly selected in the enabled policy, including empty groups. */
             groups: components["schemas"]["SelfApiKeyGroupOption"][];
-            /** @description Individual channels contributed by the enabled API Key Policy. */
+            /** @description Logical channels selectable directly, from either the policy's current group members or its direct grants. */
             channels: components["schemas"]["SelfApiKeyChannelOption"][];
         };
         SelfApiKeyGroupOption: {
@@ -3035,10 +3051,10 @@ export interface components {
             channel_group_name: string | null;
             /**
              * Format: uuid
-             * @description Administrator-only; all self-service responses return null.
+             * @description Historical dispatch identity (may identify a capability). Administrator-only; all self-service responses return null.
              */
             channel_id: string | null;
-            /** @description Administrator-only current display name; all self-service responses return null. */
+            /** @description Historical channel label for that dispatch identity. Administrator-only; all self-service responses return null. */
             channel_name: string | null;
             outcome: string;
             response_status_code: number | null;
@@ -3149,7 +3165,7 @@ export interface components {
             /** @description Continuous UTC buckets covering the selected range, including empty buckets. */
             buckets: components["schemas"]["CostStatisticsBucket"][];
             models: components["schemas"]["CostStatisticsModel"][];
-            /** @description Administrator-only channel breakdown; empty for regular users. */
+            /** @description Logical channel totals across capabilities. Empty on the personal endpoint, including for administrators. */
             channels: components["schemas"]["CostStatisticsChannel"][];
         };
         CostStatisticsSummary: {
@@ -3178,6 +3194,7 @@ export interface components {
             cost_amount: components["schemas"]["Decimal"];
             models: components["schemas"]["CostStatisticsBucketModel"][];
         };
+        /** @description Bucket totals grouped by the client-requested model and API format. */
         CostStatisticsBucketModel: {
             api_format: components["schemas"]["ApiFormat"];
             model: string;
@@ -3186,6 +3203,7 @@ export interface components {
             /** @description Model cost in USD for this bucket. */
             cost_amount: components["schemas"]["Decimal"];
         };
+        /** @description Totals grouped by the client-requested model and API format. */
         CostStatisticsModel: {
             api_format: components["schemas"]["ApiFormat"];
             model: string;
@@ -3209,11 +3227,7 @@ export interface components {
         CostStatisticsChannel: {
             /** Format: uuid */
             id: string;
-            /** Format: uuid */
-            channel_group_id: string;
-            channel_group_name: string;
             name: string;
-            api_format: components["schemas"]["ApiFormat"];
             request_count: number;
             total_tokens: number;
             /** @description Channel input tokens, including cached and cache-write input. */
@@ -3766,6 +3780,15 @@ export interface components {
         };
     };
     responses: {
+        /** @description Malformed or unrecognized query parameter. */
+        InvalidQuery: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "text/plain": string;
+            };
+        };
         /** @description Unauthorized. */
         Unauthorized: {
             headers: {
@@ -3850,7 +3873,7 @@ export interface components {
         /** @description Administrator-only owner filter. */
         RequestLogUserId: string;
         RequestLogApiKeyId: string;
-        /** @description Exact client-model or upstream-model identifier. */
+        /** @description Exact client-requested model identifier. Does not match an upstream alias. */
         RequestLogModel: string;
         RequestLogApiFormat: components["schemas"]["ApiFormat"];
         RequestLogApiOperation: components["schemas"]["ApiOperation"];
@@ -3872,10 +3895,8 @@ export interface components {
         StatisticsStartedBefore: components["schemas"]["DateTime"];
         /** @description Hour supports at most 31 days; day supports at most 366 days. */
         StatisticsGranularity: components["schemas"]["StatisticsGranularity"];
-        /** @description Administrator-only exact channel filter. */
+        /** @description Administrator-only logical channel identifier, not a capability identifier. */
         StatisticsChannelId: string;
-        /** @description Administrator-only Codex credential filter that includes both managed Responses and Images projection channels. Mutually exclusive with `channel_id`. */
-        StatisticsCodexCredentialId: string;
         /** @description Maximum periods returned independently for each window. */
         CodexQuotaHistoryLimit: number;
         /** @description Exact session-affinity rule name. Omit to clear the whole cache. */
@@ -4362,6 +4383,27 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
         };
     };
+    listModelOptions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sorted client-facing model identifiers, without routing or pricing details. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": string[];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+        };
+    };
     getOwnApiKey: {
         parameters: {
             query?: never;
@@ -4489,7 +4531,7 @@ export interface operations {
             query?: {
                 limit?: components["parameters"]["Limit"];
                 api_key_id?: components["parameters"]["RequestLogApiKeyId"];
-                /** @description Exact client-model or upstream-model identifier. */
+                /** @description Exact client-requested model identifier. Does not match an upstream alias. */
                 model?: components["parameters"]["RequestLogModel"];
                 api_format?: components["parameters"]["RequestLogApiFormat"];
                 api_operation?: components["parameters"]["RequestLogApiOperation"];
@@ -7278,7 +7320,7 @@ export interface operations {
                 /** @description Administrator-only owner filter. */
                 user_id?: components["parameters"]["RequestLogUserId"];
                 api_key_id?: components["parameters"]["RequestLogApiKeyId"];
-                /** @description Exact client-model or upstream-model identifier. */
+                /** @description Exact client-requested model identifier. Does not match an upstream alias. */
                 model?: components["parameters"]["RequestLogModel"];
                 api_format?: components["parameters"]["RequestLogApiFormat"];
                 api_operation?: components["parameters"]["RequestLogApiOperation"];
@@ -7382,6 +7424,7 @@ export interface operations {
                     "application/json": components["schemas"]["CostStatisticsReport"];
                 };
             };
+            400: components["responses"]["InvalidQuery"];
             401: components["responses"]["Unauthorized"];
             422: components["responses"]["Unprocessable"];
         };
@@ -7429,10 +7472,8 @@ export interface operations {
                 /** @description Administrator-only owner filter. */
                 user_id?: components["parameters"]["RequestLogUserId"];
                 api_key_id?: components["parameters"]["RequestLogApiKeyId"];
-                /** @description Administrator-only exact channel filter. */
+                /** @description Administrator-only logical channel identifier, not a capability identifier. */
                 channel_id?: components["parameters"]["StatisticsChannelId"];
-                /** @description Administrator-only Codex credential filter that includes both managed Responses and Images projection channels. Mutually exclusive with `channel_id`. */
-                codex_credential_id?: components["parameters"]["StatisticsCodexCredentialId"];
             };
             header?: never;
             path?: never;
@@ -7449,6 +7490,7 @@ export interface operations {
                     "application/json": components["schemas"]["CostStatisticsReport"];
                 };
             };
+            400: components["responses"]["InvalidQuery"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             422: components["responses"]["Unprocessable"];

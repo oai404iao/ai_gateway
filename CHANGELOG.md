@@ -9,6 +9,8 @@ Versioning.
 
 ### Changed
 
+- **Authorization change:** API keys that select a channel group now follow its membership automatically, including keys previously limited to a subset of that group. Moving a channel out removes group-derived access but not a separate direct grant. [Review existing group selections before upgrading.](docs/user/upgrades.md#渠道组授权变更)
+- **Console reporting:** Request logs display the requested model and upstream model; exact model filters and cost-report model rows use the requested identifier. System cost filters and channel totals now use logical channels across capabilities. The `codex_credential_id` filter and per-format/group fields on cost channel rows have been removed; credential quota history remains available.
 - The [Console](docs/user/console.md) now opens on a personal usage overview for both users and administrators. Use the shared navigation to follow model trends into request logs, manage API keys, or change account settings. Global reports and gateway configuration remain in the administrator-only management area.
 - Browse management pages by task or search for a setting directly. Resource lists and selectors show names by default; full request IDs remain available in log details for troubleshooting.
 

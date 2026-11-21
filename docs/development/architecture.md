@@ -32,7 +32,7 @@ Console Web UI 可在构建时嵌入二进制，生产环境不需要常驻 Node
 解析保持隔离，禁止跨格式回退或转换。`ApiOperation` 进一步区分 `chat_completion`、
 `responses`、`responses-ws`、`web_search`、`images_edit` 与 `images_generation`。
 Responses HTTP、WS 和独立搜索同属 `OpenAiResponses`，但能力、路由及日志操作相互独立。
-固定授权属于逻辑渠道并覆盖其能力，不为每个操作创建独立渠道授权；当前 Images 实现
+授权覆盖逻辑渠道的各项能力，不为每个操作创建独立渠道授权；当前 Images 实现
 非流式 JSON generation 和非流式 multipart edit。
 
 客户端 API 格式与上游接入方式是两个维度。上游接入持有 `ConnectorKind`：
@@ -94,8 +94,8 @@ Browser or Console client
    渠道时，才退回目标渠道位图，使原本已授权的断开规则仍可识别。随后使用渠道授权位图过滤
    实际模型兼容候选，并依次应用 operation capability、Session 粘性、规则中最低可用
    `priority` tier 和被动健康过滤。权重只比较该 tier 内仍然合格的渠道/模型候选，不跨 tier 比较；
-   API Key 的 group/logical-channel 选择保存为固定逻辑渠道授权；快照编译时展开为该渠道
-   当前能力的位图，新增能力共享授权，新加入组的渠道不自动获权。Console 路由编辑不创建
+   快照编译时将 API Key 所选组的当前成员与直接选择的逻辑渠道合并，再展开为这些渠道
+   当前能力的位图。Console 路由编辑不创建
    渠道授权。HTTP 授权范围内没有可选候选时返回 `503 no_healthy_channel`；
    Responses WS 使用下文的 `426 websocket_unavailable` 回退提示。
    `/v1/models` 额外要求 API Key 范围与模型兼容位图相交，所以不公布断开规则。
@@ -356,11 +356,11 @@ dense candidate slot 数组，因此正常选择路径没有全局渠道状态�
 | 上游接入 | Connector、Base URL、转发代理与超时 |
 | 上游凭证 | 认证身份、范围和独立生命周期 |
 | 渠道组 | 组织逻辑渠道，不拥有路由 priority 或 selection strategy |
-| 逻辑渠道 | 显式绑定接入与凭证，承载固定授权身份 |
+| 逻辑渠道 | 显式绑定接入与凭证，按渠道 UUID 授权 |
 | 操作能力 | 操作、模型目录、Transform、网络/健康等有效配置 |
 | 模型 profile 下的操作规则 | priority tier、selection strategy、显式能力/模型/权重 candidate |
 
-组在编辑器中只提供一次性候选选择上下文；保存后新增组成员不能隐式改写规则或授权。
+组在路由编辑器中只提供候选选择上下文；成员变化会改变已选择该组的 Key 的授权范围，但不改写路由规则。
 旧格式渠道与 Codex projection 的迁移背景见[上游身份与能力](upstream-identity-capabilities.md)，
 不能据旧表名恢复 pool-managed topology。
 

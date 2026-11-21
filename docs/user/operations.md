@@ -34,7 +34,7 @@ ai-gateway 将使用 API Key 的公共数据面与使用 JWT 的 Console 分为�
 
 ### 模型规则路由层级
 
-参见[配置模型与路由](routing.md)：凭证 → 接入 → 逻辑渠道 → 操作能力 → 显式候选，以及固定渠道授权、健康测试与 Session affinity。
+参见[配置模型与路由](routing.md)：凭证 → 接入 → 逻辑渠道 → 操作能力 → 显式候选，以及组与单渠道授权、健康测试与 Session affinity。
 
 ### Codex OAuth Connect
 

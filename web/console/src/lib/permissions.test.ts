@@ -1,9 +1,20 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { setCurrentLocale } from "@/app/i18n";
-import { apiFormatLabel } from "@/lib/permissions";
+import { API_OPERATIONS, apiFormatLabel, apiOperationLabel } from "@/lib/permissions";
 
 afterEach(() => {
   setCurrentLocale("en-US");
+});
+
+describe("apiOperationLabel", () => {
+  it("keeps capability names in English in Chinese", () => {
+    setCurrentLocale("zh-CN");
+
+    expect(API_OPERATIONS.map(apiOperationLabel)).toEqual([
+      "Chat Completions", "Responses", "Responses WebSocket", "Standalone web search",
+      "Images generation", "Images edit",
+    ]);
+  });
 });
 
 describe("apiFormatLabel", () => {

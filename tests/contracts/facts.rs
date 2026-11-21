@@ -84,7 +84,6 @@ async fn locked_or_invalid_log_projection_does_not_block_settlement_or_cost_stat
             user_id: Some(seed.user),
             api_key_id: None,
             channel_id: None,
-            codex_credential_id: None,
             include_channel_details: true,
         })
         .await

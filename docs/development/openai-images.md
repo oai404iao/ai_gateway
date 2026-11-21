@@ -41,8 +41,8 @@ upstream access + upstream credential
 同时投影出 Responses/Images 身份。渠道组提供组织和选项上下文，不持有路由权重。
 导入 Codex 凭证不创建接入、渠道、能力、授权或路由。
 
-管理员须显式创建支持的能力、配置模型目录和计价模型下的对应操作规则，再授予逻辑渠道访问。
-恢复凭证不会打开已关闭的 Images 能力，也不自动把 Images 格式加入现有 Key/Policy。
+管理员须显式创建支持的能力，配置模型目录和计价模型下的对应操作规则；客户端 Key 须已选择该渠道或其所在组。
+恢复凭证不会打开已关闭的 Images 能力，也不改变 Key/Policy 选择的目标。
 完整拓扑见[上游身份与能力](upstream-identity-capabilities.md)。
 
 ## JSON generation

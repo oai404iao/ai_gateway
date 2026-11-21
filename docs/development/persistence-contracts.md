@@ -86,7 +86,7 @@ PG 基线位于 `tests/contracts/persistence.rs`，作为
 | --- | --- | --- |
 | `query_console_request_logs` / `query_console_request_log` | 本人查询绑定 user；管理视图及字段脱敏保持原状；时间筛选含两端；`billed` 过滤 billed_at | 日志投影 + 回执 LEFT JOIN，不再拥有认领权 |
 | `personal_usage` | started_at 闭开区间、UTC 日桶、仅 client、本人 user | 费用/usage 读独立事实 |
-| `cost_statistics` | started_at 闭开区间；可按 user/Key/channel/credential 限定；不默认排除 scheduled_test | 事实提供全部聚合维度；保留 NULL 费用与请求计数差异 |
+| `cost_statistics` | started_at 闭开区间；系统视图可按用户、Key、逻辑渠道限定；不默认排除 scheduled_test | 事实按客户端模型与 API 格式聚合；渠道通过不可变身份注册表归属，保留 NULL 费用与请求计数差异 |
 | `channel_group_status` | started_at 闭开区间，24h/3d/7d UTC 分桶；活动组/渠道的已启用统计能力；不默认排除 scheduled_test | 成功率、延迟和吞吐来自日志投影，按组与 API format 区分 |
 | `refresh_spend_leaderboard_snapshots` | 仅 client；Asia/Shanghai 日/周/月边界；写入 `spend_leaderboard_*` | 保留统计快照，费用源改为事实 |
 | `persistence/codex.rs::CODEX_CURRENT_WINDOW_COSTS_LATERAL`、管理员/本人 quota history | 按不可变请求凭证归属；started_at 在 period 起点至 ended_at 或 min(now,reset_at) 的闭开区间；cost 非 NULL；本人视图遵守用户组的渠道组可见性 | 事实 JOIN request_credential_identities；旧未知才用冻结历史回退，不依赖日志、当前改绑或回执 |

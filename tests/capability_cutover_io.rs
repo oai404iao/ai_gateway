@@ -35,6 +35,14 @@ const CODEX_MODEL: Uuid = Uuid::from_u128(0x3000_0000_0000_0000_0000_0000_0000_0
 const CODEX_PROFILE: Uuid = Uuid::from_u128(0x6000_0000_0000_0000_0000_0000_0000_0002);
 const CODEX_RULE: Uuid = Uuid::from_u128(0x7000_0000_0000_0000_0000_0000_0000_0002);
 
+// A pre-existing group selection with no materialized channels, as when a key
+// selected a then-empty group. The migrated KEY retains its partial expansion.
+const INSERT_EMPTY_MATERIALIZATION: &str = "INSERT INTO api_keys
+    (id,user_id,name,secret_value,status,allowed_api_formats,permissions,allowed_group_ids,allowed_channel_ids)
+    SELECT '20000000-0000-0000-0000-000000000002',user_id,'Legacy empty expansion',
+           'empty-materialization-secret',status,allowed_api_formats,permissions,allowed_group_ids,allowed_channel_ids
+    FROM api_keys WHERE secret_value='cutover-secret'";
+
 fn cutover_at() -> DateTime<Utc> {
     DateTime::from_timestamp(1_800_000_000, 0).expect("valid cutover timestamp")
 }
@@ -526,14 +534,12 @@ async fn exercise_canonical_authorization(
         ApiKeyCreate, ApiKeyPolicyInput, ApiKeyUpdate, ChannelCapabilityInput,
         ControlPlaneMutation, SelfApiKeyCreate,
     };
-    let initial = repository.topology().await.unwrap();
-    let frozen = sorted(&initial.policy_grants);
     let key = repository
         .prepare_mutation(
             USER,
             ControlPlaneMutation::CreateApiKey(ApiKeyCreate {
                 user_id: USER,
-                name: "Frozen target key".into(),
+                name: "Group target key".into(),
                 expires_at: None,
                 allowed_api_formats: vec!["open_ai_chat_completions".into()],
                 permissions: vec!["proxy".into()],
@@ -551,15 +557,6 @@ async fn exercise_canonical_authorization(
         .unwrap()
         .0
         .remove(0);
-    let before = repository.topology().await.unwrap();
-    let fixed_key_grants = sorted(
-        &before
-            .api_key_grants
-            .iter()
-            .filter(|g| g.api_key_id == key.id)
-            .collect::<Vec<_>>(),
-    );
-    assert_eq!(fixed_key_grants.len(), 1);
     let images = Uuid::new_v4();
     repository
         .prepare_mutation(
@@ -610,7 +607,7 @@ async fn exercise_canonical_authorization(
                 id: POLICY,
                 expected_updated_at: policy.updated_at,
                 input: ApiKeyPolicyInput {
-                    name: "Renamed frozen policy".into(),
+                    name: "Renamed group policy".into(),
                     enabled: true,
                     allowed_group_ids: vec![GROUP],
                     allowed_channel_ids: vec![],
@@ -622,10 +619,6 @@ async fn exercise_canonical_authorization(
         .commit()
         .await
         .unwrap();
-    assert_eq!(
-        sorted(&repository.topology().await.unwrap().policy_grants),
-        frozen
-    );
     let self_key = repository
         .prepare_own_api_key_create(
             USER,
@@ -646,16 +639,8 @@ async fn exercise_canonical_authorization(
         .unwrap()
         .0
         .remove(0);
-    let topology = repository.topology().await.unwrap();
-    let grants = topology
-        .api_key_grants
-        .iter()
-        .filter(|g| g.api_key_id == self_key.id)
-        .collect::<Vec<_>>();
-    assert_eq!(grants.len(), 1);
-    assert_eq!(grants[0].channel_id, CHANNEL);
     let update = |channels| ApiKeyUpdate {
-        name: "Renamed frozen key".into(),
+        name: "Renamed group key".into(),
         status: "active".into(),
         expires_at: None,
         allowed_api_formats: vec!["open_ai_chat_completions".into()],
@@ -682,17 +667,6 @@ async fn exercise_canonical_authorization(
         .unwrap()
         .0
         .remove(0);
-    let topology = repository.topology().await.unwrap();
-    assert_eq!(
-        sorted(
-            &topology
-                .api_key_grants
-                .iter()
-                .filter(|g| g.api_key_id == key.id)
-                .collect::<Vec<_>>()
-        ),
-        fixed_key_grants
-    );
     assert!(
         repository
             .prepare_mutation(
@@ -720,51 +694,140 @@ async fn exercise_canonical_authorization(
         .commit()
         .await
         .unwrap();
-    let topology = repository.topology().await.unwrap();
-    let grants = topology
-        .api_key_grants
-        .iter()
-        .filter(|g| g.api_key_id == key.id)
-        .collect::<Vec<_>>();
-    assert_eq!(grants.len(), 2);
-    assert!(
-        grants
-            .iter()
-            .filter(|g| g.origin_id == GROUP)
-            .all(|g| g.channel_id == CHANNEL)
-    );
-    assert!(
-        grants
-            .iter()
-            .any(|g| g.origin_id == CHANNEL && g.channel_id == CHANNEL)
-    );
     exercise_self_service_channel_boundary(&repository, images).await;
     exercise_capability_batch_and_recovery(&repository).await;
     exercise_channel_authority_and_route_withdrawal(
         &repository,
         key.id,
         key.created_secret.as_deref().unwrap(),
+        self_key.created_secret.as_deref().unwrap(),
     )
     .await;
     exercise_canonical_model_lifecycle(&repository).await;
 }
 
+fn assert_responses_channels(
+    snapshot: &ai_gateway::domain::CompiledRuntimeConfig,
+    secret: &str,
+    expected: &[Uuid],
+) {
+    use ai_gateway::domain::{ApiFormat, ApiKeyPermission, ApiOperation, RequestProtocol};
+    use ai_gateway::routing::{PassiveHealthPolicy, RoutingRuntime, SelectionResult};
+    let routing = RoutingRuntime::new(PassiveHealthPolicy::default());
+    let key = snapshot.authenticate(secret).unwrap();
+    assert!(key.permits(ApiFormat::OpenAiResponses, ApiKeyPermission::Proxy));
+    let mut excluded = Vec::new();
+    let mut channels = std::collections::BTreeSet::new();
+    while let SelectionResult::Selected(selected) = routing
+        .select_operation_with_affinity_excluding(
+            snapshot,
+            &key,
+            ApiOperation::Responses,
+            RequestProtocol::NonStream,
+            "cutover-model",
+            None,
+            &excluded,
+        )
+    {
+        assert!(!excluded.contains(&selected.candidate_slot));
+        excluded.push(selected.candidate_slot);
+        channels.insert(selected.channel.id());
+    }
+    assert_eq!(channels, expected.iter().copied().collect());
+}
+
+async fn exercise_legacy_group_revocation(
+    repository: &ai_gateway::persistence::ControlPlaneRepository,
+    coordinator: &ai_gateway::application::ControlPlaneCoordinator,
+) {
+    use ai_gateway::persistence::{
+        ApiKeyUpdate, ControlPlaneMutation, upstream_topology::GrantOriginKind,
+    };
+    let key = repository.own_api_key(USER, KEY).await.unwrap().unwrap();
+    let update = |groups, expected_updated_at| ControlPlaneMutation::UpdateApiKey {
+        id: KEY,
+        expected_updated_at,
+        input: ApiKeyUpdate {
+            name: key.name.clone(),
+            status: "active".into(),
+            expires_at: None,
+            allowed_api_formats: key.allowed_api_formats.clone(),
+            permissions: key.permissions.clone(),
+            allowed_group_ids: groups,
+            allowed_channel_ids: vec![CHANNEL],
+            requests_per_minute: None,
+            max_concurrent_requests: None,
+            quota_limit_amount: None,
+        },
+    };
+    let with_direct = coordinator
+        .mutate(USER, update(vec![GROUP], key.updated_at))
+        .await
+        .unwrap();
+    let mut retained = repository.topology().await.unwrap().api_key_grants;
+    assert!(retained.iter().any(|g| g.api_key_id == KEY
+        && g.channel_id == CHANNEL
+        && g.origin_kind == GrantOriginKind::Channel
+        && g.origin_id == CHANNEL));
+    let total = retained.len();
+    retained.retain(|g| {
+        !(g.api_key_id == KEY && g.origin_kind == GrantOriginKind::Group && g.origin_id == GROUP)
+    });
+    assert_eq!(retained.len() + 1, total);
+    coordinator
+        .mutate(USER, update(vec![], with_direct.updated_at))
+        .await
+        .unwrap();
+    assert_eq!(
+        sorted(&repository.topology().await.unwrap().api_key_grants),
+        sorted(&retained)
+    );
+}
+
 async fn exercise_channel_authority_and_route_withdrawal(
     repository: &ai_gateway::persistence::ControlPlaneRepository,
     key_id: Uuid,
-    secret: &str,
+    group_and_direct: &str,
+    self_group: &str,
 ) {
-    use ai_gateway::domain::{ApiFormat, ApiKeyPermission, ApiOperation, RequestProtocol};
-    use ai_gateway::persistence::ControlPlaneMutation as M;
+    use ai_gateway::application::ControlPlaneCoordinator;
+    use ai_gateway::persistence::{
+        ApiKeyPolicyInput, ControlPlaneMutation as M, LogicalChannelInput, RepositoryError,
+        RoutingGroupInput, SelfApiKeyCreate, SelfApiKeyUpdate,
+    };
+    use ai_gateway::routing::{PassiveHealthPolicy, RoutingRuntime};
+    use ai_gateway::runtime_config::{RuntimeConfig, compile_runtime_config};
+    use std::sync::Arc;
+
+    let runtime = Arc::new(RuntimeConfig::new(
+        compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap(),
+    ));
+    let coordinator = ControlPlaneCoordinator::new(
+        repository.clone(),
+        runtime.clone(),
+        RoutingRuntime::new(PassiveHealthPolicy::default()),
+    );
+    let self_key = |name: &str, groups, channels| SelfApiKeyCreate {
+        name: name.into(),
+        expires_at: None,
+        allowed_group_ids: groups,
+        allowed_channel_ids: channels,
+        requests_per_minute: None,
+        max_concurrent_requests: None,
+        quota_limit_amount: None,
+    };
+    let direct = coordinator
+        .create_own_api_key(USER, self_key("Direct", vec![], vec![CHANNEL]))
+        .await
+        .unwrap();
+    let direct_secret = direct.created_secret.as_deref().unwrap();
     let initial = repository.topology().await.unwrap();
-    let grants = sorted(&initial.api_key_grants);
-    let policy_grants = sorted(&initial.policy_grants);
-    let access = initial
+    let original = initial
         .logical_channels
         .iter()
         .find(|channel| channel.id == CHANNEL)
-        .unwrap()
-        .access_id;
+        .unwrap();
+    let access = original.access_id;
     let other = Uuid::new_v4();
     let own_cap = Uuid::new_v4();
     let other_cap = Uuid::new_v4();
@@ -808,13 +871,10 @@ async fn exercise_channel_authority_and_route_withdrawal(
             })).unwrap(),
         },
     ] {
-        repository.prepare_mutation(USER, mutation).await.unwrap().commit().await.unwrap();
+        coordinator.mutate(USER, mutation).await.unwrap();
     }
-    let before = repository.topology().await.unwrap();
-    assert_eq!(sorted(&before.api_key_grants), grants);
-    assert_eq!(sorted(&before.policy_grants), policy_grants);
     assert!(
-        !repository
+        repository
             .own_api_key_options(USER)
             .await
             .unwrap()
@@ -822,34 +882,128 @@ async fn exercise_channel_authority_and_route_withdrawal(
             .iter()
             .any(|channel| channel.id == other)
     );
-    let records = repository.load().await.unwrap();
-    let key = records
-        .api_keys
-        .iter()
-        .find(|key| key.id == key_id)
+    let snapshot = runtime.snapshot();
+    for secret in [
+        "cutover-secret",
+        "empty-materialization-secret",
+        self_group,
+        group_and_direct,
+    ] {
+        assert_responses_channels(&snapshot, secret, &[own_cap, other_cap]);
+    }
+    assert_responses_channels(&snapshot, direct_secret, &[own_cap]);
+
+    let empty_group = Uuid::new_v4();
+    coordinator
+        .mutate(
+            USER,
+            M::SaveRoutingGroup {
+                id: empty_group,
+                expected: None,
+                input: RoutingGroupInput {
+                    name: "Initially empty".into(),
+                    enabled: true,
+                },
+            },
+        )
+        .await
         .unwrap();
-    assert!(key.allowed_channel_ids.contains(&own_cap));
-    assert!(!key.allowed_channel_ids.contains(&other_cap));
-    let snapshot = ai_gateway::runtime_config::compile_control_plane(records).unwrap();
-    let key = snapshot.authenticate(secret).unwrap();
-    assert!(key.permits(ApiFormat::OpenAiResponses, ApiKeyPermission::Proxy));
-    let routing = ai_gateway::routing::RoutingRuntime::new(
-        ai_gateway::routing::PassiveHealthPolicy::default(),
+    let policy = repository
+        .control_plane_lists()
+        .await
+        .unwrap()
+        .api_key_policies
+        .into_iter()
+        .find(|p| p.id == POLICY)
+        .unwrap();
+    coordinator
+        .mutate(
+            USER,
+            M::UpdateApiKeyPolicy {
+                id: POLICY,
+                expected_updated_at: policy.updated_at,
+                input: ApiKeyPolicyInput {
+                    name: "Empty group and one channel".into(),
+                    enabled: true,
+                    allowed_group_ids: vec![empty_group],
+                    allowed_channel_ids: vec![CHANNEL],
+                },
+            },
+        )
+        .await
+        .unwrap();
+    let options = repository.own_api_key_options(USER).await.unwrap();
+    assert_eq!(
+        options.groups.iter().map(|g| g.id).collect::<Vec<_>>(),
+        [empty_group]
     );
-    let selected = routing.select_operation_with_affinity_excluding(
-        &snapshot,
-        &key,
-        ApiOperation::Responses,
-        RequestProtocol::NonStream,
-        "cutover-model",
-        None,
-        &[],
+    assert_eq!(
+        options.channels.iter().map(|c| c.id).collect::<Vec<_>>(),
+        [CHANNEL]
     );
-    let ai_gateway::routing::SelectionResult::Selected(selected) = selected else {
-        panic!("new capability must be routable without rewriting grants")
+    assert!(matches!(
+        repository
+            .prepare_own_api_key_create(
+                USER,
+                self_key("Not a permitted group", vec![GROUP], vec![])
+            )
+            .await
+            .err(),
+        Some(RepositoryError::ApiKeyTargetNotAllowed)
+    ));
+    let upgrade = SelfApiKeyUpdate {
+        name: "Widened scope".into(),
+        status: "active".into(),
+        expires_at: None,
+        allowed_group_ids: vec![GROUP],
+        allowed_channel_ids: vec![CHANNEL],
+        requests_per_minute: None,
+        max_concurrent_requests: None,
+        quota_limit_amount: None,
     };
-    assert_eq!(selected.channel.id(), own_cap);
-    drop(selected);
+    assert!(matches!(
+        repository
+            .prepare_own_api_key_update(USER, direct.id, upgrade, direct.updated_at)
+            .await
+            .err(),
+        Some(RepositoryError::ApiKeyTargetNotAllowed)
+    ));
+    let empty = coordinator
+        .create_own_api_key(USER, self_key("Empty group", vec![empty_group], vec![]))
+        .await
+        .unwrap();
+    let empty_secret = empty.created_secret.as_deref().unwrap();
+    let before_move = runtime.snapshot();
+    assert_responses_channels(&before_move, empty_secret, &[]);
+    assert_responses_channels(&before_move, self_group, &[own_cap, other_cap]);
+    coordinator
+        .mutate(
+            USER,
+            M::SaveLogicalChannel {
+                id: CHANNEL,
+                expected: Some(original.updated_at),
+                input: LogicalChannelInput {
+                    group_id: empty_group,
+                    access_id: access,
+                    credential_id: original.credential_id,
+                    name: original.name.clone(),
+                    enabled: original.enabled,
+                },
+            },
+        )
+        .await
+        .unwrap();
+    let moved = runtime.snapshot();
+    for secret in ["cutover-secret", "empty-materialization-secret", self_group] {
+        assert_responses_channels(&moved, secret, &[other_cap]);
+    }
+    assert_responses_channels(&moved, empty_secret, &[own_cap]);
+    assert_responses_channels(&moved, direct_secret, &[own_cap]);
+    assert_responses_channels(&moved, group_and_direct, &[own_cap, other_cap]);
+    assert_responses_channels(&before_move, empty_secret, &[]);
+    exercise_legacy_group_revocation(repository, &coordinator).await;
+    assert_responses_channels(&runtime.snapshot(), "cutover-secret", &[own_cap]);
+    let before = repository.topology().await.unwrap();
     let own_version = before
         .channel_capabilities
         .iter()
@@ -868,8 +1022,8 @@ async fn exercise_channel_authority_and_route_withdrawal(
         .unwrap();
     drop(pending);
     assert_topology(&before, &repository.topology().await.unwrap());
-    let (mutations, _) = repository
-        .prepare_mutation(
+    let mutation = coordinator
+        .mutate(
             USER,
             M::DeleteChannelCapability {
                 id: own_cap,
@@ -877,12 +1031,9 @@ async fn exercise_channel_authority_and_route_withdrawal(
             },
         )
         .await
-        .unwrap()
-        .commit()
-        .await
         .unwrap();
     assert_eq!(
-        mutations[0].after_redacted["detached_routes"],
+        mutation.after_redacted["detached_routes"],
         serde_json::json!([
             {"rule_id": rule_id, "disabled": false}
         ])
@@ -913,20 +1064,10 @@ async fn exercise_channel_authority_and_route_withdrawal(
             .unwrap()
             .enabled
     );
-    assert!(
-        !repository
-            .load()
-            .await
-            .unwrap()
-            .api_keys
-            .iter()
-            .find(|key| key.id == key_id)
-            .unwrap()
-            .allowed_channel_ids
-            .contains(&other_cap)
-    );
-    repository
-        .prepare_mutation(
+    assert_responses_channels(&runtime.snapshot(), group_and_direct, &[other_cap]);
+    assert_responses_channels(&runtime.snapshot(), direct_secret, &[]);
+    coordinator
+        .mutate(
             USER,
             M::DeleteChannelCapability {
                 id: other_cap,
@@ -938,9 +1079,6 @@ async fn exercise_channel_authority_and_route_withdrawal(
                     .updated_at,
             },
         )
-        .await
-        .unwrap()
-        .commit()
         .await
         .unwrap();
     let after = repository.topology().await.unwrap();
@@ -958,7 +1096,22 @@ async fn exercise_channel_authority_and_route_withdrawal(
             .iter()
             .all(|tier| tier.rule_id != rule_id)
     );
-    assert_eq!(sorted(&after.api_key_grants), grants);
+    coordinator
+        .mutate(
+            USER,
+            M::DeleteLogicalChannel {
+                id: other,
+                expected: after
+                    .logical_channels
+                    .iter()
+                    .find(|channel| channel.id == other)
+                    .unwrap()
+                    .updated_at,
+            },
+        )
+        .await
+        .unwrap();
+    assert_responses_channels(&runtime.snapshot(), group_and_direct, &[]);
     let replacement = Uuid::new_v4();
     repository
         .prepare_mutation(
@@ -1515,7 +1668,7 @@ async fn exercise_self_service_channel_boundary(
                 id: POLICY,
                 expected_updated_at: policy.updated_at,
                 input: ApiKeyPolicyInput {
-                    name: "Two frozen scopes".into(),
+                    name: "Two selected groups".into(),
                     enabled: true,
                     allowed_group_ids: vec![GROUP, group],
                     allowed_channel_ids: vec![],
@@ -1550,15 +1703,6 @@ async fn exercise_self_service_channel_boundary(
         .unwrap()
         .0
         .remove(0);
-    assert!(
-        repository
-            .topology()
-            .await
-            .unwrap()
-            .api_key_grants
-            .iter()
-            .any(|g| g.api_key_id == key.id && g.channel_id == CHANNEL)
-    );
     let runtime = repository.load().await.unwrap();
     assert!(
         runtime
@@ -1592,19 +1736,15 @@ async fn exercise_self_service_channel_boundary(
         .unwrap()
         .0
         .remove(0);
-    let topology = repository.topology().await.unwrap();
-    assert!(
-        topology
-            .api_key_grants
-            .iter()
-            .any(|g| g.api_key_id == key.id && g.channel_id == CHANNEL)
-    );
-    assert!(
-        topology
-            .api_key_grants
-            .iter()
-            .any(|g| g.api_key_id == key.id && g.channel_id == channel)
-    );
+    let records = repository.load().await.unwrap();
+    let targets = &records
+        .api_keys
+        .iter()
+        .find(|k| k.id == key.id)
+        .unwrap()
+        .allowed_channel_ids;
+    assert!(targets.contains(&dormant_images));
+    assert!(targets.contains(&capability));
     repository
         .prepare_own_api_key_update(
             USER,
@@ -1626,15 +1766,15 @@ async fn exercise_self_service_channel_boundary(
         .commit()
         .await
         .unwrap();
-    let topology = repository.topology().await.unwrap();
-    let grants = topology
-        .api_key_grants
+    let records = repository.load().await.unwrap();
+    let targets = &records
+        .api_keys
         .iter()
-        .filter(|g| g.api_key_id == key.id)
-        .collect::<Vec<_>>();
-    assert_eq!(grants.len(), 1);
-    assert_eq!(grants[0].channel_id, CHANNEL);
-    assert_ne!(grants[0].channel_id, channel);
+        .find(|k| k.id == key.id)
+        .unwrap()
+        .allowed_channel_ids;
+    assert!(targets.contains(&dormant_images));
+    assert!(!targets.contains(&capability));
 }
 
 #[tokio::test]
@@ -1797,7 +1937,6 @@ async fn postgres_history_queries_cover_old_and_canonical_codex_identities() {
         user_id: None,
         api_key_id: None,
         channel_id: None,
-        codex_credential_id: None,
         include_channel_details: true,
     };
     let report = queries
@@ -1815,12 +1954,15 @@ async fn postgres_history_queries_cover_old_and_canonical_codex_identities() {
     let codex = queries
         .metering()
         .cost_statistics(CostStatisticsFilter {
-            codex_credential_id: Some(CODEX_CHANNEL),
+            channel_id: Some(CODEX_CHANNEL),
             ..filter
         })
         .await
         .unwrap();
     assert_eq!(codex.summary.request_count, 2);
+    assert_eq!(codex.channels.len(), 1);
+    assert_eq!(codex.channels[0].id, CODEX_CHANNEL);
+    assert_eq!(codex.channels[0].request_count, 2);
     let status = queries
         .channel_group_status(ai_gateway::persistence::ChannelGroupStatusWindow::Last24Hours)
         .await
@@ -1926,7 +2068,7 @@ async fn postgres_startup_cutover_rolls_back_and_retries_atomically() {
 }
 
 #[tokio::test]
-async fn postgres_canonical_authorization_writes_preserve_fixed_grants() {
+async fn postgres_canonical_authorization_follows_group_membership() {
     let database = TestDatabase::new().await;
     run_migrations(&database.pool).await.unwrap();
     seed(&database.pool).await;
@@ -1934,6 +2076,14 @@ async fn postgres_canonical_authorization_writes_preserve_fixed_grants() {
         .await
         .unwrap();
     let mut transaction = database.pool.begin().await.unwrap();
+    assert_eq!(
+        sqlx::query(INSERT_EMPTY_MATERIALIZATION)
+            .execute(&mut *transaction)
+            .await
+            .unwrap()
+            .rows_affected(),
+        1
+    );
     sqlx::query("UPDATE users SET default_api_key_policy_id=$1 WHERE id=$2")
         .bind(POLICY)
         .bind(USER)
@@ -2725,7 +2875,7 @@ mod sqlite_backend {
     }
 
     #[tokio::test]
-    async fn sqlite_canonical_authorization_writes_preserve_fixed_grants() {
+    async fn sqlite_canonical_authorization_follows_group_membership() {
         let (_directory, database) = database().await;
         install_legacy_schema(&database).await;
         let mut transaction = database.begin_write().await.unwrap();
@@ -2733,6 +2883,14 @@ mod sqlite_backend {
         transaction.commit().await.unwrap();
         database.install_schema().await.unwrap();
         let mut transaction = database.begin_write().await.unwrap();
+        assert_eq!(
+            sqlx::query(INSERT_EMPTY_MATERIALIZATION)
+                .execute(&mut *transaction)
+                .await
+                .unwrap()
+                .rows_affected(),
+            1
+        );
         sqlx::query("UPDATE users SET default_api_key_policy_id=?,updated_at=ag_now() WHERE id=?")
             .bind(POLICY.to_string())
             .bind(USER.to_string())

@@ -184,6 +184,24 @@ describe("RoutingTargetFields", () => {
     ).toHaveAttribute("aria-disabled", "true");
   });
 
+  it("keeps group and direct channel selections independent", async () => {
+    const user = userEvent.setup();
+    render(<I18nProvider><Harness /></I18nProvider>);
+    await user.click(screen.getByRole("button", { name: /Show individual channels/ }));
+    const channel = screen.getByRole("checkbox", { name: "channel-enabled (chat-first)" });
+    const group = screen.getByRole("checkbox", { name: "chat-first" });
+    await user.click(channel);
+    await user.click(group);
+    expect(channel).toBeChecked();
+    await user.click(channel);
+    expect(group).toBeChecked();
+    expect(channel).not.toBeChecked();
+    await user.click(channel);
+    await user.click(group);
+    expect(channel).toBeChecked();
+    expect(group).not.toBeChecked();
+  });
+
   it("allows administrators to select unavailable or model-incompatible targets", async () => {
     const user = userEvent.setup();
     render(

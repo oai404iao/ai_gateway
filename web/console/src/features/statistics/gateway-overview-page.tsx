@@ -36,7 +36,7 @@ function ModelLedger({ report, bounds }: { report: CostStatisticsReport; bounds:
     <Table className="tabular-nums">
       <TableHeader>
         <TableRow>
-          {["Model", "Request share", "Requests", "Success rate", "Total tokens", "Total cost"].map((h) => (
+          {["Requested model", "Request share", "Requests", "Success rate", "Total tokens", "Total cost"].map((h) => (
             <TableHead key={h}>{t(h)}</TableHead>
           ))}
         </TableRow>
@@ -120,7 +120,7 @@ function RequestLedger({ bounds, failed }: { bounds: UsageBounds; failed: boolea
       <Table className="tabular-nums">
         <TableHeader>
           <TableRow>
-            {["Time", "Model", "Outcome", "Duration", "Total tokens", "Total cost"].map((h) => (
+            {["Time", "Requested model", "Outcome", "Duration", "Total tokens", "Total cost"].map((h) => (
               <TableHead key={h}>
                 {t(h)}
                 {h === "Time" && " · UTC"}

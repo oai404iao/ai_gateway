@@ -2,6 +2,7 @@
 
 use super::metering::{MeteringWriteOutcome, PostgresMeteringRepository};
 use super::storage_error::StorageError;
+use super::upstream_topology::authorization::{self, GrantOwner};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fmt,
@@ -1415,7 +1416,6 @@ pub struct CostStatisticsFilter {
     pub user_id: Option<Uuid>,
     pub api_key_id: Option<Uuid>,
     pub channel_id: Option<Uuid>,
-    pub codex_credential_id: Option<Uuid>,
     pub include_channel_details: bool,
 }
 
@@ -1615,10 +1615,7 @@ pub struct CostStatisticsModel {
 #[derive(Clone, Debug, Serialize)]
 pub struct CostStatisticsChannel {
     pub id: Uuid,
-    pub channel_group_id: Uuid,
-    pub channel_group_name: String,
     pub name: String,
-    pub api_format: String,
     pub request_count: i64,
     pub total_tokens: i64,
     pub input_tokens: i64,
@@ -2284,20 +2281,34 @@ impl PostgresRequestLogQueries {
     }
 }
 
+// Dispatch IDs survive cutovers and capability retirement. Keep unlinked legacy
+// identities distinct rather than guessing a logical channel from its name.
+pub(super) const COST_FACTS_SQL: &str = "(
+    SELECT fact.*, COALESCE(dispatch.canonical_channel_id, dispatch.id) AS logical_channel_id,
+           COALESCE(channel.name, dispatch.label) AS logical_channel_name
+    FROM request_metering_facts AS fact
+    LEFT JOIN channel_identity_registry AS dispatch ON dispatch.id = fact.channel_id
+    LEFT JOIN upstream_channels AS channel ON channel.id = dispatch.canonical_channel_id
+) AS log";
+
 impl PostgresMeteringQueries {
     pub async fn cost_statistics(
         &self,
         filter: CostStatisticsFilter,
     ) -> Result<CostStatisticsReport, RepositoryError> {
         let duration = filter.ended_at.signed_duration_since(filter.started_at);
-        if duration <= chrono::Duration::zero()
-            || duration > filter.granularity.max_range()
-            || (filter.channel_id.is_some() && filter.codex_credential_id.is_some())
-        {
+        if duration <= chrono::Duration::zero() || duration > filter.granularity.max_range() {
             return Err(RepositoryError::Validation);
         }
 
-        let summary = sqlx::query_as::<_, CostSummaryRow>(
+        let scope = format!(
+            "FROM {COST_FACTS_SQL}
+             WHERE started_at >= $1 AND started_at < $2
+               AND ($3::uuid IS NULL OR user_id = $3)
+               AND ($4::uuid IS NULL OR api_key_id = $4)
+               AND ($5::uuid IS NULL OR logical_channel_id = $5)"
+        );
+        let summary = sqlx::query_as::<_, CostSummaryRow>(sqlx::AssertSqlSafe(format!(
             "SELECT count(*)::bigint AS request_count,
                     count(cost_amount)::bigint AS priced_request_count,
                     COALESCE(
@@ -2309,33 +2320,19 @@ impl PostgresMeteringQueries {
                     COALESCE(sum(cache_write_tokens), 0)::bigint AS cache_write_tokens,
                     COALESCE(sum(output_tokens), 0)::bigint AS output_tokens,
                     COALESCE(sum(cost_amount), 0) AS cost_amount
-             FROM request_metering_facts
-             WHERE started_at >= $1
-               AND started_at < $2
-               AND ($3::uuid IS NULL OR user_id = $3)
-               AND ($4::uuid IS NULL OR api_key_id = $4)
-               AND ($5::uuid IS NULL OR channel_id = $5)
-               AND (
-                   $6::uuid IS NULL
-                   OR id IN (
-                       SELECT identity.request_id
-                       FROM request_credential_identities AS identity
-                       WHERE identity.credential_id = $6
-                   )
-               )",
-        )
+             {scope}"
+        )))
         .bind(filter.started_at)
         .bind(filter.ended_at)
         .bind(filter.user_id)
         .bind(filter.api_key_id)
         .bind(filter.channel_id)
-        .bind(filter.codex_credential_id)
         .fetch_one(&self.pool)
         .await?;
 
         let bucket_sql = format!(
             "SELECT {} AS bucket_started_at,
-                    COALESCE(upstream_model, client_model) AS model,
+                    client_model AS model,
                     api_format::text AS api_format,
                     count(*)::bigint AS request_count,
                     COALESCE(
@@ -2343,26 +2340,9 @@ impl PostgresMeteringQueries {
                         0
                     )::bigint AS total_tokens,
                     COALESCE(sum(cost_amount), 0) AS cost_amount
-             FROM request_metering_facts
-             WHERE started_at >= $1
-               AND started_at < $2
-               AND ($3::uuid IS NULL OR user_id = $3)
-               AND ($4::uuid IS NULL OR api_key_id = $4)
-               AND ($5::uuid IS NULL OR channel_id = $5)
-               AND (
-                   $6::uuid IS NULL
-                   OR id IN (
-                       SELECT identity.request_id
-                       FROM request_credential_identities AS identity
-                       WHERE identity.credential_id = $6
-                   )
-               )
-             GROUP BY bucket_started_at,
-                      COALESCE(upstream_model, client_model),
-                      api_format
-             ORDER BY bucket_started_at,
-                      COALESCE(upstream_model, client_model),
-                      api_format",
+             {scope}
+             GROUP BY bucket_started_at, client_model, api_format
+             ORDER BY bucket_started_at, client_model, api_format",
             filter.granularity.bucket_expression()
         );
         let bucket_rows = sqlx::query_as::<_, CostBucketMetricRow>(sqlx::AssertSqlSafe(bucket_sql))
@@ -2371,12 +2351,11 @@ impl PostgresMeteringQueries {
             .bind(filter.user_id)
             .bind(filter.api_key_id)
             .bind(filter.channel_id)
-            .bind(filter.codex_credential_id)
             .fetch_all(&self.pool)
             .await?;
 
-        let model_rows = sqlx::query_as::<_, CostModelMetricRow>(
-            "SELECT COALESCE(upstream_model, client_model) AS model,
+        let model_rows = sqlx::query_as::<_, CostModelMetricRow>(sqlx::AssertSqlSafe(format!(
+            "SELECT client_model AS model,
                     api_format::text AS api_format,
                     count(*)::bigint AS request_count,
                     count(*) FILTER (WHERE outcome <> 'cancelled')::bigint
@@ -2391,39 +2370,21 @@ impl PostgresMeteringQueries {
                     COALESCE(sum(cache_write_tokens), 0)::bigint AS cache_write_tokens,
                     COALESCE(sum(output_tokens), 0)::bigint AS output_tokens,
                     COALESCE(sum(cost_amount), 0) AS cost_amount
-             FROM request_metering_facts
-             WHERE started_at >= $1
-               AND started_at < $2
-               AND ($3::uuid IS NULL OR user_id = $3)
-               AND ($4::uuid IS NULL OR api_key_id = $4)
-               AND ($5::uuid IS NULL OR channel_id = $5)
-               AND (
-                   $6::uuid IS NULL
-                   OR id IN (
-                       SELECT identity.request_id
-                       FROM request_credential_identities AS identity
-                       WHERE identity.credential_id = $6
-                   )
-               )
-             GROUP BY COALESCE(upstream_model, client_model), api_format
-             ORDER BY COALESCE(upstream_model, client_model), api_format",
-        )
+             {scope}
+             GROUP BY client_model, api_format
+             ORDER BY client_model, api_format"
+        )))
         .bind(filter.started_at)
         .bind(filter.ended_at)
         .bind(filter.user_id)
         .bind(filter.api_key_id)
         .bind(filter.channel_id)
-        .bind(filter.codex_credential_id)
         .fetch_all(&self.pool)
         .await?;
 
         let channels = if filter.include_channel_details {
-            sqlx::query_as::<_, CostChannelMetricRow>(
-                "SELECT log.channel_id AS id,
-                        log.channel_group_id,
-                        channel_group.label AS channel_group_name,
-                        channel.label AS name,
-                        log.api_format::text AS api_format,
+            sqlx::query_as::<_, CostChannelMetricRow>(sqlx::AssertSqlSafe(format!(
+                "SELECT logical_channel_id AS id, logical_channel_name AS name,
                         count(*)::bigint AS request_count,
                         count(*) FILTER (WHERE log.outcome <> 'cancelled')::bigint
                             AS success_rate_request_count,
@@ -2440,33 +2401,15 @@ impl PostgresMeteringQueries {
                             AS cache_write_tokens,
                         COALESCE(sum(log.output_tokens), 0)::bigint AS output_tokens,
                         COALESCE(sum(log.cost_amount), 0) AS cost_amount
-                 FROM request_metering_facts AS log
-                 JOIN channel_identity_registry AS channel ON channel.id = log.channel_id
-                 JOIN group_identity_registry AS channel_group
-                   ON channel_group.id = log.channel_group_id
-                 WHERE log.started_at >= $1
-                   AND log.started_at < $2
-                   AND ($3::uuid IS NULL OR log.user_id = $3)
-                   AND ($4::uuid IS NULL OR log.api_key_id = $4)
-                   AND ($5::uuid IS NULL OR log.channel_id = $5)
-                   AND (
-                       $6::uuid IS NULL
-                       OR log.id IN (
-                           SELECT identity.request_id
-                           FROM request_credential_identities AS identity
-                           WHERE identity.credential_id = $6
-                       )
-                   )
-                 GROUP BY log.channel_id, log.channel_group_id, channel_group.label,
-                          channel.label, log.api_format
-                 ORDER BY channel_group.label, channel.label, log.api_format",
-            )
+                 {scope} AND logical_channel_id IS NOT NULL
+                 GROUP BY logical_channel_id, logical_channel_name
+                 ORDER BY logical_channel_name, logical_channel_id"
+            )))
             .bind(filter.started_at)
             .bind(filter.ended_at)
             .bind(filter.user_id)
             .bind(filter.api_key_id)
             .bind(filter.channel_id)
-            .bind(filter.codex_credential_id)
             .fetch_all(&self.pool)
             .await?
             .into_iter()
@@ -3366,12 +3309,7 @@ async fn query_console_request_logs(
         query.push(" AND log.api_key_id = ").push_bind(api_key_id);
     }
     if let Some(model) = filter.model {
-        query
-            .push(" AND (log.client_model = ")
-            .push_bind(model.clone())
-            .push(" OR log.upstream_model = ")
-            .push_bind(model)
-            .push(")");
+        query.push(" AND log.client_model = ").push_bind(model);
     }
     if let Some(api_format) = filter.api_format {
         query
@@ -3597,10 +3535,7 @@ pub(super) struct CostModelMetricRow {
 #[derive(FromRow)]
 struct CostChannelMetricRow {
     id: Uuid,
-    channel_group_id: Uuid,
-    channel_group_name: String,
     name: String,
-    api_format: String,
     request_count: i64,
     success_rate_request_count: i64,
     succeeded_count: i64,
@@ -3616,10 +3551,7 @@ impl CostChannelMetricRow {
     fn into_metric(self) -> CostStatisticsChannel {
         CostStatisticsChannel {
             id: self.id,
-            channel_group_id: self.channel_group_id,
-            channel_group_name: self.channel_group_name,
             name: self.name,
-            api_format: self.api_format,
             request_count: self.request_count,
             total_tokens: self.total_tokens,
             input_tokens: self.input_tokens,
@@ -4794,8 +4726,11 @@ impl PostgresControlPlaneRepository {
         user_id: Uuid,
     ) -> Result<SelfApiKeyOptions, RepositoryError> {
         let mut transaction = self.pool.begin().await?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *transaction)
+            .await?;
         let policy = sqlx::query_as::<_, SelfApiKeyPolicy>(
-            "SELECT p.id,p.name,p.allowed_group_ids,p.allowed_channel_ids,p.enabled \
+            "SELECT p.id,p.name,p.allowed_group_ids,p.enabled \
              FROM users AS u \
              JOIN user_groups AS g ON g.id=u.user_group_id AND g.deleted_at IS NULL \
              JOIN api_key_policies AS p \
@@ -4806,8 +4741,7 @@ impl PostgresControlPlaneRepository {
         .fetch_optional(&mut *transaction)
         .await?;
         let topology = super::upstream_topology::pg_load(&mut transaction).await?;
-        let (groups, channels) =
-            super::upstream_topology::authorization::options(&topology, policy.as_ref());
+        let (groups, channels) = authorization::options(&topology, policy.as_ref());
         Ok(SelfApiKeyOptions {
             policy_id: policy.as_ref().map(|p| p.id),
             policy_name: policy.as_ref().map(|p| p.name.clone()),
@@ -4833,13 +4767,6 @@ impl PostgresControlPlaneRepository {
             false,
         )?;
         let policy = load_optional_self_api_key_policy(transaction, user_id).await?;
-        let allowed_api_formats = resolve_self_api_key_targets(
-            transaction,
-            &input.allowed_group_ids,
-            &input.allowed_channel_ids,
-            policy.as_ref(),
-        )
-        .await?;
         let id = Uuid::new_v4();
         let secret = generate_api_key_secret();
         let permissions = ["proxy", "models.read"];
@@ -4856,7 +4783,7 @@ impl PostgresControlPlaneRepository {
         .bind(&input.name)
         .bind(&secret)
         .bind(input.expires_at)
-        .bind(&allowed_api_formats.formats)
+        .bind(authorization::all_formats())
         .bind(permissions)
         .bind(&input.allowed_group_ids)
         .bind(&input.allowed_channel_ids)
@@ -4865,14 +4792,13 @@ impl PostgresControlPlaneRepository {
         .bind(input.quota_limit_amount)
         .fetch_one(&mut **transaction)
         .await?;
-        super::upstream_topology::authorization::pg_write(
+        authorization::pg_write(
             transaction,
             id,
-            false,
+            GrantOwner::SelfKey(policy.as_ref()),
             &json!({}),
             &input.allowed_group_ids,
             &input.allowed_channel_ids,
-            Some(allowed_api_formats),
         )
         .await?;
         Ok(MutationResult {
@@ -4920,17 +4846,8 @@ impl PostgresControlPlaneRepository {
             input.quota_limit_amount,
             !targets_changed,
         )?;
-        let allowed_api_formats = if targets_changed {
-            let policy = load_optional_self_api_key_policy(transaction, user_id).await?;
-            Some(
-                resolve_self_api_key_targets(
-                    transaction,
-                    &input.allowed_group_ids,
-                    &input.allowed_channel_ids,
-                    policy.as_ref(),
-                )
-                .await?,
-            )
+        let policy = if targets_changed {
+            load_optional_self_api_key_policy(transaction, user_id).await?
         } else {
             None
         };
@@ -4951,7 +4868,7 @@ impl PostgresControlPlaneRepository {
         .bind(&input.status)
         .bind(input.expires_at)
         .bind(targets_changed)
-        .bind(allowed_api_formats.as_ref().map(|plan| plan.formats.clone()).unwrap_or_default())
+        .bind(authorization::all_formats())
         .bind(&input.allowed_group_ids)
         .bind(&input.allowed_channel_ids)
         .bind(input.requests_per_minute)
@@ -4961,15 +4878,14 @@ impl PostgresControlPlaneRepository {
         .fetch_optional(&mut **transaction)
         .await?
         .ok_or(RepositoryError::Conflict)?;
-        if let Some(plan) = allowed_api_formats {
-            super::upstream_topology::authorization::pg_write(
+        if targets_changed {
+            authorization::pg_write(
                 transaction,
                 id,
-                false,
+                GrantOwner::SelfKey(policy.as_ref()),
                 &before,
                 &input.allowed_group_ids,
                 &input.allowed_channel_ids,
-                Some(plan),
             )
             .await?;
         }
@@ -5358,7 +5274,7 @@ impl PostgresControlPlaneRepository {
                 expected_updated_at,
             } => model_soft_delete(transaction, id, deleted_by, expected_updated_at).await,
             ControlPlaneMutation::CreateApiKey(mut input) => {
-                input.allowed_api_formats = super::upstream_topology::authorization::all_formats();
+                input.allowed_api_formats = authorization::all_formats();
                 ensure_api_key_owner_exists(transaction, input.user_id).await?;
                 validate_admin_api_key_input(
                     &input.name,
@@ -5374,14 +5290,13 @@ impl PostgresControlPlaneRepository {
                 let secret = generate_api_key_secret();
                 let updated_at = sqlx::query_scalar("INSERT INTO api_keys (id, user_id, name, secret_value, status, expires_at, allowed_api_formats, permissions, allowed_group_ids, allowed_channel_ids, requests_per_minute, max_concurrent_requests, quota_limit_amount) VALUES ($1,$2,$3,$4,'active',$5,$6::api_format[],$7,$8,$9,$10,$11,$12) RETURNING updated_at")
                     .bind(id).bind(input.user_id).bind(&input.name).bind(&secret).bind(input.expires_at).bind(&input.allowed_api_formats).bind(&input.permissions).bind(&input.allowed_group_ids).bind(&input.allowed_channel_ids).bind(input.requests_per_minute).bind(input.max_concurrent_requests).bind(input.quota_limit_amount).fetch_one(&mut **transaction).await?;
-                super::upstream_topology::authorization::pg_write(
+                authorization::pg_write(
                     transaction,
                     id,
-                    false,
+                    GrantOwner::AdminKey,
                     &json!({}),
                     &input.allowed_group_ids,
                     &input.allowed_channel_ids,
-                    None,
                 )
                 .await?;
                 Ok(MutationResult {
@@ -5412,7 +5327,7 @@ impl PostgresControlPlaneRepository {
                 mut input,
                 expected_updated_at,
             } => {
-                input.allowed_api_formats = super::upstream_topology::authorization::all_formats();
+                input.allowed_api_formats = authorization::all_formats();
                 validate_admin_api_key_input(
                     &input.name,
                     &input.allowed_api_formats,
@@ -5429,14 +5344,13 @@ impl PostgresControlPlaneRepository {
                 }
                 let updated_at = sqlx::query_scalar("UPDATE api_keys SET name=$2,status=$3,expires_at=$4,allowed_api_formats=$5::api_format[],permissions=$6,allowed_group_ids=$7,allowed_channel_ids=$8,requests_per_minute=$9,max_concurrent_requests=$10,quota_limit_amount=$11 WHERE id=$1 AND updated_at=$12 AND deleted_at IS NULL AND NOT (status='revoked' AND $3 <> 'revoked') RETURNING updated_at")
                     .bind(id).bind(&input.name).bind(&input.status).bind(input.expires_at).bind(&input.allowed_api_formats).bind(&input.permissions).bind(&input.allowed_group_ids).bind(&input.allowed_channel_ids).bind(input.requests_per_minute).bind(input.max_concurrent_requests).bind(input.quota_limit_amount).bind(expected_updated_at).fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?;
-                super::upstream_topology::authorization::pg_write(
+                authorization::pg_write(
                     transaction,
                     id,
-                    false,
+                    GrantOwner::AdminKey,
                     &before,
                     &input.allowed_group_ids,
                     &input.allowed_channel_ids,
-                    None,
                 )
                 .await?;
                 Ok(MutationResult {
@@ -5651,6 +5565,7 @@ impl PostgresControlPlaneRepository {
 pub(crate) struct SelfApiKeyPolicy {
     pub(crate) id: Uuid,
     pub(crate) name: String,
+    pub(crate) allowed_group_ids: Vec<Uuid>,
     pub(crate) enabled: bool,
 }
 
@@ -5674,7 +5589,7 @@ async fn load_optional_self_api_key_policy(
     .await?
     .ok_or(RepositoryError::DefaultApiKeyPolicyRequired)?;
     let policy = sqlx::query_as::<_, SelfApiKeyPolicy>(
-        "SELECT p.id,p.name,p.allowed_group_ids,p.allowed_channel_ids,p.enabled \
+        "SELECT p.id,p.name,p.allowed_group_ids,p.enabled \
          FROM users AS u \
          JOIN user_groups AS g ON g.id=u.user_group_id AND g.deleted_at IS NULL \
          JOIN api_key_policies AS p \
@@ -5776,21 +5691,6 @@ fn validate_admin_api_key_input(
         requests_per_minute,
         max_concurrent_requests,
         quota_limit_amount,
-    )
-}
-
-async fn resolve_self_api_key_targets(
-    transaction: &mut Transaction<'_, Postgres>,
-    selected_group_ids: &[Uuid],
-    selected_channel_ids: &[Uuid],
-    policy: Option<&SelfApiKeyPolicy>,
-) -> Result<super::upstream_topology::authorization::AuthorizationPlan, RepositoryError> {
-    let topology = super::upstream_topology::pg_load(transaction).await?;
-    super::upstream_topology::authorization::resolve(
-        &topology,
-        selected_group_ids,
-        selected_channel_ids,
-        Some(policy),
     )
 }
 
@@ -6111,14 +6011,13 @@ async fn api_key_policy_insert(
         .await?
         .ok_or(RepositoryError::Conflict)?
     };
-    super::upstream_topology::authorization::pg_write(
+    authorization::pg_write(
         transaction,
         id,
-        true,
+        GrantOwner::Policy,
         &before,
         &input.allowed_group_ids,
         &input.allowed_channel_ids,
-        None,
     )
     .await?;
     Ok(MutationResult {

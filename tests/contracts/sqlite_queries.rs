@@ -43,7 +43,7 @@ const OTHER_CHANNEL: Uuid = Uuid::from_u128(0x942);
 const LOGICAL_CHANNEL: Uuid = Uuid::from_u128(0x943);
 const OTHER_LOGICAL_CHANNEL: Uuid = Uuid::from_u128(0x944);
 const ACCESS: Uuid = Uuid::from_u128(0x945);
-const CODEX_GROUP_RESPONSES: Uuid = Uuid::from_u128(0x952);
+const RESPONSES_CAPABILITY: Uuid = Uuid::from_u128(0x946);
 
 struct Queries {
     _directory: tempfile::TempDir,
@@ -98,9 +98,7 @@ fn timestamp(value: &str) -> DateTime<Utc> {
         .with_timezone(&Utc)
 }
 
-/// Seeds two ordinary users, the priced model, two channel groups with one
-/// enabled status-statistics group, and one Codex credential pool.
-async fn seed(queries: &Queries) -> Uuid {
+async fn seed(queries: &Queries) {
     queries
         .execute(&format!(
             "INSERT INTO users(id,email,display_name,role,status,password_hash,password_changed_at,user_group_id)
@@ -122,67 +120,20 @@ async fn seed(queries: &Queries) -> Uuid {
                     ('{OTHER_LOGICAL_CHANNEL}','{OTHER_GROUP}','{ACCESS}','Other channel');
              INSERT INTO channel_capabilities(id,channel_id,operation,enabled,available_models,status_statistics_enabled)
              VALUES ('{CHANNEL}','{LOGICAL_CHANNEL}','chat_completion',1,'[\"query-model\",\"idle-model\"]',1),
+                    ('{RESPONSES_CAPABILITY}','{LOGICAL_CHANNEL}','responses',1,'[]',0),
                     ('{OTHER_CHANNEL}','{OTHER_LOGICAL_CHANNEL}','responses',1,'[]',0);
              INSERT INTO model_routing_profiles(id,model_id) VALUES ('{PROFILE}','{MODEL}');
              INSERT INTO model_operation_rules(id,model_routing_profile_id,operation,enabled)
              VALUES ('{RULE}','{PROFILE}','chat_completion',0);
              INSERT INTO group_identity_registry(id,label,canonical_group_id)
              SELECT id,name,id FROM routing_groups;
+             INSERT INTO channel_identity_registry(id,label,canonical_channel_id)
+             SELECT id,name,id FROM upstream_channels;
              INSERT INTO channel_identity_registry(id,label,canonical_channel_id,capability_id)
              SELECT cap.id,c.name,c.id,cap.id FROM channel_capabilities cap JOIN upstream_channels c ON c.id=cap.channel_id;
              INSERT INTO model_rule_identity_registry(id,label,created_at,canonical_rule_id) VALUES ('{RULE}','query-model',ag_now(),'{RULE}');"
         ))
         .await;
-    let repository = ai_gateway::persistence::sqlite::SqliteControlPlaneRepository::new(
-        Arc::clone(&queries.database),
-    );
-    repository
-        .prepare_mutation(
-            ADMIN,
-            ai_gateway::persistence::ControlPlaneMutation::SaveRoutingGroup {
-                id: CODEX_GROUP_RESPONSES,
-                expected: None,
-                input: ai_gateway::persistence::RoutingGroupInput {
-                    name: "Codex car".into(),
-                    enabled: true,
-                },
-            },
-        )
-        .await
-        .unwrap()
-        .commit()
-        .await
-        .unwrap();
-    repository
-        .prepare_codex_credential_create(
-            ADMIN,
-            ai_gateway::persistence::CodexCredentialCreate {
-                label: "Codex".into(),
-                enabled: true,
-                proxy_id: None,
-                quota_threshold_percent: 95,
-                base_url: "https://codex.invalid".into(),
-                email: None,
-                account_id: Some("acct".into()),
-                user_id: Some("provider-user".into()),
-                plan_type: None,
-                is_fedramp: false,
-                id_token: "id".into(),
-                access_token: "access".into(),
-                refresh_token: "refresh".into(),
-                access_token_expires_at: None,
-                available_models: vec!["query-model".into()],
-                quota: None,
-            },
-            None,
-        )
-        .await
-        .unwrap()
-        .commit()
-        .await
-        .unwrap()
-        .0[0]
-        .id
 }
 
 struct Fact<'a> {
@@ -192,7 +143,8 @@ struct Fact<'a> {
     request_source: &'a str,
     started_at: &'a str,
     outcome: &'a str,
-    model: &'a str,
+    client_model: &'a str,
+    upstream_model: &'a str,
     api_format: &'a str,
     channel_id: Option<Uuid>,
     channel_group_id: Option<Uuid>,
@@ -212,7 +164,8 @@ impl Fact<'_> {
             request_source: "client",
             started_at,
             outcome: "succeeded",
-            model: "query-model",
+            client_model: "query-model",
+            upstream_model: "query-model",
             api_format: "open_ai_chat_completions",
             channel_id: Some(CHANNEL),
             channel_group_id: Some(GROUP),
@@ -274,8 +227,8 @@ async fn insert_fact(queries: &Queries, fact: &Fact<'_>) {
             user = fact.user_id,
             key = fact.api_key_id,
             request_source = fact.request_source,
-            client = fact.model,
-            upstream = fact.model,
+            client = fact.client_model,
+            upstream = fact.upstream_model,
             rule = RULE,
             model_id = if fact.cost_amount.is_some() {
                 format!("'{MODEL}'")
@@ -345,8 +298,8 @@ async fn insert_log(queries: &Queries, fact: &Fact<'_>) {
             started_at = fact.started_at,
             user = fact.user_id,
             key = fact.api_key_id,
-            client = fact.model,
-            upstream = fact.model,
+            client = fact.client_model,
+            upstream = fact.upstream_model,
             rule = RULE,
             model_id = if fact.cost_amount.is_some() {
                 format!("'{MODEL}'")
@@ -394,7 +347,10 @@ async fn request_log_views_apply_owner_scope_redaction_and_receipt_billing() {
             api_key_id: OTHER_KEY,
             ..Fact::succeeded(theirs, "2026-09-18T12:00:01.000000Z", "0.5")
         },
-        Fact::succeeded(unsettled, "2026-09-18T12:00:02.000000Z", "9"),
+        Fact {
+            client_model: "query-model-large",
+            ..Fact::succeeded(unsettled, "2026-09-18T12:00:02.000000Z", "9")
+        },
     ];
     for fact in &facts {
         insert_fact(&queries, fact).await;
@@ -461,6 +417,25 @@ async fn request_log_views_apply_owner_scope_redaction_and_receipt_billing() {
     );
 
     // Field, time and receipt filters stay closed over the same projection.
+    let model_filter = RequestLogFilter {
+        limit: 50,
+        model: Some("query-model".into()),
+        ..Default::default()
+    };
+    let own_model = queries
+        .request_logs
+        .list_for_user(USER, model_filter.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        own_model.iter().map(|log| log.id).collect::<Vec<_>>(),
+        [mine]
+    );
+    let all_model = queries.request_logs.list_all(model_filter).await.unwrap();
+    assert_eq!(
+        all_model.iter().map(|log| log.id).collect::<Vec<_>>(),
+        [theirs, mine]
+    );
     let filtered = queries
         .request_logs
         .list_all(RequestLogFilter {
@@ -602,7 +577,8 @@ async fn channel_group_status_matches_postgres_buckets_windows_and_metrics() {
         api_format: "open_ai_responses",
         channel_id: Some(OTHER_CHANNEL),
         channel_group_id: Some(OTHER_GROUP),
-        model: "other-model",
+        client_model: "other-model",
+        upstream_model: "other-model",
         ..Fact::succeeded(disabled, "2026-09-18T12:00:00.000000Z", "1")
     };
     insert_fact(&queries, &fact).await;
@@ -753,7 +729,7 @@ async fn personal_usage_reads_facts_with_client_only_utc_days() {
 #[tokio::test]
 async fn cost_statistics_aggregates_groups_filters_ranges_and_orders() {
     let queries = Queries::new().await;
-    let codex_credential = seed(&queries).await;
+    seed(&queries).await;
     let started_at = timestamp("2026-09-18T00:00:00.000000Z");
     let ended_at = timestamp("2026-09-20T00:00:00.000000Z");
     // Two users, two formats, exact amounts that expose float drift if any.
@@ -765,6 +741,7 @@ async fn cost_statistics_aggregates_groups_filters_ranges_and_orders() {
             GROUP,
             "open_ai_chat_completions",
             "query-model",
+            "wire-a",
             "2026-09-18T01:00:00.000000Z",
             "0.1",
         ),
@@ -775,16 +752,18 @@ async fn cost_statistics_aggregates_groups_filters_ranges_and_orders() {
             GROUP,
             "open_ai_chat_completions",
             "query-model",
+            "wire-b",
             "2026-09-18T02:00:00.000000Z",
             "0.2",
         ),
         (
             OTHER_USER,
             OTHER_KEY,
-            CHANNEL,
+            RESPONSES_CAPABILITY,
             GROUP,
-            "open_ai_chat_completions",
-            "wire-model",
+            "open_ai_responses",
+            "query-model",
+            "wire-a",
             "2026-09-19T03:00:00.000000Z",
             "0.3",
         ),
@@ -795,11 +774,23 @@ async fn cost_statistics_aggregates_groups_filters_ranges_and_orders() {
             OTHER_GROUP,
             "open_ai_responses",
             "other-model",
+            "wire-a",
             "2026-09-19T04:00:00.000000Z",
             "0.4",
         ),
     ];
-    for (user_id, key, channel_id, group_id, api_format, model, started, cost) in events {
+    for (
+        user_id,
+        key,
+        channel_id,
+        group_id,
+        api_format,
+        client_model,
+        upstream_model,
+        started,
+        cost,
+    ) in events
+    {
         let id = Uuid::new_v4();
         let fact = Fact {
             id,
@@ -808,7 +799,8 @@ async fn cost_statistics_aggregates_groups_filters_ranges_and_orders() {
             channel_id: Some(channel_id),
             channel_group_id: Some(group_id),
             api_format,
-            model,
+            client_model,
+            upstream_model,
             started_at: started,
             ..Fact::succeeded(id, started, cost)
         };
@@ -816,6 +808,11 @@ async fn cost_statistics_aggregates_groups_filters_ranges_and_orders() {
         insert_log(&queries, &fact).await;
     }
 
+    queries
+        .execute(&format!(
+            "UPDATE upstream_channels SET name='Renamed channel',updated_at=ag_now() WHERE id='{LOGICAL_CHANNEL}'"
+        ))
+        .await;
     let report = queries
         .metering
         .cost_statistics(CostStatisticsFilter {
@@ -825,7 +822,6 @@ async fn cost_statistics_aggregates_groups_filters_ranges_and_orders() {
             user_id: None,
             api_key_id: None,
             channel_id: None,
-            codex_credential_id: None,
             include_channel_details: true,
         })
         .await
@@ -850,6 +846,8 @@ async fn cost_statistics_aggregates_groups_filters_ranges_and_orders() {
         Decimal::from_str_exact("0.3").unwrap()
     );
     assert_eq!(report.buckets[0].models.len(), 1);
+    assert_eq!(report.buckets[0].models[0].model, "query-model");
+    assert_eq!(report.buckets[0].models[0].request_count, 2);
     assert_eq!(report.buckets[1].request_count, 2);
     assert_eq!(report.buckets[1].total_tokens, 30);
     assert_eq!(report.buckets[1].models.len(), 2);
@@ -862,21 +860,20 @@ async fn cost_statistics_aggregates_groups_filters_ranges_and_orders() {
             .collect::<Vec<_>>(),
         vec![
             ("open_ai_chat_completions", "query-model"),
-            ("open_ai_chat_completions", "wire-model"),
             ("open_ai_responses", "other-model"),
+            ("open_ai_responses", "query-model"),
         ]
     );
     assert_eq!(report.models[0].success_rate, Some(1.0));
-    // Channels order by group name, channel name, then format rank.
     assert_eq!(
         report
             .channels
             .iter()
-            .map(|channel| (channel.name.as_str(), channel.api_format.as_str()))
+            .map(|channel| (channel.id, channel.name.as_str()))
             .collect::<Vec<_>>(),
         vec![
-            ("Other channel", "open_ai_responses"),
-            ("Query channel", "open_ai_chat_completions"),
+            (OTHER_LOGICAL_CHANNEL, "Other channel"),
+            (LOGICAL_CHANNEL, "Renamed channel"),
         ]
     );
     assert_eq!(report.channels[1].request_count, 3);
@@ -885,7 +882,6 @@ async fn cost_statistics_aggregates_groups_filters_ranges_and_orders() {
         Decimal::from_str_exact("0.6").unwrap()
     );
 
-    // User, key and capability filters are independent of credential filtering.
     let by_user = queries
         .metering
         .cost_statistics(CostStatisticsFilter {
@@ -895,7 +891,6 @@ async fn cost_statistics_aggregates_groups_filters_ranges_and_orders() {
             user_id: Some(USER),
             api_key_id: None,
             channel_id: None,
-            codex_credential_id: None,
             include_channel_details: false,
         })
         .await
@@ -911,13 +906,12 @@ async fn cost_statistics_aggregates_groups_filters_ranges_and_orders() {
             user_id: None,
             api_key_id: Some(OTHER_KEY),
             channel_id: None,
-            codex_credential_id: None,
             include_channel_details: false,
         })
         .await
         .unwrap();
     assert_eq!(by_key.summary.request_count, 1);
-    let by_credential = queries
+    let by_channel = queries
         .metering
         .cost_statistics(CostStatisticsFilter {
             started_at,
@@ -925,16 +919,21 @@ async fn cost_statistics_aggregates_groups_filters_ranges_and_orders() {
             granularity: StatisticsGranularity::Hour,
             user_id: None,
             api_key_id: None,
-            channel_id: None,
-            codex_credential_id: Some(codex_credential),
+            channel_id: Some(LOGICAL_CHANNEL),
             include_channel_details: true,
         })
         .await
         .unwrap();
-    assert_eq!(by_credential.summary.request_count, 0);
-    assert!(by_credential.channels.is_empty());
+    assert_eq!(by_channel.summary.request_count, 3);
+    assert_eq!(
+        by_channel.summary.cost_amount,
+        Decimal::from_str_exact("0.6").unwrap()
+    );
+    assert_eq!(by_channel.channels.len(), 1);
+    assert_eq!(by_channel.channels[0].id, LOGICAL_CHANNEL);
+    assert_eq!(by_channel.channels[0].request_count, 3);
 
-    // Closed-open range, granularity bounds, and mutually exclusive filters.
+    // Closed-open range and granularity bounds.
     for filter in [
         CostStatisticsFilter {
             started_at: ended_at,
@@ -943,7 +942,6 @@ async fn cost_statistics_aggregates_groups_filters_ranges_and_orders() {
             user_id: None,
             api_key_id: None,
             channel_id: None,
-            codex_credential_id: None,
             include_channel_details: false,
         },
         CostStatisticsFilter {
@@ -953,17 +951,6 @@ async fn cost_statistics_aggregates_groups_filters_ranges_and_orders() {
             user_id: None,
             api_key_id: None,
             channel_id: None,
-            codex_credential_id: None,
-            include_channel_details: false,
-        },
-        CostStatisticsFilter {
-            started_at,
-            ended_at,
-            granularity: StatisticsGranularity::Day,
-            user_id: None,
-            api_key_id: None,
-            channel_id: Some(CHANNEL),
-            codex_credential_id: Some(codex_credential),
             include_channel_details: false,
         },
     ] {
@@ -996,7 +983,6 @@ async fn channel_details_exclude_facts_without_resolvable_channel_attribution() 
             user_id: None,
             api_key_id: None,
             channel_id: None,
-            codex_credential_id: None,
             include_channel_details: true,
         })
         .await
@@ -1035,7 +1021,6 @@ async fn cost_statistics_preserve_null_cost_and_token_columns() {
             user_id: None,
             api_key_id: None,
             channel_id: None,
-            codex_credential_id: None,
             include_channel_details: false,
         })
         .await

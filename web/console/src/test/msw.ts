@@ -199,6 +199,7 @@ export const handlers = [
   ),
   http.get("/console/v1/api-keys", () => HttpResponse.json([ADMIN_API_KEY])),
   http.get("/console/v1/models", () => HttpResponse.json([MODEL])),
+  http.get("/console/v1/model-options", () => HttpResponse.json([MODEL.source_model_id])),
   http.get("/console/v1/models/:id", () =>
     HttpResponse.json(MODEL, {
       headers: { ETag: `"${MODEL.updated_at}"` },

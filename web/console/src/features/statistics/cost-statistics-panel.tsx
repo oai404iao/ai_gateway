@@ -47,8 +47,6 @@ import {
   useAdminApiKeys,
   useRoutingGroups,
   useLogicalChannels,
-  useChannelCapabilities,
-  useUpstreamAccesses,
   useUsers,
 } from "@/features/admin/api";
 import { useOwnApiKeys } from "@/features/api-keys/api";
@@ -80,7 +78,6 @@ interface CostFilterDraft {
   user_id: string;
   api_key_id: string;
   channel_id: string;
-  codex_credential_id: string;
 }
 
 type QuickRange = "today" | "this_week" | "this_month";
@@ -105,7 +102,6 @@ function defaultDraft(): CostFilterDraft {
     user_id: "",
     api_key_id: "",
     channel_id: "",
-    codex_credential_id: "",
   };
 }
 
@@ -135,8 +131,6 @@ function draftFromSearchParams(
   if (scope === "system") {
     draft.user_id = search.get("user_id") ?? "";
     draft.channel_id = search.get("channel_id") ?? "";
-    draft.codex_credential_id = search.get("codex_credential_id") ?? "";
-    if (draft.codex_credential_id) draft.channel_id = "";
   }
   return draft;
 }
@@ -178,7 +172,6 @@ function toFilters(draft: CostFilterDraft): CostStatisticsFilters | null {
     user_id: draft.user_id || undefined,
     api_key_id: draft.api_key_id || undefined,
     channel_id: draft.channel_id || undefined,
-    codex_credential_id: draft.codex_credential_id || undefined,
   };
 }
 
@@ -192,8 +185,7 @@ function sameCostStatisticsFilters(
     left.granularity === right.granularity &&
     left.user_id === right.user_id &&
     left.api_key_id === right.api_key_id &&
-    left.channel_id === right.channel_id &&
-    left.codex_credential_id === right.codex_credential_id
+    left.channel_id === right.channel_id
   );
 }
 
@@ -210,9 +202,6 @@ function searchParamsForFilters(
   if (scope === "system") {
     if (filters.user_id) search.set("user_id", filters.user_id);
     if (filters.channel_id) search.set("channel_id", filters.channel_id);
-    if (filters.codex_credential_id) {
-      search.set("codex_credential_id", filters.codex_credential_id);
-    }
   }
   return search;
 }
@@ -293,8 +282,6 @@ export function CostStatisticsPanel({
   const adminApiKeys = useAdminApiKeys(isSystemView);
   const channels = useLogicalChannels(isSystemView);
   const channelGroups = useRoutingGroups(isSystemView);
-  const capabilities = useChannelCapabilities(isSystemView);
-  const accesses = useUpstreamAccesses(isSystemView);
   const ownApiKeys = useOwnApiKeys(!isSystemView);
   const { t } = useI18n();
 
@@ -320,33 +307,11 @@ export function CostStatisticsPanel({
   const channelGroupNames = new Map(
     (channelGroups.data ?? []).map((group) => [group.id, group.name]),
   );
-  const channelOptions = (capabilities.data ?? [])
-    .flatMap((capability) => {
-      const channel = channels.data?.find((channel) => channel.id === capability.channel_id);
-      return channel ? [{
-        id: capability.id,
-        name: `${channel.name} · ${capability.settings.operation}`,
-        groupName: channelGroupNames.get(channel.group_id) ?? t("Unavailable channel group"),
-      }] : [];
-    })
-    .sort(
-      (left, right) =>
-        left.groupName.localeCompare(right.groupName) ||
-        left.name.localeCompare(right.name),
-    );
-  const codexAccessNames = new Map((accesses.data ?? [])
-    .filter(access => access.connector_kind === "codex").map(access => [access.id, access.name]));
-  const credentialChannels = new Map<string, Set<string>>();
-  for (const channel of channels.data ?? []) {
-    const access = codexAccessNames.get(channel.access_id);
-    if (!channel.credential_id || !access) continue;
-    const labels = credentialChannels.get(channel.credential_id) ?? new Set<string>();
-    labels.add(`${access} · ${channel.name}`);
-    credentialChannels.set(channel.credential_id, labels);
-  }
-  const codexCredentialOptions = [...credentialChannels].map(([id, labels]) => ({ id, name: [...labels].sort().join(", ") }))
-    .sort((left, right) => left.name.localeCompare(right.name));
-  const credentialLabels = resourceLabels(codexCredentialOptions);
+  const channelOptions = (channels.data ?? []).map(channel => ({
+    id: channel.id,
+    name: `${channelGroupNames.get(channel.group_id) ?? t("Unavailable channel group")} · ${channel.name}`,
+  })).sort((left, right) => left.name.localeCompare(right.name));
+  const channelLabels = resourceLabels(channelOptions);
 
   const apply = () => {
     const next = toFilters(draft);
@@ -403,7 +368,7 @@ export function CostStatisticsPanel({
       identity: string | null;
     }> = topModels.map((item, index) => ({
       key: `model_${index}`,
-      label: item.model.model,
+      label: `${item.model.model} · ${apiFormatLabel(item.model.api_format)}`,
       identity: modelIdentity(item.model),
     }));
     if (ranked.length > topModels.length) {
@@ -454,11 +419,12 @@ export function CostStatisticsPanel({
       return costDelta || right.request_count - left.request_count;
     });
   }, [data]);
+  const channelRowLabels = resourceLabels(channelRows);
 
   const columns: Column<CostStatisticsModel>[] = [
     {
       key: "model",
-      header: t("Model"),
+      header: t("Requested model"),
       render: (model) => isSystemView ? <span className="font-medium">{model.model}</span> : (
         <Link className="font-medium underline-offset-4 hover:underline" to={ownLogsLink(filters, {
           model: model.model, api_format: model.api_format,
@@ -529,27 +495,9 @@ export function CostStatisticsPanel({
   ];
   const channelColumns: Column<CostStatisticsChannel>[] = [
     {
-      key: "group",
-      header: t("Channel group"),
-      render: (channel) => (
-        <span className="font-medium">{channel.channel_group_name}</span>
-      ),
-    },
-    {
       key: "channel",
       header: t("Channel"),
-      render: (channel) => <span className="font-medium">{channel.name}</span>,
-    },
-    {
-      key: "format",
-      header: t("Format"),
-      render: (channel) => (
-        <StatusBadge
-          value={channel.api_format}
-          label={apiFormatLabel(channel.api_format)}
-          variant="info"
-        />
-      ),
+      render: (channel) => <span className="font-medium">{channelRowLabels.get(channel.id)}</span>,
     },
     {
       key: "requests",
@@ -758,41 +706,6 @@ export function CostStatisticsPanel({
             </Field>
             {isSystemView ? (
               <Field>
-                <FieldLabel htmlFor="statistics_codex_credential">
-                  {t("Codex credential")}
-                </FieldLabel>
-                <Select
-                  value={draft.codex_credential_id || "__all__"}
-                  onValueChange={(value) =>
-                    setDraft((current) => ({
-                      ...current,
-                      codex_credential_id:
-                        value === "__all__" ? "" : value,
-                      channel_id: value === "__all__" ? current.channel_id : "",
-                    }))
-                  }
-                >
-                  <SelectTrigger id="statistics_codex_credential">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                      <SelectItem value="__all__">
-                        {t("All Codex credentials")}
-                      </SelectItem>
-                      {codexCredentialOptions.map((credential) => (
-                        <SelectItem key={credential.id} value={credential.id}>
-                          {credentialLabels.get(credential.id)}
-                        </SelectItem>
-                      ))}
-                      {draft.codex_credential_id && !credentialChannels.has(draft.codex_credential_id) && <SelectItem value={draft.codex_credential_id} disabled>{t("Unavailable")}</SelectItem>}
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-              </Field>
-            ) : null}
-            {isSystemView ? (
-              <Field>
                 <FieldLabel htmlFor="statistics_channel">{t("Channel")}</FieldLabel>
                 <Select
                   value={draft.channel_id || "__all__"}
@@ -800,10 +713,6 @@ export function CostStatisticsPanel({
                     setDraft((current) => ({
                       ...current,
                       channel_id: value === "__all__" ? "" : value,
-                      codex_credential_id:
-                        value === "__all__"
-                          ? current.codex_credential_id
-                          : "",
                     }))
                   }
                 >
@@ -816,7 +725,7 @@ export function CostStatisticsPanel({
                     {draft.channel_id && !channelOptions.some(channel => channel.id === draft.channel_id) && <SelectItem value={draft.channel_id} disabled>{t("Unavailable")}</SelectItem>}
                       {channelOptions.map((channel) => (
                         <SelectItem key={channel.id} value={channel.id}>
-                          {channel.groupName} · {channel.name}
+                          {channelLabels.get(channel.id)}
                         </SelectItem>
                       ))}
                     </SelectGroup>
@@ -1044,9 +953,7 @@ export function CostStatisticsPanel({
                     <ResourceTable
                       columns={channelColumns}
                       rows={channelRows}
-                      rowKey={(channel) =>
-                        `${channel.id}:${channel.channel_group_id}:${channel.api_format}`
-                      }
+                      rowKey={(channel) => channel.id}
                     />
                   )}
                 </CardContent>

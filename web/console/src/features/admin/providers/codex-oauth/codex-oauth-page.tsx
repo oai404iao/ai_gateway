@@ -14,7 +14,6 @@ import {
   RotateCcw,
   Trash2,
 } from "lucide-react";
-import { useNavigate } from "react-router";
 import { NavigationLink } from "@/components/shared/navigation-link";
 import { usePageOrigin, withReturnTo } from "@/lib/page-navigation";
 import { toast } from "sonner";
@@ -244,18 +243,6 @@ function quotaResetReasonVariant(
   if (reason === "openai_official") return "info";
   if (reason === "natural") return "secondary";
   return "success";
-}
-
-function quotaWindowStatisticsEnd(period: CodexQuotaWindowPeriod): string {
-  if (period.ended_at) return period.ended_at;
-  const scheduled = new Date(period.scheduled_reset_at).getTime();
-  return new Date(Math.min(Date.now(), scheduled)).toISOString();
-}
-
-function quotaWindowGranularity(
-  period: CodexQuotaWindowPeriod,
-): "hour" | "day" {
-  return period.window_seconds <= 31 * 24 * 60 * 60 ? "hour" : "day";
 }
 
 function quotaResetOutcomeMessage(outcome: CodexQuotaResetOutcome): string {
@@ -1436,7 +1423,6 @@ function QuotaWindowHistoryDialog({
   onClose: () => void;
 }) {
   const { t } = useI18n();
-  const navigate = useNavigate();
   const history = useCodexQuotaWindowHistory(credential?.id ?? "");
   const primary = (history.data?.periods ?? []).filter(
     (period) => period.window_kind === "primary",
@@ -1444,23 +1430,6 @@ function QuotaWindowHistoryDialog({
   const secondary = (history.data?.periods ?? []).filter(
     (period) => period.window_kind === "secondary",
   );
-
-  const viewCosts = (period: CodexQuotaWindowPeriod) => {
-    if (!credential) return;
-    const endedAt = quotaWindowStatisticsEnd(period);
-    if (new Date(endedAt).getTime() <= new Date(period.started_at).getTime()) {
-      toast.error(t("This quota period has no elapsed time to analyze."));
-      return;
-    }
-    const search = new URLSearchParams({
-      started_after: period.started_at,
-      started_before: endedAt,
-      granularity: quotaWindowGranularity(period),
-      codex_credential_id: credential.id,
-    });
-    onClose();
-    navigate(`/admin/cost-statistics?${search.toString()}`);
-  };
 
   return (
     <Dialog open={credential !== null} onOpenChange={(open) => !open && onClose()}>
@@ -1494,10 +1463,10 @@ function QuotaWindowHistoryDialog({
               </TabsTrigger>
             </TabsList>
             <TabsContent value="primary">
-              <QuotaWindowPeriodsTable periods={primary} onViewCosts={viewCosts} />
+              <QuotaWindowPeriodsTable periods={primary} />
             </TabsContent>
             <TabsContent value="secondary">
-              <QuotaWindowPeriodsTable periods={secondary} onViewCosts={viewCosts} />
+              <QuotaWindowPeriodsTable periods={secondary} />
             </TabsContent>
           </Tabs>
         </AsyncResource>
@@ -1508,10 +1477,8 @@ function QuotaWindowHistoryDialog({
 
 function QuotaWindowPeriodsTable({
   periods,
-  onViewCosts,
 }: {
   periods: CodexQuotaWindowPeriod[];
-  onViewCosts: (period: CodexQuotaWindowPeriod) => void;
 }) {
   const { t } = useI18n();
   if (periods.length === 0) {
@@ -1534,7 +1501,6 @@ function QuotaWindowPeriodsTable({
             <TableHead>{t("Estimated total quota")}</TableHead>
             <TableHead>{t("Ended by")}</TableHead>
             <TableHead>{t("Last observed")}</TableHead>
-            <TableHead className="text-right">{t("Actions")}</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -1580,16 +1546,6 @@ function QuotaWindowPeriodsTable({
               </TableCell>
               <TableCell className="align-top">
                 {formatDateTime(period.last_observed_at)}
-              </TableCell>
-              <TableCell className="align-top text-right">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => onViewCosts(period)}
-                >
-                  <ExternalLink data-icon="inline-start" />
-                  {t("View costs")}
-                </Button>
               </TableCell>
             </TableRow>
           ))}

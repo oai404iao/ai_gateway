@@ -27,7 +27,7 @@ install_schema() 在独立 SQLite 历史上运行完整 manifest。
 | 身份 | 用户/组、会话、邀请、注册码、Key/Policy |
 | 上游拓扑 | 凭证、接入、管理组、逻辑渠道、操作能力 |
 | 路由 | 计价模型、profile、操作规则、能力 tier/candidate |
-| 授权 | Key/Policy 固定逻辑渠道与来源 |
+| 授权 | Key/Policy 分别保存所选组与直接渠道 UUID；当前组成员取自逻辑渠道的组归属 |
 | Codex | OAuth 扩展/flow、quota 窗口/reset、组可见性；不再有 pool/自动投影配置 |
 | 财务 | ingress、不可变 fact/credential attribution/receipt、pending |
 | 查询与审计 | request_logs、排行榜周期/条目、audit |

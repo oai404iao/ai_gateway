@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "@/api/client";
+import type { paths } from "@/api/generated/console-v1";
 import type { ListQuery, RequestLogView } from "@/api/types";
 
 function ownListKey(filters: ListQuery) {
@@ -32,6 +33,16 @@ export function useAllRequestLogs(filters: ListQuery) {
   return useQuery({
     queryKey: allListKey(filters),
     queryFn: () => apiGet<RequestLogView[]>(`/request-logs${requestLogQuery(filters)}`),
+  });
+}
+
+type ModelOptions = paths["/model-options"]["get"]["responses"][200]["content"]["application/json"];
+
+export function useModelOptions(enabled: boolean) {
+  return useQuery({
+    queryKey: ["console", "model-options"],
+    queryFn: ({ signal }) => apiGet<ModelOptions>("/model-options", signal),
+    enabled,
   });
 }
 

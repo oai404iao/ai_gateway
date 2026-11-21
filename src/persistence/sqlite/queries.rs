@@ -20,8 +20,9 @@ use crate::{
         SpendLeaderboardEntry, SpendLeaderboardFilter, SpendLeaderboardRefresh,
         SpendLeaderboardReport,
         postgres_control_plane::{
-            CostBucketMetricRow, CostModelMetricRow, PersonalUsageDayRow, fold_cost_buckets,
-            fold_cost_models, fold_personal_usage, redact_self_service_request_log, success_rate,
+            COST_FACTS_SQL, CostBucketMetricRow, CostModelMetricRow, PersonalUsageDayRow,
+            fold_cost_buckets, fold_cost_models, fold_personal_usage,
+            redact_self_service_request_log, success_rate,
         },
     },
 };
@@ -147,12 +148,7 @@ impl SqliteRequestLogQueries {
                 .push_bind(SqliteUuid(api_key_id));
         }
         if let Some(model) = filter.model {
-            query
-                .push(" AND (log.client_model = ")
-                .push_bind(model.clone())
-                .push(" OR log.upstream_model = ")
-                .push_bind(model)
-                .push(")");
+            query.push(" AND log.client_model = ").push_bind(model);
         }
         if let Some(api_format) = filter.api_format {
             query.push(" AND log.api_format = ").push_bind(api_format);
@@ -578,16 +574,6 @@ impl StatusMetricAccumulator {
     }
 }
 
-/// PostgreSQL orders the `api_format` enum by declaration order, which is not
-/// the byte order of its text form. Reproduce the enum order for the one query
-/// that orders by format.
-fn api_format_rank(value: &str) -> usize {
-    ApiFormat::ALL
-        .iter()
-        .position(|format| format.as_str() == value)
-        .unwrap_or(usize::MAX)
-}
-
 /// Immutable-fact cost aggregation, personal usage, and spend-leaderboard snapshots.
 #[derive(Clone)]
 pub struct SqliteMeteringQueries {
@@ -646,36 +632,27 @@ impl SqliteMeteringQueries {
         filter: CostStatisticsFilter,
     ) -> Result<CostStatisticsReport, RepositoryError> {
         let duration = filter.ended_at.signed_duration_since(filter.started_at);
-        if duration <= ChronoDuration::zero()
-            || duration > filter.granularity.max_range()
-            || (filter.channel_id.is_some() && filter.codex_credential_id.is_some())
-        {
+        if duration <= ChronoDuration::zero() || duration > filter.granularity.max_range() {
             return Err(RepositoryError::Validation);
         }
 
         let mut summary = CostSummaryAccumulator::default();
         let mut buckets = BTreeMap::<(i64, String, String), CostAccumulator>::new();
-        let mut models = BTreeMap::<(String, String), CostModelAccumulator>::new();
-        let mut channels = BTreeMap::<(Uuid, Uuid, String), CostChannelAccumulator>::new();
+        let mut models = BTreeMap::<(String, String), CostBreakdownAccumulator>::new();
+        let mut channels = BTreeMap::<(String, Uuid), CostBreakdownAccumulator>::new();
 
         let bucket_seconds = filter.granularity.bucket_seconds();
         let mut connection = self.database.acquire_read().await.map_err(open_failure)?;
-        let mut query = QueryBuilder::<Sqlite>::new(
+        let mut query = QueryBuilder::<Sqlite>::new(format!(
             "SELECT log.started_at AS started_at, log.api_format AS api_format, \
-                    COALESCE(log.upstream_model, log.client_model) AS model, \
+                    log.client_model AS model, \
                     log.outcome AS outcome, log.input_tokens AS input_tokens, \
                     log.cached_input_tokens AS cached_input_tokens, \
                     log.cache_write_tokens AS cache_write_tokens, \
                     log.output_tokens AS output_tokens, log.cost_amount AS cost_amount, \
-                    log.channel_id AS channel_id, log.channel_group_id AS channel_group_id, \
-                    channel.label AS channel_name, \
-                    channel_group.label AS channel_group_name \
-             FROM request_metering_facts AS log \
-             LEFT JOIN channel_identity_registry AS channel ON channel.id = log.channel_id \
-             LEFT JOIN group_identity_registry AS channel_group \
-               ON channel_group.id = log.channel_group_id \
-             WHERE log.started_at >= ",
-        );
+                    logical_channel_id, logical_channel_name \
+             FROM {COST_FACTS_SQL} WHERE log.started_at >= "
+        ));
         query.push_bind(SqliteTimestamp(filter.started_at));
         query.push(" AND log.started_at < ");
         query.push_bind(SqliteTimestamp(filter.ended_at));
@@ -691,18 +668,8 @@ impl SqliteMeteringQueries {
         }
         if let Some(channel_id) = filter.channel_id {
             query
-                .push(" AND log.channel_id = ")
+                .push(" AND logical_channel_id = ")
                 .push_bind(SqliteUuid(channel_id));
-        }
-        if let Some(credential_id) = filter.codex_credential_id {
-            query
-                .push(
-                    " AND log.id IN (SELECT identity.request_id \
-                     FROM request_credential_identities AS identity \
-                     WHERE identity.credential_id = ",
-                )
-                .push_bind(SqliteUuid(credential_id))
-                .push(")");
         }
         {
             let mut stream = query
@@ -721,11 +688,11 @@ impl SqliteMeteringQueries {
                     .or_default()
                     .add(&row)?;
                 if filter.include_channel_details
-                    && let (Some(channel_id), Some(channel_group_id)) =
-                        (row.channel_id, row.channel_group_id)
+                    && let (Some(channel_id), Some(name)) =
+                        (row.logical_channel_id, &row.logical_channel_name)
                 {
                     channels
-                        .entry((channel_id.0, channel_group_id.0, row.api_format.clone()))
+                        .entry((name.clone(), channel_id.0))
                         .or_default()
                         .add(&row)?;
                 }
@@ -765,22 +732,10 @@ impl SqliteMeteringQueries {
             })
             .collect::<Result<Vec<_>, RepositoryError>>()?;
 
-        let mut channel_details = channels
-            .into_values()
-            .map(CostChannelAccumulator::finish)
+        let channel_details = channels
+            .into_iter()
+            .map(|((name, id), accumulator)| accumulator.into_channel(id, name))
             .collect::<Result<Vec<_>, RepositoryError>>()?;
-        channel_details.sort_by(|left, right| {
-            (
-                &left.channel_group_name,
-                &left.name,
-                api_format_rank(&left.api_format),
-            )
-                .cmp(&(
-                    &right.channel_group_name,
-                    &right.name,
-                    api_format_rank(&right.api_format),
-                ))
-        });
 
         let duration_minutes = duration.num_milliseconds().max(1) as f64 / 60_000.0;
         Ok(CostStatisticsReport {
@@ -914,10 +869,8 @@ struct CostFactRow {
     cache_write_tokens: Option<i64>,
     output_tokens: Option<i64>,
     cost_amount: Option<SqliteAmount>,
-    channel_id: Option<SqliteUuid>,
-    channel_group_id: Option<SqliteUuid>,
-    channel_name: Option<String>,
-    channel_group_name: Option<String>,
+    logical_channel_id: Option<SqliteUuid>,
+    logical_channel_name: Option<String>,
 }
 
 /// PostgreSQL computes `COALESCE(input_tokens,0) + COALESCE(output_tokens,0)`
@@ -1007,7 +960,7 @@ impl CostAccumulator {
 }
 
 #[derive(Default)]
-struct CostModelAccumulator {
+struct CostBreakdownAccumulator {
     request_count: i64,
     success_rate_request_count: i64,
     succeeded_count: i64,
@@ -1019,7 +972,7 @@ struct CostModelAccumulator {
     cost_amount: CostSum,
 }
 
-impl CostModelAccumulator {
+impl CostBreakdownAccumulator {
     fn add(&mut self, row: &CostFactRow) -> Result<(), RepositoryError> {
         checked_add_count(&mut self.request_count, 1)?;
         if row.outcome != "cancelled" {
@@ -1038,71 +991,15 @@ impl CostModelAccumulator {
             &mut self.output_tokens,
         )
     }
-}
 
-#[derive(Default)]
-struct CostChannelAccumulator {
-    channel_group_name: String,
-    name: String,
-    api_format: String,
-    request_count: i64,
-    success_rate_request_count: i64,
-    succeeded_count: i64,
-    total_tokens: i64,
-    input_tokens: i64,
-    cached_input_tokens: i64,
-    cache_write_tokens: i64,
-    output_tokens: i64,
-    cost_amount: CostSum,
-    id: Uuid,
-    channel_group_id: Uuid,
-}
-
-impl CostChannelAccumulator {
-    /// The PostgreSQL channel query inner-joins `channels` and
-    /// `channel_groups`, so a fact whose attribution cannot be resolved is
-    /// excluded from the channel breakdown. Callers select only rows with both
-    /// ids present and the join supplies the names.
-    fn add(&mut self, row: &CostFactRow) -> Result<(), RepositoryError> {
-        let (Some(channel_id), Some(channel_group_id)) = (row.channel_id, row.channel_group_id)
-        else {
-            return Ok(());
-        };
-        let (Some(name), Some(group_name)) =
-            (row.channel_name.as_ref(), row.channel_group_name.as_ref())
-        else {
-            return Ok(());
-        };
-        self.id = channel_id.0;
-        self.channel_group_id = channel_group_id.0;
-        self.name.clone_from(name);
-        self.channel_group_name.clone_from(group_name);
-        self.api_format.clone_from(&row.api_format);
-        checked_add_count(&mut self.request_count, 1)?;
-        if row.outcome != "cancelled" {
-            checked_add_count(&mut self.success_rate_request_count, 1)?;
-        }
-        if row.outcome == "succeeded" {
-            checked_add_count(&mut self.succeeded_count, 1)?;
-        }
-        add_cost(&mut self.cost_amount, row)?;
-        add_usage(
-            row,
-            &mut self.total_tokens,
-            &mut self.input_tokens,
-            &mut self.cached_input_tokens,
-            &mut self.cache_write_tokens,
-            &mut self.output_tokens,
-        )
-    }
-
-    fn finish(self) -> Result<CostStatisticsChannel, RepositoryError> {
+    fn into_channel(
+        self,
+        id: Uuid,
+        name: String,
+    ) -> Result<CostStatisticsChannel, RepositoryError> {
         Ok(CostStatisticsChannel {
-            id: self.id,
-            channel_group_id: self.channel_group_id,
-            channel_group_name: self.channel_group_name,
-            name: self.name,
-            api_format: self.api_format,
+            id,
+            name,
             request_count: self.request_count,
             total_tokens: self.total_tokens,
             input_tokens: self.input_tokens,

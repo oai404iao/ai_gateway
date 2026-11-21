@@ -14,7 +14,7 @@
 | 时间段内已记录花费 | 个人用量报表（`/statistics`）或管理区的全局花费（`/admin/cost-statistics`） |
 | 排名和长期活跃情况 | 花费排行榜（`/leaderboard`）和用量报表中的个人使用情况 |
 
-个人概览（`/`）适合从趋势追到单次调用：选择 24 小时或 7 天，在请求数、Token 或费用之间切换，选中图中的时段后打开对应的个人日志。趋势使用 UTC；未计价与已知的零费用不是一回事。按模型查看的是**相关请求**：报表按上游模型（缺失时使用客户端模型）和 API 格式分组，而日志的模型筛选匹配客户端或上游名称，因此笔数不一定与模型行相等。
+个人概览（`/`）适合从趋势追到单次调用：选择 24 小时或 7 天，在请求数、Token 或费用之间切换，选中图中的时段后打开对应的个人日志。趋势使用 UTC；未计价与已知的零费用不是一回事。概览和花费报表按**用户请求的模型及 API 格式**分组。即使网关将同一个请求模型发往不同上游模型，这些请求仍属于同一模型行；从模型行查看日志时沿用该行的口径。
 
 ## 观察当前实例
 
@@ -46,10 +46,7 @@ JWT 主体推导用户 ID，管理员在此也只能看到自己的数据；系�
 个人用量报表默认显示花费分析，范围限定为当前 JWT 用户，包括管理员。它只支持时间区间、
 API Key 和小时/天聚合粒度，不提供用户或渠道筛选，响应中的渠道明细固定为空。
 管理员需要查看全局、指定用户或指定渠道的花费时，使用管理区的全局花费页面；
-该页面调用 `GET /console/v1/system/statistics/costs`，可按用户、API Key、单一渠道或 Codex
-逻辑凭证筛选并显示渠道明细。Codex 凭证筛选会同时覆盖其 Responses 与 Images managed channels，
-并与单一渠道筛选互斥。凭证页的任一主/次窗口周期都可以直接跳转到这里，自动带入周期时间范围和
-该 Codex 凭证筛选。
+该页面调用 `GET /console/v1/system/statistics/costs`，可组合用户、API Key 和逻辑渠道筛选。选择 Provider A 会计入它的 Responses、Chat Completions 等所有能力，不会计入其他渠道，即使它们共用凭证。要查看 Codex 凭证在某个额度窗口的费用，请到凭证的窗口历史，而不是按渠道推算。
 
 ## 查看花费排行榜
 
@@ -100,6 +97,8 @@ OpenAI Responses 的 `reasoning.effort`、DeepSeek/OpenAI Chat Completions 兼�
 详见[恢复、容量与回滚边界](../development/request-log-durability.md)。
 
 ## 查询个人与系统请求日志
+
+「模型」列区分用户请求的模型与网关发往上游的模型。「模型」筛选只精确匹配前者：例如 `public-a → provider-b` 的请求可按 `public-a` 查到，不会仅因上游别名是 `provider-b` 而匹配它。可以从计价模型列表选择，也可以手输早已下架或没有计价记录的请求模型名。
 
 Console 请求日志列表会在同一列上下显示 `api_operation` 和请求协议，并支持按
 `api_operation` 筛选。操作区分 Chat Completions、Responses、standalone web search、

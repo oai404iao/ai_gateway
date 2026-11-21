@@ -73,6 +73,20 @@ describe("Gateway overview", () => {
     },
   );
 
+  it("keeps separate drill-downs for one requested model used in two formats", async () => {
+    seedUserSession();
+    const chat = report.models[0];
+    server.use(http.get("/console/v1/statistics/costs", () => HttpResponse.json({
+      ...report, models: [chat, {...chat, api_format: "open_ai_responses"}],
+    })));
+    renderOverview();
+    const ledger = await screen.findByRole("tabpanel", {name: "Model distribution"});
+    for (const [label, format] of [["Chat Completions", "open_ai_chat_completions"], ["Responses", "open_ai_responses"]]) {
+      const link = await within(ledger).findByRole("link", {name: `Related requests for ${chat.model} · ${label}`});
+      expect(Object.fromEntries(urlOf(link).searchParams)).toMatchObject({ model: chat.model, api_format: format });
+    }
+  });
+
   it("compares matching UTC windows across month boundaries and clips partial hourly slices", () => {
     const end = Date.parse("2026-03-02T00:15:00Z");
     expect(overviewWindow(end, "7d")).toEqual({ started_after:"2026-02-24T00:00:00.000Z", started_before:"2026-03-02T00:15:00.000Z" });

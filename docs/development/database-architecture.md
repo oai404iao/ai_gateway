@@ -43,14 +43,14 @@ SQLSTATE 或任意 executor。接口定位见[持久化操作接口](persistence
 | 身份与授权 | `users`、`user_groups`、会话、邀请、注册码、`api_keys`、`api_key_policies` | Console 身份、角色、生命周期、具体 Key 及自助授权范围 |
 | 上游拓扑 | `upstream_credentials`、`upstream_accesses`、`routing_groups`、`upstream_channels`、`channel_capabilities` | 认证、接入、组织、绑定和操作能力分别配置 |
 | 模型路由 | `models`、`model_routing_profiles`、`model_operation_rules`、`model_capability_tiers`、`model_capability_candidates` | 客户端计价身份、操作规则、priority/strategy、显式能力/wire-model/weight |
-| 固定授权 | `api_key_channel_grants`、`api_key_policy_channel_grants` | 保存逻辑渠道及组/直接渠道来源，不随组成员自动扩权 |
+| 授权目标 | `api_keys`、`api_key_policies` 的 `allowed_group_ids` / `allowed_channel_ids` | 分别保存所选组与直接渠道 UUID，不把组成员复制为直接选择 |
 | Codex | `codex_oauth_credentials`、OAuth flow、额度窗口、重置事件、组可见性 | OAuth 材料与提供方状态；不拥有渠道拓扑 |
 | 辅助配置 | `proxies`、`config_templates`、`system_settings`、插件生命周期与设置记录 | 网络、变换、动态通用策略及管理员安装的插件状态 |
 | 财务 | `request_metering_facts`、`request_credential_attributions`、`request_settlements`、`request_settlement_pending` | 不可变终态事实、请求时凭证归属、唯一扣款权及未结算工作 |
 | 查询与审计 | `request_log_ingest`、`request_logs`、排行榜周期/条目、`audit_logs` | 耐久入口、可查询投影、统计快照及控制面审计 |
 | 历史身份 | group/channel/model-rule identity registry | 旧 UUID 与新身份的只读关联，供历史查询和 spool 重放，不参与授权 |
 
-### 上游身份、能力与固定授权
+### 上游身份、能力与渠道授权
 
 - 静态凭证是认证材料与精确目标范围的唯一来源；OAuth Token 由 Codex 扩展持有。
   凭证不属于组或 pool，导入凭证不创建接入、渠道、能力或候选。
@@ -62,8 +62,8 @@ SQLSTATE 或任意 executor。接口定位见[持久化操作接口](persistence
 - `models.source_model_id` 是不可变客户端计价身份，每模型至多一个 profile。
   操作规则按 `(profile, operation)` 唯一，启用规则必须有非空层。
   候选显式保存能力/wire-model/weight；同层只禁止完全相同组合，组不参与动态展开路由。
-- Key/Policy 的新增组来源在保存时展开为固定逻辑渠道；保留来源不重新展开。
-  自助选择与 Policy 固定范围相交。已授权渠道的后续能力共享授权，但仍需路由、目录、
+- 快照从 Key 所选组的当前成员和直接选择的渠道推导有效授权，不以历史组成员授权行限制范围。
+  已授权渠道的后续能力共享授权，但仍需路由、目录、
   开关、健康和准入全部满足。`allowed_api_formats` 只是废弃兼容元数据。
 - 删除能力在同一事务撤销其全部候选、清理空层、停用无候选规则并推进相关规则 ETag。
   删除逻辑渠道要求先退役能力，删除管理组要求先清空成员。

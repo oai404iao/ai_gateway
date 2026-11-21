@@ -82,126 +82,128 @@ fn fixture() -> (UpstreamTopologyRecords, SelfApiKeyPolicy) {
         },
         SelfApiKeyPolicy {
             id: POLICY,
-            name: "Frozen policy".into(),
+            name: "Group policy".into(),
+            allowed_group_ids: vec![GROUP],
             enabled: true,
         },
     )
 }
 
 #[test]
-fn policy_options_and_issuance_use_fixed_channels_and_current_origin() {
+fn explicit_policy_group_offers_current_members_and_survives_an_empty_group() {
     let (mut topology, policy) = fixture();
-    let plan = resolve(&topology, &[GROUP], &[], Some(Some(&policy))).unwrap();
-    assert_eq!(
-        plan.grants.iter().map(|g| g.channel_id).collect::<Vec<_>>(),
-        [CHANNEL]
-    );
-    let mut formats = plan.formats;
-    formats.sort_unstable();
-    assert_eq!(
-        formats,
-        [
-            "open_ai_chat_completions",
-            "open_ai_images",
-            "open_ai_responses"
-        ]
-    );
+    let issue = |topology: &_, groups: &[Uuid], channels: &[Uuid]| {
+        prepare(
+            topology,
+            GrantOwner::SelfKey(Some(&policy)),
+            &json!({}),
+            groups,
+            channels,
+        )
+    };
     let (groups, channels) = options(&topology, Some(&policy));
+    assert_eq!(groups.len(), 1);
     assert_eq!(
         groups[0].api_formats,
         ["open_ai_images", "open_ai_responses"]
     );
-    assert_eq!(
-        channels[0].api_formats,
-        ["open_ai_images", "open_ai_responses"]
-    );
+    assert_eq!(channels.len(), 1);
+    assert_eq!(channels[0].api_formats, groups[0].api_formats);
+    assert!(issue(&topology, &[GROUP], &[]).unwrap().added.is_empty());
+    assert_eq!(issue(&topology, &[], &[CHANNEL]).unwrap().added, [CHANNEL]);
+
     let mut moved_group = topology.routing_groups[0].clone();
     moved_group.id = Uuid::from_u128(9);
     topology.logical_channels[0].group_id = moved_group.id;
     topology.routing_groups.push(moved_group);
-    assert!(resolve(&topology, &[], &[CHANNEL], Some(Some(&policy))).is_err());
-    assert!(options(&topology, Some(&policy)).1.is_empty());
-}
-
-#[test]
-fn metadata_edits_and_adding_targets_do_not_expand_retained_origins() {
-    let (topology, _) = fixture();
-    let existing = Grant {
-        channel_id: CHANNEL,
-        group: true,
-        origin_id: GROUP,
-    };
-    let before = json!({"allowed_group_ids": [GROUP], "allowed_channel_ids": []});
-    let plan = resolve(&topology, &[GROUP], &[], None).unwrap();
-    assert_eq!(
-        reconcile(vec![existing], plan, &before, &[GROUP], &[]).unwrap(),
-        [existing]
-    );
-    let plan = resolve(&topology, &[GROUP], &[CHANNEL], None).unwrap();
-    let grants = reconcile(vec![existing], plan, &before, &[GROUP], &[CHANNEL]).unwrap();
-    assert_eq!(
-        grants
-            .iter()
-            .filter(|g| g.group)
-            .copied()
-            .collect::<Vec<_>>(),
-        [existing]
-    );
-    assert_eq!(grants.iter().filter(|g| !g.group).count(), 1);
-    let plan = resolve(&topology, &[], &[CHANNEL], None).unwrap();
-    assert!(
-        reconcile(vec![existing], plan, &before, &[], &[CHANNEL])
-            .unwrap()
-            .iter()
-            .all(|g| !g.group)
-    );
-}
-
-#[test]
-fn empty_and_deleted_retained_targets_never_implicitly_gain_grants() {
-    let (mut topology, _) = fixture();
-    let before = json!({"allowed_group_ids": [GROUP], "allowed_channel_ids": []});
-    let plan = resolve(&topology, &[GROUP], &[], None).unwrap();
-    assert!(
-        reconcile(vec![], plan, &before, &[GROUP], &[])
-            .unwrap()
-            .is_empty()
-    );
-    topology.routing_groups[0].deleted_at = Some(Utc::now());
-    assert!(
-        resolve_added(&topology, &before, &[GROUP], &[])
-            .unwrap()
-            .grants
-            .is_empty()
-    );
-    assert!(resolve_added(&topology, &json!({}), &[GROUP], &[]).is_err());
-}
-
-#[test]
-fn capabilities_are_not_authorization_targets_and_new_group_members_are_not_inherited() {
-    let (mut topology, policy) = fixture();
-    topology.channel_capabilities.clear();
-    let existing = resolve(&topology, &[GROUP], &[], Some(Some(&policy)))
-        .unwrap()
-        .grants;
-    assert_eq!(existing.len(), 1);
-    assert_eq!(existing[0].channel_id, CHANNEL);
     let (groups, channels) = options(&topology, Some(&policy));
     assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].id, GROUP);
+    assert!(groups[0].api_formats.is_empty());
+    assert!(channels.is_empty());
+    assert!(issue(&topology, &[GROUP], &[]).is_ok());
+    assert!(matches!(
+        issue(&topology, &[], &[CHANNEL]),
+        Err(RepositoryError::ApiKeyTargetNotAllowed)
+    ));
+
+    let mut joined = topology.logical_channels[0].clone();
+    joined.id = Uuid::new_v4();
+    joined.group_id = GROUP;
+    topology.logical_channels.push(joined.clone());
+    let (_, channels) = options(&topology, Some(&policy));
     assert_eq!(channels.len(), 1);
+    assert_eq!(channels[0].id, joined.id);
+    assert!(channels[0].api_formats.is_empty());
     assert!(!channels[0].auto_disabled);
-    let mut added = topology.logical_channels[0].clone();
-    added.id = Uuid::new_v4();
-    topology.logical_channels.push(added.clone());
-    let before = json!({
-        "allowed_group_ids": [GROUP], "allowed_channel_ids": [],
-        "allowed_api_formats": ["open_ai_responses"]
-    });
-    let plan = resolve_added(&topology, &before, &[GROUP], &[]).unwrap();
-    let retained = reconcile(existing.clone(), plan, &before, &[GROUP], &[]).unwrap();
-    assert_eq!(retained, existing);
-    assert!(retained.iter().all(|grant| grant.channel_id != added.id));
-    assert!(resolve(&topology, &[], &[added.id], Some(Some(&policy))).is_err());
+    assert_eq!(
+        issue(&topology, &[], &[joined.id]).unwrap().added,
+        [joined.id]
+    );
+}
+
+#[test]
+fn individual_policy_grant_never_allows_issuing_a_whole_group() {
+    let (mut topology, mut policy) = fixture();
+    policy.allowed_group_ids.clear();
+    let grant = ApiKeyPolicyChannelGrantRecord {
+        policy_id: POLICY,
+        channel_id: CHANNEL,
+        origin_kind: GrantOriginKind::Channel,
+        origin_id: CHANNEL,
+        created_at: Utc::now(),
+    };
+    topology.policy_grants.push(grant);
+    let owner = GrantOwner::SelfKey(Some(&policy));
+    let (groups, channels) = options(&topology, Some(&policy));
+    assert!(groups.is_empty());
+    assert_eq!(channels.len(), 1);
+    assert_eq!(channels[0].id, CHANNEL);
+    assert!(matches!(
+        prepare(&topology, owner, &json!({}), &[GROUP], &[CHANNEL]),
+        Err(RepositoryError::ApiKeyTargetNotAllowed)
+    ));
+    assert_eq!(
+        prepare(&topology, owner, &json!({}), &[], &[CHANNEL])
+            .unwrap()
+            .added,
+        [CHANNEL]
+    );
+
+    topology
+        .policy_grants
+        .retain(|g| g.origin_kind == GrantOriginKind::Group);
+    assert!(options(&topology, Some(&policy)).1.is_empty());
+    assert!(matches!(
+        prepare(&topology, owner, &json!({}), &[], &[CHANNEL]),
+        Err(RepositoryError::ApiKeyTargetNotAllowed)
+    ));
+}
+
+#[test]
+fn only_changes_to_explicit_channel_selections_write_direct_grants() {
+    let (mut topology, _) = fixture();
+    let before = json!({"allowed_group_ids": [GROUP], "allowed_channel_ids": [CHANNEL]});
+    for owner in [GrantOwner::Policy, GrantOwner::AdminKey] {
+        let retained = prepare(&topology, owner, &before, &[], &[CHANNEL]).unwrap();
+        assert!(retained.added.is_empty());
+        assert_eq!(retained.removed, [("group", GROUP)]);
+        let removed = prepare(&topology, owner, &before, &[GROUP], &[]).unwrap();
+        assert!(removed.added.is_empty());
+        assert_eq!(removed.removed, [("channel", CHANNEL)]);
+        assert_eq!(
+            prepare(&topology, owner, &json!({}), &[GROUP], &[CHANNEL])
+                .unwrap()
+                .added,
+            [CHANNEL]
+        );
+    }
+    topology.routing_groups[0].deleted_at = Some(Utc::now());
+    for owner in [GrantOwner::Policy, GrantOwner::AdminKey] {
+        assert!(prepare(&topology, owner, &before, &[GROUP], &[CHANNEL]).is_ok());
+        assert!(prepare(&topology, owner, &json!({}), &[GROUP], &[]).is_err());
+        assert!(prepare(&topology, owner, &json!({}), &[], &[CHANNEL]).is_err());
+    }
 }
 
 #[test]
@@ -210,11 +212,23 @@ fn self_service_requires_an_enabled_policy_for_every_target() {
     policy.enabled = false;
     for (groups, channels) in [(&[GROUP][..], &[][..]), (&[][..], &[CHANNEL][..])] {
         assert!(matches!(
-            resolve(&topology, groups, channels, Some(None)),
+            prepare(
+                &topology,
+                GrantOwner::SelfKey(None),
+                &json!({}),
+                groups,
+                channels
+            ),
             Err(RepositoryError::DefaultApiKeyPolicyRequired)
         ));
         assert!(matches!(
-            resolve(&topology, groups, channels, Some(Some(&policy))),
+            prepare(
+                &topology,
+                GrantOwner::SelfKey(Some(&policy)),
+                &json!({}),
+                groups,
+                channels
+            ),
             Err(RepositoryError::DefaultApiKeyPolicyDisabled)
         ));
     }

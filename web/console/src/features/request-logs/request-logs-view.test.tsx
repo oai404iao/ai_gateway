@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BrowserRouter } from "react-router";
@@ -10,13 +10,12 @@ import {
   CHANNEL,
   CHANNEL_GROUP,
   CONTROL_PLANE_USER,
-  MODEL_RULE,
   OWN_API_KEY,
   REQUEST_LOG,
 } from "@/test/fixtures";
 import { server, seedAuthenticatedSession, seedUserSession } from "@/test/msw";
 
-function renderAppAt(path: string) {
+async function renderAppAt(path: string) {
   window.history.replaceState({}, "", path);
   render(
     <AppProviders>
@@ -25,21 +24,30 @@ function renderAppAt(path: string) {
       </BrowserRouter>
     </AppProviders>,
   );
+  await act(() => vi.dynamicImportSettled());
 }
 
 describe("RequestLogsView", () => {
   it("keeps the personal request-log table owner-scoped even for administrators", async () => {
     seedAuthenticatedSession();
     const queries: URLSearchParams[] = [];
+    const catalogOnlyModel = "priced/not-in-history";
+    const log = { ...REQUEST_LOG, upstream_model: "upstream-only" };
+    const adminCatalogRequests: string[] = [];
     server.use(
+      http.get(/\/console\/v1\/(?:models|routing\/profiles|routing\/operation-rules)$/, ({ request }) => {
+        adminCatalogRequests.push(request.url);
+        return HttpResponse.json([]);
+      }),
+      http.get("/console/v1/model-options", () => HttpResponse.json([catalogOnlyModel])),
       http.get("/console/v1/me/request-logs", ({ request }) => {
         queries.push(new URL(request.url).searchParams);
-        return HttpResponse.json([REQUEST_LOG]);
+        return HttpResponse.json([log]);
       }),
     );
 
     const user = userEvent.setup();
-    renderAppAt("/usage/request-logs");
+    await renderAppAt("/usage/request-logs");
 
     await screen.findByRole("columnheader", { name: "Started" });
     expect(
@@ -56,6 +64,9 @@ describe("RequestLogsView", () => {
       "View details",
     ]);
     expect(screen.getByText("Chat Completions")).toBeInTheDocument();
+    const modelCell = screen.getByRole("cell", { name: /Requested model:/ });
+    expect(modelCell).toHaveTextContent(`Requested model: ${log.client_model}`);
+    expect(modelCell).toHaveTextContent(`Upstream model: ${log.upstream_model}`);
     expect(screen.getByText("SSE")).toBeInTheDocument();
     expect(screen.queryByText(CHANNEL.name)).not.toBeInTheDocument();
     expect(screen.queryByText(CHANNEL.id)).not.toBeInTheDocument();
@@ -79,11 +90,13 @@ describe("RequestLogsView", () => {
       }),
     );
 
-    const model = screen.getByRole("combobox", { name: "Model" });
+    const model = screen.getByRole("combobox", { name: "Requested model" });
+    expect(model).toHaveAccessibleDescription("Choose a priced model or enter the exact model ID from the request.");
     await user.click(model);
-    await user.click(
-      await screen.findByRole("option", { name: REQUEST_LOG.client_model }),
-    );
+    const catalogOption = await screen.findByRole("option", { name: catalogOnlyModel });
+    expect(screen.queryByRole("option", { name: log.client_model })).not.toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: log.upstream_model })).not.toBeInTheDocument();
+    await user.click(catalogOption);
 
     const operation = screen.getByRole("combobox", { name: "Operation" });
     await user.click(operation);
@@ -97,11 +110,12 @@ describe("RequestLogsView", () => {
         queries.some(
           (query) =>
             query.get("api_key_id") === OWN_API_KEY.id &&
-            query.get("model") === REQUEST_LOG.client_model &&
+            query.get("model") === catalogOnlyModel &&
             query.get("api_operation") === REQUEST_LOG.api_operation,
         ),
       ).toBe(true);
     });
+    expect(adminCatalogRequests).toEqual([]);
   });
 
   it("hides request-mode badges when the client did not enable them", async () => {
@@ -118,9 +132,10 @@ describe("RequestLogsView", () => {
       ),
     );
 
-    renderAppAt("/usage/request-logs");
+    await renderAppAt("/usage/request-logs");
 
     await screen.findByText(REQUEST_LOG.client_model);
+    expect(screen.getByRole("cell", { name: /Requested & upstream:/ })).toHaveTextContent(REQUEST_LOG.client_model);
     expect(screen.queryByLabelText(/Reasoning effort:/)).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Fast mode")).not.toBeInTheDocument();
   });
@@ -128,7 +143,9 @@ describe("RequestLogsView", () => {
   it("adds user and channel names only to the system request-log table", async () => {
     seedAuthenticatedSession();
     const queries: URLSearchParams[] = [];
+    const historicalModel = "retired/requested-model";
     server.use(
+      http.get("/console/v1/model-options", () => HttpResponse.json(["priced/catalog-option"])),
       http.get("/console/v1/request-logs", ({ request }) => {
         queries.push(new URL(request.url).searchParams);
         return HttpResponse.json([REQUEST_LOG]);
@@ -136,7 +153,7 @@ describe("RequestLogsView", () => {
     );
 
     const user = userEvent.setup();
-    renderAppAt("/admin/request-logs");
+    await renderAppAt("/admin/request-logs");
 
     await screen.findByRole("columnheader", { name: "Started" });
     expect(
@@ -179,11 +196,10 @@ describe("RequestLogsView", () => {
       }),
     );
 
-    const modelSelect = screen.getByRole("combobox", { name: "Model" });
-    await user.click(modelSelect);
-    await user.click(
-      await screen.findByRole("option", { name: MODEL_RULE.client_model }),
-    );
+    const modelSelect = screen.getByRole("combobox", { name: "Requested model" });
+    await user.type(modelSelect, historicalModel);
+    await user.tab();
+    expect(modelSelect).toHaveValue(historicalModel);
     await user.click(screen.getByRole("button", { name: "Apply" }));
 
     await waitFor(() => {
@@ -192,7 +208,7 @@ describe("RequestLogsView", () => {
           (query) =>
             query.get("user_id") === CONTROL_PLANE_USER.id &&
             query.get("api_key_id") === ADMIN_API_KEY.id &&
-            query.get("model") === MODEL_RULE.client_model,
+            query.get("model") === historicalModel,
         ),
       ).toBe(true);
     });
@@ -219,7 +235,7 @@ describe("RequestLogsView", () => {
       ),
     );
 
-    renderAppAt("/admin/request-logs");
+    await renderAppAt("/admin/request-logs");
 
     const groupName = await screen.findByText(longGroupName);
     expect(screen.getByRole("cell", { name: longChannelName })).toBeVisible();
@@ -278,13 +294,16 @@ describe("RequestLogsView", () => {
     );
 
     const user = userEvent.setup();
-    renderAppAt("/admin/request-logs");
+    await renderAppAt("/admin/request-logs");
 
     const model = await screen.findByText("detail-model");
     expect(screen.queryByText(log.id.slice(0, 8))).not.toBeInTheDocument();
     await user.click(model);
     expect(await screen.findByLabelText("Request ID")).toHaveTextContent(log.id);
     await screen.findByText("Completed", { selector: "dt" });
+    const detailModel = within(screen.getByRole("complementary", { name: "Request log" })).getByText("Model", { selector: "dt" }).parentElement;
+    expect(detailModel).toHaveTextContent(`Requested model: ${log.client_model}`);
+    expect(detailModel).toHaveTextContent(`Upstream model: ${log.upstream_model}`);
     expect([...document.querySelectorAll("dt")].map((label) => label.textContent)).toEqual([
       "Started",
       "Model",
@@ -337,7 +356,7 @@ describe("RequestLogsView", () => {
     );
 
     const user = userEvent.setup();
-    renderAppAt("/admin/request-logs");
+    await renderAppAt("/admin/request-logs");
 
     await user.click(await screen.findByText("search-model"));
     expect(
@@ -363,7 +382,7 @@ describe("RequestLogsView", () => {
     );
 
     const user = userEvent.setup();
-    renderAppAt("/usage/request-logs");
+    await renderAppAt("/usage/request-logs");
 
     await screen.findByRole("columnheader", { name: "Started" });
     expect(
@@ -409,6 +428,30 @@ describe("RequestLogsView", () => {
     expect(detail.queryByText(ownLog.user_name)).not.toBeInTheDocument();
   });
 
+  it("shows the recorded upstream or its absence in compact rows and mobile details", async () => {
+    vi.stubGlobal("innerWidth", 390);
+    try {
+      seedUserSession();
+      const log = { ...REQUEST_LOG, upstream_model: "mobile-wire" };
+      const unknown = { ...log, id: "f1111111-2222-4333-8444-555555555555", upstream_model: null };
+      server.use(
+        http.get("/console/v1/me/request-logs", () => HttpResponse.json([log, unknown])),
+        http.get(`/console/v1/me/request-logs/${unknown.id}`, () => HttpResponse.json(unknown)),
+      );
+      await renderAppAt("/usage/request-logs");
+      const row = await screen.findByRole("row", { name: /mobile-wire/ });
+      expect(row).toHaveTextContent(`Requested model: ${log.client_model}`);
+      expect(row).toHaveTextContent(`Upstream model: ${log.upstream_model}`);
+      await userEvent.click(screen.getByText("Not recorded"));
+      const detail = within(await screen.findByRole("dialog", { name: "Request log" }));
+      const model = (await detail.findByText("Model", { selector: "dt" })).parentElement;
+      expect(model).toHaveTextContent(`Requested model: ${unknown.client_model}`);
+      expect(model).toHaveTextContent("Upstream model: Not recorded");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("opens an owner-scoped deep link outside the fetched slice and preserves its exact report bounds", async () => {
     seedAuthenticatedSession();
     const end = "2026-07-21T12:59:59.999999Z";
@@ -420,7 +463,7 @@ describe("RequestLogsView", () => {
       }),
       http.get(`/console/v1/me/request-logs/${REQUEST_LOG.id}`, () => HttpResponse.json(REQUEST_LOG)),
     );
-    renderAppAt(`/usage/request-logs?${new URLSearchParams({ id: REQUEST_LOG.id, model: "report-model", started_before: end, api_format: "open_ai_responses", user_id: CONTROL_PLANE_USER.id })}`);
+    await renderAppAt(`/usage/request-logs?${new URLSearchParams({ id: REQUEST_LOG.id, model: "report-model", started_before: end, api_format: "open_ai_responses", user_id: CONTROL_PLANE_USER.id })}`);
     const detail = within(await screen.findByRole("complementary", { name: "Request log" }));
     expect(await detail.findByText(REQUEST_LOG.client_model)).toBeVisible();
     expect(Object.fromEntries(listQuery!)).toEqual({limit: "50", model: "report-model", started_before: end, api_format: "open_ai_responses"});

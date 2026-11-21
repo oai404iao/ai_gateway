@@ -1490,6 +1490,46 @@ async fn request(
 }
 
 #[tokio::test]
+async fn model_options_expose_only_non_deleted_billing_identifiers_to_console_users() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let path = "/console/v1/model-options";
+    assert_eq!(
+        request_with_token(&app, "", "GET", path, serde_json::json!({}), &[])
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    for (name, enabled, deleted) in [
+        ("active", true, false),
+        ("retired", false, true),
+        ("disabled", false, false),
+    ] {
+        sqlx::query("INSERT INTO models (id,source_model_id,display_name,enabled,currency,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,deleted_at,deleted_by) VALUES ($1,$2,'Private price record',$3,'USD',1000,1,0,0,2,now(),$4,$5)")
+            .bind(Uuid::new_v4()).bind(name).bind(enabled).bind(deleted.then(chrono::Utc::now))
+            .bind(deleted.then_some(app.user_id)).execute(&database.pool).await.unwrap();
+    }
+    let email = "catalog-reader@example.test";
+    sqlx::query("INSERT INTO users (id,email,display_name,role,status,password_hash) SELECT $1,$2,'Reader','user','active',password_hash FROM users WHERE id=$3")
+        .bind(Uuid::new_v4()).bind(email).bind(app.user_id).execute(&database.pool).await.unwrap();
+    let session = app
+        .auth
+        .login(email.to_owned(), test_password().to_owned())
+        .await
+        .unwrap();
+    for token in [&app.access_token, &session.access_token] {
+        let response =
+            request_with_token(&app, token, "GET", path, serde_json::json!({}), &[]).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            body_json(response).await,
+            serde_json::json!(["active", "disabled"])
+        );
+    }
+    database.cleanup().await;
+}
+
+#[tokio::test]
 async fn upstream_access_contract_is_versioned_and_does_not_create_authority() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
@@ -5936,17 +5976,21 @@ async fn capability_deletion_withdraws_routes_atomically_and_preserves_channel_g
         .status(),
         StatusCode::NOT_FOUND
     );
-    let key_grants: Vec<(Uuid, String, Uuid)> = sqlx::query_as(
-        "SELECT channel_id,origin_kind,origin_id FROM api_key_channel_grants WHERE api_key_id=$1",
+    let detail = request(
+        &app,
+        "GET",
+        &format!("/console/v1/api-keys/{key}"),
+        serde_json::json!({}),
+        &[],
     )
-    .bind(key)
-    .fetch_all(&database.pool)
-    .await
-    .unwrap();
+    .await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    let detail = body_json(detail).await;
     assert_eq!(
-        key_grants,
-        [(topology.channel, "group".into(), topology.group)]
+        detail["allowed_group_ids"],
+        serde_json::json!([topology.group])
     );
+    assert_eq!(detail["allowed_channel_ids"], serde_json::json!([]));
     let policy_grants: Vec<(Uuid, String, Uuid)> = sqlx::query_as("SELECT channel_id,origin_kind,origin_id FROM api_key_policy_channel_grants WHERE policy_id=$1")
         .bind(policy).fetch_all(&database.pool).await.unwrap();
     assert_eq!(
@@ -6067,13 +6111,17 @@ async fn group_deletion_requires_explicit_child_retirement_and_preserves_history
         detail["allowed_channel_ids"],
         serde_json::json!([topology.channel])
     );
-    let count: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM api_key_policy_channel_grants WHERE policy_id=$1")
-            .bind(policy)
-            .fetch_one(&database.pool)
-            .await
-            .unwrap();
-    assert_eq!(count, 2);
+    let grants: Vec<(Uuid, String, Uuid)> = sqlx::query_as(
+        "SELECT channel_id,origin_kind,origin_id FROM api_key_policy_channel_grants WHERE policy_id=$1",
+    )
+    .bind(policy)
+    .fetch_all(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        grants,
+        [(topology.channel, "channel".into(), topology.channel)]
+    );
     let history: i64 =
         sqlx::query_scalar("SELECT count(*) FROM group_identity_registry WHERE id=$1")
             .bind(topology.group)
@@ -7189,15 +7237,23 @@ async fn request_log_filters_match_the_console_contract() {
     .unwrap();
     let now = chrono::Utc::now();
     let matching_log_id = Uuid::new_v4();
-    for (id, client_model, outcome, error_code, error_summary) in [
+    for (id, client_model, upstream_model, outcome, error_code, error_summary) in [
         (
             matching_log_id,
             "filter-model",
+            "wire-alias",
             "failed",
             Some("provider_error"),
             Some("upstream quota exhausted"),
         ),
-        (Uuid::new_v4(), "other-model", "succeeded", None, None),
+        (
+            Uuid::new_v4(),
+            "filter-model-large",
+            "filter-model",
+            "succeeded",
+            None,
+            None,
+        ),
     ] {
         sqlx::query(
             "INSERT INTO request_logs \
@@ -7209,7 +7265,7 @@ async fn request_log_filters_match_the_console_contract() {
         .bind(app.user_id)
         .bind(api_key_id)
         .bind(client_model)
-        .bind("filter-upstream")
+        .bind(upstream_model)
         .bind(outcome)
         .bind(error_code)
         .bind(error_summary)
@@ -7217,6 +7273,21 @@ async fn request_log_filters_match_the_console_contract() {
         .execute(&database.pool)
         .await
         .unwrap();
+    }
+
+    for path in ["/console/v1/me/request-logs", "/console/v1/request-logs"] {
+        let response = request(
+            &app,
+            "GET",
+            &format!("{path}?model=filter-model"),
+            serde_json::json!({}),
+            &[],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let rows = body_json(response).await;
+        assert_eq!(rows.as_array().unwrap().len(), 1);
+        assert_eq!(rows[0]["id"], matching_log_id.to_string());
     }
 
     let response = request(
@@ -7622,17 +7693,16 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
         .parse::<f64>()
         .unwrap();
     assert!((amount - 0.25).abs() < f64::EPSILON);
-    assert_eq!(costs["models"][0]["model"], "statistics-model");
+    assert_eq!(costs["models"][0]["model"], "statistics-client-model");
     assert_eq!(costs["models"][0]["input_tokens"], 110);
     assert_eq!(costs["models"][0]["cached_input_tokens"], 22);
     assert_eq!(costs["models"][0]["cache_write_tokens"], 6);
     assert_eq!(costs["models"][0]["output_tokens"], 50);
     assert_eq!(costs["models"][0]["success_rate"], 0.5);
-    assert_eq!(costs["channels"][0]["id"], channel_id.to_string());
-    assert_eq!(
-        costs["channels"][0]["channel_group_name"],
-        group_detail["name"]
-    );
+    assert_eq!(costs["channels"][0]["id"], topology.channel.to_string());
+    for field in ["api_format", "channel_group_id", "channel_group_name"] {
+        assert!(costs["channels"][0].get(field).is_none());
+    }
     assert_eq!(costs["channels"][0]["name"], "Spec channel");
     assert_eq!(costs["channels"][0]["request_count"], 3);
     assert_eq!(costs["channels"][0]["success_rate"], 0.5);
@@ -7895,7 +7965,10 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
         .parse::<f64>()
         .unwrap();
     assert!((user_cost_amount - 1.0).abs() < f64::EPSILON);
-    assert_eq!(user_costs["models"][0]["model"], "statistics-user-model");
+    assert_eq!(
+        user_costs["models"][0]["model"],
+        "statistics-user-client-model"
+    );
     assert_eq!(user_costs["channels"], serde_json::json!([]));
 
     let user_channel_filter = request_with_token(
@@ -7903,7 +7976,7 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
         &regular_session.access_token,
         "GET",
         &format!(
-            "/console/v1/statistics/costs?started_after={range_start}&started_before={range_end}&granularity=hour&channel_id={channel_id}"
+            "/console/v1/statistics/costs?started_after={range_start}&started_before={range_end}&granularity=hour&channel_id={}", topology.channel
         ),
         serde_json::json!({}),
         &[],
@@ -8035,7 +8108,7 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
         &app,
         "GET",
         &format!(
-            "/console/v1/system/statistics/costs?started_after={range_start}&started_before={range_end}&granularity=hour&channel_id={channel_id}"
+            "/console/v1/system/statistics/costs?started_after={range_start}&started_before={range_end}&granularity=hour&channel_id={}", topology.channel
         ),
         serde_json::json!({}),
         &[],
@@ -8158,11 +8231,8 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
         codex_fixture_input(codex_group_id, "statistics-codex"),
     )
     .await;
-    bind_test_codex_channel(&database.pool, &app, codex_group_id, codex_credential_id).await;
-    let codex_images_channel = (
-        codex_capability_id(&database.pool, codex_credential_id, "images_generation").await,
-        codex_group_id,
-    );
+    let codex_channel =
+        bind_test_codex_channel(&database.pool, &app, codex_group_id, codex_credential_id).await;
     let history_period_id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO codex_quota_window_periods \
@@ -8205,18 +8275,52 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     let codex_started_at = started_at + chrono::Duration::hours(3);
     let codex_responses_channel =
         codex_capability_id(&database.pool, codex_credential_id, "responses").await;
-    for (api_format, api_operation, group_id, channel_id) in [
+    let codex_images_capability =
+        codex_capability_id(&database.pool, codex_credential_id, "images_generation").await;
+    let access_id: Uuid = sqlx::query_scalar("SELECT access_id FROM upstream_channels WHERE id=$1")
+        .bind(codex_channel)
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    let other_channel = create_resource(
+        &app,
+        "/console/v1/routing/logical-channels",
+        serde_json::json!({
+            "name":"Other Codex channel","group_id":codex_group_id,"access_id":access_id,
+            "credential_id":codex_credential_id,"enabled":true
+        }),
+    )
+    .await;
+    let other_responses_capability = create_resource(
+        &app,
+        "/console/v1/routing/capabilities",
+        capability_input(other_channel, "responses"),
+    )
+    .await;
+    for (api_format, api_operation, capability, upstream_model) in [
         (
             "open_ai_responses",
             "responses",
-            codex_group_id,
             codex_responses_channel,
+            "wire-v1",
+        ),
+        (
+            "open_ai_responses",
+            "responses",
+            codex_responses_channel,
+            "wire-v2",
         ),
         (
             "open_ai_images",
             "images_generation",
-            codex_images_channel.1,
-            codex_images_channel.0,
+            codex_images_capability,
+            "image-wire",
+        ),
+        (
+            "open_ai_responses",
+            "responses",
+            other_responses_capability,
+            "wire-v1",
         ),
     ] {
         sqlx::query(
@@ -8225,7 +8329,7 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
               client_model,upstream_model,channel_group_id,channel_id,outcome, \
               response_status_code,streamed,input_tokens,output_tokens) \
              VALUES ($1,$2,$2,$3,$4,$5::api_format,$6, \
-                     'statistics-codex-model','statistics-codex-model',$7,$8, \
+                     'statistics-codex-model',$9,$7,$8, \
                      'succeeded',200,false,10,5)",
         )
         .bind(Uuid::new_v4())
@@ -8234,8 +8338,9 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
         .bind(api_key_id)
         .bind(api_format)
         .bind(api_operation)
-        .bind(group_id)
-        .bind(channel_id)
+        .bind(codex_group_id)
+        .bind(capability)
+        .bind(upstream_model)
         .execute(&database.pool)
         .await
         .unwrap();
@@ -8257,7 +8362,7 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
         &app,
         "GET",
         &format!(
-            "/console/v1/system/statistics/costs?started_after={codex_range_start}&started_before={codex_range_end}&granularity=hour&codex_credential_id={codex_credential_id}"
+            "/console/v1/system/statistics/costs?started_after={codex_range_start}&started_before={codex_range_end}&granularity=hour&channel_id={codex_channel}"
         ),
         serde_json::json!({}),
         &[],
@@ -8265,37 +8370,29 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     .await;
     assert_eq!(codex_costs.status(), StatusCode::OK);
     let codex_costs = body_json(codex_costs).await;
-    assert_eq!(codex_costs["summary"]["request_count"], 2);
-    assert_eq!(codex_costs["channels"].as_array().unwrap().len(), 2);
-
-    let personal_codex_filter = request(
-        &app,
-        "GET",
-        &format!(
-            "/console/v1/statistics/costs?started_after={codex_range_start}&started_before={codex_range_end}&granularity=hour&codex_credential_id={codex_credential_id}"
-        ),
-        serde_json::json!({}),
-        &[],
-    )
-    .await;
-    assert_eq!(
-        personal_codex_filter.status(),
-        StatusCode::UNPROCESSABLE_ENTITY
-    );
-    let conflicting_channel_filters = request(
-        &app,
-        "GET",
-        &format!(
-            "/console/v1/system/statistics/costs?started_after={codex_range_start}&started_before={codex_range_end}&granularity=hour&channel_id={codex_credential_id}&codex_credential_id={codex_credential_id}"
-        ),
-        serde_json::json!({}),
-        &[],
-    )
-    .await;
-    assert_eq!(
-        conflicting_channel_filters.status(),
-        StatusCode::UNPROCESSABLE_ENTITY
-    );
+    assert_eq!(codex_costs["summary"]["request_count"], 3);
+    assert_eq!(codex_costs["channels"].as_array().unwrap().len(), 1);
+    assert_eq!(codex_costs["channels"][0]["id"], codex_channel.to_string());
+    assert_eq!(codex_costs["channels"][0]["request_count"], 3);
+    let models = codex_costs["models"].as_array().unwrap();
+    assert_eq!(models.len(), 2);
+    for (format, count) in [("open_ai_responses", 2), ("open_ai_images", 1)] {
+        let model = models
+            .iter()
+            .find(|model| model["api_format"] == format)
+            .unwrap();
+        assert_eq!(model["model"], "statistics-codex-model");
+        assert_eq!(model["request_count"], count);
+    }
+    for path in [
+        "/console/v1/statistics/costs",
+        "/console/v1/system/statistics/costs",
+    ] {
+        let removed = request(&app, "GET", &format!(
+            "{path}?started_after={codex_range_start}&started_before={codex_range_end}&granularity=hour&codex_credential_id={codex_credential_id}"
+        ), serde_json::json!({}), &[]).await;
+        assert_eq!(removed.status(), StatusCode::BAD_REQUEST);
+    }
 
     let invalid_start = (started_at - chrono::Duration::days(32))
         .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);

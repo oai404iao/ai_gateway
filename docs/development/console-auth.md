@@ -151,10 +151,12 @@ PostgreSQL 控制面使用 serializable 事务；SQLite 通过同一操作契约
 
 有效 Policy 按“用户覆盖，否则组默认”解析。普通用户从上界中选择
 `allowed_group_ids` / `allowed_channel_ids`，可设置自身 Key 的 RPM、并发与额度，但不能传入
-`user_id`、API 格式或权限；自助权限固定为 `proxy`、`models.read`，格式从所选目标推导。
+`user_id`、API 格式或权限；自助权限固定为 `proxy`、`models.read`。
 
-组选择在保存时展开为固定逻辑渠道授权。一个逻辑渠道新增能力共享授权，后来加入组的渠道
-不会自动获权；路由编辑也不创建授权。Policy 更新不反向改写已存在的 Key。
+自助签发或修改授权目标时，只有 Policy 显式选择了某个组，用户才能选择整组。
+用户也可直接选择 Policy 指定的渠道或其已选组的当前成员；即使 Policy 逐一指定了组内所有渠道，也不等于授予整组。
+Policy 更新不追溯改变已发 Key；仅修改 Key 名称、额度等元数据不重新签发授权。
+已发 Key 的[有效渠道](upstream-identity-capabilities.md#逻辑渠道授权与能力删除)由 Key 自身的选择和当前拓扑决定。
 
 ## 验证
 

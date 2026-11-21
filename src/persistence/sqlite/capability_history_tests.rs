@@ -282,14 +282,13 @@ async fn history_rebuild_preserves_rows_guards_and_rolls_back_as_one_transaction
             user_id: None,
             api_key_id: None,
             channel_id: None,
-            codex_credential_id: None,
             include_channel_details: true,
         })
         .await
         .unwrap();
     assert_eq!(report.channels.len(), 1);
+    assert_eq!(Some(report.channels[0].id), log.channel_id);
     assert_eq!(report.channels[0].name, "History");
-    assert_eq!(report.channels[0].channel_group_name, "History");
     let status = logs
         .channel_group_status(crate::persistence::ChannelGroupStatusWindow::Last24Hours)
         .await
