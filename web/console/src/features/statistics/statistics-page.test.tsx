@@ -272,6 +272,7 @@ describe("StatisticsPage", () => {
 
   it("hydrates a Codex credential filter from the URL and keeps it separate from channel filters", async () => {
     seedAuthenticatedSession();
+    const user = userEvent.setup();
     const credentialId = "00000000-0000-0000-0000-00000000d001";
     const queries: URLSearchParams[] = [];
     server.use(
@@ -310,10 +311,14 @@ describe("StatisticsPage", () => {
     const query = queries.at(-1);
     expect(query?.get("codex_credential_id")).toBe(credentialId);
     expect(query?.has("channel_id")).toBe(false);
-    const credentialFilter = screen.getByRole("combobox", {name: "Codex credential"});
-    await waitFor(() => expect(credentialFilter).toHaveTextContent("Subscriptions · Codex Images, Subscriptions · Codex Plus"));
-    await userEvent.click(credentialFilter);
-    expect(screen.getAllByRole("option")).toHaveLength(2);
+    const credentialFilter = screen.getByRole("combobox", { name: "Codex credential" });
+    const credentialName = "Subscriptions · Codex Images, Subscriptions · Codex Plus";
+    await waitFor(() => expect(credentialFilter).toHaveTextContent(credentialName));
+    credentialFilter.focus();
+    await user.keyboard("{ArrowDown}");
+    const options = await screen.findAllByRole("option");
+    expect(options.map((option) => option.textContent)).toEqual(["All Codex credentials", credentialName]);
+    await user.keyboard("{Escape}");
     expect(screen.getByRole("combobox", { name: "Channel" })).toBeInTheDocument();
   });
 });
