@@ -63,7 +63,3 @@ export function describeSessionDevice(
       : browser ?? platform ?? unknownLabel;
   return { label, kind: deviceKind(userAgent) };
 }
-
-export function shortSessionId(id: string): string {
-  return id.slice(-8);
-}

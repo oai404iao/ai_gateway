@@ -10,6 +10,7 @@ import { CapabilityBatchDialog } from "./capability-batch-dialog";
 import { AppendModelDialog } from "./append-model-dialog";
 import type { ChannelCapabilityView } from "@/api/types";
 import { useReturnPath } from "@/lib/page-navigation";
+import { resourceLabels } from "@/lib/resource-labels";
 
 export function CapabilitiesPage({ channelId }: { channelId?: string } = {}) {
   const query = useChannelCapabilities();
@@ -23,7 +24,7 @@ export function CapabilitiesPage({ channelId }: { channelId?: string } = {}) {
   const selectedCapabilities = (visibleCapabilities ?? []).filter((capability) => selected.has(capability.id));
   const invalidSelection = selectedCapabilities.length === 0 || selectedCapabilities.length > 100;
   const channelNames = useMemo(
-    () => new Map((channels.data ?? []).map((channel) => [channel.id, channel.name])),
+    () => resourceLabels(channels.data ?? []),
     [channels.data],
   );
   return (
@@ -33,9 +34,6 @@ export function CapabilitiesPage({ channelId }: { channelId?: string } = {}) {
       backTo={channelId ? undefined : parentPath}
       linkColumnKey="operation"
       title={t("Channel capabilities")}
-      description={channelId ? channelNames.get(channelId) ?? channelId : t(
-        "One operation and model catalogue per logical channel.",
-      )}
       query={{
         data: visibleCapabilities,
         isLoading: query.isLoading || channels.isLoading,
@@ -57,7 +55,7 @@ export function CapabilitiesPage({ channelId }: { channelId?: string } = {}) {
           header: t("Select"),
           render: (capability) => (
             <Checkbox
-              aria-label={t("Select {name}", { name: `${channelNames.get(capability.channel_id) ?? capability.channel_id} / ${apiOperationLabel(capability.settings.operation)}` })}
+              aria-label={t("Select {name}", { name: `${channelNames.get(capability.channel_id) ?? t("Unknown channel")} / ${apiOperationLabel(capability.settings.operation)}` })}
               checked={selected.has(capability.id)}
               onClick={(event) => event.stopPropagation()}
               onCheckedChange={(checked) => setSelected((previous) => {
@@ -84,7 +82,7 @@ export function CapabilitiesPage({ channelId }: { channelId?: string } = {}) {
           key: "channel",
           header: t("Channel"),
           render: (capability) =>
-            channelNames.get(capability.channel_id) ?? capability.channel_id,
+            channelNames.get(capability.channel_id) ?? t("Unknown channel"),
         },
         {
           key: "operation",

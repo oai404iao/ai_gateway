@@ -6,7 +6,7 @@ import { http, HttpResponse } from "msw";
 import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
 import { server, seedAuthenticatedSession } from "@/test/msw";
-import { CHANNEL_CAPABILITY, LOGICAL_CHANNEL, UPSTREAM_ACCESS, UPSTREAM_CREDENTIAL } from "@/test/fixtures";
+import { CHANNEL_CAPABILITY, LOGICAL_CHANNEL, MODEL, UPSTREAM_ACCESS, UPSTREAM_CREDENTIAL } from "@/test/fixtures";
 import type { CapabilityBatchUpdateInput, ChannelCapabilityInput, ChannelModelDiscoveryInput } from "@/api/types";
 
 function renderAt(path: string) {
@@ -81,10 +81,15 @@ describe("channel capabilities", () => {
       response_header_timeout_ms: UPSTREAM_ACCESS.response_header_timeout_ms,
       override_document: {},
     });
+    await user.type(screen.getByLabelText("Probe test model"), "new-wire-model");
+    await user.click(screen.getByRole("combobox", { name: "Probe pricing model" }));
+    await user.click(await screen.findByRole("option", { name: `${MODEL.display_name} (${MODEL.source_model_id})` }));
     await user.click(screen.getByRole("button", { name: "Save capability" }));
     await waitFor(() => expect(saved?.settings.available_models).toEqual([
       "gpt-5", "gpt-5-mini", "new-wire-model",
     ]));
+    expect(saved?.settings.test_model).toBe("new-wire-model");
+    expect(saved?.settings.test_pricing_model_id).toBe(MODEL.id);
   });
 
   it("fetches models for a codex-credentialed channel through the shared discovery endpoint", async () => {

@@ -40,7 +40,7 @@ export function AsyncResource({
     return (
       <EmptyState
         title={t(emptyTitle ?? "Nothing here yet")}
-        description={t(emptyDescription ?? "There are no items to show.")}
+        description={emptyDescription && t(emptyDescription)}
         className="py-12"
       />
     );

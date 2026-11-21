@@ -1,22 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router";
+import { useNavigate, useSearchParams } from "react-router";
 import { usePageOrigin, withReturnTo } from "@/lib/page-navigation";
 import { useListPagination } from "@/lib/use-list-pagination";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { toast } from "sonner";
-import { Check, Copy, Plus } from "lucide-react";
+import { Check, Copy, Ellipsis, Plus, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Sheet, SheetContent, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import {
@@ -53,6 +46,8 @@ import {
 } from "@/lib/dates";
 import { formatList } from "@/lib/formatters";
 import { useI18n } from "@/app/i18n";
+import { API_KEY_STATUSES } from "@/lib/permissions";
+import { useIsMobile } from "@/hooks/use-mobile";
 
 const createSchema = z
   .object({
@@ -102,11 +97,30 @@ export function ApiKeysPage() {
   const navigate = useNavigate();
   const origin = usePageOrigin();
   const pagination = useListPagination();
+  const isMobile = useIsMobile();
   const { data: keys, isLoading, error } = useOwnApiKeys();
   const create = useCreateOwnApiKey();
   const apiHosts = useApiHosts();
   const { t } = useI18n();
-  const [createOpen, setCreateOpen] = useState(false);
+  const [params, setParams] = useSearchParams();
+  const createOpen = params.get("create") === "1";
+  const setCreateOpen = (open: boolean) => {
+    const next = new URLSearchParams(params);
+    if (open) next.set("create", "1"); else next.delete("create");
+    setParams(next, { replace: true, preventScrollReset: true });
+  };
+  const [search, setSearch] = useState("");
+  const activeStatus = API_KEY_STATUSES.find(value => value === params.get("status")) ?? "";
+  const needle = search.trim().toLocaleLowerCase();
+  const matched = (keys ?? []).filter(key =>
+    (!activeStatus || key.status === activeStatus) && key.name.toLocaleLowerCase().includes(needle),
+  );
+  const selectStatus = (status: string) => {
+    const next = new URLSearchParams(params);
+    next.delete("page");
+    if (status) next.set("status", status); else next.delete("status");
+    setParams(next, { replace: true, preventScrollReset: true });
+  };
   const [submitting, setSubmitting] = useState(false);
   const [copiedHost, setCopiedHost] = useState<string | null>(null);
   const copiedHostTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -201,21 +215,23 @@ export function ApiKeysPage() {
     {
       key: "secret",
       header: t("API key"),
-      render: (key) => <ApiKeyValue value={key.secret} />,
-      className: "min-w-80",
+      render: (key) => <ApiKeyValue value={key.secret} className="min-w-44" />,
+      className: "min-w-52",
     },
     {
       key: "groups",
       header: t("Channel groups"),
       render: (key) => formatList(key.allowed_group_ids.map((id) =>
-        targetGroups.find((group) => group.id === id)?.name ?? id)),
+        targetGroups.find((group) => group.id === id)?.name ?? t("Unavailable channel group"))),
     },
     {
       key: "channels",
       header: t("Logical channels"),
       render: (key) => formatList(key.allowed_channel_ids.map((id) => {
         const channel = targetChannels.find((channel) => channel.id === id);
-        return channel ? `${channel.name} (${channel.channel_group_name ?? channel.channel_group_id})` : id;
+        if (!channel) return t("Unknown channel");
+        const groupName = channel.channel_group_name ?? targetGroups.find(group => group.id === channel.channel_group_id)?.name;
+        return groupName ? `${channel.name} (${groupName})` : channel.name;
       })),
     },
     {
@@ -233,27 +249,46 @@ export function ApiKeysPage() {
       header: t("Updated"),
       render: (key) => formatRelative(key.updated_at),
     },
+    {
+      key: "actions", header: t("Actions"), className: "w-12 text-right",
+      render: key => <DropdownMenu><DropdownMenuTrigger aria-label={t("Actions for {name}", { name: key.name })} render={<Button variant="ghost" size="icon-sm" />}><Ellipsis /></DropdownMenuTrigger>
+        <DropdownMenuContent align="end" onClick={event => event.stopPropagation()}><DropdownMenuGroup>
+          <DropdownMenuItem onClick={() => navigate(withReturnTo(`/api-keys/${key.id}`, origin))}>{t("View details")}</DropdownMenuItem>
+          {key.status !== "revoked" && <DropdownMenuItem onClick={() => navigate(withReturnTo(`/api-keys/${key.id}?edit=1`, origin))}>{t("Edit")}</DropdownMenuItem>}
+        </DropdownMenuGroup></DropdownMenuContent></DropdownMenu>,
+    },
   ];
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex min-w-0 flex-col gap-3">
       <PageHeader
         title={t("API Keys")}
-        description={t("Your personal client keys for the OpenAI-compatible data plane.")}
         actions={
           <Button onClick={() => setCreateOpen(true)}>
             <Plus data-icon="inline-start" /> {t("New API key")}
           </Button>
         }
       />
-      <Card>
-        <CardHeader>
-          <CardTitle>{t("API hosts")}</CardTitle>
-          <CardDescription>
-            {t("Copy a configured base URL to connect an OpenAI-compatible client.")}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
+      <div role="group" aria-label={t("Status")} className="flex min-w-0 gap-2 overflow-x-auto border-b">
+        {(["", ...API_KEY_STATUSES] as const).map(value => <button key={value} type="button" aria-pressed={value === activeStatus}
+          className="inline-flex shrink-0 items-center gap-1.5 border-b-2 border-transparent px-2 py-2 text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring aria-pressed:border-primary aria-pressed:text-foreground"
+          onClick={() => selectStatus(value)}>
+          {value ? t(value === "active" ? "Active" : value === "disabled" ? "Disabled" : "Revoked") : t("All")}
+          {keys && <> <span className="font-mono text-[10px] text-muted-foreground">{keys.filter(key => !value || key.status === value).length}</span></>}
+        </button>)}
+      </div>
+      <label className="flex max-w-72 items-center gap-1 text-muted-foreground"><Search className="size-4 shrink-0" /><Input type="search" value={search} aria-label={t("Filter key names")} placeholder={t("Filter key names")} className="h-8 border-0 px-1 shadow-none" onChange={e => { setSearch(e.target.value); if (pagination.page !== 1) pagination.onPageChange(1); }} /></label>
+      <section aria-label={t("Keys")} className="min-w-0">
+        <AsyncResource isLoading={isLoading} error={error} isEmpty={!matched.length}
+          emptyTitle={t(keys?.length ? "No matching API keys" : "No API keys")}
+          emptyDescription={t(keys?.length ? "Try another key name or status." : "Create your first API key to start using the data plane.")}>
+          <ResourceTable columns={isMobile ? columns.filter(col => ["name", "status", "actions"].includes(col.key)) : columns} rows={matched} rowKey={key => key.id}
+            rowHref={key => withReturnTo(`/api-keys/${key.id}`, origin)} onRowClick={key => navigate(withReturnTo(`/api-keys/${key.id}`, origin))} pagination={pagination} />
+        </AsyncResource>
+      </section>
+      <section className="mt-3 grid min-w-0 gap-3 border-t py-4 md:grid-cols-[minmax(12rem,1fr)_minmax(0,2fr)]">
+        <h2 className="text-sm font-semibold">{t("API hosts")}</h2>
+        <div>
           <AsyncResource
             isLoading={apiHosts.isLoading}
             error={apiHosts.error}
@@ -287,54 +322,22 @@ export function ApiKeysPage() {
               ))}
             </div>
           </AsyncResource>
-        </CardContent>
-      </Card>
-      <Card>
-        <CardHeader>
-          <CardTitle>{t("Keys")}</CardTitle>
-          <CardDescription>
-            {t(
-              "Each key has its own routing targets, rate limits, concurrency limit, and quota.",
-            )}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <AsyncResource
-            isLoading={isLoading}
-            error={error}
-            isEmpty={keys?.length === 0}
-            emptyTitle={t("No API keys")}
-            emptyDescription={t("Create your first API key to start using the data plane.")}
-          >
-            <ResourceTable
-              columns={columns}
-              rows={keys ?? []}
-              rowKey={(key) => key.id}
-              rowHref={(key) => withReturnTo(`/api-keys/${key.id}`, origin)}
-              onRowClick={(key) => navigate(withReturnTo(`/api-keys/${key.id}`, origin))}
-              pagination={pagination}
-            />
-          </AsyncResource>
-        </CardContent>
-      </Card>
+        </div>
+      </section>
 
-      <Dialog
+      <Sheet
         open={createOpen}
         onOpenChange={(open) => {
+          if (submitting) return;
           setCreateOpen(open);
           if (!open) form.reset();
         }}
       >
-        <DialogContent className="max-h-[calc(100svh-2rem)] overflow-y-auto sm:max-w-5xl">
-          <DialogHeader>
-            <DialogTitle>{t("New API key")}</DialogTitle>
-            <DialogDescription>
-              {t(
-                "Choose policy targets, then configure this key's own limits.",
-              )}
-            </DialogDescription>
-          </DialogHeader>
-          <form onSubmit={form.handleSubmit(onSubmit)} className="flex flex-col gap-4">
+        <SheetContent className="overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-2xl">
+          <SheetHeader className="border-b pr-12">
+            <SheetTitle>{t("New API key")}</SheetTitle>
+          </SheetHeader>
+          <form onSubmit={form.handleSubmit(onSubmit)} className="flex flex-col gap-4 px-4">
             <FieldGroup className="grid gap-5 md:grid-cols-2">
               <Field data-invalid={Boolean(form.formState.errors.name)}>
                 <FieldLabel htmlFor="name">{t("Name")}</FieldLabel>
@@ -438,15 +441,15 @@ export function ApiKeysPage() {
                 description={t("Leave blank for no per-key quota limit.")}
               />
             </FieldGroup>
-            <DialogFooter>
+            <SheetFooter className="sticky bottom-0 flex-row justify-end border-t bg-background px-0">
               <Button type="submit" disabled={submitting || options.isLoading || Boolean(options.error)}>
                 {submitting || options.isLoading ? <Spinner data-icon="inline-start" /> : null}
                 {t("Create key")}
               </Button>
-            </DialogFooter>
+            </SheetFooter>
           </form>
-        </DialogContent>
-      </Dialog>
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }

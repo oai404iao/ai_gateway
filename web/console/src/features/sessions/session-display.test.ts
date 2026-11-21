@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  describeSessionDevice,
-  shortSessionId,
-} from "@/features/sessions/session-display";
+import { describeSessionDevice } from "@/features/sessions/session-display";
 
 describe("describeSessionDevice", () => {
   it("recognizes common browser and platform combinations", () => {
@@ -29,6 +26,5 @@ describe("describeSessionDevice", () => {
       label: "Unknown browser",
       kind: "unknown",
     });
-    expect(shortSessionId("00000000-0000-0000-0000-00000000abcd")).toBe("0000abcd");
   });
 });

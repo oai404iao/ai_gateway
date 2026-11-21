@@ -163,7 +163,6 @@ export function ModelsPage() {
     <div className={cn("flex min-w-0 flex-col gap-6", view === "models" && styles.clientView)}>
       <PageHeader
         title={t("Model configuration")}
-        description={t("Select a client model, add an operation, then configure its routing rules.")}
         actions={
           <>
             <NavigationLink to={withReturnTo("/admin/models/new", origin)} variant="outline">{t("New client model")}</NavigationLink>
@@ -187,7 +186,7 @@ export function ModelsPage() {
             error={hasLists ? null : listError}
           >
             <div className={styles.workspace}>
-              <Card className={cn("min-h-0 min-w-0", styles.directory)} data-detail-open={modelId ? "" : undefined}>
+              <Card variant="section" className={cn("min-h-0 min-w-0", styles.directory)} data-detail-open={modelId ? "" : undefined}>
                 <CardHeader>
                   <CardTitle>{t("Client models")}</CardTitle>
                   <Input ref={searchInput} type="search" value={search}
@@ -242,9 +241,9 @@ export function ModelsPage() {
                               <span className="flex w-full items-start gap-1"><span className="grow wrap-anywhere">{model.display_name}</span>
                                 {current && <Check className="shrink-0" aria-hidden="true" />}
                               </span>
-                              <span className="max-w-full truncate font-mono text-xs text-muted-foreground" title={model.source_model_id}>
+                              {model.source_model_id !== model.display_name && <span className="max-w-full truncate font-mono text-xs text-muted-foreground" title={model.source_model_id}>
                                 {model.source_model_id}
-                              </span>
+                              </span>}
                               <ModelPrices model={model} compact />
                             </span>
                           </Button>
@@ -268,13 +267,13 @@ export function ModelsPage() {
                 </Button>}
                 {selected ? (
                   <>
-                    <Card className="shrink-0">
+                    <Card variant="section" className="shrink-0">
                       <CardHeader>
                         <div className="flex flex-wrap items-start gap-2">
                           <h2 ref={heading} tabIndex={-1} className="min-w-0 wrap-anywhere text-xl font-semibold">{selected.display_name}</h2>
                           <StatusBadge value={selected.enabled} />
                         </div>
-                        <CardDescription className="wrap-anywhere font-mono">{selected.source_model_id}</CardDescription>
+                        {selected.source_model_id !== selected.display_name && <CardDescription className="wrap-anywhere font-mono">{selected.source_model_id}</CardDescription>}
                       </CardHeader>
                       <CardContent className="flex flex-col gap-4">
                         <div className="flex flex-wrap items-center gap-2">

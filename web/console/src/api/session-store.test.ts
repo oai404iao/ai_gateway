@@ -1,11 +1,11 @@
 import { act, renderHook } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { refreshAccessToken } from "@/api/client";
+import { apiSend, refreshAccessToken } from "@/api/client";
 import { login, logout } from "@/api/session";
 import { getAccessToken, getSession, setSession } from "@/api/session-store";
 import { useSession } from "@/lib/use-session";
-import { ADMIN_ACCESS_TOKEN, ADMIN_LOGIN_RESPONSE, ADMIN_USER } from "@/test/fixtures";
+import { ADMIN_ACCESS_TOKEN, ADMIN_LOGIN_RESPONSE, ADMIN_USER, USER_ACCESS_TOKEN, USER_USER } from "@/test/fixtures";
 import { server } from "@/test/msw";
 
 beforeEach(() => {
@@ -55,5 +55,24 @@ describe("in-memory session state", () => {
     expect(result.current.status).toBe("unauthenticated");
     expect(result.current.user).toBeNull();
     expect(getAccessToken()).toBeNull();
+  });
+
+  it.each([true, false])("only retries an expired request for the same principal (same=%s)", async (same) => {
+    setSession({ status: "authenticated", user: USER_USER, accessToken: "expired" });
+    const attempts: string[] = [];
+    server.use(
+      http.post("/console/v1/auth/refresh", () => HttpResponse.json(same
+        ? { user: USER_USER, access_token: USER_ACCESS_TOKEN } : ADMIN_LOGIN_RESPONSE)),
+      http.patch("/console/v1/me", ({request}) => {
+        const authorization = request.headers.get("Authorization")!;
+        attempts.push(authorization);
+        return authorization === "Bearer expired" ? new HttpResponse(null, {status: 401}) : new HttpResponse(null, {status: 204});
+      }),
+    );
+    const save = apiSend("/me", "PATCH", { display_name: "Updated" });
+    if (same) await expect(save).resolves.toBeNull();
+    else await expect(save).rejects.toMatchObject({status: 401});
+    expect(attempts).toEqual(same ? ["Bearer expired", `Bearer ${USER_ACCESS_TOKEN}`] : ["Bearer expired"]);
+    expect(getSession().user?.id).toBe(same ? USER_USER.id : ADMIN_USER.id);
   });
 });

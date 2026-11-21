@@ -25,24 +25,27 @@ describe("SystemPage", () => {
     seedAuthenticatedSession();
     const user = userEvent.setup();
     renderApp("");
-    expect(await screen.findByRole("heading", { name: "System settings · General settings" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "API hosts" })).toBeInTheDocument();
     expect(window.location.pathname).toBe("/admin/system/general");
-    const menu = screen.getByRole("button", { name: "System settings" });
-    expect(menu).toHaveAttribute("aria-expanded", "true");
+    const menu = () => within(screen.getByRole("navigation", { name: "Management navigation" }));
+    expect(menu().getByRole("link", { name: "API hosts" })).toHaveAttribute("aria-current", "page");
     expect(screen.queryByLabelText("Connect timeout (seconds)")).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "MCP Servers" })).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("link", { name: "Upstream timeouts" }));
+    await user.click(menu().getByRole("link", { name: "Upstream timeouts" }));
     const timeout = await screen.findByLabelText("Connect timeout (seconds)");
     await user.clear(timeout);
     await user.type(timeout, "12");
-    await user.click(screen.getByRole("link", { name: "General settings" }));
+    const changes = screen.getByRole("complementary", { name: "Pending settings changes" });
+    expect(changes).toHaveTextContent("Connect timeout (seconds)");
+    expect(changes).toHaveTextContent("10 → 12");
+    await user.click(menu().getByRole("link", { name: "API hosts" }));
     expect(await screen.findByRole("alertdialog", { name: "Discard unsaved changes?" })).toBeInTheDocument();
     expect(timeout).toHaveValue(12);
     await user.click(screen.getByRole("button", { name: "Discard changes" }));
-    expect(await screen.findByRole("heading", { name: "System settings · General settings" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "API hosts" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Codex" })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("link", { name: "Upstream timeouts" }));
+    await user.click(menu().getByRole("link", { name: "Upstream timeouts" }));
     expect(await screen.findByLabelText("Connect timeout (seconds)")).toHaveValue(SYSTEM_SETTINGS.upstream.connect_timeout_seconds);
   });
 
@@ -254,7 +257,7 @@ describe("SystemPage", () => {
   it("redirects the removed provider settings category to general settings", async () => {
     seedAuthenticatedSession();
     renderApp("codex");
-    expect(await screen.findByRole("heading", { name: "System settings · General settings" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "API hosts" })).toBeInTheDocument();
     expect(window.location.pathname).toBe("/admin/system/general");
     expect(screen.queryByLabelText("Synthetic Git origin")).not.toBeInTheDocument();
   });

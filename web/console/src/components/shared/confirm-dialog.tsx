@@ -20,6 +20,7 @@ interface ConfirmDialogProps {
   cancelLabel?: string;
   destructive?: boolean;
   confirmDisabled?: boolean;
+  finalFocus?: React.ComponentProps<typeof AlertDialogContent>["finalFocus"];
   onConfirm: () => void;
 }
 
@@ -33,12 +34,13 @@ export function ConfirmDialog({
   cancelLabel,
   destructive,
   confirmDisabled,
+  finalFocus,
   onConfirm,
 }: ConfirmDialogProps) {
   const { t } = useI18n();
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
-      <AlertDialogContent>
+      <AlertDialogContent finalFocus={finalFocus}>
         <AlertDialogHeader>
           <AlertDialogTitle>{title}</AlertDialogTitle>
           <AlertDialogDescription>{description}</AlertDialogDescription>

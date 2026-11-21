@@ -26,7 +26,7 @@ export function PageHeader({ title, description, actions, backTo, backLabel, emb
       ) : null}
       <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
       <div className="flex min-w-0 flex-col gap-1">
-        <Heading className={embedded ? "break-words text-lg font-semibold tracking-tight" : "break-words text-2xl font-semibold tracking-tight"}>{t(title)}</Heading>
+        <Heading className={embedded ? "break-words text-lg font-semibold tracking-tight" : "break-words text-[clamp(1.6rem,2.3vw,2.125rem)] leading-tight font-semibold tracking-tight"}>{t(title)}</Heading>
         {description ? (
           <p className="text-sm text-muted-foreground">{t(description)}</p>
         ) : null}

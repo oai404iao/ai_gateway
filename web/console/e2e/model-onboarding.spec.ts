@@ -55,7 +55,7 @@ async function prepare(page: Page, existing: boolean) {
   await page.getByLabel(/^(Email|邮箱)$/).fill("admin@example.com");
   await page.getByLabel(/^(Password|密码)$/).fill("correct-horse-battery-staple");
   await page.getByRole("button", { name: /^(Sign in|登录)$/ }).click();
-  await expect(page).toHaveURL(/\/account/);
+  await expect(page).toHaveURL("/");
   return { posts, writes };
 }
 

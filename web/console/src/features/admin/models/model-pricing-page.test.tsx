@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { BrowserRouter } from "react-router";
@@ -21,6 +21,24 @@ function renderAppAt(path: string) {
 }
 
 describe("ModelPricingPage", () => {
+  it("compares draft and saved base rates using their separate token units without saving", async () => {
+    seedAuthenticatedSession();
+    const user = userEvent.setup();
+    const other = { ...MODEL, id: "00000000-0000-0000-0000-000000000090", source_model_id: "compare-small", price_unit_tokens: 1000 };
+    server.use(http.get("/console/v1/models", () => HttpResponse.json([MODEL, other])));
+    renderAppAt(`/admin/models/${MODEL.id}/pricing`);
+    await user.click(await screen.findByRole("combobox", { name: "Comparison model" }));
+    await user.click(await screen.findByRole("option", { name: `${other.display_name} (${other.source_model_id})` }));
+    expect(screen.getByLabelText("Comparison estimate")).toHaveTextContent("$2.70");
+    expect(screen.getByLabelText("Draft estimate")).toHaveTextContent("$0.0027");
+    fireEvent.change(screen.getByLabelText("Uncached input tokens"), { target: { value: 20000 } });
+    expect(screen.getByLabelText("Draft estimate")).toHaveTextContent("$0.0042");
+    expect(screen.getByRole("button", { name: "Save model pricing" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText(/^Input unit price/i), { target: { value: "0.25" } });
+    expect(screen.getByLabelText("Draft estimate")).toHaveTextContent("$0.0062");
+    expect(screen.getByLabelText("Comparison estimate")).toHaveTextContent("$4.20");
+  });
+
   it("abbreviates the displayed token unit without changing the editable value", async () => {
     seedAuthenticatedSession();
     renderAppAt(`/admin/models/${MODEL.id}/pricing`);

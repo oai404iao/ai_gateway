@@ -107,11 +107,9 @@ function intensityLevel(requestCount: number, maximum: number): number {
 function MetricCard({
   title,
   value,
-  description,
 }: {
   title: string;
   value: React.ReactNode;
-  description: string;
 }) {
   return (
     <Card size="sm">
@@ -120,7 +118,6 @@ function MetricCard({
       </CardHeader>
       <CardContent className="flex flex-col gap-1">
         <CardTitle className="text-2xl tabular-nums">{value}</CardTitle>
-        <CardDescription className="text-xs">{description}</CardDescription>
       </CardContent>
     </Card>
   );
@@ -150,28 +147,22 @@ export function PersonalUsagePanel() {
             <MetricCard
               title={t("Requests")}
               value={data.total_request_count.toLocaleString(locale)}
-              description={t("Client requests in the 365-day window.")}
             />
             <MetricCard
               title={t("Active days")}
               value={`${data.active_day_count.toLocaleString(locale)} / 365`}
-              description={t("UTC dates with at least one client request.")}
             />
             <MetricCard
               title={t("Current streak")}
               value={t("{count} days", {
                 count: data.current_streak_days.toLocaleString(locale),
               })}
-              description={t(
-                "Consecutive active UTC dates through the current day.",
-              )}
             />
             <MetricCard
               title={t("Longest streak")}
               value={t("{count} days", {
                 count: data.longest_streak_days.toLocaleString(locale),
               })}
-              description={t("Longest active-day run in this window.")}
             />
           </div>
 

@@ -117,7 +117,7 @@ export function CredentialDetailPage() {
         {credential.channel_ids.length === 0 ? <p>{t("No referencing channels.")}</p> : credential.channel_ids.map((channelId) => {
           const channel = channels.data?.find((value) => value.id === channelId);
           const path = `/admin/routing/logical-channels/${channelId}`;
-          return <Link key={channelId} to={withReturnTo(path, origin)} className="underline underline-offset-4">{channel?.name ?? channelId}</Link>;
+          return <Link key={channelId} to={withReturnTo(path, origin)} className="underline underline-offset-4">{channel?.name ?? t("Unknown channel")}</Link>;
         })}
         {credential.secret ? <ApiKeyValue value={credential.secret} className="min-w-0 w-full" /> : null}
       </CardContent>

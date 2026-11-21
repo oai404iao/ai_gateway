@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { resourceLabels } from "@/lib/resource-labels";
 import {
   Coins,
   Gauge,
@@ -7,7 +8,7 @@ import {
   Zap,
 } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from "recharts";
-import { useSearchParams } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
@@ -69,6 +70,8 @@ import {
 import { formatCompactTokens, formatUsd } from "@/lib/formatters";
 import { apiFormatLabel } from "@/lib/permissions";
 import { useI18n } from "@/app/i18n";
+import { UsageTrend } from "./usage-trend";
+import { modelIdentity, overviewWindow, ownLogsLink, type UsageMetric } from "./usage-window";
 
 interface CostFilterDraft {
   started_after: string;
@@ -111,6 +114,11 @@ function draftFromSearchParams(
   scope: CostStatisticsScope,
 ): CostFilterDraft {
   const draft = defaultDraft();
+  if (scope === "own" && !search.has("started_after") && !search.has("started_before")) {
+    const bounds = overviewWindow(Math.floor(Date.now() / 1000) * 1000, "7d");
+    draft.started_after = formatDateTimeLocalInput(bounds.started_after, true);
+    draft.started_before = formatDateTimeLocalInput(bounds.started_before, true);
+  }
   const startedAfter = search.get("started_after");
   const startedBefore = search.get("started_before");
   const granularity = search.get("granularity");
@@ -214,10 +222,6 @@ function numericAmount(value: string): number {
   return Number.isFinite(amount) ? amount : 0;
 }
 
-function modelIdentity(model: { api_format: string; model: string }): string {
-  return `${model.api_format}:${model.model}`;
-}
-
 function formatRate(value: number | null): string {
   if (value === null) return "—";
   return `${(value * 100).toLocaleString(undefined, { maximumFractionDigits: 1 })}%`;
@@ -242,7 +246,7 @@ function SummaryCard({
 }: {
   title: string;
   value: React.ReactNode;
-  description: React.ReactNode;
+  description?: React.ReactNode;
   icon: typeof Hash;
 }) {
   return (
@@ -255,7 +259,7 @@ function SummaryCard({
       </CardHeader>
       <CardContent className="flex flex-col gap-1">
         <CardTitle className="text-2xl tabular-nums">{value}</CardTitle>
-        <CardDescription className="text-xs">{description}</CardDescription>
+        {description && <CardDescription className="text-xs">{description}</CardDescription>}
       </CardContent>
     </Card>
   );
@@ -267,6 +271,7 @@ export function CostStatisticsPanel({
   scope: CostStatisticsScope;
 }) {
   const [searchParams, setSearchParams] = useSearchParams();
+  const [modelSort, setModelSort] = useState<UsageMetric>("cost_amount");
   const [initialDraft] = useState(() =>
     draftFromSearchParams(searchParams, scope),
   );
@@ -275,7 +280,7 @@ export function CostStatisticsPanel({
     () => toFilters(initialDraft) as CostStatisticsFilters,
   );
   const [quickRange, setQuickRange] = useState<QuickRange | null>(() =>
-    searchParams.has("started_after") || searchParams.has("started_before")
+    scope === "own" || searchParams.has("started_after") || searchParams.has("started_before")
       ? null
       : "today",
   );
@@ -302,11 +307,16 @@ export function CostStatisticsPanel({
     setFilters(next);
   };
 
+  const userNames = resourceLabels((users.data ?? []).map(user => ({id: user.id, name: user.email ? `${user.display_name} · ${user.email}` : user.display_name})));
   const filteredKeys = isSystemView
     ? (adminApiKeys.data ?? [])
         .filter((key) => !draft.user_id || key.user_id === draft.user_id)
-        .map((key) => ({ id: key.id, name: key.name }))
+        .map((key) => {
+          const ownerName = !draft.user_id && userNames.get(key.user_id);
+          return { id: key.id, name: ownerName ? `${key.name} · ${ownerName}` : key.name };
+        })
     : (ownApiKeys.data ?? []).map((key) => ({ id: key.id, name: key.name }));
+  const keyNames = resourceLabels(filteredKeys);
   const channelGroupNames = new Map(
     (channelGroups.data ?? []).map((group) => [group.id, group.name]),
   );
@@ -316,7 +326,7 @@ export function CostStatisticsPanel({
       return channel ? [{
         id: capability.id,
         name: `${channel.name} · ${capability.settings.operation}`,
-        groupName: channelGroupNames.get(channel.group_id) ?? channel.group_id,
+        groupName: channelGroupNames.get(channel.group_id) ?? t("Unavailable channel group"),
       }] : [];
     })
     .sort(
@@ -324,17 +334,19 @@ export function CostStatisticsPanel({
         left.groupName.localeCompare(right.groupName) ||
         left.name.localeCompare(right.name),
     );
-  const codexCredentialOptions = (channels.data ?? [])
-    .filter(
-      (channel) =>
-        channel.credential_id && accesses.data?.some((access) =>
-          access.id === channel.access_id && access.connector_kind === "codex"),
-    )
-    .map((channel) => ({
-      id: channel.credential_id!,
-      name: `${channel.name} · ${channel.credential_id!.slice(0, 8)}`,
-    }))
+  const codexAccessNames = new Map((accesses.data ?? [])
+    .filter(access => access.connector_kind === "codex").map(access => [access.id, access.name]));
+  const credentialChannels = new Map<string, Set<string>>();
+  for (const channel of channels.data ?? []) {
+    const access = codexAccessNames.get(channel.access_id);
+    if (!channel.credential_id || !access) continue;
+    const labels = credentialChannels.get(channel.credential_id) ?? new Set<string>();
+    labels.add(`${access} · ${channel.name}`);
+    credentialChannels.set(channel.credential_id, labels);
+  }
+  const codexCredentialOptions = [...credentialChannels].map(([id, labels]) => ({ id, name: [...labels].sort().join(", ") }))
     .sort((left, right) => left.name.localeCompare(right.name));
+  const credentialLabels = resourceLabels(codexCredentialOptions);
 
   const apply = () => {
     const next = toFilters(draft);
@@ -376,7 +388,7 @@ export function CostStatisticsPanel({
   };
 
   const chart = useMemo(() => {
-    if (!data) {
+    if (!data || !isSystemView) {
       return { config: {} satisfies ChartConfig, data: [], series: [] };
     }
     const ranked = data.models
@@ -426,16 +438,14 @@ export function CostStatisticsPanel({
       return point;
     });
     return { config, data: points, series };
-  }, [data, t]);
+  }, [data, isSystemView, t]);
 
   const modelRows = useMemo(() => {
     if (!data) return [];
     return [...data.models].sort((left, right) => {
-      const costDelta =
-        numericAmount(right.cost_amount) - numericAmount(left.cost_amount);
-      return costDelta || right.request_count - left.request_count;
+      return Number(right[modelSort]) - Number(left[modelSort]) || right.request_count - left.request_count;
     });
-  }, [data]);
+  }, [data, modelSort]);
   const channelRows = useMemo(() => {
     if (!data) return [];
     return [...data.channels].sort((left, right) => {
@@ -449,7 +459,15 @@ export function CostStatisticsPanel({
     {
       key: "model",
       header: t("Model"),
-      render: (model) => <span className="font-medium">{model.model}</span>,
+      render: (model) => isSystemView ? <span className="font-medium">{model.model}</span> : (
+        <Link className="font-medium underline-offset-4 hover:underline" to={ownLogsLink(filters, {
+          model: model.model, api_format: model.api_format,
+          ...(filters.api_key_id ? { api_key_id: filters.api_key_id } : {}),
+        })} title={t("Related requests for {model}", { model: model.model })}
+          aria-label={t("Related requests for {model}", { model: `${model.model} · ${apiFormatLabel(model.api_format)}` })}>
+          {model.model}
+        </Link>
+      ),
     },
     {
       key: "format",
@@ -581,20 +599,7 @@ export function CostStatisticsPanel({
     },
   ];
 
-  return (
-    <div className="flex flex-col gap-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>{t("Filters")}</CardTitle>
-          <CardDescription>
-            {t(
-              isSystemView
-                ? "Filter by time range, user, API key, channel or Codex credential, and aggregation granularity."
-                : "Filter your own statistics by time range, API key, and aggregation granularity.",
-            )}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
+  const filterFields = (
           <FieldGroup className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             <Field className="md:col-span-2 xl:col-span-3">
               <FieldLabel id="statistics-quick-range-label">
@@ -713,10 +718,10 @@ export function CostStatisticsPanel({
                   <SelectContent>
                     <SelectGroup>
                       <SelectItem value="__all__">{t("All users")}</SelectItem>
+                      {draft.user_id && !userNames.has(draft.user_id) && <SelectItem value={draft.user_id} disabled>{t("Unavailable")}</SelectItem>}
                       {users.data?.map((user) => (
                         <SelectItem key={user.id} value={user.id}>
-                          {user.display_name}
-                          {user.email ? ` · ${user.email}` : ""}
+                          {userNames.get(user.id)}
                         </SelectItem>
                       ))}
                     </SelectGroup>
@@ -741,9 +746,10 @@ export function CostStatisticsPanel({
                 <SelectContent>
                   <SelectGroup>
                     <SelectItem value="__all__">{t("All API keys")}</SelectItem>
+                    {draft.api_key_id && !filteredKeys.some(key => key.id === draft.api_key_id) && <SelectItem value={draft.api_key_id} disabled>{t("Unavailable")}</SelectItem>}
                     {filteredKeys.map((key) => (
                       <SelectItem key={key.id} value={key.id}>
-                        {key.name} · {key.id.slice(0, 8)}
+                        {keyNames.get(key.id)}
                       </SelectItem>
                     ))}
                   </SelectGroup>
@@ -776,9 +782,10 @@ export function CostStatisticsPanel({
                       </SelectItem>
                       {codexCredentialOptions.map((credential) => (
                         <SelectItem key={credential.id} value={credential.id}>
-                          {credential.name}
+                          {credentialLabels.get(credential.id)}
                         </SelectItem>
                       ))}
+                      {draft.codex_credential_id && !credentialChannels.has(draft.codex_credential_id) && <SelectItem value={draft.codex_credential_id} disabled>{t("Unavailable")}</SelectItem>}
                     </SelectGroup>
                   </SelectContent>
                 </Select>
@@ -805,7 +812,8 @@ export function CostStatisticsPanel({
                   </SelectTrigger>
                   <SelectContent>
                     <SelectGroup>
-                      <SelectItem value="__all__">{t("All channels")}</SelectItem>
+                    <SelectItem value="__all__">{t("All channels")}</SelectItem>
+                    {draft.channel_id && !channelOptions.some(channel => channel.id === draft.channel_id) && <SelectItem value={draft.channel_id} disabled>{t("Unavailable")}</SelectItem>}
                       {channelOptions.map((channel) => (
                         <SelectItem key={channel.id} value={channel.id}>
                           {channel.groupName} · {channel.name}
@@ -829,13 +837,22 @@ export function CostStatisticsPanel({
               </div>
             </Field>
           </FieldGroup>
-        </CardContent>
-      </Card>
+  );
+
+  return (
+    <div className="flex min-w-0 flex-col gap-6">
+      {isSystemView ? <Card>
+        <CardHeader><CardTitle>{t("Filters")}</CardTitle></CardHeader>
+        <CardContent>{filterFields}</CardContent>
+      </Card> : <details className="rounded-md border">
+        <summary className="cursor-pointer px-4 py-3 text-sm font-medium focus-visible:outline-ring">{t("Filters")}<span className="ml-3 text-xs font-normal text-muted-foreground">{formatDateTime(filters.started_after)} – {formatDateTime(filters.started_before)} · {t(filters.granularity === "hour" ? "Hourly" : "Daily")}</span></summary>
+        <div className="px-4 pb-4">{filterFields}</div>
+      </details>}
 
       <AsyncResource isLoading={isLoading} error={error}>
         {data ? (
           <>
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+            {isSystemView ? <><div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
               <SummaryCard
                 title={t("Requests")}
                 value={data.summary.request_count.toLocaleString()}
@@ -853,7 +870,6 @@ export function CostStatisticsPanel({
                     "—"
                   )
                 }
-                description={t("All costs are settled in USD.")}
                 icon={Coins}
               />
               <SummaryCard
@@ -895,13 +911,11 @@ export function CostStatisticsPanel({
                 value={data.summary.average_rpm.toLocaleString(undefined, {
                   maximumFractionDigits: 2,
                 })}
-                description={t("Requests per minute across the selected range.")}
                 icon={Gauge}
               />
               <SummaryCard
                 title={t("Average TPM")}
                 value={formatCompactTokens(data.summary.average_tpm)}
-                description={t("Tokens per minute across the selected range.")}
                 icon={Zap}
               />
             </div>
@@ -963,12 +977,37 @@ export function CostStatisticsPanel({
               </CardContent>
             </Card>
 
+            </> : <>
+              <UsageTrend key={`${data.started_at}/${data.ended_at}/${data.granularity}/${filters.api_key_id ?? ""}`} report={data} groupByDay={data.granularity === "hour" && data.buckets.length > 48} apiKeyId={filters.api_key_id}/>
+              <dl className="flex flex-wrap gap-x-6 gap-y-3 text-xs tabular-nums">
+                {[
+                  ["Input tokens", formatCompactTokens(data.summary.input_tokens)],
+                  ["Cache hit tokens", formatCompactTokens(data.summary.cached_input_tokens)],
+                  ["Cache write tokens", formatCompactTokens(data.summary.cache_write_tokens)],
+                  ["Cache rate", formatRate(cacheRate(data.summary.input_tokens, data.summary.cached_input_tokens))],
+                  ["Output tokens", formatCompactTokens(data.summary.output_tokens)],
+                  ["Priced requests", data.summary.priced_request_count.toLocaleString()],
+                  ["Average RPM", data.summary.average_rpm.toLocaleString(undefined, { maximumFractionDigits: 2 })],
+                  ["Average TPM", formatCompactTokens(data.summary.average_tpm)],
+                ].map(([label,value]) => <div key={label}><dt className="text-muted-foreground">{t(label)}</dt><dd className="mt-1 font-medium">{value}</dd></div>)}
+              </dl>
+            </>}
+
             <Card>
               <CardHeader>
                 <CardTitle>{t("Model cost breakdown")}</CardTitle>
-                <CardDescription>
-                  {t("Requests, reliability, tokens, and cost for each upstream model.")}
-                </CardDescription>
+                {!isSystemView && <CardAction>
+                  <Select value={modelSort} onValueChange={value => {
+                    if (value === "cost_amount" || value === "request_count" || value === "total_tokens") setModelSort(value);
+                  }} items={{cost_amount:t("Total cost"), request_count:t("Requests"), total_tokens:t("Total tokens")}}>
+                    <SelectTrigger aria-label={t("Sort models by")}><SelectValue /></SelectTrigger>
+                    <SelectContent><SelectGroup>
+                      <SelectItem value="cost_amount">{t("Total cost")}</SelectItem>
+                      <SelectItem value="request_count">{t("Requests")}</SelectItem>
+                      <SelectItem value="total_tokens">{t("Total tokens")}</SelectItem>
+                    </SelectGroup></SelectContent>
+                  </Select>
+                </CardAction>}
               </CardHeader>
               <CardContent>
                 {modelRows.length === 0 ? (
@@ -991,11 +1030,6 @@ export function CostStatisticsPanel({
               <Card>
                 <CardHeader>
                   <CardTitle>{t("Channel details")}</CardTitle>
-                  <CardDescription>
-                    {t(
-                      "Requests, reliability, tokens, and cost for each selected channel.",
-                    )}
-                  </CardDescription>
                 </CardHeader>
                 <CardContent>
                   {channelRows.length === 0 ? (

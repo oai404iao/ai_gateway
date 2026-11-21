@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import {
   E2E_ADMIN_USER_GROUP_ID,
   E2E_API_KEY,
@@ -14,6 +14,24 @@ import {
   E2E_USER,
   mockConsoleApi,
 } from "./mock-api";
+
+function topNav(page: Page) {
+  return page.getByRole("navigation", { name: "Console navigation" });
+}
+
+async function accountPage(page: Page, name: string) {
+  await page.getByRole("button", { name: "Account menu" }).click();
+  await page.getByRole("menuitem", { name, exact: true }).click();
+}
+
+async function managementPage(page: Page, destination: string, ...groups: string[]) {
+  await topNav(page).getByRole("link", { name: "Management" }).click();
+  const nav = page.getByRole("navigation", { name: "Management navigation" });
+  for (const label of groups) {
+    await nav.getByRole("button", { name: label, exact: true }).click();
+  }
+  await nav.getByRole("link", { name: destination, exact: true }).click();
+}
 
 test.describe("Console SPA smoke", () => {
   test("legacy model setup redirects to the single model workspace", async ({
@@ -113,7 +131,7 @@ test.describe("Console SPA smoke", () => {
     await expect(page.getByText("Client model deleted")).toBeVisible();
   });
 
-  test("login page renders and a successful login reaches the account shell", async ({
+  test("sign-in opens the overview with profile in the account menu", async ({
     page,
   }) => {
     await mockConsoleApi(page);
@@ -128,12 +146,11 @@ test.describe("Console SPA smoke", () => {
     await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
     await page.getByRole("button", { name: /sign in/i }).click();
 
-    // Profile is no longer duplicated in the sidebar. It remains available
-    // from the user menu in the top-right corner.
-    await expect(page.getByRole("link", { name: "Profile" })).toHaveCount(0);
-    await page.getByRole("button", { name: /Initial Admin/ }).click();
-    await expect(page.getByRole("menuitem", { name: "Profile" })).toBeVisible();
-    await expect(page).toHaveURL(/\/account/);
+    await expect(page).toHaveURL("/");
+    await expect(topNav(page).getByRole("link", { name: "Profile" })).toHaveCount(0);
+    await accountPage(page, "Profile");
+    await expect(page).toHaveURL("/account");
+    await expect(page.getByLabel("Display name", { exact: true })).toHaveValue("Initial Admin");
   });
 
   test("a temporary password is restricted until the user chooses a new password", async ({
@@ -165,8 +182,8 @@ test.describe("Console SPA smoke", () => {
       new_password: "new-permanent-password",
     });
 
-    await expect(page).toHaveURL(/\/account/);
-    await expect(page.getByRole("heading", { name: "Profile" })).toBeVisible();
+    await expect(page).toHaveURL("/");
+    await expect(topNav(page).getByRole("link", { name: "Overview" })).toHaveAttribute("aria-current", "page");
   });
 
   test("a protected deep link redirects to login when refresh is unauthorized", async ({
@@ -203,7 +220,8 @@ test.describe("Console SPA smoke", () => {
       display_name: "New User",
       password: "correct-horse-battery-staple",
     });
-    await expect(page).toHaveURL(/\/account/);
+    await expect(page).toHaveURL("/");
+    await accountPage(page, "Profile");
     await expect(page.getByLabel("Display name", { exact: true })).toHaveValue("New User");
     await expect(page.getByText("new-user@example.test", { exact: true })).toBeVisible();
     await expect(page.getByRole("link", { name: "Users", exact: true })).toHaveCount(0);
@@ -238,7 +256,7 @@ test.describe("Console SPA smoke", () => {
     await page.getByLabel(/email/i).fill("admin@example.com");
     await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
     await page.getByRole("button", { name: /sign in/i }).click();
-    await page.getByRole("link", { name: "API Keys" }).click();
+    await topNav(page).getByRole("link", { name: "API keys", exact: true }).click();
 
     await expect(page.getByRole("textbox", { name: "API host" })).toHaveValue(
       "https://api.e2e.example.test/v1",
@@ -255,7 +273,7 @@ test.describe("Console SPA smoke", () => {
     await page.getByLabel(/email/i).fill("admin@example.com");
     await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
     await page.getByRole("button", { name: /sign in/i }).click();
-    await page.getByRole("link", { name: "API Keys" }).click();
+    await topNav(page).getByRole("link", { name: "API keys", exact: true }).click();
     await page.getByText(E2E_API_KEY.name, { exact: true }).click();
     await expect(page).toHaveURL(new RegExp(`/api-keys/${E2E_API_KEY.id}\\?returnTo=`));
 
@@ -312,13 +330,15 @@ test.describe("Console SPA smoke", () => {
     await page.getByLabel(/email/i).fill(E2E_USER.email);
     await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
     await page.getByRole("button", { name: /sign in/i }).click();
-    await page.getByRole("link", { name: "Codex quotas" }).click();
+    await topNav(page).getByRole("link", { name: "Services" }).click();
+    await page.getByRole("link", { name: "Codex quotas", exact: true }).click();
 
     await expect(page).toHaveURL(/\/codex-quotas/);
     await expect(
       page.getByRole("heading", { name: "Codex quotas" }),
     ).toBeVisible();
-    await expect(page.getByText(E2E_CODEX_CREDENTIAL_ID)).toBeVisible();
+    await expect(page.getByRole("cell", { name: "Codex account", exact: true })).toBeVisible();
+    await expect(page.getByRole("main")).not.toContainText(E2E_CODEX_CREDENTIAL_ID);
     await expect(page.getByText("96%")).toBeVisible();
     await expect(page.getByText("4.75 USD")).toBeVisible();
     await expect(page.getByText("24.50 USD")).toBeVisible();
@@ -332,14 +352,18 @@ test.describe("Console SPA smoke", () => {
       page.getByRole("button", { name: /reset quota/i }),
     ).toHaveCount(0);
 
+    const loadedHistory = page.waitForResponse(response =>
+      new URL(response.url()).pathname === `/console/v1/me/codex-quotas/${E2E_CODEX_CREDENTIAL_ID}/windows` &&
+      response.request().method() === "GET");
     await page
       .getByRole("button", {
-        name: `View quota history for ${E2E_CODEX_CREDENTIAL_ID}`,
+        name: "View quota history for Codex account",
       })
       .click();
+    expect((await loadedHistory).ok()).toBe(true);
     await expect(
       page.getByRole("heading", {
-        name: `Quota window history for ${E2E_CODEX_CREDENTIAL_ID}`,
+        name: "Quota window history for Codex account",
       }),
     ).toBeVisible();
     await expect(page.getByText("Natural reset")).toBeVisible();
@@ -356,7 +380,7 @@ test.describe("Console SPA smoke", () => {
     await page.getByLabel(/email/i).fill("admin@example.com");
     await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
     await page.getByRole("button", { name: /sign in/i }).click();
-    await expect(page).toHaveURL(/\/account/);
+    await expect(page).toHaveURL("/");
     await page.evaluate((path) => {
       window.history.pushState({}, "", path);
       window.dispatchEvent(new PopStateEvent("popstate"));
@@ -390,7 +414,7 @@ test.describe("Console SPA smoke", () => {
     await page.getByLabel(/email/i).fill("admin@example.com");
     await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
     await page.getByRole("button", { name: /sign in/i }).click();
-    await page.getByRole("link", { name: "Login sessions" }).click();
+    await accountPage(page, "Login sessions");
 
     await expect(page).toHaveURL(/\/account\/sessions/);
     await expect(page.getByText("Safari 18 · macOS")).toBeVisible();
@@ -416,8 +440,8 @@ test.describe("Console SPA smoke", () => {
     await expect(page.getByRole("button", { name: "Sign out this device" })).toBeVisible();
 
     await page.getByRole("button", { name: "Show history" }).click();
-    const firefox = page.locator('[data-slot="card-header"]').filter({
-      has: page.getByText("Firefox 128 · Windows", { exact: true }),
+    const firefox = page.getByRole("article").filter({
+      has: page.getByRole("heading", { name: /Firefox 128 · Windows/ }),
     });
     await expect(firefox.getByText("Revoked session", { exact: true })).toBeVisible();
   });
@@ -430,7 +454,7 @@ test.describe("Console SPA smoke", () => {
     await page.getByLabel(/email/i).fill("admin@example.com");
     await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
     await page.getByRole("button", { name: /sign in/i }).click();
-    await page.getByRole("link", { name: "Personal settings" }).click();
+    await accountPage(page, "Personal settings");
 
     await expect(page).toHaveURL(/\/account\/settings/);
     const toggle = page.getByRole("switch", {
@@ -458,7 +482,7 @@ test.describe("Console SPA smoke", () => {
     await page.getByLabel(/email/i).fill("admin@example.com");
     await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
     await page.getByRole("button", { name: /sign in/i }).click();
-    await expect(page).toHaveURL(/\/account/);
+    await expect(page).toHaveURL("/");
     await page.evaluate((path) => {
       window.history.pushState({}, "", path);
       window.dispatchEvent(new PopStateEvent("popstate"));
@@ -486,19 +510,14 @@ test.describe("Console SPA smoke", () => {
     await expect(page.getByText("E2E ISP")).toBeVisible();
   });
 
-  test("system settings expand into isolated, deep-linked categories", async ({ page }) => {
+  test("system settings categories remain isolated and deep-linked on desktop and mobile", async ({ page }) => {
     await mockConsoleApi(page);
     await page.goto("/login");
     await page.getByLabel(/email/i).fill("admin@example.com");
     await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
     await page.getByRole("button", { name: /sign in/i }).click();
-    await expect(page).toHaveURL(/\/account/);
-
-    const menu = page.getByRole("button", { name: "System settings", exact: true });
-    await expect(menu).toHaveAttribute("aria-expanded", "false");
-    await menu.click();
-    await expect(menu).toHaveAttribute("aria-expanded", "true");
-    await page.getByRole("link", { name: "Upstream timeouts", exact: true }).click();
+    await expect(page).toHaveURL("/");
+    await managementPage(page, "Upstream timeouts", "System settings", "Connections and protocols");
     await expect(page).toHaveURL(/\/admin\/system\/upstream$/);
     await expect(page.getByLabel("Connect timeout (seconds)")).toBeVisible();
     await expect(page.getByLabel("Codex originator")).toHaveCount(0);
@@ -515,23 +534,20 @@ test.describe("Console SPA smoke", () => {
     expect(request.headers()["if-match"]).toBe('"2026-01-02T00:00:00.000Z"');
     expect(request.postDataJSON()).not.toHaveProperty("mcp");
 
-    await menu.click();
-    await expect(page.getByRole("link", { name: "General settings", exact: true })).toBeHidden();
-    await menu.click();
-    await page.getByRole("link", { name: "General settings", exact: true }).click();
-    await expect(page.getByRole("heading", { name: "System settings · General settings" })).toBeVisible();
+    await page.getByRole("link", { name: "API hosts", exact: true }).click();
+    await expect(page.getByRole("heading", { level: 1, name: "API hosts" })).toBeVisible();
     await expect(page.getByLabel("Connect timeout (seconds)")).toHaveCount(0);
     await page.reload();
-    await expect(menu).toHaveAttribute("aria-expanded", "true");
-    await expect(page.getByRole("link", { name: "General settings", exact: true })).toHaveAttribute("aria-current", "page");
-
-    await page.getByRole("button", { name: "Toggle Sidebar" }).click();
-    await menu.click();
-    await expect(page.getByRole("link", { name: "General settings", exact: true })).toBeVisible();
+    await expect(page.getByRole("link", { name: "API hosts", exact: true })).toHaveAttribute("aria-current", "page");
 
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.getByRole("button", { name: "Toggle Sidebar" }).click();
-    await page.getByRole("link", { name: "Runtime maintenance", exact: true }).click();
+    const management = page.getByRole("navigation", { name: "Management navigation" });
+    const mobileTree = management.getByRole("button", { name: "Browse management pages" });
+    await expect(mobileTree).toHaveAttribute("aria-expanded", "false");
+    await mobileTree.click();
+    await expect(management.getByRole("link", { name: "API hosts", exact: true })).toHaveAttribute("aria-current", "page");
+    await management.getByRole("link", { name: "Runtime maintenance", exact: true }).click();
+    await expect(mobileTree).toHaveAttribute("aria-expanded", "false");
     await expect(page.getByRole("button", { name: "Reload now" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Save system settings" })).toHaveCount(0);
     await expect(page.getByRole("dialog")).toBeHidden();
@@ -545,7 +561,7 @@ test.describe("Console SPA smoke", () => {
     await page.getByLabel(/email/i).fill("admin@example.com");
     await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
     await page.getByRole("button", { name: /sign in/i }).click();
-    await expect(page).toHaveURL(/\/account/);
+    await expect(page).toHaveURL("/");
     await page.evaluate((path) => {
       window.history.pushState({}, "", path);
       window.dispatchEvent(new PopStateEvent("popstate"));
@@ -576,13 +592,7 @@ test.describe("Console SPA smoke", () => {
     });
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(page.getByRole("button", { name: "Save group" })).toBeVisible();
-    expect(
-      await page.evaluate(
-        () =>
-          document.documentElement.scrollWidth <=
-          document.documentElement.clientWidth + 1,
-      ),
-    ).toBe(true);
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
   });
 
   test("administrators can inspect and batch-update a Codex OAuth credential", async ({
@@ -593,7 +603,7 @@ test.describe("Console SPA smoke", () => {
     await page.getByLabel(/email/i).fill("admin@example.com");
     await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
     await page.getByRole("button", { name: /sign in/i }).click();
-    await expect(page).toHaveURL(/\/account/);
+    await expect(page).toHaveURL("/");
     await page.evaluate((path) => {
       window.history.pushState({}, "", path);
       window.dispatchEvent(new PopStateEvent("popstate"));
@@ -722,7 +732,7 @@ test.describe("Console SPA smoke", () => {
     await page.getByLabel(/email/i).fill("admin@example.com");
     await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
     await page.getByRole("button", { name: /sign in/i }).click();
-    await page.getByRole("link", { name: "Channel group status" }).click();
+    await topNav(page).getByRole("link", { name: "Services" }).click();
 
     await expect(page).toHaveURL(/\/channel-group-status/);
     await expect(
@@ -740,19 +750,20 @@ test.describe("Console SPA smoke", () => {
     await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
     await page.getByRole("button", { name: /sign in/i }).click();
 
-    await page.getByRole("link", { name: "Statistics", exact: true }).click();
+    await topNav(page).getByRole("link", { name: "Usage", exact: true }).click();
     await expect(page).toHaveURL(/\/statistics/);
+    await page.getByRole("tab", { name: "Personal usage" }).click();
     await expect(page.getByText("Request activity", { exact: true })).toBeVisible();
     await expect(
       page.getByLabel("6 requests on Jul 27, 2026"),
     ).toBeVisible();
 
     await page.getByRole("tab", { name: "Cost statistics" }).click();
-    await expect(page.getByText("Total cost", { exact: true })).toBeVisible();
+    await expect(page.getByRole("group", { name: "Chart metric" }).getByRole("button", { name: /^Total cost/ })).toBeVisible();
     await expect(page.getByRole("combobox", { name: "Channel" })).toHaveCount(0);
     await expect(page.getByText("Channel details", { exact: true })).toHaveCount(0);
 
-    await page.locator('a[href="/admin/cost-statistics"]').click();
+    await managementPage(page, "Cost statistics", "Operations");
     await expect(page).toHaveURL(/\/admin\/cost-statistics/);
     await expect(
       page.getByRole("heading", { name: "Cost statistics" }),
@@ -776,7 +787,7 @@ test.describe("Console SPA smoke", () => {
     await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
     await page.getByRole("button", { name: /sign in/i }).click();
 
-    await page.locator('a[href="/usage/request-logs"]').click();
+    await topNav(page).getByRole("link", { name: "Request logs" }).click();
     await expect(page).toHaveURL(/\/usage\/request-logs/);
     await expect(
       page.getByRole("columnheader", { name: "Started" }),
@@ -801,13 +812,17 @@ test.describe("Console SPA smoke", () => {
         );
       });
     const applyFilters = page.getByRole("button", { name: "Apply" });
+    const filterToggle = page.getByRole("button", { name: /^Filters \(/ });
+    await filterToggle.click();
     let repeatedQuery = waitForPersonalLogQuery();
     await applyFilters.click();
     await repeatedQuery;
+    await filterToggle.click();
     repeatedQuery = waitForPersonalLogQuery();
     await applyFilters.click();
     await repeatedQuery;
 
+    await filterToggle.click();
     await page.getByRole("combobox", { name: "Operation" }).click();
     await page.getByRole("option", { name: "Responses", exact: true }).click();
     const operationQuery = waitForPersonalLogQuery();
@@ -817,7 +832,7 @@ test.describe("Console SPA smoke", () => {
     ).toBe("responses");
 
     await page.getByRole("cell", { name: "gateway-e2e-model" }).click();
-    const personalDetail = page.getByRole("dialog");
+    const personalDetail = page.getByRole("complementary", { name: "Request log" });
     await expect(personalDetail).toBeVisible();
     await expect(
       personalDetail.locator("dt").filter({ hasText: "Completed" }),
@@ -828,10 +843,10 @@ test.describe("Console SPA smoke", () => {
     await expect(
       personalDetail.getByText("Responses", { exact: true }),
     ).toBeVisible();
-    await page.keyboard.press("Escape");
+    await personalDetail.getByRole("button", { name: "Close inspector" }).click();
     await expect(personalDetail).toBeHidden();
 
-    await page.locator('a[href="/admin/request-logs"]').click();
+    await managementPage(page, "Global request logs", "Operations");
     await expect(page).toHaveURL(/\/admin\/request-logs/);
     await expect(
       page.getByRole("columnheader", { name: "User", exact: true }),
@@ -853,7 +868,7 @@ test.describe("Console SPA smoke", () => {
     await channel.blur();
     await expect(page.getByRole("cell", { name: "Batch User" })).toBeVisible();
     await page.getByRole("cell", { name: "gateway-e2e-model" }).click();
-    const systemDetail = page.getByRole("dialog");
+    const systemDetail = page.getByRole("complementary", { name: "Request log" });
     await expect(systemDetail).toBeVisible();
     await expect(
       systemDetail.locator("dt").filter({ hasText: "Completed" }),
@@ -884,6 +899,7 @@ test.describe("Console SPA smoke", () => {
     await page.getByLabel(/email/i).fill("batch-user@example.test");
     await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
     await page.getByRole("button", { name: /sign in/i }).click();
+    await topNav(page).getByRole("link", { name: "Services" }).click();
     await page.getByRole("link", { name: "Spend leaderboard" }).click();
 
     await expect(page).toHaveURL(/\/leaderboard/);
@@ -899,7 +915,7 @@ test.describe("Console SPA smoke", () => {
     await page.getByLabel(/email/i).fill("admin@example.com");
     await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
     await page.getByRole("button", { name: /sign in/i }).click();
-    await page.getByRole("link", { name: "API Keys" }).click();
+    await topNav(page).getByRole("link", { name: "API keys", exact: true }).click();
     await page.getByRole("button", { name: "New API key" }).click();
 
     await page.getByLabel(/^name$/i).fill("browser key");
@@ -961,7 +977,7 @@ test.describe("Console SPA smoke", () => {
     await page.getByLabel(/email/i).fill("admin@example.com");
     await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
     await page.getByRole("button", { name: /sign in/i }).click();
-    await page.getByRole("link", { name: "Users" }).click();
+    await managementPage(page, "Users", "Members and access");
 
     await page.getByRole("checkbox", { name: "Select Batch User" }).check();
     await page.getByRole("button", { name: "Batch edit (1)" }).click();
@@ -1002,10 +1018,16 @@ test.describe("Console SPA smoke", () => {
     await page.getByLabel(/email/i).fill("admin@example.com");
     await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
     await page.getByRole("button", { name: /sign in/i }).click();
-    await page.getByRole("link", { name: "Users" }).click();
-    await page
-      .getByRole("cell", { name: /Batch User batch-user@example/ })
-      .click();
+    await managementPage(page, "Users", "Members and access");
+    await page.getByRole("button", { name: `Inspect ${E2E_USER.display_name}`, exact: true }).click();
+    const properties = page.getByRole("complementary", { name: E2E_USER.display_name });
+    await expect(properties.getByText("Default Users", { exact: true })).toBeVisible();
+    await expect(properties.getByText("default", { exact: true })).toBeVisible();
+    for (const id of [E2E_USER.id, E2E_USER.user_group_id, E2E_USER.effective_api_key_policy_id]) {
+      await expect(properties).not.toContainText(id);
+    }
+    await properties.getByRole("link", { name: "Open configuration" }).click();
+    await expect(page).toHaveURL(new RegExp(`/admin/users/${E2E_USER.id}\\?returnTo=`));
 
     const websocket = page.getByRole("switch", {
       name: "Enable Responses WebSocket",
@@ -1035,7 +1057,7 @@ test.describe("Console SPA smoke", () => {
     await page.getByLabel(/email/i).fill("admin@example.com");
     await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
     await page.getByRole("button", { name: /sign in/i }).click();
-    await page.getByRole("link", { name: "Registration Codes" }).click();
+    await managementPage(page, "Registration Codes", "Members and access");
     await page.getByRole("link", { name: "New registration code" }).click();
 
     await page.getByLabel("Name").fill("Community launch");

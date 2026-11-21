@@ -33,7 +33,7 @@ describe("LoginPage", () => {
     renderAppAt("/login");
     const email = await screen.findByLabelText(/email/i);
     await user.type(email, "admin@example.com");
-    await user.type(screen.getByLabelText(/password/i), "a-very-long-password");
+    await user.type(screen.getByLabelText("Password"), "a-very-long-password");
     await user.click(screen.getByRole("button", { name: /sign in/i }));
 
     await waitFor(() => {
@@ -71,12 +71,12 @@ describe("SessionsPage", () => {
     expect(await screen.findByText("Other devices signed out")).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByRole("button", { name: /sign out firefox/i })).not.toBeInTheDocument());
     expect(screen.getByRole("button", { name: "Sign out this device" })).toBeEnabled();
-    expect(screen.getByText("Session 000000a1")).toBeVisible();
+    expect(screen.getByText("Safari 18 · macOS")).toBeVisible();
     expect(screen.getByRole("button", { name: "Sign out other devices" })).toBeDisabled();
-    expect(screen.queryByText("Session 000000a3")).not.toBeInTheDocument();
+    expect(screen.queryByText("Firefox 128 · Windows")).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Show history" }));
     expect(await screen.findByText("Revoked session")).toBeVisible();
-    expect(screen.getByText("Session 000000a3")).toBeVisible();
+    expect(screen.getByText("Firefox 128 · Windows")).toBeVisible();
     expect(deletes).toEqual(["collection"]);
   });
 

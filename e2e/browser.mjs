@@ -43,6 +43,11 @@ try {
     await assertMemoryOnly();
     return cookie;
   }
+  async function assertOverview() {
+    await expect(page.getByRole("heading", { level: 1, name: "Gateway overview" })).toBeVisible();
+    await expect(page.getByRole("group", { name: "Chart metric" }).getByRole("button", { name: /^Requests/ })).toBeVisible();
+    await expect(page.getByRole("main").getByRole("alert")).toHaveCount(0);
+  }
   page.setDefaultTimeout(15_000);
   await page.goto(`${data.console}/login`);
   await page.getByLabel("Email", { exact: true }).fill("system-e2e@example.test");
@@ -50,16 +55,21 @@ try {
   const login = watchPost("/auth/login");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await rememberToken(await login, "access_token");
-  await expect(page).toHaveURL(/\/account$/);
+  await expect(page).toHaveURL(`${data.console}/`);
+  await assertOverview();
   const refresh = await refreshCookie();
   await assertMemoryOnly();
   const rotated = await navigateWithRefresh();
-  await expect(page.getByRole("heading", { name: "Profile", exact: true })).toBeVisible();
+  await assertOverview();
+  await expect(page.getByRole("navigation", { name: "Console navigation" }).getByRole("link", { name: "Overview", exact: true })).toHaveAttribute("aria-current", "page");
   assertRefreshRotation(refresh, rotated);
 
   const pluginUrl = `${data.console}/console/v1/plugins/codex`;
   const pluginSettingsUrl = `${pluginUrl}/settings`;
-  await page.getByRole("link", { name: "Plugins", exact: true }).click();
+  await page.getByRole("navigation", { name: "Console navigation" }).getByRole("link", { name: "Management" }).click();
+  const management = page.getByRole("navigation", { name: "Management navigation" });
+  await management.getByRole("button", { name: "System settings", exact: true }).click();
+  await management.getByRole("link", { name: "Plugins", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Plugins", exact: true })).toBeVisible();
   await page.getByLabel("Plugin package", { exact: true }).setInputFiles(data.plugin_archive);
   await page.getByRole("button", { name: "Install plugin", exact: true }).click();

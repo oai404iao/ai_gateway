@@ -1,4 +1,4 @@
-import { clearSession, setSession } from "@/api/session-store";
+import { clearSession, getSession, sessionScope, setSession } from "@/api/session-store";
 import type {
   ActivateInvitationInput,
   CompletePasswordResetInput,
@@ -8,6 +8,7 @@ import type {
 } from "@/api/types";
 import { ApiError, readApiError } from "@/api/errors";
 import { apiSend, consoleFetch } from "@/api/client";
+import { translate } from "@/app/i18n";
 
 const LOGIN_PATH = "/console/v1/auth/login";
 const REGISTER_PATH = "/console/v1/auth/register";
@@ -62,15 +63,18 @@ export async function activateInvitation(
 export async function completePasswordReset(
   input: CompletePasswordResetInput,
 ): Promise<LoginResponse> {
+  const scope = sessionScope(getSession().user);
   const data = await apiSend<LoginResponse>(
     "/auth/complete-password-reset",
     "POST",
     input,
   );
+  if (scope !== sessionScope(getSession().user)) throw new Error(translate("Your session has changed."));
   return applyLogin(data);
 }
 
 export async function logout(): Promise<void> {
+  const scope = sessionScope(getSession().user);
   try {
     await consoleFetch("/auth/logout", { method: "POST" });
   } catch (error) {
@@ -80,6 +84,6 @@ export async function logout(): Promise<void> {
       // Surface unexpected errors to the caller, but always clear locally.
     }
   } finally {
-    clearSession();
+    if (scope === sessionScope(getSession().user)) clearSession();
   }
 }

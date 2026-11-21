@@ -15,7 +15,7 @@ async function signIn(page: Page, path: string) {
   await page.getByLabel("Email").fill("admin@example.com");
   await page.getByLabel("Password", { exact: true }).fill("correct-horse-battery-staple");
   await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page.getByRole("link", { name: "Users", exact: true })).toBeVisible();
+  await expect(page).toHaveURL("/");
   await page.goto(path);
 }
 

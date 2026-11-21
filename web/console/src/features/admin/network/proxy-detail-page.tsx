@@ -196,7 +196,6 @@ export function ProxyDetailPage() {
   return (
     <AdminDetailShell
       title={isNew ? t("New proxy") : state.name || t("Proxy")}
-      description={t("An egress proxy shared by upstream clients.")}
       backPath={returnTo}
       navigationGuard={draft.navigationGuard}
       isLoading={isLoading}
@@ -231,9 +230,7 @@ export function ProxyDetailPage() {
         <Card>
           <CardHeader>
             <CardTitle>{isNew ? t("Create proxy") : t("Edit proxy")}</CardTitle>
-            <CardDescription>
-              {!isNew ? t("Leave credential fields blank to keep current values.") : null}
-            </CardDescription>
+            {!isNew && <CardDescription>{t("Leave credential fields blank to keep current values.")}</CardDescription>}
           </CardHeader>
           <CardContent>
             <form className="flex flex-col gap-4" onSubmit={(event) => { event.preventDefault(); void submit(); }}>

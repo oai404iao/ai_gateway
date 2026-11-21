@@ -6,6 +6,7 @@ import { z } from "zod";
 import { toast } from "sonner";
 import { AdminDetailShell } from "@/features/admin/components/admin-detail-shell";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
+import { ErrorAlert } from "@/components/shared/async-resource";
 import { DecimalField } from "@/components/shared/decimal-field";
 import { StringListField } from "@/components/shared/string-list-field";
 import { ChannelModelPickerDialog } from "@/features/admin/routing/channels/channel-model-picker-dialog";
@@ -38,6 +39,7 @@ import {
   useDeleteChannelCapability,
   useDiscoverChannelModels,
   useLogicalChannels,
+  useModels,
   useRecoverCapability,
   useUpdateChannelCapability,
   useUpstreamAccesses,
@@ -58,6 +60,8 @@ import { usePageOrigin, useReturnPath, withReturnTo } from "@/lib/page-navigatio
 import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
 import { useConnectorPlugins } from "@/features/admin/connectors/api";
 import { modelDiscoveryInput, supportsModelDiscovery } from "./model-discovery-input";
+import { modelLabel } from "@/features/admin/models/model-label";
+import { resourceLabels } from "@/lib/resource-labels";
 
 const NONE = "__none__";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -131,6 +135,7 @@ export function CapabilityDetailPage({ capabilityId, channelId, embedded = false
   const discover = useDiscoverChannelModels();
   const [pickingModels, setPickingModels] = useState(false);
   const templates = useConfigTemplates();
+  const pricingModels = useModels();
   const create = useCreateChannelCapability();
   const update = useUpdateChannelCapability(id);
   const remove = useDeleteChannelCapability(id);
@@ -142,6 +147,7 @@ export function CapabilityDetailPage({ capabilityId, channelId, embedded = false
     defaultValues: { ...defaults, channel_id: channelId ?? params.get("channel") ?? defaults.channel_id },
   });
   const capability = query.data?.data;
+  const probePriceId = form.watch("test_pricing_model_id");
   const selectedChannel = channels.data?.find((channel) => channel.id === form.watch("channel_id"));
   const selectedAccess = accesses.data?.find((access) => access.id === selectedChannel?.access_id);
   const connector = connectors.data?.find((item) => item.id === selectedAccess?.connector_kind);
@@ -160,7 +166,7 @@ export function CapabilityDetailPage({ capabilityId, channelId, embedded = false
     ? `/admin/routing/logical-channels/${channelId}?${closeParams}`
     : returnTo;
   const channelNames = useMemo(
-    () => new Map((channels.data ?? []).map((channel) => [channel.id, channel.name])),
+    () => resourceLabels(channels.data ?? []),
     [channels.data],
   );
 
@@ -519,11 +525,20 @@ export function CapabilityDetailPage({ capabilityId, channelId, embedded = false
                     <FieldLabel htmlFor="capability-test-price">
                       {t("Probe pricing model")}
                     </FieldLabel>
-                    <Input
-                      id="capability-test-price"
-                      {...form.register("test_pricing_model_id")}
-                      aria-invalid={Boolean(form.formState.errors.test_pricing_model_id)}
-                    />
+                    <Select value={probePriceId || NONE} disabled={!pricingModels.data}
+                      onValueChange={(value) => form.setValue("test_pricing_model_id", value === NONE ? "" : value, { shouldDirty: true })}>
+                      <SelectTrigger id="capability-test-price" aria-invalid={Boolean(form.formState.errors.test_pricing_model_id)}><SelectValue /></SelectTrigger>
+                      <SelectContent><SelectGroup>
+                        <SelectItem value={NONE}>{t("None")}</SelectItem>
+                        {probePriceId && !pricingModels.data?.some((model) => model.id === probePriceId) && <SelectItem value={probePriceId} disabled>
+                          {pricingModels.isLoading ? t("Loading…") : `${t("Unavailable")} · ${probePriceId}`}
+                        </SelectItem>}
+                        {pricingModels.data?.map((model) => <SelectItem key={model.id} value={model.id}>
+                          {modelLabel(model.display_name, model.source_model_id)}
+                        </SelectItem>)}
+                      </SelectGroup></SelectContent>
+                    </Select>
+                    {pricingModels.error && <ErrorAlert error={pricingModels.error} />}
                     <FieldDescription>
                       {t("Both probe fields are set or cleared together.")}
                     </FieldDescription>

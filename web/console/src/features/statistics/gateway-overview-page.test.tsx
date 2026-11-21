@@ -1,0 +1,86 @@
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { http, HttpResponse } from "msw";
+import { MemoryRouter } from "react-router";
+import { describe, expect, it } from "vitest";
+import { AppProviders } from "@/app/providers";
+import { OWN_COST_STATISTICS_REPORT as report, REQUEST_LOG } from "@/test/fixtures";
+import { seedAuthenticatedSession, seedUserSession, server } from "@/test/msw";
+import { GatewayOverviewPage } from "./gateway-overview-page";
+import { overviewWindow, usageSlices } from "./usage-window";
+
+function renderOverview() {
+  render(<AppProviders><MemoryRouter><GatewayOverviewPage /></MemoryRouter></AppProviders>);
+}
+
+function urlOf(link: HTMLElement) {
+  return new URL(link.getAttribute("href")!, "https://console.test");
+}
+
+describe("Gateway overview", () => {
+  it.each([["member", seedUserSession], ["administrator", seedAuthenticatedSession]] as const)(
+    "queries only owner resources and drills into the failed request for a %s", async (_, seed) => {
+      seed();
+      const costs: URLSearchParams[] = [], logs: URLSearchParams[] = [], system: string[] = [];
+      server.use(
+        http.get("/console/v1/statistics/costs", ({ request }) => {
+          costs.push(new URL(request.url).searchParams);
+          return HttpResponse.json(report);
+        }),
+        http.get("/console/v1/me/request-logs", ({ request }) => {
+          logs.push(new URL(request.url).searchParams);
+          return HttpResponse.json([{ ...REQUEST_LOG, outcome: "failed", response_status_code: 503 }]);
+        }),
+        http.get(/\/console\/v1\/(system\/statistics\/costs|request-logs)$/, ({ request }) => {
+          system.push(request.url);
+          return new HttpResponse(null, {status: 403});
+        }),
+      );
+      const user = userEvent.setup();
+      renderOverview();
+      const ledger = await screen.findByRole("tabpanel", {name: "Model distribution"});
+      const model = urlOf(await within(ledger).findByRole("link", {name: `Related requests for ${report.models[0].model} · Chat Completions`}));
+      expect(model.pathname).toBe("/usage/request-logs");
+      expect(model.searchParams.get("api_format")).toBe(report.models[0].api_format);
+      expect(model.searchParams.get("model")).toBe(report.models[0].model);
+      expect(logs).toHaveLength(0);
+
+      const interval = screen.getByRole("link", {name: "Interval logs"});
+      expect(urlOf(interval).searchParams.get("started_after")).toBe("2026-07-21T00:00:00.000Z");
+      expect(urlOf(interval).searchParams.get("started_before")).toBe("2026-07-21T13:59:59.999999Z");
+      await user.click(screen.getByRole("button", {name: "Previous interval"}));
+      expect(urlOf(interval).searchParams.get("started_after")).toBe("2026-07-20T00:00:00.000Z");
+      const tokens = screen.getByRole("button", {name: /^Total tokens/});
+      await user.click(tokens);
+      expect(tokens).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getByText("16,000,000 Tokens")).toBeVisible();
+
+      await user.click(screen.getByRole("button", {name: "Last 24 hours"}));
+      const day = urlOf(screen.getByRole("link", {name: "Usage report"}));
+      const start = day.searchParams.get("started_after")!, end = day.searchParams.get("started_before")!;
+      expect(Date.parse(end)-Date.parse(start)).toBe(86_400_000);
+      await waitFor(() => expect(costs.some(q => q.get("started_after") === start && q.get("started_before") === end && q.get("granularity") === "hour")).toBe(true));
+      expect(costs.every(q => !q.has("user_id") && !q.has("channel_id"))).toBe(true);
+      await user.click(screen.getByRole("tab", {name: "Failed requests"}));
+      const failed = await screen.findByRole("tabpanel", {name: "Failed requests"});
+      const request = urlOf(await within(failed).findByRole("link"));
+      expect(request.pathname).toBe("/usage/request-logs");
+      expect(request.searchParams.get("id")).toBe(REQUEST_LOG.id);
+      expect(logs.at(-1)?.get("outcome")).toBe("failed");
+      expect(logs.at(-1)?.get("started_after")).toBe(start);
+      expect(logs.at(-1)?.get("started_before")).toBe(request.searchParams.get("started_before"));
+      expect(system).toEqual([]);
+    },
+  );
+
+  it("compares matching UTC windows across month boundaries and clips partial hourly slices", () => {
+    const end = Date.parse("2026-03-02T00:15:00Z");
+    expect(overviewWindow(end, "7d")).toEqual({ started_after:"2026-02-24T00:00:00.000Z", started_before:"2026-03-02T00:15:00.000Z" });
+    expect(overviewWindow(end, "7d", true)).toEqual({ started_after:"2026-02-17T00:00:00.000Z", started_before:"2026-02-23T00:15:00.000Z" });
+    const interval = usageSlices({ ...report, granularity: "hour", started_at:"2026-07-20T00:35:00Z", ended_at:"2026-07-20T01:12:00Z", buckets:[report.buckets[0], {...report.buckets[1],started_at:"2026-07-20T01:00:00Z"}] }, false);
+    expect(interval.map(s => [s.start,s.end])).toEqual([
+      [Date.parse("2026-07-20T00:35:00Z"),Date.parse("2026-07-20T01:00:00Z")],
+      [Date.parse("2026-07-20T01:00:00Z"),Date.parse("2026-07-20T01:12:00Z")],
+    ]);
+  });
+});

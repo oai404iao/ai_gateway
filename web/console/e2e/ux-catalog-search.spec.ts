@@ -47,7 +47,7 @@ async function openPriceSync(page: Page) {
   await page.locator('input[type="email"]').fill("admin@example.com");
   await page.locator('input[type="password"]').fill("synthetic-password");
   await page.locator('button[type="submit"]').click();
-  await expect(page).toHaveURL(/\/account$/);
+  await expect(page).toHaveURL("/");
   await page.goto("/admin/models?view=prices");
   return { previews, applied };
 }

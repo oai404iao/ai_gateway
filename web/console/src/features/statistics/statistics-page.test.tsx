@@ -11,8 +11,10 @@ import {
   CHANNEL_GROUP,
   ROUTING_GROUP,
   LOGICAL_CHANNEL,
+  UPSTREAM_ACCESS,
   CHANNEL_CAPABILITY,
   COST_STATISTICS_REPORT,
+  OWN_API_KEY,
   MODEL,
 } from "@/test/fixtures";
 
@@ -28,14 +30,15 @@ function renderApp(path = "/statistics") {
 }
 
 describe("StatisticsPage", () => {
-  it("redirects the Console root to statistics", async () => {
+  it("opens the personal overview at the Console root", async () => {
     seedAuthenticatedSession();
     renderApp("/");
 
     expect(
-      await screen.findByText("Request activity", {}, { timeout: 5_000 }),
+      await screen.findByRole("heading", {name: "Gateway overview"}, { timeout: 5_000 }),
     ).toBeInTheDocument();
-    expect(window.location.pathname).toBe("/statistics");
+    expect(window.location.pathname).toBe("/");
+    expect(await screen.findByRole("tab", {name: "Model distribution"})).toBeInTheDocument();
   });
 
   it("keeps administrator personal analytics owner-scoped and exposes system analytics", async () => {
@@ -58,6 +61,7 @@ describe("StatisticsPage", () => {
     const user = userEvent.setup();
     renderApp();
 
+    await user.click(await screen.findByRole("tab", { name: "Personal usage" }));
     expect(
       await screen.findByText("Request activity", {}, { timeout: 5_000 }),
     ).toBeInTheDocument();
@@ -68,25 +72,18 @@ describe("StatisticsPage", () => {
     expect(
       screen.getByLabelText("8 requests on Jul 25, 2026"),
     ).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Model configuration" })).toHaveAttribute("href", "/admin/models");
-    expect(screen.getByRole("link", { name: "System load" })).toHaveAttribute(
-      "href",
-      "/admin/system-load",
-    );
-    expect(screen.getByRole("link", { name: "Cost statistics" })).toHaveAttribute(
-      "href",
-      "/admin/cost-statistics",
-    );
+    expect(screen.getByRole("link", { name: "Management" })).toHaveAttribute("href", "/admin/models");
     expect(screen.queryByRole("tab", { name: "System load" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("tab", { name: "Cost statistics" }));
 
-    expect(await screen.findByText("Total cost", {}, { timeout: 5_000 })).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        "Filter your own statistics by time range, API key, and aggregation granularity.",
-      ),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /^Total cost/ }, { timeout: 5_000 })).toBeVisible();
+    await user.click(screen.getByText("Filters", {selector: "summary"}));
+    const keyFilter = screen.getByRole("combobox", {name: "API key"});
+    await user.click(keyFilter);
+    await user.click(await screen.findByRole("option", {name: OWN_API_KEY.name}));
+    await user.click(screen.getByRole("button", {name: "Apply"}));
+    await waitFor(() => expect(ownQueries.at(-1)?.get("api_key_id")).toBe(OWN_API_KEY.id));
     expect(screen.queryByRole("combobox", { name: "Channel" })).not.toBeInTheDocument();
     expect(screen.queryByText("Channel details")).not.toBeInTheDocument();
     expect(ownQueries.length).toBeGreaterThan(0);
@@ -94,6 +91,9 @@ describe("StatisticsPage", () => {
     expect(ownQueries.every((query) => !query.has("channel_id"))).toBe(true);
     expect(systemCostRequests).toBe(0);
 
+    await user.click(screen.getByRole("link", { name: "Management" }));
+    await user.click(await screen.findByRole("button", { name: "Operations" }));
+    expect(await screen.findByRole("link", { name: "System load" })).toHaveAttribute("href", "/admin/system-load");
     await user.click(screen.getByRole("link", { name: "Cost statistics" }));
 
     expect(window.location.pathname).toBe("/admin/cost-statistics");
@@ -161,21 +161,19 @@ describe("StatisticsPage", () => {
     );
     renderApp();
 
+    await user.click(await screen.findByRole("tab", { name: "Personal usage" }));
     expect(
       await screen.findByText("Request activity", {}, { timeout: 5_000 }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Statistics" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Usage" })).toHaveAttribute(
       "href",
       "/statistics",
     );
-    expect(screen.getByRole("link", { name: "Channel group status" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Services" })).toHaveAttribute(
       "href",
       "/channel-group-status",
     );
-    expect(screen.getByRole("link", { name: "Spend leaderboard" })).toHaveAttribute(
-      "href",
-      "/leaderboard",
-    );
+    expect(screen.queryByRole("link", { name: "Management" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Model configuration" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "System load" })).not.toBeInTheDocument();
     expect(
@@ -185,15 +183,12 @@ describe("StatisticsPage", () => {
 
     await user.click(screen.getByRole("tab", { name: "Cost statistics" }));
 
-    expect(await screen.findByText("Total cost", {}, { timeout: 5_000 })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /^Total cost/ }, { timeout: 5_000 })).toBeVisible();
+    await user.click(screen.getByText("Filters", {selector: "summary"}));
     expect(screen.queryByRole("combobox", { name: "Channel" })).not.toBeInTheDocument();
     expect(screen.queryByText("Channel details")).not.toBeInTheDocument();
 
-    expect(
-      screen.getByText(
-        "Filter your own statistics by time range, API key, and aggregation granularity.",
-      ),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("combobox", {name: "API key"})).toBeVisible();
     expect(screen.queryByText("All users")).not.toBeInTheDocument();
     expect(adminUserRequests).toBe(0);
     expect(adminKeyRequests).toBe(0);
@@ -207,6 +202,7 @@ describe("StatisticsPage", () => {
       await screen.findByRole("heading", { name: "Channel group status" }),
     ).toBeInTheDocument();
     expect(await screen.findByText("Model overview")).toBeInTheDocument();
+    expect(screen.getByRole("link", {name:"Spend leaderboard"})).toHaveAttribute("href", "/leaderboard");
     expect(await screen.findByText(CHANNEL_GROUP.name)).toBeInTheDocument();
     expect(screen.queryByText("Total cost")).not.toBeInTheDocument();
   });
@@ -276,27 +272,25 @@ describe("StatisticsPage", () => {
 
   it("hydrates a Codex credential filter from the URL and keeps it separate from channel filters", async () => {
     seedAuthenticatedSession();
+    const user = userEvent.setup();
     const credentialId = "00000000-0000-0000-0000-00000000d001";
     const queries: URLSearchParams[] = [];
     server.use(
-      http.get("/console/v1/routing/channels", () =>
+      http.get("/console/v1/routing/accesses", () => HttpResponse.json([
+        {...UPSTREAM_ACCESS, name: "Subscriptions", connector_kind: "codex"},
+      ])),
+      http.get("/console/v1/routing/logical-channels", () =>
         HttpResponse.json([
-          CHANNEL,
           {
-            ...CHANNEL,
-            id: credentialId,
+            ...LOGICAL_CHANNEL,
+            credential_id: credentialId,
             name: "Codex Plus",
-            api_format: "open_ai_responses",
-            connector_kind: "codex",
-            provider_managed: true,
           },
           {
-            ...CHANNEL,
+            ...LOGICAL_CHANNEL,
             id: "00000000-0000-0000-0000-00000000d002",
-            name: "Codex Plus",
-            api_format: "open_ai_images",
-            connector_kind: "codex",
-            provider_managed: true,
+            credential_id: credentialId,
+            name: "Codex Images",
           },
         ]),
       ),
@@ -317,9 +311,14 @@ describe("StatisticsPage", () => {
     const query = queries.at(-1);
     expect(query?.get("codex_credential_id")).toBe(credentialId);
     expect(query?.has("channel_id")).toBe(false);
-    expect(
-      screen.getByRole("combobox", { name: "Codex credential" }),
-    ).toBeInTheDocument();
+    const credentialFilter = screen.getByRole("combobox", { name: "Codex credential" });
+    const credentialName = "Subscriptions · Codex Images, Subscriptions · Codex Plus";
+    await waitFor(() => expect(credentialFilter).toHaveTextContent(credentialName));
+    credentialFilter.focus();
+    await user.keyboard("{ArrowDown}");
+    const options = await screen.findAllByRole("option");
+    expect(options.map((option) => option.textContent)).toEqual(["All Codex credentials", credentialName]);
+    await user.keyboard("{Escape}");
     expect(screen.getByRole("combobox", { name: "Channel" })).toBeInTheDocument();
   });
 });

@@ -60,6 +60,22 @@ take precedence over the GET/HEAD SPA fallback, including JSON 404s for unknown
 See the [UI architecture](../../docs/development/console-ui.md) for cache and
 security headers, listener tests, and embedding details.
 
+## Navigate the Console
+
+After sign-in, `/` shows the current account’s overview for both users and
+administrators. `/statistics` is the personal usage report. Use the desktop
+header or the mobile dock to switch workspaces. **Find page** (`Ctrl+K` or
+`⌘K`) and the dock’s **More** button search the pages available to the account. The
+avatar menu contains account details, preferences, sessions and sign-out.
+
+Administrators can enter the management area without changing accounts. Its
+local navigation appears only on `/admin` routes. Deep links open the active
+branch of the management tree; on mobile, tap the current page above the
+content to browse. Personal reports and logs
+remain personal; `/admin/cost-statistics` and `/admin/request-logs` are the
+separate cross-user views. The workspace reads from the authenticated Console
+API, including when served by Vite. Fixtures and network mocks belong to tests.
+
 ## Layout
 
 - `src/api/` — typed Console client, session store, MSW/test helpers, generated
@@ -85,8 +101,8 @@ capability shares the channel's grant, but adding a channel to a group does not
 silently grant access. Deployment requires the coordinated migrations in the
 [cutover record](../../docs/development/upstream-identity-capabilities.md).
 
-The sidebar groups configuration into **Upstream accesses**, **Upstream
-credentials**, **Channel configuration**, and **Model configuration**.
+The management area provides **Upstream accesses**, **Upstream credentials**,
+**Channel configuration**, and **Model configuration**.
 Channel configuration combines group management, logical channels grouped by
 their group, and capabilities scoped to the selected channel.
 
@@ -151,7 +167,7 @@ Base UI. Custom triggers use `render`, not Radix `asChild`.
   redirects. Navigation uses links; mutations use buttons. Do not duplicate Back controls.
 - Seed every Select-backed React Hook Form field in `defaultValues` so `reset()`
   values participate in validation. Show field errors and retain failed drafts.
-- Create a `QueryClient` per provider mount, not as a module singleton.
+- Keep the query cache inside the mounted session provider. Changing account or privilege scope starts a fresh cache; refreshing the bearer for the same scope does not.
 - Keep access tokens in memory; refresh tokens use HttpOnly Secure cookies.
   Frontend guards are UX, never the authorization boundary.
 - Preserve GET ETags and send `If-Match` for versioned mutations. A 409 requires

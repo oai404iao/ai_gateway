@@ -100,7 +100,7 @@ function Workspace({ id, models, profiles, rules }: {
   return <div className="flex min-w-0 flex-col gap-5">
     {draft.navigationGuard}
     <PageHeader backTo={backTo} title={direct ? "Bulk configure routes" : "Onboard model"}
-      description={direct ? "Append candidates from multiple providers without changing existing pricing or routes." : "Confirm pricing once, then select the operations and providers for this model."} />
+      description={direct ? "Append candidates from multiple providers without changing existing pricing or routes." : undefined} />
     {unavailable ? <Alert><AlertTitle>{t(current ? "Enable this priced model before creating its routing profile." : "This client model is no longer available.")}</AlertTitle></Alert> : <>
       {!direct && <div ref={pricing} hidden={!!preview}><OnboardingPricing models={models} catalogRevision={revision} onReview={review} onEdit={draft.markDirty} /></div>}
       {preview && <>
@@ -119,7 +119,7 @@ function Workspace({ id, models, profiles, rules }: {
           <AlertDescription>{t("Reload the current prices and routes, then review your selection again.")}
             <Button variant="outline" disabled={busy} onClick={() => void refresh()}>{t("Reload preview")}</Button>
           </AlertDescription></Alert></div>}
-        <footer className="sticky bottom-0 z-10 flex min-w-0 flex-wrap items-center justify-between gap-3 rounded-xl border bg-background p-3">
+        <footer className="sticky bottom-[var(--console-dock-clearance,0px)] z-10 flex min-w-0 flex-wrap items-center justify-between gap-3 border-y bg-background py-3">
           <p role="status" className="text-sm">{t("{ops} operations · {routes} candidates · {models} catalog additions", {
             ops: operations.length, routes: count, models: candidates.filter((c) => c.register_model).length,
           })}{count > 100 && <span className="block text-destructive">{t("Select at most 100 candidates.")}</span>}</p>

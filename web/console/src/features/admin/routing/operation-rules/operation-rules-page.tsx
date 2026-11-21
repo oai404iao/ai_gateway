@@ -11,9 +11,6 @@ export function OperationRulesPage() {
   return (
     <AdminListPage
       title={t("Operation rules")}
-      description={t(
-        "Per-operation routing tiers that reference channel capabilities and upstream wire models.",
-      )}
       query={query}
       rowKey={(rule) => rule.id}
       detailPath={(rule) => `/admin/routing/operation-rules/${rule.id}`}
@@ -25,7 +22,7 @@ export function OperationRulesPage() {
           header: t("Routing profile"),
           render: (rule) =>
             profiles.data?.find((profile) => profile.id === rule.model_routing_profile_id)
-              ?.model_display_name ?? rule.model_routing_profile_id,
+              ?.model_display_name ?? t("Unavailable"),
         },
         {
           key: "operation",

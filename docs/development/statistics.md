@@ -27,9 +27,8 @@
 | 系统花费 | 管理员 | 事实，可筛 user/Key/channel/Codex credential，含渠道明细 |
 | 花费排行榜 | 任意已登录用户 | spend_leaderboard_* 快照，上海自然日/周/月 |
 
-“统计”页默认个人使用情况，花费在独立标签。
-系统花费位于 Console 系统分组，管理员在个人标签不获得额外字段/筛选。
-系统负载仍是独立管理员 /admin/system-load 页面，不混入个人统计。
+个人概览（`/`）和用量报表（`/statistics`）不因管理员角色而切换读源或增加系统级筛选。
+需要跨用户比较时使用管理区的 `/admin/cost-statistics`；系统负载在 `/admin/system-load`，不混入个人统计。
 
 ## 个人使用情况
 
@@ -88,8 +87,8 @@ SQLite 使用相邻秩与 PG 插值公式实现百分位，见[精确查询](sql
 
 查询按 started_at 左闭右开区间，granularity=hour/day：
 小时最多 31 天，天最多 366 天。
-连续 UTC 桶补齐无请求日期/小时，请求数、Token 和花费为 0；
-Console 按浏览器本地时区展示。
+连续 UTC 桶补齐无请求日期/小时，请求数、Token 和花费为 0。个人趋势图标示 UTC；
+筛选表单中的本地日期时间要转换为带时区的请求边界。
 
 个人端点仅接受时间、粒度和 api_key_id，不接受 user/channel 等系统筛选；
 管理员访问个人端点仍只看本人，channels 为空。

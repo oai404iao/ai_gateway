@@ -28,7 +28,7 @@ export function RegistrationInvitationCodesPage() {
   const { t } = useI18n();
 
   const groupName = (id: string) =>
-    groups.data?.find((group) => group.id === id)?.name ?? id;
+    groups.data?.find((group) => group.id === id)?.name ?? t("Unavailable");
   const statusBadge = (code: RegistrationInvitationCodeView) => {
     const value = status(code);
     if (value === "expired") {
@@ -43,15 +43,13 @@ export function RegistrationInvitationCodesPage() {
   return (
     <AdminListPage
       title={t("Registration Codes")}
-      description={t(
-        "Create and adjust reusable invitation codes for self-service registration.",
-      )}
       query={{
         data: codes.data,
         isLoading: codes.isLoading || groups.isLoading,
         error: codes.error ?? groups.error,
       }}
       rowKey={(code) => code.id}
+      rowName={(code) => code.name}
       detailPath={(code) => `/admin/registration-invitation-codes/${code.id}`}
       createLabel={t("New registration code")}
       createPath="/admin/registration-invitation-codes/new"

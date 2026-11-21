@@ -17,25 +17,20 @@ export function useUpdateProfile() {
   return useMutation({
     mutationFn: (input: ProfileUpdateInput) => apiSend<ConsoleProfile>("/me", "PATCH", input),
     onSuccess: (profile) => {
+      const { user } = getSession();
+      if (!user || user.id !== profile.id) return;
       queryClient.setQueryData(PROFILE_KEY, profile);
-      const session = getSession();
-      if (session.user) {
-        setSession({
-          user: {
-            ...session.user,
-            display_name: profile.display_name,
-          },
-        });
-      }
+      setSession({ user: { ...user, display_name: profile.display_name } });
     },
   });
 }
 
 export function useChangePassword() {
   return useMutation({
-    mutationFn: (input: PasswordChangeInput) => apiSend<void>("/me/password", "POST", input),
-    onSuccess: () => {
-      clearSession();
+    mutationFn: async (input: PasswordChangeInput) => {
+      const ownerId = getSession().user?.id;
+      await apiSend<void>("/me/password", "POST", input);
+      if (ownerId && getSession().user?.id === ownerId) clearSession();
     },
   });
 }

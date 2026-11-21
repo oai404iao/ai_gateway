@@ -10,7 +10,6 @@ export function OwnRequestLogsPage() {
   return (
     <RequestLogsView
       title={t("Request Logs")}
-      description={t("Your own proxied requests, usage, and settlement state.")}
       basePath="/me/request-logs"
       useLogs={useOwnRequestLogs}
       apiKeys={apiKeys.data ?? []}

@@ -36,9 +36,9 @@ export function CredentialsPage() {
         <AdminListPage
     embedded
     title={item.id === "general" ? t("General credentials") : `${item.id} · ${t("Upstream credentials")}`}
-    description={t("Bearer tokens and custom authentication headers for compatible upstream accesses.")}
     query={{ ...query, data: query.data?.filter((credential) => credential.connector_kind === item.id) }}
     rowKey={(credential) => credential.id}
+    rowName={(credential) => credential.name}
     detailPath={(credential) => `/admin/routing/upstream-credentials/${credential.id}`}
     createLabel={t("New credential")}
     createPath="/admin/routing/upstream-credentials/new"

@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useBatchUpdateCapabilities, useDiscoverChannelModels, useUpstreamAccesses } from "@/features/admin/api";
 import { apiOperationLabel } from "@/lib/permissions";
+import { resourceLabels } from "@/lib/resource-labels";
 import { modelDiscoveryInput, supportsModelDiscovery } from "./model-discovery-input";
 
 interface AppendModelDialogProps {
@@ -32,10 +33,11 @@ export function AppendModelDialog({ capabilities, channels, refresh, onClose, on
   const [refreshing, setRefreshing] = useState(false);
   const model = input.trim();
   const tooLong = [...model].length > 300;
+  const channelNames = resourceLabels(channels);
   const rows = capabilities.map((cap) => {
     const channel = channels.find(({ id }) => id === cap.channel_id);
     const access = accesses.data?.find(({ id }) => id === channel?.access_id);
-    return { cap, label: `${channel?.name ?? cap.channel_id} / ${apiOperationLabel(cap.settings.operation)}`,
+    return { cap, label: `${channelNames.get(cap.channel_id) ?? t("Unknown channel")} / ${apiOperationLabel(cap.settings.operation)}`,
       discoveryInput: channel && access && supportsModelDiscovery(access)
         ? modelDiscoveryInput(channel, access, cap.settings.operation, cap.config_template_id, cap.override_document) : null,
       exists: cap.settings.available_models.includes(model),

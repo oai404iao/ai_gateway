@@ -117,7 +117,7 @@ export function UserGroupDetailPage() {
   };
   const policyName = group?.default_api_key_policy_id
     ? policies.data?.find((policy) => policy.id === group.default_api_key_policy_id)
-        ?.name ?? group.default_api_key_policy_id
+        ?.name ?? t("Unavailable")
     : t("None");
 
   const submit = async () => {
@@ -196,7 +196,6 @@ export function UserGroupDetailPage() {
     <>
       <AdminDetailShell
         title={isNew ? t("New user group") : state.name || t("User group")}
-        description={t("Group defaults apply when a user has no policy override.")}
         backPath={returnTo}
         navigationGuard={draft.navigationGuard}
         isLoading={
@@ -209,14 +208,10 @@ export function UserGroupDetailPage() {
           !isNew && group ? (
             <Card>
               <CardHeader>
-                <CardTitle>{group.name}</CardTitle>
-                <CardDescription>
-                  {group.system_role
-                    ? t("Protected default group for {role} accounts.", {
-                        role: roleLabel(group.system_role),
-                      })
-                    : t("Custom user group")}
-                </CardDescription>
+                <CardTitle>{t("User group")}</CardTitle>
+                {group.system_role && <CardDescription>
+                  {t("Protected default group for {role} accounts.", { role: roleLabel(group.system_role) })}
+                </CardDescription>}
               </CardHeader>
               <CardContent>
                 <dl className="grid grid-cols-1 gap-4">
@@ -245,9 +240,6 @@ export function UserGroupDetailPage() {
                 <CardTitle>
                   {isNew ? t("Create user group") : t("Edit user group")}
                 </CardTitle>
-                <CardDescription>
-                  {t("Users inherit this policy unless they have an individual override.")}
-                </CardDescription>
               </CardHeader>
               <CardContent>
                 <form className="flex flex-col gap-4" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
@@ -347,7 +339,7 @@ export function UserGroupDetailPage() {
                       </FieldLegend>
                       <FieldDescription>
                         {t(
-                          "Members can only read quota windows and subscription tiers. Credential names are shown as IDs.",
+                          "Members can view quota windows and subscription tiers, but not credential names.",
                         )}
                       </FieldDescription>
                       <FieldGroup data-slot="checkbox-group">
@@ -367,7 +359,6 @@ export function UserGroupDetailPage() {
                               >
                                 <span>{candidate.name}</span>
                               </FieldLabel>
-                              <FieldDescription>{candidate.id}</FieldDescription>
                             </FieldContent>
                           </Field>
                         ))}

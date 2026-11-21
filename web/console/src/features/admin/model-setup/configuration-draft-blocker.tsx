@@ -43,6 +43,7 @@ export function ConfigurationDraftBlocker({
       description={t("Your edits on this page will be lost.")}
       confirmLabel={t("Discard changes")}
       confirmDisabled={saving}
+      finalFocus={() => !bypass.current}
       destructive
       onConfirm={() => {
         if (blocker.state === "blocked") {

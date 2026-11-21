@@ -172,9 +172,7 @@ export function SpendLeaderboardPage() {
 
   return (
     <div className="flex min-w-0 flex-col gap-4">
-      <PageHeader title="Spend leaderboard" actions={
-        <p className="pt-1.5 text-xs text-muted-foreground">{t("Shanghai time · Asia/Shanghai")}</p>
-      } />
+      <PageHeader title="Spend leaderboard" />
       <div className="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2">
         <ToggleGroup value={[period]} variant="outline" spacing={0} aria-label={t("Ranking period")}
           className="max-w-full items-stretch"
@@ -197,7 +195,10 @@ export function SpendLeaderboardPage() {
               onClick={() => { if (data?.previous_period_start) changeStart(data.previous_period_start); }}>
               <ChevronLeft />
             </Button>
-            <span ref={periodStatus} tabIndex={-1} role="status" className="min-w-0 text-sm font-medium wrap-anywhere">{periodLabel}</span>
+            <div className="flex min-w-0 flex-col">
+              <span ref={periodStatus} tabIndex={-1} role="status" className="text-sm font-medium wrap-anywhere">{periodLabel}</span>
+              <span className="text-xs text-muted-foreground">{t("Shanghai time · Asia/Shanghai")}</span>
+            </div>
             <Button variant="outline" size="icon-sm" aria-label={t("Next period")} title={t("Next period")}
               aria-disabled={!data?.next_period_start} className="aria-disabled:opacity-50"
               onClick={() => { if (data?.next_period_start) changeStart(data.next_period_start); }}>
@@ -222,7 +223,7 @@ export function SpendLeaderboardPage() {
       )}
 
       {isLoading && (
-        <Card role="status" aria-label={t("Loading…")}>
+        <Card variant="section" role="status" aria-label={t("Loading…")}>
           <CardHeader aria-hidden="true"><Skeleton className="h-16 w-full" /></CardHeader>
           <CardContent aria-hidden="true" className="flex flex-col gap-3">
             {[0, 1, 2].map((row) => <Skeleton key={row} className="h-14 w-full" />)}
@@ -231,9 +232,9 @@ export function SpendLeaderboardPage() {
       )}
 
       {data && (
-        <Card className="@container gap-0 pt-0">
+        <Card variant="section" className="@container gap-0 pt-0">
           {hasSnapshot && (
-            <CardHeader className="flex flex-wrap items-end justify-between gap-x-6 gap-y-2 border-b bg-muted/50 py-3">
+            <CardHeader className="flex flex-wrap items-end justify-between gap-x-6 gap-y-2 border-b py-4">
               <div className="flex min-w-0 flex-col gap-1">
                 <p className="text-xs text-muted-foreground">{t("Total recorded cost for the period")}</p>
                 <p className="text-3xl font-semibold tracking-tight wrap-anywhere tabular-nums sm:text-4xl">{formatAmount(data.total_cost_amount)}</p>

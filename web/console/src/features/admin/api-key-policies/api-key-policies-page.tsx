@@ -10,9 +10,9 @@ export function ApiKeyPoliciesPage() {
   return (
     <AdminListPage
       title={t("API Key Policies")}
-      description={t("Defines the channel groups and channels users may assign to their keys.")}
       query={{ data, isLoading, error }}
       rowKey={(policy) => policy.id}
+      rowName={(policy) => policy.name}
       detailPath={(policy) => `/admin/api-key-policies/${policy.id}`}
       createLabel={t("New policy")}
       createPath="/admin/api-key-policies/new"

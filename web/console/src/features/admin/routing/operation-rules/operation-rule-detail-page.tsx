@@ -30,6 +30,8 @@ import {
 } from "@/features/admin/api";
 import { useI18n } from "@/app/i18n";
 import { API_OPERATIONS, apiOperationLabel } from "@/lib/permissions";
+import { modelLabel } from "@/features/admin/models/model-label";
+import { resourceLabels } from "@/lib/resource-labels";
 import type { ApiOperation, OperationRuleInput, OperationTierInput } from "@/api/types";
 import { OperationRuleTierEditor } from "./operation-rule-tier-editor";
 import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
@@ -145,7 +147,8 @@ export function OperationRuleDetailPage({
   const rule = query.data?.data;
   const busy = submitting || create.isPending || update.isPending || createProfile.isPending;
   const draft = useConfigurationDraft(busy, undefined, embedded ? "q" : undefined);
-  const parentModelId = modelId ?? profiles.data?.find((profile) => profile.id === rule?.model_routing_profile_id)?.model_id;
+  const savedProfile = profiles.data?.find((profile) => profile.id === rule?.model_routing_profile_id);
+  const parentModelId = modelId ?? savedProfile?.model_id;
   const returnTo = useReturnPath(parentModelId
     ? `/admin/models?model=${parentModelId}` : "/admin/routing/operation-rules");
 
@@ -195,7 +198,7 @@ export function OperationRuleDetailPage({
   }, [isNew, modelId, modelProfileId, rules.data, draft.dirty]);
 
   const channelNames = useMemo(
-    () => new Map((channels.data ?? []).map((channel) => [channel.id, channel.name])),
+    () => resourceLabels(channels.data ?? []),
     [channels.data],
   );
   const operationCapabilities = useMemo(
@@ -277,9 +280,6 @@ export function OperationRuleDetailPage({
       embedded={embedded}
       navigationGuard={draft.navigationGuard}
       title={isNew ? t("New operation rule") : t("Operation rule")}
-      description={t(
-        "Candidates reference an explicit capability and upstream model. Tiers, priorities, and weights are never inferred from legacy channels.",
-      )}
       backPath={returnTo}
       isLoading={(!isNew && query.isLoading) || capabilities.isLoading || channels.isLoading || profiles.isLoading || (canCreateProfile && models.isLoading) || rules.isLoading}
       error={query.error ?? capabilities.error ?? channels.error ?? (embedded ? null :
@@ -290,13 +290,13 @@ export function OperationRuleDetailPage({
           <Card size="sm">
             <CardHeader>
               <CardTitle>{apiOperationLabel(rule.operation)}</CardTitle>
-              <CardDescription>{rule.model_routing_profile_id}</CardDescription>
+              {savedProfile && <CardDescription>{savedProfile.client_model}</CardDescription>}
             </CardHeader>
           </Card>
         ) : null
       }
       editCard={
-        <Card>
+        <Card variant="section">
           <CardHeader>
             <CardTitle>{t("Routing graph")}</CardTitle>
             <CardDescription>
@@ -313,7 +313,7 @@ export function OperationRuleDetailPage({
                 <Select
                   value={state.model_routing_profile_id}
                   items={(profiles.data ?? []).map((profile) => ({
-                    value: profile.id, label: `${profile.model_display_name} (${profile.client_model})`,
+                    value: profile.id, label: modelLabel(profile.model_display_name, profile.client_model),
                   }))}
                   disabled={!isNew}
                   onValueChange={(value) => patch({ model_routing_profile_id: value ?? "" })}
@@ -325,7 +325,7 @@ export function OperationRuleDetailPage({
                     <SelectGroup>
                       {(profiles.data ?? []).map((profile) => (
                         <SelectItem key={profile.id} value={profile.id}>
-                          {profile.model_display_name} ({profile.client_model})
+                          {modelLabel(profile.model_display_name, profile.client_model)}
                         </SelectItem>
                       ))}
                     </SelectGroup>
@@ -343,7 +343,7 @@ export function OperationRuleDetailPage({
                   <FieldLabel htmlFor="profile-model">{t("Create profile for pricing model")}</FieldLabel>
                   <Select value={newProfileModel} onValueChange={(value) => setNewProfileModel(value ?? "")}
                     items={(models.data ?? []).map((model) => ({
-                      value: model.id, label: `${model.display_name} (${model.source_model_id})`,
+                      value: model.id, label: modelLabel(model.display_name, model.source_model_id),
                     }))}>
                     <SelectTrigger id="profile-model"><SelectValue /></SelectTrigger>
                     <SelectContent>
@@ -352,7 +352,7 @@ export function OperationRuleDetailPage({
                           !profiles.data?.some((profile) => profile.model_id === model.id))
                           .map((model) => (
                             <SelectItem key={model.id} value={model.id}>
-                              {model.display_name} ({model.source_model_id})
+                              {modelLabel(model.display_name, model.source_model_id)}
                             </SelectItem>
                           ))}
                       </SelectGroup>

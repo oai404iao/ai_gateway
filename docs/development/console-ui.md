@@ -22,9 +22,12 @@ Rust 二进制；Node 不是生产服务。先选择运行方式，再按契约�
 [Console 导航与页面交互规范](console-interaction-standard.md)。
 视觉、主题、图标和动画遵循根目录的 [design.md](../../design.md)。
 
-系统设置分类定义在 `web/console/src/features/admin/system/settings-sections.ts`，侧栏的
-可展开子菜单与 `/admin/system/:section` 页面共用此定义。旧 `/admin/system` 地址跳转
-到基础设置；分类切换前确认未保存修改，再重建表单，保留完整 API 配置及 ETag，只挂载当前分类控件。
+`ConsoleLayout` 负责已登录页面的共享外壳。`web/console/src/app/layouts/nav.ts` 提供导航项与页面查找目录；按当前路径确定区域，按角色筛选可见管理入口。管理员的个人首页不是系统仪表盘。页面通过 typed client 查询 `/console/v1/*`，个人与全局统计、日志分别使用对应端点和缓存范围。
+生产页面不以来自设计稿的样本填补缺失数据；请求未完成、失败和成功但空的数据应可区分。
+
+系统设置分类定义在 `web/console/src/features/admin/system/settings-sections.ts`，由
+管理目录、页面查找与 `/admin/system/:section` 页面共用。旧 `/admin/system` 地址跳转
+到 API 地址页；分类切换前确认未保存修改，再重建表单，保留完整 API 配置及 ETag，只挂载当前分类控件。
 
 [上游实体联合重构](upstream-identity-capabilities.md)的接入管理位于
 `src/features/admin/routing/accesses/`，独立管理连接器、Base URL、代理和超时，
@@ -85,7 +88,7 @@ pnpm 自动切回旧版。当前没有可调整尺寸或拖拽布局；后续分
 Zustand 会话 store 只存在于内存。主题与语言 store 按 provider mount 创建，只有这些
 非敏感偏好写入已有浏览器存储键；Context 只传递 store，不再独立维护一份共享状态。
 服务端数据继续归 TanStack Query，表单归 React Hook Form，局部展开状态留在组件。
-`QueryClient` 仍按 mount 创建。Toast 复用应用主题，不使用独立的 `next-themes` provider。
+`QueryClient` 按挂载和登录主体隔离：切换账号、角色或临时密码限制后不复用上一个上下文的缓存；同一主体正常刷新 token 不会清空当前视图。Toast 复用应用主题，不使用独立的 `next-themes` provider。
 Motion 的全局配置响应用户减弱动态效果偏好，循环加载动画另行停止；CSS 同时关闭原语的
 基础状态过渡。不要将这些基础过渡的保留误解为允许新增另一套应用动画库。
 
@@ -139,7 +142,7 @@ docs/openapi/console-v1.yaml
   Query Cache。
 - refresh token 只存在于 `HttpOnly; Secure; SameSite=Lax` Cookie。生产 Console listener 应置于
   HTTPS 反向代理之后。
-- API client 对并发 401 使用 single-flight refresh，并只重试原请求一次。
+- API client 对并发 401 共用一次 refresh；只有刷新后仍为同一账号和权限范围时才重试原请求，最多一次。
 - 前端 role-aware 导航只是 UX；后端 JWT ownership/admin 校验始终是授权边界。
 - API Key 默认打码；一次性邀请/注册 secret 不进入 Query Cache 或浏览器持久化。
 - 可更新资源从 GET 响应保存 ETag，并在 PUT/DELETE 发送 `If-Match`；`409` 应提示重新加载，不能
@@ -158,7 +161,6 @@ docs/openapi/console-v1.yaml
   `src/features/`。
 - TypeScript 启用了 `verbatimModuleSyntax`、`noUnusedLocals`、`noUnusedParameters` 和
   `erasableSyntaxOnly`：使用 `import type`，不使用 TypeScript enum，不保留未使用变量。
-- `QueryClient` 必须按 `AppProviders` mount 创建，不能改成模块级 singleton。
 - 模型价格使用十进制字符串作为表单和 API 状态。`/admin/models/:id/pricing` 的倍率计算通过
   `src/lib/decimal.ts` 使用 `BigInt` 做十进制定点乘法并按 12 位小数舍入，不能用 JavaScript
   `number` 的二进制浮点结果直接写回价格字段。该子页保存完整 `ModelInput` 时必须保留模型元数据、
@@ -171,7 +173,7 @@ docs/openapi/console-v1.yaml
 
 ### 模型配置导航与层级编辑
 
-“模型与路由”侧边栏提供上游接入、上游凭证、渠道配置、模型配置四个入口。
+上游接入、上游凭证、渠道配置与模型配置位于管理区，沿用各自的资源页面。
 
 - `/admin/routing/channels` 在同一工作区展示组配置和按组列出的逻辑渠道；选择渠道后仅展示
   该渠道的能力，新增能力自动带入渠道。原有详情页仍负责单资源编辑。

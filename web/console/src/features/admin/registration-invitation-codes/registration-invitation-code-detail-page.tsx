@@ -176,7 +176,7 @@ export function RegistrationInvitationCodeDetailPage() {
   const status = code ? codeStatus(code) : null;
   const groupName = code
     ? groups.data?.find((group) => group.id === code.user_group_id)?.name ??
-      code.user_group_id
+      t("Unavailable")
     : "";
   const pending = create.isPending || update.isPending;
   const draft = useConfigurationDraft(pending, form.formState.isDirty);
@@ -231,9 +231,6 @@ export function RegistrationInvitationCodeDetailPage() {
     <>
       <AdminDetailShell
         title={isNew ? t("New registration code") : code?.name ?? t("Registration code")}
-        description={t(
-          "Settings are evaluated atomically when each user registers and affect only future accounts.",
-        )}
         backPath={returnTo}
         navigationGuard={draft.navigationGuard}
         isLoading={detail.isLoading || groups.isLoading}
@@ -243,10 +240,7 @@ export function RegistrationInvitationCodeDetailPage() {
           !isNew && code && status ? (
             <Card>
               <CardHeader>
-                <CardTitle>{code.name}</CardTitle>
-                <CardDescription>
-                  {t("Usage and current availability of this registration code.")}
-                </CardDescription>
+                <CardTitle>{t("Registration code")}</CardTitle>
               </CardHeader>
               <CardContent>
                 <dl className="grid grid-cols-1 gap-4">
@@ -290,7 +284,7 @@ export function RegistrationInvitationCodeDetailPage() {
                 {isNew ? t("Create registration code") : t("Edit registration code")}
               </CardTitle>
               <CardDescription>
-                {t("Choose who can register, how often, and with which starting balance.")}
+                {t("Changes apply only to future registrations.")}
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -364,9 +358,6 @@ export function RegistrationInvitationCodeDetailPage() {
                             </SelectGroup>
                           </SelectContent>
                         </Select>
-                        <FieldDescription>
-                          {t("Future registrations are assigned to this group.")}
-                        </FieldDescription>
                         {fieldState.error ? (
                           <FieldError>{t(fieldState.error.message ?? "")}</FieldError>
                         ) : null}

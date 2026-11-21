@@ -54,6 +54,7 @@ async function openConflictedKey(readLatest: () => Response, draftName?: string)
   );
   const user = userEvent.setup();
   renderAppAt(`/api-keys/${OWN_API_KEY.id}`);
+  await user.click(await screen.findByRole("button", { name: "Edit" }));
   const name = await screen.findByDisplayValue(OWN_API_KEY.name);
   if (draftName) {
     await user.clear(name);
@@ -79,6 +80,36 @@ async function confirmDiscard(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe("ApiKeysPage", () => {
+  it("filters the owner's inventory and opens an edit sheet from its row menu", async () => {
+    seedAuthenticatedSession();
+    const user = userEvent.setup();
+    renderAppAt("/api-keys");
+    await screen.findByText(OWN_API_KEY.name);
+    await user.click(screen.getByRole("button", {name: /^Revoked/}));
+    expect(await screen.findByText("No matching API keys")).toBeVisible();
+    await user.click(screen.getByRole("button", {name: /^All \d/}));
+    await user.type(screen.getByRole("searchbox", {name:"Filter key names"}), "not-in-inventory");
+    expect(screen.getByText("No matching API keys")).toBeVisible();
+    await user.clear(screen.getByRole("searchbox", {name:"Filter key names"}));
+    await user.click(screen.getByRole("button", {name:`Actions for ${OWN_API_KEY.name}`}));
+    await user.click(await screen.findByRole("menuitem", {name:"Edit"}));
+    const editor = within(await screen.findByRole("dialog", {name:"Edit API key"}));
+    expect(editor.getByLabelText("Name")).toHaveValue(OWN_API_KEY.name);
+    await user.type(editor.getByLabelText("Name"), " draft");
+    await user.keyboard("{Escape}");
+    const guard = within(await screen.findByRole("alertdialog", {name:"Discard unsaved changes?"}));
+    await user.click(guard.getByRole("button", {name:"Cancel"}));
+    expect(editor.getByLabelText("Name")).toHaveValue(`${OWN_API_KEY.name} draft`);
+  });
+
+  it("opens the creation sheet from a direct link without creating a key", async () => {
+    seedAuthenticatedSession();
+    renderAppAt("/api-keys?create=1");
+    expect(await screen.findByRole("dialog", {name:"New API key"})).toBeVisible();
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(new URLSearchParams(window.location.search).has("create")).toBe(false);
+  });
   it("distinguishes same-named logical channel grants in different groups", async () => {
     seedAuthenticatedSession();
     const channels = ["one", "two"].map((suffix) => ({
@@ -110,7 +141,7 @@ describe("ApiKeysPage", () => {
     expect(screen.queryByRole("columnheader", { name: "Formats" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /new api key/i }));
-    const nameField = await screen.findByLabelText(/name/i);
+    const nameField = await within(await screen.findByRole("dialog", { name: "New API key" })).findByLabelText(/^name$/i);
     await user.type(nameField, "spec key");
     await user.click(
       screen.getByRole("checkbox", { name: new RegExp(`^${CHANNEL_GROUP.name}`, "i") }),
@@ -275,7 +306,7 @@ describe("ApiKeysPage", () => {
     );
     const user = userEvent.setup();
     renderAppAt(`/api-keys/${disabledKey.id}`);
-
+    await user.click(await screen.findByRole("button", { name: "Edit" }));
     expect(await screen.findByDisplayValue(disabledKey.name)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /save changes/i }));
 
@@ -327,6 +358,7 @@ describe("ApiKeysPage", () => {
     window.history.replaceState({}, "", `/api-keys/${OWN_API_KEY.id}`);
     const { result } = renderHook(() => useQueryClient(), { wrapper: TestApp });
     const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Edit" }));
     const name = await screen.findByDisplayValue(OWN_API_KEY.name);
     await user.clear(name);
     await user.type(name, "draft before refresh");

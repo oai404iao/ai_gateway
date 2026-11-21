@@ -1,3 +1,4 @@
+import { settingsLabels } from "./settings-labels";
 import { useState, type FormEvent } from "react";
 import {
   ArrowDownIcon,
@@ -12,7 +13,7 @@ import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
 import {
   Dialog,
   DialogClose,
@@ -319,9 +320,8 @@ export function SessionAffinityCard({
 
   return (
     <>
-      <Card>
+      <Card variant="section">
         <CardHeader>
-          <CardTitle>{t("Session affinity")}</CardTitle>
           <CardDescription>
             {t(
               "Reuse the last successful channel for matching session keys without adding retries.",
@@ -333,13 +333,8 @@ export function SessionAffinityCard({
             <Field className="xl:col-span-2" orientation="horizontal">
               <FieldContent>
                 <FieldLabel htmlFor="session_affinity_enabled">
-                  {t("Enable session affinity")}
+                  {t(settingsLabels["session_affinity.enabled"])}
                 </FieldLabel>
-                <FieldDescription>
-                  {t(
-                    "The cache is process-local, bounded, and stores only hashed keys with channel IDs.",
-                  )}
-                </FieldDescription>
               </FieldContent>
               <Switch
                 disabled={disabled}
@@ -351,7 +346,7 @@ export function SessionAffinityCard({
 
             <Field data-invalid={Boolean(errors?.maxEntries)}>
               <FieldLabel htmlFor="session_affinity_max_entries">
-                {t("Maximum cache entries")}
+                {t(settingsLabels["session_affinity.max_entries"])}
               </FieldLabel>
               <Input
                 id="session_affinity_max_entries"
@@ -362,15 +357,12 @@ export function SessionAffinityCard({
                 aria-invalid={Boolean(errors?.maxEntries)}
                 onChange={(event) => update({ max_entries: event.target.valueAsNumber })}
               />
-              <FieldDescription>
-                {t("Bounds memory use when clients continuously generate new session keys.")}
-              </FieldDescription>
               {errors?.maxEntries ? <FieldError>{t(errors.maxEntries)}</FieldError> : null}
             </Field>
 
             <Field data-invalid={Boolean(errors?.defaultTtl)}>
               <FieldLabel htmlFor="session_affinity_default_ttl">
-                {t("Default affinity TTL (seconds)")}
+                {t(settingsLabels["session_affinity.default_ttl_seconds"])}
               </FieldLabel>
               <Input
                 id="session_affinity_default_ttl"
@@ -395,7 +387,7 @@ export function SessionAffinityCard({
             >
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex flex-col gap-1">
-                  <FieldLabel>{t("Affinity rules")}</FieldLabel>
+                  <FieldLabel>{t(settingsLabels["session_affinity.rules"])}</FieldLabel>
                   <FieldDescription>
                     {t("Rules are evaluated from top to bottom; the first extracted key wins.")}
                   </FieldDescription>

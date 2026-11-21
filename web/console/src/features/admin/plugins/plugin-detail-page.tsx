@@ -52,7 +52,7 @@ export function PluginDetailPage() {
   };
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader title={id} description="Plugin versions and settings" backTo="/admin/plugins" backLabel="Plugins" />
+      <PageHeader title={id} backTo="/admin/plugins" backLabel="Plugins" />
       <AsyncResource isLoading={detail.isPending} error={detail.error}>
         {detail.data ? <>
           <PluginVersionCard key={detail.data.etag} plugin={detail.data.data} busy={Boolean(action)}
@@ -114,7 +114,8 @@ function PluginVersionCard({ plugin, busy, onChange, onDelete }: {
               </Select>
             </Field>
           </FieldGroup>
-          {digest ? <code className="break-all text-xs">{digest}</code> : null}
+          {digest ? <details className="text-xs text-muted-foreground"><summary className="w-fit cursor-pointer">{t("Artifact digest")}</summary>
+            <code className="mt-2 block break-all">{digest}</code></details> : null}
           <div className="flex flex-wrap gap-2">
             <Button disabled={busy || !digest || (plugin.enabled && digest === plugin.artifact_digest)}
               onClick={() => onChange(true, digest)}>{t("Enable selected version")}</Button>

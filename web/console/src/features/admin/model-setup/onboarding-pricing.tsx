@@ -10,6 +10,7 @@ import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useModelSyncPreview } from "@/features/admin/api";
+import { modelLabel } from "@/features/admin/models/model-label";
 import { isNonNegativeRustDecimal } from "@/lib/decimal";
 import { formatTokens } from "@/lib/formatters";
 
@@ -87,7 +88,7 @@ export function OnboardingPricing({ models, onReview, onEdit, catalogRevision }:
         {method === "copy" && <Field><FieldLabel htmlFor="onboard-copy">{t("Copy pricing from model")}</FieldLabel>
           <Select value={copy?.id ?? ""} onValueChange={(value) => { setCopy(models.find((m) => m.id === value) ?? null); onEdit(); }}>
             <SelectTrigger id="onboard-copy" className="max-w-full"><SelectValue placeholder={t("Choose a model")} /></SelectTrigger>
-            <SelectContent><SelectGroup>{models.map((m) => <SelectItem key={m.id} value={m.id}>{m.source_model_id}</SelectItem>)}</SelectGroup></SelectContent>
+            <SelectContent><SelectGroup>{models.map((m) => <SelectItem key={m.id} value={m.id}>{modelLabel(m.display_name, m.source_model_id)}</SelectItem>)}</SelectGroup></SelectContent>
           </Select></Field>}
         {method === "catalog" && <CatalogChoice key={`${id}:${catalogRevision}`} name={id} selected={catalogRow}
           onSelect={(row) => { setCatalog(row && { row, revision: catalogRevision }); onEdit(); }} />}

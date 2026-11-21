@@ -8,7 +8,7 @@ import { z } from "zod";
 import { toast } from "sonner";
 import type { TemporaryPasswordResponse, UserUpdateInput } from "@/api/types";
 import { ApiError } from "@/api/errors";
-import { clearSession, setSession } from "@/api/session-store";
+import { clearSession, getSession, setSession, sessionScope } from "@/api/session-store";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -184,7 +184,8 @@ export function UserDetailPage() {
     setSubmitting(action);
     try {
       await update.mutateAsync({ input, ifMatch: etag });
-      if (currentUser?.id === id) {
+      const activeUser = getSession().user;
+      if (activeUser && currentUser?.id === id && sessionScope(activeUser) === sessionScope(currentUser)) {
         if (invalidatesCurrentSession) {
           draft.markSaved();
           toast.success(t("Account updated. Sign in again to continue."));
@@ -194,7 +195,7 @@ export function UserDetailPage() {
         if (updatedDisplayName !== undefined) {
           setSession({
             user: {
-              ...currentUser,
+              ...activeUser,
               display_name: updatedDisplayName,
             },
           });
@@ -353,19 +354,17 @@ export function UserDetailPage() {
 
   const groupName =
     groups.data?.find((group) => group.id === user?.user_group_id)?.name ??
-    user?.user_group_id ??
-    "—";
+    t("Unavailable");
   const effectivePolicyName = user?.effective_api_key_policy_id
     ? policies.data?.find(
         (policy) => policy.id === user.effective_api_key_policy_id,
-      )?.name ?? user.effective_api_key_policy_id
+      )?.name ?? t("Unavailable")
     : t("None");
 
   return (
     <>
       <AdminDetailShell
       title={user?.display_name ?? t("User")}
-      description={t("Manage identity, policy, balance, and access independently.")}
       backPath={returnTo}
       navigationGuard={draft.navigationGuard}
       backLabel={t("Back to users")}
@@ -377,7 +376,6 @@ export function UserDetailPage() {
           <Card>
             <CardHeader>
               <CardTitle>{t("Account")}</CardTitle>
-              <CardDescription>{t("Current account facts and activation state.")}</CardDescription>
             </CardHeader>
             <CardContent>
               <dl className="grid grid-cols-1 gap-4">
@@ -407,9 +405,6 @@ export function UserDetailPage() {
             <Card>
               <CardHeader>
                 <CardTitle>{t("Account details")}</CardTitle>
-                <CardDescription>
-                  {t("Update identity and defaults without changing balance or access status.")}
-                </CardDescription>
               </CardHeader>
               <CardContent>
                 <form
@@ -637,11 +632,6 @@ export function UserDetailPage() {
             <Card>
               <CardHeader>
                 <CardTitle>{t("Personal settings")}</CardTitle>
-                <CardDescription>
-                  {t(
-                    "Manage the same optional capabilities available in the user's personal settings.",
-                  )}
-                </CardDescription>
               </CardHeader>
               <CardContent>
                 <Field orientation="horizontal">
@@ -684,9 +674,6 @@ export function UserDetailPage() {
             <Card>
               <CardHeader>
                 <CardTitle>{t("Balance management")}</CardTitle>
-                <CardDescription>
-                  {t("Adjust only this user's current USD balance. Other fields are preserved.")}
-                </CardDescription>
               </CardHeader>
               <CardContent>
                 <form
@@ -722,9 +709,6 @@ export function UserDetailPage() {
             <Card>
               <CardHeader>
                 <CardTitle>{t("Access status")}</CardTitle>
-                <CardDescription>
-                  {t("Manage sign-in and API access separately from account details.")}
-                </CardDescription>
               </CardHeader>
               <CardContent>
                 {user.can_reissue_invitation ? (

@@ -53,7 +53,7 @@ async function signIn(page: Page, handle: SnapshotHandler, settings: { locale?: 
   await page.locator("input[type=email]").fill(E2E_USER.email);
   await page.locator("input[type=password]").fill("mock-password");
   await page.locator("button[type=submit]").click();
-  await expect(page).toHaveURL(/\/account$/);
+  await expect(page).toHaveURL("/");
   await page.goto("/leaderboard");
   return queries;
 }
@@ -84,8 +84,10 @@ async function press(page: Page, control: Locator, key = "Enter") {
 async function firstViewport(page: Page, locator: Locator) {
   await expect(locator).toBeInViewport({ ratio: 1 });
   const bounds = await locator.boundingBox();
-  const toolbar = await page.locator("main > header").boundingBox();
+  const toolbar = await page.getByRole("banner").boundingBox();
   expect(bounds!.y).toBeGreaterThanOrEqual(toolbar!.y + toolbar!.height);
+  const dock = page.getByRole("navigation", { name: /Mobile navigation|移动导航/ });
+  if (await dock.isVisible()) expect(bounds!.y + bounds!.height).toBeLessThanOrEqual((await dock.boundingBox())!.y);
 }
 
 async function screenshot(page: Page, name: string, info: TestInfo) {

@@ -1,4 +1,4 @@
-import { useId, useMemo } from "react";
+import { useId, useMemo, useState } from "react";
 import { Plus, Trash2, X } from "lucide-react";
 import type {
   ChannelCapabilityView,
@@ -7,14 +7,7 @@ import type {
 } from "@/api/types";
 import { useI18n } from "@/app/i18n";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardAction,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { AllocationPath } from "./allocation-path";
 import {
   Combobox,
   ComboboxCollection,
@@ -79,6 +72,8 @@ export function OperationRuleTierEditor({
 }: OperationRuleTierEditorProps) {
   const { t } = useI18n();
   const idPrefix = useId();
+  const [selection, setSelection] = useState(0);
+  const active = Math.min(selection, value.length - 1);
   const capabilityById = useMemo(
     () => new Map(capabilities.map((capability) => [capability.id, capability])),
     [capabilities],
@@ -95,7 +90,7 @@ export function OperationRuleTierEditor({
     [capabilities, channelNames],
   );
   const capabilityLabel = (capability: ChannelCapabilityView) =>
-    `${channelNames.get(capability.channel_id) ?? capability.channel_id} · ${apiOperationLabel(capability.settings.operation)}${capability.settings.enabled ? "" : ` · ${t("Disabled")}`}`;
+    `${channelNames.get(capability.channel_id) ?? t("Unknown channel")} · ${apiOperationLabel(capability.settings.operation)}${capability.settings.enabled ? "" : ` · ${t("Disabled")}`}`;
 
   const patchTier = (tierIndex: number, partial: Partial<OperationTierInput>) => {
     onChange(updateAt(value, tierIndex, { ...value[tierIndex], ...partial }));
@@ -123,18 +118,21 @@ export function OperationRuleTierEditor({
           "Lower priority tiers are tried first. Every candidate names a capability and one of its advertised upstream models.",
         )}
       </FieldDescription>
-      <FieldGroup>
+      <div className="@container min-w-0 border-y">
+        <div className="grid min-w-0 @min-[42rem]:grid-cols-[minmax(0,1fr)_minmax(19rem,.9fr)]">
+        <AllocationPath tiers={value} active={active} onSelect={setSelection} errorFor={errorFor}
+          controls={`${idPrefix}-properties`} channelName={(id) => {
+            const capability = capabilityById.get(id);
+            return capability ? channelNames.get(capability.channel_id) ?? t("Unknown channel") : t(id ? "Unavailable" : "Choose a capability");
+          }} />
         {value.map((tier, tierIndex) => {
+          if (tierIndex !== active) return null;
           const tierPath = ["routing_tiers", tierIndex];
           const priorityError = errorFor([...tierPath, "priority"]);
           return (
-            <Card key={tierIndex}>
-              <CardHeader>
-                <CardTitle>{t("Tier {number}", { number: tierIndex + 1 })}</CardTitle>
-                <CardDescription>
-                  {t("{count} routing candidates", { count: tier.candidates.length })}
-                </CardDescription>
-                <CardAction>
+            <section key={tierIndex} id={`${idPrefix}-properties`} aria-label={t("Tier properties")} className="min-w-0 border-t bg-muted/25 p-3 @min-[42rem]:border-t-0 @min-[42rem]:border-l">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-sm font-medium">{t("Tier {number}", { number: tierIndex + 1 })} · {t("Tier properties")}</h3>
                   <Button
                     type="button"
                     variant="ghost"
@@ -144,11 +142,9 @@ export function OperationRuleTierEditor({
                   >
                     <Trash2 data-icon="inline-start" />
                   </Button>
-                </CardAction>
-              </CardHeader>
-              <CardContent>
+              </div>
                 <FieldGroup>
-                  <FieldGroup className="grid gap-4 sm:grid-cols-[8rem_14rem]">
+                  <FieldGroup className="grid grid-cols-[minmax(4rem,.65fr)_minmax(0,1.35fr)] gap-2">
                     <Field data-invalid={Boolean(priorityError) || undefined}>
                       <FieldLabel htmlFor={`${idPrefix}-${tierIndex}-priority`}>
                         {t("Priority")}
@@ -223,7 +219,7 @@ export function OperationRuleTierEditor({
                           const rowId = `${idPrefix}-${tierIndex}-${candidateIndex}`;
                           return (
                             <li key={candidateIndex}
-                              className="grid min-w-0 items-start gap-3 rounded-md border p-3 @min-[32rem]:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_5rem_auto]">
+                              className="grid min-w-0 grid-cols-[minmax(0,1fr)] items-start gap-2 border-t px-2 py-3 @min-[32rem]:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_5rem_auto]">
                                 <Field data-invalid={Boolean(capabilityError) || undefined}>
                                   <FieldLabel htmlFor={`${rowId}-capability`}>{t("Capability")}</FieldLabel>
                                   <Combobox
@@ -231,7 +227,7 @@ export function OperationRuleTierEditor({
                                     value={candidate.capability_id || null}
                                     itemToStringLabel={(id) => {
                                       const option = capabilityById.get(id);
-                                      return option ? capabilityLabel(option) : id;
+                                      return option ? capabilityLabel(option) : t("Unavailable");
                                     }}
                                     onValueChange={(capabilityId) => {
                                       if (capabilityId === null) return;
@@ -269,14 +265,7 @@ export function OperationRuleTierEditor({
                                                     (model) => duplicate(capabilityId, model),
                                                   )}
                                                 >
-                                                  <span className="flex min-w-0 flex-col">
-                                                    <span className="truncate">
-                                                      {capabilityLabel(option)}
-                                                    </span>
-                                                    <span className="truncate text-xs text-muted-foreground">
-                                                      {apiOperationLabel(option.settings.operation)}
-                                                    </span>
-                                                  </span>
+                                                  <span className="truncate">{capabilityLabel(option)}</span>
                                                 </ComboboxItem>
                                               );
                                             }}
@@ -400,11 +389,11 @@ export function OperationRuleTierEditor({
                     </Button>
                   </FieldSet>
                 </FieldGroup>
-              </CardContent>
-            </Card>
+            </section>
           );
         })}
-      </FieldGroup>
+        </div>
+      </div>
       {errorFor(["routing_tiers"]) ? (
         <FieldError>{errorFor(["routing_tiers"])}</FieldError>
       ) : null}
@@ -412,7 +401,8 @@ export function OperationRuleTierEditor({
         type="button"
         variant="outline"
         className="self-start"
-        onClick={() =>
+        onClick={() => {
+          setSelection(value.length);
           onChange([
             ...value,
             {
@@ -420,8 +410,8 @@ export function OperationRuleTierEditor({
               selection_strategy: "weighted_random",
               candidates: [],
             },
-          ])
-        }
+          ]);
+        }}
       >
         <Plus data-icon="inline-start" />
         {t("Add routing tier")}

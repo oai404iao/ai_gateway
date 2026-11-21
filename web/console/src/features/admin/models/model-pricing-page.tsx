@@ -68,6 +68,7 @@ import {
 import { formatDateTime } from "@/lib/dates";
 import { formatCompactTokens } from "@/lib/formatters";
 import { cn } from "@/lib/utils";
+import { ModelPriceComparison } from "./model-price-comparison";
 
 const UTC_TIME_PATTERN = /^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/;
 const MINUTES_PER_DAY = 24 * 60;
@@ -510,14 +511,15 @@ export function ModelPricingPage() {
     <AdminDetailShell
       navigationGuard={navigationGuard}
       title={data?.data.display_name || t("Model pricing")}
-      description={t("Configure base USD prices and weekly UTC peak or off-peak multipliers.")}
       backPath={returnTo}
       isLoading={isLoading}
       error={data ? null : error}
       hasData={Boolean(data)}
       editCard={
         data ? (
-          <div className="grid gap-6 [&_:is(input,button,[tabindex])]:scroll-my-24 lg:grid-cols-[minmax(0,2fr)_minmax(20rem,1fr)] lg:items-start">
+          <div className="flex min-w-0 flex-col gap-4">
+          <ModelPriceComparison model={data.data} draft={form.watch()} />
+          <div className="grid gap-3 [&_:is(input,button,[tabindex])]:scroll-my-24 lg:grid-cols-[minmax(0,2fr)_minmax(20rem,1fr)] lg:items-start">
             <form
               id={pricingFormId}
               ref={pricingForm}
@@ -526,7 +528,7 @@ export function ModelPricingPage() {
               onSubmit={submit}
             >
             <fieldset className="contents" disabled={formDisabled}>
-            <Card className="min-w-0 lg:col-start-1 lg:row-start-1">
+            <Card variant="section" className="min-w-0 lg:col-start-1 lg:row-start-1">
               <CardHeader>
                 <CardTitle>{t("Base prices")}</CardTitle>
                 <CardDescription>
@@ -589,7 +591,7 @@ export function ModelPricingPage() {
               </CardContent>
             </Card>
 
-            <Card className="min-w-0 lg:col-start-1 lg:row-start-2">
+            <Card variant="section" className="min-w-0 lg:col-start-1 lg:row-start-2">
               <CardHeader>
                 <CardTitle>{t("UTC peak and off-peak windows")}</CardTitle>
                 <CardDescription>
@@ -677,7 +679,6 @@ export function ModelPricingPage() {
                       <Card key={window.id} size="sm">
                         <CardHeader>
                           <CardTitle className="wrap-anywhere">{windowLabel}</CardTitle>
-                          <CardDescription>{t("Weekly UTC price window")}</CardDescription>
                           <CardAction className="flex items-center gap-2">
                             <Badge variant="secondary">{selectedWeekdaySummary}</Badge>
                             <Button
@@ -840,7 +841,7 @@ export function ModelPricingPage() {
             </form>
 
             <div className="flex min-w-0 flex-col gap-6 lg:col-start-2 lg:row-span-2 lg:row-start-1">
-              <Card>
+              <Card variant="section">
                 <CardHeader>
                   <CardTitle className="hidden lg:block"><h2>{t("Multiplier calculator")}</h2></CardTitle>
                   <Button
@@ -916,12 +917,9 @@ export function ModelPricingPage() {
                 </CardContent>
               </Card>
 
-              <Card>
+              <Card variant="section">
                 <CardHeader>
                   <CardTitle>{t("Review and save")}</CardTitle>
-                  <CardDescription>
-                    {t("Confirm the effective price unit and weekly schedule before saving.")}
-                  </CardDescription>
                 </CardHeader>
                 <CardContent>
                   <dl className="grid grid-cols-2 gap-4">
@@ -942,7 +940,7 @@ export function ModelPricingPage() {
               </Card>
             </div>
 
-            <div className="bottom-0 z-10 flex flex-wrap items-center justify-between gap-2 border-t bg-background py-2 pb-[max(--spacing(2),env(safe-area-inset-bottom))] lg:col-span-2 [@media(min-height:24rem)]:sticky">
+            <div className="bottom-[var(--console-dock-clearance,0px)] z-10 flex flex-wrap items-center justify-between gap-2 border-t bg-background py-2 pb-[max(--spacing(2),env(safe-area-inset-bottom))] lg:col-span-2 [@media(min-height:24rem)]:sticky">
               <Badge
                 variant={pricingIsDirty || reloadRequired ? "default" : "secondary"}
                 aria-live="polite"
@@ -993,6 +991,7 @@ export function ModelPricingPage() {
                 )}
               </div>
             </div>
+          </div>
           </div>
         ) : null
       }

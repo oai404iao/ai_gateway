@@ -113,6 +113,7 @@ import {
   useStartCodexOauth,
   useUpdateCodexCredential,
 } from "./api";
+import { CodexAccountIdentity } from "./codex-account-identity";
 
 const NO_PROXY = "__none__";
 const MAX_BATCH_SIZE = 100;
@@ -671,9 +672,6 @@ export default function CodexOauthPage() {
       <PageHeader
         embedded
         title={t("Codex")}
-        description={t(
-          "Manage Codex accounts, token refresh, maintenance proxies and quota independently of routing. Bind credentials to logical channels in Channel configuration.",
-        )}
         actions={
           <>
             <Button
@@ -885,29 +883,10 @@ export default function CodexOauthPage() {
                       </TableCell>
                       <TableCell className="min-w-52 align-top">
                         <div className="font-medium">{credential.label}</div>
-                        <div className="text-xs text-muted-foreground">
-                          {credential.email ??
-                            credential.user_id ??
-                            credential.account_id ??
-                            t("Personal Codex account")}
-                        </div>
-                        {credential.account_id ? (
-                          <p className="mt-1 break-all text-xs text-muted-foreground">
-                            {t("Workspace {id}", { id: credential.account_id })}
-                          </p>
-                        ) : (
-                          <p className="mt-1 text-xs text-muted-foreground">
-                            {t("Personal credential (no workspace ID)")}
-                          </p>
+                        {credential.email && credential.email !== credential.label && (
+                          <div className="text-xs text-muted-foreground">{credential.email}</div>
                         )}
-                        {credential.user_id ? (
-                          <p className="mt-1 break-all text-xs text-muted-foreground">
-                            {t(
-                              credential.account_id ? "Member {id}" : "User {id}",
-                              { id: credential.user_id },
-                            )}
-                          </p>
-                        ) : null}
+                        <CodexAccountIdentity accountId={credential.account_id} userId={credential.user_id} />
                         <div className="mt-2 flex flex-wrap gap-1">
                           {credential.plan_type ? (
                             <Badge variant="secondary">{credential.plan_type}</Badge>
@@ -990,7 +969,7 @@ export default function CodexOauthPage() {
                       </TableCell>
                       <TableCell className="align-top text-sm">
                         <p className="text-xs text-muted-foreground">
-                          {credential.proxy_id ? t("Proxy assigned") : t("Direct")}
+                          {credential.proxy_id ? proxies.find((proxy) => proxy.id === credential.proxy_id)?.name ?? t("Proxy assigned") : t("Direct")}
                         </p>
                       </TableCell>
                       <TableCell className="align-top">

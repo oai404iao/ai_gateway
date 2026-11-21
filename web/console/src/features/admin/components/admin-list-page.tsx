@@ -7,6 +7,7 @@ import { useI18n } from "@/app/i18n";
 import { NavigationLink } from "@/components/shared/navigation-link";
 import { usePageOrigin, withReturnTo } from "@/lib/page-navigation";
 import { useListPagination } from "@/lib/use-list-pagination";
+import { ResourceDirectory } from "./resource-directory";
 
 interface ListResult<T> {
   data: T[] | undefined;
@@ -16,7 +17,6 @@ interface ListResult<T> {
 
 interface AdminListPageProps<T> {
   title: string;
-  description: string;
   query: ListResult<T>;
   columns: Column<T>[];
   rowKey: (row: T) => string;
@@ -28,11 +28,12 @@ interface AdminListPageProps<T> {
   groupBy?: (row: T) => string;
   embedded?: boolean;
   linkColumnKey?: string;
+  rowName?: (row: T) => string;
+  searchText?: (row: T) => string;
 }
 
 export function AdminListPage<T>({
   title,
-  description,
   query,
   columns,
   rowKey,
@@ -44,6 +45,8 @@ export function AdminListPage<T>({
   groupBy,
   embedded,
   linkColumnKey,
+  rowName,
+  searchText,
 }: AdminListPageProps<T>) {
   const navigate = useNavigate();
   const { t } = useI18n();
@@ -55,7 +58,6 @@ export function AdminListPage<T>({
       <PageHeader
         backTo={backTo}
         title={title}
-        description={description}
         embedded={embedded}
         actions={
           headerActions || (createPath && createLabel) ? (
@@ -75,9 +77,9 @@ export function AdminListPage<T>({
             error={query.error}
             isEmpty={query.data?.length === 0}
             emptyTitle={t("No records")}
-            emptyDescription={t("There are no records to show yet.")}
           >
-            <ResourceTable
+            {rowName ? <ResourceDirectory rows={query.data ?? []} columns={columns} rowKey={rowKey} rowName={rowName}
+              searchText={searchText} rowHref={href} linkColumnKey={linkColumnKey} groupBy={groupBy} /> : <ResourceTable
               columns={columns}
               rows={query.data ?? []}
               rowKey={rowKey}
@@ -86,7 +88,7 @@ export function AdminListPage<T>({
               onRowClick={(row) => navigate(href(row))}
               groupBy={groupBy}
               pagination={pagination}
-            />
+            />}
           </AsyncResource>
     </div>
   );

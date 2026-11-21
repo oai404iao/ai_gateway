@@ -92,9 +92,6 @@ export function GroupDetailPage() {
     <>
       <AdminDetailShell
         title={isNew ? t("New group") : group?.name ?? t("Channel group")}
-        description={t(
-          "Groups organize logical channels. Deleting a group requires every member channel to be removed first.",
-        )}
         backPath={returnTo}
         isLoading={!isNew && query.isLoading}
         error={query.error}

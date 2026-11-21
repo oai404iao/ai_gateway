@@ -31,7 +31,7 @@ async function prepare(page: Page) {
   await page.getByLabel("Email", { exact: true }).fill("admin@example.com");
   await page.getByLabel("Password", { exact: true }).fill("correct-horse-battery-staple");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
-  await expect(page).toHaveURL(/\/account/);
+  await expect(page).toHaveURL("/");
 }
 
 test("operation routing displays its priced model and opens the operation graph", async ({ page }) => {

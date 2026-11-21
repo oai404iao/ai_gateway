@@ -12,8 +12,7 @@ export function AdminRequestLogsPage() {
 
   return (
     <RequestLogsView
-      title={t("Request Logs")}
-      description={t("All proxied requests across every user and API key.")}
+      title={t("Global request logs")}
       basePath="/request-logs"
       useLogs={useAllRequestLogs}
       scope="system"
