@@ -199,7 +199,7 @@ Lite 客户端在已有 response ID 后可发送 `response.interrupt`（`mode: d
 `websocket_unavailable` 的 426 错误帧。实际 Codex CLI 0.130.0 已通过本地兼容测试：
 两条路径都最终生成一次 HTTP 请求，且网关不做请求重放。命令和隔离条件见
 [真实上游与客户端兼容测试](../development/real-upstream-smoke.md)；
-网关错误契约见 [操作说明](../user/operations.md)。
+网关错误契约见 [操作说明](../user/websocket.md)。
 
 ## 代理和 TLS
 

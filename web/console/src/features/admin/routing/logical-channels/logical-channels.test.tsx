@@ -23,7 +23,7 @@ function renderAt(path: string) {
 
 describe("logical channels", () => {
   it("lists channels with resolved group, access, and credential names", async () => {
-    renderAt("/admin/routing/logical-channels");
+    renderAt("/admin/routing/channels");
     expect(await screen.findByText("Primary channel")).toBeInTheDocument();
     expect(screen.getAllByText(ROUTING_GROUP.name).length).toBeGreaterThan(0);
     expect(screen.getAllByText(UPSTREAM_ACCESS.name).length).toBeGreaterThan(0);

@@ -89,11 +89,6 @@ export function useCompleteCodexOauth() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: credentialsKey });
       void queryClient.invalidateQueries({ queryKey: ["console", "upstream-credentials"] });
-      void queryClient.invalidateQueries({ queryKey: ["console", "channels"] });
-      void queryClient.invalidateQueries({ queryKey: ["console", "model-rules"] });
-      void queryClient.invalidateQueries({
-        queryKey: ["console", "control-plane-lists"],
-      });
     },
   });
 }
@@ -109,11 +104,6 @@ export function useImportCodexCredential() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: credentialsKey });
       void queryClient.invalidateQueries({ queryKey: ["console", "upstream-credentials"] });
-      void queryClient.invalidateQueries({ queryKey: ["console", "channels"] });
-      void queryClient.invalidateQueries({ queryKey: ["console", "model-rules"] });
-      void queryClient.invalidateQueries({
-        queryKey: ["console", "control-plane-lists"],
-      });
     },
   });
 }
@@ -147,11 +137,6 @@ export function useUpdateCodexCredential(id: string) {
       void queryClient.invalidateQueries({ queryKey: credentialsKey });
       void queryClient.invalidateQueries({ queryKey: ["console", "upstream-credentials"] });
       void queryClient.invalidateQueries({ queryKey: credentialKey(id) });
-      void queryClient.invalidateQueries({ queryKey: ["console", "channels"] });
-      void queryClient.invalidateQueries({ queryKey: ["console", "model-rules"] });
-      void queryClient.invalidateQueries({
-        queryKey: ["console", "control-plane-lists"],
-      });
     },
   });
 }
@@ -170,11 +155,6 @@ export function useDeleteCodexCredential() {
       void queryClient.invalidateQueries({ queryKey: credentialsKey });
       void queryClient.invalidateQueries({ queryKey: ["console", "upstream-credentials"] });
       void queryClient.removeQueries({ queryKey: credentialKey(id) });
-      void queryClient.invalidateQueries({ queryKey: ["console", "channels"] });
-      void queryClient.invalidateQueries({ queryKey: ["console", "model-rules"] });
-      void queryClient.invalidateQueries({
-        queryKey: ["console", "control-plane-lists"],
-      });
     },
   });
 }
@@ -192,11 +172,6 @@ export function useBatchUpdateCodexCredentials() {
       void queryClient.invalidateQueries({ queryKey: ["console", "upstream-credentials"] });
       void queryClient.invalidateQueries({
         queryKey: ["console", "codex-oauth", "credential"],
-      });
-      void queryClient.invalidateQueries({ queryKey: ["console", "channels"] });
-      void queryClient.invalidateQueries({ queryKey: ["console", "model-rules"] });
-      void queryClient.invalidateQueries({
-        queryKey: ["console", "control-plane-lists"],
       });
     },
   });

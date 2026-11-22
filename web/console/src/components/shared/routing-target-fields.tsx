@@ -255,7 +255,7 @@ export function RoutingTargetFields({
           {t("Channel groups ({count})", { count: visibleGroups.length })}
         </FieldLegend>
         <FieldDescription>
-          {t("Group access follows membership: channels are included when they join and excluded when they leave. Individually selected channels stay selected if they move.")}
+          {t("Selecting a group includes its current and future members. Select a channel individually to keep access if it leaves the group.")}
         </FieldDescription>
         {visibleGroups.length > 0 ? (
           <FieldGroup data-slot="checkbox-group" className="gap-3">

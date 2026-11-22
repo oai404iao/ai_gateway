@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { BrowserRouter } from "react-router";
+import { BrowserRouter, Link } from "react-router";
 import { http, HttpResponse } from "msw";
 import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
-import { ADMIN_LOGIN_RESPONSE, PLUGIN_JOB, PLUGIN_SETTINGS } from "@/test/fixtures";
+import { ADMIN_LOGIN_RESPONSE, CONNECTOR_PLUGINS, PLUGIN_JOB, PLUGIN_SETTINGS } from "@/test/fixtures";
 import { seedAuthenticatedSession, server } from "@/test/msw";
 import type { PluginSettingsInput } from "@/api/types";
 
@@ -192,5 +192,34 @@ describe("Plugin management", () => {
     await confirm(user, "Discover plugins");
     expect(await screen.findByText("Plugin operation failed (invalid_package).")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "general" })).toBeInTheDocument();
+  });
+
+  it("refreshes the credentials page's cached connector list after disabling a plugin", async () => {
+    let enabled = true;
+    server.use(
+      http.get("/console/v1/system/connectors", () => HttpResponse.json(enabled ? [
+        ...CONNECTOR_PLUGINS, { id: "example", version: "1.0.0", abi_version: 1, built_in: false, operations: ["responses"] },
+      ] : CONNECTOR_PLUGINS)),
+      http.put("/console/v1/plugins/example/state", async ({ request }) => {
+        enabled = (await request.json() as { enabled: boolean }).enabled;
+        return HttpResponse.json({ id: "example", correlation_id: "disabled" });
+      }),
+    );
+    const user = userEvent.setup();
+    seedAuthenticatedSession();
+    const credentials = "/admin/routing/upstream-credentials";
+    window.history.replaceState({}, "", credentials);
+    render(<AppProviders><BrowserRouter>
+      <Link to="/admin/plugins/example">Edit example plugin</Link><Link to={credentials}>Browse credentials</Link>
+      <AppRouter />
+    </BrowserRouter></AppProviders>);
+    expect(await screen.findByRole("tab", { name: "example" })).toBeVisible();
+    await user.click(screen.getByRole("link", { name: "Edit example plugin" }));
+    await user.click(await screen.findByRole("button", { name: "Disable plugin" }));
+    await confirm(user, "Disable plugin");
+    await screen.findByText("Plugin state updated.");
+    await user.click(screen.getByRole("link", { name: "Browse credentials" }));
+    expect(await screen.findByRole("tab", { name: "General" })).toBeVisible();
+    await waitFor(() => expect(screen.queryByRole("tab", { name: "example" })).not.toBeInTheDocument());
   });
 });

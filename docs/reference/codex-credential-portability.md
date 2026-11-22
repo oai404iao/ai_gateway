@@ -1,4 +1,4 @@
-# Codex 凭证导入格式兼容性
+# Codex 凭证导入格式
 
 > 类型：外部格式参考与当前导入边界。
 >
@@ -37,19 +37,11 @@ Header helper 只在 account ID 非空时发送 chatgpt-account-id。
 缺 account ID 不是 Free plan 专属，也不能由迁移工具补造 workspace ID。
 这些是版本观察，不承诺对方未来 schema 不变。
 
-## ai-gateway 兼容行为
+## 原生 Bundle
 
-### 原生 Bundle 与旧字段
+`ai-gateway-codex-credentials` 的导入和导出都使用数字版本 `3`。版本不符时不创建凭证或代理草稿。Bundle 包含凭证和可选维护代理；渠道绑定、模型和路由权重由管理员在导入后配置。
 
-原生类型是 `ai-gateway-codex-credentials`；当前导出 **version 3**，导入器仍识别旧版及
-上述外部形状。导出可带维护代理定义/认证、身份、enable 和 quota threshold，
-不包含渠道组、逻辑渠道归属或 routing weight。
-
-旧 Bundle 或外部对象中的 `weight` 被忽略并在草稿警告，不提交服务端。
-新导入凭证不会恢复旧 `all`/`selected` assignment，也不会自动加进模型规则；
-路由候选的渠道、wire model 和正权重由相应操作规则显式拥有。
-
-### 身份、去重与验证
+## 身份、去重与验证
 
 `access_token`、`refresh_token` 必须有值，`id_token` 可缺；缺少时从 access token 提取身份。
 account ID 可缺，但须取得 user ID，解析兼容 auth namespace 中 chatgpt_user_id/user_id
@@ -71,16 +63,3 @@ personal user ID，最后才用相同 Token 检测重复草稿。同一 Business
 - 代理必须显式检查映射，不通过导入绕过目标范围或凭证校验。
 - 网关只导出自身 Bundle，不生成 CLIProxyAPI/Sub2API 文件，也不承诺无损往返外部产品。
 - 维护代理和数据面接入代理不同；导入代理不自动替换已有逻辑渠道的转发网络策略。
-
-## 维护检查项
-
-修改格式识别时，对比固定来源并记录实际重新核对的日期，同时覆盖：
-
-1. CLIProxyAPI 单对象/数组、缺 id_token、proxy_url。
-2. Sub2API payload/envelope、accountless 身份、proxy_key 和内嵌代理认证。
-3. 当前原生 Bundle 往返、旧版兼容、weight 警告与不恢复旧路由赋值。
-4. 草稿去重、Business 多成员、服务端含糊匹配拒绝和 claim 冲突。
-5. 文件限制、部分失败重试、禁用/删除代理、未映射代理确认与敏感字段脱敏。
-
-解析器与页面测试位于 `web/console/src/features/admin/providers/codex-oauth/`；
-OAuth 生命周期与存储约束见[Codex 开发文档](../development/codex-oauth-connector.md)。

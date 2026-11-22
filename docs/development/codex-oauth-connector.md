@@ -146,10 +146,7 @@ worker、上游 `401` 恢复和多实例并发均传递 observed generation；�
 workspace/member，或相同 accountless personal user ID 的新 Token
 会事务内更新原 credential、递增 generation 并清除 `reauth_required`，不修改渠道和操作配置。
 
-原生凭证导出 Bundle 当前为 version 3，包含 Token、身份、enable/quota 和可选维护 proxy 数据，
-不包含组、渠道归属或 routing weight。高级导入器会忽略旧原生 Bundle 或外部凭证对象中的 `weight` 并显示
-warning；导入完成后，管理员仍需显式绑定逻辑渠道、配置操作能力和路由 candidate。
-凭证导入不把新账号自动加入规则，也不恢复旧 `all`/`selected` 路由赋值语义。
+原生凭证导入和导出使用 version 3，包含 Token、身份、启用状态、quota 和可选维护代理。导入只写入凭证；渠道绑定、模型和路由权重由管理员单独配置。
 
 ## Quota 与 Session 粘性
 

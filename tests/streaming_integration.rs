@@ -114,7 +114,6 @@ fn proxy_service_with_network_policy(
             secret_value: CLIENT_KEY.into(),
             status: "active".into(),
             expires_at: None,
-            allowed_api_formats: vec!["open_ai_chat_completions".into()],
             permissions: vec!["proxy".into()],
             allowed_group_ids: vec![group_id],
             allowed_channel_ids: vec![],

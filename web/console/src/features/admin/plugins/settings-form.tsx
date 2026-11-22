@@ -54,7 +54,7 @@ export function PluginSettingsForm({ settings, saving, onSave }: {
       <Card>
         <CardHeader>
           <CardTitle>{localized(settings.descriptor.title, locale) || t("Plugin settings")}</CardTitle>
-          <CardDescription>{t("Settings are defined and validated by this plugin. Do not enter credentials here.")}</CardDescription>
+          <CardDescription>{t("Do not enter credentials here.")}</CardDescription>
         </CardHeader>
         <CardContent>
           <FieldGroup>

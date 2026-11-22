@@ -151,7 +151,6 @@ fn request_log_event(
         model_id: Some(model),
         outcome: RequestLogOutcome::Succeeded,
         response_status_code: Some(200),
-        streamed: false,
         ttft_ms: Some(1),
         total_duration_ms: 2,
         billing: Some(RequestBilling {

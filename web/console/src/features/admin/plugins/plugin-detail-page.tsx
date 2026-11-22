@@ -16,6 +16,7 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import { deletePluginArtifact, getPlugin, getPluginSettings, pluginKeys, updatePluginSettings, updatePluginState } from "./api";
 import { PluginAuthorizationDialog, type PluginAction } from "./authorization-dialog";
 import { PluginSettingsForm } from "./settings-form";
+import { CONNECTORS_KEY } from "@/features/admin/connectors/api";
 
 export function PluginDetailPage() {
   const { id = "" } = useParams();
@@ -59,7 +60,10 @@ export function PluginDetailPage() {
             onChange={(enabled, digest) => {
               const etag = detail.data!.etag;
               setAction({ title: enabled ? "Enable selected version" : "Disable plugin", run: (token) => execute(
-                () => updatePluginState(id, { enabled, artifact_digest: digest }, etag, token), "Plugin state updated.",
+                async () => {
+                  await updatePluginState(id, { enabled, artifact_digest: digest }, etag, token);
+                  await client.invalidateQueries({ queryKey: CONNECTORS_KEY });
+                }, "Plugin state updated.",
               ) });
             }}
             onDelete={(digest) => {

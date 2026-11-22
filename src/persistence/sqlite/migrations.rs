@@ -215,7 +215,14 @@ pub(super) async fn run(
     let connector_ids = migrations.iter().any(|migration| {
         migration.version == 10 && migration.description == "native connector identities"
     });
-    if capability_cutover || operation_split || credential_ownership || connector_ids {
+    let rebuild_tables = capability_cutover
+        || operation_split
+        || credential_ownership
+        || connector_ids
+        || migrations.iter().any(|migration| {
+            migration.version == 13 && migration.description == "remove API key format restrictions"
+        });
+    if rebuild_tables {
         sqlx::query("PRAGMA foreign_keys=OFF")
             .execute(&mut *connection)
             .await?;
@@ -309,7 +316,7 @@ pub(super) async fn run(
     if check_identity(&mut transaction).await? != Some(database_id) {
         return Err(SqliteOpenError::ForeignDatabase.into());
     }
-    if (capability_cutover || operation_split || credential_ownership || connector_ids)
+    if rebuild_tables
         && sqlx::query("PRAGMA foreign_key_check")
             .fetch_optional(&mut *transaction)
             .await?

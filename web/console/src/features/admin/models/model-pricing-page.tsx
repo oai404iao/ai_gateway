@@ -532,7 +532,7 @@ export function ModelPricingPage() {
               <CardHeader>
                 <CardTitle>{t("Base prices")}</CardTitle>
                 <CardDescription>
-                  {t("USD prices are per the configured price unit tokens.")}
+                  {t("Prices are in USD per token unit shown below.")}
                 </CardDescription>
               </CardHeader>
               <CardContent>

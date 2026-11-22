@@ -162,8 +162,8 @@ Base UI. Custom triggers use `render`, not Radix `asChild`.
   `dnd-kit`. Encapsulate recurring combinations in project-owned layout components.
   No resize/drag interaction or dependency is currently installed.
 - Follow the [interaction standard](../../docs/development/console-interaction-standard.md)
-  for parent links, URL list state, detail layouts, unsaved drafts, labels and
-  redirects. Navigation uses links; mutations use buttons. Do not duplicate Back controls.
+  for parent links, URL list state, detail layouts, unsaved drafts and labels.
+  Navigation uses links; mutations use buttons. Do not duplicate Back controls.
 - Seed every Select-backed React Hook Form field in `defaultValues` so `reset()`
   values participate in validation. Show field errors and retain failed drafts.
 - Keep the query cache inside the mounted session provider. Changing account or privilege scope starts a fresh cache; refreshing the bearer for the same scope does not.

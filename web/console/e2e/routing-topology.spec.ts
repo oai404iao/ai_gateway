@@ -65,7 +65,7 @@ test.describe("canonical routing topology", () => {
     await expect(page.getByRole("heading", { name: "Channel capabilities" })).toHaveCount(0);
 
     await page.getByText("Upstream A", { exact: true }).click();
-    await page.getByRole("link", { name: "Choose a capability to configure body and header transforms." }).click();
+    await page.getByRole("link", { name: "Configure body and header transforms" }).click();
     await expect(page.getByRole("heading", { name: "Channel capabilities" })).toBeVisible();
     await expect(page.getByRole("columnheader", { name: "Transports" })).toHaveCount(0);
     await page.getByRole("cell", { name: "Chat Completions", exact: true }).click();
@@ -115,7 +115,7 @@ test.describe("canonical routing topology", () => {
 
   test("an administrator edits a channel binding with its ETag", async ({ page }) => {
     await prepare(page);
-    await page.goto("/admin/routing/logical-channels");
+    await page.goto("/admin/routing/channels");
     await page.getByText("Upstream A", { exact: true }).click();
     await expect(page).toHaveURL(/\/admin\/routing\/logical-channels\/[0-9a-f-]+\?returnTo=/);
     await expect(page.getByLabel("Name", { exact: true })).toHaveValue(

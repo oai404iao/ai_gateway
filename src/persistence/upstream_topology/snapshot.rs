@@ -18,7 +18,7 @@ pub async fn pg_load_control_plane(
                 SELECT k.id,k.user_id,u.status AS user_status,
                     u.websocket_enabled AS user_websocket_enabled,
                     g.filter_fast_mode AS user_filter_fast_mode,k.secret_value,k.status,k.expires_at,
-                    k.allowed_api_formats::text[] AS allowed_api_formats,k.permissions,
+                    k.permissions,
                     k.allowed_group_ids,ARRAY[]::uuid[] AS allowed_channel_ids,
                     k.requests_per_minute,k.max_concurrent_requests,
                     k.quota_limit_amount::text,k.quota_used_amount::text
@@ -78,7 +78,7 @@ pub async fn sqlite_load_control_plane(
                 'user_websocket_enabled',json(CASE u.websocket_enabled WHEN 1 THEN 'true' ELSE 'false' END),
                 'user_filter_fast_mode',json(CASE g.filter_fast_mode WHEN 1 THEN 'true' ELSE 'false' END),
                 'secret_value',k.secret_value,'status',k.status,'expires_at',k.expires_at,
-                'allowed_api_formats',json(k.allowed_api_formats),'permissions',json(k.permissions),
+                'permissions',json(k.permissions),
                 'allowed_group_ids',json(k.allowed_group_ids),'allowed_channel_ids',json('[]'),
                 'requests_per_minute',k.requests_per_minute,'max_concurrent_requests',k.max_concurrent_requests,
                 'quota_limit_amount',k.quota_limit_amount,'quota_used_amount',k.quota_used_amount)

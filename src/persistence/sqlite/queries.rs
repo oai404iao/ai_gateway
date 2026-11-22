@@ -421,7 +421,7 @@ const CONSOLE_REQUEST_LOG_SELECT: &str = "SELECT log.id,log.started_at,log.compl
      log.api_operation,log.request_protocol,log.client_model,log.reasoning_effort,log.fast_mode,\
      log.upstream_model,log.model_rule_id,log.channel_group_id,\
      channel_group.label AS channel_group_name,log.channel_id,channel.label AS channel_name,log.outcome,\
-     log.response_status_code,log.streamed,log.ttft_ms,log.total_duration_ms,\
+     log.response_status_code,log.ttft_ms,log.total_duration_ms,\
      log.output_tokens_per_second,log.input_tokens,log.cached_input_tokens,log.cache_write_tokens,\
      log.output_tokens,log.reasoning_tokens,log.cost_amount,log.peak_pricing,log.error_code,\
      log.error_summary,receipt.settled_at AS billed_at \
@@ -454,7 +454,6 @@ struct ConsoleRequestLogRow {
     channel_name: Option<String>,
     outcome: String,
     response_status_code: Option<i16>,
-    streamed: bool,
     ttft_ms: Option<i32>,
     total_duration_ms: Option<i32>,
     output_tokens_per_second: Option<SqliteTokenRate>,
@@ -498,7 +497,6 @@ impl ConsoleRequestLogRow {
             channel_name: self.channel_name,
             outcome: self.outcome,
             response_status_code: self.response_status_code,
-            streamed: self.streamed,
             ttft_ms: self.ttft_ms,
             total_duration_ms: self.total_duration_ms,
             output_tokens_per_second: self.output_tokens_per_second.map(|value| value.0),

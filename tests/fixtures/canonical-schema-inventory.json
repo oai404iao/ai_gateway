@@ -77,8 +77,6 @@
   },
   "api_keys": {
     "checks": [
-      "api_keys_allowed_api_formats_check",
-      "api_keys_allowed_api_formats_check1",
       "api_keys_allowed_channel_ids_no_nulls",
       "api_keys_allowed_group_ids_no_nulls",
       "api_keys_check",
@@ -100,14 +98,12 @@
       "secret_value",
       "status",
       "expires_at",
-      "allowed_api_formats",
       "permissions",
       "allowed_group_ids",
       "requests_per_minute",
       "max_concurrent_requests",
       "quota_limit_amount",
       "quota_used_amount",
-      "last_used_at",
       "created_at",
       "updated_at",
       "allowed_channel_ids",
@@ -122,7 +118,6 @@
       "api_keys_user_id_fkey"
     ],
     "types": {
-      "allowed_api_formats": "api_format[]",
       "allowed_channel_ids": "uuid[]",
       "allowed_group_ids": "uuid[]",
       "created_at": "timestamptz",
@@ -131,7 +126,6 @@
       "expires_at": "timestamptz",
       "id": "uuid",
       "is_system": "bool",
-      "last_used_at": "timestamptz",
       "max_concurrent_requests": "int4",
       "name": "varchar",
       "permissions": "text[]",
@@ -163,7 +157,6 @@
       "after_redacted",
       "correlation_id",
       "reason",
-      "source_ip_prefix",
       "actor_role"
     ],
     "constraints": [
@@ -182,8 +175,7 @@
       "object_id": "uuid",
       "object_type": "text",
       "occurred_at": "timestamptz",
-      "reason": "varchar",
-      "source_ip_prefix": "cidr"
+      "reason": "varchar"
     }
   },
   "channel_capabilities": {
@@ -974,7 +966,6 @@
   "request_logs": {
     "checks": [
       "request_logs_api_operation_format_check",
-      "request_logs_attempts_check",
       "request_logs_cache_write_tokens_check",
       "request_logs_cache_write_unit_price_check",
       "request_logs_cached_input_tokens_check",
@@ -1015,7 +1006,6 @@
       "channel_id",
       "outcome",
       "response_status_code",
-      "streamed",
       "ttft_ms",
       "total_duration_ms",
       "output_tokens_per_second",
@@ -1032,7 +1022,6 @@
       "cache_write_unit_price",
       "output_unit_price",
       "cost_amount",
-      "attempts",
       "error_code",
       "error_summary",
       "request_source",
@@ -1056,7 +1045,6 @@
       "api_format": "api_format",
       "api_key_id": "uuid",
       "api_operation": "text",
-      "attempts": "jsonb",
       "cache_write_tokens": "int8",
       "cache_write_unit_price": "numeric",
       "cached_input_tokens": "int8",
@@ -1088,7 +1076,6 @@
       "request_source": "text",
       "response_status_code": "int2",
       "started_at": "timestamptz",
-      "streamed": "bool",
       "total_duration_ms": "int4",
       "ttft_ms": "int4",
       "upstream_model": "varchar",

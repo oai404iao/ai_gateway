@@ -670,33 +670,6 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
-    put:
-      tags: [Users]
-      operationId: replaceUser
-      deprecated: true
-      description: |
-        Compatibility full-resource update. New clients should use `PATCH`,
-        which preserves every omitted field.
-      security: [{ bearerAuth: [] }]
-      parameters:
-        - $ref: "#/components/parameters/PathId"
-        - $ref: "#/components/parameters/IfMatch"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/UserInput" }
-      responses:
-        "200":
-          description: Updated.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/MutationResponse" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "409": { $ref: "#/components/responses/Conflict" }
-        "422": { $ref: "#/components/responses/Unprocessable" }
     delete:
       tags: [Users]
       operationId: deleteUser
@@ -4138,7 +4111,7 @@ components:
       type: object
       description: Access is the union of current members of the selected groups and independently granted logical channels. Group membership changes take effect when the updated snapshot is published; the key need not be edited.
       required:
-        [id, name, secret, status, expires_at, allowed_api_formats, permissions,
+        [id, name, secret, status, expires_at, permissions,
          allowed_group_ids, allowed_channel_ids, requests_per_minute, max_concurrent_requests,
          quota_limit_amount, quota_used_amount, created_at, updated_at]
       properties:
@@ -4149,11 +4122,6 @@ components:
           description: Full API key value. Console clients must mask it by default.
         status: { type: string }
         expires_at: { $ref: "#/components/schemas/DateTimeNullable" }
-        allowed_api_formats:
-          type: array
-          deprecated: true
-          description: Compatibility metadata, not an authorization restriction. Active keys report all supported formats; access is determined by logical-channel grants and enabled operation routes.
-          items: { $ref: "#/components/schemas/ApiFormat" }
         permissions:
           type: array
           items: { type: string }
@@ -5086,7 +5054,7 @@ components:
       required:
         [id, started_at, completed_at, user_id, user_name, api_key_id, api_format,
          api_operation, request_source, request_protocol, client_model, upstream_model, model_rule_id, channel_group_id,
-         channel_group_name, channel_id, channel_name, outcome, response_status_code, streamed, ttft_ms,
+         channel_group_name, channel_id, channel_name, outcome, response_status_code, ttft_ms,
          total_duration_ms, output_tokens_per_second, reasoning_effort, fast_mode, input_tokens, cached_input_tokens,
          cache_write_tokens, output_tokens, reasoning_tokens, cost_amount, peak_pricing, error_code, error_summary,
          billed_at]
@@ -5131,9 +5099,6 @@ components:
           description: Historical channel label for that dispatch identity. Administrator-only; all self-service responses return null.
         outcome: { type: string }
         response_status_code: { type: integer, nullable: true }
-        streamed:
-          type: boolean
-          description: Compatibility flag; true for SSE and WebSocket requests.
         ttft_ms: { type: integer, nullable: true }
         total_duration_ms: { type: integer, nullable: true }
         output_tokens_per_second:
@@ -5651,6 +5616,7 @@ components:
 
     SelfApiKeyCreateInput:
       type: object
+      additionalProperties: false
       required: [name, allowed_group_ids, allowed_channel_ids]
       properties:
         name: { type: string }
@@ -5667,6 +5633,7 @@ components:
 
     SelfApiKeyUpdateInput:
       type: object
+      additionalProperties: false
       required: [name, status, allowed_group_ids, allowed_channel_ids]
       properties:
         name: { type: string }
@@ -5751,24 +5718,6 @@ components:
         initial_balance_amount:
           allOf: [{ $ref: "#/components/schemas/Decimal" }]
           description: Updated initial USD balance for future registrations.
-
-    UserInput:
-      type: object
-      required: [display_name, role, status, balance_amount]
-      properties:
-        display_name: { type: string }
-        email: { type: string, nullable: true }
-        role: { $ref: "#/components/schemas/UserRole" }
-        status: { type: string }
-        balance_amount:
-          allOf: [{ $ref: "#/components/schemas/Decimal" }]
-          description: Current account balance in USD.
-        user_group_id:
-          type: string
-          format: uuid
-          nullable: true
-          description: Null or omission selects the protected default role group.
-        default_api_key_policy_id: { type: string, format: uuid, nullable: true }
 
     UserUpdateInput:
       type: object
@@ -5891,17 +5840,13 @@ components:
 
     ApiKeyCreateInput:
       type: object
+      additionalProperties: false
       required:
         [user_id, name, permissions, allowed_group_ids,
          allowed_channel_ids]
       properties:
         user_id: { type: string, format: uuid }
         name: { type: string }
-        allowed_api_formats:
-          type: array
-          deprecated: true
-          description: Ignored compatibility input. Logical-channel authorization does not restrict individual capabilities or API formats.
-          items: { $ref: "#/components/schemas/ApiFormat" }
         permissions:
           type: array
           items: { type: string }
@@ -5918,17 +5863,13 @@ components:
 
     ApiKeyUpdateInput:
       type: object
+      additionalProperties: false
       required:
         [name, status, permissions, allowed_group_ids,
          allowed_channel_ids]
       properties:
         name: { type: string }
         status: { type: string }
-        allowed_api_formats:
-          type: array
-          deprecated: true
-          description: Ignored compatibility input. Logical-channel authorization does not restrict individual capabilities or API formats.
-          items: { $ref: "#/components/schemas/ApiFormat" }
         permissions:
           type: array
           items: { type: string }
@@ -6290,19 +6231,3 @@ components:
         provider_id: { type: string }
         model_id: { type: string }
         preview_token: { $ref: "#/components/schemas/ModelSyncPreviewToken" }
-
-    ListQuery:
-      type: object
-      properties:
-        limit: { type: integer, minimum: 1, maximum: 100 }
-        user_id: { type: string, format: uuid }
-        api_key_id: { type: string, format: uuid }
-        model: { type: string, maxLength: 300 }
-        api_format: { $ref: "#/components/schemas/ApiFormat" }
-        api_operation: { $ref: "#/components/schemas/ApiOperation" }
-        outcome:
-          type: string
-          enum: [succeeded, failed, rejected, cancelled]
-        started_after: { $ref: "#/components/schemas/DateTime" }
-        started_before: { $ref: "#/components/schemas/DateTime" }
-        billed: { type: boolean }

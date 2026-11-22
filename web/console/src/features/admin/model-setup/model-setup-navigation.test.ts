@@ -17,10 +17,10 @@ describe("model setup navigation", () => {
   it("keeps return navigation inside administrator routes", () => {
     expect(
       safeAdminReturnPath(
-        "/admin/model-setup?view=models",
+        "/admin/models?q=chat",
         "/admin/models",
       ),
-    ).toBe("/admin/model-setup?view=models");
+    ).toBe("/admin/models?q=chat");
     expect(
       safeAdminReturnPath("//evil.example/path", "/admin/models"),
     ).toBe("/admin/models");
@@ -36,11 +36,11 @@ describe("model setup navigation", () => {
     expect(
       adminPath("/admin/models/new", {
         copyFrom: "00000000-0000-4000-8000-000000000001",
-        returnTo: "/admin/model-setup?view=models",
+        returnTo: "/admin/models?q=chat",
         ignored: null,
       }),
     ).toBe(
-      "/admin/models/new?copyFrom=00000000-0000-4000-8000-000000000001&returnTo=%2Fadmin%2Fmodel-setup%3Fview%3Dmodels",
+      "/admin/models/new?copyFrom=00000000-0000-4000-8000-000000000001&returnTo=%2Fadmin%2Fmodels%3Fq%3Dchat",
     );
   });
 });

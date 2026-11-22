@@ -65,7 +65,6 @@ pub struct ControlPlaneRecords {
 pub struct RuntimeConfigRecords {
     pub control_plane: ControlPlaneRecords,
     pub system_settings: SystemSettingsRecord,
-    pub connector_ids: Vec<String>,
     pub plugin_records: super::PluginRuntimeRecords,
 }
 
@@ -311,7 +310,6 @@ pub struct ApiKeyRecord {
     pub secret_value: String,
     pub status: String,
     pub expires_at: Option<DateTime<Utc>>,
-    pub allowed_api_formats: Vec<String>,
     pub permissions: Vec<String>,
     pub allowed_group_ids: Vec<Uuid>,
     pub allowed_channel_ids: Vec<Uuid>,
@@ -332,7 +330,6 @@ impl fmt::Debug for ApiKeyRecord {
             .field("secret_value", &"REDACTED")
             .field("status", &self.status)
             .field("expires_at", &self.expires_at)
-            .field("allowed_api_formats", &self.allowed_api_formats)
             .field("permissions", &self.permissions)
             .field("allowed_group_ids", &self.allowed_group_ids)
             .field("allowed_channel_ids", &self.allowed_channel_ids)
@@ -392,48 +389,6 @@ pub struct ModelRuleRecord {
     pub enabled: bool,
 }
 
-#[derive(Debug, FromRow)]
-struct ModelRuleRecordRow {
-    id: Uuid,
-    client_model: String,
-    api_format: String,
-    model_id: Uuid,
-    model_enabled: bool,
-    model_currency: String,
-    price_unit_tokens: i64,
-    price_effective_at: DateTime<Utc>,
-    input_unit_price: rust_decimal::Decimal,
-    cached_input_unit_price: rust_decimal::Decimal,
-    cache_write_unit_price: rust_decimal::Decimal,
-    output_unit_price: rust_decimal::Decimal,
-    advanced_billing: Value,
-    routing_tiers: sqlx::types::Json<Vec<ModelRuleRoutingTier>>,
-    enabled: bool,
-}
-
-impl From<ModelRuleRecordRow> for ModelRuleRecord {
-    fn from(row: ModelRuleRecordRow) -> Self {
-        let api_operation = ApiOperation::for_legacy_format(&row.api_format);
-        Self {
-            id: row.id,
-            client_model: row.client_model,
-            api_format: row.api_format,
-            api_operation,
-            model_id: row.model_id,
-            model_enabled: row.model_enabled,
-            model_currency: row.model_currency,
-            price_unit_tokens: row.price_unit_tokens,
-            price_effective_at: row.price_effective_at,
-            input_unit_price: row.input_unit_price,
-            cached_input_unit_price: row.cached_input_unit_price,
-            cache_write_unit_price: row.cache_write_unit_price,
-            output_unit_price: row.output_unit_price,
-            advanced_billing: row.advanced_billing,
-            routing_tiers: row.routing_tiers.0,
-            enabled: row.enabled,
-        }
-    }
-}
 #[derive(Debug, FromRow)]
 pub struct ChannelGroupRecord {
     pub id: Uuid,
@@ -598,8 +553,6 @@ pub(super) struct PostgresControlPlaneRepository {
 pub struct ApiKeyCreate {
     pub user_id: Uuid,
     pub name: String,
-    #[serde(default)]
-    pub allowed_api_formats: Vec<String>,
     pub permissions: Vec<String>,
     pub allowed_group_ids: Vec<Uuid>,
     pub allowed_channel_ids: Vec<Uuid>,
@@ -613,8 +566,6 @@ pub struct ApiKeyCreate {
 pub struct ApiKeyUpdate {
     pub name: String,
     pub status: String,
-    #[serde(default)]
-    pub allowed_api_formats: Vec<String>,
     pub permissions: Vec<String>,
     pub allowed_group_ids: Vec<Uuid>,
     pub allowed_channel_ids: Vec<Uuid>,
@@ -732,21 +683,6 @@ impl UserUpdateInput {
             && self.user_group_id.is_none()
             && self.default_api_key_policy_id.is_none()
             && self.websocket_enabled.is_none()
-    }
-}
-
-impl From<UserInput> for UserUpdateInput {
-    fn from(value: UserInput) -> Self {
-        Self {
-            display_name: Some(value.display_name),
-            email: Some(value.email),
-            role: Some(value.role),
-            status: Some(value.status),
-            balance_amount: Some(value.balance_amount),
-            user_group_id: value.user_group_id,
-            default_api_key_policy_id: Some(value.default_api_key_policy_id),
-            websocket_enabled: None,
-        }
     }
 }
 
@@ -1233,7 +1169,6 @@ pub struct ConsoleApiKey {
     pub secret: String,
     pub status: String,
     pub expires_at: Option<DateTime<Utc>>,
-    pub allowed_api_formats: Vec<String>,
     pub permissions: Vec<String>,
     pub allowed_group_ids: Vec<Uuid>,
     pub allowed_channel_ids: Vec<Uuid>,
@@ -1297,7 +1232,6 @@ pub struct ConsoleRequestLog {
     pub channel_name: Option<String>,
     pub outcome: String,
     pub response_status_code: Option<i16>,
-    pub streamed: bool,
     pub ttft_ms: Option<i32>,
     pub total_duration_ms: Option<i32>,
     pub output_tokens_per_second: Option<rust_decimal::Decimal>,
@@ -1680,7 +1614,6 @@ pub struct ControlPlaneApiKey {
     pub secret: String,
     pub status: String,
     pub expires_at: Option<DateTime<Utc>>,
-    pub allowed_api_formats: Vec<String>,
     pub permissions: Vec<String>,
     pub allowed_group_ids: Vec<Uuid>,
     pub allowed_channel_ids: Vec<Uuid>,
@@ -2843,7 +2776,7 @@ impl PostgresRequestLogRepository {
                 "INSERT INTO request_logs \
                  (id,started_at,completed_at,user_id,api_key_id,request_source,api_format,\
                   api_operation,request_protocol,client_model,upstream_model,model_rule_id,\
-                  channel_group_id,channel_id,outcome,response_status_code,streamed,ttft_ms,\
+                  channel_group_id,channel_id,outcome,response_status_code,ttft_ms,\
                   total_duration_ms,output_tokens_per_second,input_tokens,cached_input_tokens,\
                   cache_write_tokens,output_tokens,model_id,currency,price_unit_tokens,\
                   price_effective_at,input_unit_price,cached_input_unit_price,\
@@ -2853,7 +2786,7 @@ impl PostgresRequestLogRepository {
                         input.request_source,input.api_format::api_format,input.api_operation,\
                         input.request_protocol,input.client_model,input.upstream_model,\
                         input.model_rule_id,input.channel_group_id,input.channel_id,input.outcome,\
-                        input.response_status_code,input.streamed,input.ttft_ms,input.total_duration_ms,\
+                        input.response_status_code,input.ttft_ms,input.total_duration_ms,\
                         input.output_tokens_per_second,input.input_tokens,input.cached_input_tokens,\
                         input.cache_write_tokens,input.output_tokens,input.model_id,\
                         input.currency::char(3),input.price_unit_tokens,input.price_effective_at,\
@@ -2864,15 +2797,15 @@ impl PostgresRequestLogRepository {
                  FROM UNNEST(\
                     $1::uuid[],$2::timestamptz[],$3::timestamptz[],$4::uuid[],$5::uuid[],\
                     $6::text[],$7::text[],$8::text[],$9::text[],$10::text[],$11::text[],\
-                    $12::uuid[],$13::uuid[],$14::uuid[],$15::text[],$16::int2[],$17::bool[],\
-                    $18::int4[],$19::int4[],$20::numeric[],$21::int8[],$22::int8[],$23::int8[],\
-                    $24::int8[],$25::uuid[],$26::text[],$27::int8[],$28::timestamptz[],\
-                    $29::numeric[],$30::numeric[],$31::numeric[],$32::numeric[],$33::numeric[],\
-                    $34::text[],$35::text[],$36::int8[],$37::text[],$38::bool[],$39::bool[]\
+                    $12::uuid[],$13::uuid[],$14::uuid[],$15::text[],$16::int2[],\
+                    $17::int4[],$18::int4[],$19::numeric[],$20::int8[],$21::int8[],$22::int8[],\
+                    $23::int8[],$24::uuid[],$25::text[],$26::int8[],$27::timestamptz[],\
+                    $28::numeric[],$29::numeric[],$30::numeric[],$31::numeric[],$32::numeric[],\
+                    $33::text[],$34::text[],$35::int8[],$36::text[],$37::bool[],$38::bool[]\
                  ) AS input(\
                     id,started_at,completed_at,user_id,api_key_id,request_source,api_format,\
                     api_operation,request_protocol,client_model,upstream_model,model_rule_id,\
-                    channel_group_id,channel_id,outcome,response_status_code,streamed,ttft_ms,\
+                    channel_group_id,channel_id,outcome,response_status_code,ttft_ms,\
                     total_duration_ms,output_tokens_per_second,input_tokens,cached_input_tokens,\
                     cache_write_tokens,output_tokens,model_id,currency,price_unit_tokens,\
                     price_effective_at,input_unit_price,cached_input_unit_price,\
@@ -2898,7 +2831,6 @@ impl PostgresRequestLogRepository {
                 .bind(&batch.channel_ids)
                 .bind(&batch.outcomes)
                 .bind(&batch.response_status_codes)
-                .bind(&batch.streamed)
                 .bind(&batch.ttft_ms)
                 .bind(&batch.total_duration_ms)
                 .bind(&batch.output_tokens_per_second)
@@ -2944,7 +2876,7 @@ impl PostgresRequestLogRepository {
                     "SELECT id,started_at,completed_at,user_id,api_key_id,request_source,\
                             api_format::text AS api_format,api_operation,request_protocol,\
                             client_model,upstream_model,model_rule_id,channel_group_id,channel_id,outcome,\
-                            response_status_code,streamed,ttft_ms,total_duration_ms,\
+                            response_status_code,ttft_ms,total_duration_ms,\
                             output_tokens_per_second,input_tokens,cached_input_tokens,\
                             cache_write_tokens,output_tokens,reasoning_tokens,\
                             model_id,currency,price_unit_tokens,price_effective_at,input_unit_price,\
@@ -3231,7 +3163,7 @@ pub(super) fn redact_self_service_request_log(log: &mut ConsoleRequestLog) {
 }
 
 pub(crate) const LOG_OPERATION_SQL: &str = "CASE log.api_operation WHEN 'chat_completions' THEN 'chat_completion' WHEN 'standalone_web_search' THEN 'web_search' WHEN 'responses' THEN CASE WHEN log.request_protocol='websocket' THEN 'responses-ws' ELSE 'responses' END ELSE log.api_operation END";
-const CONSOLE_REQUEST_LOG_COLUMNS: &str = "log.id,log.started_at,log.completed_at,log.user_id,request_user.display_name AS user_name,log.api_key_id,log.request_source,log.api_format::text AS api_format,CASE log.api_operation WHEN 'chat_completions' THEN 'chat_completion' WHEN 'standalone_web_search' THEN 'web_search' WHEN 'responses' THEN CASE WHEN log.request_protocol='websocket' THEN 'responses-ws' ELSE 'responses' END ELSE log.api_operation END AS api_operation,log.request_protocol,log.client_model,log.reasoning_effort,log.fast_mode,log.upstream_model,log.model_rule_id,log.channel_group_id,channel_group.label AS channel_group_name,log.channel_id,channel.label AS channel_name,log.outcome,log.response_status_code,log.streamed,log.ttft_ms,log.total_duration_ms,log.output_tokens_per_second,log.input_tokens,log.cached_input_tokens,log.cache_write_tokens,log.output_tokens,log.reasoning_tokens,log.cost_amount,log.peak_pricing,log.error_code,log.error_summary,receipt.settled_at AS billed_at";
+const CONSOLE_REQUEST_LOG_COLUMNS: &str = "log.id,log.started_at,log.completed_at,log.user_id,request_user.display_name AS user_name,log.api_key_id,log.request_source,log.api_format::text AS api_format,CASE log.api_operation WHEN 'chat_completions' THEN 'chat_completion' WHEN 'standalone_web_search' THEN 'web_search' WHEN 'responses' THEN CASE WHEN log.request_protocol='websocket' THEN 'responses-ws' ELSE 'responses' END ELSE log.api_operation END AS api_operation,log.request_protocol,log.client_model,log.reasoning_effort,log.fast_mode,log.upstream_model,log.model_rule_id,log.channel_group_id,channel_group.label AS channel_group_name,log.channel_id,channel.label AS channel_name,log.outcome,log.response_status_code,log.ttft_ms,log.total_duration_ms,log.output_tokens_per_second,log.input_tokens,log.cached_input_tokens,log.cache_write_tokens,log.output_tokens,log.reasoning_tokens,log.cost_amount,log.peak_pricing,log.error_code,log.error_summary,receipt.settled_at AS billed_at";
 
 async fn query_console_request_log(
     pool: &PgPool,
@@ -3871,7 +3803,6 @@ struct RequestLogInsertBatch {
     channel_ids: Vec<Option<Uuid>>,
     outcomes: Vec<String>,
     response_status_codes: Vec<Option<i16>>,
-    streamed: Vec<bool>,
     ttft_ms: Vec<Option<i32>>,
     total_duration_ms: Vec<i32>,
     output_tokens_per_second: Vec<Option<rust_decimal::Decimal>>,
@@ -3915,7 +3846,6 @@ impl RequestLogInsertBatch {
             channel_ids: Vec::with_capacity(capacity),
             outcomes: Vec::with_capacity(capacity),
             response_status_codes: Vec::with_capacity(capacity),
-            streamed: Vec::with_capacity(capacity),
             ttft_ms: Vec::with_capacity(capacity),
             total_duration_ms: Vec::with_capacity(capacity),
             output_tokens_per_second: Vec::with_capacity(capacity),
@@ -3965,7 +3895,6 @@ impl RequestLogInsertBatch {
         self.channel_ids.push(event.channel_id);
         self.outcomes.push(event.outcome.as_str().into());
         self.response_status_codes.push(response_status_code);
-        self.streamed.push(event.streamed);
         self.ttft_ms.push(event.ttft_ms);
         self.total_duration_ms.push(event.total_duration_ms);
         self.output_tokens_per_second
@@ -4032,7 +3961,6 @@ struct StoredRequestLog {
     channel_id: Option<Uuid>,
     outcome: String,
     response_status_code: Option<i16>,
-    streamed: bool,
     ttft_ms: Option<i32>,
     total_duration_ms: Option<i32>,
     output_tokens_per_second: Option<rust_decimal::Decimal>,
@@ -4081,7 +4009,6 @@ impl StoredRequestLog {
             && self.channel_id == event.channel_id
             && self.outcome == event.outcome.as_str()
             && self.response_status_code == response_status_code
-            && self.streamed == event.streamed
             && self.ttft_ms == event.ttft_ms
             && self.total_duration_ms == Some(event.total_duration_ms)
             && self.output_tokens_per_second
@@ -4262,11 +4189,10 @@ impl PostgresControlPlaneRepository {
         .unwrap_or(false);
         let key_created = sqlx::query_scalar::<_, bool>(
             "INSERT INTO api_keys
-             (id,user_id,name,secret_value,status,allowed_api_formats,permissions,
+             (id,user_id,name,secret_value,status,permissions,
               allowed_group_ids,allowed_channel_ids,is_system)
              VALUES (
                  $1,$2,$3,$4,'active',
-                 ARRAY['open_ai_chat_completions','open_ai_responses']::api_format[],
                  ARRAY['proxy','models.read']::text[],
                  ARRAY[]::uuid[],ARRAY[]::uuid[],true
              )
@@ -4388,12 +4314,6 @@ impl PostgresControlPlaneRepository {
             plugin_records: super::plugins::postgres::load(transaction).await?,
             control_plane: Self::load_transaction(transaction).await?,
             system_settings: Self::load_system_settings_transaction(transaction).await?,
-            connector_ids: sqlx::query_scalar(
-                "SELECT connector_kind FROM upstream_accesses WHERE deleted_at IS NULL
-                 UNION SELECT connector_kind FROM upstream_credentials WHERE deleted_at IS NULL",
-            )
-            .fetch_all(&mut **transaction)
-            .await?,
         })
     }
 
@@ -4635,7 +4555,7 @@ impl PostgresControlPlaneRepository {
         .fetch_all(&self.pool)
         .await?;
         let models = sqlx::query_as::<_, ControlPlaneModel>("SELECT id,source_model_id,display_name,provider_name,enabled,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,advanced_billing,last_synced_at,created_at,updated_at FROM models WHERE deleted_at IS NULL ORDER BY id").fetch_all(&self.pool).await?;
-        let api_keys = sqlx::query_as::<_, ControlPlaneApiKey>("SELECT k.id, k.user_id, u.status AS user_status, k.name, k.secret_value AS secret, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount, k.updated_at FROM api_keys k JOIN users u ON u.id=k.user_id WHERE NOT k.is_system AND k.deleted_at IS NULL AND u.deleted_at IS NULL ORDER BY k.id").fetch_all(&self.pool).await?;
+        let api_keys = sqlx::query_as::<_, ControlPlaneApiKey>("SELECT k.id, k.user_id, u.status AS user_status, k.name, k.secret_value AS secret, k.status, k.expires_at, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount, k.updated_at FROM api_keys k JOIN users u ON u.id=k.user_id WHERE NOT k.is_system AND k.deleted_at IS NULL AND u.deleted_at IS NULL ORDER BY k.id").fetch_all(&self.pool).await?;
         let api_key_policies = sqlx::query_as::<_, ControlPlaneApiKeyPolicy>("SELECT id,name,allowed_group_ids,allowed_channel_ids,enabled,created_at,updated_at FROM api_key_policies ORDER BY id").fetch_all(&self.pool).await?;
         let proxies = sqlx::query_as::<_, ControlPlaneProxy>("SELECT id,name,regexp_replace(regexp_replace(proxy_url, '^([^:/?#]+://)[^/?#]*@', E'\\\\1'), '[?#].*$', '') AS proxy_url,no_proxy_hosts,enabled,(username IS NOT NULL OR password IS NOT NULL) AS credential_configured,created_at,updated_at FROM proxies ORDER BY id").fetch_all(&self.pool).await?;
         let config_templates = sqlx::query_as::<_, ControlPlaneConfigTemplate>("SELECT id,name,description,document->>'api_format' AS api_format,enabled,created_at,updated_at FROM config_templates ORDER BY id").fetch_all(&self.pool).await?;
@@ -4689,7 +4609,7 @@ impl PostgresControlPlaneRepository {
 
     pub async fn own_api_keys(&self, user_id: Uuid) -> Result<Vec<ConsoleApiKey>, RepositoryError> {
         sqlx::query_as::<_, ConsoleApiKey>(
-            "SELECT id,name,secret_value AS secret,status,expires_at,allowed_api_formats::text[] AS allowed_api_formats, \
+            "SELECT id,name,secret_value AS secret,status,expires_at, \
                     permissions,allowed_group_ids,allowed_channel_ids,requests_per_minute,max_concurrent_requests, \
                     quota_limit_amount,quota_used_amount,created_at,updated_at \
              FROM api_keys \
@@ -4708,7 +4628,7 @@ impl PostgresControlPlaneRepository {
         id: Uuid,
     ) -> Result<Option<ConsoleApiKey>, RepositoryError> {
         sqlx::query_as::<_, ConsoleApiKey>(
-            "SELECT id,name,secret_value AS secret,status,expires_at,allowed_api_formats::text[] AS allowed_api_formats, \
+            "SELECT id,name,secret_value AS secret,status,expires_at, \
                     permissions,allowed_group_ids,allowed_channel_ids,requests_per_minute,max_concurrent_requests, \
                     quota_limit_amount,quota_used_amount,created_at,updated_at \
              FROM api_keys \
@@ -4772,10 +4692,10 @@ impl PostgresControlPlaneRepository {
         let permissions = ["proxy", "models.read"];
         let updated_at = sqlx::query_scalar(
             "INSERT INTO api_keys \
-             (id,user_id,name,secret_value,status,expires_at,allowed_api_formats,permissions, \
+             (id,user_id,name,secret_value,status,expires_at,permissions, \
               allowed_group_ids,allowed_channel_ids,requests_per_minute,max_concurrent_requests, \
               quota_limit_amount) \
-             VALUES ($1,$2,$3,$4,'active',$5,$6::api_format[],$7,$8,$9,$10,$11,$12) \
+             VALUES ($1,$2,$3,$4,'active',$5,$6,$7,$8,$9,$10,$11) \
              RETURNING updated_at",
         )
         .bind(id)
@@ -4783,7 +4703,6 @@ impl PostgresControlPlaneRepository {
         .bind(&input.name)
         .bind(&secret)
         .bind(input.expires_at)
-        .bind(authorization::all_formats())
         .bind(permissions)
         .bind(&input.allowed_group_ids)
         .bind(&input.allowed_channel_ids)
@@ -4855,10 +4774,9 @@ impl PostgresControlPlaneRepository {
         let updated_at = sqlx::query_scalar(
             "UPDATE api_keys \
              SET name=$3,status=$4,expires_at=$5, \
-                 allowed_api_formats=CASE WHEN $6 THEN $7::api_format[] ELSE allowed_api_formats END, \
-                 allowed_group_ids=$8,allowed_channel_ids=$9,requests_per_minute=$10, \
-                 max_concurrent_requests=$11,quota_limit_amount=$12 \
-             WHERE id=$1 AND user_id=$2 AND updated_at=$13 \
+                 allowed_group_ids=$6,allowed_channel_ids=$7,requests_per_minute=$8, \
+                 max_concurrent_requests=$9,quota_limit_amount=$10 \
+             WHERE id=$1 AND user_id=$2 AND updated_at=$11 \
                AND status <> 'revoked' AND deleted_at IS NULL \
              RETURNING updated_at",
         )
@@ -4867,8 +4785,6 @@ impl PostgresControlPlaneRepository {
         .bind(&input.name)
         .bind(&input.status)
         .bind(input.expires_at)
-        .bind(targets_changed)
-        .bind(authorization::all_formats())
         .bind(&input.allowed_group_ids)
         .bind(&input.allowed_channel_ids)
         .bind(input.requests_per_minute)
@@ -5273,12 +5189,10 @@ impl PostgresControlPlaneRepository {
                 deleted_by,
                 expected_updated_at,
             } => model_soft_delete(transaction, id, deleted_by, expected_updated_at).await,
-            ControlPlaneMutation::CreateApiKey(mut input) => {
-                input.allowed_api_formats = authorization::all_formats();
+            ControlPlaneMutation::CreateApiKey(input) => {
                 ensure_api_key_owner_exists(transaction, input.user_id).await?;
                 validate_admin_api_key_input(
                     &input.name,
-                    &input.allowed_api_formats,
                     &input.permissions,
                     &input.allowed_group_ids,
                     &input.allowed_channel_ids,
@@ -5288,8 +5202,8 @@ impl PostgresControlPlaneRepository {
                 )?;
                 let id = Uuid::new_v4();
                 let secret = generate_api_key_secret();
-                let updated_at = sqlx::query_scalar("INSERT INTO api_keys (id, user_id, name, secret_value, status, expires_at, allowed_api_formats, permissions, allowed_group_ids, allowed_channel_ids, requests_per_minute, max_concurrent_requests, quota_limit_amount) VALUES ($1,$2,$3,$4,'active',$5,$6::api_format[],$7,$8,$9,$10,$11,$12) RETURNING updated_at")
-                    .bind(id).bind(input.user_id).bind(&input.name).bind(&secret).bind(input.expires_at).bind(&input.allowed_api_formats).bind(&input.permissions).bind(&input.allowed_group_ids).bind(&input.allowed_channel_ids).bind(input.requests_per_minute).bind(input.max_concurrent_requests).bind(input.quota_limit_amount).fetch_one(&mut **transaction).await?;
+                let updated_at = sqlx::query_scalar("INSERT INTO api_keys (id, user_id, name, secret_value, status, expires_at, permissions, allowed_group_ids, allowed_channel_ids, requests_per_minute, max_concurrent_requests, quota_limit_amount) VALUES ($1,$2,$3,$4,'active',$5,$6,$7,$8,$9,$10,$11) RETURNING updated_at")
+                    .bind(id).bind(input.user_id).bind(&input.name).bind(&secret).bind(input.expires_at).bind(&input.permissions).bind(&input.allowed_group_ids).bind(&input.allowed_channel_ids).bind(input.requests_per_minute).bind(input.max_concurrent_requests).bind(input.quota_limit_amount).fetch_one(&mut **transaction).await?;
                 authorization::pg_write(
                     transaction,
                     id,
@@ -5324,13 +5238,11 @@ impl PostgresControlPlaneRepository {
             }
             ControlPlaneMutation::UpdateApiKey {
                 id,
-                mut input,
+                input,
                 expected_updated_at,
             } => {
-                input.allowed_api_formats = authorization::all_formats();
                 validate_admin_api_key_input(
                     &input.name,
-                    &input.allowed_api_formats,
                     &input.permissions,
                     &input.allowed_group_ids,
                     &input.allowed_channel_ids,
@@ -5342,8 +5254,8 @@ impl PostgresControlPlaneRepository {
                 if !before["deleted_at"].is_null() {
                     return Err(RepositoryError::NotFound);
                 }
-                let updated_at = sqlx::query_scalar("UPDATE api_keys SET name=$2,status=$3,expires_at=$4,allowed_api_formats=$5::api_format[],permissions=$6,allowed_group_ids=$7,allowed_channel_ids=$8,requests_per_minute=$9,max_concurrent_requests=$10,quota_limit_amount=$11 WHERE id=$1 AND updated_at=$12 AND deleted_at IS NULL AND NOT (status='revoked' AND $3 <> 'revoked') RETURNING updated_at")
-                    .bind(id).bind(&input.name).bind(&input.status).bind(input.expires_at).bind(&input.allowed_api_formats).bind(&input.permissions).bind(&input.allowed_group_ids).bind(&input.allowed_channel_ids).bind(input.requests_per_minute).bind(input.max_concurrent_requests).bind(input.quota_limit_amount).bind(expected_updated_at).fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?;
+                let updated_at = sqlx::query_scalar("UPDATE api_keys SET name=$2,status=$3,expires_at=$4,permissions=$5,allowed_group_ids=$6,allowed_channel_ids=$7,requests_per_minute=$8,max_concurrent_requests=$9,quota_limit_amount=$10 WHERE id=$1 AND updated_at=$11 AND deleted_at IS NULL AND NOT (status='revoked' AND $3 <> 'revoked') RETURNING updated_at")
+                    .bind(id).bind(&input.name).bind(&input.status).bind(input.expires_at).bind(&input.permissions).bind(&input.allowed_group_ids).bind(&input.allowed_channel_ids).bind(input.requests_per_minute).bind(input.max_concurrent_requests).bind(input.quota_limit_amount).bind(expected_updated_at).fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?;
                 authorization::pg_write(
                     transaction,
                     id,
@@ -5667,10 +5579,8 @@ fn validate_self_api_key_input(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn validate_admin_api_key_input(
     name: &str,
-    allowed_api_formats: &[String],
     permissions: &[String],
     allowed_group_ids: &[Uuid],
     allowed_channel_ids: &[Uuid],
@@ -5679,9 +5589,7 @@ fn validate_admin_api_key_input(
     quota_limit_amount: Option<rust_decimal::Decimal>,
 ) -> Result<(), RepositoryError> {
     if name.trim().is_empty()
-        || allowed_api_formats.is_empty()
         || permissions.is_empty()
-        || allowed_api_formats.iter().collect::<HashSet<_>>().len() != allowed_api_formats.len()
         || permissions.iter().collect::<HashSet<_>>().len() != permissions.len()
     {
         return Err(RepositoryError::Validation);
@@ -5768,7 +5676,7 @@ async fn key_audit_for_user(
     user_id: Uuid,
 ) -> Result<Value, RepositoryError> {
     let value = sqlx::query_scalar::<_, Value>(
-        "SELECT json_build_object('id',id,'user_id',user_id,'name',name,'status',status,'expires_at',expires_at,'allowed_api_formats',allowed_api_formats,'permissions',permissions,'allowed_group_ids',allowed_group_ids,'allowed_channel_ids',allowed_channel_ids,'requests_per_minute',requests_per_minute,'max_concurrent_requests',max_concurrent_requests,'quota_limit_amount',quota_limit_amount,'quota_used_amount',quota_used_amount,'deleted_at',deleted_at,'deleted_by',deleted_by,'created_at',created_at,'updated_at',updated_at) FROM api_keys WHERE id=$1 AND user_id=$2 AND NOT is_system FOR UPDATE",
+        "SELECT json_build_object('id',id,'user_id',user_id,'name',name,'status',status,'expires_at',expires_at,'permissions',permissions,'allowed_group_ids',allowed_group_ids,'allowed_channel_ids',allowed_channel_ids,'requests_per_minute',requests_per_minute,'max_concurrent_requests',max_concurrent_requests,'quota_limit_amount',quota_limit_amount,'quota_used_amount',quota_used_amount,'deleted_at',deleted_at,'deleted_by',deleted_by,'created_at',created_at,'updated_at',updated_at) FROM api_keys WHERE id=$1 AND user_id=$2 AND NOT is_system FOR UPDATE",
     )
     .bind(id)
     .bind(user_id)
@@ -5782,7 +5690,7 @@ async fn key_audit(
     id: Uuid,
 ) -> Result<Value, RepositoryError> {
     let value = sqlx::query_scalar::<_, Value>(
-        "SELECT json_build_object('id',id,'user_id',user_id,'name',name,'status',status,'expires_at',expires_at,'allowed_api_formats',allowed_api_formats,'permissions',permissions,'allowed_group_ids',allowed_group_ids,'allowed_channel_ids',allowed_channel_ids,'requests_per_minute',requests_per_minute,'max_concurrent_requests',max_concurrent_requests,'quota_limit_amount',quota_limit_amount,'quota_used_amount',quota_used_amount,'deleted_at',deleted_at,'deleted_by',deleted_by,'created_at',created_at,'updated_at',updated_at) FROM api_keys WHERE id=$1 AND NOT is_system FOR UPDATE",
+        "SELECT json_build_object('id',id,'user_id',user_id,'name',name,'status',status,'expires_at',expires_at,'permissions',permissions,'allowed_group_ids',allowed_group_ids,'allowed_channel_ids',allowed_channel_ids,'requests_per_minute',requests_per_minute,'max_concurrent_requests',max_concurrent_requests,'quota_limit_amount',quota_limit_amount,'quota_used_amount',quota_used_amount,'deleted_at',deleted_at,'deleted_by',deleted_by,'created_at',created_at,'updated_at',updated_at) FROM api_keys WHERE id=$1 AND NOT is_system FOR UPDATE",
     )
     .bind(id)
     .fetch_optional(&mut **transaction)

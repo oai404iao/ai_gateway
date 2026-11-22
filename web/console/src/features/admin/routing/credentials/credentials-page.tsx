@@ -41,7 +41,7 @@ export function CredentialsPage() {
     rowName={(credential) => credential.name}
     detailPath={(credential) => `/admin/routing/upstream-credentials/${credential.id}`}
     createLabel={t("New credential")}
-    createPath="/admin/routing/upstream-credentials/new"
+    createPath={`/admin/routing/upstream-credentials/new?${new URLSearchParams({ connector: item.id })}`}
     columns={[
       { key: "name", header: t("Name"), render: (credential) => credential.name },
       { key: "kind", header: t("Authentication type"), render: (credential) => credential.kind === "bearer" ? "Bearer" : t("Custom header") },

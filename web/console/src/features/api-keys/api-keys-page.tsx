@@ -281,7 +281,7 @@ export function ApiKeysPage() {
       <section aria-label={t("Keys")} className="min-w-0">
         <AsyncResource isLoading={isLoading} error={error} isEmpty={!matched.length}
           emptyTitle={t(keys?.length ? "No matching API keys" : "No API keys")}
-          emptyDescription={t(keys?.length ? "Try another key name or status." : "Create your first API key to start using the data plane.")}>
+          emptyDescription={t(keys?.length ? "Try another key name or status." : "Create an API key to send requests.")}>
           <ResourceTable columns={isMobile ? columns.filter(col => ["name", "status", "actions"].includes(col.key)) : columns} rows={matched} rowKey={key => key.id}
             rowHref={key => withReturnTo(`/api-keys/${key.id}`, origin)} onRowClick={key => navigate(withReturnTo(`/api-keys/${key.id}`, origin))} pagination={pagination} />
         </AsyncResource>
@@ -385,9 +385,8 @@ export function ApiKeysPage() {
                     );
                   }}
                   legend={t("API Key Policy targets")}
-                  description={t(options.data?.policy_enabled
-                    ? "These ordinary groups and channels come from your enabled API Key Policy."
-                    : "No enabled API Key Policy is assigned. Ask an administrator to assign one.")}
+                  description={options.data?.policy_enabled === false
+                    ? t("Ask an administrator to assign an active API key policy.") : undefined}
                   error={targetError ? t(targetError) : undefined}
                 />
               </div>

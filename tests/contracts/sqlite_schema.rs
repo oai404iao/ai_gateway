@@ -230,7 +230,7 @@ async fn complete_baseline_and_guards_rollback_as_one_pending_batch() {
     assert!(!table_exists(&db, "users").await);
     assert!(!table_exists(&db, "request_metering_facts").await);
     assert!(!table_exists(&db, "_gateway_routing_assertions").await);
-    assert_eq!(db.install_schema().await.unwrap(), 12);
+    assert_eq!(db.install_schema().await.unwrap(), 14);
     db.close().await;
 }
 

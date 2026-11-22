@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useId, useState } from "react";
-import { Navigate, useParams } from "react-router";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm, useFormState, useWatch, get, type Control } from "react-hook-form";
 import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
@@ -41,7 +40,7 @@ import { SessionAffinityCard } from "@/features/admin/system/session-affinity-ca
 import { useI18n } from "@/app/i18n";
 import type { ScheduledTestingMode, SystemSettings, SystemSettingsInput } from "@/api/types";
 import { settingsLabels } from "./settings-labels";
-import { SETTINGS_SECTIONS, type SettingsSection } from "./settings-sections";
+import type { SettingsSection } from "./settings-sections";
 
 function statusCodesAreValid(value: string): boolean {
   const codes = value
@@ -346,14 +345,7 @@ const defaultValues: SystemSettingsValues = {
   },
 };
 
-export function SystemPage() {
-  const { section } = useParams();
-  const selected = SETTINGS_SECTIONS.find((item) => item.id === section);
-  if (!selected) return <Navigate to="/admin/system/general" replace />;
-  return <SystemSettingsForm key={selected.id} section={selected.id} label={selected.label} />;
-}
-
-function SystemSettingsForm({ section, label }: { section: SettingsSection; label: string }) {
+export function SystemPage({ section, label }: { section: SettingsSection; label: string }) {
   const formId = useId();
   const { t } = useI18n();
   const settings = useSystemSettings();
@@ -1203,7 +1195,7 @@ function SystemSettingsForm({ section, label }: { section: SettingsSection; labe
           <CardTitle>{t("Reload control plane")}</CardTitle>
           <CardDescription>
             {t(
-              "Re-compiles and publishes the immutable runtime snapshot. Periodic reloads also run automatically.",
+              "Apply the current configuration now instead of waiting for the next automatic reload.",
             )}
           </CardDescription>
         </CardHeader>

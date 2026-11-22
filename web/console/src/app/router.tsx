@@ -7,7 +7,6 @@ import {
   RouterProvider,
   createBrowserRouter,
   createRoutesFromElements,
-  useLocation,
 } from "react-router";
 import { NavigationLink } from "@/components/shared/navigation-link";
 import { EmptyState } from "@/components/shared/empty-state";
@@ -17,6 +16,7 @@ import { sessionScope } from "@/api/session-store";
 import { ConsoleLayout } from "@/app/layouts/console-layout";
 import { AuthLayout } from "@/app/layouts/auth-layout";
 import { ModelWorkspaceLayout } from "@/features/admin/models/model-workspace-layout";
+import { SETTINGS_SECTIONS } from "@/features/admin/system/settings-sections";
 
 // Page components are lazy-loaded so each route ships in its own chunk.
 // The shell (providers and navigation) stays eager for instant first paint.
@@ -239,15 +239,6 @@ function RequireAuth() {
   return <Outlet key={sessionScope(user)} />;
 }
 
-function WorkspaceRedirect({ to }: { to: string }) {
-  const { search } = useLocation();
-  const target = new URL(to, "https://console.invalid");
-  for (const [key, value] of new URLSearchParams(search)) {
-    if (!target.searchParams.has(key)) target.searchParams.set(key, value);
-  }
-  return <Navigate to={`${target.pathname}${target.search}`} replace />;
-}
-
 function RequirePasswordChange() {
   const { user } = useSession();
   if (!user?.password_change_required) return <Navigate to="/" replace />;
@@ -333,7 +324,6 @@ function appRouteElements() {
                 path="/admin/api-key-policies/:id"
                 element={<ApiKeyPolicyDetailPage />}
               />
-              <Route path="/admin/model-setup" element={<WorkspaceRedirect to="/admin/models" />} />
               <Route path="/admin/routing/channels" element={<ChannelConfigurationPage />} />
               <Route path="/admin/models" element={<ModelWorkspaceLayout />}>
                 <Route index element={<ModelsPage />} />
@@ -342,23 +332,9 @@ function appRouteElements() {
                 <Route path=":id" element={<ModelDetailPage />} />
                 <Route path=":id/pricing" element={<ModelPricingPage />} />
               </Route>
-              <Route path="/admin/catalog" element={<WorkspaceRedirect to="/admin/models?view=prices" />} />
-              <Route
-                path="/admin/routing/channel-groups/*"
-                element={<WorkspaceRedirect to="/admin/routing/channels?view=groups" />}
-              />
-              <Route
-                path="/admin/routing/channels/*"
-                element={<WorkspaceRedirect to="/admin/routing/channels" />}
-              />
               <Route path="/admin/routing/upstream-credentials" element={<CredentialsPage />} />
               <Route path="/admin/routing/accesses" element={<AccessesPage />} />
-              <Route path="/admin/routing/groups" element={<WorkspaceRedirect to="/admin/routing/channels?view=groups" />} />
               <Route path="/admin/routing/groups/:id" element={<GroupDetailPage />} />
-              <Route
-                path="/admin/routing/logical-channels"
-                element={<WorkspaceRedirect to="/admin/routing/channels" />}
-              />
               <Route
                 path="/admin/routing/logical-channels/:id"
                 element={<LogicalChannelDetailPage />}
@@ -379,18 +355,6 @@ function appRouteElements() {
               <Route path="/admin/routing/accesses/:id" element={<AccessDetailPage />} />
               <Route path="/admin/routing/upstream-credentials/:id" element={<CredentialDetailPage />} />
               <Route path="/admin/routing/upstream-credentials/codex/import" element={<CodexImportPage />} />
-              <Route
-                path="/admin/routing/model-rules/*"
-                element={<Navigate to="/admin/routing/operation-rules" replace />}
-              />
-              <Route
-                path="/admin/providers/codex-oauth/:id"
-                element={<Navigate to="/admin/routing/upstream-credentials?connector=codex" replace />}
-              />
-              <Route
-                path="/admin/providers/codex-oauth/:id/import"
-                element={<Navigate to="/admin/routing/upstream-credentials/codex/import" replace />}
-              />
               <Route path="/admin/network/proxies" element={<ProxiesPage />} />
               <Route
                 path="/admin/network/proxies/:id"
@@ -405,20 +369,17 @@ function appRouteElements() {
                 element={<ConfigTemplateDetailPage />}
               />
               <Route
-                path="/admin/statistics"
-                element={<Navigate to="/admin/cost-statistics" replace />}
-              />
-              <Route
                 path="/admin/cost-statistics"
                 element={<SystemCostStatisticsPage />}
               />
               <Route path="/admin/request-logs" element={<AdminRequestLogsPage />} />
               <Route path="/admin/audit-logs" element={<AuditLogsPage />} />
               <Route path="/admin/system-load" element={<SystemLoadPage />} />
-              <Route path="/admin/system" element={<SystemPage />} />
+              {SETTINGS_SECTIONS.map(({ id, label }) => (
+                <Route key={id} path={`/admin/system/${id}`} element={<SystemPage key={id} section={id} label={label} />} />
+              ))}
               <Route path="/admin/plugins" element={<PluginsPage />} />
               <Route path="/admin/plugins/:id" element={<PluginDetailPage />} />
-              <Route path="/admin/system/:section" element={<SystemPage />} />
             </Route>
 
             <Route path="*" element={<NotFound />} />

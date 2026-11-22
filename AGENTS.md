@@ -54,7 +54,7 @@ repo/
 |   |-- application/            # Proxy, Console auth, control-plane publication, request-log sink
 |   |-- request_policy.rs       # Public client Header/body policy and generic outbound guards
 |   |-- request_log_journal.rs  # Versioned safe request-log payload encoding
-|   |-- request_log_spool.rs    # CRC-protected local append log and checkpoints
+|   |-- request_log_spool.rs    # Root lock; journal-v2/ holds the active append log, checkpoint and admissions
 |   |-- routing/                # Priority/weight selection and passive health state
 |   |-- transforms/             # Compiled constrained JSON/header/SSE/WebSocket-event transform DSL
 |   |-- upstream/               # Reused reqwest clients, Responses WebSocket pool/dialer, proxy policy, timeout resolution
@@ -269,17 +269,13 @@ Axum HTTP
 ### Load-bearing rules
 
 - Support `OpenAiChatCompletions`, `OpenAiResponses`, and `OpenAiImages` (`src/domain/api_format.rs`). Keep their validation and routing paths separate: never fall back or transform between formats. `ApiOperation::StandaloneWebSearch` maps to `OpenAiResponses` but keeps its request policy, channel capability, target path, non-streaming protocol, and logging operation isolated. `OpenAiImages` exposes JSON `POST /v1/images/generations` and multipart `POST /v1/images/edits`; image streaming and public JSON/data-URL edits are not implemented.
-- A priced `models.source_model_id` is the immutable client-model identity once attached to its
-  sole `model_routing_profiles` row. Format-specific `model_rules` are protocol children, unique by
-  `(model_routing_profile_id, api_format)`; disabled children may be empty drafts, while enabled
-  children require a nonempty routing graph. Protocol rules, candidates, channel groups, and
-  channels must agree on `api_format`.
-- Upstream wire models belong to explicit weighted `(channel_id, upstream_model)` route
-  candidates, not the priced model or protocol parent. A channel may appear with different models
-  in one tier or across tiers; reject only an exact duplicate pair within one tier. The Console
-  edits explicit channel/model/weight rows; Channel Groups provide option context only and never
-  enter the persisted or compiled route. Keep request billing on the profile's priced model while
-  rewriting and logging the final selected candidate's upstream model.
+- A priced model attached to a routing profile has an immutable client-model identity.
+  Select a rule by **operation**, not just API format: HTTP Responses, WebSocket Responses
+  and standalone search can never borrow each other's candidates. An enabled rule needs a
+  nonempty routing graph. Each weighted candidate names an operation-matched capability
+  and a wire model; reject duplicate capability/model pairs within one tier. Bill the
+  profile's priced model and log the selected wire model. Groups organize and authorize
+  logical channels; they are not route candidates. See [upstream topology](docs/development/upstream-identity-capabilities.md).
 - Channel scheduled probes pair an upstream `test_model` with an independent
   `test_pricing_model_id`; both must be set or null. Do not infer probe pricing by matching the wire
   model string.
@@ -323,17 +319,16 @@ Axum HTTP
   turn metadata workspaces with its independently configured synthetic Git
   workspace, and safely fills only the documented missing identity/cache
   metadata. Apply the same policy to Responses HTTP, Responses WebSocket,
-  standalone search Headers, and paired Images projections; never forward
+  standalone search Headers, and Images operations; never forward
   client workspace paths, Git remotes, commits, dirty state, or raw
   installation fingerprints. The host supplies stable credential identity and
   immutable plugin settings, but must not interpret or duplicate those provider
   rules. Run plugin preparation after administrator transforms; failures abort
   dispatch. Financial admission, transport and generic outbound constraints
   remain host-owned.
-- A Codex OAuth logical credential belongs to one `connector_pools` record and projects through
-  `codex_oauth_credential_channels` to separate Responses and Images managed channels. Preserve the
-  legacy Responses channel/credential ID, share token/quota/proxy state, keep format health and
-  authorization isolated, and never auto-enable the paired Images group or grant Images access.
+- A Codex OAuth credential owns its token and quota state independently of logical channels.
+  Import or reauthorization must not implicitly bind channels, enable Images capabilities,
+  or broaden Key access. Preserve historical credential identities when changing bindings.
 - Stream upstream responses instead of buffering them. Do not retry or switch candidates after
   sending response headers or any response byte to the client. Ordinary Connectors may retry
   pre-header transport failures and explicitly configured 4xx/5xx responses before downstream
@@ -563,7 +558,7 @@ pool isolation, transforms, and configured outbound proxies.
 | Console UI generated TypeScript types | `web/console/src/api/generated/console-v1.d.ts` (regenerate via `pnpm --dir web/console generate:api`) |
 | Console UI architecture and development guide | `docs/development/console-ui.md` |
 | Console/JWT design record | `docs/development/console-auth.md` |
-| Current operational API documentation | `docs/user/operations.md` |
+| Current operational API documentation | `docs/user/README.md` |
 | OpenAI compatibility and external semantics | `docs/reference/` |
 | Images staged design and Codex projection | `docs/development/openai-images.md` |
 | Codex OAuth connector architecture | `docs/development/codex-oauth-connector.md` |

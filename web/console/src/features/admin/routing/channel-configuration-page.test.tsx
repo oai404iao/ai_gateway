@@ -61,7 +61,7 @@ describe("Channel configuration", () => {
     await user.click(within(row).getByText(LOGICAL_CHANNEL.name));
     expect(await screen.findByRole("button", { name: "Save channel" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Channel capabilities" })).toBeEnabled();
-    await user.click(screen.getByRole("link", { name: "Choose a capability to configure body and header transforms." }));
+    await user.click(screen.getByRole("link", { name: "Configure body and header transforms" }));
     expect(await screen.findByRole("heading", { name: "Channel capabilities" })).toBeInTheDocument();
     expect(screen.queryByText("Images edit")).not.toBeInTheDocument();
     await user.click(screen.getByRole("link", { name: "New capability" }));
@@ -71,8 +71,8 @@ describe("Channel configuration", () => {
     expect(screen.getByRole("combobox", { name: "Logical channel" })).toBeDisabled();
   });
 
-  it("redirects the old selected-channel URL into the channel's capabilities tab", async () => {
-    renderAppAt(`/admin/routing/channels?channel=${LOGICAL_CHANNEL.id}`);
+  it("opens the capabilities tab directly at the channel detail URL", async () => {
+    renderAppAt(`/admin/routing/logical-channels/${LOGICAL_CHANNEL.id}?view=capabilities`);
     expect(await screen.findByRole("heading", { name: "Channel capabilities" })).toBeInTheDocument();
     expect(window.location.pathname).toBe(`/admin/routing/logical-channels/${LOGICAL_CHANNEL.id}`);
   });

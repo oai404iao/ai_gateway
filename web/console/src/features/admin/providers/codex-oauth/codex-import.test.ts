@@ -17,7 +17,7 @@ describe("Codex import parser", () => {
         name: "gateway-export.json",
         content: JSON.stringify({
           type: "ai-gateway-codex-credentials",
-          version: 2,
+          version: 3,
           proxies: [
             {
               proxy_key: "00000000-0000-0000-0000-000000000001",
@@ -69,24 +69,24 @@ describe("Codex import parser", () => {
     });
   });
 
-  it("ignores legacy credential weight with a warning", () => {
+  it.each([undefined, 1, 2, 4, "3"])("rejects native version %s before creating drafts", (version) => {
     const parsed = parseCodexImportDocuments([
       {
-        name: "legacy-export.json",
+        name: "unsupported.json",
         content: JSON.stringify({
-          type: "codex",
-          access_token: jwt({ exp: 1_900_000_000 }),
-          refresh_token: "refresh-legacy",
-          weight: 80,
+          type: "ai-gateway-codex-credentials",
+          version,
+          credentials: [{ access_token: "access-token", refresh_token: "refresh-token" }],
+          proxies: [{ proxy_key: "external", proxy_url: "http://proxy.example" }],
         }),
       },
     ]);
 
-    expect(parsed.credentials[0]).not.toHaveProperty("weight");
-    expect(parsed.credentials[0]?.warnings).toContain(
-      "Legacy credential weight was ignored.",
-    );
-    expect(parsed.credentials[0]?.selected).toBe(true);
+    expect(parsed).toEqual({
+      credentials: [],
+      proxies: [],
+      errors: ["unsupported.json: Use a version 3 ai-gateway export."],
+    });
   });
 
   it("accepts a CLIProxyAPI auth file and separates embedded proxy credentials", () => {

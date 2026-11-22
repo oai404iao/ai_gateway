@@ -450,12 +450,7 @@ export interface paths {
             cookie?: never;
         };
         get: operations["getUser"];
-        /**
-         * @deprecated
-         * @description Compatibility full-resource update. New clients should use `PATCH`,
-         *     which preserves every omitted field.
-         */
-        put: operations["replaceUser"];
+        put?: never;
         post?: never;
         /**
          * @description Irreversibly anonymizes the user, revokes every session, invitation,
@@ -2354,11 +2349,6 @@ export interface components {
             secret: string;
             status: string;
             expires_at: components["schemas"]["DateTimeNullable"];
-            /**
-             * @deprecated
-             * @description Compatibility metadata, not an authorization restriction. Active keys report all supported formats; access is determined by logical-channel grants and enabled operation routes.
-             */
-            allowed_api_formats: components["schemas"]["ApiFormat"][];
             permissions: string[];
             allowed_group_ids: string[];
             allowed_channel_ids: string[];
@@ -3058,8 +3048,6 @@ export interface components {
             channel_name: string | null;
             outcome: string;
             response_status_code: number | null;
-            /** @description Compatibility flag; true for SSE and WebSocket requests. */
-            streamed: boolean;
             ttft_ms: number | null;
             total_duration_ms: number | null;
             /** @description Output tokens divided by generation time in seconds (total duration minus TTFT). */
@@ -3441,21 +3429,6 @@ export interface components {
             /** @description Updated initial USD balance for future registrations. */
             initial_balance_amount: components["schemas"]["Decimal"];
         };
-        UserInput: {
-            display_name: string;
-            email?: string | null;
-            role: components["schemas"]["UserRole"];
-            status: string;
-            /** @description Current account balance in USD. */
-            balance_amount: components["schemas"]["Decimal"];
-            /**
-             * Format: uuid
-             * @description Null or omission selects the protected default role group.
-             */
-            user_group_id?: string | null;
-            /** Format: uuid */
-            default_api_key_policy_id?: string | null;
-        };
         UserUpdateInput: {
             display_name?: string;
             /** @description Set to null to clear the email; omit to preserve it. */
@@ -3541,11 +3514,6 @@ export interface components {
             /** Format: uuid */
             user_id: string;
             name: string;
-            /**
-             * @deprecated
-             * @description Ignored compatibility input. Logical-channel authorization does not restrict individual capabilities or API formats.
-             */
-            allowed_api_formats?: components["schemas"]["ApiFormat"][];
             permissions: string[];
             allowed_group_ids: string[];
             allowed_channel_ids: string[];
@@ -3557,11 +3525,6 @@ export interface components {
         ApiKeyUpdateInput: {
             name: string;
             status: string;
-            /**
-             * @deprecated
-             * @description Ignored compatibility input. Logical-channel authorization does not restrict individual capabilities or API formats.
-             */
-            allowed_api_formats?: components["schemas"]["ApiFormat"][];
             permissions: string[];
             allowed_group_ids: string[];
             allowed_channel_ids: string[];
@@ -3762,21 +3725,6 @@ export interface components {
             provider_id: string;
             model_id: string;
             preview_token: components["schemas"]["ModelSyncPreviewToken"];
-        };
-        ListQuery: {
-            limit?: number;
-            /** Format: uuid */
-            user_id?: string;
-            /** Format: uuid */
-            api_key_id?: string;
-            model?: string;
-            api_format?: components["schemas"]["ApiFormat"];
-            api_operation?: components["schemas"]["ApiOperation"];
-            /** @enum {string} */
-            outcome?: "succeeded" | "failed" | "rejected" | "cancelled";
-            started_after?: components["schemas"]["DateTime"];
-            started_before?: components["schemas"]["DateTime"];
-            billed?: boolean;
         };
     };
     responses: {
@@ -4753,40 +4701,6 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-        };
-    };
-    replaceUser: {
-        parameters: {
-            query?: never;
-            header: {
-                /** @description ETag from the preceding GET; stale values yield `409`. */
-                "If-Match": components["parameters"]["IfMatch"];
-            };
-            path: {
-                id: components["parameters"]["PathId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UserInput"];
-            };
-        };
-        responses: {
-            /** @description Updated. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MutationResponse"];
-                };
-            };
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
-            422: components["responses"]["Unprocessable"];
         };
     };
     deleteUser: {

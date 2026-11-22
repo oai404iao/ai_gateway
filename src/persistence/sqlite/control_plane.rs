@@ -155,12 +155,6 @@ impl SqliteControlPlaneRepository {
             plugin_records: crate::persistence::plugins::sqlite::load(transaction).await?,
             control_plane,
             system_settings,
-            connector_ids: sqlx::query_scalar(
-                "SELECT connector_kind FROM upstream_accesses WHERE deleted_at IS NULL
-                 UNION SELECT connector_kind FROM upstream_credentials WHERE deleted_at IS NULL",
-            )
-            .fetch_all(&mut **transaction)
-            .await?,
         })
     }
 
@@ -400,7 +394,7 @@ impl SqliteControlPlaneRepository {
         .collect::<Result<Vec<_>, _>>()?;
         let api_keys = sqlx::query_as::<_, ControlPlaneApiKeyRow>(
             "SELECT k.id,k.user_id,u.status AS user_status,k.name,k.secret_value AS secret,k.status, \
-                    k.expires_at,k.allowed_api_formats,k.permissions,k.allowed_group_ids, \
+                    k.expires_at,k.permissions,k.allowed_group_ids, \
                     k.allowed_channel_ids,k.requests_per_minute,k.max_concurrent_requests, \
                     k.quota_limit_amount,k.quota_used_amount,k.updated_at \
              FROM api_keys AS k \
@@ -505,7 +499,7 @@ impl SqliteControlPlaneRepository {
     pub async fn own_api_keys(&self, user_id: Uuid) -> Result<Vec<ConsoleApiKey>, RepositoryError> {
         let mut reader = self.read().await?;
         let rows = sqlx::query_as::<_, ConsoleApiKeyRow>(
-            "SELECT id,name,secret_value AS secret,status,expires_at,allowed_api_formats, \
+            "SELECT id,name,secret_value AS secret,status,expires_at, \
                     permissions,allowed_group_ids,allowed_channel_ids,requests_per_minute, \
                     max_concurrent_requests,quota_limit_amount,quota_used_amount,created_at,updated_at \
              FROM api_keys WHERE user_id=? AND is_system=0 AND deleted_at IS NULL \
@@ -524,7 +518,7 @@ impl SqliteControlPlaneRepository {
     ) -> Result<Option<ConsoleApiKey>, RepositoryError> {
         let mut reader = self.read().await?;
         let row = sqlx::query_as::<_, ConsoleApiKeyRow>(
-            "SELECT id,name,secret_value AS secret,status,expires_at,allowed_api_formats, \
+            "SELECT id,name,secret_value AS secret,status,expires_at, \
                     permissions,allowed_group_ids,allowed_channel_ids,requests_per_minute, \
                     max_concurrent_requests,quota_limit_amount,quota_used_amount,created_at,updated_at \
              FROM api_keys WHERE id=? AND user_id=? AND is_system=0 AND deleted_at IS NULL",
@@ -687,7 +681,6 @@ struct ControlPlaneApiKeyRow {
     secret: String,
     status: String,
     expires_at: Option<SqliteTimestamp>,
-    allowed_api_formats: String,
     permissions: String,
     allowed_group_ids: String,
     allowed_channel_ids: String,
@@ -708,7 +701,6 @@ impl ControlPlaneApiKeyRow {
             secret: self.secret,
             status: self.status,
             expires_at: self.expires_at.map(|value| value.0),
-            allowed_api_formats: string_list(&self.allowed_api_formats)?,
             permissions: string_list(&self.permissions)?,
             allowed_group_ids: uuid_list(&self.allowed_group_ids)?,
             allowed_channel_ids: uuid_list(&self.allowed_channel_ids)?,
@@ -867,7 +859,6 @@ struct ConsoleApiKeyRow {
     secret: String,
     status: String,
     expires_at: Option<SqliteTimestamp>,
-    allowed_api_formats: String,
     permissions: String,
     allowed_group_ids: String,
     allowed_channel_ids: String,
@@ -887,7 +878,6 @@ impl ConsoleApiKeyRow {
             secret: self.secret,
             status: self.status,
             expires_at: self.expires_at.map(|value| value.0),
-            allowed_api_formats: string_list(&self.allowed_api_formats)?,
             permissions: string_list(&self.permissions)?,
             allowed_group_ids: uuid_list(&self.allowed_group_ids)?,
             allowed_channel_ids: uuid_list(&self.allowed_channel_ids)?,
@@ -1024,10 +1014,8 @@ fn validate_self_api_key_input(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn validate_admin_api_key_input(
     name: &str,
-    allowed_api_formats: &[String],
     permissions: &[String],
     allowed_group_ids: &[Uuid],
     allowed_channel_ids: &[Uuid],
@@ -1036,9 +1024,7 @@ fn validate_admin_api_key_input(
     quota_limit_amount: Option<Decimal>,
 ) -> Result<(), RepositoryError> {
     if name.trim().is_empty()
-        || allowed_api_formats.is_empty()
         || permissions.is_empty()
-        || allowed_api_formats.iter().collect::<HashSet<_>>().len() != allowed_api_formats.len()
         || permissions.iter().collect::<HashSet<_>>().len() != permissions.len()
     {
         return Err(RepositoryError::Validation);
@@ -1526,7 +1512,6 @@ struct KeyAuditRow {
     name: String,
     status: String,
     expires_at: Option<SqliteTimestamp>,
-    allowed_api_formats: String,
     permissions: String,
     allowed_group_ids: String,
     allowed_channel_ids: String,
@@ -1548,7 +1533,6 @@ impl KeyAuditRow {
             "name": self.name,
             "status": self.status,
             "expires_at": self.expires_at.map(|value| value.0),
-            "allowed_api_formats": string_list(&self.allowed_api_formats)?,
             "permissions": string_list(&self.permissions)?,
             "allowed_group_ids": uuid_list(&self.allowed_group_ids)?,
             "allowed_channel_ids": uuid_list(&self.allowed_channel_ids)?,
@@ -1564,7 +1548,7 @@ impl KeyAuditRow {
     }
 }
 
-const KEY_AUDIT_COLUMNS: &str = "id,user_id,name,status,expires_at,allowed_api_formats,permissions, \
+const KEY_AUDIT_COLUMNS: &str = "id,user_id,name,status,expires_at,permissions, \
      allowed_group_ids,allowed_channel_ids,requests_per_minute,max_concurrent_requests, \
      quota_limit_amount,quota_used_amount,deleted_at,deleted_by,created_at,updated_at";
 
@@ -1963,17 +1947,16 @@ async fn create_own_api_key(
     let secret = generate_api_key_secret();
     let updated_at = sqlx::query_scalar::<_, SqliteTimestamp>(
         "INSERT INTO api_keys \
-         (id,user_id,name,secret_value,status,expires_at,allowed_api_formats,permissions, \
+         (id,user_id,name,secret_value,status,expires_at,permissions, \
           allowed_group_ids,allowed_channel_ids,requests_per_minute,max_concurrent_requests, \
           quota_limit_amount) \
-         VALUES (?,?,?,?,'active',?,?,?,?,?,?,?,?) RETURNING updated_at",
+         VALUES (?,?,?,?,'active',?,?,?,?,?,?,?) RETURNING updated_at",
     )
     .bind(SqliteUuid(id))
     .bind(SqliteUuid(user_id))
     .bind(&input.name)
     .bind(&secret)
     .bind(input.expires_at.map(SqliteTimestamp))
-    .bind(json_text(&authorization::all_formats())?)
     .bind(json_text(&["proxy", "models.read"])?)
     .bind(value_to_text(&json!(input.allowed_group_ids))?)
     .bind(value_to_text(&json!(input.allowed_channel_ids))?)
@@ -2044,7 +2027,6 @@ async fn update_own_api_key(
     let updated_at = sqlx::query_scalar::<_, SqliteTimestamp>(
         "UPDATE api_keys SET \
              name=?,status=?,expires_at=?, \
-             allowed_api_formats=CASE WHEN ? THEN ? ELSE allowed_api_formats END, \
              allowed_group_ids=?,allowed_channel_ids=?,requests_per_minute=?, \
              max_concurrent_requests=?,quota_limit_amount=?,updated_at=ag_now() \
          WHERE id=? AND user_id=? AND updated_at=? \
@@ -2054,8 +2036,6 @@ async fn update_own_api_key(
     .bind(&input.name)
     .bind(&input.status)
     .bind(input.expires_at.map(SqliteTimestamp))
-    .bind(targets_changed)
-    .bind(json_text(&authorization::all_formats())?)
     .bind(value_to_text(&json!(input.allowed_group_ids))?)
     .bind(value_to_text(&json!(input.allowed_channel_ids))?)
     .bind(input.requests_per_minute)
@@ -2640,12 +2620,10 @@ async fn apply_control_plane_mutation(
             deleted_by,
             expected_updated_at,
         } => model_soft_delete(transaction, id, deleted_by, expected_updated_at).await,
-        ControlPlaneMutation::CreateApiKey(mut input) => {
-            input.allowed_api_formats = authorization::all_formats();
+        ControlPlaneMutation::CreateApiKey(input) => {
             ensure_api_key_owner_exists(transaction, input.user_id).await?;
             validate_admin_api_key_input(
                 &input.name,
-                &input.allowed_api_formats,
                 &input.permissions,
                 &input.allowed_group_ids,
                 &input.allowed_channel_ids,
@@ -2657,17 +2635,16 @@ async fn apply_control_plane_mutation(
             let secret = generate_api_key_secret();
             let updated_at = sqlx::query_scalar::<_, SqliteTimestamp>(
                 "INSERT INTO api_keys \
-                 (id,user_id,name,secret_value,status,expires_at,allowed_api_formats,permissions, \
+                 (id,user_id,name,secret_value,status,expires_at,permissions, \
                   allowed_group_ids,allowed_channel_ids,requests_per_minute,max_concurrent_requests, \
                   quota_limit_amount) \
-                 VALUES (?,?,?,?,'active',?,?,?,?,?,?,?,?) RETURNING updated_at",
+                 VALUES (?,?,?,?,'active',?,?,?,?,?,?,?) RETURNING updated_at",
             )
             .bind(SqliteUuid(id))
             .bind(SqliteUuid(input.user_id))
             .bind(&input.name)
             .bind(&secret)
             .bind(input.expires_at.map(SqliteTimestamp))
-            .bind(json_text(&input.allowed_api_formats)?)
             .bind(json_text(&input.permissions)?)
             .bind(value_to_text(&json!(input.allowed_group_ids))?)
             .bind(value_to_text(&json!(input.allowed_channel_ids))?)
@@ -2707,13 +2684,11 @@ async fn apply_control_plane_mutation(
         } => api_key_policy_insert(transaction, id, input, false, Some(expected_updated_at)).await,
         ControlPlaneMutation::UpdateApiKey {
             id,
-            mut input,
+            input,
             expected_updated_at,
         } => {
-            input.allowed_api_formats = authorization::all_formats();
             validate_admin_api_key_input(
                 &input.name,
-                &input.allowed_api_formats,
                 &input.permissions,
                 &input.allowed_group_ids,
                 &input.allowed_channel_ids,
@@ -2726,7 +2701,7 @@ async fn apply_control_plane_mutation(
                 return Err(RepositoryError::NotFound);
             }
             let updated_at = sqlx::query_scalar::<_, SqliteTimestamp>(
-                "UPDATE api_keys SET name=?,status=?,expires_at=?,allowed_api_formats=?, \
+                "UPDATE api_keys SET name=?,status=?,expires_at=?, \
                         permissions=?,allowed_group_ids=?,allowed_channel_ids=?, \
                         requests_per_minute=?,max_concurrent_requests=?,quota_limit_amount=?, \
                         updated_at=ag_now() \
@@ -2737,7 +2712,6 @@ async fn apply_control_plane_mutation(
             .bind(&input.name)
             .bind(&input.status)
             .bind(input.expires_at.map(SqliteTimestamp))
-            .bind(json_text(&input.allowed_api_formats)?)
             .bind(json_text(&input.permissions)?)
             .bind(value_to_text(&json!(input.allowed_group_ids))?)
             .bind(value_to_text(&json!(input.allowed_channel_ids))?)
@@ -4251,19 +4225,15 @@ impl SqliteControlPlaneRepository {
         .is_some();
         let key_created = sqlx::query_scalar::<_, i64>(
             "INSERT INTO api_keys \
-             (id,user_id,name,secret_value,status,allowed_api_formats,permissions, \
+             (id,user_id,name,secret_value,status,permissions, \
               allowed_group_ids,allowed_channel_ids,is_system) \
-             VALUES (?,?,?,?,'active',?,?,'[]','[]',1) \
+             VALUES (?,?,?,?,'active',?,'[]','[]',1) \
              ON CONFLICT DO NOTHING RETURNING 1",
         )
         .bind(SqliteUuid(SYSTEM_PROBE_API_KEY_ID))
         .bind(SqliteUuid(SYSTEM_PROBE_USER_ID))
         .bind(SYSTEM_PROBE_API_KEY_NAME)
         .bind(generate_api_key_secret())
-        .bind(json_text(&[
-            "open_ai_chat_completions",
-            "open_ai_responses",
-        ])?)
         .bind(json_text(&["proxy", "models.read"])?)
         .fetch_optional(&mut *transaction)
         .await?

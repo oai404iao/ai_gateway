@@ -628,7 +628,6 @@ async fn system_probe_identity_is_an_internal_active_administrator() {
         model_id: Some(model_id),
         outcome: RequestLogOutcome::Succeeded,
         response_status_code: Some(200),
-        streamed: false,
         ttft_ms: Some(1),
         total_duration_ms: 1,
         billing: Some(RequestBilling {
@@ -1218,7 +1217,6 @@ struct PersistedLog {
     model_id: Option<Uuid>,
     outcome: String,
     response_status_code: Option<i16>,
-    streamed: bool,
     ttft_ms: Option<i32>,
     total_duration_ms: Option<i32>,
     error_code: Option<String>,
@@ -1276,7 +1274,7 @@ fn assert_log_timing(log: &PersistedLog) {
 async fn wait_for_log(pool: &PgPool, api_key_id: Uuid, client_model: &str) -> PersistedLog {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     loop {
-        let rows = sqlx::query_as::<_, PersistedLog>("SELECT started_at, completed_at, user_id, api_key_id, api_format::text AS api_format, request_protocol, client_model, reasoning_effort, fast_mode, upstream_model, model_rule_id, channel_group_id, channel_id, model_id, outcome, response_status_code, streamed, ttft_ms, total_duration_ms, error_code, error_summary FROM request_logs WHERE api_key_id = $1 AND client_model = $2")
+        let rows = sqlx::query_as::<_, PersistedLog>("SELECT started_at, completed_at, user_id, api_key_id, api_format::text AS api_format, request_protocol, client_model, reasoning_effort, fast_mode, upstream_model, model_rule_id, channel_group_id, channel_id, model_id, outcome, response_status_code, ttft_ms, total_duration_ms, error_code, error_summary FROM request_logs WHERE api_key_id = $1 AND client_model = $2")
             .bind(api_key_id)
             .bind(client_model)
             .fetch_all(pool)
@@ -1304,7 +1302,7 @@ async fn wait_for_terminal_log(
 ) -> PersistedLog {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     loop {
-        let rows = sqlx::query_as::<_, PersistedLog>("SELECT started_at, completed_at, user_id, api_key_id, api_format::text AS api_format, request_protocol, client_model, reasoning_effort, fast_mode, upstream_model, model_rule_id, channel_group_id, channel_id, model_id, outcome, response_status_code, streamed, ttft_ms, total_duration_ms, error_code, error_summary FROM request_logs WHERE api_key_id = $1 AND client_model = $2 AND outcome = $3 AND error_code IS NOT DISTINCT FROM $4")
+        let rows = sqlx::query_as::<_, PersistedLog>("SELECT started_at, completed_at, user_id, api_key_id, api_format::text AS api_format, request_protocol, client_model, reasoning_effort, fast_mode, upstream_model, model_rule_id, channel_group_id, channel_id, model_id, outcome, response_status_code, ttft_ms, total_duration_ms, error_code, error_summary FROM request_logs WHERE api_key_id = $1 AND client_model = $2 AND outcome = $3 AND error_code IS NOT DISTINCT FROM $4")
             .bind(api_key_id)
             .bind(client_model)
             .bind(outcome)
@@ -2144,7 +2142,14 @@ async fn seed(pool: &PgPool) -> Seed {
         .execute(pool)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO api_keys (id, user_id, name, secret_value, status, allowed_api_formats, permissions, allowed_group_ids) VALUES ($1, $2, 'test', $3, 'active', ARRAY['open_ai_chat_completions']::api_format[], ARRAY['proxy', 'models.read'], ARRAY[$4]::uuid[])")
+    let key_query = if canonical {
+        "INSERT INTO api_keys (id,user_id,name,secret_value,status,permissions,allowed_group_ids)
+         VALUES ($1,$2,'test',$3,'active',ARRAY['proxy','models.read'],ARRAY[$4]::uuid[])"
+    } else {
+        "INSERT INTO api_keys (id,user_id,name,secret_value,status,allowed_api_formats,permissions,allowed_group_ids)
+         VALUES ($1,$2,'test',$3,'active',ARRAY['open_ai_chat_completions']::api_format[],ARRAY['proxy','models.read'],ARRAY[$4]::uuid[])"
+    };
+    sqlx::query(key_query)
         .bind(seed.key)
         .bind(seed.user)
         .bind(&seed.secret)
@@ -2227,7 +2232,6 @@ fn request_log_event(seed: &Seed, outcome: RequestLogOutcome) -> RequestLogEvent
         model_id: Some(seed.model),
         outcome,
         response_status_code: Some(200),
-        streamed: true,
         ttft_ms: Some(1),
         total_duration_ms: 2,
         billing: Some(RequestBilling {
@@ -2368,17 +2372,6 @@ async fn codex_business_credentials_are_unique_per_workspace_member() {
     let seed = seed(&database.pool).await;
     let codex_group = Uuid::new_v4();
     insert_routing_group_fixture(&database.pool, codex_group, "codex-business").await;
-    let existing_key_formats: Vec<String> =
-        sqlx::query_scalar("SELECT allowed_api_formats::text[] FROM api_keys WHERE id=$1")
-            .bind(seed.key)
-            .fetch_one(&database.pool)
-            .await
-            .unwrap();
-    assert!(
-        !existing_key_formats
-            .iter()
-            .any(|format| format == "open_ai_images")
-    );
     let image_rules: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM model_operation_rules WHERE operation IN ('images_generation','images_edit')",
     )
@@ -3997,18 +3990,13 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         }],
     )
     .await;
-    sqlx::query(
-        "UPDATE api_keys SET \
-         allowed_api_formats=ARRAY['open_ai_chat_completions','open_ai_responses','open_ai_images']::api_format[], \
-         allowed_group_ids=ARRAY[$2,$3]::uuid[] \
-         WHERE id=$1",
-    )
-    .bind(seed.key)
-    .bind(seed.group)
-    .bind(codex_group)
-    .execute(&database.pool)
-    .await
-    .unwrap();
+    sqlx::query("UPDATE api_keys SET allowed_group_ids=ARRAY[$2,$3]::uuid[] WHERE id=$1")
+        .bind(seed.key)
+        .bind(seed.group)
+        .bind(codex_group)
+        .execute(&database.pool)
+        .await
+        .unwrap();
     sqlx::query(
         "INSERT INTO api_key_channel_grants (api_key_id,channel_id,origin_kind,origin_id)
         SELECT $1,c.id,'group',$2 FROM upstream_channels c WHERE c.group_id=$2",
@@ -5444,7 +5432,6 @@ async fn request_log_insert_is_idempotent_and_worker_continues_after_failure() {
     search_event.api_format = ApiFormat::OpenAiResponses;
     search_event.api_operation = ApiOperation::StandaloneWebSearch;
     search_event.request_protocol = RequestProtocol::NonStream;
-    search_event.streamed = false;
     search_event.model_rule_id = None;
     search_event.channel_group_id = None;
     search_event.channel_id = None;
@@ -6312,7 +6299,6 @@ async fn admin_key_create_publishes_immediately_and_audits_redacted() {
         serde_json::json!({
             "user_id": seed.user,
             "name": format!("managed-{}", Uuid::new_v4()),
-            "allowed_api_formats": ["open_ai_chat_completions"],
             "permissions": ["proxy"],
             "allowed_group_ids": [seed.group],
             "allowed_channel_ids": [],
@@ -6466,7 +6452,6 @@ async fn managed_users_are_versioned_audited_and_immediately_revoke_their_keys()
         serde_json::json!({
             "user_id": user_id,
             "name": format!("managed-key-{}", Uuid::new_v4()),
-            "allowed_api_formats": ["open_ai_chat_completions"],
             "permissions": ["proxy"],
             "allowed_group_ids": [seed.group],
             "allowed_channel_ids": [],
@@ -7191,7 +7176,6 @@ async fn admin_api_key_policies_persist_publish_and_are_audited_without_secrets(
         serde_json::json!({
             "user_id": seed.user,
             "name": format!("policy-managed-{}", Uuid::new_v4()),
-            "allowed_api_formats": ["open_ai_chat_completions"],
             "permissions": ["proxy"],
             "allowed_group_ids": [seed.group],
             "allowed_channel_ids": [],
@@ -7271,7 +7255,6 @@ async fn admin_api_key_policies_persist_publish_and_are_audited_without_secrets(
         serde_json::json!({
             "name": detail["name"].clone(),
             "status": "active",
-            "allowed_api_formats": ["open_ai_chat_completions"],
             "permissions": ["proxy"],
             "allowed_group_ids": [seed.group],
             "allowed_channel_ids": [],
@@ -8104,7 +8087,7 @@ async fn revoked_api_key_cannot_be_reactivated() {
         "PUT",
         &format!("/console/v1/api-keys/{}", seed.key),
         serde_json::json!({
-            "name":"test", "status":"active", "allowed_api_formats":["open_ai_chat_completions"],
+            "name":"test", "status":"active",
             "permissions":["proxy","models.read"], "allowed_group_ids":[seed.group],
             "allowed_channel_ids":[], "expires_at":null
         }),
@@ -8420,7 +8403,7 @@ async fn full_put_requires_current_etag_and_stale_update_does_not_audit() {
     let detail = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
     assert_eq!(detail.status(), StatusCode::OK);
     let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
-    let input = serde_json::json!({"name":"updated", "status":"active", "allowed_api_formats":["open_ai_chat_completions"], "permissions":["proxy"], "allowed_group_ids":[seed.group], "allowed_channel_ids":[], "expires_at":null});
+    let input = serde_json::json!({"name":"updated", "status":"active", "permissions":["proxy"], "allowed_group_ids":[seed.group], "allowed_channel_ids":[], "expires_at":null});
     assert_eq!(
         admin_request(app.clone(), "PUT", &path, input.clone())
             .await
@@ -8473,7 +8456,7 @@ async fn repository_migrates_compiles_seeded_snapshot_and_authenticates() {
         .unwrap();
     let snapshot = compile_control_plane(records).unwrap();
     let key = snapshot.authenticate(&seed.secret).unwrap();
-    assert!(key.permits(ApiFormat::OpenAiChatCompletions, ApiKeyPermission::Proxy));
+    assert!(key.permits(ApiKeyPermission::Proxy));
     let routing::SelectionResult::Selected(route) = routing::select(
         &snapshot,
         &key,
@@ -10936,7 +10919,7 @@ async fn proxy_request_logs_reach_postgres_for_terminal_and_rejected_requests() 
 
     let inaccessible_key = Uuid::new_v4();
     let inaccessible_secret = format!("inaccessible-{}", Uuid::new_v4());
-    sqlx::query("INSERT INTO api_keys (id, user_id, name, secret_value, status, allowed_api_formats, permissions, allowed_group_ids) VALUES ($1, $2, 'inaccessible', $3, 'active', ARRAY['open_ai_chat_completions']::api_format[], ARRAY['proxy'], ARRAY[$4]::uuid[])")
+    sqlx::query("INSERT INTO api_keys (id, user_id, name, secret_value, status, permissions, allowed_group_ids) VALUES ($1, $2, 'inaccessible', $3, 'active', ARRAY['proxy'], ARRAY[$4]::uuid[])")
         .bind(inaccessible_key)
         .bind(seed.user)
         .bind(&inaccessible_secret)
@@ -11000,7 +10983,6 @@ async fn proxy_request_logs_reach_postgres_for_terminal_and_rejected_requests() 
     assert_eq!(success.model_id, Some(seed.model));
     assert_eq!(success.response_status_code, Some(200));
     assert_eq!(success.request_protocol, "sse");
-    assert!(success.streamed);
     assert!(success.ttft_ms.is_some());
     assert_eq!(success.error_code, None);
     assert_eq!(success.error_summary, None);

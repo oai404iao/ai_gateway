@@ -165,16 +165,15 @@ export function LogicalChannelDetailPage() {
           <Card>
             <CardHeader>
               <CardTitle>{t("Channel settings")}</CardTitle>
-              <CardDescription>
-                {t("Credentials are reusable identities. Rebinding changes connection identity without touching routes.")}
-                {!isNew && (
+              {!isNew && (
+                <CardDescription>
                   <Link className="block underline underline-offset-4" to={withReturnTo(
                     `/admin/routing/logical-channels/${id}?view=capabilities`, returnTo,
                   )}>
-                    {t("Choose a capability to configure body and header transforms.")}
+                    {t("Configure body and header transforms")}
                   </Link>
-                )}
-              </CardDescription>
+                </CardDescription>
+              )}
             </CardHeader>
             <CardContent>
               <form onSubmit={submit} className="flex flex-col gap-5">
@@ -322,7 +321,7 @@ export function LogicalChannelDetailPage() {
         open={confirmingDelete}
         onOpenChange={setConfirmingDelete}
         title={t("Delete this logical channel?")}
-        description={t("The channel is soft-deleted. Shared accesses and credentials are kept.")}
+        description={t("Shared accesses and credentials are kept.")}
         destructive
         confirmDisabled={busy}
         onConfirm={confirmDelete}

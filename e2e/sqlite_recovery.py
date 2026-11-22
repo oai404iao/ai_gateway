@@ -3,7 +3,7 @@
 import json
 import shutil
 from run import check, verify_settlement
-from faults import start_gateway, stop_gateway
+from faults import JOURNAL, start_gateway, stop_gateway
 
 
 def rejected(resources, args, name, stdin=None, extra_env=None):
@@ -23,7 +23,7 @@ def exercise_backup(resources, binary, data, protocols, warmup_id):
                          "--email", "system-e2e@example.test", "--password-stdin"],
              "reject-live-administrator-command", stdin=b"test-only-never-applied-password-1234\n")
     stop_gateway(resources)
-    unknown = sorted(path.name for path in (resources.directory / "spool/admissions").glob("*.json"))
+    unknown = {path.name: path.read_bytes() for path in (resources.directory / JOURNAL / "admissions").glob("*.json")}
     check(unknown, "backup test needs the unresolved pre-terminal request")
     resources.run(backup, "backup-sqlite")
     manifest = json.loads((snapshot / "manifest.json").read_text())
@@ -58,8 +58,8 @@ def exercise_backup(resources, binary, data, protocols, warmup_id):
     resources.database_file = restored / "database/gateway.sqlite"
     start_gateway(resources, binary, data, "gateway-restored")
     verify_settlement(data, protocols, warmup_id)
-    for name in unknown:
-        check((restored / "spool/admissions" / name).is_file(), "restore lost uncertain usage")
+    for name, intent in unknown.items():
+        check((restored / JOURNAL / "admissions" / name).read_bytes() == intent, "restore changed uncertain usage")
     return [
         {"id": "sqlite-single-owner-cli", "status": "passed"},
         {"id": "sqlite-offline-paired-backup-restore", "status": "passed",

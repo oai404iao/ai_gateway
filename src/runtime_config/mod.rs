@@ -863,9 +863,6 @@ pub fn compile_runtime_config_with_plugins(
     }
     let plugins = ConnectorPlugins::from_plugins(valid_plugins)
         .map_err(|_| ConfigError::Compile("invalid plugin registry".into()))?;
-    for id in &records.connector_ids {
-        parse_connector_kind(id)?;
-    }
     for channel in &mut records.control_plane.channels {
         let group = records
             .control_plane
@@ -1769,11 +1766,6 @@ fn compile_keys(
         if !usable {
             continue;
         }
-        let formats = record
-            .allowed_api_formats
-            .iter()
-            .map(|value| parse_format(value))
-            .collect::<Result<HashSet<_>, _>>()?;
         let permissions = record
             .permissions
             .iter()
@@ -1804,7 +1796,6 @@ fn compile_keys(
             record.user_id,
             record.user_websocket_enabled,
             record.user_filter_fast_mode,
-            formats,
             permissions,
             authorization,
             record.expires_at,
@@ -2554,40 +2545,28 @@ fn validate_key(
             "invalid API key or user status".into(),
         ));
     }
-    if record.allowed_api_formats.is_empty() || record.permissions.is_empty() {
+    if record.permissions.is_empty() {
         return Err(ConfigError::Compile(
-            "API key must allow formats and grant permissions".into(),
+            "API key must grant permissions".into(),
         ));
     }
-    unique(&record.allowed_api_formats, "API key allowed_api_formats")?;
     unique(&record.permissions, "API key permissions")?;
-    let formats = record
-        .allowed_api_formats
-        .iter()
-        .map(|value| parse_format(value))
-        .collect::<Result<HashSet<_>, _>>()?;
     for permission in &record.permissions {
         parse_permission(permission)?;
     }
     unique(&record.allowed_group_ids, "API key allowed_group_ids")?;
     unique(&record.allowed_channel_ids, "API key allowed_channel_ids")?;
     for id in &record.allowed_group_ids {
-        let group = groups
-            .get(id)
-            .ok_or_else(|| ConfigError::Compile("API key references a missing group".into()))?;
-        if !formats.contains(&parse_format(&group.api_format)?) {
+        if !groups.contains_key(id) {
             return Err(ConfigError::Compile(
-                "API key group access references a disallowed format".into(),
+                "API key references a missing group".into(),
             ));
         }
     }
     for id in &record.allowed_channel_ids {
-        let channel = channels
-            .get(id)
-            .ok_or_else(|| ConfigError::Compile("API key references a missing channel".into()))?;
-        if !formats.contains(&parse_format(&channel.api_format)?) {
+        if !channels.contains_key(id) {
             return Err(ConfigError::Compile(
-                "API key channel access references a disallowed format".into(),
+                "API key references a missing channel".into(),
             ));
         }
     }
@@ -3500,7 +3479,6 @@ mod tests {
     fn compiler_uses_database_backed_forwarding_settings() {
         let records = RuntimeConfigRecords {
             plugin_records: Default::default(),
-            connector_ids: Vec::new(),
             control_plane: route_records(0, "weighted_random", 1, "weighted_random", false),
             system_settings: SystemSettingsRecord {
                 setting_key: FORWARDING_SETTINGS_KEY.into(),
@@ -4169,7 +4147,6 @@ mod tests {
             secret_value: secret.into(),
             status: "active".into(),
             expires_at: None,
-            allowed_api_formats: vec!["open_ai_chat_completions".into()],
             permissions: vec!["proxy".into(), "models.read".into()],
             allowed_group_ids: groups,
             allowed_channel_ids: channels,
@@ -4224,7 +4201,6 @@ mod tests {
             secret_value: "incompatible-channel-key".into(),
             status: "active".into(),
             expires_at: None,
-            allowed_api_formats: vec!["open_ai_chat_completions".into()],
             permissions: vec!["proxy".into(), "models.read".into()],
             allowed_group_ids: vec![],
             allowed_channel_ids: vec![incompatible_channel],
@@ -4269,7 +4245,6 @@ mod tests {
             secret_value: "incompatible-only-key".into(),
             status: "active".into(),
             expires_at: None,
-            allowed_api_formats: vec!["open_ai_chat_completions".into()],
             permissions: vec!["proxy".into(), "models.read".into()],
             allowed_group_ids: vec![],
             allowed_channel_ids: vec![incompatible_channel],
@@ -4435,7 +4410,6 @@ mod tests {
             secret_value: "images-key".into(),
             status: "active".into(),
             expires_at: None,
-            allowed_api_formats: vec!["open_ai_images".into()],
             permissions: vec!["proxy".into(), "models.read".into()],
             allowed_group_ids: records.groups.iter().map(|group| group.id).collect(),
             allowed_channel_ids: vec![],

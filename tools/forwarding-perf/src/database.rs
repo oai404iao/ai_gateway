@@ -319,10 +319,9 @@ async fn seed(
 
     sqlx::query(
         "INSERT INTO api_keys
-         (id,user_id,name,secret_value,status,allowed_api_formats,permissions,
+         (id,user_id,name,secret_value,status,permissions,
           allowed_group_ids,allowed_channel_ids)
          VALUES ($1,$2,'performance',$3,'active',
-                 ARRAY['open_ai_chat_completions','open_ai_responses']::api_format[],
                  ARRAY['proxy','models.read']::text[],
                  ARRAY[$4,$5]::uuid[],ARRAY[]::uuid[])",
     )

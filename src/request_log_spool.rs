@@ -30,6 +30,7 @@ const CHECKPOINT_FILE: &str = "checkpoint";
 const CHECKPOINT_TEMP_FILE: &str = "checkpoint.tmp";
 const EVENTS_FILE: &str = "events.log";
 const LOCK_FILE: &str = "spool.lock";
+const JOURNAL_DIRECTORY: &str = "journal-v2";
 
 struct SpoolWriter {
     file: File,
@@ -74,10 +75,10 @@ impl RequestLogSpool {
         max_bytes: u64,
         min_free_bytes: u64,
     ) -> Result<Self, SpoolError> {
-        let directory = directory.as_ref().to_path_buf();
-        create_durable_directory(&directory)?;
-        secure_directory(&directory)?;
-        let lock_path = directory.join(LOCK_FILE);
+        let root = directory.as_ref();
+        create_durable_directory(root)?;
+        secure_directory(root)?;
+        let lock_path = root.join(LOCK_FILE);
         let lock = OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -87,6 +88,20 @@ impl RequestLogSpool {
         secure_file(&lock)?;
         lock.try_lock_exclusive()
             .map_err(|source| SpoolError::Lock { source })?;
+
+        let directory = root.join(JOURNAL_DIRECTORY);
+        match fs::create_dir(&directory) {
+            Ok(()) => (),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                if !directory.symlink_metadata()?.is_dir() {
+                    return Err(SpoolError::Corrupt("journal path is not a directory"));
+                }
+            }
+            Err(error) => return Err(error.into()),
+        }
+        secure_directory(&directory)?;
+        // A previous startup may have created the child but failed to sync its entry.
+        File::open(root)?.sync_all()?;
 
         let events_path = directory.join(EVENTS_FILE);
         let checkpoint_path = directory.join(CHECKPOINT_FILE);
@@ -641,7 +656,6 @@ mod tests {
             model_id: None,
             outcome: RequestLogOutcome::Rejected,
             response_status_code: Some(404),
-            streamed: false,
             ttft_ms: None,
             total_duration_ms: 1,
             billing: None,
@@ -669,7 +683,8 @@ mod tests {
         let event = event();
         let spool = Arc::new(RequestLogSpool::open(&directory, u64::MAX).unwrap());
         spool.admit(&intent(&event)).unwrap();
-        let path = directory
+        let path = spool
+            .directory()
             .join("admissions")
             .join(format!("{}.json", event.id));
         assert!(path.exists());
@@ -751,6 +766,7 @@ mod tests {
         }
         assert!(
             directory
+                .join(super::JOURNAL_DIRECTORY)
                 .join("admissions")
                 .join(format!("{}.json", event.id))
                 .exists()
@@ -791,7 +807,9 @@ mod tests {
             Err(SpoolError::Capacity)
         ));
         assert_eq!(
-            fs::read_dir(directory.join("admissions")).unwrap().count(),
+            fs::read_dir(spool.directory().join("admissions"))
+                .unwrap()
+                .count(),
             0
         );
         drop(spool);
@@ -815,6 +833,7 @@ mod tests {
                     .unwrap();
             }
             let slot = directory
+                .join(super::JOURNAL_DIRECTORY)
                 .join("admissions")
                 .join(format!("{}.slot", event.id));
             let mut file = OpenOptions::new().write(true).open(&slot).unwrap();
@@ -863,6 +882,96 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cutover_preserves_root_journal_and_replays_only_current_generation() {
+        fn v8_frame(event: &RequestLogEvent, magic: &[u8; 4]) -> Vec<u8> {
+            let mut value = serde_json::to_value(event).unwrap();
+            value["streamed"] = (event.request_protocol != RequestProtocol::NonStream).into();
+            let payload = serde_json::to_vec(&value).unwrap();
+            let mut frame = magic.to_vec();
+            frame.extend_from_slice(&8_i16.to_le_bytes());
+            frame.extend_from_slice(&0_u16.to_le_bytes());
+            frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            frame.extend_from_slice(&crc32fast::hash(&payload).to_le_bytes());
+            if magic == b"AIGL" {
+                frame.extend_from_slice(event.id.as_bytes());
+            }
+            frame.extend_from_slice(&payload);
+            frame
+        }
+
+        let root = directory();
+        fs::create_dir(&root).unwrap();
+        let mut frames = v8_frame(&event(), b"AIGL");
+        fs::write(root.join("checkpoint"), (frames.len() as u64).to_le_bytes()).unwrap();
+        frames.extend(v8_frame(&event(), b"AIGL"));
+        fs::write(root.join("events.log"), frames).unwrap();
+        let terminal = event();
+        let unknown = event();
+        {
+            let (mut admissions, _) = super::AdmissionStore::open(&root).unwrap();
+            admissions.reserve(&intent(&unknown)).unwrap();
+            admissions.reserve(&intent(&terminal)).unwrap();
+            OpenOptions::new()
+                .write(true)
+                .open(root.join(format!("admissions/{}.slot", terminal.id)))
+                .unwrap()
+                .write_all(&v8_frame(&terminal, b"AIGA"))
+                .unwrap();
+        }
+        let evidence = [
+            root.join("events.log"),
+            root.join("checkpoint"),
+            root.join(format!("admissions/{}.json", unknown.id)),
+            root.join(format!("admissions/{}.slot", unknown.id)),
+            root.join(format!("admissions/{}.json", terminal.id)),
+            root.join(format!("admissions/{}.slot", terminal.id)),
+        ]
+        .map(|path| {
+            let before = fs::read(&path).unwrap();
+            (path, before)
+        });
+
+        let current = event();
+        {
+            let spool = RequestLogSpool::open(&root, u64::MAX).unwrap();
+            assert_eq!(spool.end_offset(), 0);
+            assert_eq!(spool.checkpoint_offset(), 0);
+            spool.admit(&intent(&current)).unwrap();
+            spool.append(&current).unwrap();
+        }
+        {
+            let spool = Arc::new(RequestLogSpool::open(&root, 1).unwrap());
+            let batch = spool.reader().await.unwrap().read_batch(10).await.unwrap();
+            assert_eq!(batch.records.len(), 1);
+            assert_eq!(batch.records[0].decode().unwrap().id, current.id);
+            spool.checkpoint(batch.end_offset).unwrap();
+            assert!(spool.compact_if_drained().unwrap());
+        }
+        for (path, before) in evidence {
+            assert!(
+                fs::read(&path).unwrap() == before,
+                "{} changed",
+                path.display()
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn journal_directory_cannot_alias_the_legacy_root() {
+        let root = directory();
+        fs::create_dir(&root).unwrap();
+        std::os::unix::fs::symlink(".", root.join(super::JOURNAL_DIRECTORY)).unwrap();
+        assert!(matches!(
+            RequestLogSpool::open(&root, u64::MAX),
+            Err(SpoolError::Corrupt(_))
+        ));
+        assert!(!root.join(super::EVENTS_FILE).exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
     async fn drained_spool_compacts_without_losing_later_appends() {
         let directory = directory();
         let first = event();
@@ -888,8 +997,22 @@ mod tests {
     fn spool_directory_has_single_process_ownership() {
         let directory = directory();
         let spool = RequestLogSpool::open(&directory, u64::MAX).unwrap();
-        assert!(RequestLogSpool::open(&directory, u64::MAX).is_err());
+        assert!(matches!(
+            RequestLogSpool::open(&directory, u64::MAX),
+            Err(SpoolError::Lock { .. })
+        ));
+        let legacy_lock = OpenOptions::new()
+            .write(true)
+            .open(directory.join("spool.lock"))
+            .unwrap();
+        assert!(fs2::FileExt::try_lock_exclusive(&legacy_lock).is_err());
         drop(spool);
+        fs2::FileExt::try_lock_exclusive(&legacy_lock).unwrap();
+        assert!(matches!(
+            RequestLogSpool::open(&directory, u64::MAX),
+            Err(SpoolError::Lock { .. })
+        ));
+        drop(legacy_lock);
         assert!(RequestLogSpool::open(&directory, u64::MAX).is_ok());
         fs::remove_dir_all(directory).unwrap();
     }
@@ -905,7 +1028,11 @@ mod tests {
         }
         OpenOptions::new()
             .append(true)
-            .open(directory.join(super::EVENTS_FILE))
+            .open(
+                directory
+                    .join(super::JOURNAL_DIRECTORY)
+                    .join(super::EVENTS_FILE),
+            )
             .unwrap()
             .write_all(b"AIG")
             .unwrap();

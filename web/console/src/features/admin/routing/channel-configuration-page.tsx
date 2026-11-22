@@ -1,4 +1,4 @@
-import { Navigate, useSearchParams } from "react-router";
+import { useSearchParams } from "react-router";
 import { useI18n } from "@/app/i18n";
 import { PageHeader } from "@/components/shared/page-header";
 import { NavigationLink } from "@/components/shared/navigation-link";
@@ -12,8 +12,6 @@ export function ChannelConfigurationPage() {
   const [params, setParams] = useSearchParams();
   const origin = usePageOrigin();
   const view = params.get("view") === "groups" ? "groups" : "channels";
-  const channelId = params.get("channel");
-  if (channelId) return <Navigate replace to={`/admin/routing/logical-channels/${encodeURIComponent(channelId)}?view=capabilities`} />;
 
   return (
     <div className="flex flex-col gap-6">

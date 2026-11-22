@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router";
 import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
 import { ConfigurationSaveBar } from "@/features/admin/model-setup/configuration-save-bar";
@@ -24,8 +24,8 @@ import {
   Field,
   FieldDescription,
   FieldError,
-  FieldGroup,
   FieldLabel,
+  FieldSet,
 } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -87,7 +87,7 @@ const empty: FormState = {
     null,
     2,
   ),
-  source_payload: "{}",
+  source_payload: "",
 };
 
 function toLocalInput(iso: string): string {
@@ -106,6 +106,10 @@ function fromLocalInput(value: string): string {
 
 export function ModelDetailPage() {
   const { id = "" } = useParams();
+  return <ModelEditor key={id} id={id} />;
+}
+
+function ModelEditor({ id }: { id: string }) {
   const isNew = id === "new";
   const [searchParams] = useSearchParams();
   const copyFrom = isNew
@@ -116,7 +120,7 @@ export function ModelDetailPage() {
     "/admin/models",
   );
   const origin = usePageOrigin();
-  const { data, etag, isLoading, error, refetch } = useModel(id);
+  const { data, isLoading, error, refetch } = useModel(id);
   const copySource = useModel(copyFrom ?? "");
   const modelRules = useRoutingProfiles();
   const create = useCreateModel();
@@ -126,7 +130,11 @@ export function ModelDetailPage() {
   const [state, setState] = useState<FormState>(empty);
   const [submitting, setSubmitting] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const pending = submitting || remove.isPending;
+  const [conflict, setConflict] = useState(false);
+  const [discardOpen, setDiscardOpen] = useState(false);
+  const [reloading, setReloading] = useState(false);
+  const baselineEtag = useRef("");
+  const pending = submitting || remove.isPending || reloading;
   const { dirty, markDirty, markSaved, navigate, navigationGuard } =
     useConfigurationDraft(pending);
   const [validation, setValidation] = useState<z.ZodError | null>(null);
@@ -140,7 +148,8 @@ export function ModelDetailPage() {
     !copyFrom || initializedCopyFrom === copyFrom;
 
   useEffect(() => {
-    if (data) {
+    if (data && !dirty && !conflict) {
+      baselineEtag.current = data.etag;
       setState({
         source_model_id: data.data.source_model_id,
         display_name: data.data.display_name,
@@ -153,10 +162,10 @@ export function ModelDetailPage() {
         output_unit_price: data.data.output_unit_price,
         price_effective_at: data.data.price_effective_at,
         advanced_billing: JSON.stringify(data.data.advanced_billing, null, 2),
-        source_payload: "{}",
+        source_payload: "",
       });
     }
-  }, [data]);
+  }, [data, dirty, conflict]);
 
   useEffect(() => {
     if (
@@ -188,7 +197,7 @@ export function ModelDetailPage() {
         null,
         2,
       ),
-      source_payload: "{}",
+      source_payload: "",
     });
     setInitializedCopyFrom(copyFrom);
   }, [
@@ -205,12 +214,15 @@ export function ModelDetailPage() {
   };
 
   const submit = async () => {
+    if (conflict || pending) return;
     let payload: unknown = undefined;
     let advancedBilling: ModelInput["advanced_billing"] = undefined;
     try {
-      payload = state.source_payload.trim() ? JSON.parse(state.source_payload) : {};
-      if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
-        throw new Error("Source payload must be a JSON object.");
+      if (state.source_payload.trim()) {
+        payload = JSON.parse(state.source_payload);
+        if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+          throw new Error("Source payload must be a JSON object.");
+        }
       }
       advancedBilling = JSON.parse(state.advanced_billing);
       if (
@@ -243,7 +255,7 @@ export function ModelDetailPage() {
       output_unit_price: parsed.data.output_unit_price,
       price_effective_at: fromLocalInput(parsed.data.price_effective_at),
       advanced_billing: advancedBilling,
-      source_payload: payload,
+      ...(payload === undefined ? {} : { source_payload: payload }),
     };
     try {
       if (isNew) {
@@ -252,14 +264,14 @@ export function ModelDetailPage() {
         toast.success(t("Client model created"));
         navigate(returnTo, { replace: true });
       } else {
-        await update.mutateAsync({ input, ifMatch: etag });
+        await update.mutateAsync({ input, ifMatch: baselineEtag.current });
         markSaved();
         toast.success(t("Client model updated"));
         if (searchParams.has("returnTo")) navigate(returnTo, { replace: true });
       }
     } catch (error) {
-      if (error instanceof ApiError && error.isConflict) {
-        toast.error(t("This client model was changed elsewhere. Reloading."));
+      if (!isNew && error instanceof ApiError && error.isConflict) {
+        setConflict(true);
       } else {
         toast.error(error instanceof Error ? error.message : t("Save failed"));
       }
@@ -276,17 +288,31 @@ export function ModelDetailPage() {
   const deleteModel = async () => {
     setDeleteOpen(false);
     try {
-      await remove.mutateAsync({ ifMatch: etag });
+      await remove.mutateAsync({ ifMatch: baselineEtag.current });
       markSaved();
       toast.success(t("Client model deleted"));
       navigate(returnTo, { replace: true });
     } catch (error) {
       if (error instanceof ApiError && error.isConflict) {
-        await refetch();
-        toast.error(t("This client model was changed elsewhere. Reloading."));
+        setConflict(true);
       } else {
         toast.error(error instanceof Error ? error.message : t("Delete failed"));
       }
+    }
+  };
+
+  const reloadLatest = async () => {
+    setDiscardOpen(false);
+    setReloading(true);
+    try {
+      const result = await refetch();
+      if (result.isSuccess) {
+        setValidation(null);
+        setConflict(false);
+        markSaved();
+      }
+    } finally {
+      setReloading(false);
     }
   };
 
@@ -296,7 +322,7 @@ export function ModelDetailPage() {
       navigationGuard={navigationGuard}
       actionBar={
         <ConfigurationSaveBar dirty={dirty}>
-          <Button type="submit" form="model-editor" disabled={pending}>
+          <Button type="submit" form="model-editor" disabled={pending || conflict}>
             {submitting ? <Spinner data-icon="inline-start" /> : null}
             {isNew ? t(copyFrom ? "Create copied model" : "Create client model") : t("Save client model")}
           </Button>
@@ -316,7 +342,7 @@ export function ModelDetailPage() {
           (copySource.isLoading ||
             (!copyInitialized && !copySource.error)))
       }
-      error={error ?? copySource.error}
+      error={(conflict && data ? undefined : error) ?? copySource.error}
       hasData={
         isNew
           ? !copyFrom || copyInitialized
@@ -396,11 +422,19 @@ export function ModelDetailPage() {
               {isNew ? t("Create client model") : t("Edit client model")}
             </CardTitle>
             <CardDescription>
-              {t("USD prices are per the configured price unit tokens.")}
+              {t("Prices are in USD per token unit shown below.")}
             </CardDescription>
           </CardHeader>
           <CardContent>
             <form id="model-editor" className="flex flex-col gap-4" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+              {conflict && (
+                <Alert variant="destructive">
+                  <AlertTitle>{t("Model update conflict. Load the latest version to continue.")}</AlertTitle>
+                  {error && <AlertDescription>{t("The latest version could not be loaded. Your draft has been kept.")}</AlertDescription>}
+                  <Button type="button" variant="outline" className="justify-self-start" disabled={pending}
+                    onClick={() => dirty ? setDiscardOpen(true) : void reloadLatest()}>{t("Load latest version")}</Button>
+                </Alert>
+              )}
               {copyFrom ? (
                 <Alert>
                   <Copy />
@@ -412,7 +446,7 @@ export function ModelDetailPage() {
                   </AlertDescription>
                 </Alert>
               ) : null}
-              <FieldGroup className="grid gap-5 xl:grid-cols-2">
+              <FieldSet disabled={pending} className="grid min-w-0 gap-5 xl:grid-cols-2">
                 <Field data-invalid={Boolean(fieldError("source_model_id"))}>
                   <FieldLabel htmlFor="source_model_id">{t("Client model id")}</FieldLabel>
                   <Input
@@ -543,8 +577,9 @@ export function ModelDetailPage() {
                     value={state.source_payload}
                     onChange={(event) => patch({ source_payload: event.target.value })}
                   />
+                  {!isNew && <FieldDescription>{t("Leave blank to keep the stored payload. Enter {} to clear it.")}</FieldDescription>}
                 </Field>
-              </FieldGroup>
+              </FieldSet>
             </form>
           </CardContent>
         </Card>
@@ -554,7 +589,7 @@ export function ModelDetailPage() {
           <Button
             type="button"
             variant="destructive"
-            disabled={pending}
+            disabled={pending || conflict}
             onClick={() => setDeleteOpen(true)}
           >
             {remove.isPending ? <Spinner data-icon="inline-start" /> : null}
@@ -563,6 +598,10 @@ export function ModelDetailPage() {
         ) : undefined
       }
       />
+      <ConfirmDialog open={discardOpen} onOpenChange={setDiscardOpen}
+        title={t("Discard unsaved changes?")}
+        description={t("Load the latest version before editing again. This will discard your draft.")}
+        confirmLabel={t("Discard changes")} destructive onConfirm={() => void reloadLatest()} />
       <ConfirmDialog
         open={deleteOpen}
         onOpenChange={setDeleteOpen}

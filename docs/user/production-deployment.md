@@ -2,12 +2,12 @@
 
 > 状态：当前。单主机 PostgreSQL stack；SQLite 使用[单实例文件后端指南](sqlite.md)。
 
-本指南使用 `docker-compose.prd.yaml` 运行 Gateway、PostgreSQL 和嵌入式 Console。镜像不需要常驻 Node；部署仍需你提供 HTTPS 入口、可靠持久存储、备份和监控，不自带 HA、PITR 或跨主机 spool 复制。
+使用 `docker-compose.prd.yaml` 在单台主机上运行 Gateway、PostgreSQL 和嵌入式 Console。部署方负责 HTTPS 入口、可靠存储、监控和备份；该配置不提供 HA、PITR 或跨主机 spool 复制。
 
 ## 部署前确认
 
 - 使用支持 Compose 的 Docker 主机，确认数据目录/卷容量和持久性。
-- 固定 Compose 项目名、目标版本和实际镜像身份；不要依赖 `latest`。
+- 固定 Compose 项目名和目标镜像版本，避免更换工作目录时连到空卷。
 - 数据面和 Console 默认只映射宿主 `127.0.0.1:3000/3001`；PostgreSQL 不映射宿主端口。
 - 以下配置命令用于新部署；已有环境先走[升级与回滚](upgrades.md)，不要覆盖秘密或初始化卷。
 
@@ -77,9 +77,7 @@ docker compose \
   build gateway
 ```
 
-Dockerfile 使用 Rust 1.97.1 构建 release 二进制，并先构建、再嵌入 Console
-Web UI；源码构建也以同一固定
-工具链作为受支持和持续验证的边界。运行镜像只保留二进制、许可与通知文件及必要的 CA、健康检查和权限切换工具。
+Dockerfile 会构建并嵌入 Console 界面，运行镜像不需要 Node。
 
 ## 3. 启动与验证
 
@@ -97,14 +95,7 @@ docker compose \
 curl --fail-with-body -i http://127.0.0.1:3000/health
 ```
 
-PostgreSQL 不映射到宿主机端口，只能通过 Compose 网络或
-`docker compose exec postgres ...` 访问。数据面和 Console 端口默认仅绑定
-宿主机 `127.0.0.1`，应由反向代理按需暴露。
-
-Console refresh cookie 带 `Secure` 属性。浏览器生产访问必须经过 HTTPS
-反向代理；Gateway 本身不终止 TLS。
-
-`/health` 的 `204` 与容器 healthy 只确认进程健康，不证明路由和结算可用。检查容器日志与 Console“系统负载”，再按下面步骤建立实际可用配置。
+预期 Gateway 与 PostgreSQL 均 healthy，`/health` 返回 `204`。这只确认进程可响应；还需建立实际路由并核对计量。Console 的 refresh Cookie 带 `Secure`，请用 HTTPS 反向代理接入浏览器。
 
 ## 4. 创建首个管理员
 
@@ -123,7 +114,6 @@ docker compose \
   < /secure/path/admin-password.txt
 ```
 
-
 管理员密码至少 12 字节。`bootstrap-admin` 只在没有 active admin 时成功；密码文件须由部署者保护，不放进版本库。然后按[路由指南](routing.md)建立凭证、接入、渠道、能力、模型规则及 Key 授权；空数据库启动后不能直接代理。
 
 ## 5. 记录存储与运行身份
@@ -135,9 +125,7 @@ docker compose \
 | `gateway-plugins` | `/var/lib/ai-gateway/plugins` | 插件库存和制品，单独备份，不由数据库工具自动包含 |
 | `gateway-image-edit-spool` | `/var/lib/ai-gateway/image-edit-spool` | 匿名短生命周期 scratch，不备份在途请求 |
 
-真实卷名受 Compose 项目名影响。长期运维固定 env 文件、项目名、工作目录和配置路径，不要因更换启动目录误建空卷。
-
-entrypoint 以 root 读取只读挂载，将配置与秘密复制到私有 tmpfs，准备卷所有权，再降权为 UID/GID `10001`。不要绕过 entrypoint，也不要通过 `chmod 777`、特权容器或挂 Docker socket 修复权限。镜像根文件系统只读；数据库、持久 spool、插件和 scratch 的写权限各有用途。
+entrypoint 以 root 读取只读挂载，将配置与秘密复制到私有 tmpfs，准备卷所有权，再降权为 UID/GID `10001`。遇到权限问题，先检查挂载和运行 UID，而不是扩大容器权限。根文件系统保持只读。
 
 ## 6. 停止与重新启动
 
@@ -154,8 +142,4 @@ docker compose \
 
 ## 升级、备份与验收
 
-升级前阅读[升级指南](upgrades.md)，完成停写、一致备份和目标版本兼容性检查，再调整 env 文件中的版本、拉取/构建并启动。数据库 migration 不能靠切回旧镜像撤销；恢复前必须处理升级后新增的数据。
-
-备份目的地、加密、保留、异机副本、RPO/RTO 和恢复演练由部署方定义；默认 Compose 不执行这些工作。验收至少核对：镜像身份、原卷数据、运行 UID、HTTPS 登录及 Cookie、路由授权、日志/结算进度和停止后的持久性。真实上游验证会产生外部调用和费用，应单独授权；本指南不是压测或恢复通过证明。
-
-容量建议见[配置与调优](production-configuration.md)，诊断见[日志与监控](observability.md)，秘密管理见[安全指南](security.md)。
+升级时按[停写、备份与回滚流程](upgrades.md)保留原卷和配套恢复点。验收核对镜像身份、运行 UID、HTTPS 登录和 Cookie、渠道授权、日志与结算进度，以及停止后数据是否保留。实际发往上游的测试会产生费用。另为受保护的异机备份安排保留周期和恢复演练。

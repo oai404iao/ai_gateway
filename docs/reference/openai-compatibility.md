@@ -169,4 +169,4 @@ WS 升级后的逻辑错误通过错误事件表达；下面 HTTP 状态不能�
 | `504` | `connect_timeout` / `response_header_timeout` | 响应头前超时 |
 
 未命中显式重试策略的上游 HTTP 状态/body 默认保留，不重新包装成本地错误。
-配置和诊断步骤见[操作说明](../user/operations.md)。
+配置和诊断步骤见[操作说明](../user/data-plane.md)。

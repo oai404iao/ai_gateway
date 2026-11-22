@@ -122,8 +122,8 @@ unknown/invalid 使用专门部分索引；账户不匹配留在 pending，但�
 ## 0063 升级与回退
 
 1. 在生产规模相当的隔离副本测回填、锁等待、WAL 和空间；小测试不能替代容量验收。
-2. 停止全部旧流量与 worker，保留未知 intent，一致备份数据库及全部 spool/WAL。
-   0063 不改变 journal 格式，支持版本的积压可以保留，不能丢证据来制造排空。
+2. 停止旧流量，在旧版本按[目录切换步骤](../user/upgrades.md#请求日志目录切换)排空需要入账的本地终态，保留未知 intent。
+   再停止全部 worker，一致备份数据库及全部 spool/WAL。0063 本身不改变已提交数据库的 journal payload 格式。
 3. 新版本持 migration advisory lock，在原子批次内排他锁日志/ingress，
    等待在途旧认领结束后复制历史财务字段，逐 UUID 核对。
    已 billed 复制原金额/币种/时间，**不更新余额或额度**。

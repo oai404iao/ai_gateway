@@ -17,7 +17,7 @@
 
 查询当前行为时使用：
 
-- [用户运行与接口说明](../user/operations.md)
+- [用户运行与接口说明](../user/README.md)
 - [当前架构](../development/architecture.md)
 - [数据库与控制面架构](../development/database-architecture.md)
 - [Console Web UI 架构与开发指南](../development/console-ui.md)

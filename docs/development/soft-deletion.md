@@ -78,7 +78,7 @@ Codex 额度历史与 SQLite 未决维护 intent 不能通过删除或重启当�
 
 早期普通组/渠道的级联删除、影响预览 token 以及“能力被候选引用就拒绝删除”
 均不是当前契约。依赖顺序见[上游拓扑](upstream-identity-capabilities.md)；
-当前资源路径见[运维接口](../user/operations.md)。
+当前资源路径见[运维接口](../user/console.md)。
 
 ## 计价模型
 

@@ -119,13 +119,6 @@ pub(crate) fn options(
     (groups, channels)
 }
 
-pub(crate) fn all_formats() -> Vec<String> {
-    crate::domain::ApiFormat::ALL
-        .iter()
-        .map(|format| format.as_str().to_owned())
-        .collect()
-}
-
 #[derive(Clone, Copy)]
 pub(crate) enum GrantOwner<'a> {
     AdminKey,

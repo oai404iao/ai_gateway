@@ -36,7 +36,7 @@ import { useModelOptions, useRequestLog } from "@/features/request-logs/api";
 import type {
   ApiKeyView,
   ControlPlaneUser,
-  ListQuery,
+  AdminRequestLogQuery,
   RequestLogView,
 } from "@/api/types";
 import { dateTimeLocalToIso, formatDateTime, formatDateTimeLocalInput, formatRelative } from "@/lib/dates";
@@ -50,9 +50,9 @@ const LIMITS = [25, 50, 100] as const;
 const OUTCOMES = ["succeeded", "failed", "rejected", "cancelled"] as const;
 const uuid = /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i;
 
-type ApiFormatFilter = NonNullable<ListQuery["api_format"]>;
-type ApiOperationFilter = NonNullable<ListQuery["api_operation"]>;
-type OutcomeFilter = NonNullable<ListQuery["outcome"]>;
+type ApiFormatFilter = NonNullable<AdminRequestLogQuery["api_format"]>;
+type ApiOperationFilter = NonNullable<AdminRequestLogQuery["api_operation"]>;
+type OutcomeFilter = NonNullable<AdminRequestLogQuery["outcome"]>;
 
 interface RequestLogListResult {
   data: RequestLogView[] | undefined;
@@ -62,7 +62,7 @@ interface RequestLogListResult {
   refetch: () => Promise<unknown>;
 }
 
-type UseRequestLogs = (filters: ListQuery) => RequestLogListResult;
+type UseRequestLogs = (filters: AdminRequestLogQuery) => RequestLogListResult;
 
 interface RequestLogApiKeyOption extends Pick<ApiKeyView, "id" | "name"> {
   user_id?: string;
@@ -105,9 +105,9 @@ const REQUEST_LOG_FILTER_KEYS = [
   "started_after",
   "started_before",
   "billed",
-] as const satisfies readonly (keyof ListQuery)[];
+] as const satisfies readonly (keyof AdminRequestLogQuery)[];
 
-function readFilters(search: string, system: boolean): ListQuery {
+function readFilters(search: string, system: boolean): AdminRequestLogQuery {
   const params = new URLSearchParams(search);
   const identifier = (key: string) => {
     const value = params.get(key);
@@ -130,7 +130,7 @@ function readFilters(search: string, system: boolean): ListQuery {
   };
 }
 
-function filterDraft(query: ListQuery): RequestLogFilterDraft {
+function filterDraft(query: AdminRequestLogQuery): RequestLogFilterDraft {
   return {
     limit: LIMITS.find(value => value === query.limit) ?? 50,
     user_id: query.user_id ?? "",
@@ -352,7 +352,7 @@ function RequestCost({ log }: { log: RequestLogView }) {
   );
 }
 
-function toQuery(draft: RequestLogFilterDraft): ListQuery {
+function toQuery(draft: RequestLogFilterDraft): AdminRequestLogQuery {
   return {
     limit: draft.limit,
     user_id: optionalText(draft.user_id),
@@ -470,7 +470,7 @@ export function RequestLogsView({
   const updateDraft = (partial: Partial<RequestLogFilterDraft>) => {
     setDraft((previous) => ({ ...previous, ...partial }));
   };
-  const runQuery = (next: ListQuery) => {
+  const runQuery = (next: AdminRequestLogQuery) => {
     if (REQUEST_LOG_FILTER_KEYS.every(key => filters[key] === next[key])) void query.refetch();
     const nextParams = new URLSearchParams();
     for (const key of REQUEST_LOG_FILTER_KEYS) {
@@ -939,8 +939,7 @@ export function RequestLogsView({
             isLoading={query.isLoading}
             error={query.error}
             isEmpty={matchingRows.length === 0}
-            emptyTitle={t("No request logs")}
-            emptyDescription={t("There are no logged requests matching these filters.")}
+            emptyTitle={t("No requests match these filters")}
           >
             <ResourceTable
               columns={isMobile ? compactColumns : columns.filter(col => !hiddenColumns.has(col.key))}

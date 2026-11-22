@@ -1,3 +1,5 @@
+import { translate } from "@/app/i18n";
+
 export type CodexImportSource = "ai_gateway" | "cpa" | "sub2api" | "generic";
 
 export interface CodexImportDocument {
@@ -153,6 +155,14 @@ function parseNativeBundle(
   documentKey: string,
   result: ParseAccumulator,
 ): void {
+  if (payload.version !== 3) {
+    result.errors.push(translate("{name}: Use a version 3 ai-gateway export.", { name: sourceName }));
+    return;
+  }
+  if (!Array.isArray(payload.credentials)) {
+    result.errors.push(`${sourceName}: Native bundle has no credentials array.`);
+    return;
+  }
   const proxyKeyMap = parseProxyArray(
     payload.proxies,
     sourceName,
@@ -160,10 +170,6 @@ function parseNativeBundle(
     "ai_gateway",
     result,
   );
-  if (!Array.isArray(payload.credentials)) {
-    result.errors.push(`${sourceName}: Native bundle has no credentials array.`);
-    return;
-  }
   payload.credentials.forEach((value, index) => {
     if (!isRecord(value)) {
       result.errors.push(`${sourceName}: Credential ${index + 1} is not an object.`);
@@ -423,9 +429,6 @@ function normalizeCredential({
   if (!idToken) warnings.push("ID token is missing; identity will be read from the access token.");
   if (!accountId) {
     warnings.push("No workspace account ID was found; personal credentials can omit it.");
-  }
-  if (Object.prototype.hasOwnProperty.call(value, "weight")) {
-    warnings.push("Legacy credential weight was ignored.");
   }
   if (!label.trim()) errors.push("Label is required.");
   if (!accessToken) errors.push("Access token is required.");

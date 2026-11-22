@@ -181,7 +181,6 @@ fn managed_plugins_isolate_settings_and_keep_other_channels_when_missing_or_disa
                 channels: control_plane.channels.clone(),
                 ..Default::default()
             },
-            connector_ids: vec!["alpha".into(), "beta".into()],
             system_settings: SystemSettingsRecord {
                 setting_key: ai_gateway::persistence::FORWARDING_SETTINGS_KEY.into(),
                 value: json!({
@@ -315,7 +314,7 @@ fn snapshot_compilation_excludes_unavailable_plugin_channels() {
                 transports: operation.transports().to_vec(),
                 name: "draft".into(),
                 base_url: "https://upstream.test/base".into(),
-                enabled: false,
+                enabled: true,
                 supports_websocket: operation == ApiOperation::ResponsesWebSocket,
                 supports_standalone_web_search: operation == ApiOperation::StandaloneWebSearch,
                 auto_disabled: false,
@@ -340,7 +339,6 @@ fn snapshot_compilation_excludes_unavailable_plugin_channels() {
         RuntimeConfigRecords {
             plugin_records: Default::default(),
             control_plane,
-            connector_ids: vec![connector.into()],
             system_settings: SystemSettingsRecord {
                 setting_key: ai_gateway::persistence::FORWARDING_SETTINGS_KEY.into(),
                 value: json!({
@@ -354,12 +352,15 @@ fn snapshot_compilation_excludes_unavailable_plugin_channels() {
     };
     let snapshot = compile_runtime_config_with_plugins(records("fixture", None), &plugins).unwrap();
     assert_eq!(snapshot.channels().count(), 0);
-    assert!(
+    assert_eq!(
         compile_runtime_config_with_plugins(
             records("fixture", Some(ApiOperation::Responses)),
             &plugins
         )
-        .is_ok()
+        .unwrap()
+        .channels()
+        .count(),
+        1
     );
     let unavailable = compile_runtime_config_with_plugins(
         records("fixture", Some(ApiOperation::ChatCompletions)),
@@ -381,7 +382,12 @@ fn snapshot_compilation_excludes_unavailable_plugin_channels() {
     .unwrap();
     assert_eq!(unavailable.channels().count(), 0);
     for id in ["unknown", "codex"] {
-        assert!(compile_runtime_config_with_plugins(records(id, None), &plugins).is_ok());
+        let snapshot = compile_runtime_config_with_plugins(
+            records(id, Some(ApiOperation::Responses)),
+            &plugins,
+        )
+        .unwrap();
+        assert_eq!(snapshot.channels().count(), 0);
     }
 
     let (_directory, path, sha256) = fixture_with_flags(1, &["-DFIXTURE_PROTOCOL3"]);
@@ -391,9 +397,11 @@ fn snapshot_compilation_excludes_unavailable_plugin_channels() {
         sha256,
     }])
     .unwrap();
-    let mut enabled = records("fixture", Some(ApiOperation::Responses));
-    enabled.control_plane.channels[0].enabled = true;
-    let snapshot = compile_runtime_config_with_plugins(enabled, &plugins).unwrap();
+    let snapshot = compile_runtime_config_with_plugins(
+        records("fixture", Some(ApiOperation::Responses)),
+        &plugins,
+    )
+    .unwrap();
     let channel = snapshot.channels().next().unwrap();
     assert!(channel.permits_transport(ai_gateway::domain::CapabilityTransport::HttpJson));
     assert!(!channel.permits_transport(ai_gateway::domain::CapabilityTransport::HttpSse));
@@ -413,7 +421,6 @@ fn snapshot_compilation_excludes_unavailable_plugin_channels() {
         group.request_compression = "default".into();
         let channel = &mut enabled.control_plane.channels[0];
         channel.api_operation = None;
-        channel.enabled = true;
         channel.supports_websocket = true;
         channel.transports = vec![ai_gateway::domain::CapabilityTransport::HttpJson];
         let snapshot = compile_runtime_config_with_plugins(enabled, &plugins).unwrap();
@@ -437,7 +444,6 @@ fn snapshot_compilation_excludes_unavailable_plugin_channels() {
     }])
     .unwrap();
     let mut enabled = records("fixture", Some(ApiOperation::Responses));
-    enabled.control_plane.channels[0].enabled = true;
     let mut ordinary = enabled.control_plane.channels[0].clone();
     ordinary.id = Uuid::from_u128(8);
     ordinary.connector_kind = "general".into();

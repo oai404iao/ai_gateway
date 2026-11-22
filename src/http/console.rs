@@ -42,7 +42,7 @@ use crate::{
         RequestLogFilter, SelfApiKeyCreate, SelfApiKeyUpdate, SelfCodexQuotaCredentialView,
         SelfCodexQuotaWindowHistory, SpendLeaderboardFilter, SpendLeaderboardPeriod,
         StatisticsGranularity, SystemSettingsInput, UserBatchUpdateInput, UserGroupInput,
-        UserInput, UserSettingsInput, UserUpdateInput,
+        UserSettingsInput, UserUpdateInput,
     },
     runtime_config::ConfigError,
 };
@@ -146,10 +146,7 @@ pub fn router(state: ConsoleState) -> Router {
         )
         .route(
             "/console/v1/users/{id}",
-            get(get_user)
-                .put(replace_user)
-                .patch(update_user)
-                .delete(delete_user),
+            get(get_user).patch(update_user).delete(delete_user),
         )
         .route(
             "/console/v1/user-groups",
@@ -1258,32 +1255,12 @@ fn temporary_password_response(issued: IssuedTemporaryPassword) -> TemporaryPass
     }
 }
 
-async fn replace_user(
-    State(state): State<ConsoleState>,
-    Extension(principal): Extension<ConsolePrincipal>,
-    Path(id): Path<Uuid>,
-    headers: HeaderMap,
-    Json(input): Json<UserInput>,
-) -> Result<Json<MutationResponse>, ConsoleError> {
-    update_user_fields(state, principal, id, headers, input.into()).await
-}
-
 async fn update_user(
     State(state): State<ConsoleState>,
     Extension(principal): Extension<ConsolePrincipal>,
     Path(id): Path<Uuid>,
     headers: HeaderMap,
     Json(input): Json<UserUpdateInput>,
-) -> Result<Json<MutationResponse>, ConsoleError> {
-    update_user_fields(state, principal, id, headers, input).await
-}
-
-async fn update_user_fields(
-    state: ConsoleState,
-    principal: ConsolePrincipal,
-    id: Uuid,
-    headers: HeaderMap,
-    input: UserUpdateInput,
 ) -> Result<Json<MutationResponse>, ConsoleError> {
     mutate(
         &state,

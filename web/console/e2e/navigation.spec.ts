@@ -196,13 +196,13 @@ test("nested capability editing has one parent link and no competing batch edito
   await expect(page).toHaveURL(new RegExp(`${origin.replace("?", "\\?")}$`));
 });
 
-test("direct detail entry has a safe parent and legacy lists retain their filters", async ({ page }) => {
+test("direct detail entry has a safe parent and channel list deep links apply filters", async ({ page }) => {
   await login(page);
   await page.goto(`/admin/routing/logical-channels/${E2E_STANDARD_CHANNEL_ID}?returnTo=%2F%2Fevil.test`);
   await expect(page.getByRole("link", { name: "Back to channels" }))
     .toHaveAttribute("href", "/admin/routing/channels");
   await page.getByRole("link", { name: "Back to channels" }).click();
-  await page.goto(`/admin/routing/logical-channels?group=${E2E_ROUTING_GROUP_ID}`);
+  await page.goto(`/admin/routing/channels?group=${E2E_ROUTING_GROUP_ID}`);
   await expect(page).toHaveURL(new RegExp(`/admin/routing/channels\\?group=${E2E_ROUTING_GROUP_ID}$`));
   await expect(page.getByRole("link", { name: "Upstream A", exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "Personal Plus", exact: true })).toHaveCount(0);

@@ -1,9 +1,8 @@
-# 0063 升级与成对备份恢复演练
+# 从 PostgreSQL schema 62 升级与成对恢复
 
-> 状态：当前演练工具说明。针对 schema 62 → 0063 的小数据流程；不是生产容量认证。
+> 状态：当前。
 
-用本页在合成数据库上复现“停写备份 → 升级重放 → 成对恢复 → 再升级核对”。
-它证明数据库与本地证据必须一起恢复，不承诺任意规模的升级时长，也不操作业务库。
+本演练把合成数据库从 schema 62 迁移到当前二进制包含的最新版本，然后从备份再走一次。两次都核对数据库积压的结算金额，以及只存在于旧 spool 的记录没有入账。报告中的 `schema_to` 是实际迁移后的版本。
 
 ## 目录
 
@@ -59,7 +58,7 @@ TMPDIR="$PERSISTENCE_REHEARSAL_DIRECTORY" \
 | 路径 | 内容 |
 | --- | --- |
 | `backup/database.dump` | schema 62 的 PG custom-format 完整合成库备份 |
-| `backup/spool/` | 同一停写点的 events、checkpoint、admissions |
+| `backup/spool/` | 同一停写点的旧布局 `events.log`、`checkpoint` 和 `admissions/` |
 | `backup-manifest.json` | 备份内每个文件的相对路径与 SHA-256 |
 | `source-spool/`、`restored-spool/` | 分别升级原库、恢复副本时使用的本地证据 |
 | `report.json` | 结果、规模、时限、版本/脏工作区标记、库名、空间和 WAL 测量 |
@@ -74,23 +73,23 @@ PG 工具以容器内 30 分钟 watchdog 限时，不依赖工具可能自行重
 ## 夹具与验收
 
 旧库包含 5 条日志：已 billed、可计价未 billed、成功但费用未知、失败策略归零、
-无费用拒绝。ingress 有 3 条记录，其中 2 条重复已 billed UUID；spool 有 2 个终态，
-其中一个又重复已 billed UUID，另有一个只写 intent 的未决请求。
+无费用拒绝。ingress 有 3 条 v6 记录，其中 2 条重复已 billed UUID。
+旧 spool 根目录保留 2 个终态（一个重复已 billed UUID，一个从未入库），另有一个只有 intent 和空终态槽的未决请求。
 
 演练顺序：
 
 1. 完成夹具写入并停止写者。PG dump 与整个 spool 树在同一静止状态复制，
    生成成对 SHA-256 清单。不能把活跃写入时的顺序复制当作一致快照。
-2. 通过生产 `run_migrations` 执行 0063，确认回填不更新余额/Key 额度，
+2. 通过生产 `run_migrations` 执行所有待应用迁移，包括 `0063` 的独立计量回填；确认回填不更新余额/Key 额度，
    已 billed 的 UUID 和原时间一致。旧 claim、提前 ack 和旧 migration registry 必须失败。
-3. 启动真实 durable worker 恢复 ingress/spool；仅对三个新增的已知费用各扣一次，
-   失败写零额回执。明确检查 unknown 的费用仍为 NULL、rejected 不适用，两者均无回执。
+3. 启动真实 durable worker 处理旧库 ingress；仅对库中原未结算的已知费用及 ingress 的新增已知费用各扣一次。
+   失败写零额回执；unknown 的费用仍为 NULL、rejected 不适用，两者均无回执。仅存在于旧 spool 的请求不生成日志、事实或回执。
 4. 校验完整备份清单，在第二个全新库以 `pg_restore --single-transaction --exit-on-error`
    恢复 schema 62；复制配套 spool，核对旧账户与金额。
-5. 再迁移并重放。逐 UUID 比较全部财务字段、回执金额/资格、所有账户余额/Key 额度，
+5. 再迁移并处理数据库积压。逐 UUID 比较全部财务字段、回执金额/资格、所有账户余额/Key 额度，
    不是只比较总金额。新产生回执的时间可不同，历史回执时间必须相同。
-6. 未决 intent 文件仍存在。
-   再次重启 worker，仍不得重复扣款，unknown/rejected 仍不能被偷偷结清。
+6. 核对旧布局终态、检查点和未决 intent/slot 的文件内容均未变化。
+   再次重启 worker，仍不得接收旧本地积压或重复扣款，unknown/rejected 仍不能被偷偷结清。
 
 配套自动测试（不需要备份工具）：
 

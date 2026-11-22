@@ -91,19 +91,16 @@ impl Backend {
         )
     }
     async fn seed(&self) {
-        let (formats, permissions) = match self {
-            Self::Pg(_) => ("'{open_ai_chat_completions}'", "'{proxy,models.read}'"),
-            Self::Sq(..) => (
-                "'[\"open_ai_chat_completions\"]'",
-                "'[\"proxy\",\"models.read\"]'",
-            ),
+        let permissions = match self {
+            Self::Pg(_) => "'{proxy,models.read}'",
+            Self::Sq(..) => "'[\"proxy\",\"models.read\"]'",
         };
         self.exec(&format!(
             "INSERT INTO users(id,display_name,role,status,balance_amount,user_group_id) VALUES
              ('{USER}','User','user','active','100','00000000-0000-0000-0000-000000000101'),
              ('{OTHER}','Other','user','active','0','00000000-0000-0000-0000-000000000101');
-             INSERT INTO api_keys(id,user_id,name,secret_value,status,allowed_api_formats,permissions) VALUES
-             ('{KEY}','{USER}','Key','s4-fixture-key','active',{formats},{permissions});
+             INSERT INTO api_keys(id,user_id,name,secret_value,status,permissions) VALUES
+             ('{KEY}','{USER}','Key','s4-fixture-key','active',{permissions});
              INSERT INTO models(id,source_model_id,display_name,enabled,currency,price_unit_tokens,
                input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at)
              VALUES ('{MODEL}','model','Model',true,'USD',1000000,'1','0','0','2',now());
@@ -489,7 +486,6 @@ async fn classification(db: &Backend, now: DateTime<Utc>) -> Value {
     search.api_format = ApiFormat::OpenAiResponses;
     search.api_operation = ApiOperation::StandaloneWebSearch;
     search.request_protocol = RequestProtocol::NonStream;
-    search.streamed = false;
     search.billing = None;
     search.model_id = None;
     search.channel_id = None;

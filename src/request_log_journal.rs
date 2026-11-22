@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::domain::{ApiFormat, ApiOperation, RequestLogEvent, RequestProtocol};
 
-pub(crate) const REQUEST_LOG_SCHEMA_VERSION: i16 = 8;
+pub(crate) const REQUEST_LOG_SCHEMA_VERSION: i16 = 9;
 
 #[derive(Clone, Debug)]
 pub(crate) struct EncodedRequestLog {
@@ -30,7 +30,7 @@ impl EncodedRequestLog {
             4..=6 => decode_legacy_operation(&self.payload)?,
             7 => serde_json::from_slice::<RequestLogEvent>(&self.payload)
                 .map_err(JournalCodecError::Deserialize)?,
-            REQUEST_LOG_SCHEMA_VERSION => {
+            8 | REQUEST_LOG_SCHEMA_VERSION => {
                 let value: serde_json::Value = serde_json::from_slice(&self.payload)
                     .map_err(JournalCodecError::Deserialize)?;
                 if value.get("upstream_credential").is_none() {
@@ -42,7 +42,7 @@ impl EncodedRequestLog {
             }
             version => return Err(JournalCodecError::UnsupportedVersion { version }),
         };
-        if self.schema_version < REQUEST_LOG_SCHEMA_VERSION {
+        if self.schema_version < 8 {
             event.upstream_credential = None;
         }
         if event.id != self.request_log_id {
@@ -369,7 +369,7 @@ mod tests {
         let error = EncodedRequestLog {
             request_log_id: id,
             schema_version: super::REQUEST_LOG_SCHEMA_VERSION,
-            payload: usage_payload(id, None, Some("chat_completions"), true),
+            payload: usage_payload(id, None, Some("chat_completion"), true),
         }
         .decode()
         .unwrap_err();
@@ -399,7 +399,6 @@ mod tests {
             "model_id": null,
             "outcome": "cancelled",
             "response_status_code": 200,
-            "streamed": true,
             "ttft_ms": 1,
             "total_duration_ms": 2,
             "billing": null,
@@ -418,7 +417,7 @@ mod tests {
     }
 
     #[test]
-    fn current_writer_round_trips_peak_pricing_and_credential_as_v8() {
+    fn current_writer_round_trips_protocol_peak_pricing_and_credential_as_v9() {
         let id = Uuid::new_v4();
         let mut event = EncodedRequestLog {
             request_log_id: id,
@@ -434,7 +433,7 @@ mod tests {
         });
         let encoded = EncodedRequestLog::encode(&event).unwrap();
 
-        assert_eq!(encoded.schema_version, 8);
+        assert_eq!(encoded.schema_version, 9);
         let decoded = encoded.decode().unwrap();
         assert!(decoded.billing.unwrap().peak_pricing);
         assert_eq!(
@@ -442,12 +441,26 @@ mod tests {
             Some(credential_id)
         );
         let mut value: serde_json::Value = serde_json::from_slice(&encoded.payload).unwrap();
-        value.as_object_mut().unwrap().remove("upstream_credential");
-        let missing = EncodedRequestLog {
+        assert!(value.get("streamed").is_none());
+        assert_eq!(value["request_protocol"], "non_stream");
+
+        value["streamed"] = false.into();
+        let v8 = EncodedRequestLog {
+            schema_version: 8,
             payload: serde_json::to_vec(&value).unwrap(),
             ..encoded.clone()
         };
-        assert!(missing.decode().is_err());
+        let historical = v8.decode().unwrap();
+        assert_eq!(historical.request_protocol, event.request_protocol);
+        assert_eq!(historical.upstream_credential, event.upstream_credential);
+        value.as_object_mut().unwrap().remove("upstream_credential");
+        for record in [encoded.clone(), v8] {
+            let missing = EncodedRequestLog {
+                payload: serde_json::to_vec(&value).unwrap(),
+                ..record
+            };
+            assert!(missing.decode().is_err());
+        }
         assert!(
             EncodedRequestLog {
                 schema_version: 7,

@@ -109,14 +109,13 @@ WS 不继承 HTTP 压缩和探测；能力表出现不代表 Codex、搜索或 I
 ## 逻辑渠道授权与能力删除
 
 Key 保存所选组 UUID（`allowed_group_ids`）和直接选择的逻辑渠道 UUID（`allowed_channel_ids`）。
-每次编译快照时，有效渠道是**所选组的当前成员与直接选择的渠道的并集**：
+每次编译快照时，有效渠道是**所选组的当前成员与有直接授权记录的渠道的并集**。历史直接选择若缺少同一渠道的直接授权记录，单凭选择数组不生效；原样保存也不会补授权。Policy 的直接渠道上限遵循同一规则。
 
 - 渠道加入已选组即获得组授权；移出即失去该组授权。直接渠道授权不依赖组归属。
   其他组的渠道不会因共用上游凭证而获权。删除或未知的 UUID 不授予访问，同名重建也不继承原 UUID 的选择。
 - 此规则适用于所有已签发的 Key，包括曾只覆盖部分成员、或保存时组内没有渠道的组选择。
   不需要数据库迁移、重签 Key 或补写成员授权。
 - 授权覆盖渠道的现有及未来能力；能力开关、路由候选、模型目录、健康和准入仍独立检查。
-  `allowed_api_formats` 是废弃的 v1 兼容元数据，不是独立权限条件；活跃 Key 规范化为全部受支持格式。
 
 Policy 只约束[自助签发及目标变更](console-auth.md#api-key-自助服务规则)，不参与已发 Key 的快照授权计算。
 
@@ -188,7 +187,7 @@ A → 空/B → A 不能恢复旧连接，引用同一凭证的不同渠道不�
 ## 历史引用与升级
 
 运行时仓储只读新拓扑。最小只读 identity registry 保留旧 UUID/名称及 canonical 身份，
-金融事实、日志与旧 spool 可继续引用；注册表不能被编辑、授权或用于实时选路。
+金融事实、日志与数据库入口中的旧记录可继续引用；注册表不能被编辑、授权或用于实时选路。
 旧日志操作证据不足时保留原身份，不猜图片生成还是编辑，不改金额或回执。
 
 | PG / SQLite | 转换与不可省略的约束 |
@@ -228,7 +227,7 @@ SQLite 表重建仅在专属连接 BEGIN 前关闭 FK，提交前完整 foreign_
 验证存量升级、完整候选编译和恢复后才接流量。不能只用空库验证替代存量迁移。
 提交后优先 forward-fix；恢复必须是同一时点的库、全部本地证据和匹配二进制，
 并核对恢复点后上游使用，不能只回滚程序或数据库。
-拼车移除的人工重新授权见[运维升级](../user/operations.md#codex-拼车移除升级)。
+拼车移除的人工重新授权见[运维升级](../user/upgrades.md#codex-拼车移除升级)。
 
 ## 验证与设计背景
 
@@ -242,7 +241,7 @@ SQLite 表重建仅在专属连接 BEGIN 前关闭 FK，提交前完整 foreign_
 - 六操作路由隔离、HTTP/WS 不自动扩权、模型别名/权重保留、删除候选清理与模型墓碑。
 - WebSocket 闲置/借出/归还及 A → B → A 版本失效，continuation 不换连接重发。
 - Codex 导入/刷新/删除、OAuth 所有权、窗口费用、SQLite 未决 intent 和普通写者继续推进。
-- 请求时凭证归属、明确无认证/旧未知、改绑后的费用与旧 journal 重放。
+- 请求时凭证归属、明确无认证/旧未知、改绑后的费用与数据库入口中旧 journal 记录的重放。
 - Console API/generated types、组件/浏览器和真实 PostgreSQL/SQLite 系统 E2E。
   转发变更按授权运行真实上游 smoke；不自动运行性能负载。
 
@@ -265,4 +264,4 @@ SQLite 表重建仅在专属连接 BEGIN 前关闭 FK，提交前完整 foreign_
 
 - [数据库架构](database-architecture.md)、[当前架构](architecture.md)
 - [Codex Connector](codex-oauth-connector.md)、[插件设计](connector-plugins.md)
-- [运维接口](../user/operations.md)、[上游凭证管理](../user/upstream-credentials.md)
+- [运维接口](../user/routing.md)、[上游凭证管理](../user/upstream-credentials.md)

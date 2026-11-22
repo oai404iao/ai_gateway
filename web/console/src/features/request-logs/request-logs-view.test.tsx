@@ -270,8 +270,7 @@ describe("RequestLogsView", () => {
       channel_name: CHANNEL.name,
       outcome: "failed",
       response_status_code: 200,
-      streamed: true,
-      ttft_ms: 100,
+          ttft_ms: 100,
       total_duration_ms: 1_000,
       input_tokens: 12,
       cached_input_tokens: 2,
@@ -348,7 +347,6 @@ describe("RequestLogsView", () => {
       api_operation: "web_search",
       request_protocol: "non_stream",
       client_model: "search-model",
-      streamed: false,
     } as const;
     server.use(
       http.get("/console/v1/request-logs", () => HttpResponse.json([log])),

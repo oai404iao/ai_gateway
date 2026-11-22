@@ -27,7 +27,7 @@ body/Header 策略归外部插件。转发变更需 deterministic tests 和经�
 
 - [认证与授权](console-auth.md)：JWT、会话、角色与归属边界。
 - [前端架构](console-ui.md)与[前端命令](../../web/console/README.md)：开发、构建和嵌入式交付。
-- [导航与页面交互](console-interaction-standard.md)：列表状态、返回、草稿和历史入口。
+- [导航与页面交互](console-interaction-standard.md)：列表状态、返回与草稿。
 - [Console 可用性设计记录](console-ux-review.md)：模型工作区设计、任务复现与 mock 浏览器验收单。
 - [模型上架交互设计](model-onboarding-ux.md)：批量追加模型、按操作核对候选及冲突恢复。
 - [统计口径](statistics.md)：个人与系统范围、费用与监控定义。
@@ -44,7 +44,7 @@ body/Header 策略归外部插件。转发变更需 deterministic tests 和经�
 - [耐久请求流水线](request-log-durability.md)：spool、入口、独立投影与结算。
 - [独立计量事实](independent-metering.md)：财务事实、pending 集合和唯一结算回执。
 - [日志故障准入](request-log-admission-review.md)：故障矩阵与准入策略。
-- [成对备份恢复演练](persistence-rehearsal.md)：0063 演练的步骤、测量口径与限制。
+- [成对备份恢复演练](persistence-rehearsal.md)：从 PostgreSQL schema 62 升级，核对结算和旧 spool 证据。
 - [持久化边界设计记录](persistence-boundaries.md)：拆分动机与切换约束。
 
 ### SQLite 专题
@@ -75,6 +75,4 @@ body/Header 策略归外部插件。转发变更需 deterministic tests 和经�
 
 编码 Agent 另需遵守 [`AGENTS.md`](../../AGENTS.md)。
 
-文档变更阅读[编写规范](../documentation-standard.md)；组织和写法的依据见
-[Pi 文档研究](documentation-design.md)。[历史归档](../archive/README.md)只用于追溯，
-不要把过去的实施切片、验收记录或退出条件当成当前部署状态。
+维护文档见[编写规范](../documentation-standard.md)；旧版设计见[历史归档](../archive/README.md)。

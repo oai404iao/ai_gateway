@@ -2,11 +2,11 @@
 
 > 状态：当前。
 
-`general` 内置即可使用普通 OpenAI 兼容服务；Codex 需要另行安装并明确启用插件。本页按准备目录、安装、设置与版本切换说明操作；接入账号和路由继续读 [Codex 指南](codex.md)。
+内置 `general` 连接器可用于普通 OpenAI 兼容服务。接入 Codex 订阅时，先安装并启用插件，再[连接账号和配置路由](codex.md)。
 
 ## 先确认信任边界
 
-`general` 内置。Codex 由独立
+Codex 由独立
 [ai-gateway-connectors](https://github.com/oai404iao/ai-gateway-connectors)
 仓库发布，网关发行包不包含它，也没有内置回退。
 插件是可信原生代码，安装权限等价于以网关进程权限执行代码；只使用审查过的制品。
@@ -23,8 +23,6 @@ directory = "/var/lib/ai-gateway/plugins"
 目录由一个进程独占；插件生命周期管理当前按单实例部署，不支持分布式安装协调。
 Compose 使用 `gateway-plugins` 持久卷，entrypoint 在降低权限前准备其所有权。
 插件目录需要单独备份；数据库/SQLite 配对备份不自动包含此目录。
-
-摘要来自批准的插件包并存入库存，安装后仍校验制品完整性。
 
 ## 2. 安装并启用
 
@@ -65,33 +63,6 @@ Compose 使用 `gateway-plugins` 持久卷，entrypoint 在降低权限前准备
 升级可能使已有 Responses WebSocket continuation 或未完成 OAuth 授权失效，
 客户端需要重新建立上下文或重新授权。
 
-通用协议 3 插件明确声明支持的请求 transport；不支持的 transport 不参与选路，
-不会自动改用另一协议。显式启用的同格式 HTTP JSON/SSE 响应归一化由宿主验证
-usage、终态和标识字段；无效输出失败关闭，不回退透传。JSON 适配限 8 MiB，
-不启用适配的普通响应仍使用原有流式透传。新 Codex 插件使用协议 3，但不启用响应适配；
-它按实际 Responses 上游接口复用通用 usage 解析。旧协议 2 仍兼容。
-
 已加载库不在运行中物理卸载；多次版本升级达到进程保留额度后需要维护重启。
 删除当前或已加载制品会被拒绝，必要时先取消选择并重启。
-
-## 从旧部署升级
-
-只对已有逐项路径配置的部署应用这些步骤，新部署直接使用托管目录。
-
-1. 停机并完成数据库/spool 一致备份，保留旧二进制和原配置。
-2. 将旧 `[[plugins]]` 改为 `[plugins].directory`，不要继续使用逐项 path/SHA 配置。
-3. 准备支持 SDK 0.2 协议 3 的 Codex 插件包；已有协议 2 包仍可使用。
-4. 启动网关，让 PG 0071 或 SQLite 0011 迁移旧设置。
-5. 登录管理面，安装并启用新版插件，核对迁移值与所需操作。
-
-五项旧设置原值迁移，凭证和财务记录不变。迁移不会自动批准一个磁盘上的新动态库。
-缺失插件时管理面仍可用于恢复，但对应数据面请求不会绕过插件发送。
-旧网关不支持新版插件协议，不能只回滚网关而继续使用新插件/新数据库结构。
-
-## 相关文档
-
-- [插件架构和验收边界](../development/connector-plugins.md)
-- [上游凭证](upstream-credentials.md)
-- [生产部署](production-deployment.md)
-- [SQLite 备份与恢复](sqlite.md)
-- [安全运行](security.md)与[整体升级](upgrades.md)
+同时更换网关版本时，按[升级与回滚](upgrades.md)保留配套数据库、spool、插件目录与配置。

@@ -647,7 +647,6 @@ fn fold_grants(
         allowed.sort_unstable();
         allowed.dedup();
         key.allowed_channel_ids = allowed;
-        key.allowed_api_formats = super::authorization::all_formats();
     }
     Ok(api_keys)
 }
@@ -827,7 +826,7 @@ mod tests {
         );
     }
 
-    fn api_key(id: u128, formats: &[&str]) -> ApiKeyRecord {
+    fn api_key(id: u128) -> ApiKeyRecord {
         ApiKeyRecord {
             id: Uuid::from_u128(id),
             user_id: Uuid::from_u128(id + 10),
@@ -837,7 +836,6 @@ mod tests {
             secret_value: format!("secret-{id}"),
             status: "active".into(),
             expires_at: None,
-            allowed_api_formats: formats.iter().map(|value| (*value).to_owned()).collect(),
             permissions: vec!["proxy".into(), "models.read".into()],
             allowed_group_ids: vec![],
             allowed_channel_ids: vec![],
@@ -1010,7 +1008,7 @@ mod tests {
 
     #[test]
     fn group_membership_and_direct_grants_govern_model_visibility_and_routing() {
-        use crate::domain::{ApiFormat, RequestProtocol};
+        use crate::domain::RequestProtocol;
         use crate::routing::{PassiveHealthPolicy, RoutingRuntime, SelectionResult};
 
         let mut records = topology(vec![
@@ -1028,21 +1026,29 @@ mod tests {
                 ),
             ),
         ]);
-        records.operation_rules = vec![rule(200, 60, ApiOperation::Responses)];
-        records.operation_tiers = vec![OperationTierRecord {
-            id: Uuid::from_u128(201),
-            rule_id: Uuid::from_u128(200),
-            operation: ApiOperation::Responses,
-            priority: 0,
-            strategy: "weighted_random".into(),
-        }];
-        records.operation_candidates = vec![OperationCandidateRecord {
-            tier_id: Uuid::from_u128(201),
-            operation: ApiOperation::Responses,
-            capability_id: Uuid::from_u128(100),
-            upstream_model: "wire-model".into(),
-            weight: 1,
-        }];
+        let routes = [
+            (ApiOperation::Responses, 100),
+            (ApiOperation::ImagesGeneration, 101),
+        ];
+        for (operation, capability_id) in routes {
+            let rule = rule(1000 + capability_id, 60, operation);
+            let tier = OperationTierRecord {
+                id: Uuid::from_u128(2000 + capability_id),
+                rule_id: rule.id,
+                operation,
+                priority: 0,
+                strategy: "weighted_random".into(),
+            };
+            records.operation_candidates.push(OperationCandidateRecord {
+                tier_id: tier.id,
+                operation,
+                capability_id: Uuid::from_u128(capability_id),
+                upstream_model: "wire-model".into(),
+                weight: 1,
+            });
+            records.operation_rules.push(rule);
+            records.operation_tiers.push(tier);
+        }
         records.routing_groups.push(group(4));
         records.api_key_grants = vec![
             ApiKeyChannelGrantRecord {
@@ -1071,11 +1077,11 @@ mod tests {
         for current_group in [4, 1, 4] {
             records.logical_channels[0].group_id = Uuid::from_u128(current_group);
             let mut base = base();
-            let mut direct = api_key(300, &["open_ai_responses"]);
+            let mut direct = api_key(300);
             direct.allowed_group_ids = vec![Uuid::from_u128(1)];
-            let mut group_only = api_key(301, &["open_ai_responses"]);
+            let mut group_only = api_key(301);
             group_only.allowed_group_ids = direct.allowed_group_ids.clone();
-            let mut dormant = api_key(302, &["open_ai_responses"]);
+            let mut dormant = api_key(302);
             dormant.allowed_channel_ids = vec![Uuid::from_u128(3)];
             base.api_keys = vec![direct, group_only, dormant];
             let resolved = resolve_runtime(&records, base, &[profile()], &[]).expect("resolve");
@@ -1090,10 +1096,6 @@ mod tests {
                 }
             );
             assert!(resolved.api_keys[2].allowed_channel_ids.is_empty());
-            assert_eq!(
-                resolved.api_keys[0].allowed_api_formats,
-                super::super::authorization::all_formats()
-            );
 
             let snapshot = crate::runtime_config::compile_control_plane(resolved).unwrap();
             for (secret, authorized) in [
@@ -1102,27 +1104,28 @@ mod tests {
                 ("secret-302", false),
             ] {
                 let key = snapshot.authenticate(secret).unwrap();
-                let models = snapshot.models_for(&key, ApiFormat::OpenAiResponses);
-                let selection = routing.select_operation_with_affinity_excluding(
-                    &snapshot,
-                    &key,
-                    ApiOperation::Responses,
-                    RequestProtocol::NonStream,
-                    "client-model",
-                    None,
-                    &[],
-                );
-                if authorized {
-                    assert_eq!(models.as_slice(), &[std::sync::Arc::from("client-model")]);
-                    assert!(
-                        matches!(selection, SelectionResult::Selected(route) if route.channel.id() == Uuid::from_u128(100))
+                for (operation, capability_id) in routes {
+                    let models = snapshot.models_for(&key, operation.api_format());
+                    let selection = routing.select_operation_with_affinity_excluding(
+                        &snapshot,
+                        &key,
+                        operation,
+                        RequestProtocol::NonStream,
+                        "client-model",
+                        None,
+                        &[],
                     );
-                } else {
-                    assert!(models.is_empty());
-                    assert!(matches!(
-                        selection,
-                        SelectionResult::UnknownOrInaccessibleModel
-                    ));
+                    if authorized {
+                        assert_eq!(models.as_slice(), &[std::sync::Arc::from("client-model")]);
+                        assert!(matches!(selection, SelectionResult::Selected(route)
+                            if route.channel.id() == Uuid::from_u128(capability_id)));
+                    } else {
+                        assert!(models.is_empty());
+                        assert!(matches!(
+                            selection,
+                            SelectionResult::UnknownOrInaccessibleModel
+                        ));
+                    }
                 }
             }
         }
@@ -1151,7 +1154,7 @@ mod tests {
             created_at: at(),
         };
         let mut tombstoned_base = base();
-        tombstoned_base.api_keys = vec![api_key(300, &["open_ai_responses"])];
+        tombstoned_base.api_keys = vec![api_key(300)];
 
         records.api_key_grants = vec![grant(3)];
         let resolved = resolve_runtime(&records, tombstoned_base, &[], &[]).expect("resolve");
@@ -1161,7 +1164,7 @@ mod tests {
         );
 
         let mut unknown_base = base();
-        unknown_base.api_keys = vec![api_key(300, &["open_ai_responses"])];
+        unknown_base.api_keys = vec![api_key(300)];
         records.api_key_grants = vec![grant(999)];
         assert_eq!(
             resolve_runtime(&records, unknown_base, &[], &[]).unwrap_err(),
@@ -1219,6 +1222,31 @@ mod tests {
                 credential_id: Uuid::from_u128(400)
             }
         );
+    }
+
+    #[test]
+    fn unbound_disabled_records_validate_connector_ids_before_projection() {
+        let connector = ConnectorKind::parse("uninstalled-plugin").unwrap();
+        let mut unbound = access(2, connector, "https://up.example");
+        unbound.enabled = false;
+        let mut access_row = serde_json::to_value(unbound).unwrap();
+        let mut credential_row = json!({
+            "id": Uuid::from_u128(500), "name": "unbound", "kind": "bearer", "connector_kind": connector,
+            "secret": "fixture", "allowed_base_urls": ["https://up.example"], "enabled": false,
+            "revision": Uuid::from_u128(501), "created_at": at(), "updated_at": at()
+        });
+        let records = UpstreamTopologyRecords {
+            upstream_accesses: vec![serde_json::from_value(access_row.clone()).unwrap()],
+            ..Default::default()
+        };
+        let credential = serde_json::from_value(credential_row.clone()).unwrap();
+        let snapshot = resolve_runtime(&records, base(), &[], &[credential]).unwrap();
+        assert!(snapshot.channels.is_empty());
+
+        access_row["connector_kind"] = json!("invalid/connector");
+        credential_row["connector_kind"] = json!("invalid/connector");
+        assert!(serde_json::from_value::<UpstreamAccessRecord>(access_row).is_err());
+        assert!(serde_json::from_value::<CredentialRecord>(credential_row).is_err());
     }
 
     #[test]

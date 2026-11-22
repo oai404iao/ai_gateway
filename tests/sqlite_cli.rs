@@ -119,16 +119,15 @@ fn administrator_and_paired_snapshot_commands_reopen_and_reject_damage() {
         .status
         .success()
     );
-    fs::write(
-        root.join("spool/uncertain-fixture"),
-        b"retained fixture bytes",
-    )
-    .unwrap();
-    fs::set_permissions(
-        root.join("spool/uncertain-fixture"),
-        fs::Permissions::from_mode(0o600),
-    )
-    .unwrap();
+    let evidence: &[(&str, &[u8])] = &[
+        ("spool/events.log", b"unversioned journal evidence"),
+        ("spool/journal-v2/events.log", b"active journal evidence"),
+    ];
+    fs::create_dir(root.join("spool/journal-v2")).unwrap();
+    for &(path, bytes) in evidence {
+        fs::write(root.join(path), bytes).unwrap();
+        fs::set_permissions(root.join(path), fs::Permissions::from_mode(0o600)).unwrap();
+    }
     fs::write(root.join("spool/writer.lock"), b"").unwrap();
     fs::set_permissions(
         root.join("spool/writer.lock"),
@@ -179,12 +178,11 @@ fn administrator_and_paired_snapshot_commands_reopen_and_reject_damage() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(
-        fs::read(restored.join("spool/uncertain-fixture")).unwrap(),
-        b"retained fixture bytes"
-    );
+    for &(path, bytes) in evidence {
+        assert_eq!(fs::read(restored.join(path)).unwrap(), bytes);
+    }
     assert!(!command(&args, false).status.success());
-    fs::write(snapshot.join("spool/uncertain-fixture"), b"corrupt").unwrap();
+    fs::write(snapshot.join("spool/events.log"), b"corrupt").unwrap();
     let failed = root.join("failed");
     assert!(
         !command(

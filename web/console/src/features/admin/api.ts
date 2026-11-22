@@ -534,9 +534,6 @@ export function useDeleteModel(id: string) {
       void queryClient.invalidateQueries({ queryKey: ROUTING_PROFILES_KEY });
       void queryClient.invalidateQueries({ queryKey: OPERATION_RULES_KEY });
       void queryClient.invalidateQueries({ queryKey: CAPABILITIES_KEY });
-      void queryClient.invalidateQueries({
-        queryKey: ["console", "control-plane-lists"],
-      });
       queryClient.removeQueries({ queryKey: modelDetailKey(id) });
     },
   });
@@ -598,9 +595,6 @@ export function useCreateProxy() {
       apiPost<MutationResponse>("/network/proxies", input),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: PROXIES_KEY });
-      void queryClient.invalidateQueries({
-        queryKey: ["console", "control-plane-lists"],
-      });
     },
   });
 }
@@ -612,9 +606,6 @@ export function useUpdateProxy(id: string) {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: PROXIES_KEY });
       void queryClient.invalidateQueries({ queryKey: proxyDetailKey(id) });
-      void queryClient.invalidateQueries({
-        queryKey: ["console", "control-plane-lists"],
-      });
     },
   });
 }
@@ -628,9 +619,6 @@ export function useDeleteProxy(id: string) {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: PROXIES_KEY });
       void queryClient.removeQueries({ queryKey: proxyDetailKey(id) });
-      void queryClient.invalidateQueries({
-        queryKey: ["console", "control-plane-lists"],
-      });
     },
   });
 }

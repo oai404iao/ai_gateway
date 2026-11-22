@@ -840,7 +840,6 @@ export function CostStatisticsPanel({
                 {chart.series.length === 0 ? (
                   <EmptyState
                     title={t("No priced requests")}
-                    description={t("No request costs were recorded for this filter.")}
                     className="py-12"
                   />
                 ) : (
@@ -921,8 +920,7 @@ export function CostStatisticsPanel({
               <CardContent>
                 {modelRows.length === 0 ? (
                   <EmptyState
-                    title={t("No statistics")}
-                    description={t("No requests matched the selected filter.")}
+                    title={t("No requests match these filters")}
                     className="py-12"
                   />
                 ) : (
@@ -943,10 +941,7 @@ export function CostStatisticsPanel({
                 <CardContent>
                   {channelRows.length === 0 ? (
                     <EmptyState
-                      title={t("No channel statistics")}
-                      description={t(
-                        "No routed requests matched the selected filter.",
-                      )}
+                      title={t("No routed requests match these filters")}
                       className="py-12"
                     />
                   ) : (

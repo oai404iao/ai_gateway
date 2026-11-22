@@ -65,4 +65,14 @@ pub(crate) const MIGRATIONS: &[SqliteMigration<'static>] = &[
         description: "remove Codex sharing",
         sql: include_str!("../../../migrations/sqlite/0012_remove_codex_sharing.sql"),
     },
+    SqliteMigration {
+        version: 13,
+        description: "remove API key format restrictions",
+        sql: include_str!("../../../migrations/sqlite/0013_remove_api_key_formats.sql"),
+    },
+    SqliteMigration {
+        version: 14,
+        description: "remove obsolete key, log and audit columns",
+        sql: include_str!("../../../migrations/sqlite/0014_remove_obsolete_columns.sql"),
+    },
 ];

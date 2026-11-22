@@ -277,14 +277,14 @@ export function CodexQuotasPage() {
         isEmpty={(quotas.data?.length ?? 0) === 0}
         emptyTitle={t("No Codex quota access")}
         emptyDescription={t(
-          "Your user group has not been granted access to any Codex quota groups.",
+          "Ask an administrator to give your user group access to a Codex quota group.",
         )}
       >
         <div className="flex flex-col gap-6">
             <Card variant="section" className="min-w-0">
               <CardHeader>
                 <CardTitle>{t("Credentials")}</CardTitle>
-                <CardDescription>{t("Spend includes all callers. Quota visibility does not grant channel access.")}</CardDescription>
+                <CardDescription>{t("Spend includes requests from everyone using the credential.")}</CardDescription>
               </CardHeader>
               <CardContent>
                 <div className="min-w-0 border-y">

@@ -303,11 +303,9 @@ impl ProxyService {
         started_at: Instant,
     ) -> Result<AxumResponse, ProxyError> {
         let api_format = api_operation.api_format();
-        if !api_key.permits(api_format, ApiKeyPermission::Proxy) {
+        if !api_key.permits(ApiKeyPermission::Proxy) {
             trace_unlogged("proxy_permission_denied");
-            return Err(ProxyError::forbidden(
-                "This API key cannot proxy requests in this API format.",
-            ));
+            return Err(ProxyError::forbidden("This API key cannot proxy requests."));
         }
         let admission = match self.admission.admit(&api_key) {
             Ok(lease) => lease,
@@ -760,7 +758,6 @@ impl ProxyService {
             model_id: None,
             outcome: RequestLogOutcome::Rejected,
             response_status_code: Some(StatusCode::NOT_FOUND.as_u16()),
-            streamed: request_protocol.is_streamed(),
             ttft_ms: None,
             total_duration_ms: elapsed,
             billing: None,
@@ -809,7 +806,6 @@ impl ProxyService {
             model_id: Some(rule.model_id()),
             outcome: RequestLogOutcome::Failed,
             response_status_code: Some(error.status.as_u16()),
-            streamed: request_protocol.is_streamed(),
             ttft_ms: None,
             total_duration_ms: clamp_duration_ms(started.elapsed()),
             billing: None,
@@ -827,14 +823,8 @@ impl ProxyService {
             .authenticate(client_key)
             .ok_or_else(ProxyError::invalid_api_key)?;
 
-        let can_list_models = ApiFormat::ALL.into_iter().any(|api_format| {
-            api_key.permits(api_format, ApiKeyPermission::Proxy)
-                && api_key.permits(api_format, ApiKeyPermission::ModelsRead)
-        });
-        if !can_list_models {
-            return Err(ProxyError::forbidden(
-                "This API key cannot list models in any API format.",
-            ));
+        if !api_key.can_list_models() {
+            return Err(ProxyError::forbidden("This API key cannot list models."));
         }
 
         let models = ApiFormat::ALL
@@ -1093,6 +1083,12 @@ impl ProxyError {
                 "Images edit multipart bodies do not support request JSON transforms.",
                 "body",
                 "image_edit_json_transform_unsupported",
+            ),
+            ImageEditBodyError::ConnectorRejectedInput => (
+                StatusCode::BAD_REQUEST,
+                "This connector does not support the supplied Images edit input.",
+                "body",
+                "image_edit_input_unsupported",
             ),
             ImageEditBodyError::CodexTooManyImages => (
                 StatusCode::BAD_REQUEST,
@@ -3015,7 +3011,6 @@ impl CompletionGuard {
                 .client_visible_status
                 .or(context.upstream_status)
                 .or(outcome.fallback_status()),
-            streamed: context.request_protocol.is_streamed(),
             ttft_ms: context.first_byte_at.map(clamp_duration_ms),
             total_duration_ms,
             billing: Some(billing),

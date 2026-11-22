@@ -59,7 +59,7 @@ export function CapabilityBatchDialog({ capabilities, onClose, onApplied }: {
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{t("Batch edit capabilities")}</DialogTitle>
-          <DialogDescription>{t("Update {count} capabilities atomically. Unchanged fields and API key grants are preserved.", { count: capabilities.length })}</DialogDescription>
+          <DialogDescription>{t("Apply the selected changes to all {count} capabilities together.", { count: capabilities.length })}</DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} className="flex flex-col gap-4">
           <FieldGroup>

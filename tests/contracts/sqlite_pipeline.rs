@@ -60,7 +60,7 @@ struct Pipeline {
 impl Pipeline {
     async fn new() -> Self {
         let (directory, database) = database().await;
-        assert_eq!(database.install_schema().await.unwrap(), 12);
+        assert_eq!(database.install_schema().await.unwrap(), 14);
         let database = Arc::new(database);
         let logs = SqliteRequestLogRepository::new(Arc::clone(&database));
         Self {
@@ -137,8 +137,8 @@ impl Pipeline {
         self.execute(&format!(
             "INSERT INTO users(id,email,display_name,role,status,password_hash,password_changed_at,user_group_id)
              VALUES ('{USER}','pipeline@example.test','Pipeline user','user','active','{PASSWORD_HASH}',ag_now(),'{DEFAULT_USER_GROUP_ID}');
-             INSERT INTO api_keys(id,user_id,name,secret_value,status,allowed_api_formats,permissions)
-             VALUES ('{KEY}','{USER}','Pipeline key','pipeline-key-secret','active','[\"open_ai_chat_completions\"]','[\"proxy\"]');
+             INSERT INTO api_keys(id,user_id,name,secret_value,status,permissions)
+             VALUES ('{KEY}','{USER}','Pipeline key','pipeline-key-secret','active','[\"proxy\"]');
              INSERT INTO models(id,source_model_id,display_name,price_unit_tokens,input_unit_price,
                  cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at)
              VALUES ('{MODEL}','pipeline-model','Pipeline',1000000,'1','0','0','2','2026-01-01T00:00:00.000000Z');
@@ -403,7 +403,6 @@ fn event(outcome: RequestLogOutcome) -> RequestLogEvent {
         model_id: Some(MODEL),
         outcome,
         response_status_code: Some(200),
-        streamed: true,
         ttft_ms: Some(1),
         total_duration_ms: 2,
         billing: Some(RequestBilling {

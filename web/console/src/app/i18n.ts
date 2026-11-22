@@ -21,7 +21,6 @@ const zhCN: Record<string, string> = {
   "Onboard model": "上架模型",
   "Bulk configure routes": "批量配路由",
   "Append candidates from multiple providers without changing existing pricing or routes.": "从多个上游追加候选，不改动现有定价或路由候选。",
-  "Confirm pricing once, then select the operations and providers for this model.": "确认一次价格，再为该模型选择接口操作和上游。",
   "1 · Model and pricing": "1 · 模型与定价",
   "2 · Routing candidates": "2 · 路由候选",
   "Use existing pricing without changes": "沿用已有模型，不修改定价",
@@ -101,10 +100,7 @@ const zhCN: Record<string, string> = {
   "Actor id": "操作者 ID",
   "Before (redacted)": "变更前（已脱敏）",
   "After (redacted)": "变更后（已脱敏）",
-  "Before/after payloads are redacted by the gateway.": "网关已对变更前后的数据脱敏。",
-  "Control-plane mutations and administrative actions.": "控制面变更及管理操作。",
   "No audit events": "暂无审计事件",
-  "There are no audited events yet.": "尚无审计事件记录。",
   "Back to list": "返回列表",
   "Back to price sync": "返回价格同步",
   "Back to channel groups": "返回渠道组",
@@ -137,10 +133,10 @@ const zhCN: Record<string, string> = {
   "Client model created": "客户端模型已创建",
   "Client model updated": "客户端模型已更新",
   "Client model deleted": "客户端模型已删除",
-  "This client model was changed elsewhere. Reloading.": "客户端模型已被其他会话修改，正在重新加载。",
+  "Model update conflict. Load the latest version to continue.": "模型变更冲突，请加载最新版本后再操作。",
+  "Leave blank to keep the stored payload. Enter {} to clear it.": "留空保留已有来源数据；输入 {} 可将其清空。",
   "View details": "查看详情",
   "Result limit": "显示条数",
-  "Select a name to view or edit.": "选择名称查看或编辑。",
   "Channel authorization covers all capabilities. Permissions are fixed at creation.": "渠道授权覆盖其全部接口能力；权限在创建时确定。",
   "No channel groups with Codex channels are configured.": "尚未配置包含 Codex 渠道的渠道组。",
   "Upstream accesses": "上游接入",
@@ -151,51 +147,40 @@ const zhCN: Record<string, string> = {
   "Access saved": "接入已保存",
   "Could not save upstream access.": "无法保存上游接入。",
   "This access was changed elsewhere. Reloading.": "此接入已被其他操作修改，正在重新加载。",
-  "Connector, Base URL and network settings. Credentials and capabilities are configured separately.": "管理连接器、Base URL 与网络设置。凭证和接口能力分别配置。",
-  "Network changes affect all referencing channels and must satisfy every credential scope.": "网络设置变更会影响所有引用渠道，且必须符合每个凭证的目标范围。",
-  "Creating an access does not create channels, enable capabilities or grant API key access.": "创建接入不会创建渠道、启用接口能力或扩展 API Key 授权。",
+  "All channels using this access share its network settings. Each credential must allow the Base URL.": "使用此接入的渠道共用网络设置。每个凭证都必须允许此 Base URL。",
   "Leave blank to use the operation default.": "留空以使用接口操作的默认值。",
   "Routing groups": "渠道组",
-  "Canonical organization for logical channels. A group holds no format, connector, route, or grant.": "逻辑渠道的规范化组织单位。组本身不保存格式、连接器、路由或授权。",
   "Group saved": "组已保存",
   "Could not save routing group.": "无法保存渠道组。",
   "Group deleted": "组已删除",
   "Could not delete routing group.": "无法删除渠道组。",
   "Routing group": "渠道组",
-  "Groups organize logical channels. Deleting a group requires every member channel to be removed first.": "组用于组织逻辑渠道。删除组前必须先移除所有成员渠道。",
   "Group settings": "组设置",
-  "Saving a group never creates channels, capabilities, routes, or API key access.": "保存组不会创建渠道、接口能力、路由或 API Key 授权。",
-  "Codex-only. Rejected unless every live member channel uses the Codex OAuth connector.": "仅适用于 Codex。除非所有未删除的成员渠道都使用 Codex OAuth 连接器，否则会被拒绝。",
-  "Any member channel, including disabled channels, blocks deletion.": "任何未删除的成员渠道（包括已停用渠道）都会阻止删除。",
+  "Remove all channels from this group before deleting it, including disabled channels.": "删除前请移出组内所有渠道，包括已停用的渠道。",
   "Delete group": "删除组",
   "Delete this routing group?": "确认删除该渠道组？",
-  "The group is soft-deleted after all member channels are removed.": "移除所有成员渠道后，组将被软删除。",
+  "The group will be removed from the channel list.": "该组将从渠道列表中移除。",
   "Logical channels": "逻辑渠道",
   "Channel groups": "渠道组",
-  "Select channel groups or individual logical channels.": "选择渠道组或单个逻辑渠道。",
   "This capability belongs to another channel.": "此接口能力属于其他渠道。",
   "Cache hit price": "缓存命中价格",
   "Base prices · {currency} / {tokens} tokens": "基础价格 · {currency} / {tokens} Token",
   "{currency} / {tokens} tokens": "{currency} / {tokens} Token",
-  "Each channel binds one group, one upstream access, and at most one credential.": "每个渠道绑定一个组、一个上游接入，以及至多一个凭证。",
   "No authentication": "不使用认证",
   "Channel saved": "渠道已保存",
   "Could not save logical channel.": "无法保存逻辑渠道。",
   "Could not delete logical channel.": "无法删除逻辑渠道。",
   "Logical channel": "逻辑渠道",
-  "A channel binds authentication to one access. Shared accesses and credentials are never deleted with it.": "渠道把一个接入与认证绑定。共享的接入和凭证不会随渠道删除。",
   "Channel settings": "渠道设置",
-  "Credentials are reusable identities. Rebinding changes connection identity without touching routes.": "凭证是可复用的身份。改绑会改变连接身份，但不会修改路由。",
   "Pick an access": "选择接入",
   "Choose an access": "选择接入",
   "Choose a credential": "选择凭证",
   "Delete this channel's capabilities first. Their routing candidates are removed automatically.": "请先删除该渠道的接口能力，引用它们的路由候选会自动解绑。",
   "Delete this logical channel?": "确认删除该逻辑渠道？",
-  "The channel is soft-deleted. Shared accesses and credentials are kept.": "渠道将被软删除，共享的接入与凭证会保留。",
+  "Shared accesses and credentials are kept.": "共享的上游接入和凭证将保留。",
   "Pick a channel": "选择渠道",
   "Choose a group": "选择组",
   "Channel capabilities": "渠道接口能力",
-  "One operation, transport set, and model catalogue per logical channel.": "每个逻辑渠道一组接口操作、传输组合和模型目录。",
   "New capability": "新建接口能力",
   "Capability saved": "接口能力已保存",
   "This capability was changed elsewhere. Reloading.": "此接口能力已被其他管理员修改，正在重新加载。",
@@ -210,7 +195,7 @@ const zhCN: Record<string, string> = {
   "Capabilities updated": "接口能力已更新",
   "Could not update capabilities.": "无法更新接口能力。",
   "Batch edit capabilities": "批量编辑接口能力",
-  "Update {count} capabilities atomically. Unchanged fields and API key grants are preserved.": "原子更新 {count} 个接口能力，保留未修改字段和 API Key 授权。",
+  "Apply the selected changes to all {count} capabilities together.": "将所选更改一次应用到全部 {count} 项接口能力。",
   "One or more capabilities changed elsewhere. Refresh and try again.": "一个或多个接口能力已被其他管理员修改，请刷新后重试。",
   "Enter a non-negative decimal.": "请输入非负小数。",
   "Unchanged": "不修改",
@@ -218,17 +203,15 @@ const zhCN: Record<string, string> = {
   "Select {name}": "选择 {name}",
   "Could not delete capability.": "无法删除接口能力。",
   "Channel capability": "渠道接口能力",
-  "Only connector-implemented operation/transport combinations are accepted. Saving never grants API key access.": "只接受连接器已实现的接口操作与传输组合。保存不会授予 API Key 访问权限。",
   "Capability settings": "接口能力设置",
-  "Configure capabilities here; enable routing separately. Channel authorization covers all capabilities.": "在此配置接口能力，路由需单独启用；逻辑渠道授权覆盖其全部能力。",
+  "Configure routing separately for each operation. Channel access covers all its capabilities.": "各项操作需单独配置路由。渠道授权覆盖该渠道的全部接口能力。",
   "Transports": "传输方式",
-  "Only combinations implemented by the channel connector are accepted.": "只接受渠道连接器已实现的组合。",
   "Available models": "可用模型",
-  "Upstream wire model identifiers, one per line.": "上游 wire 模型标识，每行一个。",
+  "Enter one upstream model ID per line.": "每行填写一个上游模型 ID。",
   "Zstandard applies only to Responses HTTP JSON/SSE.": "Zstandard 仅适用于 Responses 的 HTTP JSON/SSE。",
   "Status statistics": "状态统计",
   "No template": "不使用模板",
-  "Choose a capability to configure body and header transforms.": "选择接口能力，配置请求体和标头转换。",
+  "Configure body and header transforms": "配置请求体和标头转换",
   "Body and header transforms": "请求体和标头转换",
   "Transforms apply only to this channel operation. Template rules run before these overrides.":
     "转换仅作用于当前渠道的此项接口能力。先执行模板规则，再执行下方的覆盖规则。",
@@ -241,7 +224,6 @@ const zhCN: Record<string, string> = {
   "Delete this capability?": "确认删除该接口能力？",
   "This deletes the capability and all routing candidates referencing it. Empty route rules are disabled. Channel authorization and billing history are preserved.": "将删除此接口能力及所有引用它的路由候选，无剩余候选的规则会停用。逻辑渠道授权和计费历史保持不变。",
   "Operation rules": "接口操作规则",
-  "Per-operation routing tiers that reference channel capabilities and upstream wire models.": "按接口操作维护的路由层级，显式引用渠道接口能力和上游 wire 模型。",
   "New operation rule": "新建接口操作规则",
   "Routing profile": "路由档案",
   "Candidates": "候选数",
@@ -250,7 +232,6 @@ const zhCN: Record<string, string> = {
   "This rule was changed elsewhere. Reloading.": "此规则已被其他管理员修改，正在重新加载。",
   "Could not save operation rule.": "无法保存接口操作规则。",
   "Operation rule": "接口操作规则",
-  "Candidates reference an explicit capability and upstream model. Tiers, priorities, and weights are never inferred from legacy channels.": "候选显式引用接口能力与上游模型。层级、优先级和权重不会从旧渠道推断。",
   "Routing graph": "路由图",
   "The routing profile and operation are immutable after creation.": "创建后路由档案与接口操作不可修改。",
   "Model routing profile": "模型路由档案",
@@ -275,6 +256,8 @@ const zhCN: Record<string, string> = {
   "Upstream credential": "上游凭证",
   "Manage upstream credentials": "管理上游凭证",
   "New credential": "新建凭证",
+  "Connector registry unavailable.": "无法加载连接器列表。",
+  "Choose an available connector.": "请选择可用的连接器。",
   "Credential settings": "凭证设置",
   "Authentication type": "认证类型",
   "Credential secret": "凭证密钥",
@@ -284,135 +267,57 @@ const zhCN: Record<string, string> = {
   "Save credential": "保存凭证",
   "Delete credential?": "确认删除凭证？",
   "Credential saved": "凭证已保存",
-  "Could not load upstream credentials.": "无法加载上游凭证。",
   "Could not save upstream credential.": "无法保存上游凭证。",
   "A credential secret is required.": "请输入凭证密钥。",
   "Enter one or more valid Base URLs.": "请输入至少一个有效的 Base URL。",
   "Leave blank to preserve the current secret.": "留空以保留现有密钥。",
-  "The credential must allow this exact Base URL.": "此凭证必须允许该完整 Base URL。",
   "Reusable upstream identities. Rotating a credential updates every referencing channel.": "可复用的上游身份。轮换凭证会更新所有引用它的渠道。",
-  "Rotating or disabling this identity affects every referencing channel.": "轮换或停用此身份会影响所有引用它的渠道。",
+  "Rotating or disabling this credential affects every channel that uses it.": "轮换或停用此凭证会影响所有使用它的渠道。",
   "Disabled channels also retain their credential binding.": "停用的渠道仍保留凭证绑定。",
-  "Allowed Base URLs are exact scopes, not host or path prefixes.": "允许的 Base URL 按完整地址匹配，不匹配域名或路径前缀。",
-  "This identity is managed by the Codex connector. Use its provider page to change or delete it.": "此身份由 Codex 连接器管理，请前往其管理页面修改或删除。",
+  "Enter each allowed Base URL in full, including its path.": "填写每个允许的完整 Base URL，包括路径。",
   "This credential was changed elsewhere or is still in use. Reloading.": "此凭证已被其他操作修改或仍被引用，正在重新加载。",
   "The secret will be erased permanently. Referencing channels must be unbound first.": "密钥将被永久清除，请先解除所有渠道引用。",
-  "Connection, routing, and model settings were copied. The upstream credential reference is shared; rotating it affects every referencing channel.": "连接、路由和模型设置已复制。上游凭证引用将被共享，轮换会影响所有引用渠道。",
-  "1. Pricing models": "1. 计价模型",
   "2. Channels": "2. 渠道",
-  "3. Model rules": "3. 模型规则",
-  "A client-visible model identifier with its USD billing price.":
-    "客户端可见的模型标识及其美元计费价格。",
-  "Add a priority tier before enabling this protocol.":
-    "启用此协议前请至少添加一个优先级层级。",
-  "Add only the client protocols this model supports. Each protocol owns its priority tiers and upstream model mappings.":
-    "只添加该模型支持的客户端协议。每个协议独立拥有优先级层级和上游模型映射。",
   "Add protocol": "添加协议",
-  "Advertise the upstream model identifiers each channel supports.":
-    "声明每条渠道支持的上游模型标识。",
-  "Attach a priced client model once, then configure its protocols and explicit channel/model candidates.":
-    "每个计价客户端模型只绑定一次，再配置其协议和显式渠道/模型候选项。",
-  "Attach protocols to priced models, then configure priority tiers and explicit channel/model candidates.":
-    "为计价模型添加协议，再配置优先级层级和显式渠道/模型候选项。",
-  "Back to model rule": "返回模型规则",
-  "Back to pricing models": "返回计价模型",
   "Choose a model": "选择模型",
   "Choose a priced model": "选择计价模型",
-  "Choose an enabled priced model that does not already have a model rule. Protocols can be added afterwards.":
-    "选择尚未创建模型规则的已启用计价模型，随后再添加协议。",
   "Choose an upstream model": "选择上游模型",
   "Client model id": "客户端模型 ID",
-  "Client-visible model identifiers and their USD prices. Prices carry an effective timestamp.":
-    "客户端可见的模型标识及其美元价格；价格带有生效时间。",
-  "Configure ordered, independently weighted channel and upstream-model candidates.":
-    "配置有序且独立加权的渠道与上游模型候选项。",
-  "Configure pricing models, protocol-aware routing rules, and channel supply in their dedicated views.":
-    "分别在专用页面配置计价模型、协议路由规则和渠道供给。",
-  "Copy pricing model": "复制计价模型",
-  "Create pricing model": "创建计价模型",
-  "Define the client-visible model identity and its billing prices.":
-    "定义客户端可见的模型身份及其计费价格。",
-  "Edit pricing model": "编辑计价模型",
-  "Every enabled priced model already has a rule.":
-    "所有已启用计价模型都已创建规则。",
-  "Every selected channel needs an upstream model and weight.":
-    "每条所选渠道都必须配置上游模型和权重。",
   "Forwarding rules": "转发规则",
-  "Group weight overrides inherit the group upstream model.":
-    "渠道组权重覆盖必须继承渠道组的上游模型。",
-  "Lower priority numbers run first. A disabled protocol may be saved without any tiers.":
-    "优先级数值越小越先执行；停用的协议可以不配置任何层级。",
   "Manage channels": "管理渠道",
   "Manage pricing": "管理价格",
   "Manage routing": "管理路由",
   "Model enabled": "模型已启用",
   "Model routing configuration": "模型路由配置",
-  "Models come from this group's channel capabilities.":
-    "模型选项来自该组渠道声明的能力。",
-  "Multiplies the applicable pricing model rates used for request settlement.":
-    "乘算请求结算所使用的计价模型费率。",
-  "New pricing model": "新建计价模型",
   "No protocols": "未配置协议",
   "Not configured": "未配置",
-  "One priced client model with independent protocol routing rules.":
-    "一个计价客户端模型及其相互独立的协议路由规则。",
   "Open {protocol}": "打开 {protocol}",
   "Priced client model": "计价客户端模型",
-  "Pricing Models": "计价模型",
   "Pricing model": "计价模型",
-  "Pricing model created": "计价模型已创建",
-  "Pricing model deleted": "计价模型已删除",
-  "Pricing model updated": "计价模型已更新",
-  "Protocol rule": "协议规则",
-  "Protocol rule created": "协议规则已创建",
-  "Protocol rule updated": "协议规则已更新",
-  "Protocol rules": "协议规则",
-  "Save pricing model": "保存计价模型",
   "Save protocol": "保存协议",
-  "Scheduled test pricing model": "定时测试计价模型",
-  "Select a pricing model": "选择计价模型",
   "Supported protocols": "支持的协议",
   "This pricing model was changed elsewhere. Reloading.":
     "该计价模型已被其他操作修改，正在重新加载。",
-  "Delete pricing model": "删除计价模型",
-  "Delete pricing model?": "删除计价模型？",
   "This disables and hides every protocol rule for the model, clears scheduled test pricing references, and preserves request logs and audit history. This action cannot be undone.":
     "这会停用并隐藏该模型的全部协议规则，清除定时测试计价引用，并保留请求日志和审计历史。此操作无法撤销。",
   "The client model ID cannot change after a model rule is created.":
     "创建模型规则后，客户端模型 ID 不可修改。",
-  "This protocol is already configured.": "该协议已配置。",
-  "This protocol was changed elsewhere. Reloading.":
-    "该协议已被其他操作修改，正在重新加载。",
-  "Upstream model for channel group {name}": "渠道组 {name} 的上游模型",
-  "Upstream model for channel {name}": "渠道 {name} 的上游模型",
-  "Usage from the scheduled probe is priced with this model; it may differ from the upstream wire model.":
-    "定时探测用量按此模型计价；它可以不同于实际发送的上游模型。",
   "channels": "条渠道",
   "models": "个模型",
-  "protocol rules": "条协议规则",
-  "{capable} of {total} channels advertise this model.":
-    "{total} 条渠道中有 {capable} 条声明支持此模型。",
-  "{count} model-capable channels": "{count} 条支持该模型的渠道",
   "{count} models available": "可选 {count} 个模型",
   "{tiers} priority tiers · {active}/{targets} active targets":
     "{tiers} 个优先级层级 · {active}/{targets} 个活跃目标",
-  "No enabled API Key Policy is assigned. Ask an administrator to assign one.": "当前未分配已启用的 API Key Policy，请联系管理员分配。",
-  "Choose policy targets, then configure this key's own limits.": "选择策略渠道，然后设置此 Key 自身的限制。",
   "API Key Policy targets": "API Key Policy 渠道",
-  "These ordinary groups and channels come from your enabled API Key Policy.": "这些普通渠道组和渠道来自已启用的 API Key Policy。",
+  "Ask an administrator to assign an active API key policy.": "请联系管理员分配已启用的 API 密钥策略。",
   "All": "全部",
   "Discard unsaved changes?": "放弃未保存的修改？",
   "Your edits on this page will be lost.": "此页面尚未保存的修改将丢失。",
   "Discard changes": "放弃修改",
   "No pending edits": "暂无未保存的修改",
   "Editing one resource": "仅编辑当前资源",
-  "Related resources are not changed automatically.":
-    "关联资源不会自动修改。",
   "Model configuration": "模型配置",
   "Target channels": "目标渠道",
-  "Model-capable channels": "支持模型的渠道",
   "Active channels": "当前可路由渠道",
-  "Model-capable candidates": "支持模型的候选项",
   "Active candidates": "当前可路由候选项",
   "Unavailable channel group": "渠道组不可用",
   "Personal": "个人",
@@ -437,14 +342,8 @@ const zhCN: Record<string, string> = {
   "General credentials": "通用凭证",
   "Maintenance proxy": "维护代理",
   "Available models: {count}": "可用模型：{count}",
-  "Bearer tokens and custom authentication headers for compatible upstream accesses.": "配置用于兼容上游接入的 Bearer 令牌或自定义认证请求头。",
-  "Manage Codex accounts, token refresh, maintenance proxies and quota independently of routing. Bind credentials to logical channels in Channel configuration.": "独立管理 Codex 账号、令牌刷新、维护代理和额度。在渠道配置中将凭证绑定到逻辑渠道。",
-  "Importing a credential does not create channels or routing rules. Existing sticky sessions may continue while quota is draining.": "导入凭证不会自动创建渠道或路由规则。额度进入排空状态时，现有粘性会话仍可继续。",
+  "Bind imported credentials in Channel configuration. Existing sticky sessions may keep using a draining credential.": "在「渠道配置」中绑定导入的凭证。已有粘性会话仍可能使用排空中的凭证。",
   "Back to client models": "返回客户端模型列表",
-  "Read-only account quota and total spend across referencing channels. Visibility is granted through your user group's channel groups; it does not grant channel access.": "只读查看账号额度及所有引用渠道的总费用。可见范围由用户组授权的渠道组决定，不授予渠道访问权限。",
-  "Each account is shown once, even when several channels use it.": "即使多个渠道使用同一账号，也只展示一次。",
-  "Transports are fixed by the operation. Authorization belongs to the logical channel.": "传输方式由操作决定，访问授权属于逻辑渠道。",
-  "One operation and model catalogue per logical channel.": "为逻辑渠道配置独立操作及其模型目录。",
   "Group configuration": "组配置",
   "Client models": "客户端模型",
   "Operation routing": "操作路由",
@@ -461,13 +360,10 @@ const zhCN: Record<string, string> = {
   "This client model is no longer available.": "该客户端模型已不可用。",
   "The previous model is no longer in the results.": "原模型已不在搜索结果中。",
   "Select a client model": "选择客户端模型",
-  "Select a client model, add an operation, then configure its routing rules.": "选择客户端模型，新增操作，再配置操作路由规则。",
-  "Filter channels by group. Open a channel to configure its operation capabilities.": "按渠道组筛选列表，进入渠道详情查看或配置接口能力。",
   "Select a channel to configure its capabilities": "选择逻辑渠道以配置其能力",
   "Model setup": "模型接入",
   "Manage": "管理",
   "Individual channel": "单独渠道",
-  "Copy supplier": "复制供应商",
   "Copy model": "复制模型",
   "No channel groups": "暂无渠道组",
   "Search": "搜索",
@@ -480,17 +376,11 @@ const zhCN: Record<string, string> = {
   "Pricing and provider settings were copied. Enter a unique client model ID; catalog source payload is not copied.":
     "已复制价格和供应商配置。请填写唯一的客户端模型 ID；目录来源数据不会复制。",
   "Create copied model": "创建模型副本",
-  "Provider-managed channels cannot be copied here.":
-    "Provider 托管渠道不能在此复制。",
-  "Review the copied supplier": "检查复制的供应商",
-  "Connection, routing, and model settings were copied. Enter a unique name and re-enter the upstream credential before saving.":
-    "已复制连接、路由和模型配置。请填写唯一名称，并在保存前重新输入上游凭据。",
   "Upstream Models": "上游模型",
   "Models": "模型",
   "Price sync": "价格同步",
   "Channel Groups": "渠道组",
   "Channels": "渠道",
-  "Model Rules": "模型规则",
   "Proxies": "代理",
   "Templates": "模板",
   "Statistics": "统计",
@@ -507,10 +397,6 @@ const zhCN: Record<string, string> = {
   "No API hosts configured": "尚未配置 API 地址",
   "Ask an administrator to configure an API host in System settings.":
     "请联系管理员在系统设置中配置 API 地址。",
-  "Copy a configured base URL to connect an OpenAI-compatible client.":
-    "复制已配置的基础 URL，用于连接 OpenAI 兼容客户端。",
-  "HTTP(S) base URLs shown on users' API Keys pages for copying into OpenAI-compatible clients.":
-    "显示在用户 API 密钥页面上，供复制到 OpenAI 兼容客户端的 HTTP(S) 基础 URL。",
   "One HTTP(S) base URL per line. Paths are allowed; credentials, query strings, and fragments are not.":
     "每行一个 HTTP(S) 基础 URL。允许路径，不允许凭据、查询字符串和片段。",
   "API host cannot be blank.": "API 地址不能为空。",
@@ -518,19 +404,12 @@ const zhCN: Record<string, string> = {
   "Enter a valid HTTP(S) API host.": "请输入有效的 HTTP(S) API 地址。",
   "Configure at most 32 API hosts.": "最多配置 32 个 API 地址。",
   "API hosts must be unique.": "API 地址不能重复。",
-  "Database-backed runtime settings for future requests.": "面向后续请求的数据库运行时设置。",
   "Applies immediately": "立即生效",
-  "Saving validates the full routing configuration and publishes a new runtime snapshot. Requests already in flight retain their original settings.":
-    "保存时会校验完整路由配置并发布新的运行时快照。已在处理中的请求会保留原有设置。",
   "Default upstream timeouts": "上游默认超时",
-  "Used only when a channel does not define an explicit timeout. Images use their own longer response header timeout; both response header timeouts must exceed connect timeout.":
-    "仅在渠道未设置显式超时时使用。Images 使用独立且更长的响应头超时；两个响应头超时都必须大于连接超时。",
   "Connect timeout (seconds)": "连接超时（秒）",
   "Response header timeout (seconds)": "响应头超时（秒）",
   "Images response header timeout (seconds)": "Images 响应头超时（秒）",
   "Web search response header timeout (seconds)": "Web Search 响应头超时（秒）",
-  "Used only when a channel does not define an explicit timeout. Images and standalone web search use longer response header timeouts; every response header timeout must exceed connect timeout.":
-    "仅当渠道未设置显式超时时使用。Images 和独立 Web Search 使用更长的响应头超时；所有响应头超时都必须大于连接超时。",
   "Stream idle timeout (seconds)": "流空闲超时（秒）",
   "Request failover": "请求故障转移",
   "Replayable requests can fail over after connection errors, response-header timeouts, or configured upstream status codes. A timed-out upstream may still process the original request.":
@@ -551,14 +430,9 @@ const zhCN: Record<string, string> = {
   "After the configured number of pre-header connection failures, a channel enters cooldown before one half-open probe is allowed.":
     "达到配置的响应头前连接失败次数后，渠道会进入冷却期，随后只允许一次半开探测。",
   "Connection failure threshold": "连接失败阈值",
-  "Only connection failures before upstream response headers count.": "仅统计上游响应头返回前的连接失败。",
   "Cooldown (seconds)": "冷却时间（秒）",
   "Automatic channel disable": "渠道自动禁用",
-  "Matching upstream HTTP errors can temporarily remove opted-in channels from routing.":
-    "匹配的上游 HTTP 错误可暂时将已授权渠道移出路由。",
   "Enable automatic disable": "启用自动禁用",
-  "When disabled, channel-level automatic-disable permission has no effect.":
-    "关闭后，渠道级自动禁用授权不会生效。",
   "HTTP error status codes": "HTTP 错误状态码",
   "Comma-separated upstream HTTP statuses. Matching a configured status disables an opted-in channel.":
     "以逗号分隔的上游 HTTP 状态码。匹配到配置状态码时，会禁用已授权渠道。",
@@ -567,8 +441,6 @@ const zhCN: Record<string, string> = {
   "Case-insensitive upstream error-message substrings. Response bodies are inspected only in memory.":
     "不区分大小写匹配上游错误消息的子字符串。响应正文仅在内存中检查。",
   "Scheduled channel tests": "渠道定时测活",
-  "Direct non-streaming test requests use each channel's selected test model. Their token usage and costs are logged and billed to a system-owned administrator API key.":
-    "直接发起的非流式测试请求会使用各渠道选择的测试模型，其 token 用量和成本会被记录并记账到系统内置管理员 API 密钥。",
   "Test mode": "测试模式",
   "Global": "全局",
   "Failures only": "仅失败渠道",
@@ -577,17 +449,11 @@ const zhCN: Record<string, string> = {
   "Test interval (minutes)": "测试间隔（分钟）",
   "Test prompt": "测试提示词",
   "Automatically recover": "自动恢复",
-  "Restore a temporarily disabled channel after its scheduled test succeeds.":
-    "定时测试成功后恢复暂时自动禁用的渠道。",
   "Session affinity": "Session 粘性",
   "Reuse the last successful channel for matching session keys without adding retries.":
     "为匹配的 Session Key 复用最后一次成功渠道，且不增加重试。",
   "Enable session affinity": "启用 Session 粘性",
-  "The cache is process-local, bounded, and stores only hashed keys with channel IDs.":
-    "缓存仅存在于当前进程、容量有界，并且只保存 Key 哈希和渠道 ID。",
   "Maximum cache entries": "最大缓存条目数",
-  "Bounds memory use when clients continuously generate new session keys.":
-    "限制客户端持续生成新 Session Key 时的内存占用。",
   "Default affinity TTL (seconds)": "默认粘性 TTL（秒）",
   "Successful requests refresh the matched rule's TTL.": "成功请求会刷新命中规则的 TTL。",
   "Affinity rules": "粘性规则",
@@ -679,13 +545,12 @@ const zhCN: Record<string, string> = {
   "Plugin settings": "插件设置",
   "Installed plugins": "已安装插件",
   "No installed plugins": "尚未安装插件",
-  "Manage installed native plugins independently from system settings.": "独立管理原生插件，与系统设置分离。",
   "Discover plugins": "扫描插件目录",
   "Install plugin": "安装插件",
   "Plugin package": "插件安装包",
   "Trusted native code only": "仅安装可信原生代码",
   "Plugins run with gateway privileges and may crash the process. Installing does not enable a plugin. Disabling does not unload its code.": "插件以网关权限运行，可能导致进程崩溃。安装不会自动启用插件，停用也不会从内存卸载代码。",
-  "Upload a reviewed tar.gz plugin package. A successful job installs it without granting channel capabilities.": "上传经过审核的 tar.gz 插件包。安装成功不会自动授予渠道能力。",
+  "Choose a reviewed .tar.gz package.": "选择已审核的 .tar.gz 插件包。",
   "Plugin operation": "插件操作",
   "Installation": "安装任务",
   "Discovery": "发现任务",
@@ -709,7 +574,7 @@ const zhCN: Record<string, string> = {
   "Plugin unavailable": "插件不可用",
   "Built-in connector. Lifecycle and plugin settings are not editable.": "内置连接器，不支持修改生命周期或插件设置。",
   "Installed version": "已安装版本",
-  "Settings are defined and validated by this plugin. Do not enter credentials here.": "设置由插件定义和校验，请勿在此输入凭证。",
+  "Do not enter credentials here.": "请勿在此填写凭证。",
   "This setting is required.": "此设置为必填项。",
   "Invalid setting value.": "设置值无效。",
   "Allowed range: {minimum}–{maximum}": "允许范围：{minimum}–{maximum}",
@@ -725,30 +590,18 @@ const zhCN: Record<string, string> = {
   "Control plane reloaded": "控制面已重载",
   "Reload failed": "重载失败",
   "Reload control plane": "重载控制面",
-  "Re-compiles and publishes the immutable runtime snapshot. Periodic reloads also run automatically.":
-    "重新编译并发布不可变运行时快照；定时重载也会自动执行。",
+  "Apply the current configuration now instead of waiting for the next automatic reload.": "立即应用当前配置，无需等待下次自动重载。",
   "Reload now": "立即重载",
   "Correlation id": "关联 ID",
   "Channel group status": "渠道组状态监控",
-  "Personal request activity and cost analytics.": "个人请求活动与花费分析。",
-  "System-wide request activity, token usage, and cost analytics.":
-    "全系统请求活动、Token 用量与花费分析。",
-  "Availability and performance aggregated for monitored channel groups.":
-    "按已启用监控的渠道组聚合可用性与性能。",
   "Personal usage": "个人使用情况",
   "Cost statistics": "花费统计",
   "Spend leaderboard": "花费排行榜",
   "System load": "系统负载",
-  "Current gateway instance resources and pipeline pressure.":
-    "当前网关实例的资源与处理流水线压力。",
-  "Client requests in the 365-day window.": "过去 365 天窗口内的客户端请求数。",
   "Active days": "活跃天数",
   "UTC dates with at least one client request.": "至少有一次客户端请求的 UTC 日期数。",
   "Current streak": "当前连续活跃",
-  "Consecutive active UTC dates through the current day.":
-    "截至当前 UTC 日期连续有请求的天数。",
   "Longest streak": "最长连续活跃",
-  "Longest active-day run in this window.": "该窗口内连续活跃天数的最长记录。",
   "{count} days": "{count} 天",
   "Request activity": "请求活动",
   "{start} – {end} · UTC dates; scheduled tests are excluded.":
@@ -786,8 +639,6 @@ const zhCN: Record<string, string> = {
   "{routing} routed upstream · {window} in RPM windows":
     "{routing} 个已路由上游 · RPM 窗口内 {window} 个请求",
   "Bounded queues": "有界队列",
-  "Depth and capacity for process-local asynchronous work queues.":
-    "进程内异步工作队列的深度与容量。",
   "Request-log notifications": "请求日志通知队列",
   "Wakeups for durable spool ingestion.": "用于唤醒持久化 spool 写入数据库入口。",
   "Projection notifications": "投影通知队列",
@@ -796,8 +647,6 @@ const zhCN: Record<string, string> = {
   "Upstream error events waiting for control-plane changes.":
     "等待控制面变更的上游错误事件。",
   "Request-log durability": "请求日志持久化",
-  "Local spool, PostgreSQL ingress, and billing settlement pressure.":
-    "本地 spool、PostgreSQL 入口与计费结算压力。",
   "Failures recorded": "已记录失败",
   "No failures": "无失败",
   "Spool pending": "Spool 待处理",
@@ -810,21 +659,13 @@ const zhCN: Record<string, string> = {
   "Cumulative spool, ingress, projection, and settlement failures.":
     "累计的 spool、入口、投影与结算失败次数。",
   "Images edit body spool": "图片编辑请求体 Spool",
-  "Temporary disk-backed request bodies for multipart Images edits.":
-    "multipart 图片编辑请求使用的临时磁盘请求体。",
   "Active temporary files": "活跃临时文件",
   "{bytes} currently held by in-flight edits.": "处理中编辑当前占用 {bytes}。",
   "Available spool capacity": "可用 Spool 容量",
-  "Free bytes reported by the configured spool filesystem.":
-    "配置的 spool 文件系统报告的可用字节数。",
   "Cumulative spooled bodies": "累计落盘请求体",
   "{bytes} written since this process started.": "本进程启动后累计写入 {bytes}。",
   "Spool storage failures": "Spool 存储失败",
-  "Failures while capturing or replaying temporary edit bodies.":
-    "捕获或回放临时 edit 请求体时发生的失败。",
   "Runtime state": "运行时状态",
-  "Process-local admission, routing, and operating-system counters.":
-    "进程内准入、路由与操作系统计数。",
   "Tracked API keys": "跟踪中的 API 密钥",
   "Tracked channels": "跟踪中的渠道",
   "Cooling down": "冷却中的渠道",
@@ -833,8 +674,6 @@ const zhCN: Record<string, string> = {
   "Open file descriptors": "打开的文件描述符",
   "Threads": "线程数",
   "Database pools": "数据库连接池",
-  "Current checked-out connections compared with configured capacity.":
-    "当前已借出连接数与配置容量的对比。",
   "Control plane": "控制面",
   "Request log database": "请求日志数据库",
   "{used} of {capacity} connections in use": "已使用 {used} / {capacity} 个连接",
@@ -893,21 +732,15 @@ const zhCN: Record<string, string> = {
   "Other devices": "其他设备",
   "No other devices are signed in.": "没有其他设备登录。",
   "Connection requirements": "连接生效条件",
-  "All three conditions must be met to open a WebSocket connection.": "建立 WebSocket 连接需要同时满足以下三个条件。",
   "The gateway administrator enables WebSocket access.": "网关管理员已开启 WebSocket 访问。",
   "You enable and save this preference.": "你已开启上方的偏好并保存。",
   "The selected upstream channel supports WebSocket.": "选中的上游渠道支持 WebSocket。",
-  "Use your Console account to continue.": "使用您的控制台账户继续。",
   "Email": "邮箱",
   "Password": "密码",
   "Forgot your password?": "忘记密码？",
   "Ask an administrator to generate a temporary password.":
     "请联系管理员生成临时密码。",
-  "Have a registration code?": "已有注册邀请码？",
-  "Received a personal invitation?": "收到个人邀请？",
   "Create account": "创建账户",
-  "Use a registration invitation code to create your Console account.":
-    "使用注册邀请码创建控制台账户。",
   "Invitation code": "邀请码",
   "Confirm password": "确认密码",
   "Account created": "账户已创建",
@@ -918,19 +751,13 @@ const zhCN: Record<string, string> = {
   "The invitation code is invalid, expired, disabled, or exhausted.":
     "邀请码无效、已过期、已禁用或次数已用尽。",
   "An account with this email already exists.": "该邮箱已存在控制台账户。",
-  "Received an invitation?": "收到邀请？",
   "Activate it": "激活账户",
   "Activate invitation": "激活邀请",
-  "Set your password to activate the Console account you were invited to.":
-    "设置密码以激活受邀的控制台账户。",
   "Invitation token": "邀请令牌",
   "New password": "新密码",
   "Activate account": "激活账户",
-  "Already have an account?": "已有账户？",
   "Signed in": "已登录",
   "Set a new password": "设置新密码",
-  "Your temporary password only grants access to this password-change flow.":
-    "临时密码只能用于完成本次密码修改流程。",
   "Password updated": "密码已更新",
   "Password change required": "必须修改密码",
   "The temporary password expires at {time}.": "临时密码将于 {time} 过期。",
@@ -938,11 +765,7 @@ const zhCN: Record<string, string> = {
   "Save new password": "保存新密码",
   "The new password must differ from the temporary password.":
     "新密码不能与临时密码相同。",
-  "Review the browsers signed in to your Console account and end sessions you do not recognize.":
-    "查看已登录控制台账户的浏览器，并退出不认识的会话。",
   "Active sessions": "已登录设备",
-  "Session activity is updated when the browser refreshes its sign-in credential.":
-    "浏览器刷新登录凭据时，会同步更新会话活动时间。",
   "Current device": "当前设备",
   "Active session": "活跃",
   "Revoked session": "已退出",
@@ -958,14 +781,8 @@ const zhCN: Record<string, string> = {
   "Sign out {device}": "退出 {device}",
   "Sign out other devices": "退出其他设备",
   "No login sessions": "没有登录会话",
-  "No browser sessions are recorded for this account.":
-    "此账户尚未记录任何浏览器会话。",
   "No active sessions": "没有活跃会话",
-  "No browser currently has an active Console login.":
-    "当前没有浏览器保持控制台登录状态。",
   "Session history": "会话历史",
-  "Expired and revoked sessions are kept here for security review.":
-    "已过期和已退出的会话保留在此处，便于安全检查。",
   "Show history": "显示历史",
   "Hide history": "隐藏历史",
   "Sign out other devices?": "退出其他设备？",
@@ -987,11 +804,7 @@ const zhCN: Record<string, string> = {
   "Enter a valid email.": "请输入有效的邮箱地址。",
   "Password must be at least 12 characters.": "密码至少需要 12 个字符。",
   "Invitation token is required.": "邀请令牌不能为空。",
-  "Your Console identity and security settings.": "您的控制台身份和安全设置。",
-  "Your own proxied requests, usage, and settlement state.": "您的代理请求、用量和结算状态。",
-  "All proxied requests across every user and API key.": "所有用户和 API 密钥的代理请求。",
   "Account": "账户",
-  "Read-only account facts.": "只读账户信息。",
   "Role": "角色",
   "Status": "状态",
   "Balance": "余额",
@@ -1012,10 +825,6 @@ const zhCN: Record<string, string> = {
   "Display name is required.": "显示名称不能为空。",
   "At least 12 characters.": "至少需要 12 个字符。",
   "Passwords do not match.": "两次密码输入不一致。",
-  "Console users, roles, and balances. New users join by invitation.":
-    "控制台用户、角色和余额；新用户通过邀请加入。",
-  "Console users, groups, policies, and balances. New users join by invitation.":
-    "控制台用户、用户组、策略和额度；新用户通过邀请加入。",
   "Invite user": "邀请用户",
   "Name": "名称",
   "Invitation issued": "邀请已创建",
@@ -1036,36 +845,22 @@ const zhCN: Record<string, string> = {
   "Enter a valid non-negative balance.": "请输入有效的非负额度。",
   "Send invitation": "发送邀请",
   "Give this to the new user to activate their account.": "请将此令牌提供给新用户以激活账户。",
-  "Account, access, and balance changes take effect immediately.":
-    "账户、访问权限和余额变更会立即生效。",
-  "Manage a Console user's identity, role, and status.": "管理控制台用户的身份、角色和状态。",
-  "Manage identity, policy, balance, and access independently.":
-    "分别管理用户身份、策略、额度和访问状态。",
-  "Current account facts and activation state.": "当前账户信息与激活状态。",
   "Back to users": "返回用户列表",
   "Edit user": "编辑用户",
   "Save user": "保存用户",
   "User updated": "用户已更新",
   "Account details": "账户资料",
-  "Update identity and defaults without changing balance or access status.":
-    "修改身份与默认配置，不影响额度或访问状态。",
   "Save account details": "保存账户资料",
   "Account details updated": "账户资料已更新",
   "No account changes to save.": "没有需要保存的账户资料变更。",
-  "Manage the same optional capabilities available in the user's personal settings.":
-    "管理用户个人设置中可用的同一组可选能力。",
   "This preference applies to all active API keys owned by the user's account.":
     "此偏好适用于该用户账户拥有的全部有效 API 密钥。",
   "Personal settings updated": "个人设置已更新",
   "Balance management": "额度管理",
-  "Adjust only this user's current USD balance. Other fields are preserved.":
-    "仅调整该用户当前的 USD 额度，其他字段保持不变。",
   "Update balance": "更新额度",
   "Balance updated": "额度已更新",
   "Balance is unchanged.": "额度没有变化。",
   "Access status": "访问状态",
-  "Manage sign-in and API access separately from account details.":
-    "独立于账户资料管理登录与 API 访问。",
   "Pending invitation activation": "等待邀请激活",
   "This user must activate the invitation and set a password. Editing account details or balance keeps the invitation pending.":
     "该用户必须通过邀请设置密码并激活账户。修改账户资料或额度不会改变待激活状态。",
@@ -1147,7 +942,6 @@ const zhCN: Record<string, string> = {
   "User deleted": "用户已删除",
   "Delete user": "删除用户",
   "Delete user?": "删除用户？",
-  "Deleting a user is permanent and audited.": "删除用户不可撤销，且会记录审计日志。",
   "Current administrator account": "当前管理员账户",
   "You cannot delete your own administrator account.":
     "不能删除当前登录的管理员账户。",
@@ -1156,28 +950,20 @@ const zhCN: Record<string, string> = {
   "This anonymizes the account, revokes every session and invitation, and deletes every API key with its stored secret. Request logs and audit history are preserved. This action cannot be undone.":
     "此操作会匿名化账户、撤销全部会话和邀请，并删除所有 API 密钥及其已存储 secret；请求日志与审计历史会保留，且无法撤销。",
   "Delete failed": "删除失败",
-  "Assign one group to each user and inherit its default API policy.":
-    "每个用户属于一个用户组，并继承该组的默认 API 策略。",
   "New user group": "新建用户组",
   "Default for {role}": "{role}默认组",
   "Members": "成员数",
-  "Group defaults apply when a user has no policy override.":
-    "用户未设置策略覆盖时，使用用户组默认策略。",
   "Back to user groups": "返回用户组",
   "Protected default group for {role} accounts.": "{role}账户的受保护默认组。",
   "Custom user group": "自定义用户组",
   "Create user group": "创建用户组",
   "Edit user group": "编辑用户组",
-  "Users inherit this policy unless they have an individual override.":
-    "除非用户单独设置覆盖，否则会继承此策略。",
   "Optional note shown to administrators.": "向管理员显示的可选说明。",
   "Users without an override inherit this policy immediately.":
     "未设置覆盖的用户会立即继承此策略。",
   "Visible Codex quota groups": "可见 Codex 额度组",
   "Members can view quota windows and subscription tiers, but not credential names.":
     "成员可查看额度窗口和订阅等级，但看不到凭证名称。",
-  "No Codex OAuth credential groups are configured.":
-    "尚未配置 Codex OAuth 凭证组。",
   "Fast mode filtering": "Fast 模式过滤",
   "Filter Fast mode": "过滤 Fast 模式",
   "Silently remove client service_tier before forwarding. Filtered requests are not marked Fast and do not use service-tier billing multipliers.":
@@ -1187,8 +973,6 @@ const zhCN: Record<string, string> = {
   "User group updated": "用户组已更新",
   "This user group was changed elsewhere. Reloading.":
     "此用户组已在其他位置修改，正在重新加载。",
-  "Deleting a custom group is permanent and audited. Members and registration codes are handled automatically.":
-    "删除自定义用户组不可撤销，且会记录审计日志；成员和注册邀请码会自动处理。",
   "Protected default group": "受保护的默认组",
   "Built-in default groups cannot be deleted.": "内置默认用户组不能删除。",
   "Members will be reassigned": "成员将被重新分配",
@@ -1199,8 +983,6 @@ const zhCN: Record<string, string> = {
   "This hides the group permanently, moves its members to their built-in role group, disables associated registration codes, and removes Codex quota visibility. This action cannot be undone.":
     "此操作会永久隐藏该组，将成员迁移到对应的内置角色组，禁用关联注册邀请码，并移除 Codex 配额可见性；操作无法撤销。",
   "User group deleted": "用户组已删除",
-  "Create and adjust reusable invitation codes for self-service registration.":
-    "创建并调整用于自助注册的可复用邀请码。",
   "New registration code": "新建注册邀请码",
   "Registration code": "注册邀请码",
   "Create registration code": "创建注册邀请码",
@@ -1221,18 +1003,11 @@ const zhCN: Record<string, string> = {
     "最大使用次数不能小于当前已使用次数。",
   "Leave blank for unlimited registrations.": "留空表示注册次数不限。",
   "Leave blank for no time-based expiry.": "留空表示永不过期。",
-  "Settings are evaluated atomically when each user registers and affect only future accounts.":
-    "每次注册时会原子校验这些设置，并且只影响之后创建的账户。",
-  "Usage and current availability of this registration code.":
-    "此注册邀请码的使用情况和当前可用状态。",
-  "Choose who can register, how often, and with which starting balance.":
-    "设置可注册的用户组、使用次数和初始额度。",
   "Use 12 to 128 case-sensitive characters without whitespace. The value cannot be recovered or changed after creation.":
     "使用 12 至 128 个区分大小写且不含空白的字符。创建后无法找回或修改。",
   "Invitation code is immutable": "邀请码不可修改",
   "The gateway stores only a hash. To replace the value, create a new registration code and disable this one.":
     "网关只保存哈希。如需更换邀请码，请新建一个并禁用当前邀请码。",
-  "Future registrations are assigned to this group.": "之后注册的用户会加入该用户组。",
   "Non-negative USD balance assigned to each future account.":
     "为之后创建的每个账户分配非负的 USD 初始额度。",
   "A registration code with this name or value already exists.":
@@ -1245,7 +1020,6 @@ const zhCN: Record<string, string> = {
     "请立即保存邀请码，后续详情页只显示设置和使用情况。",
   "Name is required.": "名称不能为空。",
   "Proxy URL is required.": "代理 URL 不能为空。",
-  "Pick a channel group.": "请选择渠道组。",
   "Client model id is required.": "客户端模型 ID 不能为空。",
   "Pick at least one format.": "请至少选择一种 API 格式。",
   "Upstream model": "上游模型",
@@ -1260,16 +1034,9 @@ const zhCN: Record<string, string> = {
   "Configure pricing for {model}": "配置 {model} 的价格",
   "Use long_context_tiers for whole-request input, cache, and optional output prices at token thresholds. Use request_multipliers for exact JSON Pointer matches on the original client body; all matches multiply the complete request cost.":
     "使用 long_context_tiers 配置达到 Token 阈值后整次请求的输入、缓存及可选输出价格。使用 request_multipliers 对原始客户端请求体进行 JSON Pointer 精确匹配；所有命中倍率会共同乘到整次请求费用。",
-  "Use long_context_tiers for whole-request input, cache, and optional output prices at token thresholds. Use request_multipliers for exact JSON Pointer matches on the original client body; all matches multiply the complete request cost. Use time_multipliers for non-overlapping daily UTC windows selected at request start.":
-    "使用 long_context_tiers 配置达到 Token 阈值后整次请求的输入、缓存及可选输出价格；使用 request_multipliers 对原始客户端请求体进行 JSON Pointer 精确匹配；使用 time_multipliers 配置按请求开始时间选择且互不重叠的每日 UTC 时段。",
   "Use long_context_tiers for whole-request input, cache, and optional output prices at token thresholds. Use request_multipliers for exact JSON Pointer matches on the original client body; all matches multiply the complete request cost. Use time_multipliers for non-overlapping weekly UTC windows selected at request start.":
     "使用 long_context_tiers 配置达到 Token 阈值后整次请求的输入、缓存及可选输出价格；使用 request_multipliers 对原始客户端请求体进行 JSON Pointer 精确匹配；使用 time_multipliers 配置按请求开始时间选择且互不重叠的每周 UTC 时段。",
   "Model pricing": "模型价格",
-  "Configure base USD prices and recurring UTC peak or off-peak multipliers.":
-    "配置 USD 基础价格和按星期循环的 UTC 峰谷倍率。",
-  "Configure base USD prices and weekly UTC peak or off-peak multipliers.":
-    "配置 USD 基础价格和每周循环的 UTC 峰谷倍率。",
-  "Back to pricing model": "返回计价模型",
   "Pricing overview": "价格概览",
   "Multiplier calculator": "倍率计算器",
   "Multiply four reference prices and fill the base-price fields. Calculation changes stay local until you save.":
@@ -1286,8 +1053,6 @@ const zhCN: Record<string, string> = {
   "Calculate and fill base prices": "计算并填入基础价格",
   "Base prices": "基础价格",
   "UTC peak and off-peak windows": "UTC 峰谷时段",
-  "Windows repeat every UTC day. Outside all windows the multiplier is 1. Start is inclusive and end is exclusive.":
-    "时段按 UTC 每日循环。所有时段之外倍率为 1；开始时间包含，结束时间不包含。",
   "Windows repeat on selected UTC weekdays. Outside all windows the multiplier is 1. Start is inclusive and end is exclusive.":
     "时段按选中的 UTC 星期循环。所有时段之外倍率为 1；开始时间包含，结束时间不包含。",
   "DeepSeek peak 1": "DeepSeek 高峰 1",
@@ -1300,7 +1065,6 @@ const zhCN: Record<string, string> = {
   "The preset treats stored base prices as off-peak prices and applies 2× during 01:00–04:00 and 06:00–10:00 UTC.":
     "预设将已保存的基础价格视为空闲时段价格，并在 UTC 01:00–04:00 和 06:00–10:00 应用 2 倍价格。",
   "No time-based pricing": "未配置分时价格",
-  "The base prices apply all day with multiplier 1.": "全天使用基础价格，倍率为 1。",
   "The base prices apply all week with multiplier 1.": "整周使用基础价格，倍率为 1。",
   "Add first price window": "添加首个价格时段",
   "Daily UTC price window": "每日 UTC 价格时段",
@@ -1330,8 +1094,6 @@ const zhCN: Record<string, string> = {
     "该倍率统一应用于输入、缓存输入、缓存写入和输出价格。",
   "Save model pricing": "保存模型价格",
   "Review and save": "检查并保存",
-  "Confirm the effective price unit and weekly schedule before saving.":
-    "保存前请确认价格单位和每周时段安排。",
   "Unsaved changes": "有未保存的更改",
   "Reload required": "需要重新加载",
   "Saved": "已保存",
@@ -1360,7 +1122,6 @@ const zhCN: Record<string, string> = {
   "Select at least one UTC weekday.": "请至少选择一个 UTC 星期。",
   "UTC weekdays cannot repeat.": "UTC 星期不能重复。",
   "Start and end times must differ.": "开始与结束时间不能相同。",
-  "UTC price windows cannot overlap.": "UTC 价格时段不能重叠。",
   "UTC price windows cannot overlap on the selected weekdays.":
     "所选星期内的 UTC 价格时段不能重叠。",
   "Pricing": "定价",
@@ -1371,20 +1132,11 @@ const zhCN: Record<string, string> = {
   "Model disabled": "模型已禁用",
   "Model unavailable": "不支持此模型",
   "No models match this search.": "没有匹配搜索条件的模型。",
-  "New model rule": "新建模型规则",
   "Back to rules": "返回规则列表",
   "Create rule": "创建规则",
   "Edit rule": "编辑规则",
   "Save rule": "保存规则",
-  "Model rule created": "模型规则已创建",
   "Routing status": "路由状态",
-  "Protocol routing tiers": "协议路由层",
-  "Lower priority tiers are tried first. Weights are compared only among eligible candidates in the same tier.":
-    "优先尝试数值较低的路由层；权重仅在同一层内符合条件的候选项之间比较。",
-  "Lower priority tiers are tried first. Every channel and upstream-model pair has its own weight.":
-    "优先尝试数值较低的路由层；每个渠道与上游模型组合都有独立权重。",
-  "Lower priority tiers are tried first. Strategy and weights belong to this protocol rule, not to global channels or groups.":
-    "优先尝试数值较低的优先级层。选择策略和权重属于此协议规则，而不是全局渠道或渠道组。",
   "Tier {number}": "路由层 {number}",
   "Inspect tier {number}": "查看第 {number} 层",
   "Tier properties": "层级属性",
@@ -1418,53 +1170,29 @@ const zhCN: Record<string, string> = {
   "{count} route candidates": "{count} 个路由候选项",
   "{count} channel groups": "{count} 个渠道组",
   "Remove tier {number}": "删除路由层 {number}",
-  "Lower numbers are attempted first.": "优先尝试数值较低的层。",
   "Selection strategy for tier {number}": "路由层 {number} 的选择策略",
-  "Weights are compared only among eligible channels in this tier.":
-    "权重仅在此层内符合条件的渠道之间比较。",
-  "Weights are compared only among eligible candidates in this tier.":
-    "权重仅在此层内符合条件的候选项之间比较。",
   "Add a channel": "添加渠道",
-  "Add channel to tier {number}": "向路由层 {number} 添加渠道",
   "Choose a channel": "选择渠道",
   "Add record": "新增记录",
-  "Choose a channel.": "请选择渠道。",
   "Choose an upstream model.": "请选择上游模型。",
   "Choose a channel first": "请先选择渠道",
   "No matching channels": "没有匹配的渠道",
   "No matching models": "没有匹配的模型",
-  "Weight must be a positive integer.": "权重必须为正整数。",
-  "Channel for tier {tier} row {row}": "路由层 {tier} 第 {row} 行的渠道",
   "Upstream model for tier {tier} row {row}": "路由层 {tier} 第 {row} 行的上游模型",
   "Weight for tier {tier} row {row}": "路由层 {tier} 第 {row} 行的权重",
   "Remove tier {tier} row {row}": "删除路由层 {tier} 第 {row} 行",
   "Remove": "移除",
-  "All channel/model pairs are already used": "所有渠道/模型组合均已使用",
-  "Selecting the same channel again adds its next unused upstream model.":
-    "再次选择同一渠道会添加其下一个尚未使用的上游模型。",
   "Bulk-add a channel group": "批量添加渠道组",
-  "Bulk-add channel group to tier {number}":
-    "向路由层 {number} 批量添加渠道组",
   "No unused group channels": "渠道组中没有未使用的渠道模型",
-  "This expands current group members into explicit candidates. Future group changes do not alter the saved route.":
-    "这会把当前组成员展开为显式候选项；渠道组后续变化不会修改已保存路由。",
-  "Channel/model candidates": "渠道/模型候选项",
-  "A channel may appear more than once when each entry uses a different upstream model.":
-    "同一渠道可出现多次，但每项必须使用不同的上游模型。",
   "Unknown channel": "未知渠道",
   "Remove route candidate {name}": "删除路由候选项 {name}",
   "Weight": "权重",
   "Explicit candidate": "显式候选项",
-  "Add at least one channel/model candidate.":
-    "请至少添加一个渠道/模型候选项。",
-  "A channel and upstream-model pair can appear only once in a tier.":
-    "同一渠道与上游模型组合在一个路由层中只能出现一次。",
   "Upstream model must be at most 300 characters.":
     "上游模型最多 300 个字符。",
   "Choose a channel group": "选择渠道组",
   "{tiers} priority tiers · {active}/{targets} active candidates":
     "{tiers} 个优先级层级 · {active}/{targets} 个活跃候选项",
-  "{count} model-capable candidates": "{count} 个支持模型的候选项",
   "Tier priority {priority} · {strategy}":
     "路由层优先级 {priority} · {strategy}",
   "Add routing tier": "添加路由层",
@@ -1480,28 +1208,19 @@ const zhCN: Record<string, string> = {
   "Channels ({count})": "渠道（{count}）",
   "Individual channels ({count})": "单独渠道（{count}）",
   "Routing targets": "路由目标",
-  "Targets are grouped by API format and sorted by name.":
-    "路由目标按 API 格式分类，并按名称排序。",
   "{count} groups selected": "已选择 {count} 个渠道组",
   "{count} individual channels selected": "已选择 {count} 个逻辑渠道",
   "Search routing targets": "搜索路由目标",
   "Search channel groups or channels": "搜索渠道组或渠道",
   "Show disabled targets ({count})": "显示已禁用目标（{count}）",
-  "Group access follows membership: channels are included when they join and excluded when they leave. Individually selected channels stay selected if they move.":
-    "按组授权随成员变化：渠道加入时自动纳入，移出时不再通过该组获权。单独选中的渠道即使换组也会保留选择。",
+  "Selecting a group includes its current and future members. Select a channel individually to keep access if it leaves the group.": "按组授权适用于组内现有和新加入的渠道。如需在渠道移出后保留授权，请单独选择该渠道。",
   "No channel groups match the current filters.": "没有渠道组匹配当前筛选条件。",
   "Advanced: individual channels": "高级配置：单独渠道",
   "Show individual channels ({count})": "展开逻辑渠道（{count}）",
   "Hide individual channels": "收起逻辑渠道",
   "No individual channels match the current filters.": "没有逻辑渠道匹配当前筛选条件。",
-  "No groups for this format.": "该格式没有可用渠道组。",
-  "No channels for this format.": "该格式没有可用渠道。",
   "priority {priority}": "优先级 {priority}",
-  "Preview, import, or explicitly update models.dev prices and catalog billing rules.":
-    "预览、导入或显式更新 models.dev 价格和目录计费规则。",
   "Preview": "预览",
-  "Fetch the models.dev catalog, optionally filtered by provider ids.":
-    "获取 models.dev 目录，可按提供商 ID 筛选。",
   "Provider ids (optional)": "提供商 ID（可选）",
   "Fetch preview": "获取预览",
   "Billing details": "计费详情",
@@ -1542,7 +1261,7 @@ const zhCN: Record<string, string> = {
   "Output unit price": "输出单价",
   "Price effective at": "价格生效时间",
   "Source payload (JSON, optional)": "来源数据（JSON，可选）",
-  "USD prices are per the configured price unit tokens.": "USD 价格按配置的价格单位 Token 数计算。",
+  "Prices are in USD per token unit shown below.": "价格以美元计，按下方设置的 Token 数量为单位。",
   "Effective": "生效时间",
   "Action": "操作",
   "Select": "选择",
@@ -1557,10 +1276,6 @@ const zhCN: Record<string, string> = {
   "Filters ({count})": "筛选（{count}）",
   "Applied filters": "已应用的筛选条件",
   "Clear filters": "清除筛选",
-  "Filter by exact model, request outcome, format, time range, and settlement state.":
-    "按精确模型、请求结果、格式、时间范围和结算状态筛选。",
-  "Filter by exact model, request operation, outcome, format, time range, and settlement state.":
-    "按精确模型、请求操作、结果、格式、时间范围和结算状态筛选。",
   "User ID": "用户 ID",
   "API key ID": "API 密钥 ID",
   "All models": "所有模型",
@@ -1597,8 +1312,6 @@ const zhCN: Record<string, string> = {
   "P90 TTFT": "P90 首字延迟",
   "P50 TPS": "P50 吞吐",
   "Model overview": "模型概览",
-  "Metrics aggregated across monitored channel groups.":
-    "聚合已启用监控的渠道组指标。",
   "Status window": "状态时间窗口",
   "Last 24 hours": "最近 24 小时",
   "Last 3 days": "最近 3 天",
@@ -1613,8 +1326,9 @@ const zhCN: Record<string, string> = {
     "请为此渠道组中的渠道添加可用上游模型。",
   "The gateway does not store request bodies or successful response bodies. Bounded upstream error details may be retained.":
     "网关不会存储请求正文或成功响应正文，但可能保留受限长度的上游错误详情。",
-  "No request logs": "没有请求日志",
-  "There are no logged requests matching these filters.": "没有符合这些筛选条件的请求日志。",
+  "No requests in this period": "这段时间没有请求",
+  "No requests match these filters": "没有符合筛选条件的请求",
+  "No routed requests match these filters": "没有符合筛选条件的已路由请求",
   "Started": "开始时间",
   "HTTP": "HTTP",
   "Protocol": "请求协议",
@@ -1657,47 +1371,24 @@ const zhCN: Record<string, string> = {
   "Priority": "优先级",
   "Strategy": "策略",
   "auto-disabled": "自动禁用",
-  "Pools of upstream channels for one API format.":
-    "同一 API 格式的上游渠道池。",
   "New group": "新建渠道组",
-  "Upstream endpoints inside a channel group with timeouts and auth.":
-    "渠道组内具有超时和认证配置的上游端点。",
   "Routing and identity": "路由与标识",
   "Upstream connection": "上游连接",
-  "Proxy, template, authentication, and credential overrides.":
-    "配置代理、模板、认证方式与凭据覆盖。",
   "Models and timeouts": "模型与超时",
-  "Available upstream models, scheduled checks, and timeout overrides.":
-    "配置可用上游模型、定时检测与超时覆盖。",
   "Transform override": "转换覆盖",
   "Availability and automation": "可用性与自动化",
-  "Routing state and automatic disable behavior.": "配置路由状态与自动禁用行为。",
-  "Manage channel groups and their upstream channels in one grouped view.":
-    "在一个分组视图中管理渠道组及其上游渠道。",
-  "Browse compact channel groups, with shared Codex credentials kept together.":
-    "以紧凑方式浏览渠道组，并将共享同一 Codex 凭证的渠道组集中展示。",
-  "Channel group directory": "渠道组目录",
-  "Search first, then expand only the channel groups you need.":
-    "先搜索筛选，再按需展开需要查看的渠道组。",
-  "Standard groups": "普通渠道组",
   "Codex pools": "Codex 凭证池",
   "Search groups or channels": "搜索渠道组或渠道",
   "Clear search": "清除搜索",
   "Channel group type": "渠道组类型",
   "All groups": "全部渠道组",
   "Codex credential pools": "Codex 凭证池",
-  "Responses and Images groups derived from the same credential pool are managed together.":
-    "由同一凭证池派生的 Responses 与 Images 渠道组统一管理。",
   "Shared credentials": "共享凭证",
   "Credentials ({count})": "凭证（{count}）",
   "Manage shared credentials": "管理共享凭证",
-  "Standard channel groups": "普通渠道组",
-  "Large lists stay compact until you expand a group to inspect its channels.":
-    "大量渠道组默认保持紧凑，仅在展开后查看其中渠道。",
   "Show channels ({count})": "展开渠道（{count}）",
   "Hide channels": "收起渠道",
   "No matching channel groups": "没有匹配的渠道组",
-  "Try another search or channel group type.": "请尝试其他搜索词或渠道组类型。",
   "Select all": "全选",
   "Clear selection": "清除选择",
   "Select {count} on this page": "选择本页 {count} 人",
@@ -1705,20 +1396,9 @@ const zhCN: Record<string, string> = {
   "{count} users selected": "已选 {count} 人",
   "Batch edit ({count})": "批量修改（{count}）",
   "No channels in this group": "该渠道组中没有渠道",
-  "Create a channel and assign it to this group.": "创建渠道并将其分配到该渠道组。",
   "Unavailable channel groups": "不可用的渠道组",
-  "These channels reference a group that is not available in the current response.":
-    "这些渠道引用了当前响应中不可用的渠道组。",
   "New channel": "新建渠道",
-  "Enable {name}": "启用 {name}",
-  "Disable {name}": "禁用 {name}",
-  "Recover {name}": "恢复 {name}",
   "Edit {name}": "编辑 {name}",
-  "Enabled {name}.": "已启用 {name}。",
-  "Disabled {name}.": "已禁用 {name}。",
-  "Recovered {name}.": "已恢复 {name}。",
-  "Disable channel?": "禁用渠道？",
-  "{name} will stop receiving new requests.": "{name} 将停止接收新请求。",
   "Disable": "禁用",
   "yes": "是",
   "no": "否",
@@ -1727,7 +1407,6 @@ const zhCN: Record<string, string> = {
   "Cancel": "取消",
   "Back": "返回",
   "Danger zone": "危险操作",
-  "These actions are permanent and audited.": "这些操作不可撤销，且会记录审计日志。",
   "Save it now": "立即保存",
   "This value is shown only once. The gateway does not store it in a retrievable form, and the console will not display it again.":
     "此值只显示一次。网关不会以可检索的形式存储它，控制台也不会再次显示。",
@@ -1743,10 +1422,7 @@ const zhCN: Record<string, string> = {
   "Console rejected the request ({code}).": "控制台拒绝了该请求（{code}）。",
   "An unexpected error occurred.": "发生了意外错误。",
   "Nothing here yet": "这里暂时没有内容",
-  "There are no items to show.": "暂无可显示内容。",
   "No records": "没有记录",
-  "There are no records to show yet.": "暂无可显示记录。",
-  "Click a row to view or edit.": "点击行以查看或编辑。",
   "Showing {start}-{end} of {total}": "显示第 {start}-{end} 条，共 {total} 条",
   "Rows per page": "每页行数",
   "Previous": "上一页",
@@ -1761,14 +1437,8 @@ const zhCN: Record<string, string> = {
   "unset": "未设置",
   "New API key policy": "新建 API 密钥策略",
   "Policy": "策略",
-  "Controls which channel groups and channels users may assign to API keys.":
-    "控制用户可为 API 密钥分配哪些渠道组和渠道。",
   "Users choose each key's targets and limits from these permitted resources.":
     "用户从这些获准资源中选择每个密钥的目标，并自行配置限制。",
-  "Defines the channel groups and channels users may assign to their keys.":
-    "定义用户可分配给 API 密钥的渠道组和渠道。",
-  "Bounds the formats, permissions, rate limits, and quota of self-service keys.":
-    "限制自助创建 API 密钥可用的格式、权限、速率和配额。",
   "Back to policies": "返回 API 密钥策略",
   "Policy created": "API 密钥策略已创建",
   "Policy updated": "API 密钥策略已更新",
@@ -1776,99 +1446,42 @@ const zhCN: Record<string, string> = {
   "Create policy": "创建策略",
   "Edit policy": "编辑策略",
   "Save policy": "保存策略",
-  "Users cannot raise these values when creating keys.": "用户创建密钥时不能提高这些限制。",
   "Allowed API formats": "允许的 API 格式",
   "Permissions": "权限",
   "Allowed group IDs": "允许的渠道组 ID",
   "Individual channels": "单独渠道",
-  "Selecting a group allows the key to use every channel in that group.":
-    "选择渠道组后，密钥可以使用该组内的全部渠道。",
-  "Choose individual channels when the whole group should not be available.":
-    "不希望开放整个渠道组时，可单独选择渠道。",
   "No selectable channel groups.": "没有可选择的渠道组。",
   "No selectable individual channels.": "没有可单独选择的渠道。",
   "UUID per line": "每行一个 UUID",
-  "Restrict self-service keys to these channel groups. Empty means unrestricted.":
-    "将自助创建的密钥限制在这些渠道组中；留空表示不限制。",
   "Requests / minute": "每分钟请求数",
   "Max concurrent requests": "最大并发请求数",
   "Quota limit amount": "配额上限",
   "Max active keys": "最大活跃密钥数",
   "New policy": "新建策略",
-  "Templates copied into self-service API keys to bound their authorization.":
-    "复制到自助 API 密钥中的授权限制模板。",
   "Formats": "格式",
   "Max keys": "最大密钥数",
-  "New channel group": "新建渠道组",
-  "A same-format pool of upstream channels.": "同格式的上游渠道池。",
-  "A disabled Images group is created with the Responses group so credentials can be shared without granting Images access.":
-    "创建 Responses 组时会同时创建一个停用的 Images 组，以便共享凭证且不会自动授予 Images 访问权限。",
   "Back to groups": "返回渠道组",
-  "Channel group created": "渠道组已创建",
-  "Channel group updated": "渠道组已更新",
-  "Channel group deleted": "渠道组已删除",
   "This group was changed elsewhere. Reloading.": "此渠道组已在其他位置修改，正在重新加载。",
-  "Delete channel group": "删除渠道组",
-  "Delete channel group?": "删除渠道组？",
-  "Deleting a channel group is permanent and audited. Its ordinary channels and current dependencies are handled automatically.":
-    "删除渠道组不可撤销且会记录审计日志；其普通渠道和当前依赖会自动处理。",
-  "Review the current server-calculated impact. The group and listed channels become permanent tombstones, stored upstream URLs, credentials, network settings, and transforms are erased, and this action cannot be undone.":
-    "请核对服务端当前计算的影响。该组及列出的渠道将成为永久墓碑，保存的上游 URL、凭据、网络设置和转换配置会被擦除，且无法撤销。",
   "Provider-managed group": "Provider 托管渠道组",
-  "Provider-managed groups must use their connector lifecycle.":
-    "Provider 托管渠道组必须通过对应 Connector 生命周期管理。",
   "Disable group": "禁用渠道组",
   "Disable group {name}": "禁用渠道组 {name}",
-  "Disable channel group?": "禁用渠道组？",
-  "{name} will stop all {count} channels in this group from receiving new requests. Individual channel settings are preserved.":
-    "{name} 将阻止该组内全部 {count} 个渠道接收新请求。各渠道的独立配置会保留。",
-  "Disabled {name}; all {count} channels in the group are unavailable.":
-    "已禁用 {name}；该组内全部 {count} 个渠道均已不可用。",
   "group disabled": "渠道组已禁用",
   "Create group": "创建渠道组",
   "Edit group": "编辑渠道组",
   "Save group": "保存渠道组",
   "Selection strategy": "选择策略",
   "Request compression": "请求压缩",
-  "Request compression is available only for Responses channel groups.":
-    "请求压缩仅适用于 Responses 渠道组。",
-  "Priority must be zero or greater.": "优先级必须为 0 或更大。",
-  "An upstream endpoint with timeouts and credential injection.":
-    "具有超时和凭据注入配置的上游端点。",
   "Back to channels": "返回渠道",
   "Channel created": "渠道已创建",
   "Channel updated": "渠道已更新",
   "Channel deleted": "渠道已删除",
   "This channel was changed elsewhere. Reloading.": "此渠道已在其他位置修改，正在重新加载。",
   "Delete channel": "删除渠道",
-  "Delete channel?": "删除渠道？",
-  "Deleting a channel is permanent and audited. Current routing and authorization dependencies are removed automatically.":
-    "删除渠道不可撤销且会记录审计日志；当前路由和授权依赖会自动移除。",
-  "Review the current server-calculated impact. The channel becomes a permanent tombstone, its stored upstream URL, credential, network settings, and transforms are erased, and this action cannot be undone.":
-    "请核对服务端当前计算的影响。该渠道将成为永久墓碑，保存的上游 URL、凭据、网络设置和转换配置会被擦除，且无法撤销。",
-  "Provider-managed channels must use their connector lifecycle.":
-    "Provider 托管渠道必须通过对应 Connector 生命周期管理。",
-  "Deletion impact changed. Review the updated preview.":
-    "删除影响已变化，请重新核对更新后的预览。",
-  "No routing or authorization dependencies will be changed.":
-    "不会修改任何路由或授权依赖。",
-  "Channels to delete ({count})": "将删除的渠道（{count}）",
-  "Protocol rules affected ({count})": "受影响的协议规则（{count}）",
   "will be disabled": "将被停用",
-  "Deleted parent groups: {count}": "将删除的所属渠道组：{count}",
-  "Channels removed from route: {count}": "将从路由中移除的渠道：{count}",
-  "Tiers removed: {priorities}": "将移除的层级：{priorities}",
-  "API keys to unbind ({count})": "将解绑的 API Key（{count}）",
-  "API key policies to unbind ({count})":
-    "将解绑的 API Key Policy（{count}）",
-  "Quota visibility assignments to remove ({count})":
-    "将移除的额度可见性关系（{count}）",
   "Create channel": "创建渠道",
   "Edit channel": "编辑渠道",
   "Save channel": "保存渠道",
   "Status monitoring": "状态监控",
-  "Include this channel group in the channel group status report.":
-    "在渠道组状态监控报告中包含此渠道组。",
   "Monitoring enabled": "监控已启用",
   "Monitoring disabled": "监控已禁用",
   "Auto-disabled": "自动禁用",
@@ -1876,22 +1489,9 @@ const zhCN: Record<string, string> = {
   "Allow automatic disable": "允许自动禁用",
   "Scheduled test model": "定时测试模型",
   "Select a test model": "选择测试模型",
-  "Periodic scheduled tests send this wire model. Choose it from the available upstream models, then pair it with a pricing model below.":
-    "定时测试会发送此 wire model。请从可用上游模型中选择，再在下方配对一个计价模型。",
-  "Images channels do not support scheduled test models.":
-    "Images 渠道不支持配置定时测试模型。",
-  "Images channels are excluded from scheduled paid probes.":
-    "Images 渠道不会参与定时付费探测。",
-  "Allow matching system automatic-disable rules to temporarily remove this channel from routing.":
-    "允许匹配的系统自动禁用规则暂时将此渠道移出路由。",
-  "Choose a test model from the available upstream models.":
-    "请从可用上游模型中选择测试模型。",
   "Credential configured": "已配置凭据",
-  "The channel format must match its group's format.": "渠道格式必须与所属渠道组的格式一致。",
   "Pick a group": "选择渠道组",
   "Config template": "配置模板",
-  "Only enabled templates matching this channel's API format can be selected.":
-    "只能选择已启用且与当前渠道 API 格式一致的模板。",
   "Incompatible format": "格式不兼容",
   "Upstream auth kind": "上游认证方式",
   "Header name": "请求头名称",
@@ -1899,7 +1499,6 @@ const zhCN: Record<string, string> = {
   "(leave blank to keep current)": "（留空以保留当前值）",
   "Available upstream models": "可用上游模型",
   "Enter an upstream model ID": "输入上游模型 ID",
-  "Press Enter or Add to include a model.": "按 Enter 或“添加”以加入模型。",
   "Fetch models": "获取模型列表",
   "Select upstream models": "选择上游模型",
   "Choose models returned by the upstream GET /v1/models endpoint. Applying the selection updates discovered entries while preserving manually entered models that were not returned.":
@@ -1911,44 +1510,19 @@ const zhCN: Record<string, string> = {
   "Discovered models": "已发现模型",
   "Try a different model ID.": "请尝试其他模型 ID。",
   "Apply selection": "应用选择",
-  "The channel settings are not valid for model discovery. Check the base URL, timeouts, proxy, template, transforms, and authentication.":
-    "当前渠道设置无法用于模型发现。请检查基础 URL、超时、代理、模板、转换和认证配置。",
-  "Timed out while fetching upstream models.": "获取上游模型列表超时。",
-  "Could not fetch upstream models. Verify the base URL, credential, proxy, and transforms.":
-    "无法获取上游模型列表。请检查基础 URL、凭据、代理和转换配置。",
   "Connect timeout (ms)": "连接超时（毫秒）",
   "Response header timeout (ms)": "响应头超时（毫秒）",
   "Stream idle timeout (ms)": "流空闲超时（毫秒）",
   "Override document (JSON)": "覆盖文档（JSON）",
-  "Optional constrained transform document.": "可选的受限转换文档。",
-  "The current document is redacted. Leave this blank to preserve it; enter {} to clear it.":
-    "当前文档已脱敏。留空以保留它；输入 {} 以清空它。",
-  "Override document is not valid JSON.": "覆盖文档不是有效的 JSON。",
-  "Override document must be a JSON object.": "覆盖文档必须是 JSON 对象。",
-  "An upstream API key is required when upstream auth is enabled.": "启用上游认证时必须提供上游 API 密钥。",
-  "Enter an HTTP(S) URL without credentials, query parameters, or a fragment.":
-    "请输入不含凭据、查询参数或片段的 HTTP(S) URL。",
-  "Billing multiplier must be zero or greater.": "计费倍率必须大于或等于 0。",
-  "Batch edit channels": "批量修改渠道",
-  "Apply the selected changes atomically to {count} channels.":
-    "以原子方式将所选修改应用到 {count} 个渠道。",
   "Enabled state": "启用状态",
   "Keep unchanged": "保持不变",
   "Allowed": "允许",
   "Not allowed": "不允许",
   "Choose at least one field to change.": "请至少选择一个要修改的字段。",
-  "Select at most {count} channels per batch.": "每批最多选择 {count} 个渠道。",
-  "Update channels": "更新渠道",
-  "Updated {count} channels.": "已更新 {count} 个渠道。",
-  "One or more channels changed elsewhere. Refresh and try again.":
-    "一个或多个渠道已在其他位置修改，请刷新后重试。",
   "Batch update failed": "批量更新失败",
-  "Model ID is required.": "模型 ID 不能为空。",
   "A custom header name is required.": "必须提供自定义请求头名称。",
-  "Available model IDs must be unique.": "可用模型 ID 必须唯一。",
   "New proxy": "新建代理",
   "Proxy": "代理",
-  "An egress proxy shared by upstream clients.": "由上游客户端共享的出口代理。",
   "Back to proxies": "返回代理",
   "Proxy created": "代理已创建",
   "Proxy updated": "代理已更新",
@@ -1992,8 +1566,6 @@ const zhCN: Record<string, string> = {
     "只有已启用的代理才能分配给 Codex 凭证。",
   "No proxies configured": "尚未配置代理",
   "Delete {name}": "删除 {name}",
-  "HTTP/SOCKS egress proxies reused by upstream reqwest clients.":
-    "由上游 reqwest 客户端复用的 HTTP/SOCKS 出口代理。",
   "URL": "URL",
   "Credential": "凭证",
   "Enter an HTTP(S) or SOCKS proxy URL without embedded credentials, path, query, or fragment.":
@@ -2026,7 +1598,6 @@ const zhCN: Record<string, string> = {
     "剩余 {remaining} 次；{seconds} 秒后重置",
   "New template": "新建模板",
   "Template": "模板",
-  "A reusable constrained transform document.": "可复用的受限转换文档。",
   "Back to templates": "返回模板",
   "Template created": "模板已创建",
   "Template updated": "模板已更新",
@@ -2034,16 +1605,11 @@ const zhCN: Record<string, string> = {
   "Create template": "创建模板",
   "Edit template": "编辑模板",
   "Save template": "保存模板",
-  "The current document is redacted. Leave the JSON blank to preserve it; enter {} to clear it.":
-    "当前文档已脱敏。将 JSON 留空以保留它；输入 {} 以清空它。",
   "Document (JSON)": "文档（JSON）",
   "Constrained transform document.": "受限转换文档。",
-  "Optional replacement document.": "可选的替换文档。",
   "Template document is not valid JSON.": "模板文档不是有效的 JSON。",
   "Template document must be a JSON object.": "模板文档必须是 JSON 对象。",
   "Transform Templates": "转换模板",
-  "Reusable constrained transform and network configuration documents.":
-    "可复用的受限转换和网络配置文档。",
   "API key": "API 密钥",
   "API key updated": "API 密钥已更新",
   "This version of the API key can no longer be saved.": "无法再保存此版本的 API 密钥。",
@@ -2057,12 +1623,7 @@ const zhCN: Record<string, string> = {
   "API key revoked": "API 密钥已撤销",
   "API key deleted": "API 密钥已删除",
   "Revoke failed": "撤销失败",
-  "View, rename, enable, disable, revoke, or delete this key.":
-    "查看、重命名、启用、禁用、撤销或删除此密钥。",
   "Details": "详情",
-  "Authorization fields are managed by your policy.": "授权字段由您的策略管理。",
-  "Formats are derived from the selected targets; permissions are fixed at creation.":
-    "API 格式根据所选目标自动推导；权限在创建时固定。",
   "Expires": "过期时间",
   "Allowed groups": "允许的渠道组",
   "Allowed channels": "允许的渠道",
@@ -2087,14 +1648,8 @@ const zhCN: Record<string, string> = {
   "This key was changed by another session. Reload before deleting it.":
     "此密钥已被其他会话修改，请重新加载后再删除。",
   "API key created": "API 密钥已创建",
-  "Your personal client keys for the OpenAI-compatible data plane.":
-    "用于 OpenAI 兼容数据平面的个人客户端密钥。",
   "New API key": "新建 API 密钥",
   "Keys": "密钥",
-  "Permissions, formats, and limits are set by your assigned API key policy and cannot be raised from this page.":
-    "权限、格式和限制由分配给您的 API 密钥策略设定，不能在此页面提高。",
-  "Each key has its own routing targets, rate limits, concurrency limit, and quota.":
-    "每个密钥独立配置路由目标、速率限制、并发限制和配额。",
   "No API keys": "没有 API 密钥",
   "No matching API keys": "没有匹配的 API 密钥",
   "Try another key name or status.": "请更换名称或状态再试。",
@@ -2102,19 +1657,13 @@ const zhCN: Record<string, string> = {
   "Key ID": "密钥 ID",
   "Actions for {name}": "{name} 的操作",
   "Edit API key": "编辑 API 密钥",
-  "Create your first API key to start using the data plane.": "创建您的第一个 API 密钥以开始使用数据平面。",
-  "Choose a name and optional expiry. Authorization fields are assigned from your default policy.":
-    "选择名称和可选过期时间。授权字段由您的默认策略分配。",
-  "Choose targets from your policy and configure this key's own limits.":
-    "从策略允许的范围内选择目标，并配置该密钥自身的限制。",
+  "Create an API key to send requests.": "创建 API 密钥后即可发送请求。",
   "Create key": "创建密钥",
   "Expiry must be a valid future date and time.": "过期时间必须是有效的未来日期和时间。",
   "Create an API key policy, then assign it to this user under Administration → Users.":
     "请先创建 API 密钥策略，然后在“管理 → 用户”中将其分配给此用户。",
   "Your default API key policy is disabled. Ask an administrator to enable or replace it.":
     "您的默认 API 密钥策略已禁用。请管理员启用或替换它。",
-  "Your policy's active API key limit has been reached. Revoke an existing key or raise the limit.":
-    "已达到策略的活跃 API 密钥上限。请撤销现有密钥或提高上限。",
   "One or more selected targets are no longer allowed by your API key policy.":
     "一个或多个所选目标已不在当前 API 密钥策略允许范围内。",
   "Enter a non-negative amount.": "请输入非负金额。",
@@ -2125,21 +1674,7 @@ const zhCN: Record<string, string> = {
   "Pick at least one channel group or channel.": "请至少选择一个渠道组或渠道。",
   "Save blocked: the routing graph contains a missing, cross-format, or otherwise structurally invalid dependency.":
     "无法保存：路由图包含缺失、跨格式或其他结构非法的依赖。",
-  "Save routing degradation?": "保存会降低路由可用性的更改？",
-  "This channel change will make enabled protocol routes less available. The configuration remains valid, but new requests may fail until compatible channels are restored.":
-    "此渠道更改会降低已启用协议路由的可用性。配置仍然有效，但在恢复兼容渠道前，新请求可能失败。",
-  "Save anyway": "仍然保存",
   "Base URL": "基础 URL",
-  "Filter by time range, user, API key, and aggregation granularity.":
-    "按时间区间、用户、API 密钥和聚合颗粒度筛选。",
-  "Filter by time range, user, API key, channel, and aggregation granularity.":
-    "按时间区间、用户、API 密钥、渠道和聚合颗粒度筛选。",
-  "Filter by time range, user, API key, channel or Codex credential, and aggregation granularity.":
-    "按时间区间、用户、API 密钥、渠道或 Codex 凭证和聚合颗粒度筛选。",
-  "Filter your own statistics by time range, API key, and aggregation granularity.":
-    "按时间区间、API 密钥和聚合颗粒度筛选您自己的统计。",
-  "Channel group status and your own cost analytics.":
-    "渠道组状态监控和您自己的花费统计。",
   "Quick range": "快速时间范围",
   "Today": "今天",
   "This week": "本周",
@@ -2151,8 +1686,7 @@ const zhCN: Record<string, string> = {
   "hourly": "按小时",
   "daily": "按天",
   "Codex credential": "Codex 凭证",
-  "Credential filters are no longer supported.": "不再支持按凭证筛选。",
-  "Remove the credential filter to view costs for the remaining filters.": "移除凭证筛选条件后，可查看其余条件对应的费用。",
+  "Costs cannot be filtered by credential.": "费用不支持按凭证筛选。",
   "Remove credential filter": "移除凭证筛选",
   "All users": "所有用户",
   "All API keys": "所有 API 密钥",
@@ -2161,19 +1695,13 @@ const zhCN: Record<string, string> = {
   "The start time must be before the end time.": "开始时间必须早于结束时间。",
   "The selected {granularity} range cannot exceed {days} days.":
     "所选{granularity}区间不能超过 {days} 天。",
-  "The selected leaderboard range cannot exceed 366 days.":
-    "排行榜所选时间区间不能超过 366 天。",
   "{count} priced requests": "{count} 个已计价请求",
   "Total cost": "总花费",
-  "All costs are settled in USD.": "所有花费统一使用 USD 结算。",
   "Average RPM": "平均 RPM",
   "Average TPM": "平均 TPM",
-  "Requests per minute across the selected range.": "所选区间内的每分钟平均请求数。",
-  "Tokens per minute across the selected range.": "所选区间内的每分钟平均 Token 数。",
   "Cost trend by model": "按模型花费趋势",
   "UTC buckets displayed in your browser's local time.": "按 UTC 分桶，并以浏览器本地时间显示。",
   "No priced requests": "没有已计价请求",
-  "No request costs were recorded for this filter.": "当前筛选条件下没有记录请求花费。",
   "Other models": "其他模型",
   "Gateway overview": "网关概览",
   "Usage report": "用量报告",
@@ -2199,15 +1727,7 @@ const zhCN: Record<string, string> = {
   "View all models": "查看全部模型",
   "Time": "时间",
   "Model cost breakdown": "模型花费明细",
-  "Requests, reliability, tokens, and cost for each upstream model.":
-    "各上游模型的请求数、可靠性、Token 与花费。",
   "Channel details": "渠道明细",
-  "Requests, reliability, tokens, and cost for each selected channel.":
-    "各渠道的请求数、可靠性、Token 与花费。",
-  "No channel statistics": "没有渠道统计",
-  "No routed requests matched the selected filter.":
-    "没有已路由请求符合当前筛选条件。",
-  "No statistics": "没有统计数据",
   "No requests matched the selected filter.": "没有请求符合当前筛选条件。",
   "Ranking period": "排行榜周期",
   "Shanghai time · Asia/Shanghai": "上海时间 · Asia/Shanghai",
@@ -2275,8 +1795,6 @@ const zhCN: Record<string, string> = {
   "Header value": "请求头值",
   "Request body (JSON Patch)": "请求体（JSON Patch）",
   "Response body (streaming SSE)": "响应体（流式 SSE）",
-  "Apply add, replace, or remove operations to the upstream JSON request. Model and stream remain protected.":
-    "对上游 JSON 请求应用 add、replace 或 remove 操作；model 和 stream 字段始终受保护。",
   "Add request body rule": "添加请求体规则",
   "No request-body rules": "暂无请求体规则",
   "Add a JSON Patch to adjust an upstream request.": "添加 JSON Patch 以调整上游请求。",
@@ -2334,8 +1852,6 @@ const zhCN: Record<string, string> = {
   "Request-body rules cannot change model or stream.": "请求体规则不能修改 model 或 stream。",
   "Streaming response rules cannot change immutable event envelope fields.":
     "流式响应规则不能修改不可变的事件信封字段。",
-  "Every add or replace rule needs a valid JSON value.":
-    "每条 add 或 replace 规则都需要有效的 JSON 值。",
   "JSON Patch paths cannot overlap in the same rule list.":
     "同一规则列表中的 JSON Patch 路径不能重叠。",
   "Choose a response event supported by the selected API format.":
@@ -2395,13 +1911,6 @@ const zhCN: Record<string, string> = {
   "Shallow-merge safe metadata only when the target is an object.":
     "仅当目标是对象时，浅合并安全元数据。",
   "Personal settings": "个人设置",
-  "Control optional forwarding capabilities for your account.":
-    "控制当前账户可选的转发能力。",
-  "Three-layer WebSocket access": "三层 WebSocket 访问控制",
-  "Responses WebSocket requests are accepted only when the administrator enables the system, you enable this preference, and the selected upstream channel declares WebSocket support.":
-    "仅当管理员启用系统开关、你启用个人偏好，并且选中的上游渠道声明支持 WebSocket 时，Responses WebSocket 请求才会被接受。",
-  "Enable your API keys to request the OpenAI Responses WebSocket transport.":
-    "允许你的 API 密钥请求 OpenAI Responses WebSocket 传输。",
   "This preference applies to all active API keys owned by your account.":
     "此偏好适用于当前账户拥有的全部有效 API 密钥。",
   "Personal settings saved.": "个人设置已保存。",
@@ -2416,7 +1925,6 @@ const zhCN: Record<string, string> = {
   "Set to zero to disable upstream connection reuse.": "设置为 0 可禁用上游连接复用。",
   "Idle timeout (seconds)": "空闲超时（秒）",
   "Maximum connection age (seconds)": "连接最长寿命（秒）",
-  "Must be greater than the idle timeout.": "必须大于空闲超时。",
   "Idle pool capacity must be between 0 and 4096.": "空闲连接池容量必须在 0 至 4096 之间。",
   "WebSocket idle timeout must be between 1 and 3600 seconds.":
     "WebSocket 空闲超时必须在 1 至 3600 秒之间。",
@@ -2425,7 +1933,6 @@ const zhCN: Record<string, string> = {
   "Maximum WebSocket age must exceed the idle timeout.":
     "WebSocket 最长寿命必须大于空闲超时。",
   "Supports Responses WebSocket": "支持 Responses WebSocket",
-  "Supports standalone web search": "支持独立 Web Search",
   "Web search": "Web Search",
   "Kind": "类型",
   "Model rule": "模型规则",
@@ -2439,29 +1946,12 @@ const zhCN: Record<string, string> = {
   "Cached": "缓存",
   "Size": "尺寸",
   "Auto": "自动",
-  "Allow this channel to receive Codex standalone alpha/search requests. Request JSON transforms are not supported.":
-    "允许此渠道接收 Codex 独立 alpha/search 请求。不支持请求 JSON 转换。",
-  "Only OpenAI Responses channels can enable standalone web search.":
-    "只有 OpenAI Responses 渠道可以启用独立 Web Search。",
-  "Only Responses channels can support standalone web search.":
-    "只有 Responses 渠道可以支持独立 Web Search。",
-  "Allow this channel to receive WebSocket requests when the system and user are also enabled.":
-    "当系统和用户开关也启用时，允许此渠道接收 WebSocket 请求。",
-  "Only OpenAI Responses channels can enable WebSocket forwarding.":
-    "只有 OpenAI Responses 渠道可以启用 WebSocket 转发。",
-  "Only Responses channels can support WebSocket forwarding.":
-    "只有 Responses 渠道可以支持 WebSocket 转发。",
   "WebSocket": "WebSocket",
   "WebSocket sessions": "WebSocket 会话",
   "{idle} idle upstream · {leased} leased": "{idle} 条上游空闲 · {leased} 条已借出",
   "Responses WebSocket pool": "Responses WebSocket 连接池",
-  "Process-local downstream sessions, upstream connection reuse, and cumulative pool outcomes.":
-    "当前进程的下游会话、上游连接复用和连接池累计结果。",
   "Active downstream sessions": "活跃下游会话",
-  "Accepted client WebSocket connections still open.": "仍保持打开的客户端 WebSocket 连接。",
   "Leased upstream connections": "已借出上游连接",
-  "Upstream WebSockets currently serving a logical request.":
-    "当前正在处理逻辑请求的上游 WebSocket。",
   "Idle upstream pool": "空闲上游连接池",
   "Clean upstream connections available for exact-key reuse.":
     "可按完全一致的连接键复用的干净上游连接。",
@@ -2477,23 +1967,16 @@ const zhCN: Record<string, string> = {
   "OpenAI-compatible": "OpenAI 兼容",
   "Codex OAuth": "Codex OAuth",
   "Codex quotas": "Codex 额度",
-  "Read-only quota windows and credential-wide spend for Codex credential groups granted by your user group. Spend includes every caller and both Responses and Images. Estimated total quota divides current period spend by the most recently provider-reported used percentage.":
-    "只读查看当前用户组获准访问的 Codex 凭证组额度窗口和凭证总花费。花费包含所有调用者以及 Responses 与 Images。预估总额度按当前周期花费除以 Provider 最近报告的已使用百分比计算。",
   "No Codex quota access": "暂无 Codex 额度查看权限",
-  "Your user group has not been granted access to any Codex quota groups.":
-    "当前用户组尚未获准查看任何 Codex 额度组。",
+  "Ask an administrator to give your user group access to a Codex quota group.": "请联系管理员，给你的用户组分配 Codex 额度组的查看权限。",
   "Subscription": "订阅等级",
   "Last checked": "最后检查时间",
   "Quota history": "额度窗口历史",
   "Quota window history for {name}": "{name} 的额度窗口历史",
   "View quota history for {name}": "查看 {name} 的额度窗口历史",
-  "This view is read-only and contains quota windows plus the provider-reported subscription tier. Period spend covers all priced requests routed through the credential, not only your requests.":
-    "此页面为只读，包含额度窗口和 Provider 报告的订阅等级。周期花费包含经由该凭证的所有已计价请求，而不只是你的请求。",
   "Manage Codex credentials": "管理 Codex 凭证",
   "Manage credentials": "管理凭证",
   "Provider-managed credentials": "Provider 托管凭证",
-  "Use the Codex credential manager to add OAuth accounts, proxies, and quota thresholds.":
-    "请使用 Codex 凭证管理器添加 OAuth 账户、代理和额度阈值。",
   "Resets {time}": "{time} 重置",
   "Outbound proxy": "出站代理",
   "Direct": "直连",
@@ -2510,10 +1993,6 @@ const zhCN: Record<string, string> = {
   "Codex credential imported.": "Codex 凭证已导入。",
   "Token refreshed.": "Token 已刷新。",
   "Quota refreshed.": "额度已刷新。",
-  "This channel group is not a Codex OAuth connector.":
-    "该渠道组不是 Codex OAuth Connector。",
-  "Connect ChatGPT Codex subscriptions, share credentials across Responses and Images channels, assign proxies, and monitor quota. Estimated total quota divides current period spend by the most recently provider-reported used percentage.":
-    "连接 ChatGPT Codex 订阅，在 Responses 与 Images 渠道间共享凭证、分配代理并监控额度。预估总额度按当前周期花费除以 Provider 最近报告的已使用百分比计算。",
   "Export credentials": "导出凭证",
   "Advanced import": "高级导入",
   "Import tokens": "导入 Token",
@@ -2522,8 +2001,6 @@ const zhCN: Record<string, string> = {
   "Ready for new requests": "可接收新请求",
   "Draining or unavailable": "Draining 或不可用",
   "Managed credentials": "托管凭证",
-  "Each credential projects to separate Responses and Images managed channels. Existing sticky Responses sessions may continue while quota is draining.":
-    "每个凭证会投影为独立的 Responses 与 Images 托管渠道；额度进入 draining 后，已有 Responses 粘性会话仍可继续。",
   "Responses models: {count}": "Responses 模型：{count}",
   "No Codex credentials": "暂无 Codex 凭证",
   "Connect an account with OAuth or import an existing token set.":
@@ -2538,7 +2015,7 @@ const zhCN: Record<string, string> = {
   "Period spend": "周期花费",
   "Codex account": "Codex 账户",
   "Period spend includes all priced requests using this credential.": "周期花费包含通过此凭证发起的所有已计价请求。",
-  "Spend includes all callers. Quota visibility does not grant channel access.": "花费包含所有调用者；查看额度不代表可以调用渠道。",
+  "Spend includes requests from everyone using the credential.": "花费包含所有调用者使用此凭证的请求。",
   "Estimated total quota": "预估总额度",
   "Natural reset": "自然重置",
   "Manual reset credit": "手动 reset credit",
@@ -2629,16 +2106,12 @@ const zhCN: Record<string, string> = {
   "{count} credentials will stop receiving requests and their stored OAuth tokens will be cleared. This cannot be undone.":
     "{count} 个凭证将停止接收请求，已保存的 OAuth Token 也会被清除。此操作无法撤销。",
   "Advanced Codex import": "Codex 高级导入",
-  "Parse native, CLIProxyAPI, and Sub2API JSON into editable drafts, configure proxies, then import.":
-    "将原生、CLIProxyAPI 和 Sub2API JSON 解析为可编辑草稿，配置代理后再导入。",
   "Back to credentials": "返回凭证",
   "Clear drafts": "清空草稿",
   "Sensitive credential workspace": "敏感凭证工作区",
   "Imported tokens remain only in this page's memory until submitted. Clear drafts when you finish, and protect exported JSON files as secrets.":
     "导入的 Token 在提交前仅保存在当前页面内存中。完成后请清空草稿，并将导出的 JSON 文件按密钥保护。",
   "1. Load JSON": "1. 加载 JSON",
-  "Paste JSON, upload one or more .json files, or combine both sources. Format detection is automatic.":
-    "可粘贴 JSON、上传一个或多个 .json 文件，或同时使用两种来源；系统会自动识别格式。",
   "Paste JSON": "粘贴 JSON",
   "JSON files": "JSON 文件",
   "Credential JSON": "凭证 JSON",
@@ -2708,7 +2181,7 @@ const zhCN: Record<string, string> = {
     "缺少 ID Token；身份信息将从 Access Token 读取。",
   "No workspace account ID was found; personal credentials can omit it.":
     "未找到工作区 Account ID；个人凭证可以不提供该字段。",
-  "Legacy credential weight was ignored.": "已忽略旧版凭证权重。",
+  "{name}: Use a version 3 ai-gateway export.": "{name}：请使用 ai-gateway 的第 3 版导出格式。",
   "Enter valid credential settings.": "请输入有效的凭证设置。",
   "Credential updated.": "凭证已更新。",
   "Edit Codex credential": "编辑 Codex 凭证",

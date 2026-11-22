@@ -15,35 +15,11 @@ WebSocket Upgrade 在 HTTP 握手阶段验证 Gateway API Key 和 Responses `pro
 3. 管理员配置独立的 `responses-ws` 能力和同操作路由，API Key 已授权所属逻辑渠道；
    HTTP `responses` 能力和路由不能替代 WS 配置。
 
-创建 Codex 凭证不会创建或启用能力、路由或渠道授权；需要管理员分别配置 Responses HTTP 与 WS。
-系统与用户开关仍默认关闭。没有可配置的 `transports` 字段。
-Chat Completions 渠道不能声明 WebSocket 支持。系统、用户未开启，或没有可用且声明支持的
-Responses WS 路由时，HTTP Upgrade 统一返回 `426 websocket_unavailable`，提示客户端改用
-`POST /v1/responses`，且不向客户端暴露系统开关、渠道或 Connector 凭证的内部状态：
+系统或用户未开启 WS，或该 Key 没有任何可用 WS 路由时，握手返回 HTTP `426 websocket_unavailable`。握手时还不知道请求模型：若升级成功后才发现所选模型的 WS 传输不可用，或上游无法建立连接，网关发同码错误帧并关闭连接。未知或无权访问的模型仍返回 `404 model_not_found`，鉴权、准入、校验和停机错误保留各自的错误码。
 
-- 握手时还没有请求模型。如果该 API Key 的全部已授权 Responses 路由都没有可选 WS 渠道，
-  直接拒绝 Upgrade，返回 HTTP 426 和普通 JSON 错误体。
-- 如果其他模型仍可使用 WS，允许 Upgrade；收到 `response.create` 后，若该模型没有可选
-  WS 渠道，则发送 `type: "error"`、`status: 426`、
-  `error.code: "websocket_unavailable"` 的错误帧并关闭连接。请求日志记录同样的状态和错误码。
-- 未配置 WS 能力、渠道组/渠道停用、自动禁用，以及被动健康冷却或已被占用的半开探针都会影响
-  可选性。明确不可用的 Codex Connector 凭证也不会使对应 projection 通过握手预检。预检不占用
-  路由 lease、不推进权重轮转、不消耗 RPM/并发，也不发起上游请求；模型消息仍重新执行正常鉴权、
-  准入和路由。
-- 未知或无权访问的模型在消息阶段仍返回 `404 model_not_found`；Gateway API Key 鉴权/权限、
-  请求校验、准入和进程关闭错误不会被改成 426。HTTP 无可选渠道仍使用
-  `503 no_healthy_channel`。
-- 上游渠道只能在首条消息后确定；若 Connector、目标配置、网络或上游 Upgrade 在发送
-  `response.create` 前不可用，已经完成的下游 `101` 无法撤销，Gateway 改为发送同码的
-  `426 websocket_unavailable` 错误帧并关闭连接。
-
-握手 426 可供客户端改用 HTTP；升级后的 426 错误帧也由客户端决定是否及何时回退，**不保证立即回退**。Gateway 不把已发送的 WS 请求自动转换或重放为 HTTP。客户端实现与具体错误映射见
-[Codex 参考](../reference/codex-responses-websocket.md)。
+遇到 426，由客户端决定是否改用 `POST /v1/responses`；网关不会把已发送的 WS 请求自动重放为 HTTP。
 
 握手成功时，`x-codex-websocket-max-message-bytes` 告知客户端网关自身的单条消息字节上限，不代表上游限制。若上游随后在其握手中声明更小的上限，网关在派发前检查最终准备好的消息。超过任一限制，或上游在本次请求首条文本事件之前以 1009 拒绝消息时，网关用 Close 1009 通知客户端；收到文本事件之后的上游断开不作为大小回退信号。
-
-管理员也可以在用户详情页修改同一个 `websocket_enabled` 个人偏好。该操作走版本化用户资源，
-保存后立即重新发布数据面快照；用户仍可随后在自己的个人设置页再次调整。
 
 ## 发送与计量
 
@@ -64,7 +40,7 @@ Responses Lite 可以仅在每条 create 的 `client_metadata.ws_request_header_
 
 收到 `response.created` 后，客户端可针对其中的响应 ID 发送一次 `{"type":"response.interrupt","response_id":"…","mode":"discard_partial_items"}`。它使用本轮已绑定的上游连接，不另行计费。`response.interrupt.failed` 只表示中断未被接受，不替代原请求的终态。网关继续转发，直到匹配的终态到达；在此之前不能并发发送第二个 create。匹配的终态按上游 usage 结算并释放并发槽，不等待确认。Codex 的 `response.incomplete` 且原因是 `interrupted` 也可以是成功终态。
 
-如果终态先到，等待取消确认的客户端仍能收到本轮的元数据、计时事件和确认；持续无上游活动直到空闲超时，网关会关闭连接。如果中断与正常完成交错，网关已释放该轮上游连接，则对同一下游连接上刚完成且 ID 匹配的响应一次性答复 `response.interrupt.failed`，不再派发中断。已结束等待的客户端可以直接发下一条 create，包括用刚完成的 ID 精确续写。先前响应迟到的确认和相关元数据不会进入新请求的事件流、计量或空闲计时。响应 ID 冲突、无法区分或超过连接跟踪上限的中断会使连接不可复用。
+若终态先于中断确认到达，可继续等待确认（受空闲超时限制），也可用刚完成的响应 ID 发下一条 create。若中断到达网关时，上游连接已释放，网关会对刚完成且 ID 匹配的响应一次性答复 `response.interrupt.failed`。上一轮迟到的确认不会混入下一轮。
 
 ## 继续上下文或恢复连接
 
@@ -72,7 +48,7 @@ Responses Lite 可以仅在每条 create 的 `client_metadata.ws_request_header_
 
 携带非空 `previous_response_id` 的请求依赖上游保存的上下文。网关只将其交给同一 API Key 和握手身份下、最近一次成功响应 ID 匹配的空闲连接，并再次检查当前授权、凭证、目标、网络策略和最终 Header。如果 Session affinity 已改绑到另一候选，续写仍使用符合路由条件的原连接，不把亲和记录改回去。
 
-若找不到唯一匹配，或连接因空闲/总龄、容量、配置或凭证变化、进程重启或多实例漂移而丢失，网关不向新连接派发增量。它返回以下错误帧，由客户端清除增量状态并重发完整请求：
+若找不到唯一匹配（例如空闲连接过期、轮换密钥、进程重启或切到其他实例），网关不向新连接派发增量。收到以下错误帧后，客户端需清除增量状态，重新发送完整输入：
 
 ```json
 {
@@ -93,10 +69,7 @@ Responses Lite 可以仅在每条 create 的 `client_metadata.ws_request_header_
 请求建立新连接。这两类状态恢复错误不会触发渠道自动禁用或清除 Session affinity；Gateway 自身仍不
 重放已经发送的请求。
 
-每条 WebSocket 连接同时只允许一个 `response.create` 在途。上游握手完成前的连接类失败仍可按全局
-重试设置切换未尝试渠道；消息一旦发往上游，就不再自动重试，以避免重复生成。连接期间客户端 API Key
-被撤销或过期后，下一条消息会收到 `invalid_api_key` 错误；系统或用户开关在连接期间关闭后，下一条
-消息会收到 `426 websocket_unavailable` 并结束连接。
+上游握手失败时可按全局重试设置切换未尝试候选，消息一旦发送就不再自动重试。连接期间 Key 撤销或过期，下一条消息返回 `invalid_api_key`；关闭系统或用户 WS 开关，下一条消息返回 `426 websocket_unavailable` 并结束连接。
 
 ## 配置反向代理与连接池
 

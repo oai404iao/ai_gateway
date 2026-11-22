@@ -316,8 +316,8 @@ async fn check_current_sqlite_fact_constraints(sqlite: &SqliteDatabase) {
         .await
         .unwrap();
     sqlx::query(
-        "INSERT INTO api_keys(id,user_id,name,secret_value,status,allowed_api_formats,permissions)
-         VALUES (?,?,'Schema parity key','parity-test-secret','active','[\"open_ai_responses\"]','[\"proxy\"]')",
+        "INSERT INTO api_keys(id,user_id,name,secret_value,status,permissions)
+         VALUES (?,?,'Schema parity key','parity-test-secret','active','[\"proxy\"]')",
     )
     .bind(key)
     .bind(user)

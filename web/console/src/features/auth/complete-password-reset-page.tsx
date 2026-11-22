@@ -69,10 +69,7 @@ export function CompletePasswordResetPage() {
   };
 
   return (
-    <AuthFormPage
-      title={t("Set a new password")}
-      description={t("Your temporary password only grants access to this password-change flow.")}
-    >
+    <AuthFormPage title={t("Set a new password")}>
       <form onSubmit={form.handleSubmit(onSubmit)} className="flex flex-col gap-4">
         <Alert>
           <AlertTitle>{t("Password change required")}</AlertTitle>

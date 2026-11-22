@@ -21,10 +21,10 @@ function renderApp(section = "upstream") {
 }
 
 describe("SystemPage", () => {
-  it("redirects the old settings URL and opens only the selected category", async () => {
+  it("opens only the selected settings category", async () => {
     seedAuthenticatedSession();
     const user = userEvent.setup();
-    renderApp("");
+    renderApp("general");
     expect(await screen.findByRole("heading", { name: "API hosts" })).toBeInTheDocument();
     expect(window.location.pathname).toBe("/admin/system/general");
     const menu = () => within(screen.getByRole("navigation", { name: "Management navigation" }));
@@ -254,11 +254,11 @@ describe("SystemPage", () => {
     expect(retry).not.toHaveAttribute("aria-disabled", "true");
   });
 
-  it("redirects the removed provider settings category to general settings", async () => {
+  it("shows Not found for an unknown settings category", async () => {
     seedAuthenticatedSession();
     renderApp("codex");
-    expect(await screen.findByRole("heading", { name: "API hosts" })).toBeInTheDocument();
-    expect(window.location.pathname).toBe("/admin/system/general");
+    expect(await screen.findByText("Not found")).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/admin/system/codex");
     expect(screen.queryByLabelText("Synthetic Git origin")).not.toBeInTheDocument();
   });
 

@@ -3,7 +3,7 @@
 > 状态：部分实现。非流式 JSON generation、multipart edit、Codex 插件适配和 request-body
 > spool 已实现；Images streaming 仍未实现。末节保留早期分阶段设计的迁移背景。
 
-Images 使用独立的 `open_ai_images` 格式权限和操作路由，复用网关鉴权、健康、Transform、
+Images 使用 `open_ai_images` 格式，按图片操作独立选路，复用网关鉴权、健康、Transform、
 日志与计费，不借用 Responses 路由。大图片输入通过可回放 body 落盘，而不是扩大所有 JSON
 请求的内存上限。
 
@@ -191,7 +191,7 @@ Images 不使用 Session affinity、WebSocket、SSE Transform 或 scheduled prob
 | Edit | exact replay、模型别名/字段删除重建、阈值落盘、权限、重复读取、取消与 Drop 清理 |
 | 负向输入 | body/file/part/image/mask 限制、Content-Type/Encoding、streaming、JSON Transform |
 | Codex | 插件实际库、路径与认证、image-turn、两张图片 data URL、五张上限、mask 拒绝与脱敏 |
-| 财务与日志 | operation、journal v2/v3 backlog 与后续版本兼容、独立计量事实、一次结算、Console 投影 |
+| 财务与日志 | operation、已入库 v2/v3 payload 解码、独立计量事实、一次结算、Console 投影 |
 | 重试与超时 | 两个可选候选仍只派发一次、Images 专用/显式超时、派发前凭证筛除 |
 
 转发改动须按仓库规则运行 Rust/相关 Console 检查，以及经授权的[真实上游 smoke](real-upstream-smoke.md)。
@@ -225,4 +225,4 @@ timeout，但保持模型、健康和授权隔离；Images 固定模型目录使
 | usage 与响应适配 | `src/application/usage.rs`、`src/application/response_adapter.rs` |
 | Transform 与编译 | `src/transforms/`、`src/runtime_config/mod.rs` |
 | Console 形状 | [Console OpenAPI](../openapi/console-v1.yaml) |
-| 用户行为与外部兼容 | [运维接口](../user/operations.md)、[Images 参考](../reference/openai-images.md) |
+| 用户行为与外部兼容 | [运维接口](../user/data-plane.md)、[Images 参考](../reference/openai-images.md) |
