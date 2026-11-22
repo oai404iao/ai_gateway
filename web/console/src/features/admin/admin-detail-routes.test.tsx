@@ -51,14 +51,22 @@ describe("Admin detail routes", () => {
   });
 
   it.each([
-    ["/admin/routing/channel-groups/new", "/admin/routing/channels", "Channel groups"],
-    ["/admin/routing/channels/old-id", "/admin/routing/channels", "Logical channels"],
-    ["/admin/routing/model-rules/old-id/protocols/old-child", "/admin/routing/operation-rules", "Operation rules"],
-  ])("redirects retired route %s to canonical management", async (path, target, heading) => {
+    "/admin/catalog",
+    "/admin/model-setup",
+    "/admin/routing/groups",
+    "/admin/routing/logical-channels",
+    "/admin/routing/channel-groups/new",
+    "/admin/routing/channels/old-id",
+    "/admin/routing/model-rules/old-id/protocols/old-child",
+    "/admin/providers/codex-oauth/old-group",
+    "/admin/providers/codex-oauth/old-group/import",
+    "/admin/statistics",
+    "/admin/system",
+  ])("shows Not found at retired route %s", async (path) => {
     seedAuthenticatedSession();
     renderAppAt(path);
-    expect(await screen.findByRole("heading", { name: heading })).toBeInTheDocument();
-    expect(window.location.pathname).toBe(target);
+    expect(await screen.findByText("Not found")).toBeInTheDocument();
+    expect(window.location.pathname).toBe(path);
   });
 
   it("localizes logical channel editing", async () => {

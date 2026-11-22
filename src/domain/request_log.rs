@@ -42,7 +42,6 @@ pub struct RequestLogEvent {
     pub model_id: Option<Uuid>,
     pub outcome: RequestLogOutcome,
     pub response_status_code: Option<u16>,
-    pub streamed: bool,
     pub ttft_ms: Option<i32>,
     pub total_duration_ms: i32,
     pub billing: Option<RequestBilling>,
@@ -114,11 +113,6 @@ impl RequestProtocol {
             Self::Sse => "sse",
             Self::WebSocket => "websocket",
         }
-    }
-
-    #[must_use]
-    pub const fn is_streamed(self) -> bool {
-        !matches!(self, Self::NonStream)
     }
 }
 

@@ -87,7 +87,7 @@ impl ProxyService {
         let api_key = snapshot
             .authenticate(secret)
             .ok_or_else(ProxyError::invalid_api_key)?;
-        if !api_key.permits(OPENAI_RESPONSES_FORMAT, ApiKeyPermission::Proxy) {
+        if !api_key.permits(ApiKeyPermission::Proxy) {
             return Err(ProxyError::forbidden(
                 "This API key cannot proxy Responses WebSocket requests.",
             ));
@@ -295,7 +295,7 @@ impl ResponsesWebSocketSession {
                 return SessionAction::Close;
             }
         };
-        if !api_key.permits(OPENAI_RESPONSES_FORMAT, ApiKeyPermission::Proxy) {
+        if !api_key.permits(ApiKeyPermission::Proxy) {
             send_error(
                 client,
                 403,

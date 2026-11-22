@@ -74,7 +74,7 @@ impl Backend {
                 .install_schema()
                 .await
                 .expect("infrastructure: SQLite schema must install"),
-            12
+            14
         );
         Self::Sqlite {
             directory,
@@ -1053,14 +1053,6 @@ async fn self_service_contract(repositories: Repositories) {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(
-        key.allowed_api_formats,
-        [
-            "open_ai_chat_completions",
-            "open_ai_responses",
-            "open_ai_images"
-        ]
-    );
     assert_eq!(key.permissions, ["proxy", "models.read"]);
     assert!(
         repository
@@ -1496,7 +1488,6 @@ fn admin_api_key_create(user: Uuid, group: Uuid, name: &str) -> ApiKeyCreate {
     ApiKeyCreate {
         user_id: user,
         name: name.into(),
-        allowed_api_formats: vec!["open_ai_chat_completions".into()],
         permissions: vec!["proxy".into(), "models.read".into()],
         allowed_group_ids: vec![group],
         allowed_channel_ids: Vec::new(),
@@ -2536,14 +2527,6 @@ async fn admin_api_key_and_policy_contract(repositories: Repositories) {
     assert_eq!(listed.name, "Admin key");
     assert_eq!(listed.secret, secret);
     assert_eq!(listed.status, "active");
-    assert_eq!(
-        listed.allowed_api_formats,
-        [
-            "open_ai_chat_completions",
-            "open_ai_responses",
-            "open_ai_images"
-        ]
-    );
     assert_eq!(listed.permissions, ["proxy", "models.read"]);
     assert_eq!(listed.allowed_group_ids, vec![world.group]);
     assert!(listed.allowed_channel_ids.is_empty());
@@ -2572,10 +2555,6 @@ async fn admin_api_key_and_policy_contract(repositories: Repositories) {
         input: ApiKeyUpdate {
             name: "Admin key renamed".into(),
             status: "disabled".into(),
-            allowed_api_formats: vec![
-                "open_ai_chat_completions".into(),
-                "open_ai_responses".into(),
-            ],
             permissions: vec!["proxy".into()],
             allowed_group_ids: vec![world.group],
             allowed_channel_ids: vec![world.channel],
@@ -2606,14 +2585,6 @@ async fn admin_api_key_and_policy_contract(repositories: Repositories) {
     let listed = listed_key(&repositories, created.id).await;
     assert_eq!(listed.name, "Admin key renamed");
     assert_eq!(listed.status, "disabled");
-    assert_eq!(
-        listed.allowed_api_formats,
-        [
-            "open_ai_chat_completions",
-            "open_ai_responses",
-            "open_ai_images"
-        ]
-    );
     assert_eq!(listed.permissions, ["proxy"]);
     assert_eq!(listed.allowed_channel_ids, vec![world.channel]);
     assert_eq!(listed.expires_at, Some(timestamp("2030-01-01T00:00:00Z")));
@@ -4184,7 +4155,6 @@ async fn authorization_and_etag_rollback_contract(repositories: Repositories) {
                 input: ApiKeyUpdate {
                     name: "Rollback key renamed".into(),
                     status: "disabled".into(),
-                    allowed_api_formats: vec!["open_ai_chat_completions".into()],
                     permissions: vec!["proxy".into()],
                     allowed_group_ids: vec![world.group],
                     allowed_channel_ids: Vec::new(),
@@ -4786,7 +4756,6 @@ async fn missing_and_soft_deleted_resource_contract(repositories: Repositories) 
                 input: ApiKeyUpdate {
                     name: "x".into(),
                     status: "active".into(),
-                    allowed_api_formats: vec!["open_ai_chat_completions".into()],
                     permissions: vec!["proxy".into()],
                     allowed_group_ids: vec![world.group],
                     allowed_channel_ids: Vec::new(),

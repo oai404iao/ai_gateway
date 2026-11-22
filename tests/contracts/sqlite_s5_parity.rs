@@ -924,19 +924,13 @@ async fn identity_and_proxy_export(backend: &Backend, c: Context) {
 async fn visible_projection_costs(backend: &Backend, c: Context) {
     let key = Uuid::new_v4();
     let model = Uuid::new_v4();
-    let (formats, permissions) = match backend {
-        Backend::Pg(_) => (
-            "'{open_ai_responses,open_ai_images}'",
-            "'{proxy,models.read}'",
-        ),
-        Backend::Sq(..) => (
-            "'[\"open_ai_responses\",\"open_ai_images\"]'",
-            "'[\"proxy\",\"models.read\"]'",
-        ),
+    let permissions = match backend {
+        Backend::Pg(_) => "'{proxy,models.read}'",
+        Backend::Sq(..) => "'[\"proxy\",\"models.read\"]'",
     };
     backend.exec(&format!(
-        "INSERT INTO api_keys(id,user_id,name,secret_value,status,allowed_api_formats,permissions)
-         VALUES ('{key}','{}','Key','s5-fixture-key','active',{formats},{permissions});
+        "INSERT INTO api_keys(id,user_id,name,secret_value,status,permissions)
+         VALUES ('{key}','{}','Key','s5-fixture-key','active',{permissions});
          INSERT INTO models(id,source_model_id,display_name,enabled,currency,price_unit_tokens,
           input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at)
          VALUES ('{model}','s5-model','Model',true,'USD',1000000,'1','0','0','2',now());
@@ -992,7 +986,6 @@ async fn visible_projection_costs(backend: &Backend, c: Context) {
         } else {
             RequestProtocol::NonStream
         };
-        event.streamed = event.request_protocol.is_streamed();
         event.billing.as_mut().unwrap().cost_amount = Some(Decimal::new((index + 1) as i64, 8));
         events.push(event);
     }

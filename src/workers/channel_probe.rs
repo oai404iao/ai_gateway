@@ -556,7 +556,6 @@ fn finished_probe(
             model_id: Some(context.billing_model.id()),
             outcome,
             response_status_code,
-            streamed: false,
             ttft_ms,
             total_duration_ms,
             billing: Some(billing),

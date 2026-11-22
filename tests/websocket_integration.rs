@@ -733,7 +733,6 @@ async fn gateway_harness_with_records(
             secret_value: CLIENT_KEY.into(),
             status: "active".into(),
             expires_at: None,
-            allowed_api_formats: vec!["open_ai_responses".into()],
             permissions: if controls.proxy_permission {
                 vec!["proxy".into(), "models.read".into()]
             } else {
@@ -1349,7 +1348,6 @@ async fn responses_websocket_forwards_transforms_reuses_connection_and_logs_requ
         assert_eq!(event.request_protocol, RequestProtocol::WebSocket);
         assert_eq!(event.reasoning_effort.as_deref(), Some("high"));
         assert!(event.fast_mode);
-        assert!(event.streamed);
         let usage = event.billing.unwrap().usage.unwrap();
         assert_eq!(usage.input_tokens, 5);
         assert_eq!(usage.cached_input_tokens, 1);

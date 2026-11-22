@@ -292,8 +292,7 @@ def exercise_response_adapter(resources, data, fixture):
         def key(name):
             result, _ = api("/api-keys", "POST", {
                 "user_id": data["user_id"], "name": name, "permissions": ["proxy"],
-                "allowed_group_ids": [group["id"]], "allowed_channel_ids": [],
-                "allowed_api_formats": ["open_ai_chat_completions", "open_ai_responses"]})
+                "allowed_group_ids": [group["id"]], "allowed_channel_ids": []})
             resources.secret_values.append(result["secret"])
             return result
         main_key, denied_key = key("response-adapter"), key("response-adapter-denied")

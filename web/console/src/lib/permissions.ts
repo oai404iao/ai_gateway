@@ -1,7 +1,6 @@
 import type {
   ApiFormat,
   ApiOperation,
-  ConnectorKind,
   RequestCompression,
   SelectionStrategy,
   UserRole,
@@ -17,11 +16,6 @@ export const API_FORMATS: readonly ApiFormat[] = [
 export const SELECTION_STRATEGIES: readonly SelectionStrategy[] = [
   "weighted_random",
   "weighted_round_robin",
-];
-
-export const CONNECTOR_KINDS: readonly ConnectorKind[] = [
-  "general",
-  "codex",
 ];
 
 export const REQUEST_COMPRESSIONS: readonly RequestCompression[] = ["default", "zstd"];
@@ -92,12 +86,6 @@ export function selectionStrategyLabel(value: SelectionStrategy): string {
   return value === "weighted_random"
     ? translate("Weighted random")
     : translate("Weighted round-robin");
-}
-
-export function connectorKindLabel(value: ConnectorKind): string {
-  return value === "general"
-    ? translate("General")
-    : "Codex";
 }
 
 export function requestCompressionLabel(value: RequestCompression): string {

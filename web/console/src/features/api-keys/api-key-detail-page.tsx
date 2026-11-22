@@ -432,9 +432,8 @@ function ApiKeyDetail({ id }: { id: string }) {
                           );
                         }}
                         legend={t("API Key Policy targets")}
-                        description={t(options.data?.policy_enabled
-                          ? "These ordinary groups and channels come from your enabled API Key Policy."
-                          : "No enabled API Key Policy is assigned. Ask an administrator to assign one.")}
+                        description={options.data?.policy_enabled === false
+                          ? t("Ask an administrator to assign an active API key policy.") : undefined}
                         error={targetError ? t(targetError) : undefined}
                       />
                     </div>

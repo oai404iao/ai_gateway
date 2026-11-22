@@ -7,7 +7,7 @@ import { toast } from "sonner";
 import { AdminDetailShell } from "@/features/admin/components/admin-detail-shell";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -101,9 +101,6 @@ export function GroupDetailPage() {
           <Card>
             <CardHeader>
               <CardTitle>{t("Group settings")}</CardTitle>
-              <CardDescription>
-                {t("Saving a group never creates channels, capabilities, routes, or API key access.")}
-              </CardDescription>
             </CardHeader>
             <CardContent>
               <form onSubmit={submit} className="flex flex-col gap-5">
@@ -139,7 +136,7 @@ export function GroupDetailPage() {
           isNew ? undefined : (
             <div className="flex flex-col gap-3">
               <p className="text-sm text-muted-foreground">
-                {t("Any member channel, including disabled channels, blocks deletion.")}
+                {t("Remove all channels from this group before deleting it, including disabled channels.")}
               </p>
               <Button
                 type="button"
@@ -158,7 +155,7 @@ export function GroupDetailPage() {
         open={confirmingDelete}
         onOpenChange={setConfirmingDelete}
         title={t("Delete this routing group?")}
-        description={t("The group is soft-deleted after all member channels are removed.")}
+        description={t("The group will be removed from the channel list.")}
         destructive
         confirmDisabled={busy}
         onConfirm={confirmDelete}

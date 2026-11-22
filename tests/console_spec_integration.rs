@@ -1040,9 +1040,8 @@ async fn administrator_temporary_password_forces_and_completes_password_change()
     let api_key_id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO api_keys \
-         (id,user_id,name,secret_value,status,allowed_api_formats,permissions) \
+         (id,user_id,name,secret_value,status,permissions) \
          VALUES ($1,$2,'temporary-password-key',$3,'active', \
-                 ARRAY['open_ai_chat_completions']::api_format[], \
                  ARRAY['proxy','models.read'])",
     )
     .bind(api_key_id)
@@ -2755,10 +2754,9 @@ async fn personal_websocket_setting_is_published_to_owned_api_keys() {
     let secret = format!("sk-user-settings-{}", Uuid::new_v4().simple());
     sqlx::query(
         "INSERT INTO api_keys
-         (id,user_id,name,secret_value,status,allowed_api_formats,permissions,
+         (id,user_id,name,secret_value,status,permissions,
           allowed_group_ids,allowed_channel_ids)
          VALUES ($1,$2,$3,$4,'active',
-                 ARRAY['open_ai_responses']::api_format[],
                  ARRAY['proxy']::text[],'{}'::uuid[],'{}'::uuid[])",
     )
     .bind(Uuid::new_v4())
@@ -2818,10 +2816,9 @@ async fn administrator_can_manage_a_users_personal_websocket_setting() {
     let secret = format!("sk-admin-user-settings-{}", Uuid::new_v4().simple());
     sqlx::query(
         "INSERT INTO api_keys
-         (id,user_id,name,secret_value,status,allowed_api_formats,permissions,
+         (id,user_id,name,secret_value,status,permissions,
           allowed_group_ids,allowed_channel_ids)
          VALUES ($1,$2,$3,$4,'active',
-                 ARRAY['open_ai_responses']::api_format[],
                  ARRAY['proxy']::text[],'{}'::uuid[],'{}'::uuid[])",
     )
     .bind(Uuid::new_v4())
@@ -3124,6 +3121,10 @@ async fn removed_console_compatibility_paths_are_not_routed() {
         assert_console_route_absent(&app, method, path).await;
     }
 
+    let user_path = format!("/console/v1/users/{}", app.user_id);
+    let response = request(&app, "PUT", &user_path, serde_json::json!({}), &[]).await;
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+
     database.cleanup().await;
 }
 
@@ -3135,20 +3136,16 @@ async fn legacy_user_name_field_is_rejected() {
     let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
     assert_eq!(detail.status(), StatusCode::OK);
     let etag = detail.headers()[header::ETAG].to_str().unwrap().to_owned();
-    let detail = body_json(detail).await;
-    let update = serde_json::json!({
-        "email": detail["email"], "display_name": "Renamed user", "role": detail["role"],
-        "status": detail["status"], "balance_amount": detail["balance_amount"]
-    });
+    let update = serde_json::json!({"display_name": "Renamed user"});
     let mut extra = update.clone();
     extra["name"] = update["display_name"].clone();
     let mut alias = extra.clone();
     alias.as_object_mut().unwrap().remove("display_name");
     for invalid in [extra, alias] {
-        let response = request(&app, "PUT", &path, invalid, &[("if-match", &etag)]).await;
+        let response = request(&app, "PATCH", &path, invalid, &[("if-match", &etag)]).await;
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
-    let response = request(&app, "PUT", &path, update, &[("if-match", &etag)]).await;
+    let response = request(&app, "PATCH", &path, update, &[("if-match", &etag)]).await;
     assert_eq!(response.status(), StatusCode::OK);
     database.cleanup().await;
 }
@@ -3159,6 +3156,7 @@ async fn obsolete_control_plane_columns_are_absent() {
 
     for (table, column) in [
         ("api_keys", "tokens_per_minute"),
+        ("api_keys", "allowed_api_formats"),
         ("channels", "health_check"),
         ("channels", "status_statistics_enabled"),
     ] {
@@ -3405,10 +3403,9 @@ async fn user_groups_supply_role_defaults_and_inherited_api_policy() {
     let inherited_secret = format!("sk-fast-filter-{}", Uuid::new_v4().simple());
     sqlx::query(
         "INSERT INTO api_keys
-         (id,user_id,name,secret_value,status,allowed_api_formats,permissions,
+         (id,user_id,name,secret_value,status,permissions,
           allowed_group_ids,allowed_channel_ids)
          VALUES ($1,$2,$3,$4,'active',
-                 ARRAY['open_ai_responses']::api_format[],
                  ARRAY['proxy']::text[],'{}'::uuid[],'{}'::uuid[])",
     )
     .bind(Uuid::new_v4())
@@ -3657,14 +3654,13 @@ async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
         let request_api_key_id = Uuid::new_v4();
         sqlx::query(
             "INSERT INTO api_keys \
-             (id,user_id,name,secret_value,status,allowed_api_formats,permissions) \
-             VALUES ($1,$2,$3,$4,'active',ARRAY[$5::api_format],ARRAY['proxy'])",
+             (id,user_id,name,secret_value,status,permissions) \
+             VALUES ($1,$2,$3,$4,'active',ARRAY['proxy'])",
         )
         .bind(request_api_key_id)
         .bind(request_user_id)
         .bind(format!("quota-cost-key-{request_api_key_id}"))
         .bind(format!("quota-cost-secret-{request_api_key_id}"))
-        .bind(api_format)
         .execute(&database.pool)
         .await
         .unwrap();
@@ -4048,10 +4044,9 @@ async fn api_key_delete_erases_secret_hides_tombstone_and_releases_name() {
     let secret = format!("sk-soft-delete-{}", Uuid::new_v4().simple());
     sqlx::query(
         "INSERT INTO api_keys \
-         (id,user_id,name,secret_value,status,allowed_api_formats,permissions, \
+         (id,user_id,name,secret_value,status,permissions, \
           allowed_group_ids,allowed_channel_ids) \
          VALUES ($1,$2,$3,$4,'active', \
-                 ARRAY['open_ai_chat_completions']::api_format[], \
                  ARRAY['proxy']::text[],'{}','{}')",
     )
     .bind(key_id)
@@ -4116,10 +4111,9 @@ async fn api_key_delete_erases_secret_hides_tombstone_and_releases_name() {
     let replacement_id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO api_keys \
-         (id,user_id,name,secret_value,status,allowed_api_formats,permissions, \
+         (id,user_id,name,secret_value,status,permissions, \
           allowed_group_ids,allowed_channel_ids) \
          VALUES ($1,$2,$3,$4,'disabled', \
-                 ARRAY['open_ai_chat_completions']::api_format[], \
                  ARRAY['proxy']::text[],'{}','{}')",
     )
     .bind(replacement_id)
@@ -4185,10 +4179,9 @@ async fn user_delete_anonymizes_and_tombstones_api_keys() {
     .unwrap();
     sqlx::query(
         "INSERT INTO api_keys \
-         (id,user_id,name,secret_value,status,allowed_api_formats,permissions, \
+         (id,user_id,name,secret_value,status,permissions, \
           allowed_group_ids,allowed_channel_ids) \
          VALUES ($1,$2,'delete-key',$3,'active', \
-                 ARRAY['open_ai_chat_completions']::api_format[], \
                  ARRAY['proxy']::text[],'{}','{}')",
     )
     .bind(api_key_id)
@@ -4430,10 +4423,9 @@ async fn model_delete_hides_routing_clears_probes_and_preserves_history() {
     let key_id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO api_keys \
-         (id,user_id,name,secret_value,status,allowed_api_formats,permissions, \
+         (id,user_id,name,secret_value,status,permissions, \
           allowed_group_ids,allowed_channel_ids) \
-         VALUES ($1,$2,'model delete history',$3,'active', \
-                 ARRAY['open_ai_chat_completions']::api_format[],ARRAY['proxy'], \
+         VALUES ($1,$2,'model delete history',$3,'active',ARRAY['proxy'], \
                  ARRAY[$4]::uuid[],'{}')",
     )
     .bind(key_id)
@@ -4448,9 +4440,9 @@ async fn model_delete_hides_routing_clears_probes_and_preserves_history() {
         "INSERT INTO request_logs \
          (id,started_at,completed_at,user_id,api_key_id,api_format,api_operation, \
           client_model,upstream_model,model_rule_id,channel_group_id,channel_id, \
-          outcome,streamed,total_duration_ms,model_id) \
+          outcome,total_duration_ms,model_id) \
          VALUES ($1,now(),now(),$2,$3,'open_ai_chat_completions','chat_completions', \
-                 $4,'model-delete-wire',$5,$6,$7,'succeeded',false,10,$8)",
+                 $4,'model-delete-wire',$5,$6,$7,'succeeded',10,$8)",
     )
     .bind(historical_log_id)
     .bind(app.user_id)
@@ -6267,6 +6259,23 @@ async fn model_advanced_billing_is_returned_and_validated() {
     database.cleanup().await;
 }
 
+async fn assert_format_field_rejected(
+    app: &App,
+    method: &str,
+    path: &str,
+    valid: &serde_json::Value,
+    headers: &[(&str, &str)],
+) {
+    let mut obsolete = valid.clone();
+    obsolete["allowed_api_formats"] = serde_json::json!(["open_ai_chat_completions"]);
+    let rejected = request(app, method, path, obsolete, headers).await;
+    assert_eq!(
+        rejected.status(),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{method} {path}"
+    );
+}
+
 /// API key creation uses the `sk-` prefix and the same value remains
 /// retrievable from authorized list/detail endpoints.
 #[tokio::test]
@@ -6275,40 +6284,52 @@ async fn api_key_create_returns_retrievable_prefixed_secret() {
     let app = app(database.pool.clone()).await;
     let topology = seed_test_topology(&app, "chat_completion").await;
     let group_id = topology.group.to_string();
-    let create = request(
-        &app,
-        "POST",
-        "/console/v1/api-keys",
-        serde_json::json!({
-            "user_id": app.user_id,
-            "name": "spec-key",
-            "allowed_api_formats": ["open_ai_chat_completions"],
-            "permissions": ["proxy"],
-            "allowed_group_ids": [group_id],
-            "allowed_channel_ids": [],
-        }),
-        &[],
-    )
-    .await;
+    let collection = "/console/v1/api-keys";
+    let create_input = serde_json::json!({
+        "user_id": app.user_id,
+        "name": "spec-key",
+        "permissions": ["proxy"],
+        "allowed_group_ids": [group_id],
+        "allowed_channel_ids": [],
+    });
+    assert_format_field_rejected(&app, "POST", collection, &create_input, &[]).await;
+    let create = request(&app, "POST", collection, create_input, &[]).await;
     assert_eq!(create.status(), StatusCode::CREATED);
     let body = body_json(create).await;
     let secret = body["secret"].as_str().expect("secret present on create");
     assert!(secret.starts_with("sk-"));
     let id = body["id"].as_str().expect("id present").to_owned();
 
-    let detail = request(
-        &app,
-        "GET",
-        &format!("/console/v1/api-keys/{id}"),
-        serde_json::json!({}),
-        &[],
-    )
-    .await;
+    for path in [collection, "/console/v1/me/api-keys"] {
+        let list = request(&app, "GET", path, serde_json::json!({}), &[]).await;
+        assert_eq!(list.status(), StatusCode::OK);
+        let list = body_json(list).await;
+        let key = list
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|key| key["id"] == id)
+            .unwrap();
+        assert_eq!(key["secret"], secret);
+        assert!(key.get("allowed_api_formats").is_none(), "GET {path}");
+    }
+
+    let path = format!("{collection}/{id}");
+    let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
     assert_eq!(detail.status(), StatusCode::OK);
-    let has_etag = detail.headers().get(header::ETAG).is_some();
+    let etag = detail.headers()[header::ETAG].to_str().unwrap().to_owned();
     let detail_body = body_json(detail).await;
     assert_eq!(detail_body["secret"], secret);
-    assert!(has_etag, "detail returns an ETag");
+    assert!(detail_body.get("allowed_api_formats").is_none());
+
+    let update = serde_json::json!({
+        "name": "renamed-key", "status": "active", "permissions": ["proxy"],
+        "allowed_group_ids": [group_id], "allowed_channel_ids": [],
+    });
+    let headers = [("if-match", etag.as_str())];
+    assert_format_field_rejected(&app, "PUT", &path, &update, &headers).await;
+    let updated = request(&app, "PUT", &path, update, &headers).await;
+    assert_eq!(updated.status(), StatusCode::OK);
     database.cleanup().await;
 }
 
@@ -7081,18 +7102,11 @@ async fn self_api_key_create_reports_policy_preconditions() {
     );
 
     let expiry = (chrono::Utc::now() + chrono::Duration::days(1)).to_rfc3339();
-    let created = request(
-        &app,
-        "POST",
-        "/console/v1/me/api-keys",
-        {
-            let mut input = key_input("first-key");
-            input["expires_at"] = serde_json::json!(expiry.clone());
-            input
-        },
-        &[],
-    )
-    .await;
+    let mut input = key_input("first-key");
+    input["expires_at"] = serde_json::json!(expiry);
+    let collection = "/console/v1/me/api-keys";
+    assert_format_field_rejected(&app, "POST", collection, &input, &[]).await;
+    let created = request(&app, "POST", collection, input, &[]).await;
     assert_eq!(created.status(), StatusCode::CREATED);
     let created = body_json(created).await;
     let id = created["id"].as_str().expect("created key id");
@@ -7113,14 +7127,7 @@ async fn self_api_key_create_reports_policy_preconditions() {
     assert_eq!(detail["secret"], secret);
     assert_eq!(detail["allowed_group_ids"], serde_json::json!([group_id]));
     assert_eq!(detail["allowed_channel_ids"], serde_json::json!([]));
-    assert_eq!(
-        detail["allowed_api_formats"],
-        serde_json::json!([
-            "open_ai_chat_completions",
-            "open_ai_responses",
-            "open_ai_images"
-        ])
-    );
+    assert!(detail.get("allowed_api_formats").is_none());
     assert_eq!(
         detail["permissions"],
         serde_json::json!(["proxy", "models.read"])
@@ -7129,23 +7136,20 @@ async fn self_api_key_create_reports_policy_preconditions() {
     assert_eq!(detail["max_concurrent_requests"], 2);
     assert_eq!(detail["quota_limit_amount"], "5.00000000");
 
-    let updated = request(
-        &app,
-        "PUT",
-        &format!("/console/v1/me/api-keys/{id}"),
-        serde_json::json!({
-            "name": "first-key-updated",
-            "status": "active",
-            "expires_at": expiry,
-            "allowed_group_ids": [],
-            "allowed_channel_ids": [channel_id],
-            "requests_per_minute": 40,
-            "max_concurrent_requests": 3,
-            "quota_limit_amount": "8.50"
-        }),
-        &[("if-match", &etag)],
-    )
-    .await;
+    let update = serde_json::json!({
+        "name": "first-key-updated",
+        "status": "active",
+        "expires_at": expiry,
+        "allowed_group_ids": [],
+        "allowed_channel_ids": [channel_id],
+        "requests_per_minute": 40,
+        "max_concurrent_requests": 3,
+        "quota_limit_amount": "8.50"
+    });
+    let path = format!("{collection}/{id}");
+    let headers = [("if-match", etag.as_str())];
+    assert_format_field_rejected(&app, "PUT", &path, &update, &headers).await;
+    let updated = request(&app, "PUT", &path, update, &headers).await;
     assert_eq!(updated.status(), StatusCode::OK);
     let detail = request(
         &app,
@@ -7184,8 +7188,8 @@ async fn request_logs_limit_defaults_and_clamps_to_the_documented_bounds() {
     let app = app(database.pool.clone()).await;
     sqlx::query(
         "WITH fixture_key AS (
-             INSERT INTO api_keys(id,user_id,name,secret_value,status,allowed_api_formats,permissions)
-             VALUES(gen_random_uuid(),$1,'limit test','limit-test-key','active',ARRAY['open_ai_chat_completions']::api_format[],ARRAY['proxy'])
+             INSERT INTO api_keys(id,user_id,name,secret_value,status,permissions)
+             VALUES(gen_random_uuid(),$1,'limit test','limit-test-key','active',ARRAY['proxy'])
              RETURNING id,user_id
          )
          INSERT INTO request_logs(id,started_at,completed_at,user_id,api_key_id,api_format,api_operation,client_model,outcome)
@@ -7225,8 +7229,8 @@ async fn request_log_filters_match_the_console_contract() {
     let api_key_id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO api_keys \
-         (id,user_id,name,secret_value,status,allowed_api_formats,permissions) \
-         VALUES ($1,$2,$3,$4,'active',ARRAY['open_ai_chat_completions']::api_format[],ARRAY['proxy'])",
+         (id,user_id,name,secret_value,status,permissions) \
+         VALUES ($1,$2,$3,$4,'active',ARRAY['proxy'])",
     )
     .bind(api_key_id)
     .bind(app.user_id)
@@ -7257,8 +7261,8 @@ async fn request_log_filters_match_the_console_contract() {
     ] {
         sqlx::query(
             "INSERT INTO request_logs \
-             (id,started_at,completed_at,user_id,api_key_id,api_format,api_operation,client_model,upstream_model,outcome,streamed,ttft_ms,total_duration_ms,output_tokens_per_second,reasoning_effort,fast_mode,input_tokens,cached_input_tokens,cache_write_tokens,output_tokens,reasoning_tokens,cost_amount,error_code,error_summary,peak_pricing) \
-             VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions','chat_completions',$5,$6,$7,false,100,1000,5.5556,'high',true,12,2,1,5,1,CASE WHEN $7='failed' THEN 0 ELSE NULL END,$8,$9,$10)",
+             (id,started_at,completed_at,user_id,api_key_id,api_format,api_operation,client_model,upstream_model,outcome,ttft_ms,total_duration_ms,output_tokens_per_second,reasoning_effort,fast_mode,input_tokens,cached_input_tokens,cache_write_tokens,output_tokens,reasoning_tokens,cost_amount,error_code,error_summary,peak_pricing) \
+             VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions','chat_completions',$5,$6,$7,100,1000,5.5556,'high',true,12,2,1,5,1,CASE WHEN $7='failed' THEN 0 ELSE NULL END,$8,$9,$10)",
         )
         .bind(id)
         .bind(now)
@@ -7504,9 +7508,8 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     );
     sqlx::query(
         "INSERT INTO api_keys \
-         (id,user_id,name,secret_value,status,allowed_api_formats,permissions) \
-         VALUES ($1,$2,$3,$4,'active', \
-                 ARRAY['open_ai_chat_completions']::api_format[],ARRAY['proxy'])",
+         (id,user_id,name,secret_value,status,permissions) \
+         VALUES ($1,$2,$3,$4,'active',ARRAY['proxy'])",
     )
     .bind(api_key_id)
     .bind(app.user_id)
@@ -7566,12 +7569,12 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
             "INSERT INTO request_logs \
              (id,started_at,completed_at,user_id,api_key_id,api_format,api_operation,client_model, \
               upstream_model,channel_group_id,channel_id,outcome,response_status_code, \
-              streamed,ttft_ms,total_duration_ms,output_tokens_per_second,input_tokens, \
+              ttft_ms,total_duration_ms,output_tokens_per_second,input_tokens, \
               cached_input_tokens,cache_write_tokens,output_tokens,currency,price_unit_tokens, \
               price_effective_at,input_unit_price,cached_input_unit_price, \
               cache_write_unit_price,output_unit_price,cost_amount) \
              VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions','chat_completions','statistics-client-model', \
-                     'statistics-model',$5,$6,$7,$8,false,$9,1000,$10,$11,$12,$13,$14, \
+                     'statistics-model',$5,$6,$7,$8,$9,1000,$10,$11,$12,$13,$14, \
                      'USD',1000000,$2,1,0,0,1,$15)",
         )
         .bind(Uuid::new_v4())
@@ -7599,13 +7602,13 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
         "INSERT INTO request_logs \
          (id,started_at,completed_at,user_id,api_key_id,request_source,api_format,api_operation,client_model, \
           upstream_model,channel_group_id,channel_id,outcome,response_status_code, \
-          streamed,ttft_ms,total_duration_ms,input_tokens,cached_input_tokens, \
+          ttft_ms,total_duration_ms,input_tokens,cached_input_tokens, \
           cache_write_tokens,output_tokens,currency,price_unit_tokens,price_effective_at, \
           input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price, \
           cost_amount) \
          VALUES ($1,$2,$2,$3,$4,'scheduled_test','open_ai_chat_completions','chat_completions', \
                  'statistics-scheduled-client-model','statistics-model',$5,$6,'succeeded',200, \
-                 false,100,200,1,0,0,1,'USD',1000000,$2,1,0,0,1,0.01)",
+                 100,200,1,0,0,1,'USD',1000000,$2,1,0,0,1,0.01)",
     )
     .bind(Uuid::new_v4())
     .bind(scheduled_test_at)
@@ -7778,9 +7781,8 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     .unwrap();
     sqlx::query(
         "INSERT INTO api_keys \
-         (id,user_id,name,secret_value,status,allowed_api_formats,permissions) \
-         VALUES ($1,$2,$3,$4,'active', \
-                 ARRAY['open_ai_chat_completions']::api_format[],ARRAY['proxy'])",
+         (id,user_id,name,secret_value,status,permissions) \
+         VALUES ($1,$2,$3,$4,'active',ARRAY['proxy'])",
     )
     .bind(regular_api_key_id)
     .bind(regular_user_id)
@@ -7794,12 +7796,12 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
         "INSERT INTO request_logs \
          (id,started_at,completed_at,user_id,api_key_id,api_format,api_operation,client_model, \
           upstream_model,channel_group_id,channel_id,outcome,response_status_code, \
-          streamed,ttft_ms,total_duration_ms,output_tokens_per_second,input_tokens, \
+          ttft_ms,total_duration_ms,output_tokens_per_second,input_tokens, \
           cached_input_tokens,cache_write_tokens,output_tokens,currency,price_unit_tokens, \
           price_effective_at,input_unit_price,cached_input_unit_price, \
           cache_write_unit_price,output_unit_price,cost_amount) \
          VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions','chat_completions','statistics-user-client-model', \
-                 'statistics-user-model',$5,$6,'succeeded',200,false,250,500,25,40,0,0,10, \
+                 'statistics-user-model',$5,$6,'succeeded',200,250,500,25,40,0,0,10, \
                  'USD',1000000,$2,1,0,0,1,1)",
     )
     .bind(regular_request_log_id)
@@ -7833,6 +7835,7 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     assert_eq!(admin_logs[0]["channel_name"], "Spec channel");
     assert_eq!(admin_logs[0]["user_name"], regular_display_name);
     assert_eq!(admin_logs[0]["request_protocol"], "non_stream");
+    assert!(!admin_logs[0].as_object().unwrap().contains_key("streamed"));
 
     let admin_own_logs = request(
         &app,
@@ -7848,6 +7851,12 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     assert!(admin_own_logs[0]["channel_id"].is_null());
     assert!(admin_own_logs[0]["channel_name"].is_null());
     assert_eq!(admin_own_logs[0]["request_protocol"], "non_stream");
+    assert!(
+        !admin_own_logs[0]
+            .as_object()
+            .unwrap()
+            .contains_key("streamed")
+    );
     let admin_own_log_id = admin_own_logs[0]["id"].as_str().unwrap().to_owned();
     let admin_own_log = request(
         &app,
@@ -7863,6 +7872,7 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     assert!(admin_own_log["channel_id"].is_null());
     assert!(admin_own_log["channel_name"].is_null());
     assert_eq!(admin_own_log["request_protocol"], "non_stream");
+    assert!(!admin_own_log.as_object().unwrap().contains_key("streamed"));
 
     let user_logs = request_with_token(
         &app,
@@ -7880,6 +7890,7 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     assert!(user_logs[0]["channel_id"].is_null());
     assert!(user_logs[0]["channel_name"].is_null());
     assert_eq!(user_logs[0]["request_protocol"], "non_stream");
+    assert!(!user_logs[0].as_object().unwrap().contains_key("streamed"));
 
     let user_log = request_with_token(
         &app,
@@ -7896,6 +7907,7 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     assert!(user_log["channel_id"].is_null());
     assert!(user_log["channel_name"].is_null());
     assert_eq!(user_log["request_protocol"], "non_stream");
+    assert!(!user_log.as_object().unwrap().contains_key("streamed"));
 
     let other_user_log = request_with_token(
         &app,
@@ -8327,10 +8339,10 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
             "INSERT INTO request_logs \
              (id,started_at,completed_at,user_id,api_key_id,api_format,api_operation, \
               client_model,upstream_model,channel_group_id,channel_id,outcome, \
-              response_status_code,streamed,input_tokens,output_tokens) \
+              response_status_code,input_tokens,output_tokens) \
              VALUES ($1,$2,$2,$3,$4,$5::api_format,$6, \
                      'statistics-codex-model',$9,$7,$8, \
-                     'succeeded',200,false,10,5)",
+                     'succeeded',200,10,5)",
         )
         .bind(Uuid::new_v4())
         .bind(codex_started_at)
@@ -8417,9 +8429,8 @@ async fn spend_leaderboard_uses_shanghai_periods_and_serves_snapshots() {
     let api_key_id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO api_keys \
-         (id,user_id,name,secret_value,status,allowed_api_formats,permissions) \
-         VALUES ($1,$2,$3,$4,'active', \
-                 ARRAY['open_ai_chat_completions']::api_format[],ARRAY['proxy'])",
+         (id,user_id,name,secret_value,status,permissions) \
+         VALUES ($1,$2,$3,$4,'active',ARRAY['proxy'])",
     )
     .bind(api_key_id)
     .bind(app.user_id)
@@ -8458,11 +8469,11 @@ async fn spend_leaderboard_uses_shanghai_periods_and_serves_snapshots() {
         sqlx::query(
             "INSERT INTO request_logs \
              (id,started_at,completed_at,user_id,api_key_id,api_format,api_operation,client_model, \
-              outcome,response_status_code,streamed,input_tokens,output_tokens,currency, \
+              outcome,response_status_code,input_tokens,output_tokens,currency, \
               price_unit_tokens,price_effective_at,input_unit_price,cached_input_unit_price, \
               cache_write_unit_price,output_unit_price,cost_amount) \
              VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions','chat_completions','leaderboard-model', \
-                     'succeeded',200,false,10,5,'USD',1000000,$2,1,0,0,1,$5)",
+                     'succeeded',200,10,5,'USD',1000000,$2,1,0,0,1,$5)",
         )
         .bind(Uuid::new_v4())
         .bind(started_at)
@@ -8623,11 +8634,11 @@ async fn spend_leaderboard_uses_shanghai_periods_and_serves_snapshots() {
     sqlx::query(
         "INSERT INTO request_logs \
          (id,started_at,completed_at,user_id,api_key_id,api_format,api_operation,client_model, \
-          outcome,response_status_code,streamed,input_tokens,output_tokens,currency, \
+          outcome,response_status_code,input_tokens,output_tokens,currency, \
           price_unit_tokens,price_effective_at,input_unit_price,cached_input_unit_price, \
           cache_write_unit_price,output_unit_price,cost_amount) \
          VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions','chat_completions','leaderboard-model', \
-                 'succeeded',200,false,10,5,'USD',1000000,$2,1,0,0,1,1)",
+                 'succeeded',200,10,5,'USD',1000000,$2,1,0,0,1,1)",
     )
     .bind(Uuid::new_v4())
     .bind(after_midnight)

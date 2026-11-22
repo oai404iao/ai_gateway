@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { AppProviders } from "@/app/providers";
@@ -15,12 +15,12 @@ function renderAt(path: string) {
 
 describe("Console navigation contracts", () => {
   it.each([
-    ["/admin/catalog", "/admin/models?view=prices", "Model configuration"],
-    ["/admin/routing/groups", "/admin/routing/channels?view=groups", "Channel configuration"],
-  ])("redirects %s to one canonical workspace", async (from, to, title) => {
-    renderAt(from);
+    ["/admin/models?view=prices", "Price sync", "Model configuration"],
+    ["/admin/routing/channels?view=groups", "Group configuration", "Channel configuration"],
+  ])("opens the selected workspace tab at %s", async (path, tab, title) => {
+    renderAt(path);
     expect(await screen.findByRole("heading", { level: 1, name: title })).toBeInTheDocument();
-    await waitFor(() => expect(window.location.pathname + window.location.search).toBe(to));
+    expect(await screen.findByRole("tab", { name: tab, selected: true })).toBeInTheDocument();
     expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
     expect(screen.queryByRole("navigation", { name: "Model routing configuration" })).not.toBeInTheDocument();
   });

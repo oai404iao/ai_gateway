@@ -114,8 +114,7 @@ function RequestLedger({ bounds, failed }: { bounds: UsageBounds; failed: boolea
       isLoading={query.isLoading}
       error={query.error}
       isEmpty={query.data?.length === 0}
-      emptyTitle="No request logs"
-      emptyDescription="No requests matched the selected filter."
+      emptyTitle="No requests in this period"
     >
       <Table className="tabular-nums">
         <TableHeader>

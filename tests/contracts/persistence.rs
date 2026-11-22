@@ -178,8 +178,8 @@ async fn settlement_rolls_back_claims_and_all_accounts_on_overflow_or_missing_up
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO api_keys(id,user_id,name,secret_value,status,allowed_api_formats,permissions)
-             VALUES($1,$2,'other',$3,'active',ARRAY['open_ai_chat_completions']::api_format[],ARRAY['proxy'])",
+            "INSERT INTO api_keys(id,user_id,name,secret_value,status,permissions)
+             VALUES($1,$2,'other',$3,'active',ARRAY['proxy'])",
         )
         .bind(other_key)
         .bind(other_user)

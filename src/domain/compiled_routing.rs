@@ -509,7 +509,6 @@ pub struct CompiledApiKey {
     user_id: Uuid,
     websocket_enabled: bool,
     filter_fast_mode: bool,
-    allowed_api_formats: HashSet<ApiFormat>,
     permissions: HashSet<ApiKeyPermission>,
     authorization: Arc<AuthorizationProfile>,
     expires_at: Option<DateTime<Utc>>,
@@ -536,10 +535,11 @@ impl CompiledApiKey {
         self.filter_fast_mode
     }
     #[must_use]
-    pub fn permits(&self, format: ApiFormat, permission: ApiKeyPermission) -> bool {
-        self.allowed_api_formats.contains(&format)
-            && self.permissions.contains(&permission)
-            && !self.is_expired()
+    pub fn permits(&self, permission: ApiKeyPermission) -> bool {
+        self.permissions.contains(&permission) && !self.is_expired()
+    }
+    pub(crate) fn can_list_models(&self) -> bool {
+        self.permits(ApiKeyPermission::Proxy) && self.permits(ApiKeyPermission::ModelsRead)
     }
     pub(crate) fn permits_route_candidate(&self, slot: usize) -> bool {
         self.authorization.permits_route_candidate(slot)
@@ -594,7 +594,6 @@ impl CompiledApiKey {
     pub(crate) fn new(
         id: Uuid,
         user_id: Uuid,
-        formats: HashSet<ApiFormat>,
         permissions: HashSet<ApiKeyPermission>,
         groups: HashSet<Uuid>,
         channels: HashSet<Uuid>,
@@ -609,7 +608,6 @@ impl CompiledApiKey {
             user_id,
             false,
             false,
-            formats,
             permissions,
             Arc::new(AuthorizationProfile::legacy(groups, channels)),
             expires_at,
@@ -625,7 +623,6 @@ impl CompiledApiKey {
         user_id: Uuid,
         websocket_enabled: bool,
         filter_fast_mode: bool,
-        formats: HashSet<ApiFormat>,
         permissions: HashSet<ApiKeyPermission>,
         authorization: Arc<AuthorizationProfile>,
         expires_at: Option<DateTime<Utc>>,
@@ -639,7 +636,6 @@ impl CompiledApiKey {
             user_id,
             websocket_enabled,
             filter_fast_mode,
-            allowed_api_formats: formats,
             permissions,
             authorization,
             expires_at,
@@ -660,7 +656,6 @@ impl CompiledApiKey {
         Self::new(
             id,
             Uuid::new_v4(),
-            HashSet::new(),
             HashSet::new(),
             HashSet::new(),
             HashSet::new(),
@@ -1742,9 +1737,7 @@ impl CompiledRuntimeConfig {
     }
     #[must_use]
     pub fn models_for(&self, key: &CompiledApiKey, format: ApiFormat) -> Vec<Arc<str>> {
-        if !key.permits(format, ApiKeyPermission::Proxy)
-            || !key.permits(format, ApiKeyPermission::ModelsRead)
-        {
+        if !key.can_list_models() {
             return vec![];
         }
         let mut models = self
@@ -1774,7 +1767,7 @@ mod tests {
     use reqwest::header::HeaderName;
     use uuid::Uuid;
 
-    use super::{ApiFormat, ApiKeyHash, CompiledApiKey, CompiledRuntimeConfig, UpstreamAuth};
+    use super::{ApiKeyHash, CompiledApiKey, CompiledRuntimeConfig, UpstreamAuth};
 
     #[test]
     fn expired_keys_are_rejected_at_authentication_time() {
@@ -1782,7 +1775,6 @@ mod tests {
         let key = Arc::new(CompiledApiKey::new(
             Uuid::new_v4(),
             Uuid::new_v4(),
-            HashSet::from([ApiFormat::OpenAiChatCompletions]),
             HashSet::new(),
             HashSet::new(),
             HashSet::new(),

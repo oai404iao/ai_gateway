@@ -2,172 +2,53 @@
 
 > 状态：当前。
 
-Codex 通过独立安装的可信原生插件接入 ChatGPT 订阅。先[安装并启用 Codex 插件](connector-plugins.md)，再导入账号、配置能力和授权；仅有订阅凭证不能代理请求。
+要让客户端通过网关使用 ChatGPT 订阅，先[安装并启用 Codex 插件](connector-plugins.md)，再连接账号、配置路由和授权。客户端始终使用 Gateway API Key，不需要拿到订阅 Token。
 
 ## 连接账号
 
-管理员可把 ChatGPT Codex 订阅作为 Connector 接入，无需 sidecar。每个凭证保留稳定
-credential UUID，可由多个兼容的逻辑渠道引用，没有组或池归属。渠道可显式配置 Responses HTTP、
-Responses WS、独立 Search、Images generation、Images edit 能力。Token、quota 和维护代理属于凭证，
-转发代理属于接入，健康、目录和路由按能力分离，访问授权属于逻辑渠道。
-
-按以下顺序配置：
-
-1. 打开 **上游凭证 → Codex**：`/admin/routing/upstream-credentials?connector=codex`。
-2. 使用 **Connect account** 的 PKCE 流程，或 **Import tokens** / **Advanced import**。
-   PKCE 回调地址仍为 `http://localhost:1455/auth/callback`，复制完整地址回 Console 完成交换。
-   高级导入支持原生 Bundle、CPA 和 Sub2API；草稿与 Token 只留在当前页面内存。
-   workspace/member 或无 workspace 的个人 user ID 用于原位重授权，不按 Token 文本去重。
-3. 配置 Codex 上游接入、渠道组及引用该凭证的逻辑渠道，再在渠道详情添加操作能力和模型目录。
-   导入不会自动创建渠道或能力；旧配置迁移保留 Images 的停用状态，重导入不覆盖渠道的独立目录。
-   HTTP Responses 的 zstd 压缩只在 Responses 能力配置，不影响 Search、Images 或 WebSocket。
-4. 建立计价模型/profile，并为需要的每个操作分别保存能力/模型候选。Search 不隐式借用
-   Responses 规则；Images generation/edit 也各有规则。新增凭证不会自动加入候选。
-5. 显式给 API Key/Policy 添加所需组或逻辑渠道；Key 需要 `proxy` 权限。
-   新建或移入已选组的渠道自动获得组授权；已授权渠道的全部能力无需逐项重新授权。
-6. 客户端 Codex provider 的 base URL 指向 Gateway `/v1`；独立搜索仍需客户端
-   `supports_standalone_web_search = true`。需要操作内会话粘性时配置 Session affinity；缓存按模型规则隔离，
-   Responses 与 Search 使用独立规则，相同 Session Key 不保证两者选中同一账号。跨操作使用同一账号
-   必须在各操作路由中明确选择绑定同一凭证的渠道能力，不能仅依赖 affinity。
-
-Codex 认证生命周期通过 `/console/v1/routing/upstream-credentials/codex` 及其子路径管理。
-逻辑渠道与能力使用统一 CRUD；普通静态密钥接口不能替代 OAuth 认证流程。
-删除凭证前必须解除全部未删除渠道的引用，包括停用渠道；删除只清除 Token 和维护代理，
-不级联删除接入、渠道、能力或金融事实。维护代理修改不改写渠道接入的转发代理。
+1. 在「上游凭证 → Codex」选择 **Connect account**，完成浏览器授权，将以 `http://localhost:1455/auth/callback` 开头的完整回调地址粘回 Console。已有凭证可选择 **Import tokens**，或用 **Advanced import** 读取原生 Bundle（`version` 必须为数字 `3`）、CLIProxyAPI 或 Sub2API 文件，见[导入格式](../reference/codex-credential-portability.md)。
+2. 创建 `codex` 上游接入，在渠道组内创建逻辑渠道并绑定这份凭证。维护代理用于 OAuth、Token 和额度操作；请求转发走接入的代理。同一凭证可供多个渠道使用。
+3. 在渠道详情添加所需操作能力和模型目录，然后[配置模型候选和 Key 授权](routing.md)。Responses HTTP、Responses WebSocket、独立搜索、图片生成和编辑各用自己的规则。凭证导入或模型发现不会替你发布路由。
+4. 将客户端 provider 的 Base URL 指向 Gateway `/v1`，用具备 `proxy` 权限且获渠道授权的 Key 发起请求。需要独立搜索时，客户端还须打开 `supports_standalone_web_search`。
 
 ## 识别凭证状态
 
-凭证状态含义：
+| 状态 | 如何处理 |
+| --- | --- |
+| `active` | 凭证可用；能否调用还取决于对应操作的路由和授权。 |
+| `draining` | 用量达到设置的阈值，不接新会话。已命中亲和记录的请求仍可继续；Images 不使用亲和。 |
+| `unavailable` | 检查额度是否允许请求，以及凭证是否需要重新授权。永久 refresh 失败后，仅查询额度或编辑设置不能恢复。 |
+| `disabled` | 凭证已被管理员停用。 |
 
-- `active`：可接收新的 Responses Session、standalone web search 或 Images generation/edit；
-- `draining`：primary/secondary quota 用量达到 threshold；只允许已命中 affinity 的既有
-  Responses Session，Images 能力在发送前被排除；
-- `unavailable`：quota 不允许、额度耗尽或 refresh token 永久失效；
-- `disabled`：管理员关闭。
-
-永久 refresh 失败会设置持久的重新授权状态；后续 quota 成功或普通设置编辑不会把该凭证重新置为
-`active`。重新执行 OAuth 或导入同一 workspace/member 身份，或同一无 workspace 个人 user ID
-的新 Token，会复用原凭证并清除该状态，不更改已绑定渠道和能力。
+重新授权或导入同一 workspace/member（个人账号为无 workspace 的同一 user ID）会更新原凭证，保留渠道、模型目录和路由。多个凭证匹配同一身份时不能自动合并。
 
 ## 导入、导出与删除
 
-凭证列表支持多选后批量启用、停用、删除和导出选中项。单条和批量删除都使用乐观并发版本：
-删除前必须解除全部未删除逻辑渠道的引用。成功后凭证从列表消失，保存的 ID/access/refresh token 被清除，维护代理引用被释放；保留不含敏感秘密的身份墓碑和历史请求引用，不级联删除其他共享资源。
-该删除不会调用
-OpenAI token revocation endpoint，若还需要使外部 Token 失效，应在账户侧另行撤销授权。
+在凭证列表选择账号可批量启用、停用、导出或删除。**Export credentials 导出的是秘密**：原生 Bundle v3 包含原始 ID/access/refresh Token、账号身份与 enable/quota 设置，还可包含所选代理及其认证信息。它不包含路由权重或渠道归属。管理员确认后才可下载，请按未加密的密钥备份保管。常规列表和详情不能读取 Token。
 
-凭证页的 **Export credentials** 需要显式确认，并下载 ai-gateway 原生 JSON Bundle。当前 Bundle
-为 version 3，包含原始 ID/access/refresh token、可选 workspace/member 身份和 enable/quota
-设置，并可选包含被这些凭证引用的代理定义及代理认证信息；不包含组/渠道归属或 routing weight。它必须按密钥或
-未加密备份处理。常规凭证列表和详情接口仍不会返回已保存 Token，只有管理员显式调用导出接口时
-才会读取这些敏感字段。高级导入会保留 Bundle 中的 enable 状态；如果 `id_token` 缺失，则验证
-阶段从 `access_token` 读取身份声明。旧原生或外部 JSON 中若带 `weight`，前端会忽略并显示
-warning。新凭证不会自动加入现有模型规则；管理员必须在协议路由编辑器中逐条添加其
-能力候选。
-
-高级导入页允许删除代理，但服务端要求 `If-Match`，并且只有当代理未被上游接入、Codex 凭证的
-维护配置或仍保留的 OAuth 流引用时才会删除；否则返回 `proxy_in_use`。已分配给导入草稿的代理还必须存在且已启用。
+删除凭证前，先解绑全部引用渠道（包括停用渠道）。删除会擦除已存 Token、释放维护代理并保留历史请求引用；如需让外部 Token 失效，还要在账号侧撤销授权。删除代理则须先解除上游接入、凭证维护设置和未清理 OAuth 流的引用。
 
 ## 刷新 Token 与查看额度
 
-后台 worker 每分钟检查凭证；access token 接近过期时刷新，quota 默认每 15 分钟重新读取。手动
-refresh token / quota 也可从凭证页执行。同一凭证的 refresh 使用实例内互斥与 generation 校验，
-避免 rotating refresh token 被并发重复使用。PostgreSQL 使用行锁事务；SQLite 使用数据库 owner
-独占、单写事务与持久 intent，不跨上游 HTTP 持有写事务，未知结果不会自动重试，恢复边界见
-[SQLite 指南](sqlite.md#升级与未知结果)。上游请求返回 `401` 时会触发一次 generation 去重的后台刷新。
+后台每分钟检查凭证，在 access token 接近过期时刷新；默认每 15 分钟查一次额度。管理员也可在凭证页手动刷新。SQLite 上未确认结果的 refresh/reset 不会自动重试，按[未知结果处理](sqlite.md#升级与未知结果)保留证据。
 
-凭证页同时记录主窗口和次窗口的周期历史。达到计划边界后的换窗显示为“自然重置”；管理员确认后
-调用 OpenAI reset-credit 接口并消费可用 credit，随后匹配到的换窗显示为“手动 reset credit”；
-没有对应手动事件却提前换窗时显示为“OpenAI 官方重置”。最后一种是根据提前换窗推断的故障补偿等
-provider-side 重置，因为 OpenAI usage 响应本身不返回重置原因。Gateway 不会自动消费
-reset credit。窗口使用率一直为 `0%` 时，Provider 可能按每次查询时间重新计算 `reset_at`；
-Gateway 会把这类滑动时间合并为同一个未使用周期，首次出现非零使用率时再固定周期边界，不会把
-每次查询误记为“OpenAI 官方重置”；历史查询也会隐藏升级前已产生的 `0% → 0%`
-“OpenAI 官方重置”误报。手动 reset-credit 操作会写审计；如果调用成功但紧随其后的 quota
-刷新失败，后台轮询会继续补齐当前状态和窗口历史。
+窗口历史区分按计划换窗的「自然重置」、管理员确认消费 credit 后的「手动 reset credit」，以及根据提前换窗推断的「OpenAI 官方重置」。最后一种是推断而非服务商返回的原因。未使用窗口的 `reset_at` 可能随查询滑动，不会每次都算成重置。网关不会自动消费 credit；手动操作后若额度刷新失败，先等待后台核对，不要重复兑换。
 
-当前主/次窗口和每条历史周期同时显示该逻辑凭证的 USD 周期花费。金额会合并 Responses 与
-Images 各能力及旧投影上所有用户、API Key 和请求来源的已计价请求，因此它表示凭证总花费，
-不是当前查看用户的个人花费。该值由 Gateway 保存的模型价格快照和渠道倍率计算，并不等同于 OpenAI
-账单；未能解析 usage 或没有价格的请求不会计入。主窗口与次窗口通常重叠，两个金额不能相加。
+窗口花费汇总该凭证下所有用户的已计价调用，按网关保存的价格和用量计算，不是服务商账单。主次窗口常有重叠，不能把金额相加。普通用户的[额度查看权](console.md#查看-codex-额度)由用户组授予。
 
-## 调用 Responses
+## 按操作调用
 
-Codex Responses HTTP Connector 只接受 `stream: true` 的 SSE 请求，强制上游
-`store: false`，并拒绝非空 `previous_response_id`。当 Responses 能力的**请求压缩**选择
-`Zstandard (zstd)` 时，发往 Codex 的最终 JSON body 使用 Zstandard level 3 编码，并设置
-`Content-Encoding: zstd` 与 `Content-Type: application/json`；默认 `Default` 不压缩，
-WebSocket、standalone search 和 Images 请求也不使用该请求编码。客户端仍可发送
-`max_output_tokens`，但选中 Codex managed channel 后，Connector 会在最终上游请求中静默删除
-该字段，因为当前 Codex 订阅请求类型不支持它；该值因此不会限制 Codex 输出。这个兼容处理同时
-适用于 HTTP SSE 与 WebSocket `response.create`，普通 OpenAI-compatible channel 不受影响。
-Codex body/Header 在普通 Transform 之后还会应用独立 provider 白名单：纯遥测、空值和明确
-no-op 可以按契约删除；无法表达的非默认语义和未知 body 字段返回 `400`，未知 Header 被删除。
-Responses HTTP/WebSocket 会透传已经显式允许的 `x-codex-beta-features`、
-`x-codex-turn-state` 和 `x-openai-internal-codex-responses-lite`；客户端提供的
-`x-codex-routing-hint` 不透传。Gateway 根据最终请求的上游模型和有效 `service_tier` 生成
-`model=<model>[;tier=<tier>]`，用于 HTTP 请求和上游 WS 握手。支持 TTL 的插件版本中，Responses 的
-`prompt_cache_options` 仅支持 `{"ttl":"30m"}` 和 `{"ttl":"12h"}`；`null` 按未设置处理。
-此外，Codex OAuth 出站会把 `client_metadata["x-codex-installation-id"]` 和 turn metadata 中的
-`installation_id` 替换为按逻辑凭证稳定的 opaque UUID；turn metadata 的 `workspaces` 始终替换
-为 Console“插件管理”中配置的单一合成 Git 工作区。其 `path`、
-`associated_remote_urls.origin` 等值以所安装插件版本的设置 schema 和已保存配置为准，不是
-Gateway 固定默认值；修改方法见[插件设置](connector-plugins.md#3-调整插件设置)。本地路径、真实
-Git remote、workspace 数量、commit 和 dirty 状态不会发送给订阅后端。
-管理员可在 Console“插件管理”的 Codex 设置中修改 `originator`、`client_version` 和
-`User-Agent`。默认值和校验以所安装插件提供的设置 schema 为准；需要精确模拟原生 CLI 时，可把带操作系统、架构与终端后缀的完整
-User-Agent 写入该设置。`client_version` 同时用于 `version` Header 和 Models 查询参数，因此
-上游提高最小客户端版本时无需重新发布 Gateway。保存会发布新快照；已经在处理的请求以及正在执行的
-Models/quota 管理请求保留取得身份时的设置。
-Responses HTTP/WebSocket 缺少 `client_metadata` 时，Gateway 会创建并补齐 installation、
-session、thread、turn、window、turn metadata 和 `prompt_cache_key`；已有非空身份值保留。
-Gateway 不推测 request kind、sandbox、beta、subagent、attestation、turn-state 或 residency。
-其他 metadata 和 W3C trace/baggage 保持不变。
-Codex HTTP 成功响应即使缺少或错误声明上游 `Content-Type`，Gateway 也会向客户端规范化为
-`text/event-stream`；非成功 JSON 错误响应仍保留原内容类型。
-Responses WebSocket 需要独立能力、路由以及系统与用户开关；WebSocket `response.create` 同样强制 `stream: true` 和
-`store: false`，但保留 `previous_response_id`、`generate` 与 `client_metadata`，使同一条
-上游连接可以使用 Codex 增量状态。首次派发前凭证不可用时，未命中 affinity 或 WebSocket pin
-的请求可以换到同一操作规则内其他合格候选；HTTP 请求或 WebSocket 消息一旦发送到 Codex，不做跨凭证自动重试。
-已命中 affinity 的凭证处于 `unavailable`、`disabled` 或 Token 过期时，会在 affinity TTL
-内持续 fail closed；携带 `previous_response_id` 的 WebSocket 增量请求也不会改用其他订阅账户。完整的新请求不因共用下游连接而绑定上次的账户。
+| 操作 | 客户端需要注意 |
+| --- | --- |
+| Responses HTTP | `POST /v1/responses` 需要 `stream: true`，不能带非空 `previous_response_id`。插件设置 `store: false`，删除 `max_output_tokens`，因此该值不限制订阅账号的输出。成功响应为 SSE。 |
+| Responses WebSocket | 在系统和用户设置中[开启 WebSocket](websocket.md)，配置 `responses-ws` 能力及路由。顺序发送 `response.create`；可用 `previous_response_id` 在原上游连接续写。与 HTTP 一样不保留 `max_output_tokens`。 |
+| 独立搜索 | `POST /v1/alpha/search` 返回非流式 JSON。不复用 Responses 路由；没有可识别 usage 时不估算费用。 |
+| 图片 | generation 使用 JSON，edit 使用 multipart；Codex edit 最多 5 张输入图且不接受 mask。支持的字段和值见 [Images 兼容范围](../reference/openai-images.md#codex-插件)。两者均不使用 Session 亲和。 |
 
-## 调用独立搜索
-
-Codex standalone web search 使用独立 Search 能力和同一凭证，公共目标为
-`POST /v1/alpha/search`，Connector 将上游目标改为 managed base URL 下的 `/alpha/search`。
-该请求固定为非流式 JSON；保留合法的 `x-codex-turn-metadata`，缺失时由 Connector 安全补齐，
-并对其应用相同 installation/workspace 归一化；客户端 `originator` 和 `User-Agent` 始终替换为
-插件设置中的 Codex Connector 身份。随后注入共享 Bearer、可选 account/FedRAMP 和版本，
-并按 Responses 相同规则保留会话身份 Header、仅补全缺失值。发送前不可用且未命中 affinity 时可以重选凭证；命中
-affinity 后 fail closed；请求发送后不重试。上游没有返回可识别 usage 时，日志不估算 token
-或费用。
-
-## 生成和编辑图片
-
-Codex Images generation 在模型别名和受限变换后只保留 Codex wire type 声明的 JSON 字段，请求目标改为
-`/backend-api/codex/images/generations`。Connector 注入共享凭证的 Bearer、可选
-account/FedRAMP、`originator`、版本、User-Agent；`x-codex-image-turn-id` 保留有效调用方值，
-缺失或不可用时补全。`session-id`、`thread-id`、`x-client-request-id`、window 和 turn metadata
-沿用 Responses 的保留/缺失补全规则，installation/workspaces 仍归一化。Images 不使用 Session affinity；发送前若凭证
-不可用可以选择同一操作规则中的其他 Images 能力，但请求一旦发送就不会自动换账户或重试。
-成功响应按非流式 JSON 转发并增量提取顶层 usage，不会为 `data[].b64_json` 缓冲完整响应。
-
-Codex Images edit 接收相同客户端模型的 multipart 请求，并在 replayable body 上流式读取图片，
-转换为 `/backend-api/codex/images/edits` 的 JSON `images[].image_url` data URL。该 adapter
-最多接受五张输入图片、不接受 mask；转发 `prompt`、`background`、
-`model`、`n`、`quality`、`size` 及[支持的 GIF 控制字段](../reference/openai-images.md#codex-插件)。`moderation=auto` 在客户端入口层作为兼容默认值删除；
-`output_format=png` 在 Codex 出口层作为 provider 等价值删除。其他无法等价忽略的取值或字段在
-联系上游前拒绝。认证、会话身份和 image turn Header、draining 和发送后不重试边界与 generation 相同。
+需要压缩 HTTP Responses 时，在对应能力开启 `zstd`；该设置不影响 WebSocket、搜索或图片。请求一旦发往 Codex 就不自动重试。若想让同一会话的搜索和 Responses 使用同一账号，应为各操作明确选择绑定同一凭证的能力：亲和按模型规则隔离，不跨操作选账号。已命中亲和的凭证不可用时，不会为继续该会话而改用另一账号。
 
 ## 会话身份与秘密保护
 
-客户端已有的合法 `session-id` / `thread-id` 会转发。缺少时，Responses/Search HTTP 请求若匹配 Session affinity，
-会从不可逆 session hash 派生稳定 opaque UUID；未匹配 affinity 的 HTTP 请求仅使用本次请求
-UUID。WebSocket Session 从下游握手身份派生稳定 seed，使顺序请求和池化重连使用一致身份。
+插件在管理员变换之后处理出站身份：保留允许的会话标识，补全缺失值，以凭证稳定的安装 ID 和合成 Git 工作区替换客户端本地安装信息、路径和 Git 元数据。`originator`、客户端版本、User-Agent 和合成工作区均在[插件设置](connector-plugins.md#3-调整插件设置)中维护，默认值取决于安装的插件版本。
 
-OAuth token 不会进入 audit/debug 输出；除显式管理员导出接口外，也不会由常规 Console API 返回。
-与普通 upstream API key 一样依赖受保护的数据库、备份和主机访问边界，未额外实施列级
-静态加密。外部接口与限制见
-[Codex OAuth 与订阅后端接入参考](../reference/codex-oauth-connect.md)和
-[Codex 凭证导入格式兼容性](../reference/codex-credential-portability.md)。
+数据库、导出包及其备份需按[秘密保护要求](security.md)管控。出站字段、版本差异及订阅后端行为见 [Codex 接入参考](../reference/codex-oauth-connect.md)。

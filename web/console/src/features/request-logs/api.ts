@@ -1,17 +1,17 @@
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "@/api/client";
 import type { paths } from "@/api/generated/console-v1";
-import type { ListQuery, RequestLogView } from "@/api/types";
+import type { AdminRequestLogQuery, OwnRequestLogQuery, RequestLogView } from "@/api/types";
 
-function ownListKey(filters: ListQuery) {
+function ownListKey(filters: OwnRequestLogQuery) {
   return ["console", "me", "request-logs", filters] as const;
 }
 
-function allListKey(filters: ListQuery) {
+function allListKey(filters: AdminRequestLogQuery) {
   return ["console", "request-logs", filters] as const;
 }
 
-function requestLogQuery(filters: ListQuery): string {
+function requestLogQuery(filters: OwnRequestLogQuery | AdminRequestLogQuery): string {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(filters)) {
     if (value !== undefined && value !== null && value !== "") {
@@ -22,14 +22,14 @@ function requestLogQuery(filters: ListQuery): string {
   return query ? `?${query}` : "";
 }
 
-export function useOwnRequestLogs(filters: ListQuery) {
+export function useOwnRequestLogs(filters: OwnRequestLogQuery) {
   return useQuery({
     queryKey: ownListKey(filters),
     queryFn: () => apiGet<RequestLogView[]>(`/me/request-logs${requestLogQuery(filters)}`),
   });
 }
 
-export function useAllRequestLogs(filters: ListQuery) {
+export function useAllRequestLogs(filters: AdminRequestLogQuery) {
   return useQuery({
     queryKey: allListKey(filters),
     queryFn: () => apiGet<RequestLogView[]>(`/request-logs${requestLogQuery(filters)}`),
@@ -53,5 +53,3 @@ export function useRequestLog(basePath: string, id: string | null) {
     enabled: Boolean(id),
   });
 }
-
-export type { ListQuery };

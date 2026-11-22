@@ -85,7 +85,7 @@ const FACT_FIELDS: [&str; 30] = [
     "peak_pricing",
 ];
 
-const LOG_FIELDS: [&str; 39] = [
+const LOG_FIELDS: [&str; 38] = [
     "id",
     "started_at",
     "completed_at",
@@ -102,7 +102,6 @@ const LOG_FIELDS: [&str; 39] = [
     "channel_id",
     "outcome",
     "response_status_code",
-    "streamed",
     "ttft_ms",
     "total_duration_ms",
     "output_tokens_per_second",
@@ -403,7 +402,7 @@ impl SqliteRequestLogRepository {
                 let stored = sqlx::query_as::<_, RequestLogRow>(
                     "SELECT id,started_at,completed_at,user_id,api_key_id,request_source,api_format,\
                             api_operation,request_protocol,client_model,upstream_model,model_rule_id,\
-                            channel_group_id,channel_id,outcome,response_status_code,streamed,ttft_ms,\
+                            channel_group_id,channel_id,outcome,response_status_code,ttft_ms,\
                             total_duration_ms,output_tokens_per_second,input_tokens,cached_input_tokens,\
                             cache_write_tokens,output_tokens,reasoning_tokens,model_id,currency,\
                             price_unit_tokens,price_effective_at,input_unit_price,\
@@ -1378,7 +1377,6 @@ fn log_object(
     entry.insert("channel_id".into(), json!(uuid_text(event.channel_id)));
     entry.insert("outcome".into(), json!(event.outcome.as_str()));
     entry.insert("response_status_code".into(), json!(response_status_code));
-    entry.insert("streamed".into(), json!(event.streamed));
     entry.insert("ttft_ms".into(), json!(event.ttft_ms));
     entry.insert("total_duration_ms".into(), json!(event.total_duration_ms));
     entry.insert(
@@ -1565,7 +1563,6 @@ struct RequestLogRow {
     channel_id: Option<SqliteUuid>,
     outcome: String,
     response_status_code: Option<i16>,
-    streamed: bool,
     ttft_ms: Option<i32>,
     total_duration_ms: Option<i32>,
     output_tokens_per_second: Option<SqliteTokenRate>,
@@ -1613,7 +1610,6 @@ impl RequestLogRow {
             && self.channel_id.map(|value| value.0) == event.channel_id
             && self.outcome == event.outcome.as_str()
             && self.response_status_code == response_status_code
-            && self.streamed == event.streamed
             && self.ttft_ms == event.ttft_ms
             && self.total_duration_ms == Some(event.total_duration_ms)
             && self.output_tokens_per_second.map(|value| value.0)
@@ -1678,7 +1674,7 @@ mod tests {
             let database = SqliteDatabase::open(&directory.path().join("gateway.sqlite"))
                 .await
                 .unwrap();
-            assert_eq!(database.install_schema().await.unwrap(), 12);
+            assert_eq!(database.install_schema().await.unwrap(), 14);
             let database = Arc::new(database);
             let logs = SqliteRequestLogRepository::new(Arc::clone(&database));
             Self {
@@ -1718,9 +1714,9 @@ mod tests {
         async fn seed(&self) {
             self.execute(&format!(
                 "INSERT INTO users(id,display_name) VALUES ('{USER}','Pipeline unit user');
-                 INSERT INTO api_keys(id,user_id,name,secret_value,status,allowed_api_formats,permissions)
+                 INSERT INTO api_keys(id,user_id,name,secret_value,status,permissions)
                  VALUES ('{KEY}','{USER}','Unit key','unit-key-secret','active',
-                         '[\"open_ai_chat_completions\"]','[\"proxy\"]');
+                         '[\"proxy\"]');
                  INSERT INTO models(id,source_model_id,display_name,price_unit_tokens,input_unit_price,
                      cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at)
                  VALUES ('{MODEL}','pipeline-model','Pipeline',1000000,'1','0','0','2',
@@ -1759,7 +1755,6 @@ mod tests {
             model_id: Some(MODEL),
             outcome: RequestLogOutcome::Succeeded,
             response_status_code: Some(200),
-            streamed: false,
             ttft_ms: Some(1),
             total_duration_ms: 2,
             billing: Some(RequestBilling {

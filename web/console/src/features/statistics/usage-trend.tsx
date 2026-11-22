@@ -161,12 +161,7 @@ export function UsageTrend({
         </div>
         {!report.summary.request_count || !series.length || (unpriced && metric === "cost_amount") ? (
           <EmptyState
-            title={t(unpriced && metric === "cost_amount" ? "No priced requests" : "No statistics")}
-            description={t(
-              unpriced && metric === "cost_amount"
-                ? "No request costs were recorded for this filter."
-                : "No requests matched the selected filter.",
-            )}
+            title={t(unpriced && metric === "cost_amount" ? "No priced requests" : "No requests match these filters")}
             className="min-h-52"
           />
         ) : (

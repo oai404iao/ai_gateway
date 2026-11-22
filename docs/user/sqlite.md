@@ -2,9 +2,7 @@
 
 > 状态：当前。仅支持 Linux、本地文件系统与协作式单实例。
 
-本页用于选择 SQLite、启动单实例，并在停机后备份和恢复数据库/spool。SQLite 与 PostgreSQL 是完整替代后端，不是混合存储，不提供 PG 数据导入、HA 或在线备份。Console、API Key、路由、
-Codex、请求日志、不可变计量事实与结算均使用选定的数据库。
-公共协议、鉴权和金额规则不变；单写事务不适合通过增加实例数扩容。
+选择 SQLite 后，Console、路由、请求日志与结算共用本地数据库，由一个 Gateway 进程独占。适用于不需要 PostgreSQL 或多实例的部署；不提供 PostgreSQL 数据导入、HA 或在线备份。
 
 ## 1. 构建并选择 SQLite
 
@@ -55,12 +53,10 @@ connect_timeout_seconds = 5
 
 管理员 CLI、迁移、备份与 serve 使用相同文件/进程所有权。
 **运行中的 SQLite 实例不能同时执行管理员 CLI**，需先停机；Console 在线管理不受此限制。
-`close()` 不释放进程级 lease，只有进程退出才允许另一个进程接手。
 
 ## 使用容器
 
-`docker-compose.sqlite.yaml` 不启动 PostgreSQL，提供数据库、request spool 和
-Images 临时上传目录的独立持久卷。**当前该 manifest 未挂载 entrypoint 必需的插件目录，必须先补充下面的本地 override**；不要直接运行原始 manifest 后把只读根文件系统改为可写来绕过。先按[生产部署](production-deployment.md)生成 JWT
+`docker-compose.sqlite.yaml` 为数据库、request spool 和 Images 临时目录提供独立卷。**还需用下面的 override 挂载 entrypoint 所需的插件目录**，使容器根文件系统保持只读。先按[生产部署](production-deployment.md)生成 JWT
 密钥，复制 `deploy/compose/config.example.toml` 到 `config/config.sqlite.toml`，
 把数据库段换为：
 
@@ -71,9 +67,7 @@ max_connections = 5
 connect_timeout_seconds = 5
 ```
 
-删除该段的 `password_file`。SQLite stack 不挂载 PostgreSQL 密码；entrypoint 在降权到
-UID/GID 10001 前准备 `0700` SQLite volume。不要通过多个容器共享此卷扩容，
-不要绕过 entrypoint。默认使用本地镜像，避免选到不含 SQLite 的旧发布。将下面的内容保存为忽略的 `config/compose.sqlite.override.yaml`，为 entrypoint 添加独立持久插件卷：
+SQLite 不使用 `password_file`。entrypoint 在降权到 UID/GID 10001 前准备 `0700` 数据库目录；该卷只供一个容器运行。将以下内容保存为 `config/compose.sqlite.override.yaml`：
 
 ```yaml
 services:
@@ -95,7 +89,6 @@ docker compose -f docker-compose.sqlite.yaml -f config/compose.sqlite.override.y
 ```
 
 已有文件必须保持 UID/GID 10001；entrypoint 不递归修复恢复数据的错误所有权。
-已有 PostgreSQL 部署继续使用 `docker-compose.prd.yaml`，其连接和事务语义不变。
 
 ## 停机成对备份
 
@@ -119,7 +112,7 @@ ai-gateway restore-sqlite --source /absolute/backups/new-snapshot \
 1. 取得数据库进程/目录锁，拒绝活跃 Gateway；验证身份、完整 migration checksum、
    integrity、外键，然后执行 checkpoint 并关闭 native 连接。
 2. 保留文件所有权，取得所有 spool writer 锁；复制主库、`.identity`、仍存在的
-   SQLite sidecars 及整个 spool（含未知请求、检查点和终结槽）。
+   SQLite sidecars 及整个 spool（含 `journal-v2/` 中的检查点、终态槽和未知 intent，也保留根目录下的旧布局证据）。
 3. 写带数据库 UUID、相对路径、文件大小和 SHA-256 的 manifest，fsync 文件与目录。
    manifest 最后落盘；没有完整 manifest 的目录不是可用备份。
 4. 恢复先验证清单、文件集合与 checksum，写入新的私有 staging tree，再由同一个二进制
@@ -129,30 +122,23 @@ ai-gateway restore-sqlite --source /absolute/backups/new-snapshot \
 恢复后配置：
 
 - 数据库 URL 指向 `new-instance/database/gateway.sqlite`；
-- spool 指向 `new-instance/spool`；
+- spool 指向 `new-instance/spool`，不是 `new-instance/spool/journal-v2`；恢复备份不会将旧布局转换为可回放记录；
 - 外部配置、JWT 私钥、插件目录和代理/网络环境需另行安全保存并配套恢复，不包含在 snapshot 内；
 - Images 临时上传目录不属于财务备份，不恢复在途 HTTP 请求。
 
 失败备份目录或 `.sqlite-restore-*` staging 保留用于诊断，**不要用它们启动服务**。
 确认失败且无进程占用后由操作者单独处置；工具不自动删除已有数据。
 校验和检测损坏，不证明来自可信操作者；仅恢复受保护、可信来源的快照。
-这不是在线一致性备份，也不保证硬件突然断电、恶意同 UID/root 或跨机器并行副本的安全。
 
 ## 升级与未知结果
 
-SQLite 支持新部署和自身连续 schema 升级，不提供 PG → SQLite 导入。
-升级前停机成对备份，禁止混跑新旧二进制；SQLite migration 整批原子提交，
-未知/超前历史或 checksum 变化拒绝启动，不提供跳过校验开关。
+从旧请求日志布局升级时，先按[目录切换步骤](upgrades.md#请求日志目录切换)处理未入库的终态，再用匹配的旧版本停机成对备份。SQLite migration 整批原子提交；迁移历史未知、超前或校验和不符时拒绝启动。
 
 Codex refresh/reset 在 HTTP 前持久化 intent；取消、超时或结果提交失败不自动重试。
 放弃的 refresh 可由管理员重新导入正确凭证；活跃操作不允许抢占。
 未知 quota-reset **持续拒绝受保护操作**，没有人工确认结果的恢复 API。
 不要删除 intent、重试兑换或凭借重启宣称已经退款；保留 provider 证据。
 详见[Codex 仓储协议](../development/sqlite-codex.md)。
-跨版本升级先读[升级指南](upgrades.md)，包含原 Codex 拼车部署的授权审核。
-
-验收与故障场景见[双后端系统 E2E](../development/system-e2e.md)、
-[文件生命周期](../development/sqlite-lifecycle.md)及[独立计量](../development/sqlite-metering.md)。
 
 ## 恢复后验证
 

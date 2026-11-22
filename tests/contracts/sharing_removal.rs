@@ -146,8 +146,8 @@ async fn seed(database: &Backend<'_>) {
          INSERT INTO codex_sharing_ledger(singleton,ledger_id) VALUES (true,'{}');
          INSERT INTO request_metering_facts(id,started_at,completed_at,user_id,api_key_id,request_source,
           api_format,api_operation,request_protocol,client_model,outcome,cost_amount,peak_pricing)
-         VALUES ('{}',now(),now(),'{user}','{key}','client','open_ai_responses','responses','non_stream','model','failed','0',false),
-                ('{}',now(),now(),'{user}','{key}','client','open_ai_responses','responses','non_stream','model','succeeded',NULL,false),
+         VALUES ('{}',now(),now(),'{user}','{key}','client','open_ai_responses','responses','sse','model','failed','0',false),
+                ('{}',now(),now(),'{user}','{key}','client','open_ai_responses','responses-ws','websocket','model','succeeded',NULL,false),
                 ('{}',now(),now(),'{user}','{key}','client','open_ai_responses','responses','non_stream','model','cancelled','0',false);
          INSERT INTO request_settlements(request_id,cost_amount,currency) VALUES ('{}','0',NULL);
          INSERT INTO request_settlement_pending(request_id,completed_at) VALUES ('{}',now());",
@@ -155,7 +155,7 @@ async fn seed(database: &Backend<'_>) {
     )).await;
 }
 
-async fn verify(database: &Backend<'_>, before: Vec<Vec<String>>) {
+async fn verify(database: &Backend<'_>, before: &[Vec<String>]) {
     assert_eq!(database.preserved_state().await, before);
     assert_eq!(
         database.rows("SELECT CAST(id AS TEXT) FROM upstream_channels WHERE enabled AND deleted_at IS NULL ORDER BY id").await,
@@ -182,7 +182,7 @@ async fn verify(database: &Backend<'_>, before: Vec<Vec<String>>) {
 }
 
 #[tokio::test]
-async fn postgres_sharing_removal_quarantines_aliases_and_preserves_grants_and_facts() {
+async fn postgres_removals_quarantine_aliases_and_preserve_grants_logs_and_facts() {
     use ai_gateway::persistence::capability_cutover::{activation, operation_split::storage};
     use sqlx::migrate::Migrate;
 
@@ -217,15 +217,71 @@ async fn postgres_sharing_removal_quarantines_aliases_and_preserves_grants_and_f
     let backend = Backend::Postgres(&database.pool);
     seed(&backend).await;
     let before = backend.preserved_state().await;
-    run_migrations(&database.pool).await.unwrap();
-    verify(&backend, before).await;
-    run_migrations(&database.pool).await.unwrap();
+    let apply = async |version| {
+        let migration = MIGRATOR.iter().find(|m| m.version == version).unwrap();
+        let mut tx = database.pool.begin().await.unwrap();
+        (*tx).apply("_sqlx_migrations", migration).await.unwrap();
+        tx.commit().await.unwrap();
+    };
+    apply(72).await;
+    verify(&backend, &before).await;
+
+    sqlx::query(
+        "UPDATE api_keys SET last_used_at=now(), allowed_group_ids=ARRAY[$2]::uuid[], allowed_channel_ids=ARRAY[$3]::uuid[]
+         WHERE id=$1",
+    )
+    .bind(id(2))
+    .bind(id(4))
+    .bind(id(26))
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let keys = backend
+        .rows("SELECT (to_jsonb(k) - 'allowed_api_formats')::text FROM api_keys k ORDER BY k.id")
+        .await;
+    apply(73).await;
     assert_eq!(
         backend
-            .rows("SELECT CAST(max(version) AS TEXT) FROM _sqlx_migrations")
+            .rows("SELECT to_jsonb(k)::text FROM api_keys k ORDER BY k.id")
             .await,
-        ["72"]
+        keys,
     );
+
+    backend.execute(&format!(
+        "INSERT INTO request_logs(id,started_at,completed_at,user_id,api_key_id,api_format,api_operation,
+           request_protocol,streamed,attempts,client_model,outcome,cost_amount)
+         SELECT id,started_at,completed_at,user_id,api_key_id,api_format,api_operation,
+           request_protocol,false,'[1]'::jsonb,client_model,outcome,cost_amount FROM request_metering_facts;
+         INSERT INTO audit_logs(id,actor_user_id,actor_type,action,object_type,object_id,source_ip_prefix)
+         VALUES ('{}','{}','user','update','api_key','{}','192.0.2.0/24');",
+        id(51), id(1), id(2),
+    )).await;
+    let mut rows_after_drop = Vec::new();
+    for (table, discarded) in [
+        ("api_keys", "'last_used_at'"),
+        ("request_logs", "ARRAY['streamed','attempts']"),
+        ("audit_logs", "'source_ip_prefix'"),
+    ] {
+        let rows = backend
+            .rows(&format!(
+                "SELECT (to_jsonb(t) - {discarded})::text FROM {table} t ORDER BY id"
+            ))
+            .await;
+        assert!(!rows.is_empty());
+        rows_after_drop.push((table, rows));
+    }
+    for _ in 0..2 {
+        run_migrations(&database.pool).await.unwrap();
+        for (table, rows) in &rows_after_drop {
+            let actual = backend
+                .rows(&format!(
+                    "SELECT to_jsonb(t)::text FROM {table} t ORDER BY id"
+                ))
+                .await;
+            assert_eq!(&actual, rows, "unexpected {table} row change");
+        }
+        verify(&backend, &before).await;
+    }
     database.cleanup().await;
 }
 
@@ -261,8 +317,8 @@ async fn sqlite_sharing_removal_preserves_pending_intent_and_restores_update_fen
     let intent_query = "SELECT credential_id||':'||attempt_id||':'||kind||':'||CAST(generation AS TEXT)||':'||started_at FROM _gateway_codex_operations";
     let intent = backend.rows(intent_query).await;
     let before = backend.preserved_state().await;
-    assert_eq!(database.install_schema().await.unwrap(), 1);
-    verify(&backend, before).await;
+    assert_eq!(database.install_schema().await.unwrap(), 3);
+    verify(&backend, &before).await;
     assert_eq!(backend.rows(intent_query).await, intent);
     let mut tx = database.begin_write().await.unwrap();
     let error = sqlx::query(sqlx::AssertSqlSafe(format!(

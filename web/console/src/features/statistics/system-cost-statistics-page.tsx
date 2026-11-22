@@ -14,9 +14,8 @@ export function SystemCostStatisticsPage() {
       <PageHeader title="Cost statistics" actions={<Badge variant="secondary">{t("Global")}</Badge>} />
       {params.has("codex_credential_id") ? (
         <Alert>
-          <AlertTitle>{t("Credential filters are no longer supported.")}</AlertTitle>
+          <AlertTitle>{t("Costs cannot be filtered by credential.")}</AlertTitle>
           <AlertDescription className="flex flex-col items-start gap-2">
-            {t("Remove the credential filter to view costs for the remaining filters.")}
             <Button variant="outline" onClick={() => {
               const next = new URLSearchParams(params);
               next.delete("codex_credential_id");

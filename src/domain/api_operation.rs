@@ -5,7 +5,7 @@ use super::ApiFormat;
 /// The concrete public API operation for one logical request.
 ///
 /// Operations isolate routing within an API format, including HTTP versus
-/// WebSocket Responses. Format permission alone does not authorize a capability.
+/// WebSocket Responses. The selected candidate must belong to an authorized channel.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApiOperation {

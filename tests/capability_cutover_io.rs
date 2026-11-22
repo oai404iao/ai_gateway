@@ -38,9 +38,9 @@ const CODEX_RULE: Uuid = Uuid::from_u128(0x7000_0000_0000_0000_0000_0000_0000_00
 // A pre-existing group selection with no materialized channels, as when a key
 // selected a then-empty group. The migrated KEY retains its partial expansion.
 const INSERT_EMPTY_MATERIALIZATION: &str = "INSERT INTO api_keys
-    (id,user_id,name,secret_value,status,allowed_api_formats,permissions,allowed_group_ids,allowed_channel_ids)
+    (id,user_id,name,secret_value,status,permissions,allowed_group_ids,allowed_channel_ids)
     SELECT '20000000-0000-0000-0000-000000000002',user_id,'Legacy empty expansion',
-           'empty-materialization-secret',status,allowed_api_formats,permissions,allowed_group_ids,allowed_channel_ids
+           'empty-materialization-secret',status,permissions,allowed_group_ids,allowed_channel_ids
     FROM api_keys WHERE secret_value='cutover-secret'";
 
 fn cutover_at() -> DateTime<Utc> {
@@ -541,7 +541,6 @@ async fn exercise_canonical_authorization(
                 user_id: USER,
                 name: "Group target key".into(),
                 expires_at: None,
-                allowed_api_formats: vec!["open_ai_chat_completions".into()],
                 permissions: vec!["proxy".into()],
                 allowed_group_ids: vec![GROUP],
                 allowed_channel_ids: vec![],
@@ -643,7 +642,6 @@ async fn exercise_canonical_authorization(
         name: "Renamed group key".into(),
         status: "active".into(),
         expires_at: None,
-        allowed_api_formats: vec!["open_ai_chat_completions".into()],
         permissions: vec!["proxy".into()],
         allowed_group_ids: vec![GROUP],
         allowed_channel_ids: channels,
@@ -711,11 +709,11 @@ fn assert_responses_channels(
     secret: &str,
     expected: &[Uuid],
 ) {
-    use ai_gateway::domain::{ApiFormat, ApiKeyPermission, ApiOperation, RequestProtocol};
+    use ai_gateway::domain::{ApiKeyPermission, ApiOperation, RequestProtocol};
     use ai_gateway::routing::{PassiveHealthPolicy, RoutingRuntime, SelectionResult};
     let routing = RoutingRuntime::new(PassiveHealthPolicy::default());
     let key = snapshot.authenticate(secret).unwrap();
-    assert!(key.permits(ApiFormat::OpenAiResponses, ApiKeyPermission::Proxy));
+    assert!(key.permits(ApiKeyPermission::Proxy));
     let mut excluded = Vec::new();
     let mut channels = std::collections::BTreeSet::new();
     while let SelectionResult::Selected(selected) = routing
@@ -751,7 +749,6 @@ async fn exercise_legacy_group_revocation(
             name: key.name.clone(),
             status: "active".into(),
             expires_at: None,
-            allowed_api_formats: key.allowed_api_formats.clone(),
             permissions: key.permissions.clone(),
             allowed_group_ids: groups,
             allowed_channel_ids: vec![CHANNEL],
@@ -1687,7 +1684,6 @@ async fn exercise_self_service_channel_boundary(
                 user_id: USER,
                 name: "Channel-authorized admin key".into(),
                 expires_at: None,
-                allowed_api_formats: vec!["open_ai_chat_completions".into()],
                 permissions: vec!["proxy".into()],
                 allowed_group_ids: vec![GROUP],
                 allowed_channel_ids: vec![],
@@ -2976,7 +2972,7 @@ mod sqlite_backend {
             &ai_gateway::persistence::capability_cutover::credential_ownership::upgrade(&projected),
         );
         transaction.commit().await.unwrap();
-        assert_eq!(database.install_schema().await.unwrap(), 6);
+        assert_eq!(database.install_schema().await.unwrap(), 8);
         let mut transaction = database.begin_write().await.unwrap();
         assert_topology(
             &expected,

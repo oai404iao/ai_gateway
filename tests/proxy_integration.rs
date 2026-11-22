@@ -49,6 +49,7 @@ use uuid::Uuid;
 
 const CLIENT_KEY: &str = "client-key";
 const CHAT_ONLY_KEY: &str = "chat-only-key";
+const PROXY_ONLY_KEY: &str = "proxy-only-key";
 const MODELS_READ_ONLY_KEY: &str = "models-read-only-key";
 const NO_REACHABLE_MODELS_KEY: &str = "no-reachable-models-key";
 const UPSTREAM_KEY: &str = "upstream-key";
@@ -866,25 +867,22 @@ fn configured_proxy_with_policy_and_transforms(
         test_model: None,
         test_pricing_model_id: None,
     };
-    let key = |secret: &str, formats: Vec<&str>, groups: Vec<Uuid>, permissions: Vec<&str>| {
-        ApiKeyRecord {
-            id: Uuid::new_v4(),
-            user_id: Uuid::new_v4(),
-            user_status: "active".into(),
-            user_websocket_enabled: false,
-            user_filter_fast_mode: transforms.filter_fast_mode,
-            secret_value: secret.into(),
-            status: "active".into(),
-            expires_at: None,
-            allowed_api_formats: formats.into_iter().map(str::to_owned).collect(),
-            permissions: permissions.into_iter().map(str::to_owned).collect(),
-            allowed_group_ids: groups,
-            allowed_channel_ids: vec![],
-            requests_per_minute: None,
-            max_concurrent_requests: None,
-            quota_limit_amount: None,
-            quota_used_amount: Default::default(),
-        }
+    let key = |secret: &str, groups: Vec<Uuid>, permissions: Vec<&str>| ApiKeyRecord {
+        id: Uuid::new_v4(),
+        user_id: Uuid::new_v4(),
+        user_status: "active".into(),
+        user_websocket_enabled: false,
+        user_filter_fast_mode: transforms.filter_fast_mode,
+        secret_value: secret.into(),
+        status: "active".into(),
+        expires_at: None,
+        permissions: permissions.into_iter().map(str::to_owned).collect(),
+        allowed_group_ids: groups,
+        allowed_channel_ids: vec![],
+        requests_per_minute: None,
+        max_concurrent_requests: None,
+        quota_limit_amount: None,
+        quota_used_amount: Default::default(),
     };
     let rule =
         |model: &str, upstream: &str, operation: ApiOperation, channel_id: Uuid| ModelRuleRecord {
@@ -947,29 +945,18 @@ fn configured_proxy_with_policy_and_transforms(
         api_keys: vec![
             key(
                 CLIENT_KEY,
-                vec![
-                    "open_ai_chat_completions",
-                    "open_ai_responses",
-                    "open_ai_images",
-                ],
                 vec![chat_group, responses_group, images_group],
                 vec!["proxy", "models.read"],
             ),
             key(
                 CHAT_ONLY_KEY,
-                vec!["open_ai_chat_completions"],
                 vec![chat_group],
                 vec!["proxy", "models.read"],
             ),
-            key(
-                MODELS_READ_ONLY_KEY,
-                vec!["open_ai_chat_completions"],
-                vec![chat_group],
-                vec!["models.read"],
-            ),
+            key(MODELS_READ_ONLY_KEY, vec![chat_group], vec!["models.read"]),
+            key(PROXY_ONLY_KEY, vec![chat_group], vec!["proxy"]),
             key(
                 NO_REACHABLE_MODELS_KEY,
-                vec!["open_ai_chat_completions"],
                 vec![empty_chat_group],
                 vec!["proxy", "models.read"],
             ),
@@ -1407,7 +1394,6 @@ fn session_affinity_proxy(first_upstream_url: &str, second_upstream_url: &str) -
             secret_value: CLIENT_KEY.into(),
             status: "active".into(),
             expires_at: None,
-            allowed_api_formats: vec!["open_ai_chat_completions".into()],
             permissions: vec!["proxy".into()],
             allowed_group_ids: vec![group_id],
             allowed_channel_ids: vec![],
@@ -1709,14 +1695,14 @@ async fn configured_model_with_only_disabled_channels_returns_service_unavailabl
 }
 
 #[tokio::test]
-async fn api_key_and_model_rules_do_not_fall_back_between_formats() {
+async fn proxy_permission_route_grants_and_operation_rules_are_independent() {
     let harness = harness(StatusCode::OK, Vec::new()).await;
     let client = client();
 
     let forbidden = authorized_post(
         &client,
-        harness.url("/v1/responses"),
-        CHAT_ONLY_KEY,
+        harness.url("/v1/chat/completions"),
+        MODELS_READ_ONLY_KEY,
         br#"{"model":"chat-only-model"}"#.to_vec(),
     )
     .send()
@@ -1736,7 +1722,7 @@ async fn api_key_and_model_rules_do_not_fall_back_between_formats() {
     assert_eq!(missing_route.status(), StatusCode::NOT_FOUND);
     assert!(harness.upstream_requests().is_empty());
 
-    let images_forbidden = authorized_post(
+    let inaccessible = authorized_post(
         &client,
         harness.url("/v1/images/generations"),
         CHAT_ONLY_KEY,
@@ -1745,7 +1731,9 @@ async fn api_key_and_model_rules_do_not_fall_back_between_formats() {
     .send()
     .await
     .unwrap();
-    assert_eq!(images_forbidden.status(), StatusCode::FORBIDDEN);
+    assert_eq!(inaccessible.status(), StatusCode::NOT_FOUND);
+    let body: Value = serde_json::from_slice(&inaccessible.bytes().await.unwrap()).unwrap();
+    assert_eq!(body["error"]["code"], "model_not_found");
     assert!(harness.upstream_requests().is_empty());
 }
 
@@ -4197,7 +4185,7 @@ async fn alias_rewrites_only_the_top_level_model() {
 }
 
 #[tokio::test]
-async fn models_endpoint_filters_by_api_format_and_requires_authentication() {
+async fn models_endpoint_lists_only_granted_routes_and_requires_authentication() {
     let harness = harness(StatusCode::OK, Vec::new()).await;
     let client = client();
 
@@ -4253,15 +4241,16 @@ async fn models_endpoint_filters_by_api_format_and_requires_authentication() {
 #[tokio::test]
 async fn models_endpoint_requires_proxy_and_models_read_permissions() {
     let harness = harness(StatusCode::OK, Vec::new()).await;
-
-    let response = client()
-        .get(harness.url("/v1/models"))
-        .header("authorization", format!("Bearer {MODELS_READ_ONLY_KEY}"))
-        .send()
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let client = client();
+    for key in [MODELS_READ_ONLY_KEY, PROXY_ONLY_KEY] {
+        let response = client
+            .get(harness.url("/v1/models"))
+            .bearer_auth(key)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
 }
 
 #[tokio::test]

@@ -2,118 +2,63 @@
 
 > 状态：当前。
 
-使用 Console 的“系统负载”判断当前进程压力，用请求日志定位调用结果，用花费统计核对已记录费用。三者更新节奏不同：健康检查成功、日志可见和结算完成不是同一件事。
+用请求日志定位一次调用，用系统负载判断当前实例是否堵塞，用花费报表核对已计价的请求。三者更新节奏不同，日志可见不代表已经结算。
 
 ## 先选择视图
 
-| 要回答的问题 | 入口 |
+| 想查什么 | Console 入口与范围 |
 | --- | --- |
-| 当前实例 CPU、连接池或 spool 是否接近上限 | 管理区的系统负载（`/admin/system-load`） |
-| 我的调用为何失败、花了多少 | 个人请求日志（`/usage/request-logs`）及详情 |
-| 其他用户或某个渠道的问题 | 管理区的全局请求日志（`/admin/request-logs`） |
-| 时间段内已记录花费 | 个人用量报表（`/statistics`）或管理区的全局花费（`/admin/cost-statistics`） |
-| 排名和长期活跃情况 | 花费排行榜（`/leaderboard`）和用量报表中的个人使用情况 |
-
-个人概览（`/`）适合从趋势追到单次调用：选择 24 小时或 7 天，在请求数、Token 或费用之间切换，选中图中的时段后打开对应的个人日志。趋势使用 UTC；未计价与已知的零费用不是一回事。概览和花费报表按**用户请求的模型及 API 格式**分组。即使网关将同一个请求模型发往不同上游模型，这些请求仍属于同一模型行；从模型行查看日志时沿用该行的口径。
+| 当前实例 CPU、连接池或 spool 压力 | 管理区 → 系统负载（`/admin/system-load`） |
+| 单次调用结果 | 个人请求日志（`/usage/request-logs`）；管理员排查其他用户时用全局请求日志（`/admin/request-logs`） |
+| 个人花费、用量和活跃天数 | 个人概览（`/`）或用量报表（`/statistics`）；即使是管理员也只含本人 |
+| 按用户或逻辑渠道核对费用 | 管理区 → 全局花费（`/admin/cost-statistics`） |
+| 按自然日、周、月比较花费 | 花费排行榜（`/leaderboard`），所有登录用户可见 |
 
 ## 观察当前实例
 
-`GET /console/v1/system/load` 是只读、管理员权限的当前实例快照。Linux 上从 procfs
-采样主机与网关进程 CPU、内存、load average、RSS、文件描述符和线程数；不支持的平台将对应字段
-返回 `null`。它还返回进程内准入与路由 in-flight 状态、请求日志通知/投影队列、自动禁用队列、
-本地 spool pending bytes、PostgreSQL ingress/settlement backlog 以及控制面和请求日志连接池占用。
-请求日志连接池占用在快照触发 backlog 查询前采样，避免监控查询自身的短暂连接占用污染结果。
-Responses WebSocket 部分返回全局启用状态、活跃下游 Session、空闲和借出的上游连接、空闲池容量/
-占用、命中/未命中/丢弃累计计数以及当前空闲超时和连接最长寿命。
-`image_body_spool` 另外返回 multipart edit 的活跃临时文件/字节、文件系统可用容量、累计落盘
-body/字节和存储失败次数。容量不足或捕获/回放存储失败必须按数据面硬失败告警；上游派发前发现的
-失败返回 `503 image_body_spool_unavailable`。
-CPU 百分比依赖相邻采样差值，因此进程启动后的首次采样可能为 `null`。这些数据不是多实例集群聚合；
-Console 的“系统负载”页默认每 5 秒重新获取一次。
-该页面是请求日志队列、spool、backlog 和数据库池的主要实时视图；完整周期 INFO 心跳默认关闭。
-后台仍每 10 秒检查一次日志流水线健康状态，只在 backlog 停滞、健康查询不可用、日志数据库池
-持续饱和及其恢复时输出一次状态变化日志。
+系统负载页每 5 秒读取 `GET /console/v1/system/load`，不是集群汇总。Linux 提供主机与进程 CPU、内存、文件描述符等指标；不支持的字段以及首次采样的 CPU 百分比可为 `null`。
 
-## 查看个人使用情况
+- **请求是否在排队？** 对比准入与路由的在途数、数据库池占用、日志队列、持久 spool 待处理字节和数据库入口/结算积压。默认关闭周期性 INFO 心跳；后台仍报告停滞、查询不可用、日志池持续饱和及恢复的状态变化。
+- **WebSocket 是否在复用？** 查看活跃下游会话、借出和空闲的上游连接以及命中、未命中与丢弃次数，结合[连接池容量和时限](websocket.md#配置反向代理与连接池)判断。
+- **图片临时目录空间是否足够？** 监控 `image_body_spool` 的可用容量、活跃字节和存储失败次数。派发前的捕获或回放存储故障返回 `503 image_body_spool_unavailable`；它和持久请求日志 spool 是[两类存储](production-configuration.md#区分两类-spool)。
 
-所有已登录用户可在个人用量报表的“个人使用情况”标签查看自己的长期活动。它固定展示截至当前
-UTC 日期的连续 365 天客户端请求数，并使用类似 GitHub 贡献图的日期网格显示每日强度；没有请求的
-日期也会保留。摘要同时显示总请求数、活跃天数、当前连续活跃天数和最长连续活跃天数。该接口只从
-JWT 主体推导用户 ID，管理员在此也只能看到自己的数据；系统定时渠道测试不会计入。
+## 查询请求日志
 
-## 查询花费
+模型筛选精确匹配**用户请求的模型**，不是上游别名；例如 `public-a → provider-b` 应按 `public-a` 查。个人日志显示渠道组，但隐藏用户和具体渠道；全局日志可查看两者。再按操作、传输协议和结果筛选。请求 ID 前缀可过滤当前结果，完整 UUID 可直接打开有权访问的详情。
 
-个人用量报表默认显示花费分析，范围限定为当前 JWT 用户，包括管理员。它只支持时间区间、
-API Key 和小时/天聚合粒度，不提供用户或渠道筛选，响应中的渠道明细固定为空。
-管理员需要查看全局、指定用户或指定渠道的花费时，使用管理区的全局花费页面；
-该页面调用 `GET /console/v1/system/statistics/costs`，可组合用户、API Key 和逻辑渠道筛选。选择 Provider A 会计入它的 Responses、Chat Completions 等所有能力，不会计入其他渠道，即使它们共用凭证。要查看 Codex 凭证在某个额度窗口的费用，请到凭证的窗口历史，而不是按渠道推算。
+| 列 | 如何解释 |
+| --- | --- |
+| 模型 | 思考等级来自请求显式指定的 `reasoning.effort` 或 `reasoning_effort`；`Fast` 表示有效的 `service_tier = "priority"`。用户组过滤掉的 `service_tier` 不显示，也不参与倍率匹配。 |
+| Tokens | 主数字是未缓存输入和输出总量，缓存命中与 reasoning 单列。reasoning 属于输出，不要重复相加。 |
+| 耗时 | TTFT 是首 Token 耗时；输出 TPS 为 `output_tokens / ((total_duration_ms - ttft_ms) / 1000)`。证据不足时不显示。 |
+| 成本 | 使用请求时价格；`Peak` 表示请求开始时命中的 UTC 时段倍率大于 1。未计价不同于已知零费用。 |
 
-## 查看花费排行榜
-
-所有已登录用户可在 Console 独立的“花费排行榜”页面查看用户花费排名。页面固定提供自然日、
-自然周和自然月榜，均按 `Asia/Shanghai` 时区切分：日榜为当日 00:00 至次日 00:00，周榜为周一至周日，
-月榜为每月 1 日至月底；并可前后浏览已保留的历史榜单；不提供任意日志时间范围筛选。后台每 15 分钟汇总一次排行榜快照，因此当前
-数据不是实时数据，除刷新间隔外还会受到请求日志投影和刷新耗时影响。页面先显示周期总花费和快照时间，
-再按名次列出最多 50 名用户的已记录 USD 花费、占周期总额的比例、已计价请求数和 Token。
-排行榜仅包含该周期内至少有一个已定价请求的用户；其总花费来自
-客户端请求的独立计量费用，不等待异步结算回执；系统定时渠道测试不会参与排行榜。
+详情中的状态码、错误代码和错误详情用于排障；最多保留 16 KiB 的错误详情，可能含上游原始文本片段或结构化错误，分享前请检查。
 
 ## 跟踪请求日志与结算
 
-要区分“客户发了几次请求”和“网关尝试了几个上游”，用 Console 请求日志 API 返回的 `id` 匹配进程 tracing 的 `request_id`。一次 HTTP 请求或一条 WebSocket `response.create` 是一个逻辑请求：
+将 Console 请求的 `id` 与进程日志的 `request_id` 对齐。同一 HTTP 请求或 WS `response.create` 可以尝试多个候选，但只形成一条逻辑请求终态。
 
-- `proxy_request_retry` / `proxy_websocket_retry`（WARN）记录切换前后的候选、切换原因和阶段。`candidate_attempt` 从 1 开始，候选可能在准备阶段就被排除。
-- `proxy_upstream_dispatch`（DEBUG）记录每次开始发送 HTTP 请求或 WS 请求消息。`dispatch_attempts` 只统计发送尝试，不把 WS 握手当成发送，也不证明服务商收到了请求或产生了费用。
-- `proxy_request_completed`（INFO）是逻辑请求的终态。例如 A 返回可重试的 503、B 成功时，两次发送共用同一 `request_id`。Console 只有一条终态日志，客户费用使用最终候选的 usage 和有效价格，不将 A 当作另一次扣款。
+| 进程事件 | 说明 |
+| --- | --- |
+| `proxy_request_retry` / `proxy_websocket_retry`（WARN） | 切换候选的原因和阶段。`candidate_attempt` 从 1 开始，准备阶段排除的候选也计数。 |
+| `proxy_upstream_dispatch`（DEBUG） | 开始发送 HTTP 请求或 WS 消息。`dispatch_attempts` 不含 WS 握手，也不能证明上游收到了请求或收费。 |
+| `proxy_request_completed`（INFO） | 一次逻辑请求的最终结果；网关按最终候选的 usage 和有效价格计费。 |
 
-逐次尝试仅保存在按级别启用的进程 tracing 中，不是持久账单。需要查看所有阶段时，临时将[日志过滤器](production-configuration.md#日志级别)中的 `ai_gateway::application::proxy` 调为 `debug`。财务流水线在可结算时以唯一回执幂等更新用户余额和 API Key 已用额度。usage 同时保留输入、缓存命中、缓存写入、输出总量，以及输出中包含的
-reasoning token。Chat Completions 的 `completion_tokens` 始终作为包含 reasoning 的输出总量保存；
-OpenAI 的最终空 `choices` usage chunk 和 DeepSeek 将 usage 附在 `finish_reason` chunk 的形式都可解析。
-Console 请求日志的 `Tokens` 列将未缓存输入和输出总量作为主数字，并用紧凑标记分别展示缓存命中
-与作为输出子集的 reasoning token。
+这些逐次尝试不是持久账单。必要时临时把[日志过滤器](production-configuration.md#日志级别)中的 `ai_gateway::application::proxy` 调为 `debug`。请求终态先形成独立计量事实；结算与日志投影各自推进，余额可能先于日志更新。`billed_at` 来自唯一结算回执。未知结果、价格证据异常或归属异常不会自动扣款，核对 `ai_gateway::metering_health` 的状态日志。拒绝或无法计价的请求也不能当作已按零额结算。
 
-终态先物化独立计量事实，再分别驱动结算与查询日志投影。日志表暂不可写时费用仍可结算，
-所以余额/统计可能先于日志页面可见。API 的 `billed_at` 与筛选保持不变，值来自结算回执；
-unknown、价格证据异常和账户归属异常不自动扣款，可通过 `ai_gateway::metering_health`
-的状态变化日志核对。无费用的拒绝和当前不可计价的独立搜索不是“零额已结算”。
-
-对于未被用户组 Fast 策略过滤的客户端原始请求，日志还会在不改变其他转发校验的前提下提取显式模式元数据：
-OpenAI Responses 的 `reasoning.effort`、DeepSeek/OpenAI Chat Completions 兼容的
-`reasoning_effort`，以及表示 OpenAI Priority processing 的
-`service_tier = "priority"`。开启用户组 `filter_fast_mode` 后，`service_tier` 会在转发前删除，
-因此该请求不显示 `Fast`，也不叠加对应请求倍率。Console 模型列按顺序显示思考等级和绿色
-`Fast` 标记；未显式提供对应字段时不显示。耗时列第三行显示输出 TPS，计算为
-`output_tokens / ((total_duration_ms - ttft_ms) / 1000)`；usage 或 TTFT 不可用时显示空值。
-
-额度是软预检查，完整价格和支出边界见[计费与额度](billing.md)。
 ## 处理日志入口故障
 
-客户端请求在派发前同步日志 intent 并预留终态空间；不可写或容量不足返回
-`503 request_log_unavailable`（WS 为同码错误帧），不会派发上游或伪造取消日志。
-终态先同步预分配 slot，再同步追加到 spool；后台通知队列满只合并唤醒。
-完整 slot 可在重启后按原 UUID 重放并幂等结算。只有 intent 而无完整终态时，
-保留待核对，不自动记零或冻结用户；应监控 `request_log_reconciliation_required`。
-日志写/同步失败锁定必须保留原目录重启，单纯容量不足可在排空后自动恢复。
-详见[恢复、容量与回滚边界](../development/request-log-durability.md)。
+派发前不能持久写入 intent 或预留终态空间时，请求返回 `503 request_log_unavailable`（WS 为同码错误帧），不发往上游。容量不足可在排空后恢复；写入或同步失败锁定时，须保留原 spool 目录并重启。
 
-## 查询个人与系统请求日志
+同一 `journal-v2/` 中的完整终态可用原 UUID 重放并幂等结算。发现 `request_log_reconciliation_required` 时，保留只有 intent、没有完整终态的证据待核对；不能据此记零、重试或退款。系统负载的 spool 待处理字节不包括旧布局文件，升级后显示为零不代表旧费用已结清。参见[目录切换](upgrades.md#请求日志目录切换)与[日志恢复边界](../development/request-log-durability.md)。
 
-「模型」列区分用户请求的模型与网关发往上游的模型。「模型」筛选只精确匹配前者：例如 `public-a → provider-b` 的请求可按 `public-a` 查到，不会仅因上游别名是 `provider-b` 而匹配它。可以从计价模型列表选择，也可以手输早已下架或没有计价记录的请求模型名。
+## 查询花费
 
-Console 请求日志列表会在同一列上下显示 `api_operation` 和请求协议，并支持按
-`api_operation` 筛选。操作区分 Chat Completions、Responses、standalone web search、
-Images generation 与 Images edit；协议区分非流式 HTTP、SSE 或 Responses WebSocket。
-列表同时显示渠道组名称。
-个人“请求日志”
-始终只查询当前 JWT 用户；即使当前用户是管理员，
-服务端也会将用户名称、具体 `channel_id` 和渠道名称置空。个人列表可查看开始时间、模型、
-操作/请求协议、渠道组、结果、Token、成本和耗时；模型旁可显示思考等级和 `Fast` 标记，耗时同时包含
-TTFT、总耗时和 TPS。成本列会为请求开始时命中大于 `1` 的 UTC 时段倍率显示 `Peak` 标记，
-该标记随日志持久化，不会因后来修改模型价格而变化。详情再显示 HTTP 状态、错误代码、错误详情和完成时间。错误详情
-可能包含上游返回的完整结构化错误对象、文本错误正文前缀或网关/传输诊断，并最多保留 16KiB。
+个人概览可选 24 小时或 7 天，从 UTC 趋势时段打开对应日志。概览和花费报表按请求模型及 API 格式分组，不因上游别名不同而拆行。用量报表按时间、API Key 和小时/天粒度查看费用；「个人使用情况」显示截至当前 UTC 日期连续 365 天的请求数与活跃天数，不含系统定时测试。
 
-只有管理区的全局请求日志可以读取所有用户的日志。该页面调用管理员接口
-`GET /console/v1/request-logs`，并在上述字段基础上额外显示
-当前用户名称和渠道名称；过长的渠道组、渠道和用户名称会在列表中省略，悬浮后显示完整值。
+管理员在全局花费叠加用户、Key 或逻辑渠道筛选。选某渠道会计入它的全部能力，不会包含共用凭证的其他渠道。要查凭证窗口花费，请到 [Codex 额度历史](codex.md#刷新-token-与查看额度)。
 
-需要与进程日志核对时，在请求 ID 查找框中输入前缀可筛选当前结果，输入完整 UUID 可直接打开本视图有权访问的请求。桌面在列表旁显示详情面板，移动端使用抽屉；面板显示完整请求 ID。复制当前地址可保留已应用的服务端筛选和打开的请求，不会授予收件人额外权限。
+## 查看花费排行榜
+
+按 `Asia/Shanghai` 的自然日、周（周一开始）或月选择榜单，最多展示 50 名有已计价客户端请求的用户，含 USD 金额、占比、已计价请求数和 Token。后台每 15 分钟刷新快照，不是实时排名。取数基于计量事实，不等待结算，也不包含定时测试。判断榜单新旧时看快照时间，不用个人 UTC 趋势的日期边界推算。

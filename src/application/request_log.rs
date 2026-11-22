@@ -347,7 +347,6 @@ mod tests {
             model_id: None,
             outcome: RequestLogOutcome::Rejected,
             response_status_code: Some(404),
-            streamed: false,
             ttft_ms: None,
             total_duration_ms: 0,
             billing: Some(RequestBilling {

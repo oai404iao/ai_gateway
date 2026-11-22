@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::domain::{
-    ApiFormat, ApiOperation, CompiledChannelUpstreamPolicy, CompiledRuntimeConfig, NoProxyHost,
+    ApiOperation, CompiledChannelUpstreamPolicy, CompiledRuntimeConfig, NoProxyHost,
     ResponsesWebSocketSettings, UpstreamTimeoutDefaults,
 };
 
@@ -52,20 +52,6 @@ impl ResolvedUpstreamTimeouts {
         channel: &CompiledChannelUpstreamPolicy,
     ) -> Self {
         Self::resolve_with_response_header(upstream.response_header(), upstream, channel)
-    }
-
-    /// Uses the Images-specific response-header default for Images channels.
-    #[must_use]
-    pub fn resolve_for(
-        api_format: ApiFormat,
-        upstream: &UpstreamTimeoutDefaults,
-        channel: &CompiledChannelUpstreamPolicy,
-    ) -> Self {
-        Self::resolve_with_response_header(
-            upstream.response_header_for(api_format),
-            upstream,
-            channel,
-        )
     }
 
     #[must_use]
@@ -134,18 +120,6 @@ impl ResolvedUpstreamPolicy {
     }
 
     #[must_use]
-    pub fn resolve_for(
-        api_format: ApiFormat,
-        upstream: &UpstreamTimeoutDefaults,
-        channel: &CompiledChannelUpstreamPolicy,
-    ) -> Self {
-        Self {
-            timeouts: ResolvedUpstreamTimeouts::resolve_for(api_format, upstream, channel),
-            tls: UpstreamTlsPolicy::RustlsWebPkiRoots,
-        }
-    }
-
-    #[must_use]
     pub fn resolve_for_operation(
         operation: ApiOperation,
         upstream: &UpstreamTimeoutDefaults,
@@ -164,14 +138,6 @@ impl ResolvedUpstreamPolicy {
         channel: &CompiledChannelUpstreamPolicy,
     ) -> Result<Self, ResolvedUpstreamPolicyError> {
         Self::resolve(upstream, channel).validate()
-    }
-
-    pub fn try_resolve_for(
-        api_format: ApiFormat,
-        upstream: &UpstreamTimeoutDefaults,
-        channel: &CompiledChannelUpstreamPolicy,
-    ) -> Result<Self, ResolvedUpstreamPolicyError> {
-        Self::resolve_for(api_format, upstream, channel).validate()
     }
 
     pub fn try_resolve_for_operation(
@@ -218,8 +184,8 @@ pub fn validate_snapshot_upstream_policies(
 ) -> Result<(), ResolvedUpstreamPolicyError> {
     let upstream_defaults = snapshot.system_settings().upstream_timeouts();
     snapshot.probe_channels().try_for_each(|channel| {
-        ResolvedUpstreamPolicy::try_resolve_for(
-            channel.api_format(),
+        ResolvedUpstreamPolicy::try_resolve_for_operation(
+            channel.api_operation(),
             &upstream_defaults,
             channel.upstream_policy(),
         )
@@ -451,8 +417,8 @@ impl UpstreamClientRegistry {
             .map(|channel| {
                 UpstreamClientKey::resolve(
                     channel.upstream_policy(),
-                    ResolvedUpstreamPolicy::resolve_for(
-                        channel.api_format(),
+                    ResolvedUpstreamPolicy::resolve_for_operation(
+                        channel.api_operation(),
                         &upstream_defaults,
                         channel.upstream_policy(),
                     ),
@@ -720,8 +686,8 @@ mod tests {
 
     #[test]
     fn websocket_pool_keys_isolate_models_on_the_same_channel() {
-        let snapshot = snapshot_with_format_proxy_timeouts_and_defaults(
-            "open_ai_responses",
+        let snapshot = snapshot_with_operation_proxy_timeouts_and_defaults(
+            ApiOperation::ResponsesWebSocket,
             "http://responses-proxy.test:8080",
             None,
             None,
@@ -795,8 +761,8 @@ mod tests {
         connect_timeout_ms: Option<i32>,
         response_header_timeout_ms: Option<i32>,
     ) -> CompiledRuntimeConfig {
-        snapshot_with_format_proxy_timeouts_and_defaults(
-            "open_ai_chat_completions",
+        snapshot_with_operation_proxy_timeouts_and_defaults(
+            ApiOperation::ChatCompletions,
             proxy_url,
             connect_timeout_ms,
             response_header_timeout_ms,
@@ -804,8 +770,8 @@ mod tests {
         )
     }
 
-    fn snapshot_with_format_proxy_timeouts_and_defaults(
-        api_format: &str,
+    fn snapshot_with_operation_proxy_timeouts_and_defaults(
+        operation: ApiOperation,
         proxy_url: &str,
         connect_timeout_ms: Option<i32>,
         response_header_timeout_ms: Option<i32>,
@@ -820,9 +786,9 @@ mod tests {
                 groups: vec![ChannelGroupRecord {
                     id: group_id,
                     name: "group".into(),
-                    api_format: api_format.into(),
-                    connector_kind: "general".into(),
-                    request_compression: "default".into(),
+                    api_format: String::new(),
+                    connector_kind: String::new(),
+                    request_compression: String::new(),
                     enabled: true,
                 }],
                 channels: vec![ChannelRecord {
@@ -830,20 +796,20 @@ mod tests {
                     credential_binding_revision: Uuid::nil(),
                     id: channel_id,
                     channel_group_id: group_id,
-                    api_format: api_format.into(),
+                    api_format: operation.api_format().as_str().into(),
                     logical_channel_id: Uuid::nil(),
                     access_id: Uuid::nil(),
-                    api_operation: None,
-                    connector_kind: String::new(),
-                    request_compression: String::new(),
+                    api_operation: Some(operation),
+                    connector_kind: "general".into(),
+                    request_compression: "default".into(),
                     access_revision: Uuid::nil(),
                     capability_revision: Uuid::nil(),
-                    transports: Vec::new(),
+                    transports: operation.transports().to_vec(),
                     name: "channel".into(),
                     base_url: "https://upstream.test".into(),
                     enabled: true,
-                    supports_websocket: false,
-                    supports_standalone_web_search: false,
+                    supports_websocket: operation == ApiOperation::ResponsesWebSocket,
+                    supports_standalone_web_search: operation == ApiOperation::StandaloneWebSearch,
                     auto_disabled: false,
                     auto_disable_allowed: false,
                     billing_multiplier: rust_decimal::Decimal::ONE,
@@ -924,9 +890,13 @@ mod tests {
             Duration::from_secs(5)
         );
         assert_eq!(
-            ResolvedUpstreamPolicy::resolve_for(ApiFormat::OpenAiImages, &defaults, &inherited,)
-                .timeouts()
-                .response_header(),
+            ResolvedUpstreamPolicy::resolve_for_operation(
+                ApiOperation::ImagesGeneration,
+                &defaults,
+                &inherited,
+            )
+            .timeouts()
+            .response_header(),
             Duration::from_secs(30)
         );
 
@@ -935,9 +905,13 @@ mod tests {
             ChannelTimeoutPolicy::new(None, Some(Duration::from_secs(9)), None),
         );
         assert_eq!(
-            ResolvedUpstreamPolicy::resolve_for(ApiFormat::OpenAiImages, &defaults, &overridden,)
-                .timeouts()
-                .response_header(),
+            ResolvedUpstreamPolicy::resolve_for_operation(
+                ApiOperation::ImagesEdit,
+                &defaults,
+                &overridden,
+            )
+            .timeouts()
+            .response_header(),
             Duration::from_secs(9)
         );
     }
@@ -988,8 +962,8 @@ mod tests {
     #[test]
     fn snapshot_validation_uses_the_images_response_header_default_for_images_channels() {
         let defaults = upstream().with_images_response_header(Duration::from_secs(10));
-        let snapshot = snapshot_with_format_proxy_timeouts_and_defaults(
-            "open_ai_images",
+        let snapshot = snapshot_with_operation_proxy_timeouts_and_defaults(
+            ApiOperation::ImagesGeneration,
             "http://images-proxy.test:8080",
             Some(6_000),
             None,
@@ -998,6 +972,29 @@ mod tests {
 
         validate_snapshot_upstream_policies(&snapshot).unwrap();
         UpstreamClientRegistry::new().reconcile(&snapshot).unwrap();
+    }
+
+    #[test]
+    fn snapshot_validation_checks_search_deadline_independently_of_responses() {
+        for (connect_ms, search_deadline_secs, valid) in [(6_000, 10, true), (4_000, 3, false)] {
+            let snapshot = snapshot_with_operation_proxy_timeouts_and_defaults(
+                ApiOperation::StandaloneWebSearch,
+                "http://search-proxy.test:8080",
+                Some(connect_ms),
+                None,
+                upstream().with_standalone_web_search_response_header(Duration::from_secs(
+                    search_deadline_secs,
+                )),
+            );
+            assert_eq!(
+                validate_snapshot_upstream_policies(&snapshot).is_ok(),
+                valid
+            );
+            assert_eq!(
+                UpstreamClientRegistry::new().reconcile(&snapshot).is_ok(),
+                valid
+            );
+        }
     }
 
     #[test]

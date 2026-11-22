@@ -143,8 +143,7 @@ def exercise_usage_normalization(resources, data, fixture):
                                               "upstream_model": "usage-wire", "weight": 1}]}]})
         key, _ = api("/api-keys", "POST", {
             "user_id": data["user_id"], "name": "usage-normalization", "permissions": ["proxy"],
-            "allowed_group_ids": [group["id"]], "allowed_channel_ids": [],
-            "allowed_api_formats": ["open_ai_responses"]})
+            "allowed_group_ids": [group["id"]], "allowed_channel_ids": []})
         resources.secret_values.append(key["secret"])
         scenarios = []
         for parser_profile, streams in (("openai", (False, True)), ("anthropic", (False, True)),

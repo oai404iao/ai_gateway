@@ -1,75 +1,44 @@
+<p align="center">
+  <img src="assets/logo.svg" width="96" height="96" alt="ai-gateway 标志">
+</p>
+
 # ai-gateway
 
-> **状态：** 当前实现，持续开发中。
+> 状态：当前。
 
 [English](README.md) · [文档](docs/README.md) · [发行版](https://github.com/oai404iao/ai_gateway/releases)
 
-`ai-gateway` 是自托管的单二进制 Rust 网关，用于转发 OpenAI 兼容的 LLM 请求。
-你可以配置上游和路由，通过独立 Console 管理访问权限，并以耐久异步流水线记录用量和结算费用。
+`ai-gateway` 是自托管服务，让应用通过同一个 OpenAI 兼容地址调用多个上游。客户端只需提供网关 API Key
+和你指定的模型名。在 Console 中，你可以为这个名字配置上游模型、授权使用者，并设定用量单价。
 
-支持 Chat Completions、Responses HTTP/SSE 与 WebSocket、非流式 Images generation、
-multipart Images edit，以及 Codex standalone search 扩展。不同 API 格式始终独立，
-不做跨格式转换；具体操作和限制见[兼容性参考](docs/reference/openai-compatibility.md)。
+## 发出第一条请求
 
-## 开始使用
+准备好上游的 Base URL、模型 ID 和 API Key，按[本地快速开始](docs/user/quickstart.md)初始化
+PostgreSQL，配置第一条路由，再通过网关向上游发送 Chat Completions 请求。
 
-按[快速上手](docs/user/quickstart.md)启动 PostgreSQL、配置 Console、创建首个管理员与路由，
-再发送请求。空控制面能够通过健康检查，但还不能代理请求。
+在服务器上运行，可用 [Docker Compose 部署发行镜像](docs/user/production-deployment.md)。
+Rust 二进制分别监听公共 API 和管理 Console；请通过 HTTPS 反向代理访问 Console。
+数据库默认使用 PostgreSQL，Linux 单机也可以[使用 SQLite](docs/user/sqlite.md)。
 
-根据部署目标选择入口：
+## 接入客户端与上游
 
-| 目标 | 阅读 |
+| 客户端操作 | 支持的传输方式 |
 | --- | --- |
-| 在单台主机运行发行镜像 | [生产 Compose 部署](docs/user/production-deployment.md) |
-| 在 Linux 使用本地数据库文件 | [SQLite 部署与停机恢复](docs/user/sqlite.md) |
-| 调整限制、存储与容量 | [生产配置](docs/user/production-configuration.md) |
-| 接入 Codex 订阅 | [安装连接器插件](docs/user/connector-plugins.md) |
+| Chat Completions | HTTP，支持 SSE 流式响应 |
+| Responses | HTTP（支持 SSE 流式响应）或 WebSocket |
+| 图片生成与编辑 | 非流式 HTTP；生成使用 JSON，编辑使用 multipart |
+| 独立网页搜索 | Codex 扩展，非流式 HTTP |
 
-默认后端是 PostgreSQL。源码构建使用 SQLite 需要 `sqlite-backend` feature；官方镜像和
-发行二进制包含该功能。`general` 连接器内置；Codex 需要从
-[ai-gateway-connectors](https://github.com/oai404iao/ai-gateway-connectors)
-单独安装并显式启用原生插件，网关发行物不附带该库。
+各操作有独立的[路由规则](docs/user/routing.md)。
+内置的 `general` 连接器可接入 OpenAI 兼容上游。使用 Codex 账号时，先[安装并启用原生连接器](docs/user/connector-plugins.md)。
 
-## 使用与运维
-
-- [使用 API 与 Console](docs/user/operations.md)：客户端 Key、路由、流式请求、上游凭证、日志与计费。
-- [查阅兼容边界](docs/reference/README.md)：请求字段、协议行为和上游特有的限制。
-- [安全运行](docs/user/security.md)：监听器暴露、凭据、可信插件与恢复边界。
-
-公共 `/v1/*` 监听器使用客户端 API Key。Console API 与可选嵌入式 React UI 位于
-**另一个监听器**，使用 JWT 会话。生产环境不需要常驻 Node.js；网关不终止 TLS，
-Console 应置于 HTTPS 反向代理后。
-
-路由读取不可变内存快照，不逐请求查询控制面数据库。上游客户端复用，普通响应流式转发；
-发送下游响应头或任何响应字节后不再重试。RPM、并发、粘性、健康状态和 WebSocket 池
-均为进程本地状态，不提供集群级协调。
-
-请求日志不保存 prompt、completion、完整 Header 或凭据，但数据库和备份仍包含敏感控制面数据。
-额度是软预检查，不是预付费用预留；将其用于支出限制前，请阅读[运维说明](docs/user/operations.md)。
-
-## 参与开发
-
-先完成[开发环境设置](docs/development/getting-started.md)，再从[维护者文档](docs/development/README.md)
-选择主题。[`rust-toolchain.toml`](rust-toolchain.toml) 固定 Rust **1.97.1**；
-Console 工具链使用 Node.js 24 和 pnpm 12.10.1。
-
-开发数据库配置并启动后，在仓库根目录运行：
-
-```bash
-cargo fmt --check
-cargo clippy --locked --workspace --all-targets
-cargo test --locked --workspace
-```
-
-前端命令见 [`web/console/README.md`](web/console/README.md)。Console API 形状由
-[`console-v1.yaml`](docs/openapi/console-v1.yaml) 定义，TypeScript 类型必须生成，不能手改。
-
-转发改动还需要经明确授权的[付费真实上游 smoke test](docs/development/real-upstream-smoke.md)。
-[性能测试](docs/development/forwarding-performance.md)另行按需执行，二者都不是普通安装步骤。
+- [调用公共 API](docs/user/data-plane.md)，或查阅[协议兼容范围](docs/reference/openai-compatibility.md)。
+- [管理用户与密钥](docs/user/console.md)、[查看请求日志](docs/user/observability.md)、[配置单价与软额度](docs/user/billing.md)。
+- 对外提供服务前，先[保护凭证与备份](docs/user/security.md)。
+- 要构建或修改网关，先[设置开发环境](docs/development/getting-started.md)。
 
 ## 许可证
 
-[GNU Affero General Public License v3.0 only](LICENSE)（`AGPL-3.0-only`）。
-修改本程序并通过网络向用户提供修改后的版本时，AGPL 第 13 条要求向这些用户提供获取对应源码的方式。
-第三方声明与再分发材料见 [`LICENSES/`](LICENSES/) 和
-[`web/console/NOTICES.md`](web/console/NOTICES.md)。
+`ai-gateway` 使用 [GNU Affero General Public License v3.0 only](LICENSE)（`AGPL-3.0-only`）。
+用户通过网络与修改版交互时，第 13 条要求向他们提供获取对应源码的方式。
+第三方再分发声明见 [`LICENSES/`](LICENSES/) 和 [`web/console/NOTICES.md`](web/console/NOTICES.md)。

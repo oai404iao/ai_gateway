@@ -28,7 +28,7 @@ PostgreSQL 使用 COPY 入口，Linux SQLite 使用事务批量 INSERT，共用�
 ```
 
 完成选路的客户端逻辑请求在 Connector 准备/派发前同步
-admissions/<request UUID>.json，并为最大 1MiB 终态 payload 预分配 slot。
+`journal-v2/admissions/<request UUID>.json`，并为最大 1MiB 终态 payload 预分配 slot。
 HTTP/SSE 重试共用一次预占；WS 每个 response.create（含 generate:false warmup）单独准入。
 正常结束与取消由同一个 CompletionGuard 完成。
 失败返回 HTTP/WS 503 request_log_unavailable，不派发、不伪造取消日志。
@@ -78,7 +78,8 @@ slot 是版本化二进制 journal，不是 JSON 或可直接导入的终态表�
 
 ### 目录与数据库必须配对
 
-每进程使用不同 spool 目录，排他文件锁防止同时写入。
+每进程使用不同的 `request_logging.spool_directory`。根目录的 `spool.lock` 排他锁覆盖新旧布局；
+当前 writer、reader 和恢复扫描都使用其 `journal-v2/` 下的 `events.log`、`checkpoint` 和 `admissions/`。
 Unix 目录/文件收紧为 0700/0600；重启沿用原目录与原业务数据库。
 切换环境必须同时切换 spool，避免把旧用户/Key UUID 写入新库。
 备份/恢复保存整套事件、checkpoint、admission 和数据库，不仅复制 events.log。
@@ -126,8 +127,12 @@ unknown、invalid、账户不匹配由 ai_gateway::metering_health 单独报告�
 
 ## journal 与升级边界
 
-当前写 v8，读 v2–8；v1 因缺必需 error_summary 不支持。
-旧 operation 名称在解码/重放时规范化，历史财务记录不重写。
+本地恢复先按目录区分布局，数据库入口则按 payload 版本解码。`journal-v2/` 是本地目录名，
+不是 payload 版本。旧根目录中的终态和未知 intent 均不扫描、移动或删除，
+即使其中的 payload 可以解码也不会进入数据库。升级和回退步骤见[目录切换](../user/upgrades.md#请求日志目录切换)。
+
+当前写 v9。已经提交到数据库入口的 v2–8 记录仍可解码；v1 因缺必需 error_summary 不支持。
+旧 operation 名称在解码时规范化，不改写历史财务记录。
 
 | 格式或字段 | 兼容行为 |
 | --- | --- |
@@ -137,14 +142,13 @@ unknown、invalid、账户不匹配由 ai_gateway::metering_health 单独报告�
 | v6 peak_pricing | 请求开始命中倍率 >1 的每周 UTC 窗口时 true；旧 v2–5 按 false，不读后来现价 |
 | v7 六操作 | 旧名归一化，Responses 根据协议识别 WS；财务重放兼容旧名 |
 | v8 credential attribution | 必须携带请求时凭证/明确无认证；旧 v2–7 为未知，查询只对未知用冻结注册表回退 |
+| v9 request_protocol | 新记录只存协议，不再额外写 `streamed` 布尔值 |
 
 peak 标记当时提高版本号，是为了让旧 worker 拒绝并保留新记录，而非忽略字段写 false。
 这个局部兼容机制**不**表示可以跨当前 schema 硬切换混跑。
 
-- 从写 v1 的版本升级，须先排空 spool 和 ingress。
-- 不支持新 journal 的旧二进制不能接管新积压，回退前须排空或按成对恢复协议处理。
-- admission 文件虽未改 events journal/schema，旧二进制不理解它；
-  回退前用新版本重放完整 slot，未知证据另行核对/保留，不能忽略未重放终态。
+- 从写 v1 的版本升级，须先用旧版排空不支持的数据库入口记录。
+- 同一布局重启可按 checkpoint 和完整 slot 恢复；跨布局不能靠替换二进制接管本地积压。
 - 0063 删除物理 billed_at 并转移扣款权，全部旧 worker 停止后才能迁移，
   不可只回退程序。它本身不改 journal。
 - v8 归属随事实同事务；渠道改绑不能改变在途/历史费用。

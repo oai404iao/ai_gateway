@@ -27,4 +27,4 @@
 
 公共数据面和 OpenAI 的兼容范围见[外部参考](../reference/README.md)。Console API 形状以 [OpenAPI](../openapi/console-v1.yaml) 为准；公共 Header 与顶层字段动作以[请求白名单契约](../reference/request-allowlists.json)为准。
 
-已有链接可继续通过[运行与接口说明](operations.md)定位拆分后的章节。架构、测试和发布维护进入[开发文档](../development/README.md)；完整来源优先级见[文档中心](../README.md)。
+架构、测试和发布维护进入[开发文档](../development/README.md)；完整来源优先级见[文档中心](../README.md)。

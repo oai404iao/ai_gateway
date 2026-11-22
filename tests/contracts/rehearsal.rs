@@ -1,7 +1,6 @@
 //! Opt-in, synthetic-only schema-62 backup, cutover, and paired recovery rehearsal.
 
 use super::*;
-use ai_gateway::application::RequestLogIntent;
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
@@ -67,6 +66,38 @@ fn copy_tree(source: &Path, destination: &Path) {
     assert_eq!(tree_manifest(source), tree_manifest(destination));
 }
 
+fn legacy_spool(directory: &Path, events: &[&RequestLogEvent], seed: &Seed) -> Uuid {
+    let admissions = directory.join("admissions");
+    fs::create_dir_all(&admissions).unwrap();
+    let mut frames = Vec::new();
+    for event in events {
+        let payload = serde_json::to_vec(&legacy_v6_event(event)).unwrap();
+        frames.extend_from_slice(b"AIGL");
+        frames.extend_from_slice(&6_i16.to_le_bytes());
+        frames.extend_from_slice(&0_u16.to_le_bytes());
+        frames.extend_from_slice(&u32::try_from(payload.len()).unwrap().to_le_bytes());
+        frames.extend_from_slice(&crc32fast::hash(&payload).to_le_bytes());
+        frames.extend_from_slice(event.id.as_bytes());
+        frames.extend_from_slice(&payload);
+    }
+    fs::write(directory.join("events.log"), frames).unwrap();
+    fs::write(directory.join("checkpoint"), 0_u64.to_le_bytes()).unwrap();
+    let id = Uuid::new_v4();
+    let intent = json!({"version":1,"id":id,"user_id":seed.user,"api_key_id":seed.key,
+        "model_id":seed.model,"started_at":Utc::now(),"api_operation":"chat_completions",
+        "request_protocol":"sse"});
+    fs::write(
+        admissions.join(format!("{id}.json")),
+        serde_json::to_vec(&intent).unwrap(),
+    )
+    .unwrap();
+    File::create_new(admissions.join(format!("{id}.slot")))
+        .unwrap()
+        .set_len(16 + 1_048_576)
+        .unwrap();
+    id
+}
+
 async fn pg_tool(container: &str, args: &[&str], input: Option<&Path>, output: Option<&Path>) {
     let mut command = Command::new("docker");
     command
@@ -100,6 +131,13 @@ async fn pg_tool(container: &str, args: &[&str], input: Option<&Path>, output: O
 
 async fn database_bytes(pool: &PgPool) -> i64 {
     sqlx::query_scalar("SELECT pg_database_size(current_database())")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+async fn schema_version(pool: &PgPool) -> i64 {
+    sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations")
         .fetch_one(pool)
         .await
         .unwrap()
@@ -194,7 +232,13 @@ async fn assert_ineligible(pool: &PgPool, unknown: Uuid, rejected: Uuid) {
     }
 }
 
-async fn recover(pool: &PgPool, directory: &Path, ids: &[Uuid]) {
+async fn recover(
+    pool: &PgPool,
+    directory: &Path,
+    ids: &[Uuid],
+    local_only: &[Uuid],
+    evidence: &BTreeMap<String, String>,
+) {
     let config = RequestLoggingConfig {
         spool_directory: directory.to_path_buf(),
         settlement_interval_milliseconds: 10,
@@ -213,6 +257,27 @@ async fn recover(pool: &PgPool, directory: &Path, ids: &[Uuid]) {
         .await
         .unwrap();
     assert_eq!(ingress, 0);
+    let materialized: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM request_logs WHERE id = ANY($1))
+             OR EXISTS (SELECT 1 FROM request_metering_facts WHERE id = ANY($1))
+             OR EXISTS (SELECT 1 FROM request_settlements WHERE request_id = ANY($1))",
+    )
+    .bind(local_only)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert!(
+        !materialized,
+        "unversioned local evidence entered accounting"
+    );
+    let after = tree_manifest(directory);
+    for (path, digest) in evidence {
+        assert_eq!(
+            after.get(path),
+            Some(digest),
+            "old evidence changed: {path}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -284,41 +349,15 @@ async fn schema62_backup_cutover_and_paired_restore() {
             "INSERT INTO request_log_ingest(request_log_id,schema_version,payload) VALUES($1,6,$2)",
         )
         .bind(event.id)
-        .bind(serde_json::to_vec(event).unwrap())
+        .bind(serde_json::to_vec(&legacy_v6_event(event)).unwrap())
         .execute(&database.pool)
         .await
         .unwrap();
     }
     let spool = directory.join("source-spool");
-    let config = RequestLoggingConfig {
-        spool_directory: spool.clone(),
-        shutdown_drain_seconds: 0,
-        ..RequestLoggingConfig::default()
-    };
-    let (sink, worker) =
-        DurableRequestLogWorker::start(RequestLogRepository::new(database.pool.clone()), &config)
-            .await
-            .unwrap();
-    worker.shutdown().await;
-    let intent = RequestLogIntent {
-        version: 1,
-        id: Uuid::new_v4(),
-        user_id: seed.user,
-        api_key_id: seed.key,
-        model_id: seed.model,
-        started_at: Utc::now(),
-        api_operation: spooled.api_operation,
-        request_protocol: spooled.request_protocol,
-    };
-    sink.admit(&intent).unwrap();
-    sink.admit(&RequestLogIntent {
-        id: spooled.id,
-        ..intent.clone()
-    })
-    .unwrap();
-    sink.try_record(spooled.clone());
-    sink.try_record(billed.clone());
-    drop(sink);
+    let intent_id = legacy_spool(&spool, &[&spooled, &billed], &seed);
+    let local_only = [spooled.id, intent_id];
+    let evidence = tree_manifest(&spool);
     let before = accounts(&database.pool, seed.key).await;
     let backup = directory.join("backup");
     fs::create_dir(&backup).unwrap();
@@ -349,6 +388,7 @@ async fn schema62_backup_cutover_and_paired_restore() {
     )
     .unwrap();
     let cutover = measured_cutover(&database.pool).await;
+    let schema_to = schema_version(&database.pool).await;
     assert_eq!(accounts(&database.pool, seed.key).await, before);
     let original_receipt: DateTime<Utc> =
         sqlx::query_scalar("SELECT settled_at FROM request_settlements WHERE request_id=$1")
@@ -396,25 +436,18 @@ async fn schema62_backup_cutover_and_paired_restore() {
         old_migrator.run(&database.pool).await,
         Err(sqlx::migrate::MigrateError::VersionMissing(63))
     ));
-    let ids = [billed.id, pending.id, failed.id, queued.id, spooled.id];
-    recover(&database.pool, &spool, &ids).await;
-    let increment = [pending, queued, spooled.clone()]
-        .iter()
-        .map(|e| e.effective_cost_amount().unwrap())
-        .sum::<Decimal>();
+    let ids = [billed.id, pending.id, failed.id, queued.id];
+    recover(&database.pool, &spool, &ids, &local_only, &evidence).await;
+    let increment =
+        pending.effective_cost_amount().unwrap() + queued.effective_cost_amount().unwrap();
     assert_eq!(
         accounts(&database.pool, seed.key).await,
         (before.0 - increment, before.1 + increment)
     );
     let expected = financial_snapshot(&database.pool).await;
     assert_ineligible(&database.pool, unknown.id, rejected.id).await;
-    assert_eq!(expected["facts"].as_array().unwrap().len(), 7);
+    assert_eq!(expected["facts"].as_array().unwrap().len(), 6);
     assert_eq!(expected["pending"], 0);
-    assert!(
-        spool
-            .join(format!("admissions/{}.json", intent.id))
-            .exists()
-    );
     let upgrade_downtime_ms = downtime.elapsed().as_millis();
 
     let restore_started = Instant::now();
@@ -451,15 +484,20 @@ async fn schema62_backup_cutover_and_paired_restore() {
     .await;
     let restored_spool = directory.join("restored-spool");
     copy_tree(&backup.join("spool"), &restored_spool);
-    let restored_schema: i64 = sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations")
-        .fetch_one(&restored.pool)
-        .await
-        .unwrap();
+    let restored_schema = schema_version(&restored.pool).await;
     assert_eq!(restored_schema, 62);
     assert_eq!(accounts(&restored.pool, seed.key).await, before);
     let restored_cutover = measured_cutover(&restored.pool).await;
+    assert_eq!(schema_version(&restored.pool).await, schema_to);
     assert_eq!(accounts(&restored.pool, seed.key).await, before);
-    recover(&restored.pool, &restored_spool, &ids).await;
+    recover(
+        &restored.pool,
+        &restored_spool,
+        &ids,
+        &local_only,
+        &evidence,
+    )
+    .await;
     assert_eq!(financial_snapshot(&restored.pool).await, expected);
     assert_ineligible(&restored.pool, unknown.id, rejected.id).await;
     let restored_receipt: DateTime<Utc> =
@@ -469,29 +507,31 @@ async fn schema62_backup_cutover_and_paired_restore() {
             .await
             .unwrap();
     assert_eq!(restored_receipt, original_receipt);
-    assert!(
-        restored_spool
-            .join(format!("admissions/{}.json", intent.id))
-            .exists()
-    );
-    recover(&restored.pool, &restored_spool, &ids).await;
+    recover(
+        &restored.pool,
+        &restored_spool,
+        &ids,
+        &local_only,
+        &evidence,
+    )
+    .await;
     assert_eq!(financial_snapshot(&restored.pool).await, expected);
     assert_ineligible(&restored.pool, unknown.id, rejected.id).await;
     let restore_total_ms = restore_started.elapsed().as_millis();
     let report = json!({
         "status":"passed",
         "scope":"small synthetic data on development PostgreSQL; not production capacity certification",
-        "schema_from":62,"schema_to":63,
+        "schema_from":restored_schema,"schema_to":schema_to,
         "source_database":database.name,"restore_database":restored.name,
         "fixture":{"historical_logs":5,"historical_receipts":1,"ingress_rows":3,
-          "spool_events":2,"unresolved_intents":1},
+          "unversioned_spool_events":2,"unresolved_intents":1},
         "backup_ms":backup_ms,"backup_bytes":manifest.keys().map(|p|fs::metadata(backup.join(p)).unwrap().len()).sum::<u64>(),
         "upgrade_downtime_ms":upgrade_downtime_ms,"upgrade_budget_ms":600_000,
         "restore_total_ms":restore_total_ms,"restore_budget_ms":1_800_000,
         "cutover":cutover,"restored_cutover":restored_cutover,
         "checks":["no backfill debit","old claim and ack rejected","old migration registry rejected",
-          "paired backup integrity","schema62 restore","exact financial replay","no duplicate debit on restart",
-          "unknown intent retained"],
+          "paired backup integrity","schema62 restore","exact database ingress replay","no duplicate debit on restart",
+          "unversioned evidence retained without replay"],
         "post_snapshot_external_dispatches":0,
         "postgres_version":sqlx::query_scalar::<_,String>("SHOW server_version").fetch_one(&database.pool).await.unwrap(),
         "source_commit":String::from_utf8(Command::new("git").args(["rev-parse","HEAD"]).output().unwrap().stdout).unwrap().trim(),

@@ -9,7 +9,7 @@
 // names below so existing `import type { ConsoleUser } from "@/api/types"`
 // callers keep working unchanged.
 
-import type { components } from "@/api/generated/console-v1";
+import type { components, operations } from "@/api/generated/console-v1";
 
 type S = components["schemas"];
 
@@ -18,7 +18,6 @@ export type UserRole = S["UserRole"];
 export type ApiFormat = S["ApiFormat"];
 export type ApiOperation = S["ApiOperation"];
 export type SelectionStrategy = S["SelectionStrategy"];
-export type ConnectorKind = S["ConnectorKind"];
 export type ConnectorPluginView = S["ConnectorPluginView"];
 export type PluginView = S["PluginView"];
 export type PluginJob = S["PluginJob"];
@@ -170,7 +169,6 @@ export type RegistrationInvitationCodeCreateInput =
   S["RegistrationInvitationCodeCreateInput"];
 export type RegistrationInvitationCodeUpdateInput =
   S["RegistrationInvitationCodeUpdateInput"];
-export type UserInput = S["UserInput"];
 export type UserUpdateInput = S["UserUpdateInput"];
 export type UserBatchUpdateTarget = S["UserBatchUpdateTarget"];
 export type UserBalanceBatchChange = S["UserBalanceBatchChange"];
@@ -206,5 +204,6 @@ export type ConfigTemplateInput = S["ConfigTemplateInput"];
 export type ModelSyncSelection = S["ModelSyncSelection"];
 export type ModelImportRequest = S["ModelImportRequest"];
 export type ModelSyncPreviewRequest = S["ModelSyncPreviewRequest"];
-export type ListQuery = S["ListQuery"];
+export type OwnRequestLogQuery = NonNullable<operations["listOwnRequestLogs"]["parameters"]["query"]>;
+export type AdminRequestLogQuery = NonNullable<operations["listAllRequestLogs"]["parameters"]["query"]>;
 export type SystemSettingsInput = S["SystemSettingsInput"];

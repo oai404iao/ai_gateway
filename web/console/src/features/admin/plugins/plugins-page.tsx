@@ -48,7 +48,7 @@ export function PluginsPage() {
       </Alert>
       <Card>
         <CardHeader><CardTitle>{t("Install plugin")}</CardTitle>
-          <CardDescription>{t("Upload a reviewed tar.gz plugin package. A successful job installs it without granting channel capabilities.")}</CardDescription></CardHeader>
+          <CardDescription>{t("Choose a reviewed .tar.gz package.")}</CardDescription></CardHeader>
         <CardContent>
           <FieldGroup>
             <Field>

@@ -210,7 +210,8 @@ export const handlers = [
     UPSTREAM_ACCESS, { headers: { ETag: `"${UPSTREAM_ACCESS.updated_at}"` } },
   )),
   http.get("/console/v1/routing/upstream-credentials", () => HttpResponse.json([UPSTREAM_CREDENTIAL])),
-  http.get("/console/v1/routing/upstream-credentials/:id", () =>
+  http.get("/console/v1/routing/upstream-credentials/codex", () => HttpResponse.json([])),
+  http.get(`/console/v1/routing/upstream-credentials/${UPSTREAM_CREDENTIAL.id}`, () =>
     HttpResponse.json(UPSTREAM_CREDENTIAL_DETAIL, { headers: { ETag: `"${UPSTREAM_CREDENTIAL.updated_at}"` } })),
   http.post("/console/v1/routing/channels/models/discover", () =>
     HttpResponse.json({ models: CHANNEL_CAPABILITY.settings.available_models }),

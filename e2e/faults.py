@@ -3,10 +3,14 @@
 import signal
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from urllib.error import URLError
 
 from run import ROOT, check, request, set_upstream, verify_settlement, wait_until
 from mock.upstream import Upstream
+
+
+JOURNAL = Path("spool/journal-v2")
 
 
 def stop_gateway(resources):
@@ -63,12 +67,13 @@ def exercise_faults(resources, binary, data, protocols, warmup_id):
             raise AssertionError("unavailable journal allowed dispatch")
 
     results = []
+    journal = resources.directory / JOURNAL / "events.log"
+    checkpoint = journal.with_name("checkpoint")
+    admissions = journal.with_name("admissions")
     with Upstream("unused", secret=data["upstream_rotated_secret"]) as upstream:
         set_upstream(data, upstream.url)
         with resources.database_outage():
             dispatch()
-            journal = resources.directory / "spool/events.log"
-            checkpoint = resources.directory / "spool/checkpoint"
             old_checkpoint = checkpoint.read_bytes() if checkpoint.exists() else None
             offset = int.from_bytes(old_checkpoint or b"\0" * 8, "little")
             wait_until(lambda: journal.stat().st_size > offset)
@@ -96,7 +101,7 @@ def exercise_faults(resources, binary, data, protocols, warmup_id):
     control = resources.directory / "spool-fault-mode"
     env = {
         "LD_PRELOAD": str(library),
-        "E2E_SPOOL_FAULT_PATH": str(resources.directory / "spool/admissions") + "/",
+        "E2E_SPOOL_FAULT_PATH": str(admissions) + "/",
         "E2E_SPOOL_FAULT_CONTROL": str(control),
     }
     for mode in ("ENOSPC", "EACCES", "EIO_SYNC"):
@@ -104,7 +109,7 @@ def exercise_faults(resources, binary, data, protocols, warmup_id):
             set_upstream(data, upstream.url)
             key = api("/api-keys", "POST", {
                 "user_id": data["user_id"], "name": f"fault-{mode}",
-                "allowed_api_formats": ["open_ai_responses"], "permissions": ["proxy"],
+                "permissions": ["proxy"],
                 "allowed_group_ids": [data["channel_group_id"]], "allowed_channel_ids": [],
             })
             resources.secret_values.append(key["secret"])
@@ -130,7 +135,7 @@ def exercise_faults(resources, binary, data, protocols, warmup_id):
             verify_settlement(data, protocols, warmup_id)
 
             stop_gateway(resources)
-            terminal_env = {**env, "E2E_SPOOL_FAULT_PATH": str(resources.directory / "spool/events.log")}
+            terminal_env = {**env, "E2E_SPOOL_FAULT_PATH": str(journal)}
             start_gateway(resources, binary, data, f"gateway-terminal-{mode}", terminal_env)
             control.write_text(mode)
             dispatch()
@@ -152,12 +157,11 @@ def exercise_faults(resources, binary, data, protocols, warmup_id):
     with (Upstream("unused", secret=data["upstream_rotated_secret"], response_gate=gate) as upstream,
           ThreadPoolExecutor(max_workers=1) as client):
         set_upstream(data, upstream.url)
-        pending_directory = resources.directory / "spool/admissions"
-        before_ids = {path.name for path in pending_directory.glob("*.json")}
+        before_ids = {path.name for path in admissions.glob("*.json")}
         future = client.submit(dispatch)
         try:
             wait_until(lambda: len(upstream.scenario.evidence) == 1)
-            intents = [path for path in pending_directory.glob("*.json") if path.name not in before_ids]
+            intents = [path for path in admissions.glob("*.json") if path.name not in before_ids]
             check(len(intents) == 1, "dispatched request lacks exactly one durable intent")
             stop_gateway(resources)
         finally:

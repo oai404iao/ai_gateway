@@ -104,10 +104,7 @@ marker 不完整时不猜测、不重建；若中断发生在 marker fsync 前�
 ## 原子 migration runner
 
 `SqliteDatabase::migrate` 接收受信任的、已审查的 SQLite 专属 manifest。
-`install_schema()` 使用 `schema.rs` 的完整 manifest，当前为 `0001–0012`：
-baseline、guard、Codex intent、凭证/能力拓扑、六操作、固定渠道授权、独立凭证、
-请求归属、连接器 ID、插件生命周期和拼车移除。前三项只是早期 baseline，不是当前 schema。
-serve 和管理员 CLI 在读取业务记录前执行；备份仅核对当前完整历史，不自动升级来源。
+serve 和管理员 CLI 在读取业务记录前调用 `install_schema()` 执行[完整迁移清单](../../src/persistence/sqlite/schema.rs)；备份仅核对历史，不自动升级来源。
 
 规则：
 

@@ -58,6 +58,40 @@ describe("upstream credential management", () => {
     }));
   });
 
+  it("creates from a plugin tab without reselecting the connector", async () => {
+    let submitted: UpstreamCredentialInput | undefined;
+    server.use(
+      http.get("/console/v1/system/connectors", () => HttpResponse.json([
+        ...CONNECTOR_PLUGINS,
+        { id: "acme", version: "1.0.0", abi_version: 1, built_in: false, operations: ["responses"] },
+      ])),
+      http.post("/console/v1/routing/upstream-credentials", async ({ request }) => {
+        submitted = await request.json() as UpstreamCredentialInput;
+        return HttpResponse.json({ id: UPSTREAM_CREDENTIAL.id, correlation_id: UPSTREAM_CREDENTIAL.id }, { status: 201 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAt("?connector=acme");
+    await user.click(await screen.findByRole("link", { name: "New credential" }));
+    expect(await screen.findByRole("combobox", { name: "Connector" })).toHaveTextContent("acme");
+    await user.type(screen.getByLabelText("Name"), "Scoped to plugin");
+    await user.type(screen.getByLabelText("Credential secret"), "test-secret");
+    await user.type(screen.getByLabelText("Allowed Base URLs"), "https://api.example.test");
+    await user.click(screen.getByRole("button", { name: "Save credential" }));
+    await waitFor(() => expect(submitted?.connector_kind).toBe("acme"));
+  });
+
+  it.each(["uninstalled", "codex"])("requires a valid static connector for a %s create link", async (requested) => {
+    const user = userEvent.setup();
+    renderAt(`new?connector=${requested}`);
+    expect(await screen.findByText("Choose an available connector.")).toBeVisible();
+    const save = screen.getByRole("button", { name: "Save credential" });
+    expect(save).toBeDisabled();
+    await user.click(screen.getByRole("combobox", { name: "Connector" }));
+    await user.click(await screen.findByRole("option", { name: "General" }));
+    expect(save).toBeEnabled();
+  });
+
   it("preserves or rotates a shared secret explicitly and sends the detail ETag", async () => {
     const submitted: UpstreamCredentialInput[] = [];
     let ifMatch: string | null = null;

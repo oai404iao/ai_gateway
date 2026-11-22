@@ -56,7 +56,7 @@ describe("CodexQuotasPage", () => {
     ).toBeInTheDocument();
     expect(
       screen.getByText(
-        "Your user group has not been granted access to any Codex quota groups.",
+        "Ask an administrator to give your user group access to a Codex quota group.",
       ),
     ).toBeInTheDocument();
   });

@@ -5,7 +5,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { toast } from "sonner";
 import { AdminDetailShell } from "@/features/admin/components/admin-detail-shell";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -98,14 +98,13 @@ export function AccessDetailPage() {
   });
   return <AdminDetailShell
     title={isNew ? t("New access") : access?.name ?? t("Upstream access")}
-    description={t("Network changes affect all referencing channels and must satisfy every credential scope.")}
+    description={isNew ? undefined : t("All channels using this access share its network settings. Each credential must allow the Base URL.")}
     backPath={returnTo}
     isLoading={!isNew && query.isLoading} error={query.error}
     hasData={isNew || Boolean(access)} navigationGuard={navigationGuard}
     editCard={<Card>
       <CardHeader>
         <CardTitle>{t("Access settings")}</CardTitle>
-        <CardDescription>{t("Creating an access does not create channels, enable capabilities or grant API key access.")}</CardDescription>
       </CardHeader>
       <CardContent>
         <form onSubmit={submit} className="flex flex-col gap-5">

@@ -368,7 +368,6 @@ fn gateway(
             secret_value: CLIENT_KEY.into(),
             status: "active".into(),
             expires_at: None,
-            allowed_api_formats: vec![format.api_format_name().into()],
             permissions: vec!["proxy".into(), "models.read".into()],
             allowed_group_ids: vec![group_id],
             allowed_channel_ids: vec![],
@@ -721,7 +720,6 @@ async fn assert_codex_nonstreaming_rejection(
     assert_eq!(event.api_format, SmokeFormat::Responses.api_format());
     assert_eq!(event.api_operation, ApiOperation::Responses);
     assert_eq!(event.request_protocol, RequestProtocol::NonStream);
-    assert!(!event.streamed);
     assert_eq!(event.outcome, RequestLogOutcome::Failed);
     assert_eq!(
         event.response_status_code,
@@ -1001,7 +999,6 @@ pub(super) async fn smoke_responses_websocket(settings: &SmokeSettings, upstream
     for event in &events[..attempts - 1] {
         assert_eq!(event.api_format, SmokeFormat::Responses.api_format());
         assert_eq!(event.request_protocol, RequestProtocol::WebSocket);
-        assert!(event.streamed);
         assert_eq!(event.outcome, RequestLogOutcome::Failed);
         assert!(
             event
@@ -1201,7 +1198,6 @@ fn assert_usage_was_logged(
     assert_eq!(event.api_format, format.api_format());
     assert_eq!(event.api_operation, operation);
     assert_eq!(event.request_protocol, request_protocol);
-    assert_eq!(event.streamed, request_protocol.is_streamed());
     assert_eq!(event.outcome, RequestLogOutcome::Succeeded);
     assert!(
         event

@@ -292,9 +292,6 @@ export function CapabilityDetailPage({ capabilityId, channelId, embedded = false
       <AdminDetailShell
         embedded={embedded}
         title={isNew ? t("New capability") : t("Channel capability")}
-        description={t(
-          "Transports are fixed by the operation. Authorization belongs to the logical channel.",
-        )}
         backPath={returnTo}
         isLoading={!isNew && query.isLoading}
         error={wrongChannel ? new Error(t("This capability belongs to another channel.")) : query.error}
@@ -305,7 +302,7 @@ export function CapabilityDetailPage({ capabilityId, channelId, embedded = false
             <CardHeader>
               <CardTitle>{t("Capability settings")}</CardTitle>
               <CardDescription>
-                {t("Configure capabilities here; enable routing separately. Channel authorization covers all capabilities.")}
+                {t("Configure routing separately for each operation. Channel access covers all its capabilities.")}
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -421,7 +418,7 @@ export function CapabilityDetailPage({ capabilityId, channelId, embedded = false
                   <StringListField
                     id="capability-models"
                     label={t("Available models")}
-                    description={t("Upstream wire model identifiers, one per line.")}
+                    description={t("Enter one upstream model ID per line.")}
                     value={form.watch("available_models")}
                     onChange={(value) =>
                       form.setValue("available_models", value, { shouldDirty: true })

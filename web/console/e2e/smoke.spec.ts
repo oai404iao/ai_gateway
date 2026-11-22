@@ -34,7 +34,7 @@ async function managementPage(page: Page, destination: string, ...groups: string
 }
 
 test.describe("Console SPA smoke", () => {
-  test("legacy model setup redirects to the single model workspace", async ({
+  test("management opens the model workspace and its price sync tab", async ({
     page,
   }) => {
     await mockConsoleApi(page);
@@ -43,7 +43,7 @@ test.describe("Console SPA smoke", () => {
     await page.getByLabel(/email/i).fill("admin@example.com");
     await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
     await page.getByRole("button", { name: /sign in/i }).click();
-    await page.goto("/admin/model-setup");
+    await topNav(page).getByRole("link", { name: "Management" }).click();
 
     await expect(page).toHaveURL(/\/admin\/models$/);
     await expect(

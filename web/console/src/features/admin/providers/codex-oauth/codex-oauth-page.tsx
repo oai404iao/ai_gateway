@@ -726,7 +726,7 @@ export default function CodexOauthPage() {
           <CardTitle>{t("Managed credentials")}</CardTitle>
           <CardDescription>
             {t(
-              "Importing a credential does not create channels or routing rules. Existing sticky sessions may continue while quota is draining.",
+              "Bind imported credentials in Channel configuration. Existing sticky sessions may keep using a draining credential.",
             )}
           </CardDescription>
         </CardHeader>

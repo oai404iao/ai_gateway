@@ -4,93 +4,44 @@
 
 # ai-gateway
 
-> **Status:** Current implementation, under active development.
+> Status: Current.
 
 [简体中文](README.zh-CN.md) · [Documentation](docs/README.md) · [Releases](https://github.com/oai404iao/ai_gateway/releases)
 
-`ai-gateway` is a self-hosted, single-binary Rust gateway for OpenAI-compatible
-LLM requests. Route traffic to configured upstreams, manage access through a
-separate Console, and record usage with durable asynchronous accounting.
+`ai-gateway` is a self-hosted service that gives your applications one OpenAI-compatible endpoint for multiple upstreams.
+Clients send a gateway API key and a model name you choose. In the Console you decide which
+upstream models can serve that name, who can use them, and how to price their usage.
 
-It supports Chat Completions, Responses over HTTP/SSE and WebSocket, non-streaming
-Images generation and multipart edits, and a Codex standalone search extension.
-API formats remain separate: the gateway does not translate between them.
-See the [compatibility reference](docs/reference/openai-compatibility.md) for
-supported operations and limits.
+## Run your first request
 
-## Get started
+The [local quickstart](docs/user/quickstart.md) takes you from a fresh PostgreSQL database
+to a Chat Completions reply through your own upstream. Bring its base URL, model ID and API key.
 
-Follow the [quickstart](docs/user/quickstart.md) to start PostgreSQL, configure
-the Console, create the first administrator and route, and send a request.
-An empty control plane can pass health checks but cannot proxy requests yet.
+For a server, [deploy the release image with Docker Compose](docs/user/production-deployment.md).
+The Rust binary serves the public API and a separate management Console; put the Console behind
+an HTTPS reverse proxy. PostgreSQL is the default database. On a single Linux host, you can
+also [use SQLite](docs/user/sqlite.md).
 
-Choose another setup if it better fits your deployment:
+## Connect clients and upstreams
 
-| Goal | Guide |
+| Client operation | Supported transport |
 | --- | --- |
-| Deploy the released image on one host | [Production Compose](docs/user/production-deployment.md) |
-| Use a local database file on Linux | [SQLite deployment and offline recovery](docs/user/sqlite.md) |
-| Configure limits, storage, and capacity | [Production configuration](docs/user/production-configuration.md) |
-| Connect a Codex subscription | [Install the connector plugin](docs/user/connector-plugins.md) |
+| Chat Completions | HTTP, including SSE streaming |
+| Responses | HTTP, including SSE streaming, or WebSocket |
+| Image generation and editing | Non-streaming HTTP; JSON for generation, multipart for edits |
+| Standalone web search | Codex extension, non-streaming HTTP |
 
-PostgreSQL is the default backend. Source builds require `sqlite-backend` for
-SQLite; official images and release binaries include it. The `general` connector
-is built in. Codex requires a separately installed, explicitly enabled native
-plugin from [ai-gateway-connectors](https://github.com/oai404iao/ai-gateway-connectors);
-gateway distributions do not bundle it.
+Each operation has its own [routing rules](docs/user/routing.md). The built-in `general` connector works with
+OpenAI-compatible upstreams. To use a Codex account, [install and enable its native connector](docs/user/connector-plugins.md).
 
-## Use and operate the gateway
-
-- [Use the APIs and Console](docs/user/operations.md): client keys, routes,
-  streaming, credentials, logs, and billing.
-- [Check compatibility](docs/reference/README.md): accepted request fields,
-  protocol behavior, and upstream-specific limitations.
-- [Run securely](docs/user/security.md): listener exposure, credentials,
-  trusted plugins, and recovery boundaries.
-
-The public `/v1/*` listener uses client API keys. The Console API and optional
-embedded React UI use a **separate** listener and JWT sessions. Production needs
-no Node.js process; the gateway does not terminate TLS. Put the Console behind
-an HTTPS reverse proxy.
-
-Routing uses immutable in-memory snapshots rather than a per-request control-plane
-database query. Upstream clients are reused, normal responses are streamed, and
-requests are never retried after downstream response headers or bytes are sent.
-RPM, concurrency, affinity, health, and WebSocket pools are process-local, not
-cluster-wide coordination.
-
-Request logs omit prompts, completions, complete headers, and credentials.
-The database and backups still contain credential-sensitive control-plane data.
-Quotas are soft checks, not prepaid cost reservations; see the
-[operations guide](docs/user/operations.md) before relying on them for spending limits.
-
-## Develop
-
-Start with the [development setup](docs/development/getting-started.md), then
-choose a topic from the [maintainer guide](docs/development/README.md).
-Rust **1.97.1** is pinned in [`rust-toolchain.toml`](rust-toolchain.toml).
-Console tooling requires Node.js 24 and pnpm 12.10.1.
-
-With the development database configured and running:
-
-```bash
-cargo fmt --check
-cargo clippy --locked --workspace --all-targets
-cargo test --locked --workspace
-```
-
-For frontend commands, see [`web/console/README.md`](web/console/README.md).
-Console API shapes come from [`console-v1.yaml`](docs/openapi/console-v1.yaml);
-regenerate TypeScript types rather than editing them by hand.
-
-Forwarding changes also require the [paid real-upstream smoke test](docs/development/real-upstream-smoke.md)
-with explicit authorization. [Performance runs](docs/development/forwarding-performance.md)
-are separately opt-in; neither belongs in routine setup.
+- [Call the public API](docs/user/data-plane.md) or check [protocol compatibility](docs/reference/openai-compatibility.md).
+- [Manage users and keys](docs/user/console.md), [review request logs](docs/user/observability.md), and [set prices and soft quotas](docs/user/billing.md).
+- [Protect credentials and backups](docs/user/security.md) before exposing the service.
+- [Set up a development environment](docs/development/getting-started.md) to build or change the gateway.
 
 ## License
 
-[GNU Affero General Public License v3.0 only](LICENSE) (`AGPL-3.0-only`).
-If you modify the program and make it available to users over a network,
-AGPL section 13 requires offering those users access to the corresponding source.
-Third-party notices and redistribution material are in [`LICENSES/`](LICENSES/)
-and [`web/console/NOTICES.md`](web/console/NOTICES.md).
+`ai-gateway` is licensed under the [GNU Affero General Public License v3.0 only](LICENSE)
+(`AGPL-3.0-only`). If users interact with a modified version over a network, section 13
+requires offering them its corresponding source. Third-party redistribution notices are in
+[`LICENSES/`](LICENSES/) and [`web/console/NOTICES.md`](web/console/NOTICES.md).

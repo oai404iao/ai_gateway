@@ -11,7 +11,7 @@ use std::{
     },
 };
 
-use ai_gateway_connector_host::{Plugin, PluginError};
+use ai_gateway_connector_host::Plugin;
 use axum::{
     body::{Body, Bytes},
     http::{
@@ -477,12 +477,13 @@ impl ImageEditRequestBody {
         &self,
         plugin: &Plugin,
     ) -> Result<(ReplayableRequestBody, HeaderValue), ImageEditBodyError> {
+        let plugin_id = plugin.manifest().id.as_str();
         let fields = self
             .text_fields
             .iter()
             .map(|field| {
                 let value = std::str::from_utf8(&field.value)
-                    .map_err(|_| ImageEditBodyError::CodexInvalidField)?;
+                    .map_err(|_| image_plugin_error(plugin_id, Some("invalid_field")))?;
                 Ok(serde_json::json!({"name":field.name,"value":value}))
             })
             .collect::<Result<Vec<_>, ImageEditBodyError>>()?;
@@ -495,7 +496,7 @@ impl ImageEditRequestBody {
                 }),
                 &fields,
             )
-            .map_err(image_plugin_error)?;
+            .map_err(|error| image_plugin_error(plugin_id, error.code()))?;
         match plan.metadata["body_mode"].as_str() {
             Some("replay_multipart") => {
                 if !plan.body.is_empty() {
@@ -569,7 +570,7 @@ impl ImageEditRequestBody {
                         }),
                         &[],
                     )
-                    .map_err(image_plugin_error)?
+                    .map_err(|error| image_plugin_error(plugin_id, error.code()))?
                     .metadata;
                 write_plan_literal(&mut writer, &part_plan, "prefix").await?;
                 skeleton.extend_from_slice(plan_literal(&part_plan, "prefix")?);
@@ -627,14 +628,15 @@ fn plan_literal<'a>(plan: &'a Value, name: &str) -> Result<&'a [u8], ImageEditBo
     Ok(value.as_bytes())
 }
 
-fn image_plugin_error(error: PluginError) -> ImageEditBodyError {
-    match error.code() {
+fn image_plugin_error(plugin_id: &str, code: Option<&str>) -> ImageEditBodyError {
+    match code {
+        Some("image_streaming_unsupported") => ImageEditBodyError::StreamingUnsupported,
+        Some(_) if plugin_id != "codex" => ImageEditBodyError::ConnectorRejectedInput,
         Some("too_many_images") => ImageEditBodyError::CodexTooManyImages,
         Some("missing_field") => ImageEditBodyError::CodexMissingField,
         Some("duplicate_field") => ImageEditBodyError::CodexDuplicateField,
         Some("invalid_field") => ImageEditBodyError::CodexInvalidField,
         Some("image_content_type") => ImageEditBodyError::CodexImageContentType,
-        Some("image_streaming_unsupported") => ImageEditBodyError::StreamingUnsupported,
         Some("mask_unsupported" | "codex_request_body_field_unsupported") => {
             ImageEditBodyError::RequestPolicy(RequestPolicyError::connector_body_rejection(
                 RequestInterface::ImagesEdit,
@@ -1447,6 +1449,7 @@ pub(crate) enum ImageEditBodyError {
     StreamingUnsupported,
     InvalidJson,
     JsonTransformUnsupported,
+    ConnectorRejectedInput,
     CodexTooManyImages,
     CodexMissingField,
     CodexDuplicateField,
@@ -1460,6 +1463,25 @@ mod tests {
     use futures_util::TryStreamExt;
 
     use super::*;
+
+    #[test]
+    fn external_image_rejections_do_not_borrow_codex_constraints() {
+        for code in [
+            "too_many_images",
+            "invalid_field",
+            "mask_unsupported",
+            "codex_request_body_field_value_unsupported",
+        ] {
+            assert_eq!(
+                image_plugin_error("fixture", Some(code)),
+                ImageEditBodyError::ConnectorRejectedInput
+            );
+        }
+        assert_eq!(
+            image_plugin_error("fixture", Some("image_streaming_unsupported")),
+            ImageEditBodyError::StreamingUnsupported
+        );
+    }
 
     #[test]
     fn plugin_image_plan_cannot_replace_model_or_restore_billing_fields() {
@@ -1660,6 +1682,39 @@ mod tests {
                 Err(ImageEditBodyError::InvalidJson)
             ));
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn non_utf8_image_edit_text_is_rejected_for_the_selected_connector() {
+        let boundary = "field-encoding";
+        let mut bytes = multipart_body(
+            boundary,
+            "model",
+            &[("prompt", "~")],
+            &[("image/png", b"image")],
+            None,
+        )
+        .to_vec();
+        let prompt = bytes.iter().position(|byte| *byte == b'~').unwrap();
+        bytes[prompt] = 0xff;
+        let (_directory, policy) = policy(1_024, 128 * 1_024);
+        let edit = policy
+            .capture(&headers(boundary, bytes.len()), Body::from(bytes))
+            .await
+            .unwrap();
+        let plugin = crate::application::connector::tests::fixture_with_mode(false, 0)
+            .unwrap()
+            .get("fixture")
+            .unwrap();
+        assert_eq!(
+            edit.to_plugin_body(&plugin).await.unwrap_err(),
+            ImageEditBodyError::ConnectorRejectedInput
+        );
+        assert_eq!(
+            plugin_json(&edit).await.unwrap_err(),
+            ImageEditBodyError::CodexInvalidField
+        );
     }
 
     #[cfg(target_os = "linux")]

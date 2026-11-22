@@ -95,9 +95,7 @@ CHECK/FK/唯一键、不可变/跨表触发器及延迟路由提交保护仍在�
 close 只结束逻辑 opener，不释放跨进程锁。不能移动、删除或替换已认领文件/目录。
 这不是自定义 VFS，不防同 UID/root，不宣称消除任意路径替换 TOCTOU。
 
-SQLite 独立 manifest 当前为 0001–0012：baseline/guard、Codex fencing、
-身份/能力拓扑、六操作、渠道授权、凭证/归属、原生连接器、插件生命周期和拼车移除。
-install_schema 运行完整 manifest，不停在最初的三项。
+`install_schema()` 依次执行 [SQLite 迁移清单](../../src/persistence/sqlite/schema.rs)。
 所有 pending DDL/DML/history 同事务；checksum/版本前缀漂移、未来版本、外部库均拒绝。
 重建表的 migration 使用专属连接并检查全部 FK，不向普通池泄露关闭外键的连接。
 

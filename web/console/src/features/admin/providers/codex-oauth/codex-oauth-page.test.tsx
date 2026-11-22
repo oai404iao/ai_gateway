@@ -98,7 +98,6 @@ describe("CodexOauthPage", () => {
       groupReads.push(new URL(request.url).pathname);
       return HttpResponse.json({ error: "not_found" }, { status: 404 });
     };
-    server.use(...baseHandlers([]));
     server.use(
       http.get("/console/v1/routing/groups", recordGroupRead),
       http.get("/console/v1/routing/groups/:id", recordGroupRead),

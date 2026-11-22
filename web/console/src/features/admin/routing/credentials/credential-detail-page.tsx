@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router";
+import { Link, useParams, useSearchParams } from "react-router";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -52,7 +52,11 @@ export function CredentialDetailPage() {
   const update = useUpdateUpstreamCredential(id);
   const remove = useDeleteUpstreamCredential(id);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const form = useForm<FormValues>({ resolver: zodResolver(schema), defaultValues: defaults });
+  const [params] = useSearchParams();
+  const form = useForm<FormValues>({
+    resolver: zodResolver(schema),
+    defaultValues: { ...defaults, connector_kind: isNew ? params.get("connector") ?? defaults.connector_kind : defaults.connector_kind },
+  });
   const credential = query.data?.data;
   const connector = connectors.data?.find((item) => item.id === form.watch("connector_kind") && item.id !== "codex");
   const managed = credential?.provider_managed ?? false;
@@ -80,6 +84,7 @@ export function CredentialDetailPage() {
     }
   };
   const submit = form.handleSubmit(async (values) => {
+    if (!connector) return;
     if ((isNew || values.secret !== "") && !values.secret.trim()) {
       form.setError("secret", { message: t("A credential secret is required.") });
       return;
@@ -106,7 +111,7 @@ export function CredentialDetailPage() {
 
   return <AdminDetailShell
     title={isNew ? t("New credential") : credential?.name ?? t("Upstream credential")}
-    description={t("Rotating or disabling this identity affects every referencing channel.")}
+    description={t("Rotating or disabling this credential affects every channel that uses it.")}
     backPath={returnTo}
     isLoading={!isNew && query.isLoading} error={query.error}
     hasData={isNew || Boolean(credential)} navigationGuard={navigationGuard}
@@ -124,7 +129,7 @@ export function CredentialDetailPage() {
     </Card> : null}
     editCard={!managed ? <Card>
       <CardHeader><CardTitle>{t("Credential settings")}</CardTitle>
-        <CardDescription>{t("Allowed Base URLs are exact scopes, not host or path prefixes.")}</CardDescription></CardHeader>
+        <CardDescription>{t("Enter each allowed Base URL in full, including its path.")}</CardDescription></CardHeader>
       <CardContent>
         <form onSubmit={submit} className="flex flex-col gap-5">
           <FieldGroup>
@@ -147,7 +152,7 @@ export function CredentialDetailPage() {
               </Select>
               <FieldDescription>{connector
                 ? `${connector.id} · ${connector.version} · ${connector.built_in ? t("Built in") : t("Native plugin")}`
-                : t("Connector registry unavailable.")}</FieldDescription>
+                : t(connectors.isLoading ? "Loading…" : connectors.error ? "Connector registry unavailable." : "Choose an available connector.")}</FieldDescription>
             </Field>
             <Field>
               <FieldLabel htmlFor="credential-kind">{t("Authentication type")}</FieldLabel>

@@ -64,7 +64,7 @@ SQLSTATE 或任意 executor。接口定位见[持久化操作接口](persistence
   候选显式保存能力/wire-model/weight；同层只禁止完全相同组合，组不参与动态展开路由。
 - 快照从 Key 所选组的当前成员和直接选择的渠道推导有效授权，不以历史组成员授权行限制范围。
   已授权渠道的后续能力共享授权，但仍需路由、目录、
-  开关、健康和准入全部满足。`allowed_api_formats` 只是废弃兼容元数据。
+  开关、健康和准入全部满足。
 - 删除能力在同一事务撤销其全部候选、清理空层、停用无候选规则并推进相关规则 ETag。
   删除逻辑渠道要求先退役能力，删除管理组要求先清空成员。
 - 新请求的凭证归属在选路快照中捕获；渠道改绑不改变历史或在途费用。
@@ -154,12 +154,14 @@ spool，再由新版本迁移与验证；不滚动混跑，也不把新 schema �
 | 0065–0070 / SQLite 0005–0010 | 新拓扑、六操作、逻辑渠道授权、无 pool 凭证、请求时归属和原生连接器 ID；保留金融事实、UUID、未决 intent |
 | 0071 / SQLite 0011 | 插件生命周期与独立设置 |
 | 0072 / SQLite 0012 | 移除 Codex 拼车：先隔离原受保护渠道及身份别名，再删除专属状态；普通计量与结算历史保留 |
+| 0073 / SQLite 0013 | 删除 `api_keys.allowed_api_formats` 列，保留 Key、渠道授权和计量记录 |
+| 0074 / SQLite 0014 | 删除 `request_logs.streamed`、`request_logs.attempts`、`api_keys.last_used_at`、`audit_logs.source_ip_prefix`，不转存旧值；保留既有 `request_protocol`、审计行和财务记录 |
 
 0052 的 all target 使用默认权重 100；重叠 direct target 不重复增加路由，
 其非默认权重仍保留。0057 分离探测 wire model 与 pricing model。
 0062 不因成员当时未声明模型而丢弃可恢复的断连候选。
 0063 的逐 UUID 校验、容量演练与成对回退见[计量升级](independent-metering.md)；
-拼车移除的人工重新授权见[升级说明](../user/operations.md#codex-拼车移除升级)。
+拼车移除的人工重新授权见[升级说明](../user/upgrades.md#codex-拼车移除升级)。
 
 ## 修改数据库的流程
 
@@ -177,5 +179,5 @@ spool，再由新版本迁移与验证；不滚动混跑，也不把新 schema �
 - `src/persistence/`：仓储、错误翻译、migration runner。
 - `src/runtime_config/`：完整候选编译与原子快照。
 - [Console OpenAPI](../openapi/console-v1.yaml)：管理接口权威契约。
-- [当前架构](architecture.md)、[运维接口](../user/operations.md)。
+- [当前架构](architecture.md)、[运维接口](../user/README.md)。
 - [首版数据库设计归档](../archive/initial-database-design.md)：仅解释历史，不是当前 schema。

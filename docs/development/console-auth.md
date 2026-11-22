@@ -180,4 +180,4 @@ Policy 更新不追溯改变已发 Key；仅修改 Key 名称、额度等元数�
 这些编号解释设计演进，不是部署时可以选择跳过的阶段。
 
 当前路由注册在 `src/http/console.rs`，认证编排在 `src/application/auth.rs`，
-用户操作见[运维接口](../user/operations.md)，UI 会话约定见[Console UI](console-ui.md)。
+用户操作见[运维接口](../user/console.md)，UI 会话约定见[Console UI](console-ui.md)。

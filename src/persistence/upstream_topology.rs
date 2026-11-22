@@ -293,24 +293,6 @@ pub struct OperationCandidateInput {
     pub weight: i32,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ApiKeyCapabilityGrantInput {
-    pub api_key_id: Uuid,
-    pub capability_id: Uuid,
-    pub origin_kind: GrantOriginKind,
-    pub origin_id: Uuid,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ApiKeyPolicyCapabilityGrantInput {
-    pub policy_id: Uuid,
-    pub capability_id: Uuid,
-    pub origin_kind: GrantOriginKind,
-    pub origin_id: Uuid,
-}
-
 fn required_nullable_uuid<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<Uuid>, D::Error> {
@@ -1090,13 +1072,14 @@ mod tests {
         assert_eq!(grant.origin_kind, GrantOriginKind::Capability);
         assert!(serde_json::from_value::<GrantOriginKind>(json!("unknown")).is_err());
 
-        let policy: ApiKeyPolicyCapabilityGrantInput = serde_json::from_value(json!({
+        let policy: ApiKeyPolicyChannelGrantRecord = serde_json::from_value(json!({
             "policy_id": Uuid::new_v4(),
-            "capability_id": Uuid::new_v4(),
+            "channel_id": Uuid::new_v4(),
             "origin_kind": "group",
-            "origin_id": Uuid::new_v4()
+            "origin_id": Uuid::new_v4(),
+            "created_at": "2026-09-20T15:44:11.123456+00:00"
         }))
-        .expect("policy grant input");
+        .expect("policy channel grant record");
         assert_eq!(policy.origin_kind, GrantOriginKind::Group);
     }
 

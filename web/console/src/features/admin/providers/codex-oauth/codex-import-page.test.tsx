@@ -98,9 +98,6 @@ describe("CodexImportPage", () => {
     expect(
       screen.getByRole("combobox", { name: "Proxy for cpa@example.test" }),
     ).toHaveTextContent(PROXY.name);
-    expect(
-      screen.getByText("Legacy credential weight was ignored."),
-    ).toBeInTheDocument();
 
     await user.click(
       screen.getByRole("button", { name: "Validate and import selected" }),

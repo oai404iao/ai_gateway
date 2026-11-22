@@ -55,7 +55,7 @@ struct Queries {
 impl Queries {
     async fn new() -> Self {
         let (directory, database) = database().await;
-        assert_eq!(database.install_schema().await.unwrap(), 12);
+        assert_eq!(database.install_schema().await.unwrap(), 14);
         let database = Arc::new(database);
         let request_logs =
             ai_gateway::persistence::sqlite::SqliteRequestLogQueries::new(Arc::clone(&database));
@@ -105,9 +105,9 @@ async fn seed(queries: &Queries) {
              VALUES ('{ADMIN}','admin@example.test','Query admin','admin','active','{PASSWORD_HASH}',ag_now(),'{DEFAULT_ADMIN_GROUP_ID}'),
                     ('{USER}','user@example.test','Query user','user','active','{PASSWORD_HASH}',ag_now(),'{DEFAULT_USER_GROUP_ID}'),
                     ('{OTHER_USER}','other@example.test','Other user','user','active','{PASSWORD_HASH}',ag_now(),'{DEFAULT_USER_GROUP_ID}');
-             INSERT INTO api_keys(id,user_id,name,secret_value,status,allowed_api_formats,permissions)
-             VALUES ('{KEY}','{USER}','Query key','query-key-secret','active','[\"open_ai_chat_completions\"]','[\"proxy\"]'),
-                    ('{OTHER_KEY}','{OTHER_USER}','Other key','other-key-secret','active','[\"open_ai_chat_completions\"]','[\"proxy\"]');
+             INSERT INTO api_keys(id,user_id,name,secret_value,status,permissions)
+             VALUES ('{KEY}','{USER}','Query key','query-key-secret','active','[\"proxy\"]'),
+                    ('{OTHER_KEY}','{OTHER_USER}','Other key','other-key-secret','active','[\"proxy\"]');
              INSERT INTO models(id,source_model_id,display_name,price_unit_tokens,input_unit_price,
                  cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at)
              VALUES ('{MODEL}','query-model','Query model',1000000,'1','0','0','2','2026-01-01T00:00:00.000000Z');
@@ -285,14 +285,14 @@ async fn insert_log(queries: &Queries, fact: &Fact<'_>) {
             "INSERT INTO request_logs
              (id,started_at,completed_at,user_id,api_key_id,request_source,api_format,api_operation,
               request_protocol,client_model,upstream_model,model_rule_id,channel_group_id,channel_id,
-              model_id,outcome,response_status_code,streamed,ttft_ms,total_duration_ms,
+              model_id,outcome,response_status_code,ttft_ms,total_duration_ms,
               output_tokens_per_second,input_tokens,cached_input_tokens,cache_write_tokens,
               output_tokens,reasoning_tokens,currency,price_unit_tokens,price_effective_at,
               input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,
               cost_amount,error_code,error_summary,reasoning_effort,fast_mode,peak_pricing)
              VALUES ('{id}','{started_at}','{started_at}','{user}','{key}','client','{api_format}',
                      '{operation}','non_stream','{client}','{upstream}','{rule}',{group},{channel},
-                     {model_id},'{outcome}',200,0,{ttft},1,{tps},{input},0,0,{output},NULL,
+                     {model_id},'{outcome}',200,{ttft},1,{tps},{input},0,0,{output},NULL,
                      {price},{cost_amount},NULL,NULL,'high',1,0)",
             id = fact.id,
             started_at = fact.started_at,

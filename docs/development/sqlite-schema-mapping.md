@@ -17,10 +17,7 @@ SQLite 不接受 PG 原始 SQL 的逐字替换，也不依赖 affinity 或应用
 
 ## 当前 schema 与历史 baseline
 
-install_schema() 在独立 SQLite 历史上运行完整 manifest。
-当前 0001–0012 不仅包括最早 baseline/guard，还包含 Codex 外部调用 fencing、
-独立凭证、新拓扑、六操作、逻辑渠道授权、请求时归属、原生连接器、
-插件生命周期及拼车移除。迁移事务和文件身份见[生命周期](sqlite-lifecycle.md)。
+`install_schema()` 执行 [SQLite 迁移清单](../../src/persistence/sqlite/schema.rs)。迁移事务和文件身份见[生命周期](sqlite-lifecycle.md)。
 
 | 当前领域 | 结构与所有权 |
 | --- | --- |
