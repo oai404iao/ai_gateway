@@ -155,9 +155,7 @@ impl SqliteRequestLogQueries {
         }
         if let Some(api_operation) = filter.api_operation {
             query
-                .push(" AND ")
-                .push(super::super::postgres_control_plane::LOG_OPERATION_SQL)
-                .push(" = ")
+                .push(" AND log.api_operation = ")
                 .push_bind(api_operation);
         }
         if let Some(outcome) = filter.outcome {
@@ -480,11 +478,7 @@ impl ConsoleRequestLogRow {
             api_key_id: self.api_key_id.0,
             request_source: self.request_source,
             api_format: self.api_format,
-            api_operation: crate::domain::ApiOperation::normalize_stored_name(
-                &self.api_operation,
-                &self.request_protocol,
-            )
-            .into(),
+            api_operation: self.api_operation,
             request_protocol: self.request_protocol,
             client_model: self.client_model,
             reasoning_effort: self.reasoning_effort,

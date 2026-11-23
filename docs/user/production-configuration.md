@@ -48,7 +48,7 @@
 | `request_logging.spool_directory` | 持久财务入口，使用支持预分配及文件/目录同步的本地存储，与数据库成对备份。`spool_max_bytes`（默认 `1 GiB`）包括在途及待核对余量；`spool_min_free_bytes`（默认 `64 MiB`）是文件系统保留空间。容量不足会阻止新请求派发，见[日志入口故障](observability.md#处理日志入口故障)。 |
 | `request_limits.image_edit_spool_directory` | 存在单次请求期间的图片 scratch，不备份。使用本地磁盘而非内存盘。改模型时可能同时保留原 body 和重建 body，Codex 转 data URL 还会膨胀。可先按最大并发 edit 数 × `3 × image_edit_body_bytes` 预留，再核对可用容量与实际峰值。 |
 
-`request_logging.spool_directory` 指向根目录，不是其 `journal-v2/` 子目录。`spool_max_bytes` 只约束当前布局；[旧布局](upgrades.md#请求日志目录切换)的文件仍占磁盘空间，规划可用容量时要另计。
+`request_logging.spool_directory` 指向本实例专用根目录。本基线首次启动时使用独立空目录；同一实例重启时保留目录及对应数据库。换基线的存储准备见[切换指南](upgrades.md#请求日志目录切换)。
 
 ### 日志级别
 

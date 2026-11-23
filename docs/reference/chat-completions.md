@@ -2,7 +2,7 @@
 
 > 类型：外部参考与网关兼容边界。
 >
-> 最近核对：2026-08-05。以下外部语义沿用该次核对，不代表第三方最新状态。
+> 最近核对：2026-08-05。
 >
 > 权威来源：[OpenAI Create chat completion](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)、
 > [DeepSeek Create Chat Completion](https://api-docs.deepseek.com/api/create-chat-completion)、
@@ -10,8 +10,7 @@
 > [DeepSeek Context Caching](https://api-docs.deepseek.com/guides/kv_cache)、
 > [阿里云百炼深度思考](https://help.aliyun.com/zh/model-studio/deep-thinking)。
 
-使用 `messages` 格式的客户端调用此入口。管理员需为客户端模型配置 `chat_completion`
-操作路由，候选逻辑渠道必须具备对应能力；仅配置 Responses 不会自动兼容。
+Chat 客户端用 `messages` 发送对话，管理员为客户端模型配置 `chat_completion` 操作能力与路由。
 
 ## 最小请求
 
@@ -76,5 +75,4 @@ curl "$GATEWAY_BASE_URL/v1/chat/completions" \
 | SSE 卡住或 usage 缺失 | `text/event-stream`、空行分帧、汇总 chunk 与终止信号 |
 | 同模型只在 Responses 可用 | 独立操作能力、模型目录和 `chat_completion` 路由 |
 
-转发实现变更的检查要求见[真实上游 smoke](../development/real-upstream-smoke.md)；
-本页示例不是自动授权执行付费测试。整体限制见[兼容性总览](openai-compatibility.md)。
+其他操作及网关错误见[兼容性总览](openai-compatibility.md)。

@@ -10,7 +10,7 @@
 | 任务 | 阅读 |
 | --- | --- |
 | 理解请求顺序、快照和模块职责 | [架构](architecture.md) |
-| 判断何时用模板、插件、独立 crate 或服务 | [转发与插件拆分决策](relay-boundaries.md) |
+| 查转发路径或宿主与插件边界 | [转发实现](relay-boundaries.md) · [架构决策](../adr/README.md) |
 | 修改上游身份、授权、能力与操作路由 | [上游实体与路由设计](upstream-identity-capabilities.md) |
 | 实现或升级原生插件 | [插件边界](connector-plugins.md)、[SDK](../../crates/connector-sdk/README.md)、[命令契约](../../crates/connector-sdk/docs/commands.md) |
 | 修改 Codex 生命周期与宿主适配 | [Codex 设计记录](codex-oauth-connector.md) |
@@ -28,10 +28,7 @@ body/Header 策略归外部插件。转发变更需 deterministic tests 和经�
 - [认证与授权](console-auth.md)：JWT、会话、角色与归属边界。
 - [前端架构](console-ui.md)与[前端命令](../../web/console/README.md)：开发、构建和嵌入式交付。
 - [导航与页面交互](console-interaction-standard.md)：列表状态、返回与草稿。
-- [Console 可用性设计记录](console-ux-review.md)：模型工作区设计、任务复现与 mock 浏览器验收单。
-- [模型上架交互设计](model-onboarding-ux.md)：批量追加模型、按操作核对候选及冲突恢复。
 - [统计口径](statistics.md)：个人与系统范围、费用与监控定义。
-- [花费排行榜设计记录](spend-leaderboard-design.md)：周期工具、费用排名单与 mock 浏览器验收。
 
 请求/响应形状先修改 [OpenAPI](../openapi/console-v1.yaml)，再生成前端类型并更新测试。
 不要从设计记录或生成类型反向定义契约。
@@ -43,9 +40,6 @@ body/Header 策略归外部插件。转发变更需 deterministic tests 和经�
 - [持久化行为契约](persistence-contracts.md)和[操作接口](persistence-interfaces.md)：金额、原子性、错误与仓储边界。
 - [耐久请求流水线](request-log-durability.md)：spool、入口、独立投影与结算。
 - [独立计量事实](independent-metering.md)：财务事实、pending 集合和唯一结算回执。
-- [日志故障准入](request-log-admission-review.md)：故障矩阵与准入策略。
-- [成对备份恢复演练](persistence-rehearsal.md)：从 PostgreSQL schema 62 升级，核对结算和旧 spool 证据。
-- [持久化边界设计记录](persistence-boundaries.md)：拆分动机与切换约束。
 
 ### SQLite 专题
 
@@ -75,4 +69,4 @@ body/Header 策略归外部插件。转发变更需 deterministic tests 和经�
 
 编码 Agent 另需遵守 [`AGENTS.md`](../../AGENTS.md)。
 
-维护文档见[编写规范](../documentation-standard.md)；旧版设计见[历史归档](../archive/README.md)。
+维护文档见[编写规范](../documentation-standard.md)；重要设计取舍见[架构决策](../adr/README.md)。

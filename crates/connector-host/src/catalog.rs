@@ -668,7 +668,7 @@ mod tests {
 
     fn cached_fixture(digest: String) -> LoadedArtifact {
         let manifest: PluginManifest = serde_json::from_value(json!({
-            "id":"fixture","version":"1","protocol_version":2,
+            "id":"fixture","version":"1","protocol_version":3,
             "operations":["responses"],"commands":["echo", "settings.describe/v1",
                 "settings.validate/v1", "settings.compile/v1"]
         }))
@@ -883,7 +883,7 @@ mod tests {
             .map(|byte| format!("{byte:02x}"))
             .collect();
         let manifest = serde_json::to_vec(&json!({
-            "id":"fixture","version":"1.0.0","operations":["responses"],"commands":["echo"]
+            "id":"fixture","version":"1.0.0","protocol_version":3,"operations":["responses"],"commands":["echo"]
         }))
         .unwrap();
         let info = serde_json::to_vec(&json!({
@@ -959,16 +959,7 @@ mod tests {
         let configured = plugin
             .configured(&descriptor.default_document(), 7)
             .unwrap();
-        assert_eq!(configured.manifest().protocol_version, 2);
-        assert!(
-            configured
-                .call(
-                    "attempt.capabilities",
-                    &json!({"operation":"responses"}),
-                    &[]
-                )
-                .is_ok()
-        );
+        assert!(configured.attempt_descriptor("responses").is_ok());
         fs::remove_file(&artifact.path).unwrap();
         assert!(catalog.discover().unwrap().is_empty());
         assert_eq!(

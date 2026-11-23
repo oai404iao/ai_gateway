@@ -113,28 +113,21 @@ fn managed_plugins_isolate_settings_and_keep_other_channels_when_missing_or_disa
         control_plane.groups.push(ChannelGroupRecord {
             id: group,
             name: id.into(),
-            api_format: ApiOperation::Responses.api_format().as_str().into(),
-            connector_kind: id.into(),
-            request_compression: "default".into(),
             enabled: true,
         });
         control_plane.channels.push(ChannelRecord {
             id: Uuid::from_u128(index + 10),
             channel_group_id: group,
-            api_format: ApiOperation::Responses.api_format().as_str().into(),
             logical_channel_id: Uuid::from_u128(index + 20),
             access_id: Uuid::from_u128(index + 30),
-            api_operation: Some(ApiOperation::Responses),
-            connector_kind: id.into(),
-            request_compression: "default".into(),
+            api_operation: ApiOperation::Responses,
+            connector_kind: ai_gateway::domain::ConnectorKind::parse(id).unwrap(),
+            request_compression: ai_gateway::domain::RequestCompression::Default,
             access_revision: Uuid::new_v4(),
             capability_revision: Uuid::new_v4(),
-            transports: ApiOperation::Responses.transports().to_vec(),
             name: id.into(),
             base_url: "https://upstream.test/v1".into(),
             enabled: true,
-            supports_websocket: false,
-            supports_standalone_web_search: false,
             auto_disabled: false,
             auto_disable_allowed: false,
             billing_multiplier: 1.into(),
@@ -166,18 +159,7 @@ fn managed_plugins_isolate_settings_and_keep_other_channels_when_missing_or_disa
         let records = RuntimeConfigRecords {
             plugin_records: plugins,
             control_plane: ControlPlaneRecords {
-                groups: control_plane
-                    .groups
-                    .iter()
-                    .map(|group| ChannelGroupRecord {
-                        id: group.id,
-                        name: group.name.clone(),
-                        api_format: group.api_format.clone(),
-                        connector_kind: group.connector_kind.clone(),
-                        request_compression: group.request_compression.clone(),
-                        enabled: group.enabled,
-                    })
-                    .collect(),
+                groups: control_plane.groups.clone(),
                 channels: control_plane.channels.clone(),
                 ..Default::default()
             },
@@ -295,28 +277,21 @@ fn snapshot_compilation_excludes_unavailable_plugin_channels() {
             control_plane.groups.push(ChannelGroupRecord {
                 id: Uuid::from_u128(1),
                 name: "group".into(),
-                api_format: String::new(),
-                connector_kind: String::new(),
-                request_compression: String::new(),
                 enabled: true,
             });
             control_plane.channels.push(ChannelRecord {
                 id: Uuid::from_u128(2),
                 channel_group_id: Uuid::from_u128(1),
-                api_format: operation.api_format().as_str().into(),
                 logical_channel_id: Uuid::from_u128(3),
                 access_id: Uuid::from_u128(4),
-                api_operation: Some(operation),
-                connector_kind: connector.into(),
-                request_compression: "default".into(),
+                api_operation: operation,
+                connector_kind: ai_gateway::domain::ConnectorKind::parse(connector).unwrap(),
+                request_compression: ai_gateway::domain::RequestCompression::Default,
                 access_revision: Uuid::from_u128(5),
                 capability_revision: Uuid::from_u128(6),
-                transports: operation.transports().to_vec(),
                 name: "draft".into(),
                 base_url: "https://upstream.test/base".into(),
                 enabled: true,
-                supports_websocket: operation == ApiOperation::ResponsesWebSocket,
-                supports_standalone_web_search: operation == ApiOperation::StandaloneWebSearch,
                 auto_disabled: false,
                 auto_disable_allowed: false,
                 billing_multiplier: 1.into(),
@@ -390,7 +365,7 @@ fn snapshot_compilation_excludes_unavailable_plugin_channels() {
         assert_eq!(snapshot.channels().count(), 0);
     }
 
-    let (_directory, path, sha256) = fixture_with_flags(1, &["-DFIXTURE_PROTOCOL3"]);
+    let (_directory, path, sha256) = fixture_with_flags(1, &["-DFIXTURE_RESPONSE_ADAPTER"]);
     let plugins = ConnectorPlugins::load(&[PluginConfig {
         id: "fixture".into(),
         path,
@@ -411,32 +386,27 @@ fn snapshot_compilation_excludes_unavailable_plugin_channels() {
         ("-DFIXTURE_DESCRIPTOR_MODE=9", true),
         ("-DFIXTURE_DESCRIPTOR_MODE=6", false),
     ] {
-        let (_directory, path, sha256) = fixture_with_flags(1, &["-DFIXTURE_PROTOCOL3", mode]);
+        let (_directory, path, sha256) =
+            fixture_with_flags(1, &["-DFIXTURE_RESPONSE_ADAPTER", mode]);
         let plugin = Plugin::load(&path, &sha256, "fixture").unwrap();
         let plugins = ConnectorPlugins::from_plugins([plugin]).unwrap();
-        let mut enabled = records("fixture", Some(ApiOperation::Responses));
-        let group = &mut enabled.control_plane.groups[0];
-        group.api_format = ApiOperation::Responses.api_format().as_str().into();
-        group.connector_kind = "fixture".into();
-        group.request_compression = "default".into();
-        let channel = &mut enabled.control_plane.channels[0];
-        channel.api_operation = None;
-        channel.supports_websocket = true;
-        channel.transports = vec![ai_gateway::domain::CapabilityTransport::HttpJson];
+        let enabled = records("fixture", Some(ApiOperation::Responses));
         let snapshot = compile_runtime_config_with_plugins(enabled, &plugins).unwrap();
         let channel = snapshot.channels().next().unwrap();
         assert_eq!(
             channel.permits_transport(ai_gateway::domain::CapabilityTransport::HttpJson),
             permits_json,
         );
-        assert!(!channel.permits_transport(ai_gateway::domain::CapabilityTransport::HttpSse));
+        assert!(channel.permits_transport(ai_gateway::domain::CapabilityTransport::HttpSse));
         assert!(!channel.permits_transport(ai_gateway::domain::CapabilityTransport::Websocket));
         assert!(!channel.supports_websocket());
         assert!(snapshot.plugin_error("fixture").is_none());
     }
 
-    let (_directory, path, sha256) =
-        fixture_with_flags(1, &["-DFIXTURE_PROTOCOL3", "-DFIXTURE_OMIT_RESPONSE_JSON"]);
+    let (_directory, path, sha256) = fixture_with_flags(
+        1,
+        &["-DFIXTURE_RESPONSE_ADAPTER", "-DFIXTURE_OMIT_RESPONSE_JSON"],
+    );
     let plugins = ConnectorPlugins::load(&[PluginConfig {
         id: "fixture".into(),
         path,
@@ -446,7 +416,9 @@ fn snapshot_compilation_excludes_unavailable_plugin_channels() {
     let mut enabled = records("fixture", Some(ApiOperation::Responses));
     let mut ordinary = enabled.control_plane.channels[0].clone();
     ordinary.id = Uuid::from_u128(8);
-    ordinary.connector_kind = "general".into();
+    ordinary.logical_channel_id = Uuid::from_u128(9);
+    ordinary.access_id = Uuid::from_u128(10);
+    ordinary.connector_kind = ai_gateway::domain::ConnectorKind::OpenAiCompatible;
     enabled.control_plane.channels.push(ordinary);
     let snapshot = compile_runtime_config_with_plugins(enabled, &plugins).unwrap();
     assert_eq!(snapshot.channels().count(), 1);
@@ -458,14 +430,14 @@ fn snapshot_compilation_excludes_unavailable_plugin_channels() {
 }
 
 #[test]
-fn semantic_descriptors_are_generation_bound_and_preserve_legacy_contracts() {
+fn semantic_descriptors_are_generation_bound_for_stateless_and_configured_plugins() {
     use ai_gateway_connector_sdk::{ConnectorProtocol, ResponseMode};
 
     for flags in [
         vec![],
         vec!["-DFIXTURE_SETTINGS"],
-        vec!["-DFIXTURE_PROTOCOL3"],
-        vec!["-DFIXTURE_PROTOCOL3", "-DFIXTURE_SETTINGS"],
+        vec!["-DFIXTURE_RESPONSE_ADAPTER"],
+        vec!["-DFIXTURE_RESPONSE_ADAPTER", "-DFIXTURE_SETTINGS"],
     ] {
         let (_directory, path, hash) = fixture_with_flags(1, &flags);
         let plugin = Plugin::load(&path, &hash, "fixture").unwrap();
@@ -481,34 +453,36 @@ fn semantic_descriptors_are_generation_bound_and_preserve_legacy_contracts() {
             descriptor.protocols[0].protocol,
             ConnectorProtocol::NonStream
         );
-        if plugin.manifest().protocol_version == 3 {
+        if flags.contains(&"-DFIXTURE_RESPONSE_ADAPTER") {
             assert_eq!(descriptor.protocols.len(), 1);
             assert_eq!(descriptor.protocols[0].response, ResponseMode::Json);
-            let revision = plugin.with_revision(2);
-            assert_ne!(plugin.generation_id(), revision.generation_id());
-            assert!(!std::ptr::eq(
-                descriptor,
-                revision.attempt_descriptor("responses").unwrap()
-            ));
-            if let Some(settings) = plugin.settings_descriptor().unwrap() {
-                let configured = plugin.configured(&settings.default_document(), 3).unwrap();
-                assert!(!std::ptr::eq(
-                    descriptor,
-                    configured.attempt_descriptor("responses").unwrap()
-                ));
-            }
         } else {
             assert!(descriptor.capabilities.successful_response_is_sse);
             assert_eq!(descriptor.protocols[0].response, ResponseMode::Passthrough);
             assert_eq!(descriptor.protocols.len(), 2);
+        }
+        let revision = plugin.with_revision(2);
+        assert_ne!(plugin.generation_id(), revision.generation_id());
+        assert!(!std::ptr::eq(
+            descriptor,
+            revision.attempt_descriptor("responses").unwrap()
+        ));
+        if let Some(settings) = plugin.settings_descriptor().unwrap() {
+            let configured = plugin.configured(&settings.default_document(), 3).unwrap();
+            assert!(!std::ptr::eq(
+                descriptor,
+                configured.attempt_descriptor("responses").unwrap()
+            ));
         }
     }
 }
 
 #[test]
 fn semantic_descriptors_call_native_code_once_per_operation_and_generation() {
-    let (_directory, path, hash) =
-        fixture_with_flags(1, &["-DFIXTURE_PROTOCOL3", "-DFIXTURE_COUNT_DESCRIBE"]);
+    let (_directory, path, hash) = fixture_with_flags(
+        1,
+        &["-DFIXTURE_RESPONSE_ADAPTER", "-DFIXTURE_COUNT_DESCRIBE"],
+    );
     let plugin = Plugin::load(&path, &hash, "fixture").unwrap();
     plugin.attempt_descriptor("responses").unwrap();
     plugin.attempt_descriptor("responses").unwrap();
@@ -549,7 +523,7 @@ fn malformed_semantic_descriptors_fail_closed_with_sanitized_cached_errors() {
         vec!["-DFIXTURE_RESPONSE_OPERATION=\"unknown\""],
     ] {
         let mut flags = flags;
-        flags.push("-DFIXTURE_PROTOCOL3");
+        flags.push("-DFIXTURE_RESPONSE_ADAPTER");
         flags.push("-DFIXTURE_COUNT_DESCRIBE");
         let (_directory, path, hash) = fixture_with_flags(1, &flags);
         let plugin = Plugin::load(&path, &hash, "fixture").unwrap();
@@ -586,7 +560,7 @@ fn upstream_usage_contracts_require_only_the_selected_parser_command() {
         (custom, true, true),
     ] {
         let mut flags = vec![
-            "-DFIXTURE_PROTOCOL3",
+            "-DFIXTURE_RESPONSE_ADAPTER",
             "-DFIXTURE_DESCRIPTOR_MODE=10",
             "-DFIXTURE_OMIT_RESPONSE_JSON",
             "-DFIXTURE_OMIT_RESPONSE_EVENT",
@@ -620,7 +594,7 @@ fn codex_protocol_three_accepts_usage_profiles_but_not_response_adapters() {
         let (_directory, path, hash) = fixture_with_flags(
             1,
             &[
-                "-DFIXTURE_PROTOCOL3",
+                "-DFIXTURE_RESPONSE_ADAPTER",
                 "-DFIXTURE_PLUGIN_ID=\"codex\"",
                 mode,
                 usage,

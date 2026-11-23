@@ -48,7 +48,7 @@ Responses WebSocket 在 `GET /v1/responses` 握手时鉴权，每条顺序的 `r
 
 ## 日志与结算
 
-终态先写入本地 spool，再进入数据库 ingress（PostgreSQL COPY / SQLite 批量事务）；收到提交确认才推进 spool checkpoint。worker 物化不可变计量事实，独立处理两类后续工作：
+当前格式的终态先写入本地 spool，再进入数据库 ingress（PostgreSQL COPY / SQLite 批量事务）；收到提交确认才推进 spool checkpoint。worker 将请求时凭证 ID 与用量、价格一同物化为不可变事实，独立处理两类后续工作：
 
 - **结算**在同一事务写唯一回执、变更余额和 Key 额度、移除待结算项。重放同一请求不会再次扣款。
 - **投影**写入可查询的请求日志。日志暂不可见不妨碍已验证的事实结算；事实和投影都持久化后，才能确认 ingress。

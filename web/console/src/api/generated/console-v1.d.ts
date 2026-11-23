@@ -950,7 +950,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description Administrator-only priced-model bindings, independent of legacy protocol configuration. */
+        /** @description Lists priced-model routing profiles. Requires an administrator. */
         get: operations["listRoutingProfiles"];
         put?: never;
         /** @description Explicitly binds an enabled pricing model to its sole routing profile. Creates no operation rule, candidate, or authorization. */
@@ -987,7 +987,7 @@ export interface paths {
         /** @description Administrator-only per-operation routing rules with their explicit capability/model tiers. */
         get: operations["listOperationRules"];
         put?: never;
-        /** @description Creates one operation rule and replaces its tier graph atomically. Candidates reference a capability and wire model; they never reference legacy channels. */
+        /** @description Creates one operation rule and replaces its tier graph atomically. Each candidate selects a capability and wire model. */
         post: operations["createOperationRule"];
         delete?: never;
         options?: never;
@@ -3563,7 +3563,7 @@ export interface components {
             input_unit_price: components["schemas"]["Decimal"];
             cached_input_unit_price: components["schemas"]["Decimal"];
             cache_write_unit_price: components["schemas"]["Decimal"];
-            /** @description Optional for compatibility; when omitted, the base output price remains active for this tier. */
+            /** @description Omit to use the model’s base output price for this tier. */
             output_unit_price?: components["schemas"]["Decimal"];
         };
         RequestBillingMultiplier: {
@@ -3580,7 +3580,7 @@ export interface components {
         TimeBillingMultiplier: {
             /** @description Unique display label within this model's time windows. */
             label: string;
-            /** @description UTC start weekdays. Omission preserves compatibility by applying the window every day. */
+            /** @description UTC weekdays on which the window starts. Omit to apply every day. */
             weekdays?: components["schemas"]["BillingWeekday"][];
             /** @description Inclusive UTC time in HH:MM format. */
             start_time: string;

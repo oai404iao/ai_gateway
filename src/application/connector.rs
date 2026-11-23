@@ -697,18 +697,16 @@ pub(crate) mod tests {
             },
         ] {
             let custom_header = matches!(auth, UpstreamAuth::Header { .. });
-            let channel = CompiledChannel::new_with_connector_policy_automation_and_billing(
+            let channel = CompiledChannel::from_capability(
                 Uuid::new_v4(),
                 Uuid::new_v4(),
-                ApiFormat::OpenAiResponses,
+                crate::domain::ChannelIdentity::for_test(crate::domain::ApiOperation::Responses),
                 ConnectorKind::parse("fixture").unwrap(),
                 RequestCompression::Default,
                 Url::parse("https://upstream.test/base").unwrap(),
                 Decimal::ONE,
                 auth,
                 HashSet::new(),
-                true,
-                false,
                 false,
                 false,
                 None,
@@ -745,18 +743,16 @@ pub(crate) mod tests {
     fn generic_external_connector_dispatches_through_native_abi_with_host_auth() {
         let plugins = fixture(false).unwrap();
         let registry = UpstreamConnectorRegistry::default();
-        let channel = CompiledChannel::new_with_connector_policy_automation_and_billing(
+        let channel = CompiledChannel::from_capability(
             Uuid::new_v4(),
             Uuid::new_v4(),
-            ApiFormat::OpenAiResponses,
+            crate::domain::ChannelIdentity::for_test(crate::domain::ApiOperation::Responses),
             ConnectorKind::parse("fixture").unwrap(),
             RequestCompression::Default,
             Url::parse("https://upstream.test/base").unwrap(),
             Decimal::ONE,
             UpstreamAuth::Bearer(Arc::from("host-owned-secret")),
             HashSet::new(),
-            true,
-            false,
             false,
             false,
             None,
@@ -857,16 +853,25 @@ pub(crate) mod tests {
 
     #[test]
     fn standard_connector_preserves_path_and_injects_configured_auth() {
-        let channel = CompiledChannel::new(
+        let channel = CompiledChannel::from_capability(
             Uuid::new_v4(),
             Uuid::new_v4(),
-            ApiFormat::OpenAiChatCompletions,
+            crate::domain::ChannelIdentity::for_test(crate::domain::ApiOperation::ChatCompletions),
+            crate::domain::ConnectorKind::OpenAiCompatible,
+            crate::domain::RequestCompression::Default,
             Url::parse("https://example.test/base").unwrap(),
+            rust_decimal::Decimal::ONE,
             UpstreamAuth::Header {
                 name: HeaderName::from_static("x-api-key"),
                 value: Arc::from("upstream-secret"),
             },
             HashSet::new(),
+            false,
+            false,
+            None,
+            crate::domain::CompiledChannelUpstreamPolicy::transparent(
+                ApiFormat::OpenAiChatCompletions,
+            ),
         );
         let attempt = PreparedUpstreamAttempt::OpenAiCompatible;
         let target = attempt
@@ -894,18 +899,18 @@ pub(crate) mod tests {
 
     #[test]
     fn websocket_preflight_excludes_a_missing_codex_connector() {
-        let channel = CompiledChannel::new_with_connector_policy_automation_and_billing(
+        let channel = CompiledChannel::from_capability(
             Uuid::new_v4(),
             Uuid::new_v4(),
-            ApiFormat::OpenAiResponses,
+            crate::domain::ChannelIdentity::for_test(
+                crate::domain::ApiOperation::ResponsesWebSocket,
+            ),
             ConnectorKind::CodexOauth,
             RequestCompression::Default,
             Url::parse("https://example.test/backend-api/codex").unwrap(),
             Decimal::ONE,
             UpstreamAuth::None,
             HashSet::new(),
-            true,
-            false,
             false,
             false,
             None,

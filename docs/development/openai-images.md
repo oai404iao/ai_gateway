@@ -1,11 +1,8 @@
 # OpenAI Images 转发
 
-> 状态：部分实现。非流式 JSON generation、multipart edit、Codex 插件适配和 request-body
-> spool 已实现；Images streaming 仍未实现。末节保留早期分阶段设计的迁移背景。
+> 状态：当前。
 
-Images 使用 `open_ai_images` 格式，按图片操作独立选路，复用网关鉴权、健康、Transform、
-日志与计费，不借用 Responses 路由。大图片输入通过可回放 body 落盘，而不是扩大所有 JSON
-请求的内存上限。
+Images 接口支持非流式 JSON generation 和 multipart edit。两者都是 `OpenAiImages`，但按操作分别匹配能力、候选与上游目标；`stream: true` 不受支持。
 
 ## 本页内容
 
@@ -15,7 +12,6 @@ Images 使用 `open_ai_images` 格式，按图片操作独立选路，复用网�
 - [理解 Codex 插件差异](#codex-images)
 - [处理大小、磁盘和重试失败](#错误与资源边界)
 - [修改后验证](#测试与验收)
-- [查阅旧迁移背景](#历史迁移背景)
 
 ## 格式与操作分离
 
@@ -24,26 +20,7 @@ Images 使用 `open_ai_images` 格式，按图片操作独立选路，复用网�
 | `POST /v1/images/generations` | `images_generation` | JSON | 非流式 JSON |
 | `POST /v1/images/edits` | `images_edit` | 带 boundary 的 multipart/form-data | 非流式 JSON |
 
-两者的 `ApiFormat` 都是 `OpenAiImages`，`ApiOperation` 分别为 `ImagesGeneration` 和
-`ImagesEdit`。日志同时保留格式和操作；operation 规则、candidate 和能力必须匹配，不能在缺少
-edit 路由时借用 generation，也不能回退到 Responses。
-
-当前资源关系是：
-
-```text
-upstream access + upstream credential
-  -> logical channel
-  -> explicit images_generation / images_edit capabilities
-  -> operation rule: (capability_id, upstream_model, weight) candidates
-```
-
-凭证可以被兼容的多个逻辑渠道复用；格式隔离发生在操作能力和路由，而不是要求一个旧式 Channel
-同时投影出 Responses/Images 身份。渠道组提供组织和选项上下文，不持有路由权重。
-导入 Codex 凭证不创建接入、渠道、能力、授权或路由。
-
-管理员须显式创建支持的能力，配置模型目录和计价模型下的对应操作规则；客户端 Key 须已选择该渠道或其所在组。
-恢复凭证不会打开已关闭的 Images 能力，也不改变 Key/Policy 选择的目标。
-完整拓扑见[上游身份与能力](upstream-identity-capabilities.md)。
+格式固定为 `OpenAiImages`，选路和日志按操作区分，edit 不能借 generation 或 Responses 候选。导入 Codex 凭证不产生渠道、能力、授权或规则；需要显式配置的关系见[上游身份与能力](upstream-identity-capabilities.md)。
 
 ## JSON generation
 
@@ -176,12 +153,6 @@ Images 不使用 Session affinity、WebSocket、SSE Transform 或 scheduled prob
 文件系统可用容量；容量低于三个最大 edit body 时还产生 `ai_gateway::image_body_spool` warning。
 监控不是磁盘预留，仍须保留写失败路径。
 
-## 后续：Streaming
-
-启用 streaming 前必须另行设计事件类型、终态/错误、partial image 大小与背压、专用 Transform
-策略、usage/取消/断开后的财务终态及重复请求风险。在此之前 `stream: true` 必须拒绝，
-不能把转发普通 SSE 的能力视为 Images streaming 已实现。
-
 ## 测试与验收
 
 | 改动面 | 必须保留的确定性覆盖 |
@@ -191,29 +162,12 @@ Images 不使用 Session affinity、WebSocket、SSE Transform 或 scheduled prob
 | Edit | exact replay、模型别名/字段删除重建、阈值落盘、权限、重复读取、取消与 Drop 清理 |
 | 负向输入 | body/file/part/image/mask 限制、Content-Type/Encoding、streaming、JSON Transform |
 | Codex | 插件实际库、路径与认证、image-turn、两张图片 data URL、五张上限、mask 拒绝与脱敏 |
-| 财务与日志 | operation、已入库 v2/v3 payload 解码、独立计量事实、一次结算、Console 投影 |
+| 财务与日志 | operation、当前格式终态的归属、独立计量事实、一次结算、Console 投影 |
 | 重试与超时 | 两个可选候选仍只派发一次、Images 专用/显式超时、派发前凭证筛除 |
 
 转发改动须按仓库规则运行 Rust/相关 Console 检查，以及经授权的[真实上游 smoke](real-upstream-smoke.md)。
-完整 `REAL_UPSTREAM_IMAGES_*` 额外启用付费 generation/edit；无论是否配置真实 Images，
-确定性插件/代理测试不能被替代。本文的设计记录不表示本次文档修改重新运行了这些验收。
-
-## 历史迁移背景
-
-最初的 PR 1 实现普通 generation，PR 2 增加 Codex generation，PR 3 增加 multipart edit 和
-spool。`0034` 增加 Images format，`0035` 增加日志 operation 与旧写入兼容触发器，journal v4
-开始保存操作并可读取 v2/v3 backlog。该触发器解释当时升级兼容，不代表当前版本可与任意旧版混跑。
-
-`0036_codex_images_projection.sql` 当时通过 `connector_pools` 和
-`codex_oauth_credential_channels` 共享凭证，保留旧 Responses group/channel/credential ID，
-创建停用的 Images 配对组及 managed channel。当时 projection 同步 label、proxy、计费倍率和
-timeout，但保持模型、健康和授权隔离；Images 固定模型目录使用 `gpt-image-2`，不启用状态统计。
-这一历史迁移要求协调停机，不自动授权或创建 Images 路由。
-
-后续[身份与能力联合切换](upstream-identity-capabilities.md)已退役该 projection 拓扑，
-改为独立凭证、逻辑渠道和显式操作能力；不能再依赖创建凭证自动生成两个 Channel、
-默认固定 Images 模型或删除凭证顺带 tombstone 两个 projection。
-当前凭证删除先解除活动渠道引用，清除 Token 并保留凭证墓碑，金融历史不删除。
+完整 `REAL_UPSTREAM_IMAGES_*` 配置额外启用付费 generation/edit。
+确定性测试验证 multipart 回放、上游只派发一次以及失败后的计量，不依赖真实上游制造这些故障。
 
 ## 权威实现位置
 

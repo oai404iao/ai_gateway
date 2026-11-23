@@ -2,163 +2,22 @@
 
 > 状态：当前。
 
-普通 CI 按路径选择检查，但每个 PR 都产生稳定的 `ci-gate`。排查红灯时先确定事件、提交 SHA
-和所选 job，再看具体失败；workflow 成功、CodeQL 无告警、发布成功是三个不同结论。
+每个 PR 和 `main` push 都运行 [CI](../../.github/workflows/ci.yml)。[`ci-changed-areas.sh`](../../scripts/ci-changed-areas.sh) 按实际改动选择 docs、Rust、Console 和 image 检查；未知路径选择全部检查。`ci-gate` 汇总所选任务，是分支保护要求的检查名。
 
-## 本页内容
+## 检查内容
 
-- [查看变更会选择哪些检查](#普通-ci)
-- [理解 Rust、Console 与系统门禁](#可复用质量门禁)
-- [维护缓存和并发](#cache-写入策略)
-- [区分依赖检查与代码扫描](#依赖与代码扫描)
-- [修改 workflow 后本地验证](#本地验证)
-
-## 定位一次失败
-
-1. 记录 `pull_request`、`main` push、tag、schedule 或手动事件，以及精确 SHA。
-2. 检查 `changes` 的分类输出与被选择的 job，不把正确的 `skipped` 解释为缺失验证。
-3. 修复最早的实质失败；最终 gate 只聚合结果，不是根因。
-4. 合并后核对合并 SHA 的 `main` push。旧 PR、关闭事件或另一个 SHA 的成功不能代替它。
-5. 发现安全告警时转入[逐条核查流程](security-alert-triage.md)，不能靠重跑普通 CI 关闭告警。
-
-## 普通 CI
-
-`.github/workflows/ci.yml` 对每个 Pull Request 和 `main` push 运行，并始终
-生成稳定的 `ci-gate` 检查。`scripts/ci-changed-areas.sh` 根据变更路径选择门禁：
-
-| 变更路径 | 分类输出 |
+| 门禁 | 验证什么 |
 | --- | --- |
-| Markdown、普通 `docs/`、Agent 指令和 `.gitignore` | `docs` |
-| 编译进网关的 `docs/reference/request-allowlists.json` | `docs`、`rust` |
-| `src/`、`crates/`、`tests/`、`migrations/`、`tools/` | `rust` |
-| 根 `e2e/`、`mock/` 的非 Markdown 文件 | `docs`、`rust`、`console` |
-| `Cargo.toml`、`Cargo.lock`、`rust-toolchain.toml` | `rust`、`image` |
-| `web/console/package.json`、`web/console/pnpm-lock.yaml`、`web/console/pnpm-workspace.yaml` | `console`、`image` |
-| 其余 `web/console/` | `console` |
-| `Dockerfile`、`.dockerignore`、`docker-compose*.yml`、`config.example.toml`、`deploy/`、`LICENSE`、`LICENSES/` | `image` |
-| Console OpenAPI、`.github/`、`scripts/` 或未知路径 | 全部门禁 |
+| 文档 | Markdown 链接、结构、元数据以及 diff 格式 |
+| Rust | 固定工具链上的 fmt、workspace Clippy 和测试；默认及 `sqlite-backend` 两组都用 PostgreSQL 和[真实插件](connector-plugins.md#验收边界) |
+| Console | OpenAPI 类型漂移、TypeScript、lint、组件测试、生产构建及 Playwright 浏览器测试 |
+| 系统 | [真实 Gateway、浏览器和 CLI](system-e2e.md)，分别使用临时 PostgreSQL 与 SQLite |
+| 镜像 | Docker release 构建与 `--version`。PR 由 image 分类选择；`main` 的 Rust 或 Console 改动也构建镜像 |
 
-这里的 `image` 输出标记会改变镜像依赖层或构建配方的路径；保守的“全部门禁”
-路径也会设置该输出。Pull Request 仅在 `image` 为 `true` 时运行 release Docker
-构建与 `--version` smoke，因此纯 Rust 或 Console 源码变更不再重复构建镜像。
-`main` push 则在 `image`、`rust` 或 `console` 任一输出为 `true` 时运行 image
-job，继续对每个影响可执行产物的合并提交验证可交付镜像。
+[可复用质量工作流](../../.github/workflows/reusable-quality.yml) 运行代码与系统检查。PR 可恢复缓存但不写缓存。同一 PR 的新提交取消旧运行；`main` 按提交保留结果。AMD64 构建缓存由 `main` CI 写入，ARM64 缓存由[镜像预热工作流](../../.github/workflows/release-image-cache.yml)按 image 分类写入。Tag 发布使用对应 `main` SHA 的成功 `ci-gate`，另行执行[发布验证](releasing.md)。
 
-CI 和 Security 的 Pull Request 触发器显式只接受 `opened`、`synchronize` 和
-`reopened`。合并产生的 `closed` 事件不运行 PR 门禁：Squash merge 后源分支可能
-已经删除，事件中记录的 head commit 无法再由 checkout 获取。合并后的权威结果
-始终是合并提交 SHA 对应的 `main` push workflow，而不是 PR close workflow。
+## 安全与排障
 
-`changes` job 先执行 `scripts/test-ci-changed-areas.sh` 固定分类边界，再对完整
-变更范围执行 `git diff --check`。文档 job 执行
-`python3 scripts/check-docs.py`，因此纯文档、Agent 指令或仅 `.gitignore` 的 PR
-也拥有可作为分支规则必需检查的 `ci-gate`，但不会启动 Rust、Console、E2E 或
-image job。
+PR 的 dependency review 检查新引入的易受攻击依赖；[Security](../../.github/workflows/security.yml) 对 Actions、JavaScript/TypeScript 和 Rust 运行 CodeQL。外部 Action 固定到完整提交 SHA。排查时先选对应事件和提交，再打开最早失败的任务；处理具体告警见[安全告警处置](security-alert-triage.md)。
 
-Docker image job 只依赖快速的路径分类，与 Rust、Console 和 E2E 并行运行。
-最终 `ci-gate` 只接受 `success` 或因事件/路径无关而产生的 `skipped` 结果。
-
-## 并发策略
-
-同一 PR 的新提交会取消旧 CI；`main` push 使用提交 SHA 作为并发键，每个合并
-提交都保留完整运行记录。Release 和定时安全扫描使用独立并发组，不会被普通 CI
-替代。
-
-## 可复用质量门禁
-
-`.github/workflows/reusable-quality.yml` 是普通 CI 的可复用质量门禁，包含：
-
-- 文档检查；
-- Rust 1.97.1 format；默认构建和启用 `sqlite-backend` 的构建并行执行完整 workspace
-  Clippy 和测试，两者均使用真实 PostgreSQL 和固定的协议 2 插件。后者还覆盖
-  [SQLite schema、生命周期与备份](sqlite-backend.md)及双后端契约；默认构建另以真实协议 3
-  制品运行 [Codex 转发契约测试](connector-plugins.md#验收边界)；
-- Console API 类型漂移、TypeScript、lint、组件测试和生产构建；
-- Chromium Playwright 模拟 API 的 UI E2E，并在失败时上传 trace/test results；
-- [系统 E2E](system-e2e.md)：真实浏览器、固定 Codex/Pi CLI、嵌入式 Gateway 和临时
-  PostgreSQL/SQLite matrix，验证 HTTP/WS 工具闭环、日志结算、崩溃重放和 spool 写失败边界；
-  SQLite 额外验证活跃实例排他、停机成对备份恢复与未完成恢复不发布；
-  Rust 或浏览器检查被选中时执行，
-  并上传脱敏报告。其结果同样进入 `quality-gate` 和稳定 `ci-gate`。
-
-Rust 质量门禁只使用仓库固定的 Rust 1.97.1，不声明或测试更低版本兼容性。
-普通 CI 按路径传入启用项。Release tag 必须解析到属于 `main` 的提交，并通过
-GitHub Actions API 验证相同 SHA 已成功完成 `main` `ci-gate`；本地 tag 创建脚本
-还要求当时的 `HEAD` 与 `origin/main` 完全一致。因此 Tag workflow 不再重复运行
-普通 Rust、Console 和 E2E，只并行执行 embedded Console feature 发布验证、双架构镜像
-构建、从 AMD64 镜像提取发布二进制和许可证、manifest/provenance 与 GitHub
-Release 发布。
-
-## Cache 写入策略
-
-Pull Request 只能恢复默认分支或 Release 已有 cache，不能创建 cache：
-
-- `Swatinem/rust-cache` 通过 `save-if` 限制写入。
-- pnpm 使用 `actions/cache/restore`，只有获准的 Console job 调用
-  `actions/cache/save`。
-- PR Docker 构建只设置 `cache-from`，`cache-to` 为空。
-
-只有 `main` 相关 workflow 可以写入 cache。两组 Rust 检查分别使用 `stable` 和
-`sqlite-backend` shared key；普通 CI 写入 `ci-image-amd64`，独立的
-`.github/workflows/release-image-cache.yml` 只在分类器的 `image` 输出为 `true`
-时异步写入 `release-image-arm64`。因此普通 Rust/Console 源码合并仍由 AMD64
-image job 验证，但不会启动 ARM64 预热；依赖清单、工具链、Console 包管理文件、
-Docker/部署配方和保守的全门禁路径变化仍会预热。Tag-triggered Release 只恢复这些
-cache，避免在发布关键路径上传大型 `mode=max` cache。Pull Request 仍然只能恢复
-cache。
-
-Docker planner 在 cargo-chef recipe 生成前将 workspace 自身版本规范化为固定值；
-发布版本号变化不会再使完整 Rust 依赖层失效。
-
-## 依赖与代码扫描
-
-普通 PR 的 `dependency-review` job 阻止引入 high 或 critical 严重度的已知漏洞
-依赖，并显示可用修复版本。
-
-`.github/workflows/security.yml` 在代码 PR、`main` push、每周定时任务和手动
-触发时运行 CodeQL `security-extended` 查询。仅修改 Markdown、`docs/` 或 `.gitignore`
-不会触发 PR/push CodeQL。扫描范围包括：
-
-- GitHub Actions workflow；
-- JavaScript/TypeScript Console；
-- 使用 CodeQL `none` build mode 提取的 Rust workspace。
-
-GitHub 仓库设置同时启用 Dependabot alerts/security updates、secret scanning
-和 push protection。所有外部 Action 必须继续固定到完整 commit SHA。
-
-## `main` ruleset
-
-默认分支 ruleset 要求：
-
-- 禁止删除和非 fast-forward 更新；
-- 所有变更通过 Pull Request；
-- 允许 squash 或明确需要的 merge commit，不允许 rebase merge；
-- 所有 review conversation 已解决；
-- `ci-gate` 在最新 `main` 基础上通过。
-
-Solo maintainer 阶段审批数为零。仓库所有者只保留 Pull Request 内的恢复性
-bypass；正常变更仍必须走 CI 和项目合并策略。
-
-## 本地验证
-
-先运行不启动服务的分类/发布自动化回归。发布自动化测试需要 Docker Compose CLI 和
-Python 环境中的 PyYAML（版本见 `ci.yml`）：
-
-```bash
-shellcheck scripts/ci-changed-areas.sh scripts/test-ci-changed-areas.sh
-scripts/test-ci-changed-areas.sh
-scripts/test-release-automation.sh
-git diff --check
-python3 scripts/check-docs.py
-```
-
-workflow 同时改变浏览器或 Rust 构建路径时，再运行相应执行门禁：
-
-```bash
-pnpm --dir web/console e2e
-cargo build --locked --workspace --all-targets
-```
-
-Docker 或 Release 路径变更还需执行容器/[发布检查](releasing.md)；系统测试路径变化按
-[系统 E2E](system-e2e.md)执行相关后端。仅修改本文不会执行这些代码门禁，文档检查也不证明
-GitHub 远端 ruleset 或安全扫描设置已经生效。
+修改分类或发布自动化时，在本地运行 `scripts/test-ci-changed-areas.sh` 和 `scripts/test-release-automation.sh`。后者使用 Docker Compose CLI 与 PyYAML；所需版本见 CI 工作流。

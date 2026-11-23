@@ -4,7 +4,7 @@
 
 Transform DSL 在编译配置时生成有界规则，用于请求 JSON、请求/响应 Header 和受支持的流事件。
 它不是脚本运行时，不读取凭据、环境或网络。模板 `config_templates.document` 与操作能力的
-`override_document` 使用同一语法；旧 `channels.override_document` 已随拓扑切换退役。
+`override_document` 使用同一语法。
 
 最小配置是 `{}`，表示显式 no-op。需要规则时声明版本和 API 格式，例如：
 

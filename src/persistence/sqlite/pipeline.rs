@@ -52,7 +52,7 @@ use super::{
 
 /// Column order is derived from one field list so the inserted columns and the
 /// `json_extract` expressions can never drift apart.
-const FACT_FIELDS: [&str; 30] = [
+const FACT_FIELDS: [&str; 31] = [
     "id",
     "started_at",
     "completed_at",
@@ -67,6 +67,7 @@ const FACT_FIELDS: [&str; 30] = [
     "model_rule_id",
     "channel_group_id",
     "channel_id",
+    "upstream_credential_id",
     "model_id",
     "outcome",
     "input_tokens",
@@ -1044,7 +1045,7 @@ async fn write_facts(
     let stored = sqlx::query_as::<_, FactRow>(
         "SELECT id,started_at,completed_at,user_id,api_key_id,request_source,api_format,\
                 api_operation,request_protocol,client_model,upstream_model,model_rule_id,\
-                channel_group_id,channel_id,model_id,outcome,input_tokens,cached_input_tokens,\
+                channel_group_id,channel_id,upstream_credential_id,model_id,outcome,input_tokens,cached_input_tokens,\
                 cache_write_tokens,output_tokens,reasoning_tokens,currency,price_unit_tokens,\
                 price_effective_at,input_unit_price,cached_input_unit_price,\
                 cache_write_unit_price,output_unit_price,cost_amount,peak_pricing \
@@ -1072,55 +1073,6 @@ async fn write_facts(
             MeteringWriteOutcome::Conflict
         });
     }
-    let inserted = inserted.into_iter().collect::<HashSet<_>>();
-    for chunk in events
-        .iter()
-        .zip(&outcomes)
-        .collect::<Vec<_>>()
-        .chunks(BIND_CHUNK)
-    {
-        let carrier = Value::Array(
-            chunk.iter()
-                .filter(|(event, outcome)| **outcome == MeteringWriteOutcome::Accepted
-                    && (inserted.contains(&event.id) || event.upstream_credential.is_none()))
-                .map(|(event, _)| json!({
-                        "request_id": event.id,
-                        "known": event.upstream_credential.is_some(),
-                        "credential_id": event.upstream_credential.and_then(|value| value.credential_id),
-                }))
-                .collect(),
-        ).to_string();
-        sqlx::query(
-            "INSERT INTO request_credential_attributions(request_id,known,credential_id)
-             SELECT json_extract(value,'$.request_id'),json_extract(value,'$.known'),
-                    json_extract(value,'$.credential_id') FROM json_each(?) WHERE true
-             ON CONFLICT(request_id) DO NOTHING",
-        )
-        .bind(carrier)
-        .execute(&mut **transaction)
-        .await?;
-    }
-    let attributed = sqlx::query_as::<_, (SqliteUuid, bool, Option<SqliteUuid>)>(
-        "SELECT request_id,known,credential_id FROM request_credential_attributions
-         WHERE request_id IN (SELECT value FROM json_each(?))",
-    )
-    .bind(uuid_array(&compared_ids))
-    .fetch_all(&mut **transaction)
-    .await?
-    .into_iter()
-    .map(|(id, known, credential)| (id.0, (known, credential.map(|id| id.0))))
-    .collect::<HashMap<_, _>>();
-    for (event, outcome) in events.iter().zip(&mut outcomes) {
-        let expected = (
-            event.upstream_credential.is_some(),
-            event
-                .upstream_credential
-                .and_then(|value| value.credential_id),
-        );
-        if attributed.get(&event.id) != Some(&expected) {
-            *outcome = MeteringWriteOutcome::Conflict;
-        }
-    }
     Ok(outcomes)
 }
 
@@ -1141,6 +1093,7 @@ struct FactRow {
     model_rule_id: Option<SqliteUuid>,
     channel_group_id: Option<SqliteUuid>,
     channel_id: Option<SqliteUuid>,
+    upstream_credential_id: Option<SqliteUuid>,
     model_id: Option<SqliteUuid>,
     outcome: String,
     input_tokens: Option<i64>,
@@ -1176,16 +1129,14 @@ impl FactRow {
             && self.api_key_id.0 == event.api_key_id
             && self.request_source == event.request_source.as_str()
             && self.api_format == event.api_format.as_str()
-            && crate::domain::ApiOperation::normalize_stored_name(
-                &self.api_operation,
-                &self.request_protocol,
-            ) == event.api_operation.as_str()
+            && self.api_operation == event.api_operation.as_str()
             && self.request_protocol == event.request_protocol.as_str()
             && self.client_model == event.client_model
             && self.upstream_model == event.upstream_model
             && self.model_rule_id.map(|value| value.0) == event.model_rule_id
             && self.channel_group_id.map(|value| value.0) == event.channel_group_id
             && self.channel_id.map(|value| value.0) == event.channel_id
+            && self.upstream_credential_id.map(|value| value.0) == event.upstream_credential_id
             && self.model_id.map(|value| value.0) == event.model_id
             && self.outcome == event.outcome.as_str()
             && self.input_tokens == usage.map(|usage| usage.input_tokens)
@@ -1258,6 +1209,10 @@ fn fact_object(
         json!(uuid_text(event.channel_group_id)),
     );
     entry.insert("channel_id".into(), json!(uuid_text(event.channel_id)));
+    entry.insert(
+        "upstream_credential_id".into(),
+        json!(uuid_text(event.upstream_credential_id)),
+    );
     entry.insert("model_id".into(), json!(uuid_text(event.model_id)));
     entry.insert("outcome".into(), json!(event.outcome.as_str()));
     entry.insert(
@@ -1598,10 +1553,7 @@ impl RequestLogRow {
             && self.api_key_id.0 == event.api_key_id
             && self.request_source == event.request_source.as_str()
             && self.api_format == event.api_format.as_str()
-            && crate::domain::ApiOperation::normalize_stored_name(
-                &self.api_operation,
-                &self.request_protocol,
-            ) == event.api_operation.as_str()
+            && self.api_operation == event.api_operation.as_str()
             && self.request_protocol == event.request_protocol.as_str()
             && self.client_model == event.client_model
             && self.upstream_model == event.upstream_model
@@ -1674,7 +1626,7 @@ mod tests {
             let database = SqliteDatabase::open(&directory.path().join("gateway.sqlite"))
                 .await
                 .unwrap();
-            assert_eq!(database.install_schema().await.unwrap(), 15);
+            assert_eq!(database.install_schema().await.unwrap(), 1);
             let database = Arc::new(database);
             let logs = SqliteRequestLogRepository::new(Arc::clone(&database));
             Self {
@@ -1751,7 +1703,7 @@ mod tests {
             model_rule_id: Some(RULE),
             channel_group_id: Some(GROUP),
             channel_id: Some(CHANNEL),
-            upstream_credential: None,
+            upstream_credential_id: None,
             model_id: Some(MODEL),
             outcome: RequestLogOutcome::Succeeded,
             response_status_code: Some(200),
@@ -1791,18 +1743,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn credential_attribution_is_immutable_across_rebinding_and_known_null_never_falls_back()
-    {
-        use crate::domain::RequestCredentialAttribution;
-
+    async fn facts_keep_the_dispatch_credential_or_null_after_channel_rebinding() {
         let fixture = Fixture::new().await;
         fixture.seed().await;
         let first = Uuid::from_u128(0x940);
         let second = Uuid::from_u128(0x941);
         let channel = Uuid::from_u128(0x942);
         let access = Uuid::from_u128(0x943);
-        fixture.execute(&format!(
-            "INSERT INTO upstream_credentials(id,name,kind,secret,allowed_base_urls)
+        fixture
+            .execute(&format!(
+                "INSERT INTO upstream_credentials(id,name,kind,secret,allowed_base_urls)
              VALUES ('{first}','First','bearer','fixture-a','[\"https://up.example\"]'),
                     ('{second}','Second','bearer','fixture-b','[\"https://up.example\"]');
              INSERT INTO routing_groups(id,name) VALUES ('{GROUP}','Bound group');
@@ -1810,64 +1760,57 @@ mod tests {
              VALUES ('{access}','Bound access','general','https://up.example');
              INSERT INTO upstream_channels(id,group_id,access_id,credential_id,name)
              VALUES ('{channel}','{GROUP}','{access}','{first}','Bound channel');
-             INSERT INTO channel_identity_registry(id,label,canonical_channel_id,codex_credential_id)
-             VALUES ('{channel}','Historical identity','{channel}','{first}');"
-        )).await;
+             INSERT INTO channel_identity_registry(id,label,canonical_channel_id)
+             VALUES ('{channel}','Bound channel','{channel}');"
+            ))
+            .await;
         let mut before = event();
         before.channel_id = Some(channel);
-        before.upstream_credential = Some(RequestCredentialAttribution {
-            credential_id: Some(first),
-        });
+        before.upstream_credential_id = Some(first);
         fixture.execute(&format!(
             "UPDATE upstream_channels SET credential_id='{second}',updated_at=ag_now() WHERE id='{channel}'"
         )).await;
         let mut after = before.clone();
         after.id = Uuid::new_v4();
-        after.upstream_credential = Some(RequestCredentialAttribution {
-            credential_id: Some(second),
-        });
+        after.upstream_credential_id = Some(second);
         let mut unauthenticated = before.clone();
         unauthenticated.id = Uuid::new_v4();
-        unauthenticated.upstream_credential = Some(RequestCredentialAttribution {
-            credential_id: None,
-        });
-        let mut legacy = before.clone();
-        legacy.id = Uuid::new_v4();
-        legacy.upstream_credential = None;
-        let events = [
-            before.clone(),
-            after.clone(),
-            unauthenticated.clone(),
-            legacy.clone(),
-        ];
+        unauthenticated.upstream_credential_id = None;
+        let events = [before.clone(), after.clone(), unauthenticated.clone()];
         assert_eq!(
             fixture.metering().record_batch(&events).await.unwrap(),
-            vec![MeteringWriteOutcome::Accepted; 4]
+            [MeteringWriteOutcome::Accepted; 3]
         );
         for (request, expected) in [
             (before.id, Some(first)),
             (after.id, Some(second)),
             (unauthenticated.id, None),
-            (legacy.id, Some(first)),
         ] {
-            let actual = fixture.scalar::<Option<SqliteUuid>>(&format!(
-                "SELECT credential_id FROM request_credential_identities WHERE request_id='{request}'"
-            )).await;
+            let actual = fixture
+                .scalar::<Option<SqliteUuid>>(&format!(
+                    "SELECT upstream_credential_id FROM request_metering_facts WHERE id='{request}'"
+                ))
+                .await;
             assert_eq!(actual.map(|id| id.0), expected);
         }
         assert_eq!(
             fixture.metering().record_batch(&events).await.unwrap(),
-            vec![MeteringWriteOutcome::Accepted; 4]
+            [MeteringWriteOutcome::Accepted; 3]
         );
-        before.upstream_credential = after.upstream_credential;
+        before.upstream_credential_id = Some(second);
+        unauthenticated.upstream_credential_id = Some(first);
         assert_eq!(
-            fixture.metering().record_batch(&[before]).await.unwrap(),
-            [MeteringWriteOutcome::Conflict]
+            fixture
+                .metering()
+                .record_batch(&[before, unauthenticated])
+                .await
+                .unwrap(),
+            [MeteringWriteOutcome::Conflict; 2]
         );
-        let attribution_count: i64 = fixture
-            .scalar("SELECT count(*) FROM request_credential_attributions")
-            .await;
-        assert_eq!(attribution_count, 4);
+        assert_eq!(
+            fixture.metering().record_batch(&events).await.unwrap(),
+            [MeteringWriteOutcome::Accepted; 3]
+        );
     }
 
     #[tokio::test]
@@ -1986,12 +1929,6 @@ mod tests {
         assert_eq!(
             fixture
                 .scalar::<i64>("SELECT count(*) FROM request_metering_facts")
-                .await,
-            0
-        );
-        assert_eq!(
-            fixture
-                .scalar::<i64>("SELECT count(*) FROM request_credential_attributions")
                 .await,
             0
         );

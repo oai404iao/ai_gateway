@@ -9,11 +9,11 @@ Versioning.
 
 ### Removed
 
-- **Codex OAuth:** PostgreSQL and SQLite no longer store a redundant redirect URI on pending flows. The plugin still validates callback URLs and specifies the redirect URI during token exchange.
-- **Request logs:** Read `request_protocol` (`non_stream`, `sse`, or `websocket`) instead of `streamed` in Console responses and database queries. New journal entries also store only the protocol.
-- **Database upgrades:** PostgreSQL and SQLite drop `api_keys.last_used_at`, `request_logs.attempts` and `audit_logs.source_ip_prefix` without copying their old values. Retain a pre-upgrade backup if you need those values. Invitation-code usage, audit entries and settlement receipts remain intact.
-- **API keys:** Remove `allowed_api_formats` from Console create/update requests (`422` if supplied) and stop reading it from key responses. PostgreSQL and SQLite drop the column; existing key permissions, channel grants and operation routes still determine access.
-- **Local request-log replay:** The gateway now reads and writes `journal-v2/` under the configured spool directory. It leaves earlier local events, checkpoints and admission slots in place and does not settle them. To bill requests that exist only in the old spool, [drain it with the old gateway before upgrading](docs/user/upgrades.md). Records already accepted into the database continue through settlement.
+- **Native plugins:** The gateway requires an explicit command protocol 3 manifest and operation descriptors. Replace protocol 1/2 plugins before upgrading. The native ABI remains version 1.
+- **Storage (breaking):** Start with an empty PostgreSQL or SQLite database and a new dedicated spool. Previous database histories, backup formats from those databases, and older request journals are not upgraded or replayed. Drain outstanding work with the original gateway before cutover; retain the database and spool together to recover the old installation. See the [storage transition guide](docs/user/upgrades.md).
+- Pending OAuth flows no longer store a redundant redirect URI. The plugin validates callback URLs and specifies the redirect URI during token exchange.
+- Request logs use `request_protocol` (`non_stream`, `sse`, or `websocket`); `request_logs.streamed`, `request_logs.attempts`, `api_keys.last_used_at`, and `audit_logs.source_ip_prefix` are no longer stored.
+- Console API keys do not have an `allowed_api_formats` field; key permissions, channel grants and operation routes determine access.
 - **Console clients:** Use `PATCH /console/v1/users/{id}` with `If-Match` to update a user. The deprecated full-resource `PUT` now returns `405`.
 - **Console bookmarks:** Retired management URLs no longer redirect. Open model setup and price sync under `/admin/models`, channel groups under `/admin/routing/channels?view=groups`, and Codex accounts under `/admin/routing/upstream-credentials?connector=codex`.
 - **Codex imports:** Native ai-gateway bundles must have numeric `version: 3`. Unsupported bundles produce no credential or proxy drafts. CLIProxyAPI and Sub2API imports are unchanged apart from removal of the obsolete weight warning.
@@ -21,14 +21,14 @@ Versioning.
 ### Changed
 
 - **Codex plugin inputs:** Identity preparation now receives only the session, thread and window headers it uses, and body adaptation no longer receives upstream authentication material. The gateway still verifies the credentials used for dispatch.
-- **Authorization change:** API keys that select a channel group now follow its membership automatically, including keys previously limited to a subset of that group. Moving a channel out removes group-derived access but not a separate direct grant. [Review existing group selections before upgrading.](docs/user/upgrades.md#渠道组授权变更)
+- **Authorization change:** API keys that select a channel group now follow its membership automatically, including keys previously limited to a subset of that group. Moving a channel out removes group-derived access but not a separate direct grant. [Review existing group selections when upgrading.](docs/user/upgrades.md)
 - **Console reporting:** Request logs display the requested model and upstream model; exact model filters and cost-report model rows use the requested identifier. System cost filters and channel totals now use logical channels across capabilities. The `codex_credential_id` filter and per-format/group fields on cost channel rows have been removed; credential quota history remains available.
 - The [Console](docs/user/console.md) now opens on a personal usage overview for both users and administrators. Use the shared navigation to follow model trends into request logs, manage API keys, or change account settings. Global reports and gateway configuration remain in the administrator-only management area.
 - Browse management pages by task or search for a setting directly. Resource lists and selectors show names by default; full request IDs remain available in log details for troubleshooting.
 
 ### Fixed
 
-- Codex refreshes that return no token update no longer advance the credential's refresh timestamp or generation, including with older compatible plugins.
+- Codex refreshes that return no token update no longer advance the credential's refresh timestamp or generation.
 - Editing a client model no longer overwrites its catalog source JSON unless you explicitly replace it. A conflicting save no longer reports a reload that did not happen.
 - Creating an upstream credential from a connector tab keeps that connector selected. Changing a plugin's active state refreshes the routing and credential forms' connector choices.
 - Standalone search validates channel timeouts against the search deadline, not the ordinary Responses deadline. Multipart errors from third-party Images plugins no longer claim Codex-specific limits.
@@ -91,7 +91,7 @@ Versioning.
   settlement receipts, and request history remain intact. Back up and stop all
   old instances before upgrading; review normal authorization before manually
   re-enabling affected channels. Old on-disk sharing WAL is inert and is not
-  automatically deleted. See the [upgrade guide](docs/user/upgrades.md#codex-拼车移除升级).
+  automatically deleted. See the [upgrade guide](docs/user/upgrades.md).
 
 ## [0.12.0] - 2026-09-23
 

@@ -2240,7 +2240,7 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":11
             "-Wall",
             "-Wextra",
             "-Werror",
-            "-DFIXTURE_PROTOCOL3",
+            "-DFIXTURE_RESPONSE_ADAPTER",
             "-DFIXTURE_DESCRIPTOR_MODE=10",
             "-DFIXTURE_USAGE_PARSE",
         ]);

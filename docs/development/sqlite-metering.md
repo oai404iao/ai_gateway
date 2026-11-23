@@ -39,7 +39,7 @@ DatabaseHealth 读取既有 writer/readers 计数，不获取连接；
 ```text
 spool terminal
   → 整批事务 INSERT ingress → commit → checkpoint
-  → fact + credential attribution + 新事实 pending + metered_at 同事务
+  → fact（含凭证 ID）+ 新事实 pending + metered_at 同事务
        ├─ unique receipt + 账户更新 + pending 删除
        └─ 独立日志投影 → fact/日志均存在才可 ack
 ```
@@ -51,10 +51,10 @@ SQLite 不模拟 COPY，按有界绑定块写 INSERT，但整个接收批次仍�
 财务比较使用存储列语义：UUID、微秒时间、12 位价格、8 位费用以及请求时归属。
 首次插入与重放比较使用同一量化，不把合法首写误判冲突。
 同 UUID 同规范内容 accepted，不同内容保留原事实并 conflict，不覆盖、不冲正。
-明确无认证不回退当前/旧绑定；旧未知归属才用冻结注册表。
+凭证归属直接比较事实中的可空凭证 ID，不回退到当前绑定。
 
 仅新事实创建 pending，结算后的重放不能再造工作。
-fact/attribution/ready 失败一起回滚。
+fact/pending/ready 失败一起回滚。
 日志字段非法、删除或暂不可写不撤销事实，也不阻止确认费用结算。
 insert/insert_batch 先提交事实再试投影；durable projector 调 project_batch，
 不是第二套收费入口。Console billed_at 从回执 JOIN 派生。

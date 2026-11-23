@@ -6,7 +6,6 @@ mod backend_codex;
 mod backend_control_plane;
 mod backend_pipeline;
 mod backend_queries;
-pub mod capability_cutover;
 mod codex;
 mod codex_write;
 mod control_plane_write;
@@ -61,9 +60,8 @@ pub use upstream_topology::ModelRoutingProfileBinding;
 #[cfg(feature = "sqlite-backend")]
 pub use upstream_topology::sqlite_load;
 pub use upstream_topology::{
-    ApiKeyCapabilityGrantRecord, ApiKeyChannelGrantRecord, ApiKeyPolicyCapabilityGrantRecord,
-    ApiKeyPolicyChannelGrantRecord, ChannelCapabilityInput, ChannelCapabilityRecord,
-    GrantOriginKind, LogicalChannelInput, LogicalChannelRecord, OperationCandidateInput,
+    ApiKeyChannelGrantRecord, ApiKeyPolicyChannelGrantRecord, ChannelCapabilityInput,
+    ChannelCapabilityRecord, LogicalChannelInput, LogicalChannelRecord, OperationCandidateInput,
     OperationCandidateRecord, OperationRuleInput, OperationRuleRecord, OperationTierInput,
     OperationTierRecord, RoutingGroupInput, RoutingGroupRecord, UpstreamAccessInput,
     UpstreamAccessRecord, UpstreamTopologyRecords, pg_load,

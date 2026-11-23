@@ -4,21 +4,17 @@
 mod aggregate;
 mod auth;
 mod codex;
-mod connector_ids;
 mod control_plane;
 mod decimal;
 mod functions;
 mod leaderboard;
-mod migrations;
 mod ownership;
 mod pipeline;
 mod queries;
-pub(crate) mod schema;
+mod schema;
 mod types;
 mod upstream_credentials;
 pub(crate) use upstream_credentials::records as credential_records;
-#[cfg(test)]
-mod capability_history_tests;
 #[cfg(test)]
 mod codex_topology_tests;
 
@@ -26,11 +22,11 @@ pub use auth::SqliteAuthRepository;
 pub(crate) use codex::operation::SqliteCodexOperation;
 pub use control_plane::{SqliteControlPlaneRepository, SqlitePreparedControlPlaneChange};
 pub use decimal::{SqliteAmount, SqliteDecimal, SqliteNumeric, SqliteTokenRate, SqliteUnitPrice};
-pub use migrations::{SqliteMigration, SqliteMigrationError};
 pub use pipeline::{
     SqliteMeteringRepository, SqliteRequestLogRepository, SqliteSettlementRepository,
 };
 pub use queries::{SqliteMeteringQueries, SqliteRequestLogQueries};
+pub use schema::SqliteSchemaError;
 pub use types::{SqliteDate, SqliteTimestamp, SqliteUuid};
 
 use std::{
@@ -60,7 +56,9 @@ pub enum SqliteOpenError {
     AlreadyOwned,
     #[error("SQLite directory or database identity changed; reopen requires operator recovery")]
     IdentityChanged,
-    #[error("SQLite database identity is absent, invalid or newer than this binary")]
+    #[error(
+        "SQLite database identity is absent, invalid or incompatible with this binary; use a fresh database"
+    )]
     ForeignDatabase,
     #[error("SQLite process ownership currently requires Linux")]
     UnsupportedPlatform,
@@ -173,7 +171,7 @@ impl SqliteDatabase {
             });
         let mut probe = SqliteConnection::connect_with(&options.clone().read_only(true)).await?;
         functions::register(&mut probe).await?;
-        let identity = migrations::check_identity(&mut probe).await;
+        let identity = schema::check_identity(&mut probe).await;
         probe.close().await?;
         if identity?.is_some_and(|identity| identity != owner.database_id()) {
             return Err(SqliteOpenError::ForeignDatabase);
@@ -184,7 +182,7 @@ impl SqliteDatabase {
             .acquire_timeout(acquire_timeout)
             .connect_with(options.clone())
             .await?;
-        let database_id = match migrations::initialize(&writer, owner.database_id()).await {
+        let database_id = match schema::initialize(&writer, owner.database_id()).await {
             Ok(identity) => identity,
             Err(error) => {
                 writer.close().await;
@@ -268,18 +266,6 @@ impl SqliteDatabase {
         functions::set_transaction_time(&mut transaction).await?;
         pools.owner.verify()?;
         Ok(transaction)
-    }
-
-    pub async fn migrate(
-        &self,
-        migrations: &[SqliteMigration<'_>],
-    ) -> Result<usize, SqliteMigrationError> {
-        let pools = self.pools()?;
-        migrations::run(&pools.writer, self.database_id, migrations).await
-    }
-
-    pub async fn install_schema(&self) -> Result<usize, SqliteMigrationError> {
-        self.migrate(schema::MIGRATIONS).await
     }
 
     pub async fn close(&self) {

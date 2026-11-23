@@ -1,4 +1,4 @@
-//! Canonical Codex lifecycle after transactional schema and identity conversion.
+//! Codex credential and channel lifecycle on the current business schema.
 
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
@@ -11,86 +11,6 @@ use crate::persistence::{
     sqlite_load,
 };
 use uuid::Uuid;
-
-#[tokio::test]
-async fn canonical_activation_preserves_uncertain_codex_operations() {
-    let directory = tempfile::tempdir().unwrap();
-    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-    let database = SqliteDatabase::open(&directory.path().join("pending.sqlite"))
-        .await
-        .unwrap();
-    database
-        .migrate(&super::schema::MIGRATIONS[..4])
-        .await
-        .unwrap();
-    let group = Uuid::new_v4();
-    let pool = Uuid::new_v4();
-    let credentials = [Uuid::new_v4(), Uuid::new_v4()];
-    let attempts = [Uuid::new_v4(), Uuid::new_v4()];
-    let mut transaction = database.begin_write().await.unwrap();
-    sqlx::query("INSERT INTO connector_pools(id,connector_kind) VALUES (?,'codex_oauth')")
-        .bind(pool.to_string())
-        .execute(&mut *transaction)
-        .await
-        .unwrap();
-    sqlx::query(
-        "INSERT INTO channel_groups(id,name,api_format,connector_kind,connector_pool_id)
-                 VALUES (?,'Pending group','open_ai_responses','codex_oauth',?)",
-    )
-    .bind(group.to_string())
-    .bind(pool.to_string())
-    .execute(&mut *transaction)
-    .await
-    .unwrap();
-    for (index, kind) in ["refresh", "quota_reset"].into_iter().enumerate() {
-        let id = credentials[index];
-        sqlx::query(
-            "INSERT INTO channels(id,channel_group_id,api_format,name,base_url,upstream_auth_kind)
-                     VALUES (?,?,'open_ai_responses',?,'https://codex.test','none')",
-        )
-        .bind(id.to_string())
-        .bind(group.to_string())
-        .bind(format!("Pending {index}"))
-        .execute(&mut *transaction)
-        .await
-        .unwrap();
-        sqlx::query("INSERT INTO codex_oauth_credentials
-                     (channel_id,channel_group_id,connector_pool_id,label,account_id,id_token,access_token,refresh_token,last_refreshed_at)
-                     VALUES (?,?,?,?,?,'test-id','test-access','test-refresh',ag_now())")
-            .bind(id.to_string()).bind(group.to_string()).bind(pool.to_string())
-            .bind(format!("Pending {index}")).bind(format!("account-{index}"))
-            .execute(&mut *transaction).await.unwrap();
-        sqlx::query("INSERT INTO _gateway_codex_operations(credential_id,attempt_id,kind,generation)
-                     SELECT channel_id,?,?,refresh_generation FROM codex_oauth_credentials WHERE channel_id=?")
-            .bind(attempts[index].to_string()).bind(kind).bind(id.to_string())
-            .execute(&mut *transaction).await.unwrap();
-    }
-    let before: Vec<(String, String, String, i64)> = sqlx::query_as(
-        "SELECT credential_id,attempt_id,kind,generation FROM _gateway_codex_operations ORDER BY credential_id"
-    ).fetch_all(&mut *transaction).await.unwrap();
-    transaction.commit().await.unwrap();
-    database.install_schema().await.unwrap();
-    let mut transaction = database.begin_write().await.unwrap();
-    let after: Vec<(String, String, String, i64)> = sqlx::query_as(
-        "SELECT credential_id,attempt_id,kind,generation FROM _gateway_codex_operations ORDER BY credential_id"
-    ).fetch_all(&mut *transaction).await.unwrap();
-    assert_eq!(before, after);
-    for id in credentials {
-        assert!(sqlx::query("UPDATE codex_oauth_credentials SET label='blocked',updated_at=ag_now() WHERE channel_id=?")
-            .bind(id.to_string()).execute(&mut *transaction).await.is_err());
-        assert!(
-            sqlx::query(
-                "UPDATE upstream_channels SET name='blocked',updated_at=ag_now() WHERE id=?"
-            )
-            .bind(id.to_string())
-            .execute(&mut *transaction)
-            .await
-            .is_err()
-        );
-    }
-    transaction.commit().await.unwrap();
-    database.close().await;
-}
 
 #[tokio::test]
 async fn canonical_create_lifecycle_and_delete_round_trip() {
@@ -285,14 +205,17 @@ async fn canonical_create_lifecycle_and_delete_round_trip() {
     .await
     .unwrap();
     assert_eq!(legacy_rows, 0);
-    let registry: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM channel_identity_registry WHERE codex_credential_id=?",
+    let registered: Vec<String> = sqlx::query_scalar(
+        "SELECT capability_id FROM channel_identity_registry
+         WHERE canonical_channel_id=? AND capability_id IS NOT NULL ORDER BY capability_id",
     )
-    .bind(credential.to_string())
-    .fetch_one(&mut *reader)
+    .bind(logical.id.to_string())
+    .fetch_all(&mut *reader)
     .await
     .unwrap();
-    assert_eq!(registry, 0);
+    let mut expected: Vec<_> = capabilities.iter().map(|cap| cap.id.to_string()).collect();
+    expected.sort();
+    assert_eq!(registered, expected);
     let kind: String = sqlx::query_scalar("SELECT kind FROM upstream_credentials WHERE id=?")
         .bind(credential.to_string())
         .fetch_one(&mut *reader)

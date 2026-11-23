@@ -23,12 +23,12 @@ use crate::{
     domain::{
         AdvancedBilling, ApiFormat, ApiKeyHash, ApiKeyPermission, ApiOperation,
         AuthorizationProfile, AutomaticDisableSettings, ChannelIdentity, ChannelTimeoutPolicy,
-        CompiledApiKey, CompiledCandidate, CompiledChannel, CompiledChannelGroup,
-        CompiledChannelUpstreamPolicy, CompiledConfigTemplate, CompiledModelRule, CompiledProxy,
-        CompiledRouteTier, CompiledRuntimeConfig, CompiledScheduledTestModel, ConnectorKind,
+        CompiledApiKey, CompiledCandidate, CompiledChannel, CompiledChannelUpstreamPolicy,
+        CompiledConfigTemplate, CompiledModelRule, CompiledProxy, CompiledRouteTier,
+        CompiledRuntimeConfig, CompiledScheduledTestModel, ConnectorKind,
         DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS,
         DEFAULT_STANDALONE_WEB_SEARCH_RESPONSE_HEADER_TIMEOUT_SECONDS, MAX_REQUEST_RETRIES,
-        ModelPriceSnapshot, ModelRouteKey, NoProxyHost, PassiveHealthSettings, RequestCompression,
+        ModelPriceSnapshot, ModelRouteKey, NoProxyHost, PassiveHealthSettings,
         RequestRetrySettings, ResponsesWebSocketSettings, ScheduledTestingMode,
         ScheduledTestingSettings, SelectionStrategy, SessionAffinityKeySource, SessionAffinityRule,
         SessionAffinitySettings, SystemRuntimeSettings, UpstreamAuth, UpstreamTimeoutDefaults,
@@ -864,17 +864,11 @@ pub fn compile_runtime_config_with_plugins(
     let plugins = ConnectorPlugins::from_plugins(valid_plugins)
         .map_err(|_| ConfigError::Compile("invalid plugin registry".into()))?;
     for channel in &mut records.control_plane.channels {
-        let group = records
-            .control_plane
-            .groups
-            .iter()
-            .find(|group| group.id == channel.channel_group_id)
-            .ok_or_else(|| ConfigError::Compile("channel references an unknown group".into()))?;
-        let connector = channel_connector_kind(channel, group)?;
+        let connector = channel.connector_kind;
         if connector == ConnectorKind::OpenAiCompatible {
             continue;
         }
-        let operation = channel_api_operation(channel)?;
+        let operation = channel.api_operation;
         let implemented = plugins.get(connector.as_str()).is_some_and(|plugin| {
             let manifest = plugin.manifest();
             (connector != ConnectorKind::CodexOauth
@@ -980,31 +974,21 @@ pub fn compile_control_plane_with_system_settings(
     compile_control_plane_for_plugins(records, system_settings, None)
 }
 
-fn compile_control_plane_for_plugins(
+pub(crate) fn compile_control_plane_for_plugins(
     records: ControlPlaneRecords,
     system_settings: SystemRuntimeSettings,
     plugins: Option<&ConnectorPlugins>,
 ) -> Result<CompiledRuntimeConfig, ConfigError> {
     let mut all_groups = HashMap::new();
-    let mut groups = HashMap::new();
     for group in records.groups {
-        validate_group(&group)?;
+        require("channel group name", &group.name)?;
         insert_unique(&mut all_groups, group.id, group, "channel group")?;
     }
-    for group in all_groups.values() {
-        if group.enabled {
-            let compiled = if neutral_group(group) {
-                CompiledChannelGroup::new(group.id)
-            } else {
-                CompiledChannelGroup::new_with_connector(
-                    group.id,
-                    parse_format(&group.api_format)?,
-                    parse_connector_kind(&group.connector_kind)?,
-                )
-            };
-            groups.insert(group.id, Arc::new(compiled));
-        }
-    }
+    let enabled_group_ids = all_groups
+        .values()
+        .filter(|group| group.enabled)
+        .map(|group| group.id)
+        .collect();
     let proxies = compile_proxies(records.proxies)?;
     let templates = compile_templates(records.templates)?;
     let models_by_id = index_models(records.models)?;
@@ -1041,7 +1025,7 @@ fn compile_control_plane_for_plugins(
     for channel in validated_channels {
         if channel.enabled {
             let auth = compile_auth(&channel)?;
-            let api_format = parse_format(&channel.api_format)?;
+            let api_format = channel.api_operation.api_format();
             let proxy = channel.proxy_id.map(|id| {
                 proxies
                     .get(&id)
@@ -1054,14 +1038,15 @@ fn compile_control_plane_for_plugins(
                     .cloned()
                     .expect("validated template reference")
             });
-            let channel_override = compile_channel_document(&channel, api_format)?;
+            let channel_override =
+                compile_channel_document(&channel.override_document, api_format)?;
             let defaults = template.as_ref().map_or_else(
                 || TransformPlan::noop(api_format),
                 |template| template.transform_plan(api_format).clone(),
             );
             let effective_transforms = TransformPlan::compose(&defaults, &channel_override)
                 .map_err(transform_error("channel effective transform plan"))?;
-            if channel.supports_standalone_web_search
+            if channel.api_operation == ApiOperation::StandaloneWebSearch
                 && !effective_transforms.request_json().is_empty()
             {
                 return Err(ConfigError::Compile(
@@ -1073,16 +1058,17 @@ fn compile_control_plane_for_plugins(
                 template,
                 channel_override,
                 effective_transforms,
-                compile_timeouts(&channel)?,
+                compile_timeouts(
+                    channel.connect_timeout_ms,
+                    channel.response_header_timeout_ms,
+                    channel.stream_idle_timeout_ms,
+                )?,
                 system_settings.upstream_timeouts().connect(),
             );
-            let group = &all_groups[&channel.channel_group_id];
-            let connector_kind = channel_connector_kind(&channel, group)?;
-            let request_compression = channel_request_compression(&channel, group)?;
-            let identity = compiled_channel_identity(&channel)?;
+            let connector_kind = channel.connector_kind;
+            let identity = compiled_channel_identity(&channel);
             let transports = plugins
                 .and_then(|plugins| plugins.get(connector_kind.as_str()))
-                .filter(|plugin| plugin.manifest().protocol_version == 3)
                 .and_then(|plugin| {
                     plugin
                         .attempt_descriptor(identity.api_operation.as_str())
@@ -1110,13 +1096,13 @@ fn compile_control_plane_for_plugins(
                                 .collect::<Vec<_>>()
                         })
                 });
-            let mut compiled = CompiledChannel::new_with_connector_policy_automation_and_billing(
+            let mut compiled = CompiledChannel::from_capability(
                 channel.id,
                 channel.channel_group_id,
-                api_format,
+                identity,
                 connector_kind,
-                request_compression,
-                parse_url(channel.id, &channel.base_url)?,
+                channel.request_compression,
+                parse_url(&channel.base_url)?,
                 channel.billing_multiplier,
                 auth,
                 channel
@@ -1124,15 +1110,11 @@ fn compile_control_plane_for_plugins(
                     .iter()
                     .map(|model| Arc::<str>::from(model.as_str()))
                     .collect(),
-                channel.supports_websocket,
-                channel.supports_standalone_web_search,
                 channel.auto_disable_allowed,
                 channel.auto_disabled,
                 channel.test_model.as_deref().map(Arc::<str>::from),
                 upstream_policy,
-            )
-            .with_channel_identity(identity)
-            .with_transports(&channel.transports);
+            );
             if let Some(transports) = transports {
                 compiled = compiled.restrict_transports(&transports);
             }
@@ -1162,19 +1144,17 @@ fn compile_control_plane_for_plugins(
         &model_rules,
         &routes_by_channel_slot,
     )?;
-    Ok(
-        CompiledRuntimeConfig::with_resources_system_settings_and_probe_channels(
-            api_keys,
-            model_rules,
-            channels,
-            probe_channels,
-            scheduled_test_models,
-            groups,
-            proxies,
-            templates,
-            system_settings,
-        ),
-    )
+    Ok(CompiledRuntimeConfig::new(
+        api_keys,
+        model_rules,
+        channels,
+        probe_channels,
+        scheduled_test_models,
+        enabled_group_ids,
+        proxies,
+        templates,
+        system_settings,
+    ))
 }
 
 fn compile_system_settings(
@@ -1648,19 +1628,18 @@ fn compile_templates(
 }
 
 fn compile_channel_document(
-    channel: &ChannelRecord,
+    document: &serde_json::Value,
     format: ApiFormat,
 ) -> Result<TransformPlan, ConfigError> {
-    compile_document(&channel.override_document, format)
-        .map_err(transform_error("channel override document"))
+    compile_document(document, format).map_err(transform_error("channel override document"))
 }
 
 /// Compiles the outbound portion of an unsaved channel draft for explicit
 /// administrator operations such as `GET /v1/models` discovery.
 pub(crate) fn compile_channel_discovery_target(
-    channel: &ChannelRecord,
+    channel: &crate::application::ChannelModelDiscoveryInput,
     snapshot: &CompiledRuntimeConfig,
-) -> Result<CompiledChannel, ConfigError> {
+) -> Result<(Url, CompiledChannelUpstreamPolicy), ConfigError> {
     let api_format = parse_format(&channel.api_format)?;
     let proxy = channel
         .proxy_id
@@ -1687,7 +1666,7 @@ pub(crate) fn compile_channel_discovery_target(
             "channel references a cross-format template".into(),
         ));
     }
-    let channel_override = compile_channel_document(channel, api_format)?;
+    let channel_override = compile_channel_document(&channel.override_document, api_format)?;
     let defaults = template.as_ref().map_or_else(
         || TransformPlan::noop(api_format),
         |template| template.transform_plan(api_format).clone(),
@@ -1699,28 +1678,25 @@ pub(crate) fn compile_channel_discovery_target(
         template,
         channel_override,
         effective_transforms,
-        compile_timeouts(channel)?,
+        compile_timeouts(
+            channel.connect_timeout_ms,
+            channel.response_header_timeout_ms,
+            channel.stream_idle_timeout_ms,
+        )?,
         snapshot.system_settings().upstream_timeouts().connect(),
     );
-    Ok(CompiledChannel::new_with_policy(
-        channel.id,
-        channel.channel_group_id,
-        api_format,
-        parse_url(channel.id, &channel.base_url)?,
-        compile_auth(channel)?,
-        HashSet::new(),
-        upstream_policy,
-    ))
+    Ok((parse_url(&channel.base_url)?, upstream_policy))
 }
 
-fn compile_timeouts(channel: &ChannelRecord) -> Result<ChannelTimeoutPolicy, ConfigError> {
+fn compile_timeouts(
+    connect: Option<i32>,
+    response_header: Option<i32>,
+    stream_idle: Option<i32>,
+) -> Result<ChannelTimeoutPolicy, ConfigError> {
     Ok(ChannelTimeoutPolicy::new(
-        positive_timeout(channel.connect_timeout_ms, "connect_timeout_ms")?,
-        positive_timeout(
-            channel.response_header_timeout_ms,
-            "response_header_timeout_ms",
-        )?,
-        positive_timeout(channel.stream_idle_timeout_ms, "stream_idle_timeout_ms")?,
+        positive_timeout(connect, "connect_timeout_ms")?,
+        positive_timeout(response_header, "response_header_timeout_ms")?,
+        positive_timeout(stream_idle, "stream_idle_timeout_ms")?,
     ))
 }
 
@@ -1791,7 +1767,7 @@ fn compile_keys(
             })
             .clone();
         let secret = Zeroizing::new(record.secret_value);
-        let key = Arc::new(CompiledApiKey::new_with_authorization_profile(
+        let key = Arc::new(CompiledApiKey::new(
             record.id,
             record.user_id,
             record.user_websocket_enabled,
@@ -2246,7 +2222,6 @@ fn validate_rule_references(
     groups: &HashMap<Uuid, ChannelGroupRecord>,
     channels: &HashMap<Uuid, ChannelRecord>,
 ) -> Result<(), ConfigError> {
-    let format = parse_format(&record.api_format)?;
     for tier in &record.routing_tiers {
         for candidate in &tier.candidates {
             let channel = channels.get(&candidate.channel_id).ok_or_else(|| {
@@ -2257,14 +2232,7 @@ fn validate_rule_references(
                     "model rule channel belongs to a missing channel group".into(),
                 ));
             }
-            if parse_format(&channel.api_format)? != format {
-                return Err(ConfigError::Compile(
-                    "model rule references a cross-format channel".into(),
-                ));
-            }
-            if let Some(channel_operation) = channel.api_operation
-                && channel_operation != record.api_operation
-            {
+            if channel.api_operation != record.api_operation {
                 return Err(ConfigError::Compile(
                     "model rule references a channel for a different operation".into(),
                 ));
@@ -2274,111 +2242,19 @@ fn validate_rule_references(
     Ok(())
 }
 
-/// Canonical routing groups carry only organization and enablement. A neutral
-/// group owns no connector, compression, or format; each capability channel
-/// owns that protocol metadata instead.
-fn neutral_group(record: &ChannelGroupRecord) -> bool {
-    record.api_format.is_empty()
-        && record.connector_kind.is_empty()
-        && record.request_compression.is_empty()
-}
-
-fn channel_connector_kind(
-    record: &ChannelRecord,
-    group: &ChannelGroupRecord,
-) -> Result<ConnectorKind, ConfigError> {
-    if record.connector_kind.is_empty() {
-        parse_connector_kind(&group.connector_kind)
-    } else {
-        parse_connector_kind(&record.connector_kind)
-    }
-}
-
-fn channel_request_compression(
-    record: &ChannelRecord,
-    group: &ChannelGroupRecord,
-) -> Result<RequestCompression, ConfigError> {
-    if record.request_compression.is_empty() {
-        parse_request_compression(&group.request_compression)
-    } else {
-        parse_request_compression(&record.request_compression)
-    }
-}
-
-/// Exact operation of one capability channel. Legacy rows persist only a
-/// format, so a canonical row always carries the explicit operation.
-fn channel_api_operation(record: &ChannelRecord) -> Result<ApiOperation, ConfigError> {
-    match record.api_operation {
-        Some(operation) => {
-            if parse_format(&record.api_format)? != operation.api_format() {
-                return Err(ConfigError::Compile(
-                    "channel api_operation does not match its api_format".into(),
-                ));
-            }
-            Ok(operation)
-        }
-        None => Ok(ApiOperation::for_legacy_format(&record.api_format)),
-    }
-}
-
-fn compiled_channel_identity(record: &ChannelRecord) -> Result<ChannelIdentity, ConfigError> {
-    Ok(ChannelIdentity {
-        logical_channel_id: if record.logical_channel_id.is_nil() {
-            record.id
-        } else {
-            record.logical_channel_id
-        },
+fn compiled_channel_identity(record: &ChannelRecord) -> ChannelIdentity {
+    ChannelIdentity {
+        logical_channel_id: record.logical_channel_id,
         access_id: record.access_id,
-        api_operation: channel_api_operation(record)?,
+        api_operation: record.api_operation,
         credential_id: record.credential.map(|credential| credential.id),
         credential_revision: record.credential.map(|credential| credential.revision),
         binding_revision: record.credential_binding_revision,
         access_revision: record.access_revision,
         capability_revision: record.capability_revision,
-    })
+    }
 }
 
-fn validate_group(record: &ChannelGroupRecord) -> Result<(), ConfigError> {
-    require("channel group name", &record.name)?;
-    if neutral_group(record) {
-        return Ok(());
-    }
-    if record.api_format.is_empty()
-        || record.connector_kind.is_empty()
-        || record.request_compression.is_empty()
-    {
-        return Err(ConfigError::Compile(
-            "channel group has incomplete protocol metadata".into(),
-        ));
-    }
-    let api_format = parse_format(&record.api_format)?;
-    let connector_kind = parse_connector_kind(&record.connector_kind)?;
-    let request_compression = parse_request_compression(&record.request_compression)?;
-    if connector_kind == ConnectorKind::CodexOauth
-        && !matches!(
-            api_format,
-            ApiFormat::OpenAiResponses | ApiFormat::OpenAiImages
-        )
-    {
-        return Err(ConfigError::Compile(
-            "Codex OAuth channel groups must use Responses or Images".into(),
-        ));
-    }
-    if request_compression.is_encoded() && api_format != ApiFormat::OpenAiResponses {
-        return Err(ConfigError::Compile(
-            "request compression is supported only for Responses channel groups".into(),
-        ));
-    }
-    Ok(())
-}
-fn parse_connector_kind(value: &str) -> Result<ConnectorKind, ConfigError> {
-    ConnectorKind::parse(value)
-        .ok_or_else(|| ConfigError::Compile("unsupported upstream connector kind".into()))
-}
-fn parse_request_compression(value: &str) -> Result<RequestCompression, ConfigError> {
-    RequestCompression::parse(value)
-        .ok_or_else(|| ConfigError::Compile("unsupported channel group request compression".into()))
-}
 fn parse_strategy(value: &str) -> Result<SelectionStrategy, ConfigError> {
     SelectionStrategy::parse(value)
         .ok_or_else(|| ConfigError::Compile("unsupported route tier selection strategy".into()))
@@ -2388,50 +2264,28 @@ fn validate_channel(
     groups: &HashMap<Uuid, ChannelGroupRecord>,
 ) -> Result<(), ConfigError> {
     require("channel name", &record.name)?;
-    let format = parse_format(&record.api_format)?;
-    if record.supports_websocket && format != ApiFormat::OpenAiResponses {
+    if !groups.contains_key(&record.channel_group_id) {
         return Err(ConfigError::Compile(
-            "only Responses channels can support WebSocket forwarding".into(),
+            "channel references a missing group".into(),
         ));
     }
-    if record.supports_standalone_web_search && format != ApiFormat::OpenAiResponses {
+    if record.logical_channel_id.is_nil() || record.access_id.is_nil() {
         return Err(ConfigError::Compile(
-            "only Responses channels can support standalone web search".into(),
+            "capability is missing its logical channel or access identity".into(),
         ));
     }
+    let format = record.api_operation.api_format();
     compile_document(&record.override_document, format)
         .map_err(transform_error("channel override document"))?;
-    compile_timeouts(record)?;
+    compile_timeouts(
+        record.connect_timeout_ms,
+        record.response_header_timeout_ms,
+        record.stream_idle_timeout_ms,
+    )?;
     if record.billing_multiplier.is_sign_negative() {
         return Err(ConfigError::Compile(
             "channel billing multiplier must be non-negative".into(),
         ));
-    }
-    unique(&record.available_models, "channel available_models")?;
-    for model in &record.available_models {
-        require("channel available model", model)?;
-    }
-    if record.test_model.is_some() != record.test_pricing_model_id.is_some() {
-        return Err(ConfigError::Compile(
-            "channel test model and pricing model must be configured together".into(),
-        ));
-    }
-    if let Some(test_model) = &record.test_model {
-        if format == ApiFormat::OpenAiImages {
-            return Err(ConfigError::Compile(
-                "Images channels do not support scheduled test models".into(),
-            ));
-        }
-        require("channel test model", test_model)?;
-        if !record
-            .available_models
-            .iter()
-            .any(|model| model == test_model)
-        {
-            return Err(ConfigError::Compile(
-                "channel test model must be one of its available models".into(),
-            ));
-        }
     }
     if !matches!(
         record.upstream_auth_kind.as_str(),
@@ -2441,63 +2295,28 @@ fn validate_channel(
             "unsupported upstream auth kind".into(),
         ));
     }
-    let group = groups
-        .get(&record.channel_group_id)
-        .ok_or_else(|| ConfigError::Compile("channel references a missing group".into()))?;
-    if record.api_operation.is_none() && parse_format(&group.api_format)? != format {
-        return Err(ConfigError::Compile(
-            "channel and group use different API formats".into(),
-        ));
+    crate::domain::CapabilitySettings {
+        operation: record.api_operation,
+        enabled: record.enabled,
+        available_models: record.available_models.clone(),
+        request_compression: record.request_compression,
+        test_model: record.test_model.clone(),
+        test_pricing_model_id: record.test_pricing_model_id,
+        auto_disable_allowed: record.auto_disable_allowed,
     }
-    let connector_kind = channel_connector_kind(record, group)?;
-    let operation = channel_api_operation(record)?;
-    if record.api_operation.is_some() {
-        crate::domain::CapabilitySettings {
-            operation,
-            enabled: record.enabled,
-            available_models: record.available_models.clone(),
-            request_compression: parse_request_compression(&record.request_compression)?,
-            test_model: record.test_model.clone(),
-            test_pricing_model_id: record.test_pricing_model_id,
-            auto_disable_allowed: record.auto_disable_allowed,
-        }
-        .validate(connector_kind)
-        .map_err(|error| ConfigError::Compile(error.to_string()))?;
-        if record.transports != operation.transports()
-            || record.supports_websocket != (operation == ApiOperation::ResponsesWebSocket)
-            || record.supports_standalone_web_search
-                != (operation == ApiOperation::StandaloneWebSearch)
-        {
-            return Err(ConfigError::Compile(
-                "capability transport flags do not match its operation settings".into(),
-            ));
-        }
-    }
-    let codex_protocol_valid = match operation {
-        ApiOperation::ChatCompletions => false,
-        ApiOperation::Responses => record.api_operation.is_some() || record.supports_websocket,
-        ApiOperation::ResponsesWebSocket => {
-            record.supports_websocket && !record.supports_standalone_web_search
-        }
-        ApiOperation::StandaloneWebSearch => !record.supports_websocket,
-        ApiOperation::ImagesGeneration | ApiOperation::ImagesEdit => {
-            !record.supports_websocket && !record.supports_standalone_web_search
-        }
-    };
-    if connector_kind == ConnectorKind::CodexOauth
-        && (!codex_protocol_valid
-            || record.upstream_auth_kind != "none"
+    .validate(record.connector_kind)
+    .map_err(|error| ConfigError::Compile(error.to_string()))?;
+    if record.connector_kind == ConnectorKind::CodexOauth
+        && (record.upstream_auth_kind != "none"
             || record.upstream_auth_header_name.is_some()
-            || record.upstream_api_key.is_some()
-            || record.test_model.is_some()
-            || record.test_pricing_model_id.is_some())
+            || record.upstream_api_key.is_some())
     {
         return Err(ConfigError::Compile(
             "invalid Codex OAuth managed channel configuration".into(),
         ));
     }
     if record.enabled {
-        parse_url(record.id, &record.base_url)?;
+        parse_url(&record.base_url)?;
         compile_auth(record)?;
     }
     Ok(())
@@ -2507,7 +2326,7 @@ fn validate_channel_resources(
     proxies: &HashMap<Uuid, Arc<CompiledProxy>>,
     templates: &HashMap<Uuid, Arc<CompiledConfigTemplate>>,
 ) -> Result<(), ConfigError> {
-    let format = parse_format(&record.api_format)?;
+    let format = record.api_operation.api_format();
     if record.proxy_id.is_some_and(|id| !proxies.contains_key(&id)) {
         return Err(ConfigError::Compile(
             "channel references a missing or disabled proxy".into(),
@@ -2653,9 +2472,9 @@ fn parse_permission(value: &str) -> Result<ApiKeyPermission, ConfigError> {
         )),
     }
 }
-fn parse_url(id: Uuid, value: &str) -> Result<Url, ConfigError> {
+fn parse_url(value: &str) -> Result<Url, ConfigError> {
     let url = Url::parse(value)
-        .map_err(|_| ConfigError::Compile(format!("channel {id} has an invalid base URL")))?;
+        .map_err(|_| ConfigError::Compile("channel has an invalid base URL".into()))?;
     if !matches!(url.scheme(), "http" | "https")
         || url.host().is_none()
         || url.query().is_some()
@@ -3023,30 +2842,23 @@ mod tests {
         let group = |id| ChannelGroupRecord {
             id,
             name: id.to_string(),
-            api_format: "open_ai_chat_completions".into(),
-            connector_kind: "general".into(),
-            request_compression: "default".into(),
             enabled: true,
         };
         let channel = |id, group_id| ChannelRecord {
             credential: None,
-            credential_binding_revision: Uuid::nil(),
+            credential_binding_revision: id,
             id,
             channel_group_id: group_id,
-            api_format: "open_ai_chat_completions".into(),
-            logical_channel_id: Uuid::nil(),
-            access_id: Uuid::nil(),
-            api_operation: None,
-            connector_kind: String::new(),
-            request_compression: String::new(),
-            access_revision: Uuid::nil(),
-            capability_revision: Uuid::nil(),
-            transports: Vec::new(),
+            logical_channel_id: id,
+            access_id: id,
+            api_operation: ApiOperation::ChatCompletions,
+            connector_kind: crate::domain::ConnectorKind::OpenAiCompatible,
+            request_compression: crate::domain::RequestCompression::Default,
+            access_revision: id,
+            capability_revision: id,
             name: id.to_string(),
             base_url: format!("https://{id}.test"),
             enabled: true,
-            supports_websocket: false,
-            supports_standalone_web_search: false,
             auto_disabled: false,
             auto_disable_allowed: false,
             billing_multiplier: rust_decimal::Decimal::ONE,
@@ -3174,39 +2986,54 @@ mod tests {
     }
 
     #[test]
-    fn compiler_accepts_zstd_only_for_responses_groups() {
+    fn compiler_rejects_crossed_operations_even_within_one_format() {
+        for (rule, capability) in [
+            (ApiOperation::Responses, ApiOperation::ResponsesWebSocket),
+            (ApiOperation::ResponsesWebSocket, ApiOperation::Responses),
+            (ApiOperation::ImagesGeneration, ApiOperation::ImagesEdit),
+            (ApiOperation::ImagesEdit, ApiOperation::ImagesGeneration),
+        ] {
+            let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
+            records.model_rules[0].api_operation = rule;
+            records.model_rules[0].api_format = rule.api_format().as_str().into();
+            for channel in &mut records.channels {
+                channel.api_operation = capability;
+            }
+            let error = compile_control_plane(records).unwrap_err();
+            assert!(error.to_string().contains("different operation"), "{error}");
+        }
+    }
+
+    #[test]
+    fn compiler_accepts_zstd_only_for_http_responses_capabilities() {
         let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
-        records.groups[0].request_compression = "zstd".into();
+        records.channels[0].request_compression = crate::domain::RequestCompression::Zstd;
         let error = compile_control_plane(records).unwrap_err().to_string();
-        assert!(error.contains("request compression is supported only for Responses"));
+        assert!(error.contains("compression requires HTTP Responses"));
 
         let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
-        for group in &mut records.groups {
-            group.api_format = "open_ai_responses".into();
-        }
         for channel in &mut records.channels {
-            channel.api_format = "open_ai_responses".into();
+            channel.api_operation = ApiOperation::Responses;
         }
         records.model_rules[0].api_format = "open_ai_responses".into();
         records.model_rules[0].api_operation = ApiOperation::Responses;
-        records.groups[0].request_compression = "zstd".into();
+        records.channels[0].request_compression = crate::domain::RequestCompression::Zstd;
 
         let snapshot = compile_control_plane(records).unwrap();
         let channel = snapshot
             .channel(Uuid::from_u128(11))
             .expect("Responses channel should compile");
-        assert_eq!(channel.request_compression(), RequestCompression::Zstd);
+        assert_eq!(
+            channel.request_compression(),
+            crate::domain::RequestCompression::Zstd
+        );
     }
 
     #[test]
     fn compiler_rejects_request_json_transforms_on_standalone_search_channels() {
         let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
-        for group in &mut records.groups {
-            group.api_format = "open_ai_responses".into();
-        }
         for channel in &mut records.channels {
-            channel.api_format = "open_ai_responses".into();
-            channel.supports_standalone_web_search = true;
+            channel.api_operation = ApiOperation::StandaloneWebSearch;
         }
         records.channels[0].override_document = serde_json::json!({
             "version": 1,
@@ -3216,7 +3043,7 @@ mod tests {
             ]
         });
         records.model_rules[0].api_format = "open_ai_responses".into();
-        records.model_rules[0].api_operation = ApiOperation::Responses;
+        records.model_rules[0].api_operation = ApiOperation::StandaloneWebSearch;
 
         let error = compile_control_plane(records).unwrap_err();
         assert!(
@@ -3285,11 +3112,8 @@ mod tests {
     #[test]
     fn compiler_rejects_scheduled_test_models_for_images_channels() {
         let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
-        for group in &mut records.groups {
-            group.api_format = "open_ai_images".into();
-        }
         for channel in &mut records.channels {
-            channel.api_format = "open_ai_images".into();
+            channel.api_operation = ApiOperation::ImagesGeneration;
         }
         records.model_rules[0].api_format = "open_ai_images".into();
         records.model_rules[0].api_operation = ApiOperation::ImagesGeneration;
@@ -3298,7 +3122,7 @@ mod tests {
 
         let error = compile_control_plane(records).unwrap_err().to_string();
 
-        assert!(error.contains("Images channels do not support scheduled test models"));
+        assert!(error.contains("invalid capability probe configuration"));
     }
 
     #[test]
@@ -3906,7 +3730,7 @@ mod tests {
         ))
         .unwrap();
         let rule = snapshot
-            .model_rule(ApiFormat::OpenAiChatCompletions, "client")
+            .operation_rule(ApiOperation::ChatCompletions, "client")
             .unwrap();
         assert_eq!(rule.tiers().len(), 2);
         assert_eq!(rule.tiers()[0].priority(), 2);
@@ -3956,7 +3780,7 @@ mod tests {
 
         let snapshot = compile_control_plane(records).unwrap();
         let rule = snapshot
-            .model_rule(ApiFormat::OpenAiChatCompletions, "deepseek")
+            .operation_rule(ApiOperation::ChatCompletions, "deepseek")
             .unwrap();
         assert_eq!(rule.target_candidate_count(), 4);
         assert_eq!(rule.model_capable_candidate_count(), 4);
@@ -4011,7 +3835,7 @@ mod tests {
 
         let snapshot = compile_control_plane(records).unwrap();
         let rule = snapshot
-            .model_rule(ApiFormat::OpenAiChatCompletions, "client")
+            .operation_rule(ApiOperation::ChatCompletions, "client")
             .unwrap();
         assert_eq!(
             rule.tiers()[0].candidates()[0].candidate_slot(),
@@ -4035,10 +3859,10 @@ mod tests {
 
         let snapshot = compile_control_plane(records).unwrap();
         let first = snapshot
-            .model_rule(ApiFormat::OpenAiChatCompletions, "client")
+            .operation_rule(ApiOperation::ChatCompletions, "client")
             .unwrap();
         let second = snapshot
-            .model_rule(ApiFormat::OpenAiChatCompletions, "second-client")
+            .operation_rule(ApiOperation::ChatCompletions, "second-client")
             .unwrap();
         assert_eq!(first.tiers()[0].candidates()[0].weight(), 3);
         assert_eq!(second.tiers()[0].candidates()[0].weight(), 9);
@@ -4057,7 +3881,7 @@ mod tests {
         set_all_group_target(&mut all_records, group_id);
         let all_snapshot = compile_control_plane(all_records).unwrap();
         let all_rule = all_snapshot
-            .model_rule(ApiFormat::OpenAiChatCompletions, "client")
+            .operation_rule(ApiOperation::ChatCompletions, "client")
             .unwrap();
         assert_eq!(all_rule.active_candidate_count(), 2);
 
@@ -4072,7 +3896,7 @@ mod tests {
         );
         let selected_snapshot = compile_control_plane(selected_records).unwrap();
         let selected_rule = selected_snapshot
-            .model_rule(ApiFormat::OpenAiChatCompletions, "client")
+            .operation_rule(ApiOperation::ChatCompletions, "client")
             .unwrap();
         assert_eq!(selected_rule.active_candidate_count(), 1);
         assert_eq!(selected_rule.tiers()[0].channel_ids(), &[first_channel]);
@@ -4110,7 +3934,7 @@ mod tests {
         ))
         .unwrap();
         let rule = snapshot
-            .model_rule(ApiFormat::OpenAiChatCompletions, "client")
+            .operation_rule(ApiOperation::ChatCompletions, "client")
             .unwrap();
         assert_eq!(
             rule.tiers()
@@ -4167,8 +3991,12 @@ mod tests {
         let inaccessible_key = snapshot.authenticate("inaccessible-key").unwrap();
         assert!(group_key.shares_authorization_profile(&channel_key));
         assert!(!group_key.shares_authorization_profile(&inaccessible_key));
+        assert_ne!(
+            group_key.routing_scope_fingerprint(),
+            inaccessible_key.routing_scope_fingerprint()
+        );
         let rule = snapshot
-            .model_rule(ApiFormat::OpenAiChatCompletions, "client")
+            .operation_rule(ApiOperation::ChatCompletions, "client")
             .unwrap();
         assert!(group_key.permits_route(rule.route_slot()));
         assert!(!inaccessible_key.permits_route(rule.route_slot()));
@@ -4213,7 +4041,7 @@ mod tests {
         let snapshot = compile_control_plane(records).unwrap();
         let key = snapshot.authenticate("incompatible-channel-key").unwrap();
         let rule = snapshot
-            .model_rule(ApiFormat::OpenAiChatCompletions, "client")
+            .operation_rule(ApiOperation::ChatCompletions, "client")
             .unwrap();
         assert!(key.permits_route(rule.route_slot()));
         assert!(
@@ -4222,7 +4050,14 @@ mod tests {
                 .is_empty()
         );
         assert!(matches!(
-            crate::routing::select(&snapshot, &key, ApiFormat::OpenAiChatCompletions, "client",),
+            crate::routing::RoutingRuntime::new(Default::default()).select_operation_with_affinity(
+                &snapshot,
+                &key,
+                ApiOperation::ChatCompletions,
+                crate::domain::RequestProtocol::NonStream,
+                "client",
+                None
+            ),
             crate::routing::SelectionResult::NoHealthyChannel { .. }
         ));
     }
@@ -4257,7 +4092,7 @@ mod tests {
         let snapshot = compile_control_plane(records).unwrap();
         let key = snapshot.authenticate("incompatible-only-key").unwrap();
         let rule = snapshot
-            .model_rule(ApiFormat::OpenAiChatCompletions, "client")
+            .operation_rule(ApiOperation::ChatCompletions, "client")
             .unwrap();
         assert!(!key.permits_route(rule.route_slot()));
         assert!(
@@ -4266,7 +4101,14 @@ mod tests {
                 .is_empty()
         );
         assert!(matches!(
-            crate::routing::select(&snapshot, &key, ApiFormat::OpenAiChatCompletions, "client",),
+            crate::routing::RoutingRuntime::new(Default::default()).select_operation_with_affinity(
+                &snapshot,
+                &key,
+                ApiOperation::ChatCompletions,
+                crate::domain::RequestProtocol::NonStream,
+                "client",
+                None
+            ),
             crate::routing::SelectionResult::UnknownOrInaccessibleModel
         ));
     }
@@ -4323,7 +4165,7 @@ mod tests {
         let snapshot = compile_control_plane(records).unwrap();
         assert_eq!(
             snapshot
-                .model_rule(ApiFormat::OpenAiChatCompletions, "client-a")
+                .operation_rule(ApiOperation::ChatCompletions, "client-a")
                 .unwrap()
                 .tiers()[0]
                 .channel_ids(),
@@ -4331,7 +4173,7 @@ mod tests {
         );
         assert_eq!(
             snapshot
-                .model_rule(ApiFormat::OpenAiChatCompletions, "client-b")
+                .operation_rule(ApiOperation::ChatCompletions, "client-b")
                 .unwrap()
                 .tiers()[0]
                 .channel_ids(),
@@ -4349,7 +4191,7 @@ mod tests {
 
         let snapshot = compile_control_plane(records).unwrap();
         let rule = snapshot
-            .model_rule(ApiFormat::OpenAiChatCompletions, "client")
+            .operation_rule(ApiOperation::ChatCompletions, "client")
             .unwrap();
         assert!(rule.tiers().is_empty());
         assert_eq!(rule.unavailable_candidates().len(), 1);
@@ -4366,7 +4208,7 @@ mod tests {
 
         let snapshot = compile_control_plane(records).unwrap();
         let rule = snapshot
-            .model_rule(ApiFormat::OpenAiChatCompletions, "client")
+            .operation_rule(ApiOperation::ChatCompletions, "client")
             .unwrap();
         assert_eq!(rule.target_candidate_count(), 1);
         assert_eq!(rule.model_capable_candidate_count(), 0);
@@ -4389,17 +4231,31 @@ mod tests {
     #[test]
     fn models_listing_unions_operations_of_one_format_without_duplicates() {
         let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
-        for group in &mut records.groups {
-            group.api_format = "open_ai_images".into();
-        }
         for channel in &mut records.channels {
-            channel.api_format = "open_ai_images".into();
+            channel.api_operation = ApiOperation::ImagesGeneration;
         }
         records.model_rules[0].api_format = "open_ai_images".into();
         records.model_rules[0].api_operation = ApiOperation::ImagesGeneration;
         let mut edit = records.model_rules[0].clone();
         edit.id = Uuid::from_u128(30);
         edit.api_operation = ApiOperation::ImagesEdit;
+        for candidate in edit
+            .routing_tiers
+            .iter_mut()
+            .flat_map(|tier| &mut tier.candidates)
+        {
+            let mut channel = records
+                .channels
+                .iter()
+                .find(|channel| channel.id == candidate.channel_id)
+                .unwrap()
+                .clone();
+            channel.id = Uuid::new_v4();
+            channel.capability_revision = Uuid::new_v4();
+            channel.api_operation = ApiOperation::ImagesEdit;
+            candidate.channel_id = channel.id;
+            records.channels.push(channel);
+        }
         records.model_rules.push(edit);
         records.api_keys.push(ApiKeyRecord {
             id: Uuid::from_u128(40),

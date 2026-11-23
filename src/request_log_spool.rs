@@ -30,7 +30,19 @@ const CHECKPOINT_FILE: &str = "checkpoint";
 const CHECKPOINT_TEMP_FILE: &str = "checkpoint.tmp";
 const EVENTS_FILE: &str = "events.log";
 const LOCK_FILE: &str = "spool.lock";
-const JOURNAL_DIRECTORY: &str = "journal-v2";
+const JOURNAL_DIRECTORY: &str = "journal";
+
+pub(crate) fn validate_layout(root: &Path) -> Result<(), SpoolError> {
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        match entry.file_name().to_str() {
+            Some(LOCK_FILE) if entry.file_type()?.is_file() => (),
+            Some(JOURNAL_DIRECTORY) if entry.file_type()?.is_dir() => (),
+            _ => return Err(SpoolError::Corrupt("unrecognized request-log spool layout")),
+        }
+    }
+    Ok(())
+}
 
 struct SpoolWriter {
     file: File,
@@ -77,6 +89,7 @@ impl RequestLogSpool {
     ) -> Result<Self, SpoolError> {
         let root = directory.as_ref();
         create_durable_directory(root)?;
+        validate_layout(root)?;
         secure_directory(root)?;
         let lock_path = root.join(LOCK_FILE);
         let lock = OpenOptions::new()
@@ -449,6 +462,12 @@ fn parse_header(header: &[u8; FRAME_HEADER_BYTES]) -> Result<ParsedHeader, Spool
         ));
     }
     let schema_version = i16::from_le_bytes([header[4], header[5]]);
+    if schema_version != crate::request_log_journal::REQUEST_LOG_SCHEMA_VERSION {
+        return Err(JournalCodecError::UnsupportedVersion {
+            version: schema_version,
+        }
+        .into());
+    }
     let reserved = u16::from_le_bytes([header[6], header[7]]);
     if reserved != 0 {
         return Err(SpoolError::Corrupt(
@@ -652,7 +671,7 @@ mod tests {
             model_rule_id: None,
             channel_group_id: None,
             channel_id: None,
-            upstream_credential: None,
+            upstream_credential_id: None,
             model_id: None,
             outcome: RequestLogOutcome::Rejected,
             response_status_code: Some(404),
@@ -881,85 +900,35 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 
-    #[tokio::test]
-    async fn cutover_preserves_root_journal_and_replays_only_current_generation() {
-        fn v8_frame(event: &RequestLogEvent, magic: &[u8; 4]) -> Vec<u8> {
-            let mut value = serde_json::to_value(event).unwrap();
-            value["streamed"] = (event.request_protocol != RequestProtocol::NonStream).into();
-            let payload = serde_json::to_vec(&value).unwrap();
-            let mut frame = magic.to_vec();
-            frame.extend_from_slice(&8_i16.to_le_bytes());
-            frame.extend_from_slice(&0_u16.to_le_bytes());
-            frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-            frame.extend_from_slice(&crc32fast::hash(&payload).to_le_bytes());
-            if magic == b"AIGL" {
-                frame.extend_from_slice(event.id.as_bytes());
-            }
-            frame.extend_from_slice(&payload);
-            frame
-        }
-
-        let root = directory();
-        fs::create_dir(&root).unwrap();
-        let mut frames = v8_frame(&event(), b"AIGL");
-        fs::write(root.join("checkpoint"), (frames.len() as u64).to_le_bytes()).unwrap();
-        frames.extend(v8_frame(&event(), b"AIGL"));
-        fs::write(root.join("events.log"), frames).unwrap();
-        let terminal = event();
-        let unknown = event();
+    #[test]
+    fn foreign_spool_is_not_replayed_or_truncated() {
+        let root = tempfile::tempdir().unwrap();
+        let evidence = root.path().join("events.log");
+        fs::write(&evidence, b"previous generation").unwrap();
+        #[cfg(unix)]
         {
-            let (mut admissions, _) = super::AdmissionStore::open(&root).unwrap();
-            admissions.reserve(&intent(&unknown)).unwrap();
-            admissions.reserve(&intent(&terminal)).unwrap();
-            OpenOptions::new()
-                .write(true)
-                .open(root.join(format!("admissions/{}.slot", terminal.id)))
-                .unwrap()
-                .write_all(&v8_frame(&terminal, b"AIGA"))
-                .unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(root.path(), fs::Permissions::from_mode(0o750)).unwrap();
         }
-        let evidence = [
-            root.join("events.log"),
-            root.join("checkpoint"),
-            root.join(format!("admissions/{}.json", unknown.id)),
-            root.join(format!("admissions/{}.slot", unknown.id)),
-            root.join(format!("admissions/{}.json", terminal.id)),
-            root.join(format!("admissions/{}.slot", terminal.id)),
-        ]
-        .map(|path| {
-            let before = fs::read(&path).unwrap();
-            (path, before)
-        });
-
-        let current = event();
+        assert!(matches!(
+            RequestLogSpool::open(root.path(), u64::MAX),
+            Err(SpoolError::Corrupt(_))
+        ));
+        assert_eq!(fs::read(evidence).unwrap(), b"previous generation");
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+        #[cfg(unix)]
         {
-            let spool = RequestLogSpool::open(&root, u64::MAX).unwrap();
-            assert_eq!(spool.end_offset(), 0);
-            assert_eq!(spool.checkpoint_offset(), 0);
-            spool.admit(&intent(&current)).unwrap();
-            spool.append(&current).unwrap();
-        }
-        {
-            let spool = Arc::new(RequestLogSpool::open(&root, 1).unwrap());
-            let batch = spool.reader().await.unwrap().read_batch(10).await.unwrap();
-            assert_eq!(batch.records.len(), 1);
-            assert_eq!(batch.records[0].decode().unwrap().id, current.id);
-            spool.checkpoint(batch.end_offset).unwrap();
-            assert!(spool.compact_if_drained().unwrap());
-        }
-        for (path, before) in evidence {
-            assert!(
-                fs::read(&path).unwrap() == before,
-                "{} changed",
-                path.display()
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                root.path().metadata().unwrap().permissions().mode() & 0o777,
+                0o750
             );
         }
-        fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(unix)]
     #[test]
-    fn journal_directory_cannot_alias_the_legacy_root() {
+    fn journal_directory_cannot_alias_the_spool_root() {
         let root = directory();
         fs::create_dir(&root).unwrap();
         std::os::unix::fs::symlink(".", root.join(super::JOURNAL_DIRECTORY)).unwrap();
@@ -1001,18 +970,18 @@ mod tests {
             RequestLogSpool::open(&directory, u64::MAX),
             Err(SpoolError::Lock { .. })
         ));
-        let legacy_lock = OpenOptions::new()
+        let other_lock = OpenOptions::new()
             .write(true)
             .open(directory.join("spool.lock"))
             .unwrap();
-        assert!(fs2::FileExt::try_lock_exclusive(&legacy_lock).is_err());
+        assert!(fs2::FileExt::try_lock_exclusive(&other_lock).is_err());
         drop(spool);
-        fs2::FileExt::try_lock_exclusive(&legacy_lock).unwrap();
+        fs2::FileExt::try_lock_exclusive(&other_lock).unwrap();
         assert!(matches!(
             RequestLogSpool::open(&directory, u64::MAX),
             Err(SpoolError::Lock { .. })
         ));
-        drop(legacy_lock);
+        drop(other_lock);
         assert!(RequestLogSpool::open(&directory, u64::MAX).is_ok());
         fs::remove_dir_all(directory).unwrap();
     }

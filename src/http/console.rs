@@ -3187,11 +3187,6 @@ fn repository_error_message(error: &crate::persistence::RepositoryError) -> &'st
         crate::persistence::RepositoryError::RegistrationInvitationCodeConflict => {
             "registration_invitation_code_conflict"
         }
-        crate::persistence::RepositoryError::Storage(error)
-            if error.kind() == crate::persistence::StorageFailureKind::RoutingDependency =>
-        {
-            "routing_dependency_invalid"
-        }
         _ => "Console operation rejected",
     }
 }
@@ -3225,8 +3220,7 @@ fn repository_status(error: &crate::persistence::RepositoryError) -> StatusCode 
         }
         crate::persistence::RepositoryError::Storage(error) => match error.kind() {
             crate::persistence::StorageFailureKind::Conflict => StatusCode::CONFLICT,
-            crate::persistence::StorageFailureKind::InvalidInput
-            | crate::persistence::StorageFailureKind::RoutingDependency => {
+            crate::persistence::StorageFailureKind::InvalidInput => {
                 StatusCode::UNPROCESSABLE_ENTITY
             }
             crate::persistence::StorageFailureKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,

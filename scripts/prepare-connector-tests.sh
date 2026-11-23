@@ -2,8 +2,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-if (( $# > 1 )) || [[ "${1:-}" == -* && "${1:-}" != --protocol-3 ]]; then
-  printf 'Usage: %s [--protocol-3 | explicit-local-plugin-repository]\n' "$0" >&2
+if (( $# > 1 )) || [[ "${1:-}" == -* ]]; then
+  printf 'Usage: %s [explicit-local-plugin-repository]\n' "$0" >&2
   exit 2
 fi
 
@@ -13,13 +13,10 @@ mkdir -p -- "$scratch_root"
 task_dir="$(mktemp -d "$scratch_root/connector-test-build.XXXXXXXX")"
 
 package_args=()
-if (( $# == 1 )) && [[ "$1" != --protocol-3 ]]; then
+if (( $# == 1 )); then
   source_root="$(cd "$1" && pwd)"
 else
   lock="$repo_root/tests/fixtures/codex-plugin.json"
-  if [[ "${1:-}" == --protocol-3 ]]; then
-    lock="$repo_root/tests/fixtures/codex-plugin-protocol-3.json"
-  fi
   package_args=(--pin "$lock")
   revision="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["revision"])' "$lock")"
   if [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]]; then

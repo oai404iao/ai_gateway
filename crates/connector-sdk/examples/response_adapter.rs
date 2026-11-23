@@ -17,7 +17,6 @@ fn manifest() -> PluginManifest {
         version: env!("CARGO_PKG_VERSION").into(),
         operations: vec!["chat_completion".into(), "responses".into()],
         commands: [
-            "attempt.capabilities",
             ATTEMPT_DESCRIBE,
             "attempt.body",
             "attempt.target",
@@ -146,9 +145,6 @@ fn process(command: &str, metadata: &Value, body: &[u8]) -> Result<PluginOutput,
         }
     }
     match command {
-        "attempt.capabilities" => Ok(output(
-            serde_json::to_value(capabilities()).map_err(|_| invalid())?,
-        )),
         ATTEMPT_DESCRIBE => {
             let protocols = [
                 (

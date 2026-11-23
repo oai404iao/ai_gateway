@@ -19,13 +19,13 @@ use ai_gateway::{
         ControlPlaneCoordinator, ModelSyncService, ProxyTestService, SystemMetricsService,
         hash_console_password,
     },
-    domain::ApiFormat,
+    domain::ApiOperation,
     http::console::{self, ConsoleState},
     models_dev::ModelsDevClient,
     persistence::{
-        AuthRepository, ControlPlaneRepository, DEFAULT_USER_GROUP_ID, MIGRATOR,
-        RequestLogRepository, SystemPassiveHealthSettingsInput, SystemSettingsInput,
-        SystemUpstreamSettingsInput, run_migrations,
+        AuthRepository, ControlPlaneRepository, DEFAULT_USER_GROUP_ID, RequestLogRepository,
+        SystemPassiveHealthSettingsInput, SystemSettingsInput, SystemUpstreamSettingsInput,
+        run_migrations,
     },
     routing::{PassiveHealthPolicy, RoutingRuntime},
     runtime_config::{AuthConfig, ModelsSyncConfig, RuntimeConfig, compile_runtime_config},
@@ -46,9 +46,9 @@ use uuid::Uuid;
 
 #[path = "support/metering.rs"]
 mod metering_fixtures;
+#[path = "support/postgres.rs"]
+mod postgres;
 
-const DEFAULT_ADMIN_URL: &str = "postgres://ai_gateway:ai_gateway@127.0.0.1:5432/postgres";
-const PASSWORD_FILE_ADMIN_URL: &str = "postgres://ai_gateway@127.0.0.1:5432/postgres";
 fn test_password() -> &'static str {
     static PASSWORD: std::sync::LazyLock<String> =
         std::sync::LazyLock::new(|| format!("spec-{}", Uuid::new_v4()));
@@ -80,21 +80,10 @@ struct TestDatabase {
 
 impl TestDatabase {
     async fn new() -> Self {
-        Self::with_migrator(&MIGRATOR).await
-    }
-
-    async fn with_migrator(migrator: &sqlx::migrate::Migrator) -> Self {
-        let admin_url =
-            std::env::var("TEST_DATABASE_ADMIN_URL").unwrap_or_else(|_| default_admin_url());
-        let mut database_url = reqwest::Url::parse(&admin_url).expect("admin URL valid");
-        assert_ne!(
-            database_url.path().trim_matches('/'),
-            "ai_gateway",
-            "TEST_DATABASE_ADMIN_URL must not target the ai_gateway database"
-        );
+        let mut database_url = postgres::admin_url(None).unwrap();
         let admin = PgPoolOptions::new()
             .max_connections(1)
-            .connect(&admin_url)
+            .connect(database_url.as_str())
             .await
             .expect("PostgreSQL admin database available");
         let name = format!("ai_gateway_spec_{}", Uuid::new_v4().simple());
@@ -108,16 +97,7 @@ impl TestDatabase {
             .connect(database_url.as_str())
             .await
             .expect("temp database connectable");
-        if std::ptr::eq(migrator, &MIGRATOR) {
-            ai_gateway::persistence::run_migrations(&pool)
-                .await
-                .expect("startup migrations apply");
-        } else {
-            migrator
-                .run(&pool)
-                .await
-                .expect("historical migrations apply");
-        }
+        run_migrations(&pool).await.expect("baseline installs");
         Self { pool, admin, name }
     }
 
@@ -132,114 +112,6 @@ impl TestDatabase {
         .expect("temp database removable");
         self.admin.close().await;
     }
-}
-
-#[tokio::test]
-async fn retired_adapter_migration_preserves_usage_and_removes_control_plane_state() {
-    let mut previous = sqlx::migrate::Migrator::new(std::path::Path::new("./migrations"))
-        .await
-        .unwrap();
-    previous.migrations = previous
-        .iter()
-        .filter(|migration| migration.version < 53)
-        .cloned()
-        .collect::<Vec<_>>()
-        .into();
-    let database = TestDatabase::with_migrator(&previous).await;
-    let user_id = Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO users (id,email,display_name,role,status) \
-        VALUES ($1,'legacy-fixture@example.test','Legacy fixture','admin','active')",
-    )
-    .bind(user_id)
-    .execute(&database.pool)
-    .await
-    .unwrap();
-    ControlPlaneRepository::new(database.pool.clone())
-        .ensure_system_settings(bootstrap_system_settings())
-        .await
-        .unwrap();
-    let key = Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO api_keys (id,user_id,name,secret_value,status,allowed_api_formats,permissions) \
-         VALUES ($1,$2,'legacy usage','legacy-test-secret','active', \
-         ARRAY['open_ai_responses']::api_format[],ARRAY['proxy'])",
-    )
-    .bind(key)
-    .bind(user_id)
-    .execute(&database.pool)
-    .await
-    .unwrap();
-    let log = Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO request_logs \
-         (id,started_at,completed_at,user_id,api_key_id,api_format,api_operation, \
-          client_model,outcome,streamed,total_duration_ms,request_source,cost_amount) \
-         VALUES ($1,now(),now(),$2,$3,'open_ai_responses','standalone_web_search', \
-                 'legacy-search','succeeded',false,100,'mcp',0.25)",
-    )
-    .bind(log)
-    .bind(user_id)
-    .bind(key)
-    .execute(&database.pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "UPDATE system_settings SET value=value || '{\"mcp\":{\"enabled\":true}}'::jsonb \
-         WHERE setting_key='forwarding_policy'",
-    )
-    .execute(&database.pool)
-    .await
-    .unwrap();
-
-    run_migrations(&database.pool).await.unwrap();
-    let app = app(database.pool.clone()).await;
-    let state: (bool, bool, bool) = sqlx::query_as(
-        "SELECT to_regclass('mcp_servers') IS NULL, to_regtype('mcp_server_kind') IS NULL, \
-         NOT (SELECT value ? 'mcp' FROM system_settings WHERE setting_key='forwarding_policy')",
-    )
-    .fetch_one(&database.pool)
-    .await
-    .unwrap();
-    assert_eq!(state, (true, true, true));
-    let preserved: (String, String) =
-        sqlx::query_as("SELECT request_source,cost_amount::text FROM request_logs WHERE id=$1")
-            .bind(log)
-            .fetch_one(&database.pool)
-            .await
-            .unwrap();
-    assert_eq!(preserved.0, "client");
-    assert_eq!(preserved.1.parse::<f64>().unwrap(), 0.25);
-    let settings = ControlPlaneRepository::new(database.pool.clone())
-        .system_settings()
-        .await
-        .unwrap();
-    assert_eq!(
-        serde_json::to_value(settings.settings).unwrap(),
-        serde_json::to_value(bootstrap_system_settings()).unwrap()
-    );
-    for path in ["/console/v1/mcp-servers", "/console/v1/mcp-servers/retired"] {
-        let response = request(&app, "GET", path, serde_json::json!({}), &[]).await;
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    }
-    database.cleanup().await;
-}
-
-fn default_admin_url() -> String {
-    let Ok(mut password) = std::fs::read_to_string("./config/postgres-password") else {
-        return DEFAULT_ADMIN_URL.into();
-    };
-    while matches!(password.as_bytes().last(), Some(b'\n' | b'\r')) {
-        password.pop();
-    }
-    if password.is_empty() {
-        return DEFAULT_ADMIN_URL.into();
-    }
-    let mut url =
-        reqwest::Url::parse(PASSWORD_FILE_ADMIN_URL).expect("default admin URL must be valid");
-    url.set_password(Some(&password))
-        .expect("PostgreSQL URL must accept a password");
-    url.to_string()
 }
 
 fn auth_config() -> AuthConfig {
@@ -812,76 +684,6 @@ async fn system_settings_bootstrap_initializes_once_without_overwriting_database
     .await
     .unwrap();
     assert_eq!(initializations, 1);
-    database.cleanup().await;
-}
-
-#[tokio::test]
-async fn plugin_settings_migration_preserves_values_and_bootstrap_does_not_reintroduce_codex() {
-    let database = TestDatabase::new().await;
-    let repository = ControlPlaneRepository::new(database.pool.clone());
-    repository
-        .ensure_system_settings(bootstrap_system_settings())
-        .await
-        .unwrap();
-    sqlx::raw_sql("DROP TABLE plugin_install_jobs,plugin_settings,plugin_states,plugin_artifacts;")
-        .execute(&database.pool)
-        .await
-        .unwrap();
-    let legacy = serde_json::json!({
-        "workspace_path":"/synthetic/project",
-        "git_remote_url":"https://github.com/example/synthetic-project",
-        "originator":"codex_gateway",
-        "client_version":"9.8.7",
-        "user_agent":"codex_gateway/9.8.7 (Linux 6.8.0; x86_64) ai-gateway"
-    });
-    sqlx::query("UPDATE system_settings SET value=jsonb_set(value,'{codex}',$1) WHERE setting_key='forwarding_policy'")
-        .bind(&legacy).execute(&database.pool).await.unwrap();
-    sqlx::query("INSERT INTO users(id,email,display_name,role,status,balance_amount) VALUES ($1,'plugin-migration@example.test','Migration fixture','user','active',123.45678)")
-        .bind(Uuid::new_v4()).execute(&database.pool).await.unwrap();
-    let balances_before: serde_json::Value =
-        sqlx::query_scalar("SELECT coalesce(jsonb_agg(to_jsonb(u) ORDER BY id),'[]') FROM users u")
-            .fetch_one(&database.pool)
-            .await
-            .unwrap();
-    sqlx::raw_sql(include_str!("../migrations/0071_plugin_lifecycle.sql"))
-        .execute(&database.pool)
-        .await
-        .unwrap();
-    let migrated = repository.plugin_settings("codex").await.unwrap().unwrap();
-    assert_eq!(migrated.values, legacy);
-    assert_eq!(migrated.schema_version, 1);
-    assert_eq!(migrated.revision, 1);
-    let records = repository.plugin_records().await.unwrap();
-    assert!(records.artifacts.is_empty());
-    assert!(!records.states[0].enabled);
-    assert!(records.states[0].artifact_digest.is_none());
-    repository
-        .ensure_system_settings(bootstrap_system_settings())
-        .await
-        .unwrap();
-    run_migrations(&database.pool).await.unwrap();
-    assert_eq!(
-        repository
-            .plugin_settings("codex")
-            .await
-            .unwrap()
-            .unwrap()
-            .values,
-        legacy
-    );
-    let stored: serde_json::Value = sqlx::query_scalar(
-        "SELECT value FROM system_settings WHERE setting_key='forwarding_policy'",
-    )
-    .fetch_one(&database.pool)
-    .await
-    .unwrap();
-    assert!(stored.get("codex").is_none());
-    let balances_after: serde_json::Value =
-        sqlx::query_scalar("SELECT coalesce(jsonb_agg(to_jsonb(u) ORDER BY id),'[]') FROM users u")
-            .fetch_one(&database.pool)
-            .await
-            .unwrap();
-    assert_eq!(balances_after, balances_before);
     database.cleanup().await;
 }
 
@@ -3666,12 +3468,12 @@ async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
         .unwrap();
         for (request_started_at, cost) in logs {
             sqlx::query(
-                "INSERT INTO request_logs \
+                "INSERT INTO request_metering_facts \
                  (id,started_at,completed_at,user_id,api_key_id,api_format,api_operation, \
-                  client_model,channel_group_id,channel_id,outcome,response_status_code, \
-                  cost_amount) \
+                  client_model,channel_group_id,channel_id,outcome,request_source,request_protocol, \
+                  peak_pricing,cost_amount,upstream_credential_id) \
                  VALUES ($1,$2,$2,$3,$4,$5::api_format,$6,'quota-cost-model',$7,$8, \
-                         'succeeded',200,$9)",
+                         'succeeded','client','non_stream',false,$9,$10)",
             )
             .bind(Uuid::new_v4())
             .bind(request_started_at)
@@ -3682,20 +3484,12 @@ async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
             .bind(channel_group_id)
             .bind(channel_id)
             .bind(cost)
+            .bind(visible_credential_id)
             .execute(&database.pool)
             .await
             .unwrap();
         }
     }
-    metering_fixtures::copy_log_fixtures(&database.pool).await;
-    sqlx::query(
-        "INSERT INTO request_credential_attributions(request_id,known,credential_id)
-        SELECT id,true,$1 FROM request_metering_facts WHERE client_model='quota-cost-model'",
-    )
-    .bind(visible_credential_id)
-    .execute(&database.pool)
-    .await
-    .unwrap();
     let legacy_zero_started_at = period_started_at - chrono::Duration::minutes(30);
     sqlx::query(
         "INSERT INTO codex_quota_window_periods \
@@ -4416,7 +4210,7 @@ async fn model_delete_hides_routing_clears_probes_and_preserves_history() {
     assert!(
         app.runtime
             .snapshot()
-            .model_rule(ApiFormat::OpenAiChatCompletions, &source_model_id)
+            .operation_rule(ApiOperation::ChatCompletions, &source_model_id)
             .is_some()
     );
 
@@ -4441,7 +4235,7 @@ async fn model_delete_hides_routing_clears_probes_and_preserves_history() {
          (id,started_at,completed_at,user_id,api_key_id,api_format,api_operation, \
           client_model,upstream_model,model_rule_id,channel_group_id,channel_id, \
           outcome,total_duration_ms,model_id) \
-         VALUES ($1,now(),now(),$2,$3,'open_ai_chat_completions','chat_completions', \
+         VALUES ($1,now(),now(),$2,$3,'open_ai_chat_completions','chat_completion', \
                  $4,'model-delete-wire',$5,$6,$7,'succeeded',10,$8)",
     )
     .bind(historical_log_id)
@@ -4503,7 +4297,7 @@ async fn model_delete_hides_routing_clears_probes_and_preserves_history() {
     assert!(
         app.runtime
             .snapshot()
-            .model_rule(ApiFormat::OpenAiChatCompletions, &source_model_id)
+            .operation_rule(ApiOperation::ChatCompletions, &source_model_id)
             .is_none()
     );
     assert_eq!(
@@ -5983,12 +5777,14 @@ async fn capability_deletion_withdraws_routes_atomically_and_preserves_channel_g
         serde_json::json!([topology.group])
     );
     assert_eq!(detail["allowed_channel_ids"], serde_json::json!([]));
-    let policy_grants: Vec<(Uuid, String, Uuid)> = sqlx::query_as("SELECT channel_id,origin_kind,origin_id FROM api_key_policy_channel_grants WHERE policy_id=$1")
-        .bind(policy).fetch_all(&database.pool).await.unwrap();
-    assert_eq!(
-        policy_grants,
-        [(topology.channel, "channel".into(), topology.channel)]
-    );
+    let policy_grants: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT channel_id FROM api_key_policy_channel_grants WHERE policy_id=$1",
+    )
+    .bind(policy)
+    .fetch_all(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(policy_grants, [topology.channel]);
     let channel = request(
         &app,
         "GET",
@@ -6103,17 +5899,14 @@ async fn group_deletion_requires_explicit_child_retirement_and_preserves_history
         detail["allowed_channel_ids"],
         serde_json::json!([topology.channel])
     );
-    let grants: Vec<(Uuid, String, Uuid)> = sqlx::query_as(
-        "SELECT channel_id,origin_kind,origin_id FROM api_key_policy_channel_grants WHERE policy_id=$1",
+    let grants: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT channel_id FROM api_key_policy_channel_grants WHERE policy_id=$1",
     )
     .bind(policy)
     .fetch_all(&database.pool)
     .await
     .unwrap();
-    assert_eq!(
-        grants,
-        [(topology.channel, "channel".into(), topology.channel)]
-    );
+    assert_eq!(grants, [topology.channel]);
     let history: i64 =
         sqlx::query_scalar("SELECT count(*) FROM group_identity_registry WHERE id=$1")
             .bind(topology.group)
@@ -7193,7 +6986,7 @@ async fn request_logs_limit_defaults_and_clamps_to_the_documented_bounds() {
              RETURNING id,user_id
          )
          INSERT INTO request_logs(id,started_at,completed_at,user_id,api_key_id,api_format,api_operation,client_model,outcome)
-         SELECT gen_random_uuid(),now(),now(),user_id,id,'open_ai_chat_completions','chat_completions','limit-test','succeeded'
+         SELECT gen_random_uuid(),now(),now(),user_id,id,'open_ai_chat_completions','chat_completion','limit-test','succeeded'
          FROM fixture_key CROSS JOIN generate_series(1,101)",
     )
     .bind(app.user_id)
@@ -7262,7 +7055,7 @@ async fn request_log_filters_match_the_console_contract() {
         sqlx::query(
             "INSERT INTO request_logs \
              (id,started_at,completed_at,user_id,api_key_id,api_format,api_operation,client_model,upstream_model,outcome,ttft_ms,total_duration_ms,output_tokens_per_second,reasoning_effort,fast_mode,input_tokens,cached_input_tokens,cache_write_tokens,output_tokens,reasoning_tokens,cost_amount,error_code,error_summary,peak_pricing) \
-             VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions','chat_completions',$5,$6,$7,100,1000,5.5556,'high',true,12,2,1,5,1,CASE WHEN $7='failed' THEN 0 ELSE NULL END,$8,$9,$10)",
+             VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions','chat_completion',$5,$6,$7,100,1000,5.5556,'high',true,12,2,1,5,1,CASE WHEN $7='failed' THEN 0 ELSE NULL END,$8,$9,$10)",
         )
         .bind(id)
         .bind(now)
@@ -7418,26 +7211,26 @@ async fn request_log_filters_match_the_console_contract() {
     .execute(&database.pool)
     .await;
     assert!(mismatched_operation.is_err());
-    let legacy_log_id = Uuid::new_v4();
-    sqlx::query(
+    let missing_operation = sqlx::query(
         "INSERT INTO request_logs \
          (id,started_at,completed_at,user_id,api_key_id,api_format,client_model,outcome) \
-         VALUES ($1,$2,$2,$3,$4,'open_ai_responses','legacy-response','succeeded')",
+         VALUES ($1,$2,$2,$3,$4,'open_ai_responses','missing-operation','succeeded')",
     )
-    .bind(legacy_log_id)
+    .bind(Uuid::new_v4())
     .bind(now)
     .bind(app.user_id)
     .bind(api_key_id)
     .execute(&database.pool)
     .await
-    .unwrap();
-    let inferred_operation: String =
-        sqlx::query_scalar("SELECT api_operation FROM request_logs WHERE id=$1")
-            .bind(legacy_log_id)
-            .fetch_one(&database.pool)
-            .await
-            .unwrap();
-    assert_eq!(inferred_operation, "responses");
+    .unwrap_err();
+    assert_eq!(
+        missing_operation
+            .as_database_error()
+            .unwrap()
+            .code()
+            .as_deref(),
+        Some("23502")
+    );
 
     let missing = request(
         &app,
@@ -7573,7 +7366,7 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
               cached_input_tokens,cache_write_tokens,output_tokens,currency,price_unit_tokens, \
               price_effective_at,input_unit_price,cached_input_unit_price, \
               cache_write_unit_price,output_unit_price,cost_amount) \
-             VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions','chat_completions','statistics-client-model', \
+             VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions','chat_completion','statistics-client-model', \
                      'statistics-model',$5,$6,$7,$8,$9,1000,$10,$11,$12,$13,$14, \
                      'USD',1000000,$2,1,0,0,1,$15)",
         )
@@ -7606,7 +7399,7 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
           cache_write_tokens,output_tokens,currency,price_unit_tokens,price_effective_at, \
           input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price, \
           cost_amount) \
-         VALUES ($1,$2,$2,$3,$4,'scheduled_test','open_ai_chat_completions','chat_completions', \
+         VALUES ($1,$2,$2,$3,$4,'scheduled_test','open_ai_chat_completions','chat_completion', \
                  'statistics-scheduled-client-model','statistics-model',$5,$6,'succeeded',200, \
                  100,200,1,0,0,1,'USD',1000000,$2,1,0,0,1,0.01)",
     )
@@ -7800,7 +7593,7 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
           cached_input_tokens,cache_write_tokens,output_tokens,currency,price_unit_tokens, \
           price_effective_at,input_unit_price,cached_input_unit_price, \
           cache_write_unit_price,output_unit_price,cost_amount) \
-         VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions','chat_completions','statistics-user-client-model', \
+         VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions','chat_completion','statistics-user-client-model', \
                  'statistics-user-model',$5,$6,'succeeded',200,250,500,25,40,0,0,10, \
                  'USD',1000000,$2,1,0,0,1,1)",
     )
@@ -8336,13 +8129,13 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
         ),
     ] {
         sqlx::query(
-            "INSERT INTO request_logs \
+            "INSERT INTO request_metering_facts \
              (id,started_at,completed_at,user_id,api_key_id,api_format,api_operation, \
               client_model,upstream_model,channel_group_id,channel_id,outcome, \
-              response_status_code,input_tokens,output_tokens) \
+              request_source,request_protocol,peak_pricing,input_tokens,output_tokens,upstream_credential_id) \
              VALUES ($1,$2,$2,$3,$4,$5::api_format,$6, \
                      'statistics-codex-model',$9,$7,$8, \
-                     'succeeded',200,10,5)",
+                     'succeeded','client','non_stream',false,10,5,$10)",
         )
         .bind(Uuid::new_v4())
         .bind(codex_started_at)
@@ -8353,19 +8146,11 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
         .bind(codex_group_id)
         .bind(capability)
         .bind(upstream_model)
+        .bind(codex_credential_id)
         .execute(&database.pool)
         .await
         .unwrap();
     }
-    metering_fixtures::copy_log_fixtures(&database.pool).await;
-    sqlx::query(
-        "INSERT INTO request_credential_attributions(request_id,known,credential_id)
-        SELECT id,true,$1 FROM request_metering_facts WHERE client_model='statistics-codex-model'",
-    )
-    .bind(codex_credential_id)
-    .execute(&database.pool)
-    .await
-    .unwrap();
     let codex_range_start = (codex_started_at - chrono::Duration::minutes(5))
         .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let codex_range_end = (codex_started_at + chrono::Duration::minutes(5))
@@ -8472,7 +8257,7 @@ async fn spend_leaderboard_uses_shanghai_periods_and_serves_snapshots() {
               outcome,response_status_code,input_tokens,output_tokens,currency, \
               price_unit_tokens,price_effective_at,input_unit_price,cached_input_unit_price, \
               cache_write_unit_price,output_unit_price,cost_amount) \
-             VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions','chat_completions','leaderboard-model', \
+             VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions','chat_completion','leaderboard-model', \
                      'succeeded',200,10,5,'USD',1000000,$2,1,0,0,1,$5)",
         )
         .bind(Uuid::new_v4())
@@ -8637,7 +8422,7 @@ async fn spend_leaderboard_uses_shanghai_periods_and_serves_snapshots() {
           outcome,response_status_code,input_tokens,output_tokens,currency, \
           price_unit_tokens,price_effective_at,input_unit_price,cached_input_unit_price, \
           cache_write_unit_price,output_unit_price,cost_amount) \
-         VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions','chat_completions','leaderboard-model', \
+         VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions','chat_completion','leaderboard-model', \
                  'succeeded',200,10,5,'USD',1000000,$2,1,0,0,1,1)",
     )
     .bind(Uuid::new_v4())

@@ -598,7 +598,7 @@ async fn postgres_plugin_storage_contract() {
 
 #[cfg(feature = "sqlite-backend")]
 #[tokio::test]
-async fn sqlite_plugin_storage_and_migration_contract() {
+async fn sqlite_plugin_storage_contract() {
     use ai_gateway::persistence::sqlite::{SqliteDatabase, SqliteUuid};
     use std::{os::unix::fs::PermissionsExt, sync::Arc};
     let directory = tempfile::Builder::new()
@@ -625,46 +625,6 @@ async fn sqlite_plugin_storage_and_migration_contract() {
         .unwrap();
     }
     tx.commit().await.unwrap();
-    let repository = ControlPlaneRepository::from_sqlite(Arc::clone(&database));
-    contract(repository.clone()).await;
-    let legacy = json!({
-        "workspace_path":"/custom/workspace","git_remote_url":"https://github.com/example/custom",
-        "originator":"custom","client_version":"9.8.7","user_agent":"custom/9.8.7"
-    });
-    let mut tx = database.begin_write().await.unwrap();
-    sqlx::raw_sql("DROP TABLE plugin_install_jobs; DROP TABLE plugin_settings; DROP TABLE plugin_states; DROP TABLE plugin_artifacts;")
-        .execute(&mut *tx).await.unwrap();
-    sqlx::query("UPDATE system_settings SET value=json_set(value,'$.codex',json(?1)),updated_at=ag_now() WHERE setting_key='forwarding_policy'")
-        .bind(legacy.to_string()).execute(&mut *tx).await.unwrap();
-    sqlx::raw_sql(include_str!(
-        "../../migrations/sqlite/0011_plugin_lifecycle.sql"
-    ))
-    .execute(&mut *tx)
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    let settings = repository.plugin_settings("codex").await.unwrap().unwrap();
-    assert_eq!(settings.values, legacy);
-    assert_eq!(settings.schema_version, 1);
-    assert_eq!(settings.revision, 1);
-    repository
-        .ensure_system_settings(super::bootstrap_system_settings())
-        .await
-        .unwrap();
-    assert_eq!(
-        repository
-            .plugin_settings("codex")
-            .await
-            .unwrap()
-            .unwrap()
-            .values,
-        legacy
-    );
-    assert!(
-        serde_json::to_value(repository.system_settings().await.unwrap())
-            .unwrap()
-            .get("codex")
-            .is_none()
-    );
+    contract(ControlPlaneRepository::from_sqlite(Arc::clone(&database))).await;
     database.close().await;
 }

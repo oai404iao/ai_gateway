@@ -18,7 +18,6 @@ fn manifest() -> PluginManifest {
         version: env!("CARGO_PKG_VERSION").into(),
         operations: vec!["chat_completion".into(), "responses".into()],
         commands: [
-            "attempt.capabilities",
             ATTEMPT_DESCRIBE,
             "attempt.body",
             "attempt.target",
@@ -134,7 +133,6 @@ fn process(command: &str, metadata: &Value, body: &[u8]) -> Result<PluginOutput,
                 .collect(),
             usage: Some(usage),
         }),
-        "attempt.capabilities" => output(capabilities()),
         "attempt.body" => Ok(PluginOutput {
             metadata: json!({}),
             body: body.to_vec(),

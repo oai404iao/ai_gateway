@@ -360,7 +360,7 @@ async fn aggregate_boundary(db: &Backend, now: DateTime<Utc>) -> Value {
          INSERT INTO request_metering_facts(id,started_at,completed_at,user_id,api_key_id,
            request_source,api_format,api_operation,request_protocol,client_model,outcome,cost_amount,peak_pricing)
          SELECT {id},'{time}','{time}','{USER}','{KEY}','client',
-           'open_ai_chat_completions','chat_completions','sse','model-'||CAST(n%2 AS TEXT),
+           'open_ai_chat_completions','chat_completion','sse','model-'||CAST(n%2 AS TEXT),
            'succeeded','9999999999999999.99999999',false FROM numbers"
     )).await.unwrap();
     let report = db

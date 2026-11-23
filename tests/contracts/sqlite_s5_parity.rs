@@ -962,9 +962,7 @@ async fn visible_projection_costs(backend: &Backend, c: Context) {
     let mut events = Vec::new();
     for (index, capability) in metered_capabilities.iter().enumerate() {
         let mut event = request_log_event(c.admin, key, model, c.group, capability.id);
-        event.upstream_credential = Some(ai_gateway::domain::RequestCredentialAttribution {
-            credential_id: Some(c.id),
-        });
+        event.upstream_credential_id = Some(c.id);
         event.channel_group_id = Some(
             backend
                 .repo()

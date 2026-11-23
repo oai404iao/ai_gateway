@@ -202,9 +202,6 @@ impl AdmissionStore {
             payload,
         }
         .decode()?;
-        if event.id != id {
-            return Err(SpoolError::Corrupt("admission terminal UUID mismatch"));
-        }
         Ok(Some(event))
     }
 

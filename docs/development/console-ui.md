@@ -1,260 +1,50 @@
-# Console Web UI 架构与开发指南
+# Console Web UI 架构
 
-> 状态：当前。实现以 `web/console/`、`src/http/console_ui.rs`、Console OpenAPI
-> 和测试为准。原始分阶段计划保存在
-> [Console UI 实施计划归档](../archive/console-ui-implementation-plan.md)。
+> 状态：当前。
 
-Console UI 是只由 Console listener 提供的 React SPA。开发时用 Vite，生产时把静态资产嵌入
-Rust 二进制；Node 不是生产服务。先选择运行方式，再按契约和交互规范修改页面。
+Console 是 React + TypeScript SPA。Vite 在开发时代理 Console API；生产只需要编入静态资源的 Rust 进程。安装依赖、启动、构建和前端测试命令见[前端 README](../../web/console/README.md)。
 
-## 本页内容
+## 路由与交付
 
-- [启动开发或构建生产资产](#7-开发与生产运行)
-- [定位目录和生成类型](#4-目录与契约)
-- [修改导航与模型工作区](#模型配置导航与层级编辑)
-- [编写安全表单](#6-base-ui-与表单约定)
-- [运行匹配的验证](#9-测试与验证)
-- [排查静态路由和缓存](#3-路由规则)
+`src/main.rs` 只在 Console listener 上合并 API 与 UI。`/console/v1/*` 始终优先，未知 API 返回 JSON 404；非 API 的 `GET` / `HEAD` 导航才可能得到 SPA fallback。公共数据面既不提供 Console API，也不提供 UI。
 
-## 页面与资源组织
-
-页面结构、返回与跳转、列表与草稿的统一约定见
-[Console 导航与页面交互规范](console-interaction-standard.md)。
-视觉、主题、图标和动画遵循根目录的 [design.md](../../design.md)。
-
-`ConsoleLayout` 负责已登录页面的共享外壳。`web/console/src/app/layouts/nav.ts` 提供导航项与页面查找目录；按当前路径确定区域，按角色筛选可见管理入口。管理员的个人首页不是系统仪表盘。页面通过 typed client 查询 `/console/v1/*`，个人与全局统计、日志分别使用对应端点和缓存范围。
-生产页面不以来自设计稿的样本填补缺失数据；请求未完成、失败和成功但空的数据应可区分。
-
-系统设置分类定义在 `web/console/src/features/admin/system/settings-sections.ts`，由
-管理目录、页面查找与 `/admin/system/:section` 页面共用。切换分类时先确认未保存修改，再重建表单，保留完整 API 配置及 ETag，只挂载当前分类控件。
-
-[上游实体联合重构](upstream-identity-capabilities.md)的接入管理位于
-`src/features/admin/routing/accesses/`，独立管理连接器、Base URL、代理和超时。凭证、能力与授权分别配置。
-同目录的 `groups/`、`logical-channels/`、`capabilities/`、`operation-rules/`
-提供资源列表和版本化编辑；候选使用 `capability_id`。能力所属渠道和操作在
-创建后只读，所有连接器均可显式创建和删除支持的能力。Key/Policy 表单分别保存组选择和直接渠道选择：
-整组跟随成员变化，直接选择则只针对该渠道，不把一组渠道选项合成为整组授权。
-“上游凭证”按 `general` / `codex` 页签管理，Codex 导入、OAuth、批量操作、quota 和导出
-与渠道绑定分开管理。只读 quota 按账号去重。
-操作规则可以按定价模型选择或显式创建
-profile。批量修改与手动恢复位于能力页面，恢复不改变显式启用状态。
-普通能力编辑可按所选接入和凭证发现模型；选择结果只更新草稿，保存后发布。
-删除确认说明自动解绑候选、停用空规则；删除成功同时失效能力和操作规则缓存。
-窄屏模型工作区使用列表/详情切换，避免操作路由编辑器被完整模型列表推到页面底部。
-表格在自身容器内滚动，Console 主区域保持 `min-w-0`，不撑宽浏览器视口。
-
-## 1. 运行边界
-
-Console UI 是管理 `ai-gateway` 的 React 单页应用，不是聊天产品或第三方 Widget。
-
-- 源码位于 `web/console/`。
-- 生产构建输出到 `web/console/dist`，可通过 `embedded-console-ui` Cargo feature 编入 Rust
-  单二进制。
-- UI 只由独立 Console listener 提供；公共 `/v1/*` listener 绝不挂载 UI、静态资源或
-  `/console/v1/*` API。
-- Rust 服务是唯一生产运行时；Node.js、pnpm 和 Vite 只用于开发、测试和构建。
-- 不使用 SSR、Next.js、常驻 Node 服务或运行时可配置的静态目录。
-
-## 2. 当前技术栈
-
-| 领域 | 当前选择 |
+| 静态响应 | 缓存 |
 | --- | --- |
-| UI | React 19 + TypeScript（strict）+ Vite |
-| 样式/组件 | Tailwind CSS v4 + shadcn/ui `base-nova`，primitives 使用 Base UI |
-| 主题/图标 | 集中的 CSS 变量；Lucide；项目品牌图形保留 |
-| 动画 | Motion（`motion/react`）；保留 Nova/Base UI 自带的基础状态过渡 |
-| 共享客户端状态 | Zustand：内存会话、主题和语言偏好 |
-| 路由 | React Router |
-| 服务端状态 | TanStack Query |
-| 表单 | React Hook Form + Zod |
-| 测试 | Vitest + Testing Library + MSW；Playwright Chromium |
-| Lint | oxlint；不使用 ESLint |
-| API 类型 | 从 `docs/openapi/console-v1.yaml` 生成 |
+| `/`、导航 fallback 及非指纹根资源 | `no-cache`，便于新部署替换入口 |
+| `/assets/` 的指纹资源 | `public, max-age=31536000, immutable` |
 
-`web/console/components.json` 和 `web/console/package.json` 是前端 base/style 与依赖的直接来源。
-shadcn 组件以源码形式保存在 `src/components/ui/`，不是运行时黑盒组件包。
+[`console_ui.rs`](../../src/http/console_ui.rs) 同时设置 CSP、`nosniff`、Referrer Policy 和防嵌入策略。发布时先构建 `web/console/dist`，再用 `embedded-console-ui` 编译并在 TOML 开启 `console.ui_enabled`。未编译 feature 时不能启用该配置；debug 构建从磁盘读取 dist，release 才将其嵌入二进制。
 
-Node.js 使用 24，pnpm 在 `packageManager` 和 Docker 构建中固定为 12.10.1。
-在仓库根目录和 `web/console/` 分别检查 `pnpm --version`，避免项目 pin 使系统级
-pnpm 自动切回旧版。当前没有可调整尺寸或拖拽布局；后续分别采用
-`react-resizable-panels` 和 `dnd-kit`，重复组合封装在项目自己的
-`src/components/layout/`，不预先增加依赖、占位组件或布局配置系统。
+## 页面、会话与缓存
 
-Zustand 会话 store 只存在于内存。主题与语言 store 按 provider mount 创建，只有这些
-非敏感偏好写入已有浏览器存储键；Context 只传递 store，不再独立维护一份共享状态。
-服务端数据继续归 TanStack Query，表单归 React Hook Form，局部展开状态留在组件。
-`QueryClient` 按挂载和登录主体隔离：切换账号、角色或临时密码限制后不复用上一个上下文的缓存；同一主体正常刷新 token 不会清空当前视图。Toast 复用应用主题，不使用独立的 `next-themes` provider。
-Motion 的全局配置响应用户减弱动态效果偏好，循环加载动画另行停止；CSS 同时关闭原语的
-基础状态过渡。不要将这些基础过渡的保留误解为允许新增另一套应用动画库。
+| 位置（相对 `web/console/`） | 职责 |
+| --- | --- |
+| `src/app/router.tsx`、`src/app/layouts/` | 路由、角色守卫及工作区导航；页面查找目录与导航共用同一份资源表 |
+| `src/api/` | 从 [OpenAPI](../openapi/console-v1.yaml) 生成的类型，typed client、会话与刷新 |
+| `src/app/providers.tsx` | 按挂载及登录主体创建 `QueryClient`，不在账号之间复用服务端数据 |
+| `src/features/` | 页面、表单、数据查询及 mutation |
+| `src/components/ui/`、`src/components/shared/` | shadcn/Base UI 原语与复用的业务组件；视觉约定见 [design.md](../../design.md) |
 
-## 3. 路由规则
+Access token 仅在内存中，refresh token 由 `HttpOnly; Secure; SameSite=Lax` Cookie 传递。并发 401 共用一次刷新；只在刷新后主体与权限范围一致时重试原请求一次。切换用户、角色或强制改密状态会切换 Query Cache，同一主体轮换 access token 不会清空当前视图。前端守卫只控制界面，实际授权取决于[后端主体与资源归属检查](console-auth.md)。
 
-```text
-HTTPS reverse proxy
-  -> Console listener
-       ├── /console/v1/*   JWT Console API
-       ├── /assets/*       fingerprinted Vite assets
-       └── GET/HEAD SPA navigation fallback
-```
+主题与语言是可持久化的非敏感偏好，服务端状态归 TanStack Query，表单草稿不进 URL、Query Cache 或浏览器存储。临时秘密只在当前交互显示。管理员的个人报表和全局报表使用不同 API 和缓存范围。
 
-API router 在 SPA fallback 之前合并。未匹配的 `/console/v1/*` 返回 JSON 404，绝不返回
-`index.html`。SPA fallback 只响应 `GET`/`HEAD`；公共 listener 的路由测试必须继续证明
-Console API/UI 不可达。
+## 表单与路由编辑
 
-## 4. 目录与契约
+- 使用 React Hook Form 和 Zod。Base UI 自定义 trigger 用 `render`；受 `watch` / `setValue` 控制的 `Select` 必须有 `defaultValues` 或注册字段，否则 `reset()` 后可能缺失验证值。
+- GET 保存资源 `ETag`，更新发送 `If-Match`。`409` 不能静默覆盖；保存失败保留草稿，离开页面或切换有草稿的分类先确认。列表来源、键盘返回和窄屏布局见[交互规范](console-interaction-standard.md)。
+- 模型编辑器按操作筛选能力候选。单规则编辑在缺少 profile 时先创建 profile，再提交规则，失败重试复用已有 profile。联合上架及单模型批量配置则先预览，再一次性提交核对的候选；版本冲突或结果未知时锁定提交，重载后重新核对。
+- 组授权与直接渠道授权是不同选择：选齐组内每个渠道也不等于选择整组。[上游实体](upstream-identity-capabilities.md)说明权限边界。
+- 价格以十进制字符串往返；倍率计算由 `src/lib/decimal.ts` 使用 `BigInt` 并按 12 位小数舍入。保存价格时应保留模型元数据、长上下文档位与请求倍率，不把缺失的 `source_payload` 写为空值。
 
-`/admin/routing/upstream-credentials` 提供独立凭证列表及详情，普通渠道表单只选择
-nullable `credential_id`。凭证详情展示受影响渠道、显式轮换输入和受 ETag 保护的修改；
-Codex 身份为只读入口并跳转至专属管理页。相关边界见
-[上游凭证管理](../user/upstream-credentials.md)。
+## 验证边界
 
-```text
-web/console/
-  src/api/           typed client、session store、generated OpenAPI types
-  src/app/           providers、router、layout、theme、i18n
-  src/features/      auth、profile、usage、API keys、admin control plane
-  src/components/ui/ shadcn/Base UI primitive wrappers
-  src/components/shared/
-  src/test/          Vitest setup、MSW、deterministic fixtures
-  e2e/               Playwright browser smoke tests
-```
+改 API 时修改 OpenAPI，运行 `pnpm --dir web/console generate:api` 并检查 `generate:api:check`；不手改生成类型。Vitest + MSW 验证组件状态，Playwright 的模拟 API 验证导航、键盘与浏览器行为。这两层不能证明真实数据库授权、Cookie 轮换或扣费；跨进程验收见[系统 E2E](system-e2e.md)。
 
-Console API 形状的唯一来源是 `docs/openapi/console-v1.yaml`：
-
-```text
-docs/openapi/console-v1.yaml
-  -> pnpm --dir web/console generate:api
-  -> web/console/src/api/generated/console-v1.d.ts
-  -> web/console/src/api/types.ts re-export shim
-```
-
-禁止手改 generated declaration。变更契约时同时提交规范和生成结果，并运行
-`generate:api:check`。
-
-## 5. 会话与安全
-
-- access token 只保存在浏览器内存，绝不写入 `localStorage`、`sessionStorage`、URL 或持久化
-  Query Cache。
-- refresh token 只存在于 `HttpOnly; Secure; SameSite=Lax` Cookie。生产 Console listener 应置于
-  HTTPS 反向代理之后。
-- API client 对并发 401 共用一次 refresh；只有刷新后仍为同一账号和权限范围时才重试原请求，最多一次。
-- 前端 role-aware 导航只是 UX；后端 JWT ownership/admin 校验始终是授权边界。
-- API Key 默认打码；一次性邀请/注册 secret 不进入 Query Cache 或浏览器持久化。
-- 可更新资源从 GET 响应保存 ETag，并在 PUT/DELETE 发送 `If-Match`；`409` 应提示重新加载，不能
-  静默覆盖。
-- `src/http/console_ui.rs` 为 UI 响应添加 CSP、`nosniff`、Referrer Policy 和防嵌入策略。
-
-## 6. Base UI 与表单约定
-
-- 项目已经从 Radix 迁移到 Base UI。自定义 trigger 使用 Base UI 的 `render`，不要重新引入
-  `asChild` 或 `@radix-ui/*`。
-- 对 shadcn wrapper 的修改必须检查 Base UI 的 popup/portal anatomy、状态属性和键盘语义；不要假设
-  Radix DOM 或 `data-state` 行为仍存在。
-- React Hook Form 中所有由 `form.watch` / `form.setValue` 驱动的 `Select` 字段都必须出现在
-  `useForm({ defaultValues })` 中，否则 `reset()` 后该字段不会参与 validation，提交可能静默失败。
-- 复用 `src/components/ui/` 与 `src/components/shared/` 中已有组件；业务组合放在对应
-  `src/features/`。
-- TypeScript 启用了 `verbatimModuleSyntax`、`noUnusedLocals`、`noUnusedParameters` 和
-  `erasableSyntaxOnly`：使用 `import type`，不使用 TypeScript enum，不保留未使用变量。
-- 模型价格使用十进制字符串作为表单和 API 状态。`/admin/models/:id/pricing` 的倍率计算通过
-  `src/lib/decimal.ts` 使用 `BigInt` 做十进制定点乘法并按 12 位小数舍入，不能用 JavaScript
-  `number` 的二进制浮点结果直接写回价格字段。该子页保存完整 `ModelInput` 时必须保留模型元数据、
-  长上下文档位和请求倍率，并省略不在普通详情响应中的 `source_payload`。桌面布局使用左侧价格/
-  星期时段编辑区和右侧 sticky 计算、摘要、保存工具栏，窄屏按 DOM 顺序降级为单栏。星期 Toggle
-  Group 必须保持至少一个 UTC 开始星期，旧响应缺少 `weekdays` 时在表单层归一化为全周。
-- 模型工作区为 `/admin/models`。普通渠道和计价模型从各自列表或详情页复制；复制 URL
-  只能携带资源 UUID 和经过校验的 `/admin/*` 返回路径，不能序列化凭据或完整资源。
-
-### 模型配置导航与层级编辑
-
-上游接入、上游凭证、渠道配置与模型配置位于管理区，沿用各自的资源页面。
-
-- `/admin/routing/channels` 在同一工作区展示组配置和按组列出的逻辑渠道；选择渠道后仅展示
-  该渠道的能力，新增能力自动带入渠道。原有详情页仍负责单资源编辑。
-- `/admin/models` 按服务商组织左侧客户端模型列表，右侧直接嵌入
-  `OperationRuleDetailPage`。URL 的 `model` / `rule` 参数记录选中身份，不保存草稿。
-  新增操作只列出该模型尚未配置的操作；操作与 profile 在创建后不可修改。
-- 在单条操作编辑器首次保存操作时，缺失的 profile 先通过独立命令创建，再保存路由规则；失败重试复用已有
-  profile，不承诺跨资源原子保存。空路由只允许作为停用草稿保存。
-- 联合上架 `/admin/models/onboarding` 与快捷入口 `/admin/models/:id/onboarding` 共用候选预览；预览固定模型、规则和能力版本，确认才发一次事务请求。见[桌面与窄屏设计](model-onboarding-ux.md)。
-- 操作编辑器复用显式能力/上游模型候选、优先级层、权重和 ETag 更新；路由候选仍按操作过滤。
-  已有操作编辑和新建操作共用同一编辑器，不在工作区复制验证或提交逻辑。
-- 价格同步作为模型配置页签；模型属性、复制、价格编辑仍通过原有详情页完成。窄屏工作区
-  在模型列表与编辑器间切换，不把完整模型列表堆在编辑器上方。
-- 生产使用 data router 的 `useBlocker` 保护 PUSH/REPLACE/浏览器 POP；表单草稿不持久化。
-  Declarative `AppRouter` 留给组件测试，fallback 保护应用链接和返回操作；真正的 POP
-  保护由详情页测试覆盖。页面刷新/关闭由 `beforeunload` 保护。
-
-## 7. 开发与生产运行
-
-开发模式：
-
-前提是 Console 已启用、JWT 密钥已配置且存在可登录账户。命令从仓库根目录运行；
-Vite 代理不会替代 Rust Console API，也不自动 bootstrap 管理员。
+更改嵌入路径时，从仓库根目录验证实际 Rust 路由和资产响应：
 
 ```bash
-# Terminal 1: Console API on 127.0.0.1:3001
-cargo run
-
-# Terminal 2: HTTPS Vite server and /console/v1 proxy
-pnpm --dir web/console install --frozen-lockfile
-pnpm --dir web/console dev
-```
-
-打开 `https://console.localhost:5173`。Vite 是开发工具；此模式下 `[console].ui_enabled` 无意义。
-
-嵌入式生产构建：
-
-```bash
-pnpm --dir web/console install --frozen-lockfile
 pnpm --dir web/console build
-cargo build --release --features embedded-console-ui
+cargo clippy --locked --all-targets --features embedded-console-ui
+cargo test --locked --features embedded-console-ui --lib console_ui
 ```
-
-然后设置 `[console].ui_enabled = true`。如果未编译 feature，启动会拒绝该配置。Debug feature
-构建时 `rust-embed` 从磁盘读取 `web/console/dist`，因此 dist 仍须存在；release 构建会嵌入资产。
-
-## 8. 静态资源与缓存
-
-| 路径 | 行为 | Cache-Control |
-| --- | --- | --- |
-| `/` 与 SPA fallback | `index.html` | `no-cache` |
-| `/assets/<fingerprinted>` | 嵌入式资产 | `public, max-age=31536000, immutable` |
-| 根目录非指纹资产 | 嵌入式资产 | `no-cache` |
-| `/console/v1/*` | Console API | `no-store` |
-
-## 9. 测试与验证
-
-```bash
-pnpm --dir web/console generate:api:check
-pnpm --dir web/console typecheck
-pnpm --dir web/console lint
-pnpm --dir web/console test
-pnpm --dir web/console build
-pnpm --dir web/console e2e:install # first run only
-pnpm --dir web/console e2e
-```
-
-- Vitest 只收集 `src/**/*.{test,spec}.{ts,tsx}`；`e2e/` 明确排除。
-- MSW handler 使用相对路径，fixtures 保持确定性。
-- Playwright 使用 `vite.e2e.config.ts` 在 `127.0.0.1:5174` 提供 HTTP SPA，并在浏览器网络层 mock
-  `/console/v1/*`，不需要 Rust 或 PostgreSQL。
-- 当前 oxlint 的 5 个 shadcn Fast Refresh warning 是已知允许项；不能新增 warning 或 error。
-- 嵌入式 serving 路径变化时，先构建 dist，再运行：
-
-  ```bash
-  cargo clippy --locked --all-targets --features embedded-console-ui
-  cargo test --locked --features embedded-console-ui --lib console_ui
-  ```
-
-后端静态 UI 测试位于 `src/http/console_ui.rs` 和相关 router 单元测试中，不存在单独的
-`tests/console_ui_integration.rs`。这些 mock API 浏览器测试不证明数据库持久化、真实 Cookie
-轮换或账单闭环；需要跨进程证据时运行[系统 E2E](system-e2e.md)，不要把两套测试混称。
-
-## 10. 相关来源
-
-- 前端命令与测试说明：[`web/console/README.md`](../../web/console/README.md)
-- Console API：`docs/openapi/console-v1.yaml`
-- Rust 静态路由：`src/http/console_ui.rs`
-- 启动与 router 合并：`src/main.rs`
-- Console JWT 设计：[Console 认证与授权](console-auth.md)

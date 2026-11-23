@@ -68,25 +68,20 @@ description: Console 桌面与移动工作区的导航、概览图表、密集�
 - [SHOULD] 保留 Nova/Base UI 自带的控件、弹层状态过渡以及第三方组件内部动画；
   减弱动态效果时通过全局 CSS 关闭这些过渡，不为此重写其焦点和卸载生命周期。
 
-## 5. 可用原语与扩展边界
+## 5. 可用原语
 
-| 角色 | 实现名称 | 源码位置（相对 `web/console/`） | 使用条件 | 状态 |
-| --- | --- | --- | --- | --- |
-| 语义颜色与圆角 | `--background`、`--foreground`、`--radius` 等 | `src/index.css` | 所有页面 | 已实现 |
-| 页面标题 | `PageHeader`、`embedded` | `src/components/shared/page-header.tsx` | 页面与内嵌区标题 | 已实现 |
-| 页面容器与断点 | `ConsoleLayout`、`AuthLayout`、`useIsMobile` | `src/app/layouts/`、`src/hooks/use-mobile.ts` | 已登录工作区、独立认证表单 | 已实现 |
-| 操作与状态 | `Button`、`Badge`、`Alert` | `src/components/ui/` | 使用实际导出的变体 | 已实现 |
-| 加载反馈 | `Spinner`、`Skeleton` | `src/components/ui/` | 正在加载的区域 | 已实现 |
-| 数据展示 | `Table`、`ChartContainer`、`JsonViewer` | `src/components/ui/`、`src/components/shared/` | 表格、图表、折叠 JSON | 已实现 |
-| 可调尺寸面板 | `react-resizable-panels` | 尚无封装或调用 | 后续有明确缩放需求时 | 未实现 |
-| 拖拽布局 | `dnd-kit` | 尚无封装或调用 | 后续有明确拖拽需求时 | 未实现 |
+| 角色 | 实现名称 | 源码位置（相对 `web/console/`） |
+| --- | --- | --- |
+| 语义颜色与圆角 | `--background`、`--foreground`、`--radius` 等 | `src/index.css` |
+| 页面与内嵌区标题 | `PageHeader`、`embedded` 变体 | `src/components/shared/page-header.tsx` |
+| 页面容器与断点 | `ConsoleLayout`、`AuthLayout`、`useIsMobile` | `src/app/layouts/`、`src/hooks/use-mobile.ts` |
+| 操作与状态 | `Button`、`Badge`、`Alert` | `src/components/ui/` |
+| 加载反馈 | `Spinner`、`Skeleton` | `src/components/ui/` |
+| 数据展示 | `Table`、`ChartContainer`、`JsonViewer` | `src/components/ui/`、`src/components/shared/` |
 
 - [MUST] 页面复用上表和 `components/ui/` 已导出的组件，不凭名称猜测不存在的原语。
 - [SHOULD] 页面组合可使用 Tailwind 工具类，无额外 CSS 类名前缀限制；
   仅调整布局和间距，不通过覆盖内部选择器改变原语语义。
-- [MUST] 后续出现重复的 resizable + dnd 组合时，在项目自己的
-  `src/components/layout/` 封装并复用；只暴露真实页面需要的属性。
-  本次不创建占位组件、布局持久化或通用布局配置系统。
 
 ## 6. 文案与数字格式
 
@@ -120,4 +115,3 @@ description: Console 桌面与移动工作区的导航、概览图表、密集�
 | Nova | 本项目采用的 shadcn `base-nova` 控件视觉基线 |
 | CSS token | `src/index.css` 中可在明暗主题间替换的语义变量 |
 | Motion | 项目动画使用的 `motion/react` 入口 |
-| layout 组合 | 后续需要时封装的面板缩放与拖拽组合，不是业务状态容器 |

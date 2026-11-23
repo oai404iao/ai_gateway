@@ -19,6 +19,8 @@ use uuid::Uuid;
 
 #[path = "contracts/sqlite_s5_parity.rs"]
 mod contracts;
+#[path = "support/postgres.rs"]
+mod postgres;
 
 struct TestDatabase {
     pool: PgPool,
@@ -28,19 +30,10 @@ struct TestDatabase {
 
 impl TestDatabase {
     async fn new() -> Self {
-        let admin_url = std::env::var("TEST_DATABASE_ADMIN_URL").unwrap_or_else(|_| {
-            let mut url =
-                reqwest::Url::parse("postgres://ai_gateway@127.0.0.1:5432/postgres").unwrap();
-            let password = std::fs::read_to_string("./config/postgres-password")
-                .expect("set TEST_DATABASE_ADMIN_URL or supply config/postgres-password");
-            url.set_password(Some(password.trim())).unwrap();
-            url.to_string()
-        });
-        let mut url = reqwest::Url::parse(&admin_url).unwrap();
-        assert_ne!(url.path().trim_matches('/'), "ai_gateway");
+        let mut url = postgres::admin_url(None).unwrap();
         let admin = PgPoolOptions::new()
             .max_connections(1)
-            .connect(&admin_url)
+            .connect(url.as_str())
             .await
             .unwrap();
         let name = format!("ai_gateway_codex_capability_{}", Uuid::new_v4().simple());
@@ -147,7 +140,7 @@ fn request_log_event(
         model_rule_id: None,
         channel_group_id: Some(group),
         channel_id: Some(capability),
-        upstream_credential: None,
+        upstream_credential_id: None,
         model_id: Some(model),
         outcome: RequestLogOutcome::Succeeded,
         response_status_code: Some(200),

@@ -38,8 +38,7 @@ pub struct LongContextTier {
     pub input_unit_price: Decimal,
     pub cached_input_unit_price: Decimal,
     pub cache_write_unit_price: Decimal,
-    /// Omission preserves the model's base output price for compatibility
-    /// with policies created before output-tier pricing was supported.
+    /// Omit to use the model's base output price for this tier.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_unit_price: Option<Decimal>,
 }
@@ -772,12 +771,12 @@ mod tests {
     }
 
     #[test]
-    fn legacy_advanced_billing_documents_default_to_all_weekdays() {
+    fn time_window_without_weekdays_applies_every_day() {
         let billing: AdvancedBilling = serde_json::from_value(json!({
             "long_context_tiers": [],
             "request_multipliers": [],
             "time_multipliers": [{
-                "label": "legacy daily peak",
+                "label": "daily peak",
                 "start_time": "01:00",
                 "end_time": "04:00",
                 "multiplier": "2"
@@ -795,7 +794,7 @@ mod tests {
                 "long_context_tiers": [],
                 "request_multipliers": [],
                 "time_multipliers": [{
-                    "label": "legacy daily peak",
+                    "label": "daily peak",
                     "start_time": "01:00",
                     "end_time": "04:00",
                     "multiplier": "2"

@@ -53,13 +53,11 @@ AuthRepository 和 ControlPlaneRepository 保留 new(PgPool)，
 接入/凭证/逻辑渠道/能力/管理组、代理、模板、动态设置及用户设置均走现行控制面。
 批量操作、目录同步、自动禁用/恢复和 reload 也不是逐行非事务入口。
 
-完整 runtime records 在同一读事务加载，包括 Codex 状态和只读历史身份。
-新拓扑写入使用[当前资源契约](upstream-identity-capabilities.md)，不保留旧渠道 CRUD、
-删除影响 token、pool 或自动投影作为第二套配置来源。
+完整 runtime records 在同一读事务加载，包括 Codex 状态与路由依赖。上游资源的绑定、能力和候选分别遵守[拓扑契约](upstream-identity-capabilities.md)。
 
 权限/版本/所有权在存储检查；保留秘密脱敏、自助 Key 签发或修改目标时的 Policy 范围校验、
 墓碑和不可逆撤销。能力删除自动修剪候选、空层及停用规则；
-逻辑渠道/组按依赖顺序删除，不使用旧级联影响确认流程。
+逻辑渠道与组须先解除依赖再删除。
 
 ## 事务与金额
 
@@ -104,6 +102,6 @@ sqlite_s3_parity.rs 以相同 case/断言调用真实 PG 与 SQLite：
 - 真实 coordinator 的 compile/commit/publish、编译/审计失败回滚；
 - 大额整数、负余额加半个最小单位仅舍入最终结果。
 
-当前契约跑完整 migration，历史升级夹具独立保留，不用旧投影占位行掩盖新拓扑。
+测试在隔离的当前基线数据库上执行；新库创建与同库重开的结果须一致，旧库不能作为测试初始化来源。
 仓储测试不替代[系统 E2E](system-e2e.md)真实浏览器/CLI 双后端矩阵，
 也不运行付费调用或性能负载。完整部署条件见[SQLite 指南](../user/sqlite.md)。

@@ -5,6 +5,8 @@ mod load_client;
 mod metrics;
 mod mock_upstream;
 mod orchestrator;
+#[path = "../../../tests/support/postgres.rs"]
+mod postgres;
 mod process;
 mod report;
 mod scenario;
@@ -76,7 +78,8 @@ fn parse_run_options(arguments: &[String]) -> Result<RunOptions, Box<dyn Error +
                 options.profile = required_value(arguments, &mut index, flag)?.parse()?;
             }
             "--database-admin-url" => {
-                options.database_admin_url = required_value(arguments, &mut index, flag)?.into();
+                options.database_admin_url =
+                    Some(required_value(arguments, &mut index, flag)?.into());
             }
             "--gateway-bin" => {
                 options.gateway_bin = PathBuf::from(required_value(arguments, &mut index, flag)?);
@@ -220,6 +223,7 @@ mod tests {
     #[test]
     fn run_options_are_manual_and_default_to_quick() {
         let options = parse_run_options(&[]).unwrap();
+        assert!(options.database_admin_url.is_none());
         assert_eq!(options.profile, ProfileName::Quick);
         assert!(options.gateway_bin.starts_with(repo_root()));
         assert!(!options.keep_database);
@@ -231,9 +235,15 @@ mod tests {
             "--profile".into(),
             "standard".into(),
             "--keep-database".into(),
+            "--database-admin-url".into(),
+            "postgres://localhost/postgres".into(),
         ])
         .unwrap();
         assert_eq!(options.profile, ProfileName::Standard);
         assert!(options.keep_database);
+        assert_eq!(
+            options.database_admin_url.as_deref(),
+            Some("postgres://localhost/postgres")
+        );
     }
 }

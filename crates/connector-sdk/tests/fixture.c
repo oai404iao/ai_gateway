@@ -54,6 +54,16 @@ static int equals(AiGatewayByteSlice bytes, const char *value) {
     return bytes.len == length && memcmp(bytes.ptr, value, length) == 0;
 }
 
+#ifndef FIXTURE_RESPONSE_ADAPTER
+static int contains(AiGatewayByteSlice bytes, const char *value) {
+    size_t n = strlen(value);
+    for (uint64_t i = 0; i + n <= bytes.len; i++) {
+        if (memcmp(bytes.ptr + i, value, n) == 0) return 1;
+    }
+    return 0;
+}
+#endif
+
 static uint32_t dispatch(
     AiGatewayByteSlice command,
     AiGatewayByteSlice metadata,
@@ -116,12 +126,7 @@ static uint32_t dispatch(
         output->metadata.len = UINT64_MAX;
         return AI_GATEWAY_CONNECTOR_OK;
     }
-    if (equals(command, "attempt.capabilities")) {
-        const char value[] = "{\"successful_response_is_sse\":true}";
-        output->metadata = copy(value, sizeof(value) - 1);
-        return AI_GATEWAY_CONNECTOR_OK;
-    }
-#ifdef FIXTURE_PROTOCOL3
+#ifdef FIXTURE_RESPONSE_ADAPTER
     if (equals(command, "response.json/v1")) {
         output->metadata = copy("{}", 2);
 #if FIXTURE_RESPONSE_RESULT_MODE == 1
@@ -137,11 +142,22 @@ static uint32_t dispatch(
 #endif
         return AI_GATEWAY_CONNECTOR_OK;
     }
+#endif
     if (equals(command, "attempt.describe/v1")) {
 #ifdef FIXTURE_COUNT_DESCRIBE
         descriptor_calls++;
 #endif
-#if FIXTURE_DESCRIPTOR_MODE == 1
+#ifndef FIXTURE_RESPONSE_ADAPTER
+        const char *protocols = "[{\"protocol\":\"non_stream\",\"response\":\"passthrough\"},{\"protocol\":\"sse\",\"response\":\"passthrough\"}]";
+        if (contains(metadata, "\"operation\":\"responses-ws\"")) {
+            protocols = "[{\"protocol\":\"websocket\",\"response\":\"passthrough\"}]";
+        } else if (contains(metadata, "\"operation\":\"images_edit\"")) {
+            protocols = "[{\"protocol\":\"non_stream\",\"response\":\"passthrough\"}]";
+        }
+        char value[512];
+        int n = snprintf(value, sizeof(value), "{\"capabilities\":{\"successful_response_is_sse\":true,\"preserves_affinity_on_failure\":false,\"changes_request_body\":false},\"protocols\":%s}", protocols);
+        if (n < 0 || (size_t)n >= sizeof(value)) abort();
+#elif FIXTURE_DESCRIPTOR_MODE == 1
         const char value[] = "{\"capabilities\":{\"successful_response_is_sse\":true},\"protocols\":[]}";
 #elif FIXTURE_DESCRIPTOR_MODE == 2
         const char value[] = "{\"capabilities\":{\"preserves_affinity_on_failure\":false,\"successful_response_is_sse\":false,\"changes_request_body\":false},\"protocols\":[{\"protocol\":\"non_stream\",\"response\":\"json\"},{\"protocol\":\"non_stream\",\"response\":\"json\"}]}";
@@ -162,13 +178,12 @@ static uint32_t dispatch(
 #else
         const char value[] = "{\"capabilities\":{\"preserves_affinity_on_failure\":false,\"successful_response_is_sse\":false,\"changes_request_body\":false},\"protocols\":[{\"protocol\":\"non_stream\",\"response\":\"json\"}]" FIXTURE_USAGE_DESCRIPTOR "}";
 #endif
-        output->metadata = copy(value, sizeof(value) - 1);
+        output->metadata = copy(value, strlen(value));
 #if FIXTURE_DESCRIPTOR_MODE == 7
         output->body = copy("secret", 6);
 #endif
         return AI_GATEWAY_CONNECTOR_OK;
     }
-#endif
 #ifdef FIXTURE_COUNT_DESCRIBE
     if (equals(command, "echo")) {
         char value[64];
@@ -212,12 +227,8 @@ static uint32_t dispatch(
 
 static const char manifest[] =
     "{\"id\":\"" FIXTURE_PLUGIN_ID "\",\"version\":\"" FIXTURE_VERSION "\","
-#ifdef FIXTURE_PROTOCOL3
     "\"protocol_version\":3,"
-#elif defined(FIXTURE_SETTINGS)
-    "\"protocol_version\":2,"
-#endif
-#ifdef FIXTURE_PROTOCOL3
+#ifdef FIXTURE_RESPONSE_ADAPTER
 #ifdef FIXTURE_RESPONSE_OPERATION
     "\"operations\":[\"" FIXTURE_RESPONSE_OPERATION "\"],"
 #else
@@ -230,13 +241,13 @@ static const char manifest[] =
     "\"commands\":[]}";
 #else
     "\"commands\":[\"echo\",\"error\",\"malformed\","
-#ifdef FIXTURE_PROTOCOL3
 #ifdef FIXTURE_USAGE_PARSE
     "\"usage.parse/v1\","
 #endif
 #ifndef FIXTURE_OMIT_DESCRIBE
     "\"attempt.describe/v1\","
 #endif
+#ifdef FIXTURE_RESPONSE_ADAPTER
 #ifndef FIXTURE_OMIT_RESPONSE_JSON
     "\"response.json/v1\","
 #endif
@@ -251,7 +262,7 @@ static const char manifest[] =
 #ifndef FIXTURE_OMIT_HEADERS
     "\"attempt.headers\","
 #endif
-    "\"attempt.capabilities\",\"attempt.image_edit_plan\",\"attempt.image_part_plan\"]}";
+    "\"attempt.image_edit_plan\",\"attempt.image_part_plan\"]}";
 #endif
 
 static const AiGatewayConnectorDescriptor descriptor = {

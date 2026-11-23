@@ -25,20 +25,17 @@ pub struct RequestLogEvent {
     pub client_model: String,
     /// Explicit reasoning effort requested by the client. Missing and
     /// unrecognized request shapes remain `None`.
-    #[serde(default)]
     pub reasoning_effort: Option<String>,
     /// Whether the client explicitly requested OpenAI Priority processing via
     /// `service_tier = "priority"`.
-    #[serde(default)]
     pub fast_mode: bool,
     pub upstream_model: Option<String>,
     pub model_rule_id: Option<Uuid>,
     pub channel_group_id: Option<Uuid>,
     pub channel_id: Option<Uuid>,
-    /// Missing only in legacy journals. A present null identity explicitly
-    /// records an unauthenticated route and must not use historical fallback.
-    #[serde(default)]
-    pub upstream_credential: Option<RequestCredentialAttribution>,
+    /// Credential selected at dispatch; null for unauthenticated routes.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub upstream_credential_id: Option<Uuid>,
     pub model_id: Option<Uuid>,
     pub outcome: RequestLogOutcome,
     pub response_status_code: Option<u16>,
@@ -46,36 +43,14 @@ pub struct RequestLogEvent {
     pub total_duration_ms: i32,
     pub billing: Option<RequestBilling>,
     pub error_code: Option<String>,
-    #[serde(deserialize_with = "deserialize_required_error_summary")]
+    #[serde(deserialize_with = "Option::deserialize")]
     pub error_summary: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct RequestCredentialAttribution {
-    #[serde(deserialize_with = "required_credential_identity")]
-    pub credential_id: Option<Uuid>,
-}
-
-fn required_credential_identity<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<Uuid>, D::Error> {
-    Option::<Uuid>::deserialize(deserializer)
-}
-
-fn deserialize_required_error_summary<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Option::<String>::deserialize(deserializer)
 }
 
 /// Identifies client requests and the system's periodic direct upstream tests.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RequestLogSource {
-    // Replay durable journals written before the retired adapter was removed.
-    #[serde(alias = "mcp")]
     Client,
     ScheduledTest,
 }
@@ -126,8 +101,7 @@ pub struct RequestBilling {
     pub cost_amount: Option<Decimal>,
     pub output_tokens_per_second: Option<Decimal>,
     /// True when a recurring time window selected a multiplier above one at
-    /// the logical request start time. Older journal payloads default false.
-    #[serde(default)]
+    /// the logical request start time.
     pub peak_pricing: bool,
 }
 
@@ -138,9 +112,7 @@ pub struct RequestUsage {
     pub cached_input_tokens: i64,
     pub cache_write_tokens: i64,
     pub output_tokens: i64,
-    /// Subset of `output_tokens` spent on model reasoning. Older journal v2
-    /// payloads omit this field and decode it as zero.
-    #[serde(default)]
+    /// Subset of `output_tokens` spent on model reasoning.
     pub reasoning_tokens: i64,
 }
 

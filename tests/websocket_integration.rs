@@ -748,9 +748,6 @@ async fn gateway_harness_with_records(
         groups: vec![ChannelGroupRecord {
             id: group_id,
             name: "responses".into(),
-            api_format: "open_ai_responses".into(),
-            connector_kind: "general".into(),
-            request_compression: "default".into(),
             enabled: controls.group_enabled,
         }],
         channels: vec![ChannelRecord {
@@ -761,20 +758,16 @@ async fn gateway_harness_with_records(
             credential_binding_revision: Uuid::from_u128(controls.credential_binding_revision),
             id: channel_id,
             channel_group_id: group_id,
-            api_format: "open_ai_responses".into(),
-            logical_channel_id: Uuid::nil(),
-            access_id: Uuid::nil(),
-            api_operation: Some(operation),
-            connector_kind: "general".into(),
-            request_compression: "default".into(),
-            access_revision: Uuid::nil(),
-            capability_revision: Uuid::nil(),
-            transports: operation.transports().to_vec(),
+            logical_channel_id: Uuid::from_u128(105),
+            access_id: Uuid::from_u128(106),
+            api_operation: operation,
+            connector_kind: ai_gateway::domain::ConnectorKind::OpenAiCompatible,
+            request_compression: ai_gateway::domain::RequestCompression::Default,
+            access_revision: Uuid::from_u128(107),
+            capability_revision: Uuid::from_u128(108),
             name: "responses".into(),
             base_url: upstream.base_url(),
             enabled: controls.channel_enabled,
-            supports_websocket: controls.channel_supported,
-            supports_standalone_web_search: false,
             auto_disabled: controls.auto_disabled,
             auto_disable_allowed: false,
             billing_multiplier: Decimal::ONE,
@@ -865,9 +858,6 @@ async fn gateway_harness_with_records(
         let group = ChannelGroupRecord {
             id: Uuid::new_v4(),
             name: "other-responses".into(),
-            api_format: "open_ai_responses".into(),
-            connector_kind: "general".into(),
-            request_compression: "default".into(),
             enabled: true,
         };
         let mut channel = records.channels[0].clone();
@@ -875,9 +865,9 @@ async fn gateway_harness_with_records(
         channel.channel_group_id = group.id;
         channel.enabled = true;
         channel.auto_disabled = false;
-        channel.supports_websocket = true;
-        channel.api_operation = Some(ApiOperation::ResponsesWebSocket);
-        channel.transports = ApiOperation::ResponsesWebSocket.transports().to_vec();
+        channel.logical_channel_id = Uuid::new_v4();
+        channel.capability_revision = Uuid::new_v4();
+        channel.api_operation = ApiOperation::ResponsesWebSocket;
         let mut rule = records.model_rules[0].clone();
         rule.id = Uuid::new_v4();
         rule.client_model = "other-ws-model".into();
@@ -1763,6 +1753,10 @@ async fn round_robin_gateway(
     gateway_harness_with_records(first, None, controls, |records| {
         let mut alternate = records.channels[0].clone();
         alternate.id = Uuid::new_v4();
+        alternate.logical_channel_id = Uuid::new_v4();
+        alternate.access_id = Uuid::new_v4();
+        alternate.access_revision = Uuid::new_v4();
+        alternate.capability_revision = Uuid::new_v4();
         alternate.base_url = second.base_url();
         alternate.available_models = vec!["alternate-model".into()];
         let tier = &mut records.model_rules[0].routing_tiers[0];
@@ -2361,10 +2355,11 @@ async fn responses_websocket_upgrade_checks_passive_health_without_acquiring_a_l
     let key = snapshot.authenticate(CLIENT_KEY).unwrap();
     for _ in 0..3 {
         let ai_gateway::routing::SelectionResult::Selected(mut selected) =
-            gateway.routing.select_websocket_with_affinity_excluding(
+            gateway.routing.select_operation_with_affinity_excluding(
                 &snapshot,
                 &key,
-                ApiFormat::OpenAiResponses,
+                ApiOperation::ResponsesWebSocket,
+                RequestProtocol::WebSocket,
                 CLIENT_MODEL,
                 None,
                 &[],

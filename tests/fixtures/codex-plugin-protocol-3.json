@@ -1,8 +1,0 @@
-{
-  "repository": "https://github.com/oai404iao/ai-gateway-connectors",
-  "revision": "737ec6873bbe58a77d9885147a1c877a40add1a8",
-  "abi_version": 1,
-  "plugin_id": "codex",
-  "plugin_version": "0.2.1",
-  "protocol_version": 3
-}

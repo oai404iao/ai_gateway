@@ -299,18 +299,7 @@ pub fn validate_hash(hash: &str) -> Result<(), PluginError> {
 
 fn validate_manifest(manifest: &PluginManifest, expected_id: &str) -> Result<(), PluginError> {
     if manifest.id != expected_id
-        || !matches!(manifest.protocol_version, 1..=3)
-        || (manifest.id == "codex" && !matches!(manifest.protocol_version, 2 | 3))
-        || (manifest.commands.iter().any(|command| {
-            command == ai_gateway_connector_sdk::ATTEMPT_DESCRIBE
-                || command == ai_gateway_connector_sdk::USAGE_PARSE
-                || command.starts_with("response.")
-        }) && manifest.protocol_version != 3)
-        || (manifest
-            .commands
-            .iter()
-            .any(|command| command.starts_with("settings."))
-            && manifest.protocol_version < 2)
+        || manifest.protocol_version != 3
         || manifest.version.is_empty()
         || manifest.version.len() > 128
         || !manifest.version.is_ascii()
@@ -718,26 +707,19 @@ mod tests {
     }
 
     #[test]
-    fn command_protocol_versions_fail_closed_without_breaking_stateless_plugins() {
-        let mut manifest: PluginManifest = serde_json::from_value(serde_json::json!({
+    fn manifests_require_the_current_command_protocol() {
+        let mut value = serde_json::json!({
             "id":"fixture","version":"1","operations":["responses"],"commands":["echo"],
-        }))
-        .unwrap();
-        assert!(validate_manifest(&manifest, "fixture").is_ok());
-        manifest.protocol_version = 4;
-        assert!(validate_manifest(&manifest, "fixture").is_err());
-        manifest.protocol_version = 1;
-        manifest.commands.push("settings.describe/v1".into());
-        assert!(validate_manifest(&manifest, "fixture").is_err());
-        manifest.protocol_version = 2;
-        assert!(validate_manifest(&manifest, "fixture").is_ok());
-        manifest.commands.push("response.json/v1".into());
-        assert!(validate_manifest(&manifest, "fixture").is_err());
-        manifest.protocol_version = 3;
-        assert!(validate_manifest(&manifest, "fixture").is_ok());
-        manifest.id = "codex".into();
-        manifest.protocol_version = 1;
-        assert!(validate_manifest(&manifest, "codex").is_err());
+        });
+        assert!(serde_json::from_value::<PluginManifest>(value.clone()).is_err());
+        for version in [1, 2, 3, 4] {
+            value["protocol_version"] = version.into();
+            let manifest = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(
+                validate_manifest(&manifest, "fixture").is_ok(),
+                version == 3
+            );
+        }
     }
 
     #[test]

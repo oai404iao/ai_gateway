@@ -20,7 +20,7 @@ const zhCN: Record<string, string> = {
   "Result unknown. Reload the preview before trying again.": "无法确认提交结果，请重新加载预览后再决定是否重试。",
   "Onboard model": "上架模型",
   "Bulk configure routes": "批量配路由",
-  "Append candidates from multiple providers without changing existing pricing or routes.": "从多个上游追加候选，不改动现有定价或路由候选。",
+  "Add routing candidates without replacing existing candidates or prices.": "追加路由候选，保留已有候选和定价。",
   "1 · Model and pricing": "1 · 模型与定价",
   "2 · Routing candidates": "2 · 路由候选",
   "Use existing pricing without changes": "沿用已有模型，不修改定价",
@@ -489,8 +489,6 @@ const zhCN: Record<string, string> = {
   "Review the rule": "请检查规则",
   "Rule name": "规则名称",
   "Enable rule": "启用规则",
-  "Disabled rules remain saved but are not compiled into the data plane.":
-    "禁用规则仍会保存，但不会编译到数据面。",
   "API formats": "API 格式",
   "Model regular expressions": "模型正则表达式",
   "Leave empty to match every model in the selected formats.":
@@ -616,8 +614,7 @@ const zhCN: Record<string, string> = {
   "Wed": "周三",
   "Fri": "周五",
   "Current instance": "当前实例",
-  "Auto-refreshes every 5 seconds. Metrics describe this gateway process, not a cluster aggregate.":
-    "每 5 秒自动刷新。指标描述当前网关进程，而不是集群聚合数据。",
+  "Metrics for this instance refresh every 5 seconds.": "当前实例的指标每 5 秒刷新一次。",
   "Refresh": "刷新",
   "Last sampled": "最近采样",
   "Gateway uptime": "网关运行时长",
@@ -1006,8 +1003,7 @@ const zhCN: Record<string, string> = {
   "Use 12 to 128 case-sensitive characters without whitespace. The value cannot be recovered or changed after creation.":
     "使用 12 至 128 个区分大小写且不含空白的字符。创建后无法找回或修改。",
   "Invitation code is immutable": "邀请码不可修改",
-  "The gateway stores only a hash. To replace the value, create a new registration code and disable this one.":
-    "网关只保存哈希。如需更换邀请码，请新建一个并禁用当前邀请码。",
+  "To replace this code, create a new one and disable this one.": "如需换码，请先新建邀请码，再停用当前邀请码。",
   "Non-negative USD balance assigned to each future account.":
     "为之后创建的每个账户分配非负的 USD 初始额度。",
   "A registration code with this name or value already exists.":
@@ -1016,8 +1012,7 @@ const zhCN: Record<string, string> = {
     "此注册邀请码已在其他位置修改，正在重新加载。",
   "Review the highlighted registration code fields.":
     "请检查标记的注册邀请码字段。",
-  "Save the code now. Future detail views show only its settings and usage.":
-    "请立即保存邀请码，后续详情页只显示设置和使用情况。",
+  "Share this code only with people you want to invite.": "请仅将此码发给要邀请的人。",
   "Name is required.": "名称不能为空。",
   "Proxy URL is required.": "代理 URL 不能为空。",
   "Client model id is required.": "客户端模型 ID 不能为空。",
@@ -1317,13 +1312,11 @@ const zhCN: Record<string, string> = {
   "Last 3 days": "最近 3 天",
   "Last 7 days": "最近 7 天",
   "No monitored channel groups": "没有启用监控的渠道组",
-  "Enable status monitoring on at least one channel group.":
-    "请至少为一个渠道组启用状态监控。",
+  "Groups appear here when a channel capability has status statistics enabled.":
+    "组内有渠道接口能力启用状态统计后，该渠道组便会出现在这里。",
   "Routing enabled": "路由已启用",
   "Routing disabled": "路由已禁用",
-  "No channel group models": "渠道组没有模型",
-  "Add available upstream models to channels in this group.":
-    "请为此渠道组中的渠道添加可用上游模型。",
+  "No models to report for this group": "该渠道组暂无可展示的模型",
   "The gateway does not store request bodies or successful response bodies. Bounded upstream error details may be retained.":
     "网关不会存储请求正文或成功响应正文，但可能保留受限长度的上游错误详情。",
   "No requests in this period": "这段时间没有请求",
@@ -1408,8 +1401,7 @@ const zhCN: Record<string, string> = {
   "Back": "返回",
   "Danger zone": "危险操作",
   "Save it now": "立即保存",
-  "This value is shown only once. The gateway does not store it in a retrievable form, and the console will not display it again.":
-    "此值只显示一次。网关不会以可检索的形式存储它，控制台也不会再次显示。",
+  "You cannot retrieve this value after closing this dialog.": "关闭此窗口后将无法找回该值。",
   "Copied": "已复制",
   "Copy": "复制",
   "Copy failed": "复制失败",
@@ -2026,7 +2018,8 @@ const zhCN: Record<string, string> = {
   "Proxy assigned": "已分配代理",
   "Workspace {id}": "工作区 {id}",
   "Workspace account": "工作区账户",
-  "Native, CLIProxyAPI, and Sub2API JSON formats are detected automatically.": "自动识别原生、CLIProxyAPI 和 Sub2API JSON 格式。",
+  "Use a credential or array (including CLIProxyAPI), an ai-gateway v3 export, or a Sub2API export.":
+    "支持单个凭证或凭证数组（含 CLIProxyAPI 格式），以及 ai-gateway v3 或 Sub2API 的导出文件。",
   "Member {id}": "成员 {id}",
   "User {id}": "用户 {id}",
   "Refresh token for {label}": "刷新 {label} 的 Token",
@@ -2038,8 +2031,8 @@ const zhCN: Record<string, string> = {
   "Delete {label}": "删除 {label}",
   "Select {label}": "选择 {label}",
   "Connect Codex account": "连接 Codex 账户",
-  "The gateway creates a short-lived PKCE flow. Authorize in a browser, then paste the complete localhost callback URL.":
-    "网关会创建短期 PKCE 流程。请在浏览器中授权，然后粘贴完整的 localhost 回调 URL。",
+  "After authorizing in your browser, paste the full localhost callback URL here.":
+    "在浏览器中完成授权后，将完整的 localhost 回调 URL 粘贴到此处。",
   "Authorization ready": "授权链接已就绪",
   "This flow expires at {time}.": "该流程将于 {time} 过期。",
   "Authorization URL": "授权 URL",
@@ -2048,8 +2041,8 @@ const zhCN: Record<string, string> = {
   "Complete connection": "完成连接",
   "Start authorization": "开始授权",
   "Import Codex tokens": "导入 Codex Token",
-  "Tokens are validated against Codex before format-specific managed channels are created. They are not returned by the Console API.":
-    "创建各格式托管渠道前会通过 Codex 验证 Token；Console API 不会返回已保存的 Token。",
+  "Import validates the tokens with Codex. Assign new credentials to a channel before use.":
+    "导入时会向 Codex 验证 Token。新凭证需绑定到渠道后才能用于转发。",
   "ID token": "ID Token",
   "Access token": "Access Token",
   "Refresh token": "Refresh Token",
@@ -2115,8 +2108,6 @@ const zhCN: Record<string, string> = {
   "Paste JSON": "粘贴 JSON",
   "JSON files": "JSON 文件",
   "Credential JSON": "凭证 JSON",
-  "Supported roots include a single credential, an array, an ai-gateway bundle, or a Sub2API data export envelope.":
-    "支持单个凭证、数组、ai-gateway 导出包或 Sub2API 数据导出封装。",
   "Up to 20 files, 5 MiB each.": "最多 20 个文件，每个不超过 5 MiB。",
   "Parse into drafts": "解析为草稿",
   "Clear sources": "清空来源",
@@ -2130,8 +2121,6 @@ const zhCN: Record<string, string> = {
   "Selected": "已选择",
   "Imported": "已导入",
   "2. Review credentials": "2. 检查凭证",
-  "Edit labels, quota thresholds, tokens, and per-credential proxy assignments before the server validates each credential.":
-    "服务器验证每个凭证前，可编辑标签、额度阈值、Token 和逐凭证代理分配。",
   "Bulk proxy assignment": "批量代理分配",
   "Apply to selected": "应用到所选项",
   "Round-robin selected": "轮询分配所选项",

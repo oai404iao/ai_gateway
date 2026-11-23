@@ -30,15 +30,10 @@ separate compatibility layers:
 | Layer | Version and behavior |
 | --- | --- |
 | Native ABI | `v1`: exported descriptor, buffers, dispatch and release functions |
-| Manifest protocol 1 | Omitted `protocol_version`; legacy stateless commands and response pass-through |
-| Manifest protocol 2 | Configured invocations and plugin-owned Codex request identity/privacy |
 | Manifest protocol 3 | Explicit transport descriptors, bounded response adaptation and optional usage selection |
 | Versioned commands | Suffixes such as `/v1` define that command's schema, not the native ABI |
 
-Codex and configurable generic plugins may declare protocol 2 or 3. Generic
-stateless protocol-1 plugins remain supported. Older gateways reject the new
-manifest field rather than silently accepting incompatible semantics; unknown
-protocol versions fail before dispatch.
+Every manifest must explicitly declare `protocol_version: 3`. Missing and unsupported versions fail before dispatch.
 
 ## Names and common rules
 
@@ -60,14 +55,12 @@ create an access, capability, route, or authorization grant.
 Every routable external connector declares and implements:
 
 ```text
-attempt.capabilities
+attempt.describe/v1
 attempt.body
 attempt.target
 attempt.headers
 ```
 
-Protocol 3 additionally requires `attempt.describe/v1`; protocol 1/2 retain
-their existing common command contract and response pass-through behavior.
 `response.json/v1` and `response.event/v1` are required only when explicitly
 selected by a protocol-3 descriptor. `usage.parse/v1` is required only when
 that descriptor selects a plugin usage parser.
@@ -146,36 +139,6 @@ Each logical request or maintenance operation pins one instance throughout its
 execution. New publications cannot change an in-flight instance, and native
 libraries remain resident for the process lifetime even after deactivation.
 
-## `attempt.capabilities`
-
-Input metadata:
-
-```json
-{"operation":"responses"}
-```
-
-Output metadata:
-
-```json
-{
-  "preserves_affinity_on_failure": false,
-  "successful_response_is_sse": false,
-  "changes_request_body": false
-}
-```
-
-All three values are booleans. `successful_response_is_sse` means a successful
-response is intrinsically SSE even when its upstream Content-Type is missing
-or misleading; it is **not** merely a declaration that the operation supports
-client-selected SSE. Ordinary Responses pass-through plugins should return
-`false`.
-
-The generic host adapter consumes the SSE flag, always treats plugin body
-adaptation as potentially modifying bytes, does not preserve failed-request
-affinity, and never automatically retries a dispatched plugin request. The
-Codex adapter additionally uses the other two flags. A plugin cannot use these
-fields to acquire retry privileges or bypass admission.
-
 ## `attempt.describe/v1` (protocol 3)
 
 Input is `{"operation":"chat_completion"}` with an empty raw body. Return an
@@ -195,8 +158,19 @@ Input is `{"operation":"chat_completion"}` with an empty raw body. Return an
 }
 ```
 
-All flags are required booleans with the same meanings as
-`attempt.capabilities`. Protocol entries are unique and nonempty and must match
+All three capability flags are required booleans. `successful_response_is_sse` means a successful
+response is intrinsically SSE even when its upstream Content-Type is missing
+or misleading; it is **not** merely a declaration that the operation supports
+client-selected SSE. Ordinary Responses pass-through plugins should return
+`false`.
+
+The generic host adapter consumes the SSE flag, always treats plugin body
+adaptation as potentially modifying bytes, does not preserve failed-request
+affinity, and never automatically retries a dispatched plugin request. The
+Codex adapter additionally uses the other two flags. A plugin cannot use these
+fields to acquire retry privileges or bypass admission.
+
+Protocol entries are unique and nonempty and must match
 the operation's protocol values above. `response` is `passthrough`, `json`, or
 `sse`. `json` requires `non_stream`, and `sse` requires `sse`; only
 `chat_completion` and `responses` may opt into adaptation. WebSocket, standalone

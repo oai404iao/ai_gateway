@@ -34,7 +34,7 @@ curl --fail-with-body http://127.0.0.1:3000/v1/models \
 
 上游和客户端分别协商响应压缩。网关可以流式解码上游 `gzip, deflate, br, zstd`，再按客户端支持的编码返回非 SSE 响应。已知小于 `1 KiB` 的响应不压缩；SSE 下游与 Range 请求上游均使用 identity。不支持的上游编码返回 `502 upstream_content_encoding_unsupported`，读取中发现压缩流损坏则终止响应并记录 `upstream_body_error`。
 
-普通 HTTP 请求在连接失败或等响应头超时后可切换到未尝试的候选；只有管理员列出的 4xx/5xx 状态也能触发切换。状态重试有重复上游执行或收费的风险。响应头或内容已发给客户端后不再重试。**图片、已派发的 Codex 请求、已发送的 WebSocket 消息均不自动重试**。策略见[故障转移设置](routing.md#管理故障转移自动禁用与定时测试)。
+普通 HTTP 请求在连接失败或等待响应头超时后可切换到未尝试的候选。也可显式配置按特定 4xx/5xx 状态码重试，但上游可能再次执行并收费。响应头或内容已发给客户端后不再重试。**图片、已派发的 Codex 请求、已发送的 WebSocket 消息均不自动重试**。策略见[故障转移设置](routing.md#管理故障转移自动禁用与定时测试)。
 
 ## 生成或编辑图片
 
@@ -48,6 +48,4 @@ generation JSON 需带 `model`，使用普通 JSON 大小限制。edit 需带 `m
 
 `/v1/alpha/search` 有独立的顶层字段白名单和非流式响应头超时。`output`、`encrypted_output` 和 `results` 按上游结果转发。可以改模型别名或 Header，不能配置请求 JSON 变换，也不会添加 Responses 的 `stream` 或 `store` 字段。
 
-## 已知边界
-
-网关不在操作间转换或回退。除表中列出的操作和模型列表外，不提供 embeddings、audio、files、batches、assistants 或 fine-tuning 等公共 API。各操作的协议差异与示例见[兼容性参考](../reference/openai-compatibility.md)。
+其他接口的支持范围及网关错误码见[协议兼容性参考](../reference/openai-compatibility.md)。

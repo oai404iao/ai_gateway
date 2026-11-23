@@ -19,7 +19,7 @@ use tokio::{
 use uuid::Uuid;
 
 use crate::{
-    database::{TemporaryDatabase, default_database_admin_url},
+    database::TemporaryDatabase,
     metrics::LoadResult,
     mock_upstream::MockStats,
     process::ManagedChild,
@@ -32,7 +32,7 @@ const REQUEST_LOG_QUEUE_CAPACITY: usize = 1_024;
 #[derive(Clone, Debug)]
 pub struct RunOptions {
     pub profile: ProfileName,
-    pub database_admin_url: String,
+    pub database_admin_url: Option<String>,
     pub gateway_bin: PathBuf,
     pub report_root: PathBuf,
     pub keep_database: bool,
@@ -43,8 +43,7 @@ impl RunOptions {
     pub fn defaults(repo_root: &Path) -> Self {
         Self {
             profile: ProfileName::Quick,
-            database_admin_url: std::env::var("TEST_DATABASE_ADMIN_URL")
-                .unwrap_or_else(|_| default_database_admin_url()),
+            database_admin_url: None,
             gateway_bin: repo_root.join("target/release/ai-gateway"),
             report_root: repo_root.join("target/perf/reports"),
             keep_database: false,
@@ -120,6 +119,7 @@ async fn execute(
     options: &RunOptions,
     resources: &mut Resources,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let admin_url = crate::postgres::admin_url(options.database_admin_url.as_deref())?;
     if !options.gateway_bin.is_file() {
         return Err(format!(
             "release gateway binary not found at {}; run the wrapper script or cargo build --release --package ai-gateway",
@@ -158,12 +158,8 @@ async fn execute(
     .await?;
 
     println!("creating isolated performance database");
-    let database = TemporaryDatabase::create(
-        &options.database_admin_url,
-        &selected_profile.scenarios,
-        &mock_url,
-    )
-    .await?;
+    let database =
+        TemporaryDatabase::create(admin_url, &selected_profile.scenarios, &mock_url).await?;
     let database_name = database.name().to_owned();
     let database_url = database.database_url().to_owned();
     resources.database = Some(database);

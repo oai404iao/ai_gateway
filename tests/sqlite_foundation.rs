@@ -6,9 +6,7 @@ use std::{os::unix::fs::PermissionsExt, path::Path, str::FromStr, sync::Arc, tim
 
 use ai_gateway::persistence::{DEFAULT_ADMIN_GROUP_ID, DEFAULT_USER_GROUP_ID};
 use ai_gateway::{
-    persistence::sqlite::{
-        SqliteDatabase, SqliteDecimal, SqliteMigration, SqliteMigrationError, SqliteOpenError,
-    },
+    persistence::sqlite::{SqliteDatabase, SqliteDecimal, SqliteOpenError, SqliteSchemaError},
     runtime_config::AppConfig,
 };
 use chrono::{DateTime, Utc};
@@ -26,8 +24,6 @@ mod sqlite_pipeline;
 mod sqlite_queries;
 #[path = "contracts/sqlite_schema.rs"]
 mod sqlite_schema;
-#[path = "contracts/sqlite_upstream_identity_migration.rs"]
-mod sqlite_upstream_identity_migration;
 
 async fn database() -> (tempfile::TempDir, SqliteDatabase) {
     let directory = private_directory();
@@ -396,13 +392,6 @@ async fn server_configuration_accepts_files_but_never_memory_databases() {
     assert!(unsafe { libsqlite3_sys::sqlite3_libversion_number() } >= 3_051_003);
 }
 
-const TEST_MIGRATION: SqliteMigration<'static> = SqliteMigration {
-    version: 1,
-    description: "test-only fixture, not the gateway business schema",
-    sql: "CREATE TABLE migration_fixture (id INTEGER PRIMARY KEY) STRICT;
-          INSERT INTO migration_fixture VALUES (1);",
-};
-
 async fn table_exists(db: &SqliteDatabase, name: &str) -> bool {
     let mut reader = db.acquire_read().await.unwrap();
     sqlx::query_scalar::<_, i64>("SELECT count(*) FROM sqlite_schema WHERE type='table' AND name=?")
@@ -414,18 +403,13 @@ async fn table_exists(db: &SqliteDatabase, name: &str) -> bool {
 }
 
 #[tokio::test]
-async fn all_pending_migrations_and_history_rollback_together() {
+async fn failed_baseline_commit_rolls_back_schema_and_history() {
     let (_directory, db) = database().await;
-    let failed = [
-        TEST_MIGRATION,
-        SqliteMigration {
-            version: 2,
-            description: "deliberate constraint failure",
-            sql: "INSERT INTO migration_fixture VALUES (1);",
-        },
-    ];
-    assert!(db.migrate(&failed).await.is_err());
-    assert!(!table_exists(&db, "migration_fixture").await);
+    let mut tx = db.begin_write().await.unwrap();
+    tx.lock_handle().await.unwrap().set_commit_hook(|| false);
+    tx.rollback().await.unwrap();
+    assert!(db.install_schema().await.is_err());
+    assert!(!table_exists(&db, "request_metering_facts").await);
     let mut reader = db.acquire_read().await.unwrap();
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM _gateway_sqlite_migrations")
@@ -435,129 +419,61 @@ async fn all_pending_migrations_and_history_rollback_together() {
         0
     );
     drop(reader);
-    assert_eq!(db.migrate(&[TEST_MIGRATION]).await.unwrap(), 1);
-    assert_eq!(db.migrate(&[TEST_MIGRATION]).await.unwrap(), 0);
+    assert_eq!(db.install_schema().await.unwrap(), 1);
     db.close().await;
 }
 
 #[tokio::test]
-async fn migration_history_requires_an_exact_known_prefix() {
-    let (_directory, db) = database().await;
-    db.migrate(&[TEST_MIGRATION]).await.unwrap();
-    for manifest in [
-        vec![],
-        vec![SqliteMigration {
-            sql: "SELECT 1;",
-            ..TEST_MIGRATION
-        }],
-        vec![SqliteMigration {
-            description: "different description",
-            ..TEST_MIGRATION
-        }],
+async fn altered_or_missing_baseline_history_is_rejected_without_modifying_business_rows() {
+    for corruption in [
+        "UPDATE _gateway_sqlite_migrations SET checksum=zeroblob(32)",
+        "UPDATE _gateway_sqlite_migrations SET version=2",
+        "UPDATE _gateway_sqlite_migrations SET description='other baseline'",
+        "DELETE FROM _gateway_sqlite_migrations",
     ] {
+        let (_directory, db) = database().await;
+        db.install_schema().await.unwrap();
+        let mut tx = db.begin_write().await.unwrap();
+        sqlx::query("INSERT INTO users(id,display_name) VALUES ('10000000-0000-0000-0000-000000000001','Keep me')")
+            .execute(&mut *tx).await.unwrap();
+        sqlx::query(corruption).execute(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
         assert!(matches!(
-            db.migrate(&manifest).await,
-            Err(SqliteMigrationError::HistoryMismatch)
+            db.install_schema().await,
+            Err(SqliteSchemaError::HistoryMismatch)
         ));
-    }
-    let mut tx = db.begin_write().await.unwrap();
-    sqlx::query("UPDATE _gateway_sqlite_migrations SET version=2")
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    assert!(matches!(
-        db.migrate(&[TEST_MIGRATION]).await,
-        Err(SqliteMigrationError::HistoryMismatch)
-    ));
-    db.close().await;
-}
-
-#[tokio::test]
-async fn invalid_and_nontransactional_manifests_are_rejected() {
-    let (_directory, db) = database().await;
-    for migration in [
-        SqliteMigration {
-            version: 2,
-            ..TEST_MIGRATION
-        },
-        SqliteMigration {
-            sql: "-- no-transaction\nSELECT 1;",
-            ..TEST_MIGRATION
-        },
-        SqliteMigration {
-            description: "",
-            ..TEST_MIGRATION
-        },
-        SqliteMigration {
-            sql: "",
-            ..TEST_MIGRATION
-        },
-    ] {
-        assert!(matches!(
-            db.migrate(&[migration]).await,
-            Err(SqliteMigrationError::InvalidManifest)
-        ));
-    }
-    db.close().await;
-}
-
-#[tokio::test]
-async fn migration_sql_cannot_commit_a_partial_batch() {
-    let (_directory, db) = database().await;
-    for sql in [
-        "COMMIT; CREATE TABLE escaped (id INTEGER) STRICT;",
-        "ROLLBACK; BEGIN; CREATE TABLE escaped (id INTEGER) STRICT;",
-    ] {
-        assert!(
-            db.migrate(&[
-                TEST_MIGRATION,
-                SqliteMigration {
-                    version: 2,
-                    description: "unexpected transaction control in migration SQL",
-                    sql,
-                },
-            ])
+        let name: String = sqlx::query_scalar("SELECT display_name FROM users")
+            .fetch_one(&mut *db.acquire_read().await.unwrap())
             .await
-            .is_err()
-        );
-        assert!(!table_exists(&db, "migration_fixture").await);
-        assert!(!table_exists(&db, "escaped").await);
+            .unwrap();
+        assert_eq!(name, "Keep me");
+        db.close().await;
     }
-    assert_eq!(db.migrate(&[TEST_MIGRATION]).await.unwrap(), 1);
+}
+
+#[tokio::test]
+async fn missing_baseline_does_not_claim_unrelated_tables() {
+    let (_directory, db) = database().await;
+    create_table(&db).await;
+    assert!(matches!(
+        db.install_schema().await,
+        Err(SqliteSchemaError::HistoryMismatch)
+    ));
+    assert!(!table_exists(&db, "users").await);
+    assert!(table_exists(&db, "amounts").await);
     db.close().await;
 }
 
 #[tokio::test]
-async fn deferred_constraint_commit_failure_rolls_back_migration_history() {
+async fn concurrent_baseline_installations_apply_once() {
     let (_directory, db) = database().await;
-    let migration = SqliteMigration {
-        version: 1,
-        description: "deferred constraint failure at commit",
-        sql: "CREATE TABLE parents (id INTEGER PRIMARY KEY) STRICT;
-              CREATE TABLE children (
-                id INTEGER REFERENCES parents(id) DEFERRABLE INITIALLY DEFERRED
-              ) STRICT;
-              INSERT INTO children VALUES (1);",
-    };
-    assert!(db.migrate(&[migration]).await.is_err());
-    assert!(!table_exists(&db, "parents").await);
-    assert!(!table_exists(&db, "children").await);
-    assert_eq!(db.migrate(&[TEST_MIGRATION]).await.unwrap(), 1);
-    db.close().await;
-}
-
-#[tokio::test]
-async fn concurrent_migration_calls_apply_once() {
-    let (_directory, db) = database().await;
-    let manifest = [TEST_MIGRATION];
-    let (left, right) = tokio::join!(db.migrate(&manifest), db.migrate(&manifest));
+    let (left, right) = tokio::join!(db.install_schema(), db.install_schema());
     assert_eq!(left.unwrap() + right.unwrap(), 1);
     db.close().await;
 }
 
 #[tokio::test]
-async fn cancelled_migration_rolls_back_and_discards_its_commit_hook() {
+async fn cancelled_baseline_installation_rolls_back_and_can_retry() {
     let (_directory, db) = database().await;
     let db = Arc::new(db);
     let mut tx = db.begin_write().await.unwrap();
@@ -568,7 +484,7 @@ async fn cancelled_migration_rolls_back_and_discards_its_commit_hook() {
         .await
         .unwrap()
         .set_update_hook(move |event| {
-            if event.table == "migration_fixture"
+            if event.table == "user_groups"
                 && let Some(started) = started.take()
             {
                 started.send(()).unwrap();
@@ -577,7 +493,7 @@ async fn cancelled_migration_rolls_back_and_discards_its_commit_hook() {
         });
     tx.rollback().await.unwrap();
     let task_db = Arc::clone(&db);
-    let task = tokio::spawn(async move { task_db.migrate(&[TEST_MIGRATION]).await });
+    let task = tokio::spawn(async move { task_db.install_schema().await });
     timeout(Duration::from_secs(3), ready)
         .await
         .unwrap()
@@ -597,8 +513,8 @@ async fn cancelled_migration_rolls_back_and_discards_its_commit_hook() {
         0
     );
     tx.commit().await.unwrap();
-    assert!(!table_exists(&db, "migration_fixture").await);
-    assert_eq!(db.migrate(&[TEST_MIGRATION]).await.unwrap(), 1);
+    assert!(!table_exists(&db, "request_metering_facts").await);
+    assert_eq!(db.install_schema().await.unwrap(), 1);
     db.close().await;
 }
 
@@ -703,9 +619,10 @@ async fn foreign_database_is_rejected_without_changing_journal_mode() {
 }
 
 #[tokio::test]
-async fn newer_or_incomplete_managed_identity_is_rejected() {
+async fn incompatible_or_incomplete_managed_identity_is_rejected() {
     for corruption in [
-        "PRAGMA user_version=2",
+        "PRAGMA user_version=1",
+        "PRAGMA user_version=3",
         "PRAGMA application_id=17",
         "DROP TABLE _gateway_sqlite_migrations",
         "DROP TRIGGER gateway_identity_no_update",
@@ -713,13 +630,24 @@ async fn newer_or_incomplete_managed_identity_is_rejected() {
     ] {
         let (directory, db) = database().await;
         let mut tx = db.begin_write().await.unwrap();
+        sqlx::query("CREATE TABLE protected_record(value TEXT NOT NULL)")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO protected_record VALUES ('must survive')")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
         sqlx::query(corruption).execute(&mut *tx).await.unwrap();
         tx.commit().await.unwrap();
         db.close().await;
+        let path = directory.path().join("gateway.sqlite");
+        let before = std::fs::read(&path).unwrap();
         assert!(matches!(
-            SqliteDatabase::open(&directory.path().join("gateway.sqlite")).await,
+            SqliteDatabase::open(&path).await,
             Err(SqliteOpenError::ForeignDatabase)
         ));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 }
 
@@ -865,7 +793,7 @@ fn sqlite_owner_child_process() {
             return;
         }
         let db = SqliteDatabase::open(&path).await.unwrap();
-        db.migrate(&[TEST_MIGRATION]).await.unwrap();
+        db.install_schema().await.unwrap();
         let mut tx = db.begin_write().await.unwrap();
         sqlx::query("CREATE TABLE interrupted_schema (id INTEGER) STRICT")
             .execute(&mut *tx)
@@ -971,8 +899,8 @@ async fn process_death_releases_ownership_and_recovers_committed_history_only() 
         reopened.database_id().to_string(),
         std::fs::read_to_string(ready).unwrap()
     );
-    assert_eq!(reopened.migrate(&[TEST_MIGRATION]).await.unwrap(), 0);
-    assert!(table_exists(&reopened, "migration_fixture").await);
+    assert_eq!(reopened.install_schema().await.unwrap(), 0);
+    assert!(table_exists(&reopened, "request_metering_facts").await);
     assert!(!table_exists(&reopened, "interrupted_schema").await);
     reopened.close().await;
 }
@@ -985,7 +913,7 @@ async fn repository_facades_dispatch_ordinary_operations_to_sqlite() {
     use uuid::Uuid;
 
     let (_directory, database) = database().await;
-    assert_eq!(database.install_schema().await.unwrap(), 15);
+    assert_eq!(database.install_schema().await.unwrap(), 1);
     let database = Arc::new(database);
 
     let auth = AuthRepository::from_sqlite(Arc::clone(&database));
@@ -1033,7 +961,7 @@ async fn s4_pipeline_and_query_facades_share_one_sqlite_database() {
     };
 
     let (_directory, database) = database().await;
-    assert_eq!(database.install_schema().await.unwrap(), 15);
+    assert_eq!(database.install_schema().await.unwrap(), 1);
     let database = Arc::new(database);
 
     let repository = RequestLogRepository::from_sqlite(Arc::clone(&database));

@@ -391,10 +391,11 @@ impl ResponsesWebSocketSession {
             &original_body,
         );
         let select_route = |excluded: &[usize]| {
-            self.proxy.routing.select_websocket_with_affinity_excluding(
+            self.proxy.routing.select_operation_with_affinity_excluding(
                 &snapshot,
                 &api_key,
-                OPENAI_RESPONSES_FORMAT,
+                ApiOperation::ResponsesWebSocket,
+                RequestProtocol::WebSocket,
                 &parsed.model,
                 affinity.clone(),
                 excluded,
@@ -412,7 +413,6 @@ impl ResponsesWebSocketSession {
                     .select_preferred_websocket_candidate(
                         &snapshot,
                         &api_key,
-                        OPENAI_RESPONSES_FORMAT,
                         &parsed.model,
                         active.key.channel_id(),
                         active.key.upstream_model(),

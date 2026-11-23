@@ -2,7 +2,6 @@
 
 use std::{
     ffi::{c_int, c_void},
-    net::IpAddr,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
         Arc,
@@ -32,12 +31,10 @@ pub(super) async fn register(connection: &mut SqliteConnection) -> Result<(), sq
         ("ag_uuid_valid", c"ag_uuid_valid", 1),
         ("ag_time_valid", c"ag_time_valid", 1),
         ("ag_date_valid", c"ag_date_valid", 1),
-        ("ag_cidr_valid", c"ag_cidr_valid", 1),
         ("ag_array_valid", c"ag_array_valid", 2),
         ("ag_array_contains", c"ag_array_contains", 2),
         ("ag_array_position", c"ag_array_position", 2),
         ("ag_array_subset", c"ag_array_subset", 2),
-        ("ag_json_equal", c"ag_json_equal", 2),
         ("ag_json_valid", c"ag_json_valid", 1),
         ("ag_regex", c"ag_regex", 2),
         ("ag_lower", c"ag_lower", 1),
@@ -204,7 +201,6 @@ fn evaluate(function: &Function, args: &[Option<String>]) -> Result<Output, ()> 
         "ag_uuid_valid" => boolean(parse_uuid(arg(0)?).is_ok()),
         "ag_time_valid" => boolean(parse_timestamp(arg(0)?).is_ok()),
         "ag_date_valid" => boolean(parse_date(arg(0)?).is_ok()),
-        "ag_cidr_valid" => boolean(valid_cidr(arg(0)?)),
         "ag_decimal_valid" => {
             let precision: u32 = arg(1)?.parse().map_err(|_| ())?;
             let scale: u32 = arg(2)?.parse().map_err(|_| ())?;
@@ -229,10 +225,6 @@ fn evaluate(function: &Function, args: &[Option<String>]) -> Result<Output, ()> 
                     value.is_null()
                         || value.as_str().is_some_and(|s| match kind {
                             "uuid" => parse_uuid(s).is_ok(),
-                            "api_format" => matches!(
-                                s,
-                                "open_ai_chat_completions" | "open_ai_responses" | "open_ai_images"
-                            ),
                             "text" => !s.contains('\0'),
                             _ => false,
                         })
@@ -262,12 +254,6 @@ fn evaluate(function: &Function, args: &[Option<String>]) -> Result<Output, ()> 
                     .iter()
                     .all(|v| !v.is_null() && right.contains(v)),
             )
-        }
-        "ag_json_equal" => {
-            if args[1].is_none() {
-                return Ok(Output::Null);
-            }
-            boolean(json(arg(0)?)? == json(arg(1)?)?)
         }
         "ag_json_valid" => boolean(serde_json::from_str::<ValidJson>(arg(0)?).is_ok()),
         "ag_regex" => boolean(
@@ -344,22 +330,5 @@ impl<'de> serde::de::Visitor<'de> for ValidJson {
         // Validate every occurrence before duplicate keys can discard an earlier value.
         while map.next_entry::<Self, Self>()?.is_some() {}
         Ok(self)
-    }
-}
-
-fn valid_cidr(value: &str) -> bool {
-    let Some((address, prefix)) = value.split_once('/') else {
-        return false;
-    };
-    let Ok(address) = address.parse::<IpAddr>() else {
-        return false;
-    };
-    let Ok(prefix) = prefix.parse::<u32>() else {
-        return false;
-    };
-    match address {
-        IpAddr::V4(ip) if prefix <= 32 => u32::from(ip).checked_shl(prefix).unwrap_or(0) == 0,
-        IpAddr::V6(ip) if prefix <= 128 => u128::from(ip).checked_shl(prefix).unwrap_or(0) == 0,
-        _ => false,
     }
 }

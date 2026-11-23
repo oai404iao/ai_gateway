@@ -8,9 +8,9 @@
 
 [简体中文](README.zh-CN.md) · [Documentation](docs/README.md) · [Releases](https://github.com/oai404iao/ai_gateway/releases)
 
-`ai-gateway` is a self-hosted service that gives your applications one OpenAI-compatible endpoint for multiple upstreams.
-Clients send a gateway API key and a model name you choose. In the Console you decide which
-upstream models can serve that name, who can use them, and how to price their usage.
+With `ai-gateway`, applications use one OpenAI-compatible base URL to call multiple upstreams.
+You host the gateway, issue its API keys, and choose the model names clients see. In the Console,
+route each name to upstream models, grant access, and set usage prices.
 
 ## Run your first request
 
@@ -21,6 +21,8 @@ For a server, [deploy the release image with Docker Compose](docs/user/productio
 The Rust binary serves the public API and a separate management Console; put the Console behind
 an HTTPS reverse proxy. PostgreSQL is the default database. On a single Linux host, you can
 also [use SQLite](docs/user/sqlite.md).
+
+**Replacing an earlier installation?** This storage baseline requires a new database and a separate empty request-log spool. [Preserve the existing ledger before switching.](docs/user/upgrades.md)
 
 ## Connect clients and upstreams
 

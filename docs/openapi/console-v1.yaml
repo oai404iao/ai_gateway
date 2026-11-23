@@ -1759,7 +1759,7 @@ paths:
     get:
       tags: [RoutingTopology]
       operationId: listRoutingProfiles
-      description: Administrator-only priced-model bindings, independent of legacy protocol configuration.
+      description: Lists priced-model routing profiles. Requires an administrator.
       security: [{ bearerAuth: [] }]
       responses:
         "200":
@@ -1831,7 +1831,7 @@ paths:
     post:
       tags: [RoutingTopology]
       operationId: createOperationRule
-      description: Creates one operation rule and replaces its tier graph atomically. Candidates reference a capability and wire model; they never reference legacy channels.
+      description: Creates one operation rule and replaces its tier graph atomically. Each candidate selects a capability and wire model.
       security: [{ bearerAuth: [] }]
       requestBody:
         required: true
@@ -5940,7 +5940,7 @@ components:
         cache_write_unit_price: { $ref: "#/components/schemas/Decimal" }
         output_unit_price:
           allOf: [{ $ref: "#/components/schemas/Decimal" }]
-          description: Optional for compatibility; when omitted, the base output price remains active for this tier.
+          description: Omit to use the model’s base output price for this tier.
 
     RequestBillingMultiplier:
       type: object
@@ -5976,7 +5976,7 @@ components:
           minItems: 1
           maxItems: 7
           uniqueItems: true
-          description: UTC start weekdays. Omission preserves compatibility by applying the window every day.
+          description: UTC weekdays on which the window starts. Omit to apply every day.
           items: { $ref: "#/components/schemas/BillingWeekday" }
         start_time:
           type: string

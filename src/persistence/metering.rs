@@ -11,7 +11,7 @@ use super::RepositoryError;
 use super::postgres_control_plane::{IngestReceipt, RequestLogIngestRecord};
 
 const FACT_COLUMNS: &str = "id,started_at,completed_at,user_id,api_key_id,request_source,api_format,api_operation,\
-     request_protocol,client_model,upstream_model,model_rule_id,channel_group_id,channel_id,\
+     request_protocol,client_model,upstream_model,model_rule_id,channel_group_id,channel_id,upstream_credential_id,\
      model_id,outcome,input_tokens,cached_input_tokens,cache_write_tokens,output_tokens,\
      reasoning_tokens,currency,price_unit_tokens,price_effective_at,input_unit_price,\
      cached_input_unit_price,cache_write_unit_price,output_unit_price,cost_amount,peak_pricing";
@@ -160,12 +160,7 @@ async fn write_facts(
     .execute(&mut **transaction)
     .await?;
     let matches: Vec<bool> = sqlx::query_scalar(
-        "SELECT (to_jsonb(stored)-'amount_state'-'api_operation') = (to_jsonb(incoming)-'amount_state'-'api_operation')
-             AND (CASE stored.api_operation
-                 WHEN 'chat_completions' THEN 'chat_completion'
-                 WHEN 'standalone_web_search' THEN 'web_search'
-                 WHEN 'responses' THEN CASE WHEN stored.request_protocol='websocket' THEN 'responses-ws' ELSE 'responses' END
-                 ELSE stored.api_operation END) = incoming.api_operation
+        "SELECT (to_jsonb(stored)-'amount_state') = (to_jsonb(incoming)-'amount_state')
          FROM jsonb_array_elements($1) WITH ORDINALITY AS input(value,ordinal)
          CROSS JOIN LATERAL jsonb_populate_record(NULL::request_metering_facts,input.value) AS incoming
          JOIN request_metering_facts AS stored ON stored.id=incoming.id
@@ -174,50 +169,10 @@ async fn write_facts(
     if matches.len() != events.len() {
         return Err(RepositoryError::Validation);
     }
-    let attributions = Value::Array(
-        events
-            .iter()
-            .zip(&matches)
-            .filter(|(_, equal)| **equal)
-            .map(|(event, _)| {
-                json!({
-                    "request_id": event.id,
-                    "known": event.upstream_credential.is_some(),
-                    "credential_id": event.upstream_credential.and_then(|value| value.credential_id),
-                })
-            })
-            .collect(),
-    );
-    sqlx::query(
-        "INSERT INTO request_credential_attributions(request_id,known,credential_id)
-         SELECT request_id,known,credential_id
-         FROM jsonb_populate_recordset(NULL::request_credential_attributions,$1) incoming
-         WHERE request_id=ANY($2) OR NOT known
-         ON CONFLICT(request_id) DO NOTHING",
-    )
-    .bind(&attributions)
-    .bind(&inserted)
-    .execute(&mut **transaction)
-    .await?;
-    let attributed: Vec<(Uuid, bool, Option<Uuid>)> = sqlx::query_as(
-        "SELECT request_id,known,credential_id FROM request_credential_attributions WHERE request_id=ANY($1)",
-    ).bind(events.iter().map(|event| event.id).collect::<Vec<_>>())
-        .fetch_all(&mut **transaction).await?;
-    let attributed = attributed
-        .into_iter()
-        .map(|(id, known, credential)| (id, (known, credential)))
-        .collect::<std::collections::HashMap<_, _>>();
     Ok(matches
         .into_iter()
-        .zip(events)
-        .map(|(equal, event)| {
-            let expected = (
-                event.upstream_credential.is_some(),
-                event
-                    .upstream_credential
-                    .and_then(|value| value.credential_id),
-            );
-            if equal && attributed.get(&event.id) == Some(&expected) {
+        .map(|equal| {
+            if equal {
                 MeteringWriteOutcome::Accepted
             } else {
                 MeteringWriteOutcome::Conflict
@@ -244,6 +199,7 @@ fn fact_input(event: &RequestLogEvent) -> Value {
         "model_rule_id": event.model_rule_id,
         "channel_group_id": event.channel_group_id,
         "channel_id": event.channel_id,
+        "upstream_credential_id": event.upstream_credential_id,
         "model_id": event.model_id,
         "outcome": event.outcome.as_str(),
         "input_tokens": usage.map(|usage| usage.input_tokens),

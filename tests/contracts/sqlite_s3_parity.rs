@@ -74,7 +74,7 @@ impl Backend {
                 .install_schema()
                 .await
                 .expect("infrastructure: SQLite schema must install"),
-            15
+            1
         );
         Self::Sqlite {
             directory,
@@ -3809,13 +3809,13 @@ async fn template_proxy_and_group_deletion_contract(repositories: Repositories) 
         .api_keys
         .iter()
         .find(|key| key.id == bound_key)
-        .expect("the key retains its explicit authorization origin");
+        .expect("the key retains its selected group");
     assert_eq!(key.allowed_group_ids, vec![world.group]);
     let policy = lists
         .api_key_policies
         .iter()
         .find(|policy| policy.id == world.policy)
-        .expect("the policy retains its explicit authorization origin");
+        .expect("the policy retains its selected group");
     assert_eq!(policy.allowed_group_ids, vec![world.group]);
 }
 

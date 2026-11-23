@@ -12,9 +12,8 @@ async fn window_cost(
 ) -> Result<rust_decimal::Decimal, RepositoryError> {
     let mut sum = CostSum::default();
     let mut rows=sqlx::query_scalar::<_,SqliteAmount>(
-        "SELECT f.cost_amount FROM request_metering_facts f
-         JOIN request_credential_identities identity ON identity.request_id=f.id
-         WHERE identity.credential_id=? AND f.cost_amount IS NOT NULL AND f.started_at>=? AND f.started_at<?")
+        "SELECT cost_amount FROM request_metering_facts
+         WHERE upstream_credential_id=? AND cost_amount IS NOT NULL AND started_at>=? AND started_at<?")
         .bind(SqliteUuid(credential)).bind(SqliteTimestamp(start)).bind(SqliteTimestamp(end))
         .fetch(connection);
     while let Some(amount) = rows.try_next().await? {

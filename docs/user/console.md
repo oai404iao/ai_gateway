@@ -2,7 +2,7 @@
 
 > 状态：当前。
 
-浏览器通过 HTTPS 访问独立的 Console 监听器。第一次运行请先[创建管理员并启用界面](quickstart.md)。自动化脚本使用同一监听器上的 `/console/v1` API；下文的 API 路径都相对于此前缀。请求字段、权限和状态码见 [Console OpenAPI](../openapi/console-v1.yaml)。数据面 API Key 不能用于登录。
+浏览器通过 HTTPS 访问独立的 Console 监听器。首次部署先[创建管理员](quickstart.md)；源码构建可[启用嵌入式界面](../../web/console/README.md)。脚本使用同一监听器上的 `/console/v1` API；下文路径均相对于此前缀。请求字段、权限和状态码见 [Console OpenAPI](../openapi/console-v1.yaml)。
 
 ## Console 认证
 

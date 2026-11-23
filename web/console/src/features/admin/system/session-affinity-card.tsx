@@ -597,9 +597,6 @@ export function SessionAffinityCard({
               <Field orientation="horizontal">
                 <FieldContent>
                   <FieldLabel htmlFor="affinity_rule_enabled">{t("Enable rule")}</FieldLabel>
-                  <FieldDescription>
-                    {t("Disabled rules remain saved but are not compiled into the data plane.")}
-                  </FieldDescription>
                 </FieldContent>
                 <Switch
                   id="affinity_rule_enabled"

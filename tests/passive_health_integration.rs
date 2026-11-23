@@ -229,9 +229,6 @@ fn proxy_fixture_with_retry_and_candidates(
             .map(|id| ChannelGroupRecord {
                 id: *id,
                 name: id.to_string(),
-                api_format: "open_ai_chat_completions".into(),
-                connector_kind: "general".into(),
-                request_compression: "default".into(),
                 enabled: true,
             })
             .collect(),
@@ -241,23 +238,19 @@ fn proxy_fixture_with_retry_and_candidates(
             .zip(upstream_urls)
             .map(|((id, group_id), base_url)| ChannelRecord {
                 credential: None,
-                credential_binding_revision: Uuid::nil(),
+                credential_binding_revision: *id,
                 id: *id,
                 channel_group_id: *group_id,
-                api_format: "open_ai_chat_completions".into(),
-                logical_channel_id: Uuid::nil(),
-                access_id: Uuid::nil(),
-                api_operation: None,
-                connector_kind: String::new(),
-                request_compression: String::new(),
-                access_revision: Uuid::nil(),
-                capability_revision: Uuid::nil(),
-                transports: Vec::new(),
+                logical_channel_id: *id,
+                access_id: *id,
+                api_operation: ApiOperation::ChatCompletions,
+                connector_kind: ai_gateway::domain::ConnectorKind::OpenAiCompatible,
+                request_compression: ai_gateway::domain::RequestCompression::Default,
+                access_revision: *id,
+                capability_revision: *id,
                 name: id.to_string(),
                 base_url: base_url.clone(),
                 enabled: true,
-                supports_websocket: false,
-                supports_standalone_web_search: false,
                 auto_disabled: false,
                 auto_disable_allowed: false,
                 billing_multiplier: rust_decimal::Decimal::ONE,
@@ -507,10 +500,7 @@ async fn retry_rewrites_each_attempt_with_its_candidate_upstream_model() {
     let pricing_model_id = fixture
         .runtime
         .snapshot()
-        .model_rule(
-            ai_gateway::domain::ApiFormat::OpenAiChatCompletions,
-            "model",
-        )
+        .operation_rule(ai_gateway::domain::ApiOperation::ChatCompletions, "model")
         .unwrap()
         .model_id();
     let logs = fixture.logs.clone();
@@ -678,10 +668,7 @@ async fn configured_status_retries_another_model_on_the_same_channel() {
     let pricing_model_id = fixture
         .runtime
         .snapshot()
-        .model_rule(
-            ai_gateway::domain::ApiFormat::OpenAiChatCompletions,
-            "model",
-        )
+        .operation_rule(ai_gateway::domain::ApiOperation::ChatCompletions, "model")
         .unwrap()
         .model_id();
     let logs = fixture.logs.clone();

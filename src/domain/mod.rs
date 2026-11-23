@@ -23,17 +23,17 @@ pub use channel_capability::{CapabilityError, CapabilitySettings, CapabilityTran
 pub(crate) use compiled_routing::ChannelIdentity;
 pub use compiled_routing::{
     ApiKeyPermission, AuthorizationProfile, ChannelTimeoutPolicy, CompiledApiKey,
-    CompiledCandidate, CompiledChannel, CompiledChannelGroup, CompiledChannelUpstreamPolicy,
-    CompiledConfigTemplate, CompiledModelRule, CompiledProxy, CompiledRouteTier,
-    CompiledRuntimeConfig, CompiledScheduledTestModel, CompiledUnavailableRouteCandidate,
-    ModelPriceSnapshot, ModelRouteKey, NoProxyHost, NoProxyHostError,
-    OutboundNetworkPolicyFingerprint, SelectionStrategy,
+    CompiledCandidate, CompiledChannel, CompiledChannelUpstreamPolicy, CompiledConfigTemplate,
+    CompiledModelRule, CompiledProxy, CompiledRouteTier, CompiledRuntimeConfig,
+    CompiledScheduledTestModel, CompiledUnavailableRouteCandidate, ModelPriceSnapshot,
+    ModelRouteKey, NoProxyHost, NoProxyHostError, OutboundNetworkPolicyFingerprint,
+    SelectionStrategy,
 };
 pub use connector::{ConnectorKind, RequestCompression};
 pub use console_auth::{ConsolePrincipal, ConsoleSessionPurpose, UserRole};
 pub use request_log::{
-    RequestBilling, RequestCredentialAttribution, RequestLogEvent, RequestLogOutcome,
-    RequestLogSource, RequestPriceSnapshot, RequestProtocol, RequestUsage,
+    RequestBilling, RequestLogEvent, RequestLogOutcome, RequestLogSource, RequestPriceSnapshot,
+    RequestProtocol, RequestUsage,
 };
 pub use system_settings::{
     AutomaticDisableSettings, AutomaticDisableTrigger,

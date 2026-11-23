@@ -243,27 +243,22 @@ async fn audit_failure_rolls_back_prepared_data_and_never_publishes_a_candidate(
 #[tokio::test]
 async fn storage_classification_preserves_database_failure_distinctions() {
     let database = TestDatabase::new().await;
-    for (code, constraint, expected) in [
-        ("40001", "", StorageFailureKind::Conflict),
-        ("40P01", "", StorageFailureKind::Conflict),
-        ("22001", "", StorageFailureKind::InvalidInput),
-        ("22007", "", StorageFailureKind::InvalidInput),
-        ("22P02", "", StorageFailureKind::InvalidInput),
-        ("23502", "", StorageFailureKind::InvalidInput),
-        ("23503", "", StorageFailureKind::InvalidInput),
-        ("23505", "", StorageFailureKind::InvalidInput),
-        ("23514", "", StorageFailureKind::InvalidInput),
-        (
-            "23503",
-            "channels_proxy_id_fkey",
-            StorageFailureKind::RoutingDependency,
-        ),
-        ("22003", "", StorageFailureKind::Internal),
-        ("08006", "", StorageFailureKind::Internal),
+    for (code, expected) in [
+        ("40001", StorageFailureKind::Conflict),
+        ("40P01", StorageFailureKind::Conflict),
+        ("22001", StorageFailureKind::InvalidInput),
+        ("22007", StorageFailureKind::InvalidInput),
+        ("22P02", StorageFailureKind::InvalidInput),
+        ("23502", StorageFailureKind::InvalidInput),
+        ("23503", StorageFailureKind::InvalidInput),
+        ("23505", StorageFailureKind::InvalidInput),
+        ("23514", StorageFailureKind::InvalidInput),
+        ("22003", StorageFailureKind::Internal),
+        ("08006", StorageFailureKind::Internal),
     ] {
         let error = sqlx::query(sqlx::AssertSqlSafe(format!(
             "DO $$ BEGIN RAISE EXCEPTION 'contract failure'
-             USING ERRCODE='{code}', CONSTRAINT='{constraint}'; END $$"
+             USING ERRCODE='{code}'; END $$"
         )))
         .execute(&database.pool)
         .await
@@ -271,7 +266,7 @@ async fn storage_classification_preserves_database_failure_distinctions() {
         let RepositoryError::Storage(error) = RepositoryError::from(error) else {
             panic!("driver errors must not become business validation failures");
         };
-        assert_eq!(error.kind(), expected, "{code}/{constraint}");
+        assert_eq!(error.kind(), expected, "{code}");
         assert!(std::error::Error::source(&error).is_some());
     }
     database.cleanup().await;

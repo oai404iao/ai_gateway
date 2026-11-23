@@ -6,7 +6,7 @@
 
 ## 连接账号
 
-1. 在「上游凭证 → Codex」选择 **Connect account**，完成浏览器授权，将以 `http://localhost:1455/auth/callback` 开头的完整回调地址粘回 Console。已有凭证可选择 **Import tokens**，或用 **Advanced import** 读取原生 Bundle（`version` 必须为数字 `3`）、CLIProxyAPI 或 Sub2API 文件，见[导入格式](../reference/codex-credential-portability.md)。
+1. 在「上游凭证 → Codex」选择 **Connect account**，完成浏览器授权，将以 `http://localhost:1455/auth/callback` 开头的完整回调地址粘回 Console。已有凭证可选择 **Import tokens**；原生 Bundle、CLIProxyAPI 和 Sub2API 文件使用 **Advanced import**，见[导入格式](../reference/codex-credential-portability.md)。
 2. 创建 `codex` 上游接入，在渠道组内创建逻辑渠道并绑定这份凭证。维护代理用于 OAuth、Token 和额度操作；请求转发走接入的代理。同一凭证可供多个渠道使用。
 3. 在渠道详情添加所需操作能力和模型目录，然后[配置模型候选和 Key 授权](routing.md)。Responses HTTP、Responses WebSocket、独立搜索、图片生成和编辑各用自己的规则。凭证导入或模型发现不会替你发布路由。
 4. 将客户端 provider 的 Base URL 指向 Gateway `/v1`，用具备 `proxy` 权限且获渠道授权的 Key 发起请求。需要独立搜索时，客户端还须打开 `supports_standalone_web_search`。

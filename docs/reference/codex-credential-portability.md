@@ -2,7 +2,7 @@
 
 > 类型：外部格式参考与当前导入边界。
 >
-> 最近核对：2026-08-03。外部格式按下列固定 commit 理解，未重新核验未来版本。
+> 最近核对：2026-08-03。
 >
 > 权威来源：CLIProxyAPI 的 [Token 定义](https://github.com/router-for-me/CLIProxyAPI/blob/928478e4b91533cec05a763bfac3edad9c3e76cf/internal/auth/codex/token.go)、
 > [文件元数据](https://github.com/router-for-me/CLIProxyAPI/blob/928478e4b91533cec05a763bfac3edad9c3e76cf/internal/watcher/synthesizer/file.go)；
@@ -12,16 +12,7 @@
 
 ## 先导入草稿，再绑定渠道
 
-在 Console“上游凭证 → Codex”的高级导入页粘贴 JSON 或选择文件。所有解析先在浏览器中完成，
-进入可检查、可修改的草稿，不会仅因打开文件就创建渠道或发送数据面请求。
-
-1. 检查 label、enable、account/user ID、Token、quota threshold 和维护代理。
-2. 把外部代理映射到现有代理，或检查后显式创建；选择直连会保留未映射警告。
-3. 逐条提交；服务端验证 Token、身份和 models 后保存凭证。
-4. 再显式创建接入、逻辑渠道和操作能力，绑定凭证，配置路由与授权。
-
-文件最多 20 个、每个 5 MiB。文件和导出 Bundle 含明文 OAuth/代理凭据，不要提交到 Git、
-贴入工单、写日志或存入浏览器持久化状态。逐步操作见[凭证管理](../user/upstream-credentials.md)。
+Console 高级导入页先在浏览器解析草稿（最多 20 个文件，每个 5 MiB）。检查账号、Token 和维护代理映射后再提交。文件和导出 Bundle 含明文 OAuth 或代理凭据，请按密钥保管。账号绑定、路由与授权见[连接账号](../user/codex.md#连接账号)。
 
 ## 外部格式关键语义
 
@@ -35,7 +26,6 @@
 固定 Sub2API 版本不强制 chatgpt_account_id，允许 user_id/sub 等身份 fallback；
 Header helper 只在 account ID 非空时发送 chatgpt-account-id。
 缺 account ID 不是 Free plan 专属，也不能由迁移工具补造 workspace ID。
-这些是版本观察，不承诺对方未来 schema 不变。
 
 ## 原生 Bundle
 
@@ -51,9 +41,7 @@ account ID 可缺，但须取得 user ID，解析兼容 auth namespace 中 chatg
 personal user ID，最后才用相同 Token 检测重复草稿。同一 Business workspace 的不同成员
 不能仅因 account ID 一样而去重。
 
-服务端仍独立验证并匹配账号；同一可识别账号更新原凭证，多条历史记录含糊匹配时拒绝静默合并。
-重新导入不复制或修改现有渠道、能力、目录和路由。models/quota/数据面仅在 account ID
-存在时发送 ChatGPT-Account-ID。JWT 解码本身不证明 Token 有效。
+服务端独立验证并匹配账号；唯一匹配时更新凭证，不改渠道或路由；多个匹配则拒绝合并。只有 account ID 非空时才发送 `ChatGPT-Account-ID`。
 
 ## 差异与限制
 

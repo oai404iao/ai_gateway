@@ -116,7 +116,7 @@ is a separate tab; model metadata, copying, and pricing retain dedicated editors
 For multiple providers or operations, use **Onboard model** or the selected model's
 **Bulk configure routes** action. These submit one reviewed transaction. For catalog-only
 changes, use **Append upstream model** in the capability list.
-See the [onboarding interaction design](../../docs/development/model-onboarding-ux.md) and
+See the [Console interaction standard](../../docs/development/console-interaction-standard.md) and
 browser coverage in `e2e/model-onboarding.spec.ts`, `e2e/ux-model-workspace.spec.ts`
 and `e2e/routing-topology.spec.ts`.
 
@@ -125,9 +125,8 @@ and `e2e/routing-topology.spec.ts`.
 Administrator **Plugins** pages (`/admin/plugins` and `/admin/plugins/:id`)
 manage native package installation, directory discovery, version activation,
 disablement, inactive artifact deletion, and plugin-defined settings.
-Settings forms render bounded scalar descriptors; no provider-specific fields,
-plugin JavaScript, or credential storage are embedded in the form renderer.
-System settings no longer contain a Codex category.
+The Console renders the settings fields declared by each plugin. Configure Codex
+on its plugin detail page; manage its OAuth accounts under **Upstream credentials**.
 
 Every plugin mutation prompts for administrator password verification. The
 single-use authorization token stays in the current operation's memory, never
@@ -158,9 +157,6 @@ Base UI. Custom triggers use `render`, not Radix `asChild`.
   reduced-motion behavior; Nova/Base UI primitive transitions remain component-owned.
 - Use Zustand for shared client state (memory-only session, theme and locale).
   Keep server state in TanStack Query, forms in React Hook Form, and local state local.
-- Future resizable panels use `react-resizable-panels`; future drag-and-drop uses
-  `dnd-kit`. Encapsulate recurring combinations in project-owned layout components.
-  No resize/drag interaction or dependency is currently installed.
 - Follow the [interaction standard](../../docs/development/console-interaction-standard.md)
   for parent links, URL list state, detail layouts, unsaved drafts and labels.
   Navigation uses links; mutations use buttons. Do not duplicate Back controls.

@@ -99,6 +99,10 @@ cargo_args=(test --test real_upstream)
 test_args=(--ignored --test-threads=1 --show-output)
 case "$mode" in
   --all)
+    if [[ "$responses_profile" == codex_oauth ]]; then
+      printf '%s\n' 'Skipping non-streaming Responses: the selected Codex profile supports SSE and WebSocket only.'
+      test_args+=(--skip suite::responses::validates_responses_nonstreaming_behavior_from_a_real_upstream)
+    fi
     if (( images_configured == 0 )); then
       test_args+=(--skip suite::images)
     fi

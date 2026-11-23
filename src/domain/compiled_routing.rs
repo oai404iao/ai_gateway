@@ -336,6 +336,7 @@ impl CompiledChannelUpstreamPolicy {
     pub fn outbound_network_policy_fingerprint(&self) -> OutboundNetworkPolicyFingerprint {
         self.outbound_network_policy_fingerprint
     }
+    #[cfg(test)]
     pub(crate) fn new(
         proxy: Option<Arc<CompiledProxy>>,
         template: Option<Arc<CompiledConfigTemplate>>,
@@ -377,7 +378,7 @@ impl CompiledChannelUpstreamPolicy {
         }
     }
 
-    #[allow(dead_code)] // retained for callers constructing a transparent policy directly
+    #[cfg(test)]
     pub(crate) fn transparent(api_format: ApiFormat) -> Self {
         Self::new(
             None,
@@ -484,20 +485,10 @@ impl AuthorizationProfile {
         allowed_channel_slots: Arc<[u64]>,
         accessible_route_slots: Arc<[u64]>,
     ) -> Self {
-        let fingerprint = routing_scope_fingerprint(&HashSet::new(), &allowed_channel_ids);
+        let fingerprint = routing_scope_fingerprint(allowed_channel_ids);
         Self {
             allowed_channel_slots,
             accessible_route_slots,
-            fingerprint,
-        }
-    }
-
-    #[cfg(test)]
-    fn legacy(allowed_group_ids: HashSet<Uuid>, allowed_channel_ids: HashSet<Uuid>) -> Self {
-        let fingerprint = routing_scope_fingerprint(&allowed_group_ids, &allowed_channel_ids);
-        Self {
-            allowed_channel_slots: Arc::from([]),
-            accessible_route_slots: Arc::from([]),
             fingerprint,
         }
     }
@@ -590,35 +581,7 @@ impl CompiledApiKey {
             .is_some_and(|limit| quota_used_amount >= limit)
     }
     #[allow(clippy::too_many_arguments)] // immutable compiled key construction mirrors validated records
-    #[cfg(test)]
     pub(crate) fn new(
-        id: Uuid,
-        user_id: Uuid,
-        permissions: HashSet<ApiKeyPermission>,
-        groups: HashSet<Uuid>,
-        channels: HashSet<Uuid>,
-        expires_at: Option<DateTime<Utc>>,
-        requests_per_minute: Option<u32>,
-        max_concurrent_requests: Option<u32>,
-        quota_limit_amount: Option<Decimal>,
-        quota_used_amount: Decimal,
-    ) -> Self {
-        Self::new_with_authorization_profile(
-            id,
-            user_id,
-            false,
-            false,
-            permissions,
-            Arc::new(AuthorizationProfile::legacy(groups, channels)),
-            expires_at,
-            requests_per_minute,
-            max_concurrent_requests,
-            quota_limit_amount,
-            quota_used_amount,
-        )
-    }
-    #[allow(clippy::too_many_arguments)] // immutable compiled key construction mirrors validated records
-    pub(crate) fn new_with_authorization_profile(
         id: Uuid,
         user_id: Uuid,
         websocket_enabled: bool,
@@ -656,9 +619,14 @@ impl CompiledApiKey {
         Self::new(
             id,
             Uuid::new_v4(),
+            false,
+            false,
             HashSet::new(),
-            HashSet::new(),
-            HashSet::new(),
+            Arc::new(AuthorizationProfile::new(
+                HashSet::new(),
+                Arc::from([]),
+                Arc::from([]),
+            )),
             None,
             requests_per_minute,
             max_concurrent_requests,
@@ -668,17 +636,11 @@ impl CompiledApiKey {
     }
 }
 
-fn routing_scope_fingerprint(groups: &HashSet<Uuid>, channels: &HashSet<Uuid>) -> [u8; 32] {
+fn routing_scope_fingerprint(channels: HashSet<Uuid>) -> [u8; 32] {
     let mut hasher = Sha256::new();
-    hasher.update(b"ai-gateway:routing-scope:v1\0");
-    let mut groups = groups.iter().copied().collect::<Vec<_>>();
-    groups.sort_unstable();
-    let mut channels = channels.iter().copied().collect::<Vec<_>>();
+    hasher.update(b"ai-gateway:routing-scope:v2\0");
+    let mut channels = channels.into_iter().collect::<Vec<_>>();
     channels.sort_unstable();
-    for group in groups {
-        hasher.update(group.as_bytes());
-    }
-    hasher.update([0]);
     for channel in channels {
         hasher.update(channel.as_bytes());
     }
@@ -710,11 +672,26 @@ pub(crate) struct ChannelIdentity {
     pub capability_revision: Uuid,
 }
 
+#[cfg(test)]
+impl ChannelIdentity {
+    pub(crate) fn for_test(api_operation: ApiOperation) -> Self {
+        Self {
+            logical_channel_id: Uuid::new_v4(),
+            access_id: Uuid::new_v4(),
+            api_operation,
+            credential_id: None,
+            credential_revision: None,
+            binding_revision: Uuid::new_v4(),
+            access_revision: Uuid::new_v4(),
+            capability_revision: Uuid::new_v4(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct CompiledChannel {
     id: Uuid,
     group_id: Uuid,
-    api_format: ApiFormat,
     logical_channel_id: Uuid,
     access_id: Uuid,
     api_operation: ApiOperation,
@@ -723,12 +700,7 @@ pub struct CompiledChannel {
     request_compression: RequestCompression,
     base_url: Url,
     connectivity_fingerprint: Arc<str>,
-    access_revision: Uuid,
-    capability_revision: Uuid,
-    supports_websocket: bool,
-    supports_standalone_web_search: bool,
     transport_mask: u8,
-    strict_transport_contract: bool,
     billing_multiplier: Decimal,
     upstream_auth: UpstreamAuth,
     available_models: HashSet<Arc<str>>,
@@ -738,26 +710,10 @@ pub struct CompiledChannel {
     upstream_policy: CompiledChannelUpstreamPolicy,
 }
 impl CompiledChannel {
-    pub(crate) fn with_transports(mut self, transports: &[super::CapabilityTransport]) -> Self {
-        if !transports.is_empty() {
-            self.transport_mask = transports
-                .iter()
-                .fold(0, |mask, transport| mask | transport_bit(*transport));
-            self.supports_websocket = self.permits_transport(super::CapabilityTransport::Websocket);
-        }
-        self.connectivity_fingerprint = Arc::from(format!(
-            "{}#transport={}",
-            self.connectivity_fingerprint, self.transport_mask
-        ));
-        self
-    }
-
     pub(crate) fn restrict_transports(mut self, transports: &[super::CapabilityTransport]) -> Self {
-        self.strict_transport_contract = true;
         self.transport_mask &= transports
             .iter()
             .fold(0, |mask, transport| mask | transport_bit(*transport));
-        self.supports_websocket = self.permits_transport(super::CapabilityTransport::Websocket);
         self.connectivity_fingerprint = Arc::from(format!(
             "{}#restricted-transport={}",
             self.connectivity_fingerprint, self.transport_mask
@@ -768,38 +724,6 @@ impl CompiledChannel {
     #[must_use]
     pub fn permits_transport(&self, transport: super::CapabilityTransport) -> bool {
         self.transport_mask & transport_bit(transport) != 0
-    }
-
-    pub(crate) fn has_strict_transport_contract(&self) -> bool {
-        self.strict_transport_contract
-    }
-
-    pub(crate) fn with_channel_identity(mut self, identity: ChannelIdentity) -> Self {
-        self.logical_channel_id = identity.logical_channel_id;
-        self.access_id = identity.access_id;
-        self.api_operation = identity.api_operation;
-        self.credential_id = identity.credential_id;
-        self.access_revision = identity.access_revision;
-        self.capability_revision = identity.capability_revision;
-        if identity.credential_id.is_some()
-            || !identity.binding_revision.is_nil()
-            || !identity.access_revision.is_nil()
-            || !identity.capability_revision.is_nil()
-        {
-            self.connectivity_fingerprint = Arc::from(format!(
-                "{}#{}/{}#{}/{}#{}/{}#{}/{}",
-                self.base_url,
-                identity.logical_channel_id,
-                identity.api_operation.as_str(),
-                identity.binding_revision,
-                identity.access_revision,
-                identity.access_id,
-                identity.capability_revision,
-                identity.credential_id.unwrap_or(Uuid::nil()),
-                identity.credential_revision.unwrap_or(Uuid::nil()),
-            ));
-        }
-        self
     }
 
     #[must_use]
@@ -828,7 +752,7 @@ impl CompiledChannel {
     }
     #[must_use]
     pub fn api_format(&self) -> ApiFormat {
-        self.api_format
+        self.api_operation.api_format()
     }
     #[must_use]
     pub const fn connector_kind(&self) -> ConnectorKind {
@@ -847,12 +771,12 @@ impl CompiledChannel {
         &self.connectivity_fingerprint
     }
     #[must_use]
-    pub const fn supports_websocket(&self) -> bool {
-        self.supports_websocket
+    pub fn supports_websocket(&self) -> bool {
+        self.permits_transport(super::CapabilityTransport::Websocket)
     }
     #[must_use]
     pub const fn supports_standalone_web_search(&self) -> bool {
-        self.supports_standalone_web_search
+        matches!(self.api_operation, ApiOperation::StandaloneWebSearch)
     }
     #[must_use]
     pub fn billing_multiplier(&self) -> Decimal {
@@ -882,167 +806,51 @@ impl CompiledChannel {
     pub fn test_model(&self) -> Option<&str> {
         self.test_model.as_deref()
     }
-    #[allow(dead_code)] // compatibility constructor for callers without a policy
-    pub(crate) fn new(
-        id: Uuid,
-        group_id: Uuid,
-        api_format: ApiFormat,
-        base_url: Url,
-        upstream_auth: UpstreamAuth,
-        available_models: HashSet<Arc<str>>,
-    ) -> Self {
-        let upstream_policy = CompiledChannelUpstreamPolicy::transparent(api_format);
-        Self::new_with_policy(
-            id,
-            group_id,
-            api_format,
-            base_url,
-            upstream_auth,
-            available_models,
-            upstream_policy,
-        )
-    }
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new_with_policy(
+    pub(crate) fn from_capability(
         id: Uuid,
         group_id: Uuid,
-        api_format: ApiFormat,
-        base_url: Url,
-        upstream_auth: UpstreamAuth,
-        available_models: HashSet<Arc<str>>,
-        upstream_policy: CompiledChannelUpstreamPolicy,
-    ) -> Self {
-        Self::new_with_policy_and_automation(
-            id,
-            group_id,
-            api_format,
-            base_url,
-            upstream_auth,
-            available_models,
-            false,
-            false,
-            None,
-            upstream_policy,
-        )
-    }
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new_with_policy_and_automation(
-        id: Uuid,
-        group_id: Uuid,
-        api_format: ApiFormat,
-        base_url: Url,
-        upstream_auth: UpstreamAuth,
-        available_models: HashSet<Arc<str>>,
-        auto_disable_allowed: bool,
-        auto_disabled: bool,
-        test_model: Option<Arc<str>>,
-        upstream_policy: CompiledChannelUpstreamPolicy,
-    ) -> Self {
-        Self::new_with_policy_automation_and_billing(
-            id,
-            group_id,
-            api_format,
-            base_url,
-            Decimal::ONE,
-            upstream_auth,
-            available_models,
-            false,
-            false,
-            auto_disable_allowed,
-            auto_disabled,
-            test_model,
-            upstream_policy,
-        )
-    }
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new_with_policy_automation_and_billing(
-        id: Uuid,
-        group_id: Uuid,
-        api_format: ApiFormat,
-        base_url: Url,
-        billing_multiplier: Decimal,
-        upstream_auth: UpstreamAuth,
-        available_models: HashSet<Arc<str>>,
-        supports_websocket: bool,
-        supports_standalone_web_search: bool,
-        auto_disable_allowed: bool,
-        auto_disabled: bool,
-        test_model: Option<Arc<str>>,
-        upstream_policy: CompiledChannelUpstreamPolicy,
-    ) -> Self {
-        Self::new_with_connector_policy_automation_and_billing(
-            id,
-            group_id,
-            api_format,
-            ConnectorKind::OpenAiCompatible,
-            RequestCompression::Default,
-            base_url,
-            billing_multiplier,
-            upstream_auth,
-            available_models,
-            supports_websocket,
-            supports_standalone_web_search,
-            auto_disable_allowed,
-            auto_disabled,
-            test_model,
-            upstream_policy,
-        )
-    }
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new_with_connector_policy_automation_and_billing(
-        id: Uuid,
-        group_id: Uuid,
-        api_format: ApiFormat,
+        identity: ChannelIdentity,
         connector_kind: ConnectorKind,
         request_compression: RequestCompression,
         base_url: Url,
         billing_multiplier: Decimal,
         upstream_auth: UpstreamAuth,
         available_models: HashSet<Arc<str>>,
-        supports_websocket: bool,
-        supports_standalone_web_search: bool,
         auto_disable_allowed: bool,
         auto_disabled: bool,
         test_model: Option<Arc<str>>,
         upstream_policy: CompiledChannelUpstreamPolicy,
     ) -> Self {
-        let connectivity_fingerprint = Arc::from(base_url.as_str());
-        use super::CapabilityTransport as T;
-        let mut transport_mask = match api_format {
-            ApiFormat::OpenAiChatCompletions => {
-                transport_bit(T::HttpJson) | transport_bit(T::HttpSse)
-            }
-            ApiFormat::OpenAiResponses => {
-                transport_bit(T::HttpSse)
-                    | if connector_kind == ConnectorKind::CodexOauth {
-                        0
-                    } else {
-                        transport_bit(T::HttpJson)
-                    }
-            }
-            ApiFormat::OpenAiImages => transport_bit(T::HttpJson) | transport_bit(T::Multipart),
-        };
-        if supports_websocket {
-            transport_mask |= transport_bit(T::Websocket);
-        }
+        let transport_mask = identity
+            .api_operation
+            .transports()
+            .iter()
+            .fold(0, |mask, transport| mask | transport_bit(*transport));
+        let connectivity_fingerprint = Arc::from(format!(
+            "{}#{}/{}#{}/{}#{}/{}#{}/{}",
+            base_url,
+            identity.logical_channel_id,
+            identity.api_operation.as_str(),
+            identity.binding_revision,
+            identity.access_revision,
+            identity.access_id,
+            identity.capability_revision,
+            identity.credential_id.unwrap_or(Uuid::nil()),
+            identity.credential_revision.unwrap_or(Uuid::nil()),
+        ));
         Self {
             id,
             group_id,
-            api_format,
-            logical_channel_id: id,
-            access_id: Uuid::nil(),
-            api_operation: ApiOperation::legacy_default(api_format),
-            credential_id: None,
+            logical_channel_id: identity.logical_channel_id,
+            access_id: identity.access_id,
+            api_operation: identity.api_operation,
+            credential_id: identity.credential_id,
             connector_kind,
             request_compression,
             base_url,
             connectivity_fingerprint,
-            access_revision: Uuid::nil(),
-            capability_revision: Uuid::nil(),
-            supports_websocket,
-            supports_standalone_web_search,
             transport_mask,
-            strict_transport_contract: false,
             billing_multiplier,
             upstream_auth,
             available_models,
@@ -1074,47 +882,6 @@ impl SelectionStrategy {
             "weighted_random" => Some(Self::WeightedRandom),
             "weighted_round_robin" => Some(Self::WeightedRoundRobin),
             _ => None,
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct CompiledChannelGroup {
-    id: Uuid,
-    api_format: Option<ApiFormat>,
-    connector_kind: Option<ConnectorKind>,
-}
-impl CompiledChannelGroup {
-    #[must_use]
-    pub fn id(&self) -> Uuid {
-        self.id
-    }
-    /// Legacy protocol metadata. Canonical routing groups are neutral and own
-    /// no connector, compression, or format, so they return `None`.
-    #[must_use]
-    pub const fn api_format(&self) -> Option<ApiFormat> {
-        self.api_format
-    }
-    #[must_use]
-    pub const fn connector_kind(&self) -> Option<ConnectorKind> {
-        self.connector_kind
-    }
-    pub(crate) fn new(id: Uuid) -> Self {
-        Self {
-            id,
-            api_format: None,
-            connector_kind: None,
-        }
-    }
-    pub(crate) fn new_with_connector(
-        id: Uuid,
-        api_format: ApiFormat,
-        connector_kind: ConnectorKind,
-    ) -> Self {
-        Self {
-            id,
-            api_format: Some(api_format),
-            connector_kind: Some(connector_kind),
         }
     }
 }
@@ -1539,7 +1306,7 @@ impl CompiledModelRoutes {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct CompiledRuntimeConfig {
     plugins: ConnectorPlugins,
     plugin_errors: HashMap<String, &'static str>,
@@ -1548,80 +1315,20 @@ pub struct CompiledRuntimeConfig {
     channels: HashMap<Uuid, Arc<CompiledChannel>>,
     probe_channels: HashMap<Uuid, Arc<CompiledChannel>>,
     scheduled_test_models: HashMap<Uuid, Arc<CompiledScheduledTestModel>>,
-    groups: HashMap<Uuid, Arc<CompiledChannelGroup>>,
+    enabled_group_ids: HashSet<Uuid>,
     proxies: HashMap<Uuid, Arc<CompiledProxy>>,
     templates: HashMap<Uuid, Arc<CompiledConfigTemplate>>,
     system_settings: SystemRuntimeSettings,
 }
 impl CompiledRuntimeConfig {
-    #[must_use]
-    pub fn new(
-        api_keys: HashMap<ApiKeyHash, Arc<CompiledApiKey>>,
-        model_rules: HashMap<ModelRouteKey, Arc<CompiledModelRule>>,
-        channels: HashMap<Uuid, Arc<CompiledChannel>>,
-        groups: HashMap<Uuid, Arc<CompiledChannelGroup>>,
-    ) -> Self {
-        Self::with_resources(
-            api_keys,
-            model_rules,
-            channels,
-            groups,
-            HashMap::new(),
-            HashMap::new(),
-        )
-    }
-    #[must_use]
-    pub fn with_resources(
-        api_keys: HashMap<ApiKeyHash, Arc<CompiledApiKey>>,
-        model_rules: HashMap<ModelRouteKey, Arc<CompiledModelRule>>,
-        channels: HashMap<Uuid, Arc<CompiledChannel>>,
-        groups: HashMap<Uuid, Arc<CompiledChannelGroup>>,
-        proxies: HashMap<Uuid, Arc<CompiledProxy>>,
-        templates: HashMap<Uuid, Arc<CompiledConfigTemplate>>,
-    ) -> Self {
-        Self::with_resources_and_system_settings(
-            api_keys,
-            model_rules,
-            channels,
-            groups,
-            proxies,
-            templates,
-            SystemRuntimeSettings::default(),
-        )
-    }
-
-    #[must_use]
-    pub(crate) fn with_resources_and_system_settings(
-        api_keys: HashMap<ApiKeyHash, Arc<CompiledApiKey>>,
-        model_rules: HashMap<ModelRouteKey, Arc<CompiledModelRule>>,
-        channels: HashMap<Uuid, Arc<CompiledChannel>>,
-        groups: HashMap<Uuid, Arc<CompiledChannelGroup>>,
-        proxies: HashMap<Uuid, Arc<CompiledProxy>>,
-        templates: HashMap<Uuid, Arc<CompiledConfigTemplate>>,
-        system_settings: SystemRuntimeSettings,
-    ) -> Self {
-        let probe_channels = channels.clone();
-        Self::with_resources_system_settings_and_probe_channels(
-            api_keys,
-            model_rules,
-            channels,
-            probe_channels,
-            HashMap::new(),
-            groups,
-            proxies,
-            templates,
-            system_settings,
-        )
-    }
-
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn with_resources_system_settings_and_probe_channels(
+    pub(crate) fn new(
         api_keys: HashMap<ApiKeyHash, Arc<CompiledApiKey>>,
         model_rules: HashMap<ModelRouteKey, Arc<CompiledModelRule>>,
         channels: HashMap<Uuid, Arc<CompiledChannel>>,
         probe_channels: HashMap<Uuid, Arc<CompiledChannel>>,
         scheduled_test_models: HashMap<Uuid, Arc<CompiledScheduledTestModel>>,
-        groups: HashMap<Uuid, Arc<CompiledChannelGroup>>,
+        enabled_group_ids: HashSet<Uuid>,
         proxies: HashMap<Uuid, Arc<CompiledProxy>>,
         templates: HashMap<Uuid, Arc<CompiledConfigTemplate>>,
         system_settings: SystemRuntimeSettings,
@@ -1634,7 +1341,7 @@ impl CompiledRuntimeConfig {
             channels,
             probe_channels,
             scheduled_test_models,
-            groups,
+            enabled_group_ids,
             proxies,
             templates,
             system_settings,
@@ -1659,12 +1366,7 @@ impl CompiledRuntimeConfig {
     }
     #[must_use]
     pub fn empty() -> Self {
-        Self::new(
-            HashMap::new(),
-            HashMap::new(),
-            HashMap::new(),
-            HashMap::new(),
-        )
+        Self::default()
     }
     #[must_use]
     pub fn authenticate(&self, secret: &str) -> Option<Arc<CompiledApiKey>> {
@@ -1672,13 +1374,6 @@ impl CompiledRuntimeConfig {
             .get(&ApiKeyHash::from_secret(secret))
             .filter(|key| !key.is_expired())
             .cloned()
-    }
-    /// Format-level compatibility lookup. The data plane must use
-    /// [`Self::operation_rule`] so an operation never borrows a sibling
-    /// operation's candidate pool from the same format.
-    #[must_use]
-    pub fn model_rule(&self, format: ApiFormat, model: &str) -> Option<Arc<CompiledModelRule>> {
-        self.operation_rule(ApiOperation::legacy_default(format), model)
     }
     /// Exact operation-qualified lookup. Returns `None` when no rule was
     /// configured for this operation; it never falls back to a sibling.
@@ -1702,8 +1397,8 @@ impl CompiledRuntimeConfig {
         self.scheduled_test_models.get(&channel_id).cloned()
     }
     #[must_use]
-    pub fn group(&self, id: Uuid) -> Option<Arc<CompiledChannelGroup>> {
-        self.groups.get(&id).cloned()
+    pub(crate) fn group_enabled(&self, id: Uuid) -> bool {
+        self.enabled_group_ids.contains(&id)
     }
     #[must_use]
     pub fn proxy(&self, id: Uuid) -> Option<Arc<CompiledProxy>> {
@@ -1758,10 +1453,7 @@ impl CompiledRuntimeConfig {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::{HashMap, HashSet},
-        sync::Arc,
-    };
+    use std::sync::Arc;
 
     use chrono::{Duration, Utc};
     use reqwest::header::HeaderName;
@@ -1772,24 +1464,18 @@ mod tests {
     #[test]
     fn expired_keys_are_rejected_at_authentication_time() {
         let secret = "expired-client-secret";
-        let key = Arc::new(CompiledApiKey::new(
+        let mut key = CompiledApiKey::test_with_policy(
             Uuid::new_v4(),
-            Uuid::new_v4(),
-            HashSet::new(),
-            HashSet::new(),
-            HashSet::new(),
-            Some(Utc::now() - Duration::seconds(1)),
             None,
             None,
             None,
             rust_decimal::Decimal::ZERO,
-        ));
-        let snapshot = CompiledRuntimeConfig::new(
-            HashMap::from([(ApiKeyHash::from_secret(secret), key)]),
-            HashMap::new(),
-            HashMap::new(),
-            HashMap::new(),
         );
+        key.expires_at = Some(Utc::now() - Duration::seconds(1));
+        let mut snapshot = CompiledRuntimeConfig::empty();
+        snapshot
+            .api_keys
+            .insert(ApiKeyHash::from_secret(secret), Arc::new(key));
         assert!(snapshot.authenticate(secret).is_none());
     }
 

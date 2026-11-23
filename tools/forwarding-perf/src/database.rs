@@ -1,6 +1,6 @@
 //! Throwaway PostgreSQL lifecycle, migrations, control-plane seeding, and log summaries.
 
-use std::{collections::HashMap, error::Error, fs, path::Path, time::Duration};
+use std::{collections::HashMap, error::Error, time::Duration};
 
 use ai_gateway::{
     persistence::{
@@ -17,27 +17,6 @@ use uuid::Uuid;
 
 use crate::scenario::{ApiKind, CLIENT_API_KEY, Scenario, UPSTREAM_API_KEY};
 
-const LEGACY_DATABASE_ADMIN_URL: &str = "postgres://ai_gateway:ai_gateway@127.0.0.1:5432/postgres";
-const PASSWORD_FILE_DATABASE_ADMIN_URL: &str = "postgres://ai_gateway@127.0.0.1:5432/postgres";
-
-pub fn default_database_admin_url() -> String {
-    database_admin_url_from_password_file(Path::new("./config/postgres-password"))
-        .unwrap_or_else(|| LEGACY_DATABASE_ADMIN_URL.into())
-}
-
-fn database_admin_url_from_password_file(path: &Path) -> Option<String> {
-    let mut password = fs::read_to_string(path).ok()?;
-    while matches!(password.as_bytes().last(), Some(b'\n' | b'\r')) {
-        password.pop();
-    }
-    if password.is_empty() {
-        return None;
-    }
-    let mut url = Url::parse(PASSWORD_FILE_DATABASE_ADMIN_URL).ok()?;
-    url.set_password(Some(&password)).ok()?;
-    Some(url.to_string())
-}
-
 pub struct TemporaryDatabase {
     admin: PgPool,
     pool: PgPool,
@@ -47,22 +26,14 @@ pub struct TemporaryDatabase {
 
 impl TemporaryDatabase {
     pub async fn create(
-        admin_url: &str,
+        mut database_url: Url,
         scenarios: &[Scenario],
         mock_base_url: &str,
     ) -> Result<Self, Box<dyn Error + Send + Sync>> {
-        let mut database_url = Url::parse(admin_url)
-            .map_err(|error| format!("invalid database admin URL: {error}"))?;
-        let admin_database = database_url.path().trim_matches('/');
-        if admin_database.is_empty() || admin_database == "ai_gateway" {
-            return Err(
-                "database admin URL must target an administrative database such as postgres".into(),
-            );
-        }
         let admin = PgPoolOptions::new()
             .max_connections(1)
             .acquire_timeout(Duration::from_secs(5))
-            .connect(admin_url)
+            .connect(database_url.as_str())
             .await?;
         let name = format!("ai_gateway_perf_{}", Uuid::new_v4().simple());
         sqlx::query(sqlx::AssertSqlSafe(format!("CREATE DATABASE \"{name}\"")))
@@ -332,13 +303,6 @@ async fn seed(
     .bind(responses_group_id)
     .execute(&mut *transaction)
     .await?;
-    for (capability, group) in [
-        (chat_channel_id, chat_group_id),
-        (responses_channel_id, responses_group_id),
-    ] {
-        sqlx::query("INSERT INTO api_key_channel_grants(api_key_id,channel_id,origin_kind,origin_id) VALUES($1,$2,'group',$3)")
-            .bind(api_key_id).bind(capability).bind(group).execute(&mut *transaction).await?;
-    }
 
     for scenario in scenarios {
         let channel_id = match scenario.api_kind {
@@ -395,38 +359,48 @@ fn operation(kind: ApiKind) -> &'static str {
 mod tests {
     use uuid::Uuid;
 
-    use super::{TemporaryDatabase, default_database_admin_url};
-    use crate::scenario::{ProfileName, profile};
+    use super::{TemporaryDatabase, operation};
+    use crate::scenario::{CLIENT_API_KEY, ProfileName, profile};
 
     #[tokio::test]
     #[ignore = "requires PostgreSQL; validates migrations and performance control-plane seeding"]
     async fn temporary_database_seeds_a_compilable_snapshot() {
-        let admin_url = std::env::var("TEST_DATABASE_ADMIN_URL")
-            .unwrap_or_else(|_| default_database_admin_url());
+        let admin_url = crate::postgres::admin_url(None).unwrap();
         let profile = profile(ProfileName::Quick);
         let database =
-            TemporaryDatabase::create(&admin_url, &profile.scenarios, "http://127.0.0.1:9")
+            TemporaryDatabase::create(admin_url, &profile.scenarios, "http://127.0.0.1:9")
                 .await
                 .unwrap();
         for scenario in &profile.scenarios {
             assert_eq!(database.request_log_stats(scenario).await.unwrap().total, 0);
         }
         let scenario = &profile.scenarios[0];
-        let payload = serde_json::to_vec(&serde_json::json!({
+        let (user, key): (Uuid, Uuid) =
+            sqlx::query_as("SELECT user_id,id FROM api_keys WHERE secret_value=$1")
+                .bind(CLIENT_API_KEY)
+                .fetch_one(&database.pool)
+                .await
+                .unwrap();
+        let now = chrono::Utc::now();
+        let event: ai_gateway::domain::RequestLogEvent = serde_json::from_value(serde_json::json!({
             "id": Uuid::new_v4(),
+            "started_at": now, "completed_at": now, "user_id": user, "api_key_id": key,
             "request_source": "client",
             "api_format": scenario.api_kind.database_name(),
+            "api_operation": operation(scenario.api_kind),
+            "request_protocol": ai_gateway::domain::RequestProtocol::from_http_streamed(scenario.streamed),
             "client_model": scenario.model,
-            "outcome": "succeeded"
+            "upstream_credential_id": null, "fast_mode": false,
+            "outcome": "succeeded", "response_status_code": 200, "total_duration_ms": 0, "error_summary": null
         }))
         .unwrap();
         sqlx::query(
             "INSERT INTO request_log_ingest
              (request_log_id,schema_version,payload)
-             VALUES ($1,1,$2)",
+             VALUES ($1,10,$2)",
         )
-        .bind(Uuid::new_v4())
-        .bind(payload)
+        .bind(event.id)
+        .bind(serde_json::to_vec(&event).unwrap())
         .execute(&database.pool)
         .await
         .unwrap();

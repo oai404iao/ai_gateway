@@ -14,7 +14,7 @@ use ai_gateway::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ConfigTemplateRecord, ControlPlaneRecords,
         ModelRuleRecord, ModelRuleRouteCandidate, ModelRuleRoutingTier,
     },
-    runtime_config::{RuntimeConfig, UpstreamConfig, compile_control_plane_with_system_settings},
+    runtime_config::{RuntimeConfig, compile_control_plane_with_system_settings},
 };
 use async_compression::tokio::write::GzipEncoder;
 use axum::{
@@ -79,13 +79,11 @@ fn proxy_service_with_documents(
 ) -> ProxyService {
     proxy_service_with_network_policy(
         upstream_url,
-        UpstreamConfig {
-            connect_timeout_seconds: 1,
-            response_header_timeout_seconds: response_header_timeout,
-            images_response_header_timeout_seconds: response_header_timeout,
-            standalone_web_search_response_header_timeout_seconds: response_header_timeout,
-            stream_idle_timeout_seconds: stream_idle_timeout,
-        },
+        UpstreamTimeoutDefaults::new(
+            Duration::from_secs(1),
+            Duration::from_secs(response_header_timeout),
+            Duration::from_secs(stream_idle_timeout),
+        ),
         (None, None, None),
         template,
         override_document,
@@ -95,7 +93,7 @@ fn proxy_service_with_documents(
 
 fn proxy_service_with_network_policy(
     upstream_url: &str,
-    upstream_config: UpstreamConfig,
+    defaults: UpstreamTimeoutDefaults,
     channel_timeouts: (Option<i32>, Option<i32>, Option<i32>),
     template: Option<Value>,
     override_document: Value,
@@ -125,30 +123,23 @@ fn proxy_service_with_network_policy(
         groups: vec![ChannelGroupRecord {
             id: group_id,
             name: "chat".into(),
-            api_format: "open_ai_chat_completions".into(),
-            connector_kind: "general".into(),
-            request_compression: "default".into(),
             enabled: true,
         }],
         channels: vec![ChannelRecord {
             credential: None,
-            credential_binding_revision: Uuid::nil(),
+            credential_binding_revision: channel_id,
             id: channel_id,
             channel_group_id: group_id,
-            api_format: "open_ai_chat_completions".into(),
-            logical_channel_id: Uuid::nil(),
-            access_id: Uuid::nil(),
-            api_operation: None,
-            connector_kind: String::new(),
-            request_compression: String::new(),
-            access_revision: Uuid::nil(),
-            capability_revision: Uuid::nil(),
-            transports: Vec::new(),
+            logical_channel_id: channel_id,
+            access_id: channel_id,
+            api_operation: ApiOperation::ChatCompletions,
+            connector_kind: ai_gateway::domain::ConnectorKind::OpenAiCompatible,
+            request_compression: ai_gateway::domain::RequestCompression::Default,
+            access_revision: channel_id,
+            capability_revision: channel_id,
             name: "chat".into(),
             base_url: upstream_url.into(),
             enabled: true,
-            supports_websocket: false,
-            supports_standalone_web_search: false,
             auto_disabled: false,
             auto_disable_allowed: false,
             billing_multiplier: rust_decimal::Decimal::ONE,
@@ -213,14 +204,7 @@ fn proxy_service_with_network_policy(
         Arc::new(RuntimeConfig::new(
             compile_control_plane_with_system_settings(
                 records,
-                SystemRuntimeSettings::new(
-                    UpstreamTimeoutDefaults::new(
-                        Duration::from_secs(upstream_config.connect_timeout_seconds),
-                        Duration::from_secs(upstream_config.response_header_timeout_seconds),
-                        Duration::from_secs(upstream_config.stream_idle_timeout_seconds),
-                    ),
-                    PassiveHealthSettings::default(),
-                ),
+                SystemRuntimeSettings::new(defaults, PassiveHealthSettings::default()),
             )
             .unwrap(),
         )),
@@ -300,6 +284,19 @@ async fn never_responds(State(state): State<HeaderTimeoutState>) -> Response {
 
 #[tokio::test]
 async fn response_header_timeout_returns_openai_error_and_cancels_upstream_request() {
+    assert_header_timeout(2, (None, None, None), OUTER_TIMEOUT).await;
+}
+
+#[tokio::test]
+async fn channel_response_header_timeout_overrides_the_longer_default() {
+    assert_header_timeout(5, (Some(50), Some(100), None), Duration::from_secs(1)).await;
+}
+
+async fn assert_header_timeout(
+    default_seconds: u64,
+    channel_timeouts: (Option<i32>, Option<i32>, Option<i32>),
+    deadline: Duration,
+) {
     let (accepted_tx, accepted_rx) = oneshot::channel();
     let (cancelled_tx, cancelled_rx) = oneshot::channel();
     let upstream = start_server(
@@ -311,14 +308,21 @@ async fn response_header_timeout_returns_openai_error_and_cancels_upstream_reque
             }),
     )
     .await;
-    let gateway = start_server(http::router(proxy_service(
+    let gateway = start_server(http::router(proxy_service_with_network_policy(
         &format!("http://{}", upstream.address),
-        2,
-        5,
+        UpstreamTimeoutDefaults::new(
+            Duration::from_secs(1),
+            Duration::from_secs(default_seconds),
+            Duration::from_secs(5),
+        ),
+        channel_timeouts,
+        None,
+        serde_json::json!({}),
+        RecordingRequestLogSink::default(),
     )))
     .await;
 
-    let response = timeout(OUTER_TIMEOUT, request(&client(), gateway.address).send())
+    let response = timeout(deadline, request(&client(), gateway.address).send())
         .await
         .expect("gateway did not enforce the response-header timeout")
         .unwrap();
@@ -336,52 +340,6 @@ async fn response_header_timeout_returns_openai_error_and_cancels_upstream_reque
     timeout(CANCELLATION_TIMEOUT, cancelled_rx)
         .await
         .expect("header-timeout cancellation did not drop the upstream request")
-        .unwrap();
-}
-
-#[tokio::test]
-async fn channel_response_header_timeout_overrides_the_longer_toml_default() {
-    let (accepted_tx, accepted_rx) = oneshot::channel();
-    let (cancelled_tx, cancelled_rx) = oneshot::channel();
-    let upstream = start_server(
-        Router::new()
-            .route("/v1/chat/completions", post(never_responds))
-            .with_state(HeaderTimeoutState {
-                accepted: Arc::new(Mutex::new(Some(accepted_tx))),
-                cancelled: Arc::new(Mutex::new(Some(cancelled_tx))),
-            }),
-    )
-    .await;
-    let gateway = start_server(http::router(proxy_service_with_network_policy(
-        &format!("http://{}", upstream.address),
-        UpstreamConfig {
-            connect_timeout_seconds: 5,
-            response_header_timeout_seconds: 5,
-            images_response_header_timeout_seconds: 5,
-            standalone_web_search_response_header_timeout_seconds: 5,
-            stream_idle_timeout_seconds: 5,
-        },
-        (Some(50), Some(100), None),
-        None,
-        serde_json::json!({}),
-        RecordingRequestLogSink::default(),
-    )))
-    .await;
-
-    let response = timeout(
-        Duration::from_secs(1),
-        request(&client(), gateway.address).send(),
-    )
-    .await
-    .expect("channel response-header override was ignored")
-    .unwrap();
-    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
-    let body: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
-    assert_eq!(body["error"]["code"], "response_header_timeout");
-    timeout(OUTER_TIMEOUT, accepted_rx).await.unwrap().unwrap();
-    timeout(CANCELLATION_TIMEOUT, cancelled_rx)
-        .await
-        .expect("channel response-header timeout did not cancel upstream")
         .unwrap();
 }
 
@@ -404,6 +362,23 @@ async fn two_chunk_sse(State(state): State<TwoChunkState>) -> Response {
         ))
     });
     sse_response(Body::from_stream(first.chain(second)))
+}
+
+async fn first_sse_frame(response: &mut reqwest::Response) -> Vec<u8> {
+    timeout(CANCELLATION_TIMEOUT, async {
+        let mut frame = Vec::new();
+        while !frame.ends_with(b"\n\n") {
+            let chunk = response
+                .chunk()
+                .await
+                .unwrap()
+                .expect("incomplete SSE frame");
+            frame.extend_from_slice(&chunk);
+        }
+        frame
+    })
+    .await
+    .expect("first SSE frame was buffered")
 }
 
 #[tokio::test]
@@ -442,21 +417,8 @@ async fn transformed_sse_first_event_arrives_before_the_second_is_released() {
             .unwrap();
         serde_json::from_slice(data).unwrap()
     };
-    let mut first = Vec::new();
-    timeout(CANCELLATION_TIMEOUT, async {
-        while !first.ends_with(b"\n\n") {
-            let chunk = response
-                .chunk()
-                .await
-                .unwrap()
-                .expect("missing first event");
-            first.extend_from_slice(&chunk);
-        }
-    })
-    .await
-    .expect("first SSE event was buffered");
     assert_eq!(
-        event_data(&first),
+        event_data(&first_sse_frame(&mut response).await),
         serde_json::json!({"object": "chat.completion.chunk", "patched": true})
     );
 
@@ -519,11 +481,7 @@ async fn idle_upstream_stream_keeps_status_then_terminates_and_releases_body() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
-        timeout(OUTER_TIMEOUT, response.chunk())
-            .await
-            .expect("gateway did not forward the first SSE chunk")
-            .unwrap()
-            .unwrap(),
+        first_sse_frame(&mut response).await,
         b"data: {\"object\":\"chat.completion.chunk\",\"patched\":true}\n\n".as_slice()
     );
     match timeout(OUTER_TIMEOUT, response.chunk())
@@ -552,13 +510,11 @@ async fn channel_stream_idle_timeout_overrides_the_longer_toml_default() {
     .await;
     let gateway = start_server(http::router(proxy_service_with_network_policy(
         &format!("http://{}", upstream.address),
-        UpstreamConfig {
-            connect_timeout_seconds: 5,
-            response_header_timeout_seconds: 6,
-            images_response_header_timeout_seconds: 6,
-            standalone_web_search_response_header_timeout_seconds: 6,
-            stream_idle_timeout_seconds: 5,
-        },
+        UpstreamTimeoutDefaults::new(
+            Duration::from_secs(5),
+            Duration::from_secs(6),
+            Duration::from_secs(5),
+        ),
         (None, None, Some(100)),
         None,
         serde_json::json!({}),
@@ -611,11 +567,7 @@ async fn client_disconnect_drops_upstream_response_body_without_background_pump(
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
-        timeout(OUTER_TIMEOUT, response.chunk())
-            .await
-            .expect("gateway did not forward the first SSE chunk")
-            .unwrap()
-            .unwrap(),
+        first_sse_frame(&mut response).await,
         b"data: {\"object\":\"chat.completion.chunk\",\"patched\":true}\n\n".as_slice()
     );
     assert!(
@@ -1126,10 +1078,7 @@ async fn later_same_chunk_sse_failure_preserves_earlier_unmatched_frame() {
     let mut response = request(&client(), gateway.address).send().await.unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        response.chunk().await.unwrap().unwrap(),
-        Bytes::from_static(b"data: [DONE]\n\n")
-    );
+    assert_eq!(first_sse_frame(&mut response).await, b"data: [DONE]\n\n");
     assert!(matches!(response.chunk().await, Err(_) | Ok(None)));
 }
 

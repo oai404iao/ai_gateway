@@ -1,18 +1,18 @@
 //! Minimal generic Responses connector using gateway-owned transport and auth.
 
 use ai_gateway_connector_sdk::{
-    PluginCallError, PluginManifest, PluginOutput, export_plugin, zeroize_json,
+    ATTEMPT_DESCRIBE, PluginCallError, PluginManifest, PluginOutput, export_plugin, zeroize_json,
 };
 use serde_json::{Value, json};
 
 fn manifest() -> PluginManifest {
     PluginManifest {
-        protocol_version: 1,
+        protocol_version: 3,
         id: "example-responses".into(),
         version: env!("CARGO_PKG_VERSION").into(),
         operations: vec!["responses".into()],
         commands: [
-            "attempt.capabilities",
+            ATTEMPT_DESCRIBE,
             "attempt.body",
             "attempt.target",
             "attempt.headers",
@@ -53,10 +53,16 @@ fn process(command: &str, metadata: &Value, body: &[u8]) -> Result<PluginOutput,
         body: Vec::new(),
     };
     match command {
-        "attempt.capabilities" => Ok(output(json!({
-            "preserves_affinity_on_failure": false,
-            "successful_response_is_sse": false,
-            "changes_request_body": false,
+        ATTEMPT_DESCRIBE => Ok(output(json!({
+            "capabilities":{
+                "preserves_affinity_on_failure":false,
+                "successful_response_is_sse":false,
+                "changes_request_body":false
+            },
+            "protocols":[
+                {"protocol":"non_stream","response":"passthrough"},
+                {"protocol":"sse","response":"passthrough"}
+            ]
         }))),
         "attempt.body" => Ok(PluginOutput {
             metadata: json!({}),
@@ -109,13 +115,16 @@ mod tests {
             let output = dispatch(command, metadata.clone(), body).unwrap();
             assert!(output.metadata.is_object());
             match command.as_str() {
-                "attempt.capabilities" => {
+                ATTEMPT_DESCRIBE => {
+                    let descriptor: ai_gateway_connector_sdk::AttemptDescriptor =
+                        serde_json::from_value(output.metadata.clone()).unwrap();
+                    assert!(descriptor.validate_for_operation("responses"));
                     for flag in [
                         "preserves_affinity_on_failure",
                         "successful_response_is_sse",
                         "changes_request_body",
                     ] {
-                        assert_eq!(output.metadata[flag], false);
+                        assert_eq!(output.metadata["capabilities"][flag], false);
                     }
                 }
                 "attempt.body" => assert_eq!(output.body, body),

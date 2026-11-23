@@ -17,8 +17,7 @@
 
 ## 目标与分层
 
-研究背景见 [Monoize 工程对比](../reference/monoize-engineering-study.md)。
-根 `e2e/` 负责跨进程系统验收，根 `mock/` 维护协议场景，不搬迁现有测试：
+系统验收由根 `e2e/` 编排，根 `mock/` 提供协议场景；按待验证的边界选择入口：
 
 | 层次 | 入口 | 边界 |
 | --- | --- | --- |
@@ -60,7 +59,7 @@
 - 只启用 read 工具，通过 JSON 事件核验成功工具执行、call ID、随机 marker、
   最终 assistant stop 及 agent_end；同时核验上游收到的工具结果。
 
-协议 3 响应插件场景在原有故障及备份验收之后独立执行：
+同格式响应适配场景使用原生协议 3 插件，验证：
 
 - 从当前 worktree 构建可信 SDK 示例，通过 Console 安装、启用和编辑设置。
 - 验证 Chat/Responses JSON/SSE 文本归一化、原始 usage 和一次结算。
@@ -88,7 +87,7 @@
 spool，再 SIGKILL Gateway；恢复 DB 并用原配置/spool 启动，核验最终日志及一次结算。
 
 `duplicate-replay-no-double-charge` 在 Gateway 停止时只回退私有 checkpoint，模拟 DB 已提交、
-本地 checkpoint 未提交的窗口。等待 spool 排空及真实 SQL ingress 计数归零，
+本地 checkpoint 未提交的窗口。PostgreSQL 在此停写点用 `pg_dump` / `pg_restore` 恢复到全新测试库，配对复制整个 spool，随后在恢复的实例验证重放。等待 spool 排空及真实 SQL ingress 计数归零，
 核验日志数、余额和额度没有重复变化；不重新 dispatch 模型调用。
 
 `spool-write-enospc` / `spool-write-eacces`：
@@ -110,7 +109,7 @@ spool，再 SIGKILL Gateway；恢复 DB 并用原配置/spool 启动，核验最
 
 `kill-before-terminal-pending`：Mock 收到请求后暂不返回响应，确认 intent 存在再 kill；
 重启保留未知记录、释放闲置 slot，不生成零费用终态、不重新调用上游。
-设施恢复后新的请求可以正常派发和结算，与本轮“不因未知费用冻结用户”的决策一致。
+设施恢复后新的请求可以正常派发和结算；保留未知费用不冻结用户。
 
 这种 syscall 注入不模拟真实文件系统的全部部分写、I/O 错误或主机断电。
 Rust 单元测试另覆盖 slot 重放、容量压力压缩、free-space 拒绝和未知记录反复恢复。
@@ -211,10 +210,4 @@ PR 不写 Rust cache；系统测试报告保留七天。CI 安装固定客户端
 
 ## 覆盖边界与维护
 
-工具闭环、禁止意外 fallback、Pi 第二客户端、共享事件模板、kill/restart、重复重放和
-ENOSPC/EACCES/同步 EIO 都是现有场景，不是待执行里程碑。日志准入决策背景见
-[准入审查](request-log-admission-review.md)；后续 SQLite 工作增加了停机恢复矩阵。
-
-这不构成所有客户端、协议与故障的笛卡尔积覆盖。待核对记录的自动核对/补账、全部文件系统
-部分写/断电组合、生产 TLS/跨域和性能不在本套件保证中。新增场景仍需自己的负向 oracle，
-不能把历史完整运行记录写成当前源码或本次文档修改已通过验收。
+系统场景验证特定客户端、协议、故障点与恢复步骤，不涵盖全部组合。检查传输时观察实际 wire 记录，检查恢复时核对最终日志、回执与账户，不能只看 CLI 退出码。未知费用的人工核对、设备断电、生产 TLS/跨域和性能不在本套件的验证范围内。

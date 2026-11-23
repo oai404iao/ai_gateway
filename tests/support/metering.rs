@@ -1,13 +1,12 @@
 use sqlx::PgPool;
 
-// Legacy SQL display/statistics fixtures need explicit financial evidence;
-// production and worker tests must use the terminal-event or metering ports.
+// Log-only fixtures have no selected upstream credential to attribute.
 pub async fn copy_log_fixtures(pool: &PgPool) {
     let columns: String = sqlx::query_scalar(
         "SELECT string_agg(quote_ident(column_name),',' ORDER BY ordinal_position)
          FROM information_schema.columns
          WHERE table_schema='public' AND table_name='request_metering_facts'
-           AND is_generated='NEVER'",
+           AND is_generated='NEVER' AND column_name <> 'upstream_credential_id'",
     )
     .fetch_one(pool)
     .await

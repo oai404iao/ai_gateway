@@ -65,9 +65,7 @@ export function SecretOnceDialog({
           <ShieldAlert data-icon="inline-start" />
           <AlertTitle>{t("Save it now")}</AlertTitle>
           <AlertDescription>
-            {t(
-              "This value is shown only once. The gateway does not store it in a retrievable form, and the console will not display it again.",
-            )}
+            {t("You cannot retrieve this value after closing this dialog.")}
           </AlertDescription>
         </Alert>
         <InputGroup>

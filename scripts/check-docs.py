@@ -82,7 +82,7 @@ def check_file(path: Path) -> list[str]:
         in {
             ("docs", "user"),
             ("docs", "development"),
-            ("docs", "archive"),
+            ("docs", "adr"),
         }
     ) and not STATUS_LINE.search(first_lines):
         errors.append(f"{relative}: missing status metadata in the first 12 lines")
