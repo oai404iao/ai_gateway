@@ -292,16 +292,17 @@ in force immediately before transport dispatch.
 
 The Codex adapter first invokes `attempt.context` with `operation`,
 `credential_id`, a per-logical-request `request_id`, nullable `affinity_hash`
-(32 integer bytes), and client `headers`. The returned object is opaque to the
-host and supplied as `request_context` on body/header calls. The plugin owns
+(32 integer bytes), and a `headers` object containing only the supplied
+`session-id`, `thread-id`, and `x-codex-window-id` identity headers. The host
+passes the opaque result as `request_context` on body/header calls. The plugin owns
 installation-ID derivation, request identity, and privacy normalization.
 
-Codex body/header calls also receive the selected credential's `access_token`,
-nullable `account_id`, and `is_fedramp`; header calls include the current
-`headers`. These credentials are host-selected, not client input. Its plan must retain
-the expected bearer authorization. Configured provider identity and privacy
-normalization belong to the plugin; the host does not interpret provider
-settings or map them into a host privacy schema.
+Both Codex body and header calls receive `operation`, `protocol`, and
+`request_context`. Only the header call receives the current `headers` and the
+selected credential's `access_token`, nullable `account_id`, and `is_fedramp`.
+The host verifies the resulting credential headers before dispatch. Configured
+provider identity and privacy normalization belong to the plugin; the host does
+not interpret provider settings or map them into a host privacy schema.
 
 ## Images edit planning
 

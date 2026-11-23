@@ -101,13 +101,17 @@ async fn local_validation_precedes_intent_and_cancelled_http_remains_fenced() {
     let router = Router::new()
         .route(
             "/oauth/token",
-            post(move || {
+            post(move |Json(body): Json<serde_json::Value>| {
                 let db = Arc::clone(&token_database);
                 let received = received.clone();
                 async move {
                     assert_eq!(pending(&db).await, 1);
                     received.send("refresh").await.unwrap();
-                    Json(serde_json::json!({"refresh_token":"rotated-fixture"}))
+                    Json(match body["refresh_token"].as_str().unwrap() {
+                        "fixture-refresh" => serde_json::json!({"refresh_token":"rotated-fixture"}),
+                        "rotated-fixture" => serde_json::json!({"access_token":""}),
+                        _ => panic!("unexpected refresh token"),
+                    })
                 }
             }),
         )
@@ -144,9 +148,34 @@ async fn local_validation_precedes_intent_and_cancelled_http_remains_fenced() {
     assert!(service.reset_quota(admin, id).await.is_err());
     assert_eq!(pending(&database).await, 0);
     assert!(requests.try_recv().is_err());
+    let before = repo.codex_credential(id).await.unwrap().unwrap();
     service.refresh_credential(admin, id).await.unwrap();
     assert_eq!(requests.recv().await, Some("refresh"));
     assert_eq!(pending(&database).await, 0);
+    let rotated = repo.codex_credential(id).await.unwrap().unwrap();
+    assert_eq!(rotated.refresh_generation, before.refresh_generation + 1);
+    assert_eq!(rotated.id_token, before.id_token);
+    assert_eq!(rotated.access_token, before.access_token);
+    assert_eq!(rotated.refresh_token, "rotated-fixture");
+
+    assert!(matches!(
+        service.refresh_credential(admin, id).await,
+        Err(CodexConnectorError::InvalidTokenResponse)
+    ));
+    assert_eq!(requests.recv().await, Some("refresh"));
+    assert_eq!(pending(&database).await, 1);
+    let failed = repo.codex_credential(id).await.unwrap().unwrap();
+    assert_eq!(failed.refresh_generation, rotated.refresh_generation);
+    assert_eq!(failed.last_refreshed_at, rotated.last_refreshed_at);
+    assert_eq!(failed.id_token, rotated.id_token);
+    assert_eq!(failed.access_token, rotated.access_token);
+    assert_eq!(failed.refresh_token, rotated.refresh_token);
+    assert!(!failed.reauth_required);
+    assert_eq!(
+        failed.last_error_code.as_deref(),
+        Some(CodexConnectorError::InvalidTokenResponse.code())
+    );
+
     let mut valid = input;
     valid.access_token = "valid-fixture-access".into();
     repo.prepare_codex_credential_create(admin, valid, None)

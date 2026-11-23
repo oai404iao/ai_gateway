@@ -50,7 +50,7 @@ use crate::{
         SessionAffinityKeySource, SessionAffinitySettings,
     },
     request_policy::{
-        RequestInterface, RequestPolicyError, RequestPolicyLayer, client_header_explicitly_ignored,
+        RequestInterface, RequestPolicyError, client_header_explicitly_ignored,
         filter_client_headers,
     },
     routing::{
@@ -350,14 +350,13 @@ impl ProxyService {
             (PreparedRequestBody::Json(value), decoded)
         };
         let interface = RequestInterface::for_http(api_operation);
-        let (original_body, client_body_changed) =
-            match original_body.apply_policy(RequestPolicyLayer::Client, interface) {
-                Ok(value) => value,
-                Err(error) => {
-                    trace_unlogged("request_policy_rejected");
-                    return Err(ProxyError::request_policy(error));
-                }
-            };
+        let (original_body, client_body_changed) = match original_body.apply_policy(interface) {
+            Ok(value) => value,
+            Err(error) => {
+                trace_unlogged("request_policy_rejected");
+                return Err(ProxyError::request_policy(error));
+            }
+        };
         let (original_body, fast_mode_filtered) =
             match original_body.filter_fast_mode(api_key.filter_fast_mode(), interface) {
                 Ok(value) => value,

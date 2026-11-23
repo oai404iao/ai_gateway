@@ -39,7 +39,7 @@ async fn repository() -> (
     SqliteControlPlaneRepository,
 ) {
     let (directory, database) = database().await;
-    assert_eq!(database.install_schema().await.unwrap(), 14);
+    assert_eq!(database.install_schema().await.unwrap(), 15);
     let database = Arc::new(database);
     let repository = SqliteControlPlaneRepository::new(Arc::clone(&database));
     (directory, database, repository)
@@ -186,7 +186,7 @@ async fn removing_obsolete_columns_preserves_keys_grants_logs_audit_and_metering
         WHERE (tbl_name='request_logs' AND type IN ('index','trigger')) OR name='request_log_ingest_ack_guard'";
     let before: String = scalar(&database, STATE).await;
     let guards: String = scalar(&database, LOG_GUARDS).await;
-    assert_eq!(database.install_schema().await.unwrap(), 2);
+    assert_eq!(database.install_schema().await.unwrap(), 3);
     database.close().await;
 
     let reopened = SqliteDatabase::open(&directory.path().join("gateway.sqlite"))

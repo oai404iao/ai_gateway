@@ -827,12 +827,10 @@ impl ControlPlaneRepository {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub async fn create_codex_oauth_flow(
         &self,
         actor_user_id: Uuid,
         input: CodexOauthStartInput,
-        redirect_uri: String,
         state_hash: Vec<u8>,
         code_verifier: String,
         expires_at: DateTime<Utc>,
@@ -842,7 +840,6 @@ impl ControlPlaneRepository {
                 r.create_codex_oauth_flow(
                     actor_user_id,
                     input,
-                    redirect_uri,
                     state_hash,
                     code_verifier,
                     expires_at,
@@ -854,7 +851,6 @@ impl ControlPlaneRepository {
                 r.create_codex_oauth_flow(
                     actor_user_id,
                     input,
-                    redirect_uri,
                     state_hash,
                     code_verifier,
                     expires_at,

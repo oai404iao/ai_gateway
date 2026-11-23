@@ -277,7 +277,6 @@ impl CodexConnectorService {
             .create_codex_oauth_flow(
                 actor,
                 input,
-                protocol::redirect_uri(self.require_plugin()?)?,
                 state_hash(self.require_plugin()?.generation_id(), &state).to_vec(),
                 pkce.verifier,
                 expires_at,

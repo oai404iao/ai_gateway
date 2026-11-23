@@ -74,7 +74,7 @@ impl Backend {
                 .install_schema()
                 .await
                 .expect("infrastructure: SQLite schema must install"),
-            14
+            15
         );
         Self::Sqlite {
             directory,

@@ -488,7 +488,6 @@ async fn oauth(c: Context) {
                 proxy_id: None,
                 quota_threshold_percent: 90,
             },
-            "http://localhost:1455/auth/callback".into(),
             vec![42; 32],
             "v".repeat(64),
             Utc::now() + chrono::Duration::minutes(10),

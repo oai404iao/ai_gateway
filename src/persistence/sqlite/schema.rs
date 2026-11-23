@@ -75,4 +75,9 @@ pub(crate) const MIGRATIONS: &[SqliteMigration<'static>] = &[
         description: "remove obsolete key, log and audit columns",
         sql: include_str!("../../../migrations/sqlite/0014_remove_obsolete_columns.sql"),
     },
+    SqliteMigration {
+        version: 15,
+        description: "remove unused Codex OAuth flow redirect URI",
+        sql: include_str!("../../../migrations/sqlite/0015_remove_codex_flow_redirect_uri.sql"),
+    },
 ];

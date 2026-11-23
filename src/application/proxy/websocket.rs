@@ -34,8 +34,8 @@ use crate::{
         RequestLogSource, RequestProtocol,
     },
     request_policy::{
-        RequestInterface, RequestPolicyLayer, apply_client_fast_mode_filter,
-        apply_json_body_policy, filter_client_headers,
+        RequestInterface, apply_client_fast_mode_filter, apply_json_body_policy,
+        filter_client_headers,
     },
     routing::{SelectionResult, SessionAffinityMatch},
     transforms::apply_websocket_event_plan,
@@ -354,17 +354,14 @@ impl ResponsesWebSocketSession {
                 return SessionAction::Close;
             }
         };
-        let applied = match apply_json_body_policy(
-            RequestPolicyLayer::Client,
-            RequestInterface::ResponsesWebSocket,
-            original_body,
-        ) {
-            Ok(applied) => applied,
-            Err(error) => {
-                send_proxy_error(client, ProxyError::request_policy(error)).await;
-                return SessionAction::Close;
-            }
-        };
+        let applied =
+            match apply_json_body_policy(RequestInterface::ResponsesWebSocket, original_body) {
+                Ok(applied) => applied,
+                Err(error) => {
+                    send_proxy_error(client, ProxyError::request_policy(error)).await;
+                    return SessionAction::Close;
+                }
+            };
         let filtered = match apply_client_fast_mode_filter(
             RequestInterface::ResponsesWebSocket,
             applied.body,

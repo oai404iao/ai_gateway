@@ -31,8 +31,8 @@ use tokio::{
 
 use crate::{
     request_policy::{
-        FieldDisposition, RequestInterface, RequestPolicyError, RequestPolicyLayer,
-        apply_client_fast_mode_filter, apply_json_body_policy, body_field_disposition,
+        FieldDisposition, RequestInterface, RequestPolicyError, apply_client_fast_mode_filter,
+        apply_json_body_policy, body_field_disposition,
     },
     runtime_config::RequestLimitsConfig,
 };
@@ -234,17 +234,16 @@ impl PreparedRequestBody {
 
     pub(crate) fn apply_policy(
         self,
-        layer: RequestPolicyLayer,
         interface: RequestInterface,
     ) -> Result<(Self, bool), RequestPolicyError> {
         match self {
             Self::Json(body) => {
-                let applied = apply_json_body_policy(layer, interface, body)?;
+                let applied = apply_json_body_policy(interface, body)?;
                 Ok((Self::Json(applied.body), applied.changed))
             }
             Self::ImageEdit(body) => {
                 debug_assert_eq!(interface, RequestInterface::ImagesEdit);
-                let (body, changed) = body.apply_field_policy(layer, interface)?;
+                let (body, changed) = body.apply_field_policy(interface)?;
                 Ok((Self::ImageEdit(body), changed))
             }
         }
@@ -322,7 +321,6 @@ impl ImageEditRequestBody {
 
     fn apply_field_policy(
         mut self,
-        layer: RequestPolicyLayer,
         interface: RequestInterface,
     ) -> Result<(Self, bool), RequestPolicyError> {
         let mut retained = Vec::with_capacity(self.text_fields.len());
@@ -339,7 +337,7 @@ impl ImageEditRequestBody {
             if !present {
                 continue;
             }
-            if body_field_disposition(layer, interface, field, None)? == FieldDisposition::Ignore {
+            if body_field_disposition(interface, field, None)? == FieldDisposition::Ignore {
                 ignored.insert(field.to_owned());
                 if field == "image" {
                     ignored.insert("image[]".to_owned());
@@ -355,7 +353,7 @@ impl ImageEditRequestBody {
             let value = std::str::from_utf8(&field.value)
                 .ok()
                 .map(|value| Value::String(value.to_owned()));
-            match body_field_disposition(layer, interface, &field.name, value.as_ref())? {
+            match body_field_disposition(interface, &field.name, value.as_ref())? {
                 FieldDisposition::Allow => retained.push(field.clone()),
                 FieldDisposition::Ignore => {
                     ignored.insert(field.name.clone());
@@ -726,13 +724,9 @@ async fn inspect_multipart(
             } else {
                 name.as_str()
             };
-            let disposition = body_field_disposition(
-                RequestPolicyLayer::Client,
-                RequestInterface::ImagesEdit,
-                policy_name,
-                None,
-            )
-            .map_err(ImageEditBodyError::RequestPolicy)?;
+            let disposition =
+                body_field_disposition(RequestInterface::ImagesEdit, policy_name, None)
+                    .map_err(ImageEditBodyError::RequestPolicy)?;
             if disposition == FieldDisposition::Allow && !is_image && !is_mask {
                 return Err(ImageEditBodyError::UnexpectedFileField);
             }
@@ -1878,7 +1872,7 @@ mod tests {
             .await
             .unwrap();
         let (filtered, changed) = captured
-            .apply_field_policy(RequestPolicyLayer::Client, RequestInterface::ImagesEdit)
+            .apply_field_policy(RequestInterface::ImagesEdit)
             .unwrap();
         assert!(changed);
         assert_eq!(
@@ -2144,7 +2138,7 @@ mod tests {
             .await
             .unwrap();
         let (body, client_changed) = PreparedRequestBody::ImageEdit(edit)
-            .apply_policy(RequestPolicyLayer::Client, RequestInterface::ImagesEdit)
+            .apply_policy(RequestInterface::ImagesEdit)
             .unwrap();
         assert!(client_changed);
         let standard = body

@@ -63,6 +63,7 @@ impl Backend<'_> {
             "SELECT CAST(request_id AS TEXT)||':'||CAST(cost_amount AS TEXT) FROM request_settlements ORDER BY request_id",
             "SELECT CAST(request_id AS TEXT) FROM request_settlement_pending ORDER BY request_id",
             "SELECT CAST(channel_id AS TEXT)||':'||access_token||':'||refresh_token||':'||CAST(refresh_generation AS TEXT) FROM codex_oauth_credentials ORDER BY channel_id",
+            "SELECT CAST(id AS TEXT)||':'||CAST(actor_user_id AS TEXT)||':'||label||':'||CAST(proxy_id AS TEXT)||':'||CAST(quota_threshold_percent AS TEXT)||':'||CAST(state_hash AS TEXT)||':'||code_verifier||':'||CAST(expires_at AS TEXT)||':'||CAST(created_at AS TEXT) FROM codex_oauth_flows WHERE completed_at IS NULL ORDER BY id",
         ] {
             state.push(self.rows(query).await);
         }
@@ -81,6 +82,14 @@ async fn seed(database: &Backend<'_>) {
     let group = id(4);
     let access = id(5);
     let ordinary_access = id(6);
+    let flow = id(7);
+    let proxy = id(8);
+    let verifier = "v".repeat(64);
+    let state_hash = match database {
+        Backend::Postgres(_) => "CAST('0123456789abcdef0123456789abcdef' AS bytea)",
+        #[cfg(feature = "sqlite-backend")]
+        Backend::Sqlite(_) => "CAST('0123456789abcdef0123456789abcdef' AS BLOB)",
+    };
     let (formats, permissions) = match database {
         Backend::Postgres(_) => ("'{open_ai_responses}'", "'{proxy}'"),
         #[cfg(feature = "sqlite-backend")]
@@ -94,7 +103,12 @@ async fn seed(database: &Backend<'_>) {
          INSERT INTO routing_groups(id,name) VALUES ('{group}','Upgrade group');
          INSERT INTO upstream_accesses(id,name,connector_kind,base_url)
          VALUES ('{access}','Codex','codex','https://codex.invalid'),
-                ('{ordinary_access}','Ordinary','general','https://ordinary.invalid');"
+                ('{ordinary_access}','Ordinary','general','https://ordinary.invalid');
+         INSERT INTO proxies(id,name,proxy_url) VALUES ('{proxy}','Flow proxy','https://proxy.invalid');
+         INSERT INTO codex_oauth_flows(id,actor_user_id,label,proxy_id,quota_threshold_percent,
+            redirect_uri,state_hash,code_verifier,expires_at)
+         VALUES ('{flow}','{user}','In progress','{proxy}',91,'http://localhost:1455/auth/callback',
+            {state_hash},'{verifier}','2099-01-01T00:00:00.000000Z');"
     )).await;
     for (value, account, member) in [
         (10, Some("bound"), "bound-user"),
@@ -317,7 +331,7 @@ async fn sqlite_sharing_removal_preserves_pending_intent_and_restores_update_fen
     let intent_query = "SELECT credential_id||':'||attempt_id||':'||kind||':'||CAST(generation AS TEXT)||':'||started_at FROM _gateway_codex_operations";
     let intent = backend.rows(intent_query).await;
     let before = backend.preserved_state().await;
-    assert_eq!(database.install_schema().await.unwrap(), 3);
+    assert_eq!(database.install_schema().await.unwrap(), 4);
     verify(&backend, &before).await;
     assert_eq!(backend.rows(intent_query).await, intent);
     let mut tx = database.begin_write().await.unwrap();

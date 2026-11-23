@@ -73,12 +73,6 @@ impl CodexEndpoints {
         })
     }
 }
-pub fn redirect_uri(plugin: &Plugin) -> Result<String, CodexConnectorError> {
-    call(plugin, "endpoints", &json!({}), &[])?.metadata["redirect_uri"]
-        .as_str()
-        .map(str::to_owned)
-        .ok_or(CodexConnectorError::InvalidEndpoint)
-}
 fn parse_url(value: &Value, key: &str) -> Result<Url, CodexConnectorError> {
     let url = Url::parse(
         value[key]
@@ -415,7 +409,7 @@ pub async fn refresh_tokens(
     response_header_timeout: Duration,
     stream_idle_timeout: Duration,
 ) -> Result<RefreshedTokens, CodexConnectorError> {
-    decoded(
+    let tokens: RefreshedTokens = decoded(
         execute(
             client,
             plugin,
@@ -426,7 +420,16 @@ pub async fn refresh_tokens(
             MAX_TOKEN_RESPONSE_BYTES,
         )
         .await?,
-    )
+    )?;
+    let updates = [
+        tokens.id_token.as_deref(),
+        tokens.access_token.as_deref(),
+        tokens.refresh_token.as_deref(),
+    ];
+    if updates.iter().all(Option::is_none) || updates.contains(&Some("")) {
+        return Err(CodexConnectorError::InvalidTokenResponse);
+    }
+    Ok(tokens)
 }
 fn backend_metadata(
     endpoints: &CodexEndpoints,
