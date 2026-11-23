@@ -391,7 +391,7 @@ export default function CodexImportPage() {
         <CardHeader>
           <CardTitle>{t("1. Load JSON")}</CardTitle>
           <CardDescription>
-            {t("Native, CLIProxyAPI, and Sub2API JSON formats are detected automatically.")}
+            {t("Use a credential or array (including CLIProxyAPI), an ai-gateway v3 export, or a Sub2API export.")}
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
@@ -418,11 +418,6 @@ export default function CodexImportPage() {
                     placeholder='{"type":"codex","access_token":"…","refresh_token":"…"}'
                     className="font-mono text-xs"
                   />
-                  <FieldDescription>
-                    {t(
-                      "Supported roots include a single credential, an array, an ai-gateway bundle, or a Sub2API data export envelope.",
-                    )}
-                  </FieldDescription>
                 </Field>
               </FieldGroup>
             </TabsContent>
@@ -521,11 +516,6 @@ export default function CodexImportPage() {
           <Card>
             <CardHeader>
               <CardTitle>{t("2. Review credentials")}</CardTitle>
-              <CardDescription>
-                {t(
-                  "Edit labels, quota thresholds, tokens, and per-credential proxy assignments before the server validates each credential.",
-                )}
-              </CardDescription>
             </CardHeader>
             <CardContent className="flex flex-col gap-4">
               <div className="flex flex-wrap items-end gap-3">

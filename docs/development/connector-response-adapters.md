@@ -1,8 +1,6 @@
 # Connector response adapters
 
-> 状态：当前。Protocol-3 SDK, capability preflight, host JSON/SSE execution and
-> runnable example are implemented. Same-format adaptation has deterministic
-> and PostgreSQL/SQLite system E2E coverage.
+> Status: current.
 
 Response adapters let an explicitly enabled protocol-3 plugin normalize HTTP
 JSON or SSE text without changing the client format, original usage or terminal
@@ -15,18 +13,10 @@ transport, errors and financial facts.
 - [Choose supported modes](#scope-and-versioning)
 - [Follow JSON and SSE execution](#host-responsibilities-and-ordering)
 - [Handle protected fields and failures](#metering-terminal-and-failure-boundaries)
-- [Interpret existing acceptance evidence](#acceptance-record-and-exclusions)
 
 ## Scope and versioning
 
-The [SDK command contract](../../crates/connector-sdk/docs/commands.md) is the
-authoritative metadata and command reference. Native ABI remains 1 and the SDK
-package remains `0.2.0`; protocol negotiation is independent. Existing
-protocol-1/2 libraries keep their pass-through behavior. Codex protocol 3 keeps
-all response modes `passthrough`; its independent usage profile reuses the
-general Responses parser.
-Protocol 3 adds `attempt.describe/v1`, required capability booleans and explicit
-per-operation transport/response entries.
+Native plugins must implement command protocol 3 and declare their operations, supported transports and response modes. `attempt.describe/v1` describes the selected operation. Codex uses `passthrough` for response modes and the general Responses parser for upstream usage. The native ABI and command protocol are distinct contracts; see the [SDK command reference](../../crates/connector-sdk/docs/commands.md).
 
 Only HTTP Chat Completions and HTTP Responses can opt into `json` or `sse`
 adaptation. This is same-format response normalization, not a cross-protocol
@@ -133,23 +123,7 @@ terminal preservation and independent request state. Host tests also cover
 transport intersection, zero overlap, protected semantics and error-then-EOF
 stream lifecycle.
 
-## Acceptance record and exclusions
-
-The implementation's recorded acceptance passed the full Rust workspace suite with
-`embedded-console-ui,sqlite-backend` against isolated PostgreSQL, plus both
-[system E2E backends](system-e2e.md). Those system tests cover Chat/Responses
-JSON/SSE, generation pinning, interleaved state, genuine incomplete/cancelled
-terminals, fail-closed output and independent durable settlement. Failed
-requests retain observed usage but preserve the existing zero-charge policy.
-
-The recorded authorized [real-upstream smoke](real-upstream-smoke.md) passed existing
-passthrough compatibility paths, including configured optional Images/search
-checks. Native response adaptation itself uses the deterministic local fixture;
-the smoke does not claim coverage of a production response-adapter plugin.
-WebSocket adaptation, cross-format conversion and adapter-inclusive backup
-recovery are outside this acceptance scope.
-These are historical implementation results, not checks rerun by editing this
-page. New adapter changes need their own host, SDK and relevant system tests.
+The [system E2E suite](system-e2e.md) exercises JSON/SSE adaptation through the example plugin, including generation pinning, request-local state and durable settlement. [Real-upstream smoke](real-upstream-smoke.md) verifies the configured passthrough path, not a production response-adapter plugin. Neither suite establishes adapter-inclusive backup recovery.
 
 ## Related documents
 

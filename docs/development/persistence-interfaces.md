@@ -112,7 +112,7 @@ tests/contracts/interfaces.rs 固定：
 
 双后端控制面、财务和 Codex 契约分别见
 [SQLite 控制面](sqlite-control-plane.md)、[计量](sqlite-metering.md)、[Codex](sqlite-codex.md)。
-P1 金额/幂等和真实 PG COPY/锁测试继续保留；系统 E2E 验证真实服务恢复。
+用 PostgreSQL 实例验证 COPY 和行锁，用[系统 E2E](system-e2e.md)验证实际进程恢复。
 转发路径变化另需授权上游 smoke。
 
 接口没有提供自动补账、事实清理或日志 TTL；日志删除不能删除财务证据。
@@ -120,6 +120,5 @@ PG 的持锁外部 HTTP 与其不确定结果边界仍存在，不因接口中�
 
 ## 相关文档
 
-[持久化边界](persistence-boundaries.md)解释设计取舍；
 [行为契约](persistence-contracts.md)列出金额与读写路径；
 [数据库架构](database-architecture.md)提供实体地图。

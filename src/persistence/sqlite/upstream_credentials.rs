@@ -30,32 +30,15 @@ pub(crate) async fn records(
 pub(super) async fn bindings(
     connection: &mut SqliteConnection,
 ) -> Result<Vec<CredentialBinding>, RepositoryError> {
-    // Live canonical logical channels own credential scope, including disabled
-    // and unrouted drafts; the legacy physical channel table is no longer read.
-    let rows = sqlx::query_as::<
-        _,
-        (
-            SqliteUuid,
-            Option<SqliteUuid>,
-            Option<SqliteUuid>,
-            SqliteUuid,
-        ),
-    >(
-        "SELECT c.id,c.credential_id,NULL,c.binding_revision FROM upstream_channels c
-         WHERE c.deleted_at IS NULL ORDER BY c.id",
+    let rows = sqlx::query_as::<_, (SqliteUuid, SqliteUuid)>(
+        "SELECT id,credential_id FROM upstream_channels
+         WHERE deleted_at IS NULL AND credential_id IS NOT NULL ORDER BY id",
     )
     .fetch_all(connection)
     .await?;
     Ok(rows
         .into_iter()
-        .map(|(channel, credential, projection, revision)| {
-            (
-                channel.0,
-                credential.map(|id| id.0),
-                projection.map(|id| id.0),
-                revision.0,
-            )
-        })
+        .map(|(channel, credential)| (channel.0, credential.0))
         .collect())
 }
 

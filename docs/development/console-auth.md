@@ -1,6 +1,6 @@
 # Console API、JWT 与角色授权
 
-> 状态：当前。描述现有认证与授权边界；末节单独保留静态 Admin API 迁移的设计背景。
+> 状态：当前。
 
 Console 使用独立 listener 上的 `/console/v1/*` API，普通用户和管理员通过同一登录机制进入。
 `admin` 是用户角色，不是路径命名空间或静态 Bearer 密钥。公共 `/v1/*` 仍使用客户端 API Key，
@@ -18,44 +18,7 @@ Console 使用独立 listener 上的 `/console/v1/*` API，普通用户和管理
 
 ## 配置与初始化
 
-先准备受限权限的 Ed25519 密钥文件，再配置 Console listener 和允许的浏览器来源。
-下面展示字段关系，完整默认值以 [`config.example.toml`](../../config.example.toml) 为准。
-
-```toml
-[console]
-enabled = true
-host = "127.0.0.1"
-port = 3001
-allowed_origins = ["https://console.example.test"]
-
-[auth]
-issuer = "ai-gateway"
-audience = "ai-gateway-console"
-access_token_ttl_seconds = 900
-refresh_token_ttl_seconds = 2_592_000
-key_id = "primary-2026"
-signing_key_path = "/run/secrets/ai-gateway-jwt-private.pem"
-verification_key_path = "/run/secrets/ai-gateway-jwt-public.pem"
-```
-
-```bash
-# 从仓库根目录运行；密码仅经 stdin 传入
-cargo run -- bootstrap-admin \
-  --email admin@example.com \
-  --display-name "Initial Admin" \
-  --password-stdin < password.txt
-```
-
-Bootstrap 只用于首个管理员，不是重复创建或提权入口。已有 active 管理员的紧急密码恢复使用
-`reset-admin-password --email … --password-stdin`。密码文件必须由操作者保护，不能提交。
-SQLite 部署还须遵守[离线管理员 CLI 与 owner 锁](../user/sqlite.md)的限制。
-
-Console listener 应部署在 HTTPS 反向代理之后。CORS 只接受显式配置的 origins，不能组合
-通配 origin 和凭据。服务不读取 dotenv，也不接受 TOML 中的 JWT 私钥或固定管理员 token。
-
-请求大小分别受 `request_limits.proxy_body_bytes`、`console_body_bytes` 和 `auth_body_bytes`
-约束；multipart Images edit 另有 `image_edit_*` 限制。不能为放宽认证请求而提高数据面上限，
-也不能把插件安装上传塞入普通 Console JSON 上限。
+Console 在单独的监听器上提供服务。TOML 只接受 Ed25519 密钥文件路径，不接受私钥内容或静态管理员 Token；带凭据的浏览器请求须匹配显式配置的 CORS origin。认证请求、普通 Console API 和插件上传分别受大小限制。配置示例与首个管理员的 stdin 初始化见[快速上手](../user/quickstart.md)；SQLite 管理 CLI 须[停机取得 owner 锁](../user/sqlite.md)。
 
 ## 账户创建与密码恢复
 
@@ -97,20 +60,7 @@ Refresh token 是高熵 opaque 值，只通过 `HttpOnly; Secure; SameSite=Lax` 
 前端 access token 只驻留内存，不写入浏览器存储、URL 或持久 Query Cache。
 登录与密码验证必须限流，密码和 token 不进入日志、audit 或错误摘要。
 
-### 公共认证与受限会话
-
-```text
-POST /console/v1/auth/login
-POST /console/v1/auth/register
-POST /console/v1/auth/refresh
-POST /console/v1/auth/logout
-POST /console/v1/auth/activate-invitation
-POST /console/v1/auth/complete-password-reset
-```
-
-这些路径并非都对匿名用户具有相同前置条件；例如完成密码重置要求对应受限 Session。
-请求/响应、Cookie 与错误码以 [Console OpenAPI](../openapi/console-v1.yaml) 为准，不能据此列表
-绕过每个处理器的认证要求。
+路径、请求字段、Cookie 和错误码见 [Console OpenAPI](../openapi/console-v1.yaml)。例如完成临时密码重置要求 `password_change` 会话，不能仅按路径前缀把所有 `/auth/*` 当作匿名端点。
 
 ## 角色与资源归属
 
@@ -144,8 +94,7 @@ PostgreSQL 控制面使用 serializable 事务；SQLite 通过同一操作契约
 遗留用户可暂时缺少 email/password，但不能因此登录。邀请用户为 `invited`，激活后为 `active`。
 
 删除用户是不可恢复匿名化：撤销 Session、邀请和 Key，保留主键及 `deleted_at` / `deleted_by`
-以维护日志和审计引用。自定义用户组仅在无成员时可删除。批量用户修改核验所有版本，任一失败
-回滚整批，不能按部分成功解释。
+以维护日志和审计引用。删除自定义用户组时按角色迁移成员，细节见[墓碑与解绑](soft-deletion.md)。批量用户修改核验所有版本，任一失败回滚整批。
 
 ## API Key 自助服务规则
 
@@ -172,12 +121,7 @@ Policy 更新不追溯改变已发 Key；仅修改 Key 名称、额度等元数�
 - 各路由 body limit 独立返回安全的 `413`。
 - 公共数据面不因 Console 鉴权改为数据库逐请求校验。
 
-## 迁移与兼容
-
-静态 `/admin/v1/*`、`src/http/admin.rs` 与 `AdminState` 已移除，不保留旧 token 兼容通道。
-最初邀请制/JWT/独立 listener 的重构已完成；后续 migration `0010` 调整 Policy，
-`0022` 引入用户组与匿名化，`0024` 增加自助注册，`0037` 增加临时密码。
-这些编号解释设计演进，不是部署时可以选择跳过的阶段。
+## 实现入口
 
 当前路由注册在 `src/http/console.rs`，认证编排在 `src/application/auth.rs`，
 用户操作见[运维接口](../user/console.md)，UI 会话约定见[Console UI](console-ui.md)。

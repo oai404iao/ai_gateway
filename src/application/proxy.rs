@@ -45,9 +45,9 @@ use crate::{
     domain::{
         ApiFormat, ApiKeyPermission, ApiOperation, AutomaticDisableSettings,
         AutomaticDisableTrigger, CompiledAdvancedBilling, CompiledApiKey, CompiledChannel,
-        CompiledModelRule, MAX_REQUEST_RETRIES, ModelPriceSnapshot, RequestCredentialAttribution,
-        RequestLogEvent, RequestLogOutcome, RequestLogSource, RequestProtocol,
-        SessionAffinityKeySource, SessionAffinitySettings,
+        CompiledModelRule, MAX_REQUEST_RETRIES, ModelPriceSnapshot, RequestLogEvent,
+        RequestLogOutcome, RequestLogSource, RequestProtocol, SessionAffinityKeySource,
+        SessionAffinitySettings,
     },
     request_policy::{
         RequestInterface, RequestPolicyError, client_header_explicitly_ignored,
@@ -751,9 +751,7 @@ impl ProxyService {
             model_rule_id: None,
             channel_group_id: None,
             channel_id: None,
-            upstream_credential: Some(RequestCredentialAttribution {
-                credential_id: None,
-            }),
+            upstream_credential_id: None,
             model_id: None,
             outcome: RequestLogOutcome::Rejected,
             response_status_code: Some(StatusCode::NOT_FOUND.as_u16()),
@@ -799,9 +797,7 @@ impl ProxyService {
             model_rule_id: Some(rule.id()),
             channel_group_id: None,
             channel_id: None,
-            upstream_credential: Some(RequestCredentialAttribution {
-                credential_id: None,
-            }),
+            upstream_credential_id: None,
             model_id: Some(rule.model_id()),
             outcome: RequestLogOutcome::Failed,
             response_status_code: Some(error.status.as_u16()),
@@ -3001,9 +2997,7 @@ impl CompletionGuard {
             model_rule_id: Some(context.model_rule_id),
             channel_group_id: Some(context.channel_group_id),
             channel_id: Some(context.channel_id),
-            upstream_credential: Some(RequestCredentialAttribution {
-                credential_id: context.credential_id,
-            }),
+            upstream_credential_id: context.credential_id,
             model_id: Some(context.model_id),
             outcome: log_outcome,
             response_status_code: context
@@ -3113,7 +3107,7 @@ mod tests {
                     "-Wall",
                     "-Wextra",
                     "-Werror",
-                    "-DFIXTURE_PROTOCOL3",
+                    "-DFIXTURE_RESPONSE_ADAPTER",
                     "-DFIXTURE_DESCRIPTOR_MODE=6",
                 ])
                 .arg(root.join("crates/connector-sdk/tests/fixture.c"))
@@ -3350,11 +3344,14 @@ mod tests {
         .unwrap();
         let mut forwarded = forward_request_headers(&filtered);
         assert!(!forwarded.contains_key("cookie"));
-        let channel = crate::domain::CompiledChannel::new(
+        let channel = crate::domain::CompiledChannel::from_capability(
             uuid::Uuid::new_v4(),
             uuid::Uuid::new_v4(),
-            ApiFormat::OpenAiResponses,
+            crate::domain::ChannelIdentity::for_test(crate::domain::ApiOperation::Responses),
+            crate::domain::ConnectorKind::OpenAiCompatible,
+            crate::domain::RequestCompression::Default,
             reqwest::Url::parse("https://example.test").unwrap(),
+            rust_decimal::Decimal::ONE,
             crate::domain::UpstreamAuth::compile(
                 "header",
                 Some("Cookie"),
@@ -3362,6 +3359,10 @@ mod tests {
             )
             .unwrap(),
             std::collections::HashSet::new(),
+            false,
+            false,
+            None,
+            crate::domain::CompiledChannelUpstreamPolicy::transparent(ApiFormat::OpenAiResponses),
         );
         crate::application::connector::inject_standard_auth(&mut forwarded, &channel).unwrap();
         crate::request_policy::sanitize_outbound_request_headers(&mut forwarded);

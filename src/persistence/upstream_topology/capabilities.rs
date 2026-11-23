@@ -301,8 +301,8 @@ pub async fn pg_save(
     if expected.is_none() {
         sqlx::query(
             "INSERT INTO channel_identity_registry
-             (id,label,created_at,canonical_channel_id,codex_credential_id,capability_id)
-             SELECT cap.id,c.name,cap.created_at,c.id,NULL,cap.id
+             (id,label,created_at,canonical_channel_id,capability_id)
+             SELECT cap.id,c.name,cap.created_at,c.id,cap.id
              FROM channel_capabilities cap JOIN upstream_channels c ON c.id=cap.channel_id
              WHERE cap.id=$1",
         )
@@ -395,8 +395,8 @@ pub async fn sqlite_save(
     if expected.is_none() {
         sqlx::query(
             "INSERT INTO channel_identity_registry
-             (id,label,created_at,canonical_channel_id,codex_credential_id,capability_id)
-             SELECT cap.id,c.name,cap.created_at,c.id,NULL,cap.id
+             (id,label,created_at,canonical_channel_id,capability_id)
+             SELECT cap.id,c.name,cap.created_at,c.id,cap.id
              FROM channel_capabilities cap JOIN upstream_channels c ON c.id=cap.channel_id
              WHERE cap.id=?",
         )

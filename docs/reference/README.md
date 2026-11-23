@@ -12,6 +12,5 @@
 | Codex 如何认证、搜索和续接上下文？ | [OAuth 与搜索](codex-oauth-connect.md) · [WebSocket 源码研究](codex-responses-websocket.md) |
 | 哪些凭证文件可以导入？ | [Codex 导入格式](codex-credential-portability.md) |
 | 定价预设和代理诊断依据什么？ | [DeepSeek 峰谷定价](deepseek-peak-pricing.md) · [ip-api.com](ip-api-proxy-test.md) |
-| 其他网关如何做测试与持久化？ | [Monoize 工程研究](monoize-engineering-study.md) |
 
 实际调用和配置步骤见[用户指南](../user/README.md)。

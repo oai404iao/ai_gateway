@@ -8,7 +8,6 @@ use axum::http::{
 };
 use bytes::{Bytes, BytesMut};
 use futures_util::StreamExt;
-use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -16,8 +15,8 @@ use tokio::time::timeout;
 use uuid::Uuid;
 
 use crate::{
-    domain::{CompiledChannel, CredentialTarget, UpstreamAuth},
-    persistence::{ChannelRecord, UpstreamCredentialDetail},
+    domain::{CredentialTarget, UpstreamAuth},
+    persistence::UpstreamCredentialDetail,
     request_policy::sanitize_outbound_request_headers,
     runtime_config::{RuntimeConfig, compile_channel_discovery_target},
     transforms::apply_header_plan,
@@ -51,36 +50,34 @@ impl ChannelModelDiscoveryService {
         credential: Option<UpstreamCredentialDetail>,
     ) -> Result<ChannelModelDiscoveryResponse, ChannelModelDiscoveryError> {
         let snapshot = self.runtime.snapshot();
-        let channel = compile_channel_discovery_target(&input.into_record(credential)?, &snapshot)
+        let auth = input.upstream_auth(credential)?;
+        let (base_url, upstream_policy) = compile_channel_discovery_target(&input, &snapshot)
             .map_err(|_| ChannelModelDiscoveryError::InvalidConfiguration)?;
         let policy = ResolvedUpstreamPolicy::try_resolve(
             &snapshot.system_settings().upstream_timeouts(),
-            channel.upstream_policy(),
+            &upstream_policy,
         )
         .map_err(|_| ChannelModelDiscoveryError::InvalidConfiguration)?;
         let client = self
             .upstream_clients
-            .client_for(channel.upstream_policy(), policy)
+            .client_for(&upstream_policy, policy)
             .map_err(|_| ChannelModelDiscoveryError::RequestFailed)?;
 
         let mut headers = HeaderMap::new();
         headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
         apply_header_plan(
             &mut headers,
-            channel
-                .upstream_policy()
-                .effective_transforms()
-                .request_headers(),
+            upstream_policy.effective_transforms().request_headers(),
         )
         .map_err(|_| ChannelModelDiscoveryError::InvalidConfiguration)?;
-        inject_upstream_auth(&mut headers, &channel)
+        inject_upstream_auth(&mut headers, &auth)
             .map_err(|_| ChannelModelDiscoveryError::InvalidConfiguration)?;
         sanitize_outbound_request_headers(&mut headers);
 
         let response = timeout(
             policy.timeouts().response_header(),
             client
-                .request(Method::GET, models_url(&channel)?)
+                .request(Method::GET, models_url(&base_url)?)
                 .headers(headers)
                 .send(),
         )
@@ -130,10 +127,10 @@ fn required_credential<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Option
 }
 
 impl ChannelModelDiscoveryInput {
-    fn into_record(
-        self,
+    fn upstream_auth(
+        &self,
         credential: Option<UpstreamCredentialDetail>,
-    ) -> Result<ChannelRecord, ChannelModelDiscoveryError> {
+    ) -> Result<UpstreamAuth, ChannelModelDiscoveryError> {
         if self.credential_id != credential.as_ref().map(|detail| detail.credential.id) {
             return Err(ChannelModelDiscoveryError::InvalidConfiguration);
         }
@@ -157,41 +154,12 @@ impl ChannelModelDiscoveryInput {
             } else {
                 ("none".to_owned(), None, None)
             };
-        Ok(ChannelRecord {
-            credential: None,
-            credential_binding_revision: Uuid::nil(),
-            id: Uuid::nil(),
-            channel_group_id: Uuid::nil(),
-            api_format: self.api_format,
-            logical_channel_id: Uuid::nil(),
-            access_id: Uuid::nil(),
-            api_operation: None,
-            connector_kind: String::new(),
-            request_compression: String::new(),
-            access_revision: Uuid::nil(),
-            capability_revision: Uuid::nil(),
-            transports: Vec::new(),
-            name: "channel-model-discovery".into(),
-            base_url: self.base_url,
-            enabled: true,
-            supports_websocket: false,
-            supports_standalone_web_search: false,
-            auto_disabled: false,
-            auto_disable_allowed: false,
-            billing_multiplier: Decimal::ONE,
-            proxy_id: self.proxy_id,
-            config_template_id: self.config_template_id,
-            override_document: self.override_document,
-            connect_timeout_ms: self.connect_timeout_ms,
-            response_header_timeout_ms: self.response_header_timeout_ms,
-            stream_idle_timeout_ms: self.stream_idle_timeout_ms,
-            upstream_auth_kind,
-            upstream_auth_header_name,
-            upstream_api_key,
-            available_models: Vec::new(),
-            test_model: None,
-            test_pricing_model_id: None,
-        })
+        UpstreamAuth::compile(
+            &upstream_auth_kind,
+            upstream_auth_header_name.as_deref(),
+            upstream_api_key.as_deref(),
+        )
+        .map_err(|_| ChannelModelDiscoveryError::InvalidConfiguration)
     }
 }
 
@@ -224,16 +192,16 @@ fn empty_object() -> Value {
     Value::Object(Default::default())
 }
 
-fn models_url(channel: &CompiledChannel) -> Result<reqwest::Url, ChannelModelDiscoveryError> {
+fn models_url(base_url: &reqwest::Url) -> Result<reqwest::Url, ChannelModelDiscoveryError> {
     reqwest::Url::parse(&format!(
         "{}/v1/models",
-        channel.base_url().as_str().trim_end_matches('/')
+        base_url.as_str().trim_end_matches('/')
     ))
     .map_err(|_| ChannelModelDiscoveryError::InvalidConfiguration)
 }
 
-fn inject_upstream_auth(headers: &mut HeaderMap, channel: &CompiledChannel) -> Result<(), ()> {
-    match channel.upstream_auth() {
+fn inject_upstream_auth(headers: &mut HeaderMap, auth: &UpstreamAuth) -> Result<(), ()> {
+    match auth {
         UpstreamAuth::None => Ok(()),
         UpstreamAuth::Bearer(token) => {
             let value = HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| ())?;

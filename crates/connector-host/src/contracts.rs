@@ -1,8 +1,8 @@
 //! Generation-bound semantic preflight, independent of request credentials.
 
 use ai_gateway_connector_sdk::{
-    ATTEMPT_DESCRIBE, AttemptCapabilities, AttemptDescriptor, ConnectorProtocol,
-    ProtocolCapability, RESPONSE_EVENT, RESPONSE_JSON, ResponseMode, USAGE_PARSE, UsageDescriptor,
+    ATTEMPT_DESCRIBE, AttemptDescriptor, RESPONSE_EVENT, RESPONSE_JSON, ResponseMode, USAGE_PARSE,
+    UsageDescriptor,
 };
 use serde_json::json;
 
@@ -42,7 +42,7 @@ impl Plugin {
             "attempt.body",
             "attempt.target",
             "attempt.headers",
-            "attempt.capabilities",
+            ATTEMPT_DESCRIBE,
         ];
         if required.iter().any(|command| !self.has_command(command))
             || (operation == "images_edit"
@@ -52,59 +52,12 @@ impl Plugin {
         {
             return Err(PluginError::InvalidCapabilities);
         }
-        let descriptor = if self.manifest.protocol_version == 3 {
-            let output = self.call(ATTEMPT_DESCRIBE, &json!({"operation": operation}), &[])?;
-            if !output.body.is_empty() {
-                return Err(PluginError::InvalidCapabilities);
-            }
-            serde_json::from_value::<AttemptDescriptor>(output.metadata.clone())
-                .map_err(|_| PluginError::InvalidCapabilities)?
-        } else {
-            let output = self.call(
-                "attempt.capabilities",
-                &json!({"operation": operation}),
-                &[],
-            )?;
-            if !output.body.is_empty() {
-                return Err(PluginError::InvalidCapabilities);
-            }
-            let capability = |name: &str, required: bool| match output.metadata.get(name) {
-                Some(value) => value.as_bool().ok_or(PluginError::InvalidCapabilities),
-                None if !required => Ok(false),
-                None => Err(PluginError::InvalidCapabilities),
-            };
-            let protocols: &[ConnectorProtocol] = match operation {
-                "chat_completion" | "responses" => {
-                    &[ConnectorProtocol::NonStream, ConnectorProtocol::Sse]
-                }
-                "responses-ws" => &[ConnectorProtocol::Websocket],
-                "web_search" | "images_generation" | "images_edit" => {
-                    &[ConnectorProtocol::NonStream]
-                }
-                _ => return Err(PluginError::InvalidCapabilities),
-            };
-            AttemptDescriptor {
-                usage: None,
-                capabilities: AttemptCapabilities {
-                    preserves_affinity_on_failure: capability(
-                        "preserves_affinity_on_failure",
-                        self.manifest.id == "codex",
-                    )?,
-                    successful_response_is_sse: capability("successful_response_is_sse", true)?,
-                    changes_request_body: capability(
-                        "changes_request_body",
-                        self.manifest.id == "codex",
-                    )?,
-                },
-                protocols: protocols
-                    .iter()
-                    .map(|protocol| ProtocolCapability {
-                        protocol: *protocol,
-                        response: ResponseMode::Passthrough,
-                    })
-                    .collect(),
-            }
-        };
+        let output = self.call(ATTEMPT_DESCRIBE, &json!({"operation": operation}), &[])?;
+        if !output.body.is_empty() {
+            return Err(PluginError::InvalidCapabilities);
+        }
+        let descriptor = serde_json::from_value::<AttemptDescriptor>(output.metadata.clone())
+            .map_err(|_| PluginError::InvalidCapabilities)?;
         if !descriptor.validate_for_operation(operation)
             || matches!(&descriptor.usage, Some(UsageDescriptor::Plugin { .. }))
                 && !self.has_command(USAGE_PARSE)

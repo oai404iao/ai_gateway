@@ -171,33 +171,30 @@ mod credential_tests {
         credential: Option<Uuid>,
         revision: Uuid,
     ) -> UpstreamWebSocketKey {
-        let channel = CompiledChannel::new_with_connector_policy_automation_and_billing(
+        let channel = CompiledChannel::from_capability(
             Uuid::from_u128(1),
             Uuid::from_u128(2),
-            ApiFormat::OpenAiResponses,
+            ChannelIdentity {
+                logical_channel_id: Uuid::from_u128(1),
+                access_id: Uuid::from_u128(2),
+                api_operation: ApiOperation::ResponsesWebSocket,
+                credential_id: credential,
+                credential_revision: credential.map(|_| revision),
+                binding_revision: Uuid::nil(),
+                access_revision: Uuid::nil(),
+                capability_revision: Uuid::nil(),
+            },
             connector,
             RequestCompression::Default,
             Url::parse("https://upstream.test").unwrap(),
             rust_decimal::Decimal::ONE,
             UpstreamAuth::Bearer(Arc::from("same-test-secret")),
             HashSet::new(),
-            true,
-            false,
             false,
             false,
             None,
             CompiledChannelUpstreamPolicy::transparent(ApiFormat::OpenAiResponses),
-        )
-        .with_channel_identity(ChannelIdentity {
-            logical_channel_id: Uuid::from_u128(1),
-            access_id: Uuid::from_u128(2),
-            api_operation: ApiOperation::ResponsesWebSocket,
-            credential_id: credential,
-            credential_revision: credential.map(|_| revision),
-            binding_revision: Uuid::nil(),
-            access_revision: Uuid::nil(),
-            capability_revision: Uuid::nil(),
-        });
+        );
         UpstreamWebSocketKey::new(
             Uuid::from_u128(3),
             WebSocketClientIdentity::new(&"/v1/responses".parse().unwrap(), &HeaderMap::new()),

@@ -6,7 +6,7 @@ use serde_json::Value;
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
-use super::{GrantOriginKind, LogicalChannelRecord, UpstreamTopologyRecords};
+use super::{LogicalChannelRecord, UpstreamTopologyRecords};
 use crate::persistence::{
     RepositoryError, SelfApiKeyChannelOption, SelfApiKeyGroupOption,
     postgres_control_plane::SelfApiKeyPolicy,
@@ -31,11 +31,7 @@ impl<'a> PolicyScope<'a> {
             direct_channels: topology
                 .policy_grants
                 .iter()
-                .filter(|grant| {
-                    grant.policy_id == policy.id
-                        && grant.origin_kind == GrantOriginKind::Channel
-                        && grant.origin_id == grant.channel_id
-                })
+                .filter(|grant| grant.policy_id == policy.id)
                 .map(|grant| grant.channel_id)
                 .collect(),
         })
@@ -128,7 +124,7 @@ pub(crate) enum GrantOwner<'a> {
 
 struct GrantChanges {
     added: Vec<Uuid>,
-    removed: Vec<(&'static str, Uuid)>,
+    removed: Vec<Uuid>,
 }
 
 fn previous_targets(before: &Value, field: &str) -> Result<Vec<Uuid>, RepositoryError> {
@@ -184,8 +180,7 @@ fn prepare(
             return Err(RepositoryError::ApiKeyTargetNotAllowed);
         }
     }
-    // Legacy direct selectors without a grant stay dormant until explicitly
-    // removed and re-added. Group selectors never need per-member rows.
+    // Unchanged channel selections do not create new authority.
     Ok(GrantChanges {
         added: channels
             .iter()
@@ -195,14 +190,6 @@ fn prepare(
         removed: old_channels
             .into_iter()
             .filter(|id| !channels.contains(id))
-            .map(|id| ("channel", id))
-            // Revoke any legacy member grants along with their group origin.
-            .chain(
-                old_groups
-                    .into_iter()
-                    .filter(|id| !groups.contains(id))
-                    .map(|id| ("group", id)),
-            )
             .collect(),
     })
 }
@@ -219,19 +206,18 @@ pub(crate) async fn pg_write(
     let changes = prepare(&topology, owner, before, groups, channels)?;
     let (delete, insert) = match owner {
         GrantOwner::Policy => (
-            "DELETE FROM api_key_policy_channel_grants WHERE policy_id=$1 AND origin_kind=$2 AND origin_id=$3",
-            "INSERT INTO api_key_policy_channel_grants (policy_id,channel_id,origin_kind,origin_id) VALUES ($1,$2,'channel',$2) ON CONFLICT DO NOTHING",
+            "DELETE FROM api_key_policy_channel_grants WHERE policy_id=$1 AND channel_id=$2",
+            "INSERT INTO api_key_policy_channel_grants (policy_id,channel_id) VALUES ($1,$2) ON CONFLICT DO NOTHING",
         ),
         GrantOwner::SelfKey(_) | GrantOwner::AdminKey => (
-            "DELETE FROM api_key_channel_grants WHERE api_key_id=$1 AND origin_kind=$2 AND origin_id=$3",
-            "INSERT INTO api_key_channel_grants (api_key_id,channel_id,origin_kind,origin_id) VALUES ($1,$2,'channel',$2) ON CONFLICT DO NOTHING",
+            "DELETE FROM api_key_channel_grants WHERE api_key_id=$1 AND channel_id=$2",
+            "INSERT INTO api_key_channel_grants (api_key_id,channel_id) VALUES ($1,$2) ON CONFLICT DO NOTHING",
         ),
     };
-    for (kind, origin) in changes.removed {
+    for channel in changes.removed {
         sqlx::query(delete)
             .bind(id)
-            .bind(kind)
-            .bind(origin)
+            .bind(channel)
             .execute(&mut **transaction)
             .await?;
     }
@@ -259,19 +245,18 @@ pub(crate) async fn sqlite_write(
     let changes = prepare(&topology, owner, before, groups, channels)?;
     let (delete, insert) = match owner {
         GrantOwner::Policy => (
-            "DELETE FROM api_key_policy_channel_grants WHERE policy_id=?1 AND origin_kind=?2 AND origin_id=?3",
-            "INSERT INTO api_key_policy_channel_grants (policy_id,channel_id,origin_kind,origin_id) VALUES (?1,?2,'channel',?2) ON CONFLICT DO NOTHING",
+            "DELETE FROM api_key_policy_channel_grants WHERE policy_id=?1 AND channel_id=?2",
+            "INSERT INTO api_key_policy_channel_grants (policy_id,channel_id) VALUES (?1,?2) ON CONFLICT DO NOTHING",
         ),
         GrantOwner::SelfKey(_) | GrantOwner::AdminKey => (
-            "DELETE FROM api_key_channel_grants WHERE api_key_id=?1 AND origin_kind=?2 AND origin_id=?3",
-            "INSERT INTO api_key_channel_grants (api_key_id,channel_id,origin_kind,origin_id) VALUES (?1,?2,'channel',?2) ON CONFLICT DO NOTHING",
+            "DELETE FROM api_key_channel_grants WHERE api_key_id=?1 AND channel_id=?2",
+            "INSERT INTO api_key_channel_grants (api_key_id,channel_id) VALUES (?1,?2) ON CONFLICT DO NOTHING",
         ),
     };
-    for (kind, origin) in changes.removed {
+    for channel in changes.removed {
         sqlx::query(delete)
             .bind(SqliteUuid(id))
-            .bind(kind)
-            .bind(SqliteUuid(origin))
+            .bind(SqliteUuid(channel))
             .execute(&mut **transaction)
             .await?;
     }

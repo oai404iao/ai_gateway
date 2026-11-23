@@ -2,7 +2,7 @@
 
 > 状态：当前。仅支持 Linux、本地文件系统与协作式单实例。
 
-选择 SQLite 后，Console、路由、请求日志与结算共用本地数据库，由一个 Gateway 进程独占。适用于不需要 PostgreSQL 或多实例的部署；不提供 PostgreSQL 数据导入、HA 或在线备份。
+SQLite 适合 Linux 单机部署。Console、路由、请求日志与结算共用一个由 Gateway 进程独占的数据库。备份和恢复需要停机；需要多实例时使用 PostgreSQL。
 
 ## 1. 构建并选择 SQLite
 
@@ -15,8 +15,7 @@ cargo build --locked --release --features embedded-console-ui,sqlite-backend
 install -d -m 0700 ./data/sqlite
 ```
 
-在普通配置模板中替换整个 `[database]` 段，其他设置仍沿用
-[快速开始](quickstart.md)和[配置指南](production-configuration.md)：
+在普通配置模板中替换整个 `[database]` 段，其他设置见[快速开始](quickstart.md)和[配置指南](production-configuration.md)。首次部署当前 v1 基线，使用**新的数据库路径及专用空 spool 根目录**；若已有其他基线的账本，先按[切换指南](upgrades.md)保留原件。
 
 ```toml
 [database]
@@ -38,8 +37,7 @@ connect_timeout_seconds = 5
   下没有独立日志写池。系统负载页面报告实际共享池状态。
 - 仅接受本地 ext 系列、XFS、Btrfs、overlay 和测试 tmpfs。生产不可使用 tmpfs；
   overlay 下层同样必须是本地持久存储。NFS/SMB、多实例共享或绕过应用直接写库不受支持。
-- 二进制内置 SQLite 3.51.3，打开前核对实际 native 版本至少为该版本，避免使用
-  未修复 WAL-reset 问题的旧链接库。
+- 打开数据库前会检查 native SQLite 版本，至少须为 3.51.3（含 WAL-reset 修复）。
 
 ## 3. 创建管理员并启动
 
@@ -111,8 +109,7 @@ ai-gateway restore-sqlite --source /absolute/backups/new-snapshot \
 
 1. 取得数据库进程/目录锁，拒绝活跃 Gateway；验证身份、完整 migration checksum、
    integrity、外键，然后执行 checkpoint 并关闭 native 连接。
-2. 保留文件所有权，取得所有 spool writer 锁；复制主库、`.identity`、仍存在的
-   SQLite sidecars 及整个 spool（含 `journal-v2/` 中的检查点、终态槽和未知 intent，也保留根目录下的旧布局证据）。
+2. 保留文件所有权，取得所有 spool writer 锁，复制主库、`.identity`、仍存在的 SQLite sidecar 及完整 spool（含检查点、终态槽和未决 intent）。
 3. 写带数据库 UUID、相对路径、文件大小和 SHA-256 的 manifest，fsync 文件与目录。
    manifest 最后落盘；没有完整 manifest 的目录不是可用备份。
 4. 恢复先验证清单、文件集合与 checksum，写入新的私有 staging tree，再由同一个二进制
@@ -122,7 +119,7 @@ ai-gateway restore-sqlite --source /absolute/backups/new-snapshot \
 恢复后配置：
 
 - 数据库 URL 指向 `new-instance/database/gateway.sqlite`；
-- spool 指向 `new-instance/spool`，不是 `new-instance/spool/journal-v2`；恢复备份不会将旧布局转换为可回放记录；
+- spool 指向备份中的完整根目录 `new-instance/spool`；
 - 外部配置、JWT 私钥、插件目录和代理/网络环境需另行安全保存并配套恢复，不包含在 snapshot 内；
 - Images 临时上传目录不属于财务备份，不恢复在途 HTTP 请求。
 
@@ -132,7 +129,7 @@ ai-gateway restore-sqlite --source /absolute/backups/new-snapshot \
 
 ## 升级与未知结果
 
-从旧请求日志布局升级时，先按[目录切换步骤](upgrades.md#请求日志目录切换)处理未入库的终态，再用匹配的旧版本停机成对备份。SQLite migration 整批原子提交；迁移历史未知、超前或校验和不符时拒绝启动。
+恢复工具用于与程序匹配的数据库和 spool，不转换存储基线。原版本的账本用原版本程序恢复；本版本可重新打开自身初始化的数据库，并从本基线的成对备份恢复。切换前的排空和备份步骤见[切换指南](upgrades.md)。
 
 Codex refresh/reset 在 HTTP 前持久化 intent；取消、超时或结果提交失败不自动重试。
 放弃的 refresh 可由管理员重新导入正确凭证；活跃操作不允许抢占。

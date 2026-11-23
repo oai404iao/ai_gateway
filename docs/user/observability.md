@@ -51,7 +51,7 @@
 
 派发前不能持久写入 intent 或预留终态空间时，请求返回 `503 request_log_unavailable`（WS 为同码错误帧），不发往上游。容量不足可在排空后恢复；写入或同步失败锁定时，须保留原 spool 目录并重启。
 
-同一 `journal-v2/` 中的完整终态可用原 UUID 重放并幂等结算。发现 `request_log_reconciliation_required` 时，保留只有 intent、没有完整终态的证据待核对；不能据此记零、重试或退款。系统负载的 spool 待处理字节不包括旧布局文件，升级后显示为零不代表旧费用已结清。参见[目录切换](upgrades.md#请求日志目录切换)与[日志恢复边界](../development/request-log-durability.md)。
+活动日志的完整终态按原 UUID 恢复并幂等结算。出现 `request_log_reconciliation_required` 时，保留 intent 和上游证据；缺少完整终态不能据此记零、重试或退款。升级前还要[核对每个实例的本地记录](upgrades.md#请求日志目录切换)。
 
 ## 查询花费
 

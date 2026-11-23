@@ -16,4 +16,4 @@
 
 ## 来源优先级
 
-查字段与端点，读 OpenAPI 和请求策略；查配置与存储，读[配置模板](../config.example.toml)、[配置类型](../src/runtime_config/mod.rs)和 [migrations](../migrations/)。用实现和测试核对实际行为。外部参考注明对应版本或日期，[历史归档](archive/README.md)保留旧方案。[文档编写规范](documentation-standard.md)说明改动后要同步哪些页面。
+查字段与端点，读 OpenAPI 和请求策略；查配置与存储，读[配置模板](../config.example.toml)、[配置类型](../src/runtime_config/mod.rs)和 [migrations](../migrations/)。[架构决策记录](adr/README.md)说明影响当前架构的关键取舍。[文档编写规范](documentation-standard.md)列出改动后要同步的页面。

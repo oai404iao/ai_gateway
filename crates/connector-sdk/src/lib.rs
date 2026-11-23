@@ -67,21 +67,9 @@ pub const STATUS_INVALID: u32 = 3;
 pub struct PluginManifest {
     pub id: String,
     pub version: String,
-    #[serde(
-        default = "legacy_protocol_version",
-        skip_serializing_if = "is_legacy_protocol"
-    )]
     pub protocol_version: u32,
     pub operations: Vec<String>,
     pub commands: Vec<String>,
-}
-
-const fn legacy_protocol_version() -> u32 {
-    1
-}
-
-fn is_legacy_protocol(version: &u32) -> bool {
-    *version == 1
 }
 
 #[derive(Clone)]

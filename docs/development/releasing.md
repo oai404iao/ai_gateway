@@ -2,163 +2,39 @@
 
 > 状态：当前。
 
-发布以属于 `main` 的 annotated `v<version>` tag 为入口。先通过发布准备 PR 更新版本与
-Changelog、运行本地门禁，再对同一个已合并 SHA 创建 tag；不能用 tag 绕过普通 CI。
+发布以 `main` 上的 annotated `v<version>` tag 为入口。版本准备 PR、该提交的 `ci-gate` 和 tag 构建分别验证源码、合并结果与发行产物。
 
-## 本页内容
+## 准备版本
 
-- [同步版本并准备 PR](#发布前准备)
-- [运行本地发布门禁](#本地发布门禁)
-- [创建并推送不可复用的 tag](#创建并发布-tag)
-- [理解 Actions 产物与权限](#github-actions-发布产物)
-- [验证已发布版本](#发布后验证)
+在分支上更新 `Cargo.toml`、`Cargo.lock`、`tools/forwarding-perf/Cargo.toml`、`web/console/package.json`、`docker-compose.prd.yaml` 的镜像和构建版本、`deploy/compose/env.example` 以及 `CHANGELOG.md` 的带日期条目。
 
-## 版本来源
+先按[测试准备步骤](getting-started.md)导出 `TEST_DATABASE_ADMIN_URL` 和 `AI_GATEWAY_TEST_CODEX_PLUGIN`。本地需要 Docker 与 Compose、固定的 Rust 和 Console 工具链。
 
-本项目使用 Semantic Versioning，`Cargo.toml` 是产品版本的主来源。门禁要求以下位置一致：
-
-- `Cargo.toml`
-- `Cargo.lock`
-- `tools/forwarding-perf/Cargo.toml`
-- `web/console/package.json`
-- `docker-compose.prd.yaml` 中 `gateway` 镜像 tag 和构建参数 `VERSION` 的默认版本
-- `deploy/compose/env.example`
-- `CHANGELOG.md` 中带日期的版本条目
-
-## 发布前准备
-
-1. 从最新 `main` 创建独立的 `release/<version>` 分支与工作树，不在主工作树直接开发。
-2. 更新上方所有版本位置。
-3. 在 `CHANGELOG.md` 将变更归入目标版本，并使用 `YYYY-MM-DD` 日期。
-4. 确认工作树只包含发布相关变更，运行本地门禁，再以发布准备 PR 走评审和 CI。
-5. 确认 GitHub Actions 已启用。发布工作流使用仓库自动提供的
-   `GITHUB_TOKEN` 创建 GitHub Release 并推送 GHCR，不需要额外配置 Registry
-   用户名或 PAT。所有外部 Action 都固定到完整 commit SHA，并由
-   `.github/dependabot.yml` 定期更新带版本 tag 的引用；固定到 `stable` 分支
-   commit 的 Rust toolchain Action 需要在常规依赖维护时人工复核。
-
-版本一致性可单独检查。需要 Docker Compose CLI 来解析实际配置，不需要启动 Docker daemon；本地环境覆盖不会影响默认版本的检查。
-
-```bash
-# 在更新 Cargo.toml 后，从主 package 读取本次目标版本。
-VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+```sh
+VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
 ./scripts/check-release-version.sh "$VERSION"
-```
-
-发布构建、普通 CI 和本地开发都使用 `rust-toolchain.toml` 固定的 Rust 1.97.1。
-Cargo manifest 不声明更低编译器兼容边界，也没有独立的旧版本验证 job。工具链
-职责和协调升级流程见 [Rust 单工具链策略](rust-toolchain-policy.md)。
-
-## 本地发布门禁
-
-先按[双后端测试准备步骤](getting-started.md#rust-与双后端)启动测试 PostgreSQL，并在运行门禁的同一 shell 导出 `TEST_DATABASE_ADMIN_URL` 和 `AI_GATEWAY_TEST_CODEX_PLUGIN`。后者应指向准备脚本生成的动态库；原生契约测试还会加载其同目录的测试制品。
-
-```bash
-VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
 ./scripts/verify-release.sh "$VERSION"
 ```
 
-该脚本执行：
+[验证脚本](../../scripts/verify-release.sh)检查 Rust 和 Console、嵌入式 UI、Compose、容器版本与随附许可证。转发变更还需按[真实上游 smoke](real-upstream-smoke.md)验证。通过后提交版本准备 PR。
 
-- Rust format、workspace-wide clippy 与完整测试（包括性能工具的轻量单元测试）。
-- Console API 类型漂移检查、TypeScript、lint、组件测试与生产构建。
-- 启用 `embedded-console-ui,sqlite-backend` 的 Rust lint，并执行 Console serving 定向测试。
-- Production Compose 解析。
-- 完整 Docker 镜像构建、容器内精确版本、AGPL OCI label 和第三方许可证存在性检查。
+## 创建 tag
 
-性能 Harness 仍然只能在
-用户明确要求时运行；发布门禁不会执行它。只有转发路径发生变化时，才按
-`docs/development/real-upstream-smoke.md` 额外运行付费真实上游 smoke test。
+确认发布准备 PR 已合入、工作树干净、`main` 与 `origin/main` 一致，并用已认证的 GitHub CLI 核对该 SHA 的检查。获准发布后执行：
 
-## 创建并发布 tag
-
-发布准备 PR 合并后回到同步后的 `main`，确认获准发布且工作树干净，再执行：
-
-```bash
-VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+```sh
 ./scripts/release.sh "$VERSION" --push
 ```
 
-该命令要求本地 `main` 与 `origin/main` 完全一致，验证目标 SHA 的 `main`
-push 已有成功的 `ci-gate`，再创建 annotated tag `v${VERSION}`，然后通过 atomic
-push 同时推送 `main` 与 tag。发布准备阶段已经运行完整本地发布门禁，因此默认
-不会在打 tag 前重复执行；需要人工再次验证时可显式增加 `--verify`。没有
-`--push` 时只创建本地 tag。查询 `ci-gate` 需要已认证的 GitHub CLI。
+脚本检查该 SHA 在 `main` push 上的 `ci-gate`，创建 annotated tag，并原子推送分支和 tag。不加 `--push` 只创建本地 tag。不要移动已发布的 tag；修订产物需新版本。
 
-| 失败 | 处理 |
-| --- | --- |
-| 不在 main、工作树不干净或 HEAD 不等于 origin/main | 返回发布准备流程，不用 reset/强推绕过 |
-| 目标 SHA 没有成功的 main ci-gate | 等待或修复该 SHA 的检查，不借用旧运行结果 |
-| tag 或 GitHub Release 已存在 | 使用新版本；不移动、覆盖或复用旧 tag |
-| 镜像 cache 未预热 | 可以正常冷构建，但耗时增加；不是降低门禁的理由 |
+## 产物与检查
 
-发布准备 PR 合并后，应先观察相同 `main` SHA 的 CI 与 Security 成功。为了稳定
-获得 warm-cache 的发布耗时，还应等待 `Release image cache` 完成再推送 tag。
-Cache 预热失败不会改变产物正确性，Release 会回退为正常冷构建，但耗时会增加；
-`release.sh` 当前只强制检查 `ci-gate`，Security 和 cache 状态仍需发布者确认。
+[Release workflow](../../.github/workflows/release.yml) 校验 tag、版本和已通过门禁的提交，再执行嵌入式 Console 构建、lint 和 serving 测试。AMD64 与 ARM64 原生 runner 分别构建并推送平台 digest。AMD64 镜像提供 Linux 归档所用二进制，归档随附 `docs/`、许可证、校验和与发布说明。平台构建和验证完成后，workflow 合成多架构镜像并发布 GitHub Release。公开仓库还会为镜像生成 attestation。
 
-已发布 tag 不得移动、覆盖或复用。发现问题时发布新的 patch 版本；不要强推旧 tag。
+稳定版镜像标记精确版本、`major.minor`、`major` 和 `latest`；预发布版本仅标记精确版本。发布后检查 tag 和实际镜像，再在隔离环境按[生产部署](../user/production-deployment.md)验证服务启动、Console 和日志投影：
 
-## GitHub Actions 发布产物
-
-`.github/workflows/release.yml` 在 `v*.*.*` tag 推送后：
-
-1. `preflight` 要求 annotated tag 精确解析到 workflow SHA，且该提交属于
-   `main`，校验代码版本与 Changelog，并通过 GitHub Actions API 固定目标 SHA
-   已成功完成 `main` `ci-gate`。本地 `release.sh` 在创建 tag 时进一步要求
-   `HEAD` 与 `origin/main` 完全一致。Tag workflow 不再重复运行相同 SHA 已通过
-   的普通 Rust、Console 与 Playwright 门禁。
-2. `verify` 与两个平台镜像构建在 `preflight` 后并行。`verify` 只执行发布专属的
-   embedded Console 构建、Clippy 和 serving tests。
-3. `publish-platform-images` 分别在原生 `ubuntu-24.04`
-   (`linux/amd64`) 与 `ubuntu-24.04-arm` (`linux/arm64`) runner 上并行构建，
-   以平台 digest 推送镜像，避免使用 QEMU 编译 Rust；Dockerfile 中与架构无关的
-   Console 构建和 `cargo-chef prepare` 阶段固定在 `$BUILDPLATFORM`。平台 digest
-   在门禁结束前没有稳定 tag；失败运行最多留下不可发现的无标签 digest。
-4. Docker planner 在生成 cargo-chef recipe 前将 workspace 自身版本规范化为
-   固定占位值，因此单纯的 release version bump 不再使第三方依赖层失效。
-5. 普通 `main` CI 预热 AMD64 cache；独立的
-   `.github/workflows/release-image-cache.yml` 在 `main` 的 image 相关变更后
-   异步预热 ARM64 `release-image-arm64` cache。Tag Release 只恢复 cache，不在
-   发布关键路径上传 `mode=max` cache。
-6. AMD64 平台 lane 从刚推送的镜像中提取二进制和第三方许可证材料，生成包含
-   完整 `docs/` 文档树的 Linux tarball、`SHA256SUMS` 与 release notes。该打包
-   与 ARM64 构建重叠执行，且 GitHub tarball 与 AMD64 容器使用同一份已编译
-   二进制，不再分别编译。
-7. `publish-image` job 下载两个平台 digest，生成稳定版或预发布版 tag，并将
-   它们合并为一个 multi-platform manifest。
-8. Public 仓库额外为最终 multi-platform 镜像生成并推送 GitHub artifact
-   attestation；Private 仓库会跳过此步骤。
-9. 仅拥有 `contents: write` 的 `publish-release` job 创建 GitHub Release
-   并上传资产。
-
-最终 image tags、provenance 和 GitHub Release 仍然必须等待发布专属验证、两个
-平台构建及资产打包全部成功。并行化只提前执行无标签构建，不降低发布门禁。
-
-稳定版本会发布精确版本、`major.minor`、`major` 与 `latest`；预发布版本只发布
-精确 SemVer tag。镜像地址为 `ghcr.io/oai404iao/ai_gateway`，OCI
-`org.opencontainers.image.licenses` label 固定为 `AGPL-3.0-only`。
-
-首次发布的 GHCR Package 默认是私有的，并与源码仓库分别管理可见性。仓库未来
-转为 Public 时，还需在 Package 设置中单独确认镜像是否公开。已经发布的 GitHub
-Release 不会被工作流覆盖；修复发布问题应使用新的 patch 版本。
-
-迁移时推送的旧 tag 不会补发 GitHub Release，因为对应历史提交中还没有
-`.github/workflows/release.yml`。首次自动发布应创建一个包含该工作流的新版本 tag。
-
-仓库转为 Public 后应在 GitHub Release 设置中启用 Immutable Releases。当前发布
-脚本本身也拒绝覆盖已有 Release；修复问题必须发布新的 patch 版本。
-
-## 发布后验证
-
-```bash
-VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+```sh
 git ls-remote --tags origin "refs/tags/v${VERSION}"
-
-docker pull "ghcr.io/oai404iao/ai_gateway:${VERSION}"
-docker run --rm "ghcr.io/oai404iao/ai_gateway:${VERSION}" --version
+docker run --rm --pull=always "ghcr.io/oai404iao/ai_gateway:${VERSION}" --version
 ```
-
-随后在隔离环境按 `docs/user/production-deployment.md` 启动完整 Compose，验证
-`/health`、Console 登录、migration、spool 与数据库投影。私有 Package 需要先
-登录 GHCR；也可以从对应 tag 本地构建。

@@ -7,35 +7,10 @@ afterEach(() => {
 });
 
 describe("formatDateTimeLocalInput", () => {
-  it("keeps the required numeric datetime-local syntax in the Chinese UI", () => {
-    const value = "2026-03-04T05:06:00Z";
-    const date = new Date(value);
-    const expected = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(
-      2,
-      "0",
-    )}-${String(date.getDate()).padStart(2, "0")}T${String(date.getHours()).padStart(
-      2,
-      "0",
-    )}:${String(date.getMinutes()).padStart(2, "0")}`;
-
+  it("formats the local time in numeric input syntax with the requested precision", () => {
+    const instant = new Date(2026, 2, 4, 5, 6, 47).toISOString();
     setCurrentLocale("zh-CN");
-
-    expect(formatDateTimeLocalInput(value)).toBe(expected);
-  });
-
-  it("preserves seconds when a precise statistics boundary is requested", () => {
-    const value = "2026-03-04T05:06:47Z";
-    const date = new Date(value);
-    const expected = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(
-      2,
-      "0",
-    )}-${String(date.getDate()).padStart(2, "0")}T${String(date.getHours()).padStart(
-      2,
-      "0",
-    )}:${String(date.getMinutes()).padStart(2, "0")}:${String(
-      date.getSeconds(),
-    ).padStart(2, "0")}`;
-
-    expect(formatDateTimeLocalInput(value, true)).toBe(expected);
+    expect(formatDateTimeLocalInput(instant)).toBe("2026-03-04T05:06");
+    expect(formatDateTimeLocalInput(instant, true)).toBe("2026-03-04T05:06:47");
   });
 });

@@ -1,4 +1,4 @@
-//! Historical pre-capability schema contracts, pinned to migrations 1–4.
+//! Business schema storage, financial guards, and reopen contracts.
 
 use super::*;
 use ai_gateway::persistence::sqlite::{SqliteDate, SqliteTimestamp, SqliteUuid};
@@ -8,6 +8,8 @@ use uuid::Uuid;
 const USER: &str = "10000000-0000-0000-0000-000000000001";
 const KEY: &str = "20000000-0000-0000-0000-000000000001";
 const MODEL: &str = "30000000-0000-0000-0000-000000000001";
+const ACCESS: &str = "90000000-0000-0000-0000-000000000001";
+const CAPABILITY: &str = "90000000-0000-0000-0000-000000000002";
 const GROUP: &str = "40000000-0000-0000-0000-000000000001";
 const CHANNEL: &str = "50000000-0000-0000-0000-000000000001";
 const PROFILE: &str = "60000000-0000-0000-0000-000000000001";
@@ -16,32 +18,9 @@ const REQUEST: &str = "80000000-0000-0000-0000-000000000001";
 const CODEX_GROUP: &str = "40000000-0000-0000-0000-000000000002";
 const CODEX_CHANNEL: &str = "50000000-0000-0000-0000-000000000002";
 
-pub(super) const IDENTITY_MIGRATIONS: &[SqliteMigration<'static>] = &[
-    SqliteMigration {
-        version: 1,
-        description: "business schema after PostgreSQL 0063",
-        sql: include_str!("../../migrations/sqlite/0001_baseline.sql"),
-    },
-    SqliteMigration {
-        version: 2,
-        description: "business constraints and derived projections",
-        sql: include_str!("../../migrations/sqlite/0002_guards.sql"),
-    },
-    SqliteMigration {
-        version: 3,
-        description: "durable Codex external-operation fences",
-        sql: include_str!("../../migrations/sqlite/0003_codex_operations.sql"),
-    },
-    SqliteMigration {
-        version: 4,
-        description: "independent upstream credential identities",
-        sql: include_str!("../../migrations/sqlite/0004_upstream_credentials.sql"),
-    },
-];
-
 async fn schema() -> (tempfile::TempDir, SqliteDatabase) {
     let (directory, db) = database().await;
-    assert_eq!(db.migrate(IDENTITY_MIGRATIONS).await.unwrap(), 4);
+    assert_eq!(db.install_schema().await.unwrap(), 1);
     (directory, db)
 }
 
@@ -54,23 +33,19 @@ async fn execute(db: &SqliteDatabase, sql: &str) -> Result<(), sqlx::Error> {
 async fn seed(db: &SqliteDatabase) {
     execute(db, &format!(
         "INSERT INTO users(id,display_name) VALUES ('{USER}','User');
-         INSERT INTO api_keys(id,user_id,name,secret_value,status,allowed_api_formats,permissions)
-         VALUES ('{KEY}','{USER}','Key','test-only-secret','active','[\"open_ai_responses\"]','[\"proxy\"]');
+         INSERT INTO api_keys(id,user_id,name,secret_value,status,permissions)
+         VALUES ('{KEY}','{USER}','Key','test-only-secret','active','[\"proxy\"]');
          INSERT INTO models(id,source_model_id,display_name,price_unit_tokens,input_unit_price,
              cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at)
          VALUES ('{MODEL}','test-model','Test',1000000,'1','0','0','2','2026-01-01T00:00:00.000000Z');
-         INSERT INTO channel_groups(id,name,api_format) VALUES ('{GROUP}','Group','open_ai_responses');
-         INSERT INTO channels(id,channel_group_id,api_format,name,base_url,upstream_auth_kind,available_models)
-         VALUES ('{CHANNEL}','{GROUP}','open_ai_responses','Channel','https://upstream.invalid','none','[\"wire\"]');
+         INSERT INTO routing_groups(id,name) VALUES ('{GROUP}','Group');
+         INSERT INTO upstream_accesses(id,name,base_url,connector_kind) VALUES ('{ACCESS}','Access','https://upstream.invalid','general');
+         INSERT INTO upstream_channels(id,group_id,access_id,name) VALUES ('{CHANNEL}','{GROUP}','{ACCESS}','Channel');
+         INSERT INTO channel_capabilities(id,channel_id,operation) VALUES ('{CAPABILITY}','{CHANNEL}','responses');
          INSERT INTO model_routing_profiles(id,model_id) VALUES ('{PROFILE}','{MODEL}');
-         INSERT INTO model_rules(id,model_routing_profile_id,api_format,enabled)
-         VALUES ('{RULE}','{PROFILE}','open_ai_responses',0);"
+         INSERT INTO model_operation_rules(id,model_routing_profile_id,operation,enabled)
+         VALUES ('{RULE}','{PROFILE}','responses',0);"
     )).await.unwrap();
-}
-
-fn routes() -> String {
-    format!("INSERT INTO model_rule_routing_tiers VALUES ('{RULE}','open_ai_responses',0,'weighted_random');
-        INSERT INTO model_rule_routing_candidates VALUES ('{RULE}','open_ai_responses',0,'{CHANNEL}','wire',1);")
 }
 
 async fn scalar<T>(db: &SqliteDatabase, query: &str) -> T
@@ -88,7 +63,7 @@ where
 async fn complete_baseline_preserves_columns_storage_guards_and_seeds_and_reopens() {
     let (directory, db) = schema().await;
     let inventory: Value =
-        serde_json::from_str(include_str!("../fixtures/sqlite-schema-inventory.json")).unwrap();
+        serde_json::from_str(include_str!("../fixtures/canonical-schema-inventory.json")).unwrap();
     let mut reader = db.acquire_read().await.unwrap();
     for (table, expected) in inventory.as_object().unwrap() {
         let columns: Vec<String> =
@@ -184,7 +159,7 @@ async fn complete_baseline_preserves_columns_storage_guards_and_seeds_and_reopen
                 "INSERT INTO request_logs(id,started_at,completed_at,user_id,api_key_id,
                 api_format,api_operation,client_model,outcome,response_status_code)
              VALUES ('{REQUEST}',ag_now(),ag_now(),'{USER}','{KEY}',
-                '{format}','standalone_web_search','test-model','succeeded',{status})"
+                '{format}','web_search','test-model','succeeded',{status})"
             ),
         )
         .await;
@@ -197,41 +172,13 @@ async fn complete_baseline_preserves_columns_storage_guards_and_seeds_and_reopen
             result.unwrap();
         }
     }
-    assert_eq!(db.migrate(IDENTITY_MIGRATIONS).await.unwrap(), 0);
+    assert_eq!(db.install_schema().await.unwrap(), 0);
     db.close().await;
     let reopened = SqliteDatabase::open(&directory.path().join("gateway.sqlite"))
         .await
         .unwrap();
-    assert_eq!(reopened.migrate(IDENTITY_MIGRATIONS).await.unwrap(), 0);
+    assert_eq!(reopened.install_schema().await.unwrap(), 0);
     reopened.close().await;
-}
-
-#[tokio::test]
-async fn complete_baseline_and_guards_rollback_as_one_pending_batch() {
-    let (_directory, db) = database().await;
-    let migrations = [
-        SqliteMigration {
-            version: 1,
-            description: "baseline",
-            sql: include_str!("../../migrations/sqlite/0001_baseline.sql"),
-        },
-        SqliteMigration {
-            version: 2,
-            description: "guards",
-            sql: include_str!("../../migrations/sqlite/0002_guards.sql"),
-        },
-        SqliteMigration {
-            version: 3,
-            description: "failure",
-            sql: "SELECT deliberate_missing_function()",
-        },
-    ];
-    assert!(db.migrate(&migrations).await.is_err());
-    assert!(!table_exists(&db, "users").await);
-    assert!(!table_exists(&db, "request_metering_facts").await);
-    assert!(!table_exists(&db, "_gateway_routing_assertions").await);
-    assert_eq!(db.install_schema().await.unwrap(), 15);
-    db.close().await;
 }
 
 #[tokio::test]
@@ -243,9 +190,6 @@ async fn storage_rejects_lossy_types_invalid_arrays_and_wrong_shapes() {
         "quota_limit_amount='0.000000001'",
         "quota_limit_amount='1.0'",
         "quota_limit_amount='-1'",
-        "allowed_api_formats='[]'",
-        "allowed_api_formats='[null]'",
-        "allowed_api_formats='[\"not-a-format\"]'",
         "allowed_group_ids='[\"bad-uuid\"]'",
         "allowed_channel_ids='[null]'",
         "permissions='[\"root\"]'",
@@ -304,6 +248,45 @@ async fn storage_rejects_lossy_types_invalid_arrays_and_wrong_shapes() {
 }
 
 #[tokio::test]
+async fn credentials_and_accesses_enforce_explicit_plugin_ownership() {
+    let (_directory, database) = schema().await;
+    let mut tx = database.begin_write().await.unwrap();
+    sqlx::query(
+        "INSERT INTO upstream_credentials(id,name,kind,connector_kind,secret,allowed_base_urls)
+         VALUES('10000000-0000-0000-0000-000000000003','plugin','bearer','acme','secret','[\"https://example.test\"]')",
+    ).execute(&mut *tx).await.unwrap();
+    sqlx::query(
+        "INSERT INTO upstream_accesses(id,name,connector_kind,base_url)
+         VALUES('20000000-0000-0000-0000-000000000001','plugin','acme','https://example.test')",
+    )
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    assert!(
+        sqlx::query(
+            "UPDATE upstream_credentials SET connector_kind='general',updated_at=ag_now()
+         WHERE id='10000000-0000-0000-0000-000000000003'",
+        )
+        .execute(&mut *tx)
+        .await
+        .is_err()
+    );
+    for (kind, connector) in [
+        ("bearer", "codex"),
+        ("codex_oauth", "acme"),
+        ("bearer", "BAD"),
+    ] {
+        assert!(sqlx::query(
+            "INSERT INTO upstream_credentials(id,name,kind,connector_kind,secret,allowed_base_urls)
+             VALUES('10000000-0000-0000-0000-000000000004','invalid',?,?,?,'[\"https://example.test\"]')",
+        ).bind(kind).bind(connector).bind((kind == "bearer").then_some("secret"))
+            .execute(&mut *tx).await.is_err());
+    }
+    tx.rollback().await.unwrap();
+    database.close().await;
+}
+
+#[tokio::test]
 async fn json_storage_rejects_postgres_incompatible_unicode() {
     let (_directory, db) = schema().await;
     seed(&db).await;
@@ -340,18 +323,22 @@ async fn json_storage_rejects_postgres_incompatible_unicode() {
 
 #[tokio::test]
 async fn normalized_log_replay_preserves_on_conflict_semantics() {
-    use ai_gateway::domain::{ApiFormat, ApiOperation};
+    use ai_gateway::domain::ApiOperation;
     let (_directory, db) = schema().await;
     seed(&db).await;
-    for format in ApiFormat::ALL {
+    for operation in [
+        ApiOperation::ChatCompletions,
+        ApiOperation::Responses,
+        ApiOperation::ImagesGeneration,
+    ] {
+        let format = operation.api_format();
         let id = Uuid::new_v4().to_string();
-        let operation = ApiOperation::legacy_default(format);
         for _ in 0..2 {
             let mut tx = db.begin_write().await.unwrap();
             sqlx::query("INSERT INTO request_logs(
                 id,started_at,completed_at,user_id,api_key_id,api_format,api_operation,client_model,outcome)
                 VALUES (?,ag_now(),ag_now(),?,?,?,?,?,'rejected') ON CONFLICT(id) DO NOTHING")
-                .bind(&id).bind(USER).bind(KEY).bind(format.as_str()).bind(ai_gateway::persistence::capability_cutover::legacy_settings::operation_name(operation))
+                .bind(&id).bind(USER).bind(KEY).bind(format.as_str()).bind(operation.as_str())
                 .bind("model").execute(&mut *tx).await.unwrap();
             tx.commit().await.unwrap();
         }
@@ -371,24 +358,21 @@ fn failure_kind(error: sqlx::Error) -> ai_gateway::persistence::StorageFailureKi
 }
 
 #[tokio::test]
-async fn sqlite_errors_keep_input_dependency_conflict_and_internal_distinct() {
+async fn sqlite_errors_keep_input_conflict_and_internal_distinct() {
     use ai_gateway::persistence::StorageFailureKind as Kind;
     let (directory, db) = schema().await;
     seed(&db).await;
-    for (assignment, expected) in [
-        (
-            format!("channel_group_id='{REQUEST}'"),
-            Kind::RoutingDependency,
-        ),
-        ("channel_group_id='bad-uuid'".into(), Kind::InvalidInput),
-        ("api_format='not-a-format'".into(), Kind::InvalidInput),
-        ("upstream_auth_kind='not-auth'".into(), Kind::InvalidInput),
+    for assignment in [
+        format!("group_id='{REQUEST}'"),
+        "group_id='bad-uuid'".into(),
+        "enabled=9".into(),
     ] {
-        let sql =
-            format!("UPDATE channels SET updated_at=ag_now(),{assignment} WHERE id='{CHANNEL}'");
+        let sql = format!(
+            "UPDATE upstream_channels SET updated_at=ag_now(),{assignment} WHERE id='{CHANNEL}'"
+        );
         assert_eq!(
             failure_kind(execute(&db, &sql).await.unwrap_err()),
-            expected
+            Kind::InvalidInput
         );
     }
     assert_eq!(
@@ -396,10 +380,10 @@ async fn sqlite_errors_keep_input_dependency_conflict_and_internal_distinct() {
         Kind::Internal
     );
     execute(&db,&format!("INSERT INTO proxies(id,name,proxy_url) VALUES ('{REQUEST}','Proxy','http://proxy.invalid');
-        UPDATE channels SET updated_at=ag_now(),proxy_id='{REQUEST}' WHERE id='{CHANNEL}';")).await.unwrap();
+        UPDATE upstream_accesses SET updated_at=ag_now(),proxy_id='{REQUEST}' WHERE id='{ACCESS}';")).await.unwrap();
     assert_eq!(
         failure_kind(execute(&db, "DELETE FROM proxies").await.unwrap_err()),
-        Kind::RoutingDependency
+        Kind::InvalidInput
     );
     let tx = db.begin_write().await.unwrap();
     let mut competing = SqliteConnection::connect_with(
@@ -413,79 +397,6 @@ async fn sqlite_errors_keep_input_dependency_conflict_and_internal_distinct() {
     assert_eq!(failure_kind(error), Kind::Conflict);
     competing.close().await.unwrap();
     tx.rollback().await.unwrap();
-    db.close().await;
-}
-
-#[tokio::test]
-async fn routing_shapes_are_deferred_and_helper_rows_cannot_bypass_them() {
-    let (_directory, db) = schema().await;
-    seed(&db).await;
-    assert!(
-        execute(
-            &db,
-            &format!(
-                "UPDATE model_rules SET updated_at=ag_now(),enabled=1 WHERE id='{RULE}';
-        UPDATE _gateway_routing_assertions SET valid=1 WHERE rule_id='{RULE}';"
-            )
-        )
-        .await
-        .is_err()
-    );
-    assert!(
-        execute(
-            &db,
-            &format!("UPDATE model_rules SET updated_at=ag_now(),enabled=1 WHERE id='{RULE}'")
-        )
-        .await
-        .is_err()
-    );
-    execute(
-        &db,
-        &format!(
-            "UPDATE model_rules SET updated_at=ag_now(),enabled=1 WHERE id='{RULE}'; {}",
-            routes()
-        ),
-    )
-    .await
-    .unwrap();
-    assert!(
-        execute(
-            &db,
-            &format!("DELETE FROM model_rule_routing_candidates WHERE model_rule_id='{RULE}'")
-        )
-        .await
-        .is_err()
-    );
-    execute(
-        &db,
-        &format!(
-            "DELETE FROM model_rule_routing_tiers WHERE model_rule_id='{RULE}'; {}",
-            routes()
-        ),
-    )
-    .await
-    .unwrap();
-    for sql in [
-        format!("DELETE FROM _gateway_routing_assertions WHERE rule_id='{RULE}'"),
-        "DELETE FROM _gateway_true".into(),
-        "UPDATE _gateway_true SET value=0".into(),
-        format!("UPDATE _gateway_routing_assertions SET valid=0 WHERE rule_id='{RULE}'"),
-        format!("UPDATE model_rule_routing_candidates SET model_rule_id='{PROFILE}'"),
-    ] {
-        assert!(execute(&db, &sql).await.is_err(), "{sql}");
-    }
-    assert!(execute(&db,&format!("INSERT INTO model_rule_routing_candidates VALUES ('{RULE}','open_ai_responses',0,'{CHANNEL}','wire',9)")).await.is_err());
-    execute(&db,&format!("INSERT INTO model_rule_routing_candidates VALUES ('{RULE}','open_ai_responses',0,'{CHANNEL}','another-wire',9)")).await.unwrap();
-    execute(
-        &db,
-        &format!("DELETE FROM model_routing_profiles WHERE id='{PROFILE}'"),
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        scalar::<i64>(&db, "SELECT count(*) FROM _gateway_routing_assertions").await,
-        0
-    );
     db.close().await;
 }
 
@@ -541,41 +452,6 @@ async fn normalized_writes_keep_one_transaction_timestamp_and_require_functions(
         .is_err()
     );
     raw.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn draft_rule_identity_update_and_cascade_preserve_assertion_coverage() {
-    let (_directory, db) = schema().await;
-    seed(&db).await;
-    execute(
-        &db,
-        &format!("UPDATE model_rules SET updated_at=ag_now(),id='{REQUEST}' WHERE id='{RULE}'"),
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        scalar::<String>(&db, "SELECT rule_id FROM _gateway_routing_assertions").await,
-        REQUEST
-    );
-    assert!(
-        execute(
-            &db,
-            &format!("UPDATE model_rules SET updated_at=ag_now(),enabled=1 WHERE id='{REQUEST}'")
-        )
-        .await
-        .is_err()
-    );
-    execute(
-        &db,
-        &format!("DELETE FROM model_routing_profiles WHERE id='{PROFILE}'"),
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        scalar::<i64>(&db, "SELECT count(*) FROM _gateway_routing_assertions").await,
-        0
-    );
-    db.close().await;
 }
 
 #[tokio::test]
@@ -747,101 +623,23 @@ async fn priced_receipts_require_exact_snapshot_amount_currency_and_key_ownershi
 }
 
 async fn codex(db: &SqliteDatabase) {
-    execute(db,&format!("INSERT INTO connector_pools(id,connector_kind) VALUES ('{CODEX_GROUP}','codex_oauth');
-        INSERT INTO channel_groups(id,name,api_format,connector_kind,connector_pool_id)
-        VALUES ('{CODEX_GROUP}','Codex','open_ai_responses','codex_oauth','{CODEX_GROUP}');
-        INSERT INTO channels(id,channel_group_id,api_format,name,base_url,upstream_auth_kind)
-        VALUES ('{CODEX_CHANNEL}','{CODEX_GROUP}','open_ai_responses','Account','https://codex.invalid','none');
-        INSERT INTO codex_oauth_credentials(channel_id,channel_group_id,connector_pool_id,label,account_id,user_id,
-            id_token,access_token,refresh_token,last_refreshed_at)
-        VALUES ('{CODEX_CHANNEL}','{CODEX_GROUP}','{CODEX_GROUP}','Account','account','provider-user','test-id','test-access','test-refresh',ag_now());")).await.unwrap();
+    execute(db, &format!(
+        "INSERT INTO routing_groups(id,name) VALUES ('{CODEX_GROUP}','Codex');
+         INSERT INTO upstream_credentials(id,name,kind,connector_kind,allowed_base_urls)
+         VALUES ('{CODEX_CHANNEL}','Account','codex_oauth','codex','[\"https://codex.invalid\"]');
+         INSERT INTO codex_oauth_credentials(channel_id,label,account_id,user_id,id_token,access_token,refresh_token,last_refreshed_at)
+         VALUES ('{CODEX_CHANNEL}','Account','account','provider-user','test-id','test-access','test-refresh',ag_now());"
+    )).await.unwrap();
 }
 
 #[tokio::test]
-async fn codex_projections_share_only_intended_state_and_keep_images_disabled() {
-    let (_directory, db) = schema().await;
-    codex(&db).await;
-    assert_eq!(
-        scalar::<i64>(&db, "SELECT count(*) FROM connector_pools").await,
-        1
-    );
-    assert_eq!(
-        scalar::<i64>(&db, "SELECT count(*) FROM codex_oauth_credential_channels").await,
-        2
-    );
-    assert_eq!(
-        scalar::<i64>(
-            &db,
-            "SELECT enabled FROM channel_groups WHERE api_format='open_ai_images'"
-        )
-        .await,
-        0
-    );
-    assert_eq!(scalar::<String>(&db,&format!("SELECT connector_pool_id FROM codex_oauth_credentials WHERE channel_id='{CODEX_CHANNEL}'")).await,CODEX_GROUP);
-    execute(&db,&format!("UPDATE channels SET updated_at=ag_now(),name='Updated',billing_multiplier='1.25',supports_websocket=1 WHERE id='{CODEX_CHANNEL}';")).await.unwrap();
-    assert_eq!(
-        scalar::<String>(
-            &db,
-            "SELECT billing_multiplier FROM channels WHERE api_format='open_ai_images'"
-        )
-        .await,
-        "1.25"
-    );
-    assert_eq!(
-        scalar::<i64>(
-            &db,
-            "SELECT supports_websocket FROM channels WHERE api_format='open_ai_images'"
-        )
-        .await,
-        0
-    );
-    execute(&db,&format!("UPDATE codex_oauth_credentials SET updated_at=ag_now(),deleted_at=ag_now() WHERE channel_id='{CODEX_CHANNEL}'")).await.unwrap();
-    assert_eq!(
-        scalar::<i64>(
-            &db,
-            "SELECT enabled FROM channels WHERE api_format='open_ai_images'"
-        )
-        .await,
-        0
-    );
-    db.close().await;
-}
-
-#[tokio::test]
-async fn partial_uniques_keep_tombstones_reusable_and_null_credentials_unique() {
+async fn active_group_names_are_unique_and_tombstones_release_the_name() {
     let (_directory, db) = schema().await;
     seed(&db).await;
-    codex(&db).await;
-    execute(&db,&format!(
-        "INSERT INTO channel_groups(id,name,api_format) VALUES ('{REQUEST}','Reusable','open_ai_responses');
-         UPDATE channel_groups SET updated_at=ag_now(),enabled=0,deleted_at=ag_now(),deleted_by='{USER}' WHERE id='{REQUEST}';
-         INSERT INTO channel_groups(id,name,api_format) VALUES ('{PROFILE}','Reusable','open_ai_responses');
-         UPDATE codex_oauth_credentials SET updated_at=ag_now(),account_id=NULL WHERE channel_id='{CODEX_CHANNEL}';"
-    )).await.unwrap();
-    let result=execute(&db,&format!(
-        "INSERT INTO channels(id,channel_group_id,api_format,name,base_url,upstream_auth_kind)
-             VALUES ('{REQUEST}','{CODEX_GROUP}','open_ai_responses','Duplicate','https://codex.invalid','none');
-         INSERT INTO codex_oauth_credentials(channel_id,channel_group_id,connector_pool_id,label,account_id,
-             user_id,id_token,access_token,refresh_token,last_refreshed_at)
-             VALUES ('{REQUEST}','{CODEX_GROUP}','{CODEX_GROUP}','Duplicate',NULL,
-                 'provider-user','test-id','test-access','test-refresh',ag_now());"
-    )).await;
-    assert_eq!(
-        failure_kind(result.unwrap_err()),
-        ai_gateway::persistence::StorageFailureKind::InvalidInput
-    );
-    assert_eq!(
-        scalar::<i64>(
-            &db,
-            &format!("SELECT count(*) FROM channels WHERE id='{REQUEST}'")
-        )
-        .await,
-        0
-    );
-    assert_eq!(
-        scalar::<i64>(&db, "SELECT count(*) FROM codex_oauth_credentials").await,
-        1
-    );
+    let insert = format!("INSERT INTO routing_groups(id,name) VALUES ('{REQUEST}','Group')");
+    assert!(execute(&db, &insert).await.is_err());
+    execute(&db, &format!("UPDATE routing_groups SET updated_at=ag_now(),enabled=0,deleted_at=ag_now() WHERE id='{GROUP}'")).await.unwrap();
+    execute(&db, &insert).await.unwrap();
     db.close().await;
 }
 
@@ -853,8 +651,9 @@ async fn tombstones_cannot_be_hard_deleted_restored_or_newly_referenced() {
         "users",
         "user_groups",
         "api_keys",
-        "channels",
-        "channel_groups",
+        "upstream_channels",
+        "channel_capabilities",
+        "routing_groups",
         "models",
     ] {
         assert!(
@@ -874,9 +673,9 @@ async fn tombstones_cannot_be_hard_deleted_restored_or_newly_referenced() {
         format!(
             "UPDATE models SET updated_at=ag_now(),deleted_at=NULL,deleted_by=NULL WHERE id='{MODEL}'"
         ),
-        format!("UPDATE model_rules SET updated_at=ag_now(),enabled=1 WHERE id='{RULE}'"),
+        format!("UPDATE model_operation_rules SET updated_at=ag_now(),enabled=1 WHERE id='{RULE}'"),
         format!(
-            "UPDATE channels SET updated_at=ag_now(),test_model='wire',test_pricing_model_id='{MODEL}' WHERE id='{CHANNEL}'"
+            "UPDATE channel_capabilities SET updated_at=ag_now(),test_model='wire',test_pricing_model_id='{MODEL}' WHERE id='{CAPABILITY}'"
         ),
         format!(
             "UPDATE model_routing_profiles SET updated_at=ag_now(),model_id='{MODEL}' WHERE id='{PROFILE}'"
@@ -884,15 +683,13 @@ async fn tombstones_cannot_be_hard_deleted_restored_or_newly_referenced() {
     ] {
         assert!(execute(&db, &sql).await.is_err(), "{sql}");
     }
-    assert!(execute(&db,&format!("UPDATE channel_groups SET updated_at=ag_now(),enabled=0,deleted_at=ag_now(),deleted_by='{USER}' WHERE id='{GROUP}'")).await.is_err());
-    execute(&db,&format!("UPDATE channels SET updated_at=ag_now(),enabled=0,base_url='https://deleted.invalid',
-        available_models='[]',deleted_at=ag_now(),deleted_by='{USER}' WHERE id='{CHANNEL}';
-        UPDATE channel_groups SET updated_at=ag_now(),enabled=0,deleted_at=ag_now(),deleted_by='{USER}' WHERE id='{GROUP}';")).await.unwrap();
+    execute(&db, &format!("UPDATE upstream_channels SET updated_at=ag_now(),enabled=0,deleted_at=ag_now() WHERE id='{CHANNEL}';
+        UPDATE routing_groups SET updated_at=ag_now(),enabled=0,deleted_at=ag_now() WHERE id='{GROUP}';")).await.unwrap();
     assert!(
         execute(
             &db,
             &format!(
-                "UPDATE channels SET updated_at=ag_now(),name='Restored' WHERE id='{CHANNEL}'"
+                "UPDATE upstream_channels SET updated_at=ag_now(),name='Restored' WHERE id='{CHANNEL}'"
             )
         )
         .await
@@ -902,7 +699,7 @@ async fn tombstones_cannot_be_hard_deleted_restored_or_newly_referenced() {
         execute(
             &db,
             &format!(
-                "UPDATE channel_groups SET updated_at=ag_now(),name='Restored' WHERE id='{GROUP}'"
+                "UPDATE routing_groups SET updated_at=ag_now(),name='Restored' WHERE id='{GROUP}'"
             )
         )
         .await
@@ -926,14 +723,14 @@ async fn identity_audit_quota_catalog_and_leaderboard_constraints_are_live() {
              VALUES ('{REQUEST}','{USER}','{USER}',x'01','2100-01-01T00:00:00.000000Z');
          INSERT INTO registration_invitation_codes(id,name,code_hash,user_group_id,created_by,max_uses)
              VALUES ('{REQUEST}','Invitation',x'01','00000000-0000-0000-0000-000000000101','{USER}',1);
-         INSERT INTO audit_logs(id,actor_user_id,actor_type,action,object_type,object_id,source_ip_prefix)
-             VALUES ('{REQUEST}','{USER}','user','test','user','{USER}','192.0.2.0/24');
+         INSERT INTO audit_logs(id,actor_user_id,actor_type,action,object_type,object_id)
+             VALUES ('{REQUEST}','{USER}','user','test','user','{USER}');
          INSERT INTO system_settings(setting_key,value) VALUES ('runtime','{{}}');
          INSERT INTO user_group_codex_quota_visibility(user_group_id,channel_group_id)
              VALUES ('00000000-0000-0000-0000-000000000101','{CODEX_GROUP}');
-         INSERT INTO codex_oauth_flows(id,actor_user_id,channel_group_id,label,quota_threshold_percent,
-             redirect_uri,state_hash,code_verifier,expires_at)
-             VALUES ('{REQUEST}','{USER}','{CODEX_GROUP}','Flow',95,'http://localhost:1455/auth/callback',
+         INSERT INTO codex_oauth_flows(id,actor_user_id,label,quota_threshold_percent,
+             state_hash,code_verifier,expires_at)
+             VALUES ('{REQUEST}','{USER}','Flow',95,
                  zeroblob(32),printf('%043d',0),'2100-01-01T00:00:00.000000Z');
          INSERT INTO codex_quota_window_periods(id,credential_id,window_kind,window_seconds,
              started_at,scheduled_reset_at,initial_used_percent,last_used_percent,first_observed_at,last_observed_at)

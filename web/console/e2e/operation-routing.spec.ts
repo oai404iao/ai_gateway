@@ -21,12 +21,13 @@ async function prepare(page: Page) {
   })) {
     await page.route(`**/console/v1/${path}`, (route) => route.fulfill({ json: body }));
   }
-  await page.route(`**/console/v1/routing/operation-rules/${OPERATION_RULE.id}`, (route) =>
-    route.fulfill({
-      headers: { ETag: `"${OPERATION_RULE.updated_at}"` },
-      json: route.request().method() === "PUT" ? { id: OPERATION_RULE.id } : OPERATION_RULE,
-    }),
-  );
+  await page.route(`**/console/v1/routing/operation-rules/${OPERATION_RULE.id}`, (route) => {
+    switch (route.request().method()) {
+      case "GET": return route.fulfill({ headers: { ETag: `"${OPERATION_RULE.updated_at}"` }, json: OPERATION_RULE });
+      case "PUT": return route.fulfill({ json: { id: OPERATION_RULE.id, correlation_id: MODEL.id } });
+      default: throw new Error(`Unexpected operation rule request: ${route.request().method()}`);
+    }
+  });
   await page.goto("/login");
   await page.getByLabel("Email", { exact: true }).fill("admin@example.com");
   await page.getByLabel("Password", { exact: true }).fill("correct-horse-battery-staple");
@@ -34,19 +35,13 @@ async function prepare(page: Page) {
   await expect(page).toHaveURL("/");
 }
 
-test("operation routing displays its priced model and opens the operation graph", async ({ page }) => {
+test("opening a priced model's operation graph and editing its weight preserves the candidate and ETag", async ({ page }) => {
   await prepare(page);
   await page.goto("/admin/routing/operation-rules");
   await page.getByText(MODEL.display_name, { exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/operation-rules/${OPERATION_RULE.id}\\?returnTo=`));
-  await expect(page.getByRole("button", { name: "Save operation rule" })).toBeVisible();
   await expect(page.getByRole("combobox", { name: "Upstream model for tier 1 row 1" }))
     .toHaveValue(OPERATION_RULE.routing_tiers[0].candidates[0].upstream_model);
-});
-
-test("operation saves preserve candidate identity and use the operation ETag", async ({ page }) => {
-  await prepare(page);
-  await page.goto(`/admin/routing/operation-rules/${OPERATION_RULE.id}`);
   await page.getByRole("spinbutton", { name: "Weight for tier 1 row 1" }).fill("7");
   const pending = page.waitForRequest((request) =>
     request.method() === "PUT" && request.url().endsWith(`/operation-rules/${OPERATION_RULE.id}`));

@@ -217,7 +217,7 @@ export function ChannelGroupStatusPanel() {
             error={error}
             isEmpty={data?.groups.length === 0}
             emptyTitle="No monitored channel groups"
-            emptyDescription="Enable status monitoring on at least one channel group."
+            emptyDescription="Groups appear here when a channel capability has status statistics enabled."
           >
             <ResourceTable
               columns={columns}
@@ -246,8 +246,7 @@ export function ChannelGroupStatusPanel() {
           <CardContent className="flex flex-col gap-5">
             {group.models.length === 0 ? (
               <EmptyState
-                title={t("No channel group models")}
-                description={t("Add available upstream models to channels in this group.")}
+                title={t("No models to report for this group")}
                 className="py-8"
               />
             ) : (

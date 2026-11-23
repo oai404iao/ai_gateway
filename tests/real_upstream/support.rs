@@ -352,6 +352,7 @@ fn gateway(
 ) -> SmokeGateway {
     let group_id = Uuid::new_v4();
     let channel_id = Uuid::new_v4();
+    let access_id = Uuid::new_v4();
     let priced_model_id = Uuid::new_v4();
     let operations: Vec<_> = smoke_operations(format)
         .iter()
@@ -379,32 +380,25 @@ fn gateway(
         groups: vec![ChannelGroupRecord {
             id: group_id,
             name: "real-upstream-smoke".into(),
-            api_format: format.api_format_name().into(),
-            connector_kind: "general".into(),
-            request_compression: "default".into(),
             enabled: true,
         }],
         channels: operations
             .iter()
             .map(|(operation, capability_id)| ChannelRecord {
                 credential: None,
-                credential_binding_revision: Uuid::nil(),
+                credential_binding_revision: channel_id,
                 id: *capability_id,
                 channel_group_id: group_id,
-                api_format: format.api_format_name().into(),
                 logical_channel_id: channel_id,
-                access_id: channel_id,
-                api_operation: Some(*operation),
-                connector_kind: "general".into(),
-                request_compression: "default".into(),
-                access_revision: Uuid::nil(),
-                capability_revision: Uuid::nil(),
-                transports: operation.transports().to_vec(),
+                access_id,
+                api_operation: *operation,
+                connector_kind: ai_gateway::domain::ConnectorKind::OpenAiCompatible,
+                request_compression: ai_gateway::domain::RequestCompression::Default,
+                access_revision: access_id,
+                capability_revision: *capability_id,
                 name: "real-upstream-smoke".into(),
                 base_url: upstream_settings.base_url.clone(),
                 enabled: true,
-                supports_websocket: *operation == ApiOperation::ResponsesWebSocket,
-                supports_standalone_web_search: *operation == ApiOperation::StandaloneWebSearch,
                 auto_disabled: false,
                 auto_disable_allowed: false,
                 billing_multiplier: Decimal::ONE,
@@ -539,9 +533,7 @@ fn responses_websocket_request_body(
     body
 }
 
-/// Makes one small JSON request for one API format. The Codex profile verifies
-/// its documented non-streaming rejection without reaching generation. The
-/// helper creates no database records and does not use process TOML.
+/// Makes one small JSON request through the ordinary upstream profile.
 pub(super) async fn smoke_nonstreaming_format(
     settings: &SmokeSettings,
     format: SmokeFormat,
@@ -554,18 +546,7 @@ pub(super) async fn smoke_nonstreaming_format(
         CLIENT_MODEL,
         upstream_model,
     );
-    let request = request(
-        format,
-        false,
-        matches!(format, SmokeFormat::Responses)
-            && settings.responses_profile == ResponsesUpstreamProfile::CodexOauth,
-    );
-    if matches!(format, SmokeFormat::Responses)
-        && settings.responses_profile == ResponsesUpstreamProfile::CodexOauth
-    {
-        assert_codex_nonstreaming_rejection(settings, gateway, request).await;
-        return;
-    }
+    let request = request(format, false, false);
     let _ =
         complete_nonstreaming_request(settings, gateway, request, format, format.api_operation())
             .await;
@@ -679,70 +660,6 @@ async fn complete_nonstreaming_request(
         value,
         elapsed: started.elapsed(),
     }
-}
-
-async fn assert_codex_nonstreaming_rejection(
-    settings: &SmokeSettings,
-    gateway: SmokeGateway,
-    request: Request<Body>,
-) {
-    let response = timeout(settings.timeout, gateway.app.oneshot(request))
-        .await
-        .expect("Codex non-streaming gateway request timed out")
-        .expect("Codex non-streaming gateway request completed");
-    let status = response.status();
-    let body = timeout(settings.timeout, response.into_body().collect())
-        .await
-        .expect("Codex non-streaming upstream body timed out")
-        .expect("Codex non-streaming upstream body completed")
-        .to_bytes();
-    assert_eq!(
-        status,
-        StatusCode::BAD_REQUEST,
-        "Codex-backed Responses non-streaming must fail with HTTP 400; {}",
-        sanitized_error_details(&body)
-    );
-    let value: Value =
-        serde_json::from_slice(&body).expect("Codex non-streaming rejection must be JSON");
-    assert_eq!(
-        value.pointer("/error/code").and_then(Value::as_str),
-        Some("codex_streaming_required"),
-        "Codex non-streaming rejection must retain the gateway error code"
-    );
-
-    let events = gateway.logs.events();
-    assert_eq!(
-        events.len(),
-        1,
-        "the Codex non-streaming rejection must produce exactly one terminal log"
-    );
-    let event = &events[0];
-    assert_eq!(event.api_format, SmokeFormat::Responses.api_format());
-    assert_eq!(event.api_operation, ApiOperation::Responses);
-    assert_eq!(event.request_protocol, RequestProtocol::NonStream);
-    assert_eq!(event.outcome, RequestLogOutcome::Failed);
-    assert_eq!(
-        event.response_status_code,
-        Some(StatusCode::BAD_REQUEST.as_u16())
-    );
-    assert_eq!(
-        event.error_code.as_deref(),
-        Some("codex_streaming_required")
-    );
-    let summary = event.error_summary.as_deref().unwrap();
-    let json = summary
-        .split_once("\n\n")
-        .map_or(summary, |(_, detail)| detail);
-    let detail: Value = serde_json::from_str(json).unwrap();
-    assert_eq!(detail["error"]["code"], "codex_streaming_required");
-    assert_eq!(detail["error"]["param"], "stream");
-    assert_eq!(
-        event.billing.as_ref().and_then(|billing| billing.usage),
-        None
-    );
-    println!(
-        "Responses non-streaming correctly returned 400 codex_streaming_required for the Codex profile"
-    );
 }
 
 /// Makes one small, paid SSE request for one API format and fully consumes the
@@ -1582,20 +1499,7 @@ mod tests {
         let body: Value =
             serde_json::from_slice(&body).expect("Codex Responses request should be JSON");
         captured.lock().unwrap().push(body.clone());
-        if body.get("stream").and_then(Value::as_bool) != Some(true) {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": {
-                        "message": "Codex OAuth channels currently require `stream: true`.",
-                        "type": "invalid_request_error",
-                        "param": "stream",
-                        "code": "codex_streaming_required",
-                    }
-                })),
-            )
-                .into_response();
-        }
+        assert_eq!(body["stream"], true);
         tokio::time::sleep(Duration::from_millis(5)).await;
         let event = json!({
             "type": "response.completed",
@@ -1855,7 +1759,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn codex_profile_keeps_the_client_shape_and_streaming_only_boundary() {
+    async fn codex_profile_forwards_the_ordinary_client_shape_over_sse() {
         let captured = Arc::new(Mutex::new(Vec::new()));
         let app = Router::new()
             .route("/v1/responses", post(mock_codex_responses))
@@ -1880,21 +1784,18 @@ mod tests {
             timeout: Duration::from_secs(5),
         };
 
-        smoke_nonstreaming_format(&settings, SmokeFormat::Responses, &settings.responses_model)
-            .await;
         smoke_streaming_format(&settings, SmokeFormat::Responses, &settings.responses_model).await;
         server.abort();
 
         let requests = captured.lock().unwrap();
-        assert_eq!(requests.len(), 2);
-        for body in requests.iter() {
-            assert_eq!(body["model"], "gateway-codex-model");
-            assert_eq!(body["input"][0]["type"], "message");
-            assert_eq!(body["input"][0]["role"], "user");
-            assert_eq!(body["input"][0]["content"][0]["type"], "input_text");
-            assert_eq!(body["max_output_tokens"], 1);
-        }
-        assert_eq!(requests[0]["stream"], false);
-        assert_eq!(requests[1]["stream"], true);
+        let [body] = requests.as_slice() else {
+            panic!("expected one streaming request");
+        };
+        assert_eq!(body["model"], "gateway-codex-model");
+        assert_eq!(body["input"][0]["type"], "message");
+        assert_eq!(body["input"][0]["role"], "user");
+        assert_eq!(body["input"][0]["content"][0]["type"], "input_text");
+        assert_eq!(body["max_output_tokens"], 1);
+        assert_eq!(body["stream"], true);
     }
 }

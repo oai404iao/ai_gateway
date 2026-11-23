@@ -389,48 +389,28 @@ pub struct ModelRuleRecord {
     pub enabled: bool,
 }
 
-#[derive(Debug, FromRow)]
+#[derive(Clone, Debug)]
 pub struct ChannelGroupRecord {
     pub id: Uuid,
     pub name: String,
-    pub api_format: String,
-    pub connector_kind: String,
-    pub request_compression: String,
     pub enabled: bool,
 }
-/// One active routing capability.
-///
-/// Canonical snapshots key a channel by its capability id (`id`), and record
-/// the owning logical channel, access, operation, connector, compression, and
-/// the independent access/capability revisions. The legacy loader leaves the
-/// canonical fields at their defaults and the runtime derives protocol metadata
-/// from the legacy channel group until that loader is retired.
-#[derive(Clone, FromRow)]
+
+/// A logical channel's routing capability for exactly one operation.
+#[derive(Clone)]
 pub struct ChannelRecord {
     pub id: Uuid,
     pub channel_group_id: Uuid,
-    pub api_format: String,
-    #[sqlx(skip)]
     pub logical_channel_id: Uuid,
-    #[sqlx(skip)]
     pub access_id: Uuid,
-    #[sqlx(skip)]
-    pub api_operation: Option<ApiOperation>,
-    #[sqlx(skip)]
-    pub connector_kind: String,
-    #[sqlx(skip)]
-    pub request_compression: String,
-    #[sqlx(skip)]
+    pub api_operation: ApiOperation,
+    pub connector_kind: crate::domain::ConnectorKind,
+    pub request_compression: crate::domain::RequestCompression,
     pub access_revision: Uuid,
-    #[sqlx(skip)]
     pub capability_revision: Uuid,
-    #[sqlx(skip)]
-    pub transports: Vec<crate::domain::CapabilityTransport>,
     pub name: String,
     pub base_url: String,
     pub enabled: bool,
-    pub supports_websocket: bool,
-    pub supports_standalone_web_search: bool,
     pub auto_disabled: bool,
     pub auto_disable_allowed: bool,
     pub billing_multiplier: rust_decimal::Decimal,
@@ -446,9 +426,7 @@ pub struct ChannelRecord {
     pub available_models: Vec<String>,
     pub test_model: Option<String>,
     pub test_pricing_model_id: Option<Uuid>,
-    #[sqlx(skip)]
     pub credential: Option<super::CredentialIdentity>,
-    #[sqlx(skip)]
     pub credential_binding_revision: Uuid,
 }
 impl fmt::Debug for ChannelRecord {
@@ -457,7 +435,6 @@ impl fmt::Debug for ChannelRecord {
             .debug_struct("ChannelRecord")
             .field("id", &self.id)
             .field("channel_group_id", &self.channel_group_id)
-            .field("api_format", &self.api_format)
             .field("logical_channel_id", &self.logical_channel_id)
             .field("access_id", &self.access_id)
             .field("api_operation", &self.api_operation)
@@ -465,15 +442,9 @@ impl fmt::Debug for ChannelRecord {
             .field("request_compression", &self.request_compression)
             .field("access_revision", &self.access_revision)
             .field("capability_revision", &self.capability_revision)
-            .field("transports", &self.transports)
             .field("name", &self.name)
             .field("base_url", &self.base_url)
             .field("enabled", &self.enabled)
-            .field("supports_websocket", &self.supports_websocket)
-            .field(
-                "supports_standalone_web_search",
-                &self.supports_standalone_web_search,
-            )
             .field("auto_disabled", &self.auto_disabled)
             .field("auto_disable_allowed", &self.auto_disable_allowed)
             .field("billing_multiplier", &self.billing_multiplier)
@@ -2062,7 +2033,7 @@ impl PostgresRequestLogQueries {
              JOIN channel_identity_registry AS identity ON identity.id=log.channel_id
              JOIN upstream_channels AS channel ON channel.id=identity.canonical_channel_id
              JOIN channel_capabilities AS capability ON capability.channel_id=channel.id
-               AND capability.operation=(CASE log.api_operation WHEN 'chat_completions' THEN 'chat_completion' WHEN 'standalone_web_search' THEN 'web_search' WHEN 'responses' THEN CASE WHEN log.request_protocol='websocket' THEN 'responses-ws' ELSE 'responses' END ELSE log.api_operation END)
+               AND capability.operation=log.api_operation
              WHERE capability.status_statistics_enabled AND capability.deleted_at IS NULL
                AND channel.deleted_at IS NULL AND channel_group.deleted_at IS NULL
                AND log.started_at >= $1
@@ -2102,7 +2073,7 @@ impl PostgresRequestLogQueries {
              JOIN channel_identity_registry AS identity ON identity.id=log.channel_id
              JOIN upstream_channels AS channel ON channel.id=identity.canonical_channel_id
              JOIN channel_capabilities AS capability ON capability.channel_id=channel.id
-               AND capability.operation=(CASE log.api_operation WHEN 'chat_completions' THEN 'chat_completion' WHEN 'standalone_web_search' THEN 'web_search' WHEN 'responses' THEN CASE WHEN log.request_protocol='websocket' THEN 'responses-ws' ELSE 'responses' END ELSE log.api_operation END)
+               AND capability.operation=log.api_operation
              WHERE capability.status_statistics_enabled AND capability.deleted_at IS NULL
                AND channel.deleted_at IS NULL AND channel_group.deleted_at IS NULL
                AND log.started_at >= $1
@@ -2161,7 +2132,7 @@ impl PostgresRequestLogQueries {
              JOIN channel_identity_registry AS identity ON identity.id=log.channel_id
              JOIN upstream_channels AS channel ON channel.id=identity.canonical_channel_id
              JOIN channel_capabilities AS capability ON capability.channel_id=channel.id
-               AND capability.operation=(CASE log.api_operation WHEN 'chat_completions' THEN 'chat_completion' WHEN 'standalone_web_search' THEN 'web_search' WHEN 'responses' THEN CASE WHEN log.request_protocol='websocket' THEN 'responses-ws' ELSE 'responses' END ELSE log.api_operation END)
+               AND capability.operation=log.api_operation
              WHERE capability.status_statistics_enabled AND capability.deleted_at IS NULL
                AND channel.deleted_at IS NULL AND channel_group.deleted_at IS NULL
                AND log.started_at >= $1
@@ -2214,8 +2185,7 @@ impl PostgresRequestLogQueries {
     }
 }
 
-// Dispatch IDs survive cutovers and capability retirement. Keep unlinked legacy
-// identities distinct rather than guessing a logical channel from its name.
+// Aggregate dispatch identities by logical channel, including retired capabilities.
 pub(super) const COST_FACTS_SQL: &str = "(
     SELECT fact.*, COALESCE(dispatch.canonical_channel_id, dispatch.id) AS logical_channel_id,
            COALESCE(channel.name, dispatch.label) AS logical_channel_name
@@ -3162,8 +3132,7 @@ pub(super) fn redact_self_service_request_log(log: &mut ConsoleRequestLog) {
     log.channel_name = None;
 }
 
-pub(crate) const LOG_OPERATION_SQL: &str = "CASE log.api_operation WHEN 'chat_completions' THEN 'chat_completion' WHEN 'standalone_web_search' THEN 'web_search' WHEN 'responses' THEN CASE WHEN log.request_protocol='websocket' THEN 'responses-ws' ELSE 'responses' END ELSE log.api_operation END";
-const CONSOLE_REQUEST_LOG_COLUMNS: &str = "log.id,log.started_at,log.completed_at,log.user_id,request_user.display_name AS user_name,log.api_key_id,log.request_source,log.api_format::text AS api_format,CASE log.api_operation WHEN 'chat_completions' THEN 'chat_completion' WHEN 'standalone_web_search' THEN 'web_search' WHEN 'responses' THEN CASE WHEN log.request_protocol='websocket' THEN 'responses-ws' ELSE 'responses' END ELSE log.api_operation END AS api_operation,log.request_protocol,log.client_model,log.reasoning_effort,log.fast_mode,log.upstream_model,log.model_rule_id,log.channel_group_id,channel_group.label AS channel_group_name,log.channel_id,channel.label AS channel_name,log.outcome,log.response_status_code,log.ttft_ms,log.total_duration_ms,log.output_tokens_per_second,log.input_tokens,log.cached_input_tokens,log.cache_write_tokens,log.output_tokens,log.reasoning_tokens,log.cost_amount,log.peak_pricing,log.error_code,log.error_summary,receipt.settled_at AS billed_at";
+const CONSOLE_REQUEST_LOG_COLUMNS: &str = "log.id,log.started_at,log.completed_at,log.user_id,request_user.display_name AS user_name,log.api_key_id,log.request_source,log.api_format::text AS api_format,log.api_operation,log.request_protocol,log.client_model,log.reasoning_effort,log.fast_mode,log.upstream_model,log.model_rule_id,log.channel_group_id,channel_group.label AS channel_group_name,log.channel_id,channel.label AS channel_name,log.outcome,log.response_status_code,log.ttft_ms,log.total_duration_ms,log.output_tokens_per_second,log.input_tokens,log.cached_input_tokens,log.cache_write_tokens,log.output_tokens,log.reasoning_tokens,log.cost_amount,log.peak_pricing,log.error_code,log.error_summary,receipt.settled_at AS billed_at";
 
 async fn query_console_request_log(
     pool: &PgPool,
@@ -3250,9 +3219,7 @@ async fn query_console_request_logs(
     }
     if let Some(api_operation) = filter.api_operation {
         query
-            .push(" AND ")
-            .push(LOG_OPERATION_SQL)
-            .push(" = ")
+            .push(" AND log.api_operation = ")
             .push_bind(api_operation);
     }
     if let Some(outcome) = filter.outcome {
@@ -3999,8 +3966,7 @@ impl StoredRequestLog {
             && self.api_key_id == event.api_key_id
             && self.request_source == event.request_source.as_str()
             && self.api_format == event.api_format.as_str()
-            && ApiOperation::normalize_stored_name(&self.api_operation, &self.request_protocol)
-                == event.api_operation.as_str()
+            && self.api_operation == event.api_operation.as_str()
             && self.request_protocol == event.request_protocol.as_str()
             && self.client_model == event.client_model
             && self.upstream_model == event.upstream_model

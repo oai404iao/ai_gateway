@@ -39,7 +39,6 @@
 拒绝低于 3.51.3 的实际 native 库；不依赖宿主机 `sqlite3` CLI 版本作为证明。
 该门槛采用 2026-09-20 核对的
 [SQLite WAL-reset 修复说明](https://www.sqlite.org/wal.html)；运行时保证是实际 native 版本检查。
-早期基础实现的 3.46.0 不再满足部署门槛；版本检查不替代连接、迁移或恢复契约。
 
 ## 两层所有权
 
@@ -54,11 +53,7 @@
    池关闭会等待借出的连接归还；丢弃数据库但仍持有连接时仍拒绝第二个 opener。
    Codex provider 操作同样保留逻辑 opener，关闭须等待其释放。
 
-保留进程 lease 是有意的 fail-closed 选择。早期 SQLx 0.8.6 的调查发现 replacement connection
-可在注册 native callback 前被取消，后台 SQLite worker 不一定已终止。
-仅在 `after_connect` 中挂一个 Arc 不能证明其整个 native 生命周期都受保护。
-此外，SQLite 使用 POSIX 文件锁，过早关闭同进程额外打开的数据库描述符也可能释放锁。
-本实现不以“取消 acquire 已返回”推断底层文件已经关闭。
+取消连接获取不证明底层 SQLite worker 已终止；同进程过早关闭额外的数据库描述符也可能释放 POSIX 文件锁。因此进程 lease 比逻辑连接池更长寿，不能在 `close()` 时直接释放。
 
 `_gateway_owner` collation 只用于 native 生命周期保留逻辑 opener，不是业务排序接口；
 跨进程保证由更长寿命的进程 lease 提供。初始化在独立任务中完成；
@@ -85,7 +80,7 @@ marker 不是密码学认证；不防同 UID 伪造整套文件。
 首次 SQLite 初始化在一个事务中创建：
 
 - `PRAGMA application_id = 0x41494757`；
-- `PRAGMA user_version = 1`，它是身份格式版本，**不是业务迁移编号**；
+- `PRAGMA user_version = 2`，它是身份格式版本，**不是业务基线编号**；
 - `_gateway_sqlite_identity`：与 marker 相同的数据库 UUID；
 - `_gateway_sqlite_migrations`：SQLite 专用的版本、description、SHA-256 checksum；
 - 禁止修改/删除数据库身份的两个触发器。
@@ -103,38 +98,15 @@ marker 不完整时不猜测、不重建；若中断发生在 marker fsync 前�
 
 ## 原子 migration runner
 
-`SqliteDatabase::migrate` 接收受信任的、已审查的 SQLite 专属 manifest。
-serve 和管理员 CLI 在读取业务记录前调用 `install_schema()` 执行[完整迁移清单](../../src/persistence/sqlite/schema.rs)；备份仅核对历史，不自动升级来源。
+serve 和管理员 CLI 在读取业务数据前，通过 `install_schema()` 安装 SQLite 自己的 [v1 基线](../../src/persistence/sqlite/schema.rs)。安装使用唯一 writer 和 `BEGIN IMMEDIATE`，schema、初始数据和安装历史同事务提交。事务出错或提交前取消不得留下部分应用的基线；若 COMMIT 回复丢失，须重开核对已提交状态，不假定已回滚。
 
-规则：
-
-1. 版本从 1 起连续递增，不接受空描述/SQL 或 `-- no-transaction`。
-2. 取得唯一写连接、`BEGIN IMMEDIATE`，核对数据库身份和已应用历史。
-3. 历史必须是当前 manifest 的完整前缀，版本、description、SQL checksum 都一致。
-   缺号、未来版本、改写历史 SQL 均拒绝；不自动 repair 或跳过。
-4. **所有 pending migration 的 DDL、DML、历史记录在同一个事务提交**。
-   SQL 失败、外键/延迟约束提交失败或提交前取消，不能留下已应用的前半批。
-5. commit hook 在最终提交前拒绝 COMMIT；rollback hook 检测脚本自行回滚/重启事务。
-   禁止迁移脚本拆开 runner 的事务；没有 PG 0034/0046 屏障。
-6. 结束前再次核对身份和完整历史，再允许唯一最终 COMMIT。
-   使用过迁移 hook 的连接关闭而不复用，取消不能污染普通写连接。
-
-需要重建表的指定迁移在专属连接 BEGIN 前关闭 FK；事务结束前执行完整
-`foreign_key_check`，检查失败整体回滚。该连接随后关闭，不把关闭外键的状态带回普通池。
-这不放宽普通连接的 `foreign_keys=ON`，也不允许迁移文本自行拆事务。
-
-迁移 SQL 不是面向用户的沙箱：不得接收 Console 文本或任意文件执行，
-不得 ATTACH 其他数据库、改变连接策略或修改 runner 的 metadata。
-baseline/增量 SQL 均须逐项代码审查和真实库测试。
-
-COMMIT 取消/回复丢失不是“明确回滚”；重开后按已提交历史判断。
-当前崩溃测试证明已提交历史保留、未提交 DDL 消失，不证明突然断电或硬件损坏恢复。
+当前库可以重开，要求身份、版本、描述与 SQL 校验和匹配。即使也含版本 1，旧迁移链也不是本基线，不能清空元数据、修改校验和或补做某几条 SQL 来导入。`backup-sqlite` 只验证来源，不升级它；旧库的备份与还原由匹配的旧制品处理。
 
 ## 验证
 
 ```bash
 cargo test --locked --features sqlite-backend --test sqlite_foundation
-cargo test --locked --features sqlite-backend --test control_plane_integration sqlite_parity
+cargo test --locked --features sqlite-backend --test control_plane_integration
 cargo clippy --locked --workspace --all-targets --features sqlite-backend
 ```
 
@@ -142,17 +114,14 @@ cargo clippy --locked --workspace --all-targets --features sqlite-backend
 
 - 两个进程独占、正常关闭后的进程 lease 保留、SIGKILL 后由新进程恢复；
 - 借出连接存活、replacement acquire 取消、迁移在执行期间取消；
-- 多个 pending migration 的 DDL/DML/history 回滚、延迟约束提交失败；
-- 并发迁移只应用一次、重复执行、checksum/description/版本前缀漂移；
-- 意外 COMMIT、ROLLBACK/BEGIN、`no-transaction` 拒绝；
+- 初始化 DDL/DML/history 回滚、延迟约束提交失败；
+- 重复执行、旧版本历史或校验和不匹配拒绝；
 - 空库初始化和 UUID 重开、缺失 metadata/身份保护触发器拒绝；
-- 完整业务 baseline/guard 安装、重复安装、重开和后续语句失败的整批回滚；
-- 真实 PG 对照、财务资格/不可变保护、Codex 派生、软删除和延迟路由约束；
+- 完整业务基线安装、重开、财务资格与不可变保护、软删除和路由外键；
 - 无 marker 的 DELETE/WAL 外部库及侧文件内容不变；
 - 权限、symlink/hardlink、侧文件别名和主文件替换拒绝。
 
-其中历史 baseline 及 migration 1–4 对照使用冻结夹具，当前业务仓储运行完整 manifest；
-不要把旧夹具数字误当成当前表清单。SQLite 生命周期变化还须跑
+SQLite 生命周期变化还须跑
 [系统 E2E](system-e2e.md)的真实 CLI/浏览器与成对恢复，并保留 PostgreSQL 回归。
 SIGKILL 只验证进程崩溃，不验证设备断电、同 UID 攻击或硬件损坏。
 

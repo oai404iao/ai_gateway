@@ -413,10 +413,8 @@ LEFT JOIN LATERAL ( \
             WHERE period.window_kind='secondary' \
         ),0) END AS secondary_window_cost_amount \
     FROM codex_quota_window_periods AS period \
-    LEFT JOIN request_credential_identities AS identity \
-      ON identity.credential_id=credential.channel_id \
     LEFT JOIN request_metering_facts AS log \
-      ON log.id=identity.request_id \
+      ON log.upstream_credential_id=period.credential_id \
      AND log.cost_amount IS NOT NULL \
      AND log.started_at>=period.started_at \
      AND log.started_at<LEAST(now(),period.scheduled_reset_at) \
@@ -507,9 +505,8 @@ impl PostgresControlPlaneRepository {
              FROM ranked AS period \
              LEFT JOIN LATERAL ( \
                  SELECT sum(log.cost_amount) AS cost_amount \
-                 FROM request_credential_identities AS identity \
-                 JOIN request_metering_facts AS log ON log.id=identity.request_id \
-                 WHERE identity.credential_id=period.credential_id \
+                 FROM request_metering_facts AS log \
+                 WHERE log.upstream_credential_id=period.credential_id \
                    AND log.cost_amount IS NOT NULL \
                    AND log.started_at>=period.started_at \
                    AND log.started_at<COALESCE( \
@@ -574,7 +571,7 @@ impl PostgresControlPlaneRepository {
         .ok_or(RepositoryError::NotFound)?;
         let periods = sqlx::query_as::<_, SelfCodexQuotaWindowPeriodView>(
             "WITH ranked AS ( \
-                 SELECT period.window_kind,period.window_seconds,period.started_at, \
+                 SELECT period.credential_id,period.window_kind,period.window_seconds,period.started_at, \
                         period.scheduled_reset_at,period.ended_at,period.reset_reason, \
                         period.initial_used_percent,period.last_used_percent, \
                         period.first_observed_at,period.last_observed_at, \
@@ -605,9 +602,8 @@ impl PostgresControlPlaneRepository {
              FROM ranked AS period \
              LEFT JOIN LATERAL ( \
                  SELECT sum(log.cost_amount) AS cost_amount \
-                 FROM request_credential_identities AS identity \
-                 JOIN request_metering_facts AS log ON log.id=identity.request_id \
-                 WHERE identity.credential_id=$2 \
+                 FROM request_metering_facts AS log \
+                 WHERE log.upstream_credential_id=period.credential_id \
                    AND log.cost_amount IS NOT NULL \
                    AND log.started_at>=period.started_at \
                    AND log.started_at<COALESCE( \

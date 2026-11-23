@@ -12,8 +12,8 @@ use std::{
 };
 
 use crate::domain::{
-    ApiFormat, ApiOperation, CompiledApiKey, CompiledChannel, CompiledModelRule, CompiledRouteTier,
-    CompiledRuntimeConfig, OutboundNetworkPolicyFingerprint, SelectionStrategy,
+    ApiOperation, CompiledApiKey, CompiledCandidate, CompiledChannel, CompiledModelRule,
+    CompiledRouteTier, CompiledRuntimeConfig, OutboundNetworkPolicyFingerprint, SelectionStrategy,
 };
 use serde::Serialize;
 use uuid::Uuid;
@@ -86,18 +86,15 @@ pub struct RoutingRuntime {
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum ChannelCapability {
-    Any,
     UnsupportedProtocol,
     ResponsesWebSocket,
     StandaloneWebSearch,
     Transport(crate::domain::CapabilityTransport),
-    ResponsesNonStream,
 }
 
 impl ChannelCapability {
     fn permits(self, channel: &CompiledChannel) -> bool {
         match self {
-            Self::Any => true,
             Self::UnsupportedProtocol => false,
             Self::ResponsesWebSocket => {
                 channel.supports_websocket()
@@ -108,13 +105,6 @@ impl ChannelCapability {
                     && channel.permits_transport(crate::domain::CapabilityTransport::HttpJson)
             }
             Self::Transport(transport) => channel.permits_transport(transport),
-            Self::ResponsesNonStream => {
-                // Explicit contracts cannot inherit Codex's legacy validation-only path.
-                channel.permits_transport(crate::domain::CapabilityTransport::HttpJson)
-                    || (channel.connector_kind() == crate::domain::ConnectorKind::CodexOauth
-                        && !channel.has_strict_transport_contract()
-                        && channel.permits_transport(crate::domain::CapabilityTransport::HttpSse))
-            }
         }
     }
 
@@ -131,8 +121,7 @@ impl ChannelCapability {
             ApiOperation::ChatCompletions | ApiOperation::Responses if protocol == P::Sse => {
                 Self::Transport(T::HttpSse)
             }
-            ApiOperation::Responses => Self::ResponsesNonStream,
-            ApiOperation::ChatCompletions => Self::Transport(T::HttpJson),
+            ApiOperation::Responses | ApiOperation::ChatCompletions => Self::Transport(T::HttpJson),
         }
     }
 }
@@ -649,29 +638,6 @@ impl RoutingRuntime {
         reconcile_affinity(&self.inner, snapshot);
     }
     #[must_use]
-    pub fn select(
-        &self,
-        snapshot: &CompiledRuntimeConfig,
-        key: &CompiledApiKey,
-        format: ApiFormat,
-        model: &str,
-    ) -> SelectionResult {
-        self.select_with_affinity_excluding(snapshot, key, format, model, None, &[])
-    }
-
-    #[must_use]
-    pub fn select_with_affinity(
-        &self,
-        snapshot: &CompiledRuntimeConfig,
-        key: &CompiledApiKey,
-        format: ApiFormat,
-        model: &str,
-        affinity: Option<SessionAffinityMatch>,
-    ) -> SelectionResult {
-        self.select_with_affinity_excluding(snapshot, key, format, model, affinity, &[])
-    }
-
-    #[must_use]
     pub fn select_operation_with_affinity(
         &self,
         snapshot: &CompiledRuntimeConfig,
@@ -681,76 +647,14 @@ impl RoutingRuntime {
         model: &str,
         affinity: Option<SessionAffinityMatch>,
     ) -> SelectionResult {
-        self.select_with_affinity_excluding_capability(
+        self.select_operation_with_affinity_excluding(
             snapshot,
             key,
             operation,
+            protocol,
             model,
             affinity,
             &[],
-            ChannelCapability::for_operation(operation, protocol),
-        )
-    }
-
-    /// Tries to pin a stateful transport to one specific channel while still
-    /// enforcing the current model rule, API-key authorization, exclusions,
-    /// passive health, highest usable priority tier, and session-affinity
-    /// bookkeeping.
-    ///
-    /// Returns `None` when the preferred channel is no longer eligible. The
-    /// caller may then perform ordinary weighted selection.
-    #[must_use]
-    #[allow(clippy::too_many_arguments)] // mirrors the existing format/model selection surface
-    pub fn select_preferred_channel(
-        &self,
-        snapshot: &CompiledRuntimeConfig,
-        key: &CompiledApiKey,
-        format: ApiFormat,
-        model: &str,
-        preferred_channel_id: Uuid,
-        affinity: Option<SessionAffinityMatch>,
-        excluded_candidate_slots: &[usize],
-    ) -> Option<SelectedRoute> {
-        self.select_preferred_channel_with_capability(
-            snapshot,
-            key,
-            ApiOperation::legacy_default(format),
-            model,
-            preferred_channel_id,
-            None,
-            affinity,
-            excluded_candidate_slots,
-            ChannelCapability::Any,
-        )
-    }
-
-    /// WebSocket-specific preferred selection that excludes channels which do
-    /// not explicitly advertise Responses WebSocket support.
-    #[must_use]
-    #[allow(clippy::too_many_arguments)]
-    pub fn select_preferred_websocket_channel(
-        &self,
-        snapshot: &CompiledRuntimeConfig,
-        key: &CompiledApiKey,
-        format: ApiFormat,
-        model: &str,
-        preferred_channel_id: Uuid,
-        affinity: Option<SessionAffinityMatch>,
-        excluded_candidate_slots: &[usize],
-    ) -> Option<SelectedRoute> {
-        if format != ApiFormat::OpenAiResponses {
-            return None;
-        }
-        self.select_preferred_channel_with_capability(
-            snapshot,
-            key,
-            ApiOperation::ResponsesWebSocket,
-            model,
-            preferred_channel_id,
-            None,
-            affinity,
-            excluded_candidate_slots,
-            ChannelCapability::ResponsesWebSocket,
         )
     }
 
@@ -760,82 +664,37 @@ impl RoutingRuntime {
         &self,
         snapshot: &CompiledRuntimeConfig,
         key: &CompiledApiKey,
-        format: ApiFormat,
         model: &str,
         preferred_channel_id: Uuid,
         preferred_upstream_model: &str,
         affinity: Option<SessionAffinityMatch>,
         excluded_candidate_slots: &[usize],
     ) -> Option<SelectedRoute> {
-        if format != ApiFormat::OpenAiResponses {
-            return None;
-        }
-        self.select_preferred_channel_with_capability(
-            snapshot,
-            key,
-            ApiOperation::ResponsesWebSocket,
-            model,
-            preferred_channel_id,
-            Some(preferred_upstream_model),
-            affinity,
-            excluded_candidate_slots,
-            ChannelCapability::ResponsesWebSocket,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn select_preferred_channel_with_capability(
-        &self,
-        snapshot: &CompiledRuntimeConfig,
-        key: &CompiledApiKey,
-        operation: ApiOperation,
-        model: &str,
-        preferred_channel_id: Uuid,
-        preferred_upstream_model: Option<&str>,
-        affinity: Option<SessionAffinityMatch>,
-        excluded_candidate_slots: &[usize],
-        capability: ChannelCapability,
-    ) -> Option<SelectedRoute> {
-        let rule = snapshot.operation_rule(operation, model)?;
+        let rule = snapshot.operation_rule(ApiOperation::ResponsesWebSocket, model)?;
         if !key.permits_route(rule.route_slot()) {
             return None;
         }
         let affinity = prepare_affinity(&self.inner, key, &rule, affinity);
         let now = self.inner.clock.now();
-        let eligible = |candidate: &crate::domain::CompiledCandidate| {
-            let channel_slot = candidate.channel_slot();
-            let channel = candidate.channel();
-            capability.permits(channel)
-                && key.permits_route_candidate(channel_slot)
-                && !excluded_candidate_slots.contains(&candidate.candidate_slot())
-                && usable(&self.inner, &ChannelIdentity::from_channel(channel), now)
+        let eligible = |candidate: &CompiledCandidate| {
+            candidate_eligible(
+                candidate,
+                key,
+                excluded_candidate_slots,
+                ChannelCapability::ResponsesWebSocket,
+                &self.inner,
+                now,
+            )
         };
         let tier = rule
             .tiers()
             .iter()
             .find(|tier| tier.candidates().iter().any(&eligible))?;
-        let candidate = if let Some(upstream_model) = preferred_upstream_model {
-            tier.candidates().iter().find(|candidate| {
-                candidate.channel().id() == preferred_channel_id
-                    && candidate.upstream_model().as_ref() == upstream_model
-                    && eligible(candidate)
-            })
-        } else {
-            affinity
-                .as_ref()
-                .and_then(|affinity| affinity.preferred_candidate.as_ref())
-                .and_then(|identity| {
-                    tier.candidates()
-                        .iter()
-                        .find(|candidate| identity.matches(candidate) && eligible(candidate))
-                })
-                .or_else(|| {
-                    let mut candidates = tier.candidates().iter().filter(|candidate| {
-                        candidate.channel().id() == preferred_channel_id && eligible(candidate)
-                    });
-                    candidates.next().filter(|_| candidates.next().is_none())
-                })
-        }?;
+        let candidate = tier.candidates().iter().find(|candidate| {
+            candidate.channel().id() == preferred_channel_id
+                && candidate.upstream_model().as_ref() == preferred_upstream_model
+                && eligible(candidate)
+        })?;
         let candidate_slot = candidate.candidate_slot();
         let channel_slot = candidate.channel_slot();
         let channel = Arc::clone(candidate.channel());
@@ -851,11 +710,8 @@ impl RoutingRuntime {
             .and_then(|affinity| affinity.preferred_candidate.as_ref())
             == Some(&candidate_identity);
         // A continuation on its origin socket must not evict or rebind a different session route.
-        let affinity = affinity.filter(|affinity| {
-            preferred_upstream_model.is_none()
-                || affinity.preferred_candidate.is_none()
-                || cache_hit
-        });
+        let affinity =
+            affinity.filter(|affinity| affinity.preferred_candidate.is_none() || cache_hit);
         let affinity_binding = affinity.as_ref().map(|affinity| AffinityBinding {
             key: affinity.key,
             ttl: affinity.ttl,
@@ -866,14 +722,6 @@ impl RoutingRuntime {
             rule_name: Arc::clone(&affinity.rule_name),
             cache_hit,
         });
-        if let Some(affinity) = &affinity
-            && let Some(stale_candidate) = affinity
-                .preferred_candidate
-                .as_ref()
-                .filter(|candidate| *candidate != &candidate_identity)
-        {
-            affinity_remove_if_candidate(&self.inner, affinity.key, stale_candidate);
-        }
         Some(SelectedRoute {
             rule,
             channel,
@@ -892,80 +740,6 @@ impl RoutingRuntime {
         })
     }
 
-    /// Selects a route while excluding channel/model candidates already
-    /// attempted by the same client request. Exclusions are applied after
-    /// authorization and before priority/weight selection, so another model on
-    /// the same physical channel remains eligible.
-    #[must_use]
-    pub fn select_with_affinity_excluding(
-        &self,
-        snapshot: &CompiledRuntimeConfig,
-        key: &CompiledApiKey,
-        format: ApiFormat,
-        model: &str,
-        affinity: Option<SessionAffinityMatch>,
-        excluded_candidate_slots: &[usize],
-    ) -> SelectionResult {
-        self.select_with_affinity_excluding_capability(
-            snapshot,
-            key,
-            ApiOperation::legacy_default(format),
-            model,
-            affinity,
-            excluded_candidate_slots,
-            ChannelCapability::Any,
-        )
-    }
-
-    #[must_use]
-    #[allow(clippy::too_many_arguments)]
-    pub fn select_operation_with_affinity_excluding(
-        &self,
-        snapshot: &CompiledRuntimeConfig,
-        key: &CompiledApiKey,
-        operation: ApiOperation,
-        protocol: crate::domain::RequestProtocol,
-        model: &str,
-        affinity: Option<SessionAffinityMatch>,
-        excluded_candidate_slots: &[usize],
-    ) -> SelectionResult {
-        self.select_with_affinity_excluding_capability(
-            snapshot,
-            key,
-            operation,
-            model,
-            affinity,
-            excluded_candidate_slots,
-            ChannelCapability::for_operation(operation, protocol),
-        )
-    }
-
-    /// WebSocket-specific weighted selection that excludes candidates whose
-    /// channels do not explicitly advertise Responses WebSocket support.
-    #[must_use]
-    pub fn select_websocket_with_affinity_excluding(
-        &self,
-        snapshot: &CompiledRuntimeConfig,
-        key: &CompiledApiKey,
-        format: ApiFormat,
-        model: &str,
-        affinity: Option<SessionAffinityMatch>,
-        excluded_candidate_slots: &[usize],
-    ) -> SelectionResult {
-        if format != ApiFormat::OpenAiResponses {
-            return SelectionResult::UnknownOrInaccessibleModel;
-        }
-        self.select_with_affinity_excluding_capability(
-            snapshot,
-            key,
-            ApiOperation::ResponsesWebSocket,
-            model,
-            affinity,
-            excluded_candidate_slots,
-            ChannelCapability::ResponsesWebSocket,
-        )
-    }
-
     /// Read-only upgrade preflight: do not select a channel, advance weights,
     /// populate affinity, or claim a half-open probe before `response.create`.
     #[must_use]
@@ -981,27 +755,36 @@ impl RoutingRuntime {
                 && key.permits_route(rule.route_slot())
                 && rule.tiers().iter().any(|tier| {
                     tier.candidates().iter().any(|candidate| {
-                        let channel = candidate.channel();
-                        channel.supports_websocket()
-                            && key.permits_route_candidate(candidate.channel_slot())
-                            && connector_available(channel)
-                            && usable(&self.inner, &ChannelIdentity::from_channel(channel), now)
+                        candidate_eligible(
+                            candidate,
+                            key,
+                            &[],
+                            ChannelCapability::ResponsesWebSocket,
+                            &self.inner,
+                            now,
+                        ) && connector_available(candidate.channel())
                     })
                 })
         })
     }
 
+    /// Selects a route while excluding channel/model candidates already
+    /// attempted by the same client request. Exclusions are applied after
+    /// authorization and before priority/weight selection, so another model on
+    /// the same physical channel remains eligible.
+    #[must_use]
     #[allow(clippy::too_many_arguments)]
-    fn select_with_affinity_excluding_capability(
+    pub fn select_operation_with_affinity_excluding(
         &self,
         snapshot: &CompiledRuntimeConfig,
         key: &CompiledApiKey,
         operation: ApiOperation,
+        protocol: crate::domain::RequestProtocol,
         model: &str,
         affinity: Option<SessionAffinityMatch>,
         excluded_candidate_slots: &[usize],
-        capability: ChannelCapability,
     ) -> SelectionResult {
+        let capability = ChannelCapability::for_operation(operation, protocol);
         let Some(rule) = snapshot.operation_rule(operation, model) else {
             return SelectionResult::UnknownOrInaccessibleModel;
         };
@@ -1010,6 +793,16 @@ impl RoutingRuntime {
         }
         let affinity = prepare_affinity(&self.inner, key, &rule, affinity);
         let now = self.inner.clock.now();
+        let eligible = |candidate: &CompiledCandidate| {
+            candidate_eligible(
+                candidate,
+                key,
+                excluded_candidate_slots,
+                capability,
+                &self.inner,
+                now,
+            )
+        };
         let preserve_inapplicable_affinity = affinity
             .as_ref()
             .and_then(|affinity| affinity.preferred_candidate.as_ref())
@@ -1042,39 +835,25 @@ impl RoutingRuntime {
                                     tier.candidates().iter().find_map(|candidate| {
                                         let channel_slot = candidate.channel_slot();
                                         let channel = candidate.channel();
-                                        (preferred.matches(candidate)
-                                            && capability.permits(channel)
-                                            && key.permits_route_candidate(channel_slot)
-                                            && !excluded_candidate_slots
-                                                .contains(&candidate.candidate_slot())
-                                            && usable(
-                                                &self.inner,
-                                                &ChannelIdentity::from_channel(channel),
-                                                now,
-                                            ))
-                                        .then(|| {
-                                            (
-                                                candidate.candidate_slot(),
-                                                channel_slot,
-                                                Arc::clone(channel),
-                                                Arc::clone(candidate.upstream_model()),
-                                            )
-                                        })
+                                        (preferred.matches(candidate) && eligible(candidate)).then(
+                                            || {
+                                                (
+                                                    candidate.candidate_slot(),
+                                                    channel_slot,
+                                                    Arc::clone(channel),
+                                                    Arc::clone(candidate.upstream_model()),
+                                                )
+                                            },
+                                        )
                                     })
                                 })
                         })
                         .flatten();
                     let cache_hit = affinity_candidate.is_some();
                     let candidate = affinity_candidate.or_else(|| match tier.strategy() {
-                        SelectionStrategy::WeightedRandom => weighted_ticket(
-                            tier,
-                            key,
-                            excluded_candidate_slots,
-                            &self.inner,
-                            now,
-                            &*self.inner.entropy,
-                            capability,
-                        ),
+                        SelectionStrategy::WeightedRandom => {
+                            weighted_ticket(tier, &*self.inner.entropy, eligible)
+                        }
                         SelectionStrategy::WeightedRoundRobin => {
                             let round_robin_key = RoundRobinKey {
                                 rule_id: rule.id(),
@@ -1106,25 +885,13 @@ impl RoutingRuntime {
                                 smooth_round_robin(
                                     shard.entry(round_robin_key).or_default(),
                                     tier,
-                                    key,
-                                    excluded_candidate_slots,
-                                    &self.inner,
-                                    now,
-                                    capability,
+                                    eligible,
                                 )
                             } else {
                                 // A request may still hold an old snapshot after reload.
                                 // It can route and hold a lease, but cannot grow state for
                                 // a retired connectivity identity.
-                                smooth_round_robin(
-                                    &mut HashMap::new(),
-                                    tier,
-                                    key,
-                                    excluded_candidate_slots,
-                                    &self.inner,
-                                    now,
-                                    capability,
-                                )
+                                smooth_round_robin(&mut HashMap::new(), tier, eligible)
                             }
                         }
                     });
@@ -1460,22 +1227,29 @@ fn usable(inner: &RuntimeInner, identity: &ChannelIdentity, now: Duration) -> bo
         .is_none_or(|channel| channel.is_usable(now))
 }
 
-fn weighted_ticket(
-    tier: &CompiledRouteTier,
+fn candidate_eligible(
+    candidate: &CompiledCandidate,
     key: &CompiledApiKey,
     excluded_candidate_slots: &[usize],
+    capability: ChannelCapability,
     inner: &RuntimeInner,
     now: Duration,
+) -> bool {
+    capability.permits(candidate.channel())
+        && key.permits_route_candidate(candidate.channel_slot())
+        && !excluded_candidate_slots.contains(&candidate.candidate_slot())
+        && usable(
+            inner,
+            &ChannelIdentity::from_channel(candidate.channel()),
+            now,
+        )
+}
+
+fn weighted_ticket(
+    tier: &CompiledRouteTier,
     entropy: &dyn Entropy,
-    capability: ChannelCapability,
+    eligible: impl Fn(&CompiledCandidate) -> bool,
 ) -> Option<(usize, usize, Arc<CompiledChannel>, Arc<str>)> {
-    let eligible = |candidate: &crate::domain::CompiledCandidate| {
-        let channel = candidate.channel();
-        capability.permits(channel)
-            && key.permits_route_candidate(candidate.channel_slot())
-            && !excluded_candidate_slots.contains(&candidate.candidate_slot())
-            && usable(inner, &ChannelIdentity::from_channel(channel), now)
-    };
     loop {
         let total = tier
             .candidates()
@@ -1527,11 +1301,7 @@ fn weighted_ticket(
 fn smooth_round_robin(
     current: &mut HashMap<RouteCandidateIdentity, i64>,
     tier: &CompiledRouteTier,
-    key: &CompiledApiKey,
-    excluded_candidate_slots: &[usize],
-    inner: &RuntimeInner,
-    now: Duration,
-    capability: ChannelCapability,
+    eligible: impl Fn(&CompiledCandidate) -> bool,
 ) -> Option<(usize, usize, Arc<CompiledChannel>, Arc<str>)> {
     let mut total = 0_i64;
     let mut winner = None::<(usize, usize, Arc<CompiledChannel>, Arc<str>, i64)>;
@@ -1539,11 +1309,7 @@ fn smooth_round_robin(
         let channel_slot = candidate.channel_slot();
         let candidate_slot = candidate.candidate_slot();
         let channel = candidate.channel();
-        if !capability.permits(channel)
-            || !key.permits_route_candidate(channel_slot)
-            || excluded_candidate_slots.contains(&candidate_slot)
-            || !usable(inner, &ChannelIdentity::from_channel(channel), now)
-        {
+        if !eligible(candidate) {
             continue;
         }
         total += i64::from(candidate.weight());
@@ -1687,18 +1453,6 @@ impl Drop for ChannelLease {
     }
 }
 
-/// Compatibility entry point for direct callers. The data plane injects a
-/// process-wide runtime through `RoutingRuntime::select` instead.
-#[must_use]
-pub fn select(
-    snapshot: &CompiledRuntimeConfig,
-    key: &CompiledApiKey,
-    format: ApiFormat,
-    model: &str,
-) -> SelectionResult {
-    RoutingRuntime::new(PassiveHealthPolicy::default()).select(snapshot, key, format, model)
-}
-
 #[cfg(test)]
 mod tests {
     use std::{
@@ -1713,7 +1467,7 @@ mod tests {
     use crate::{
         domain::{
             ApiFormat, ApiOperation, AutomaticDisableSettings, CompiledRuntimeConfig,
-            PassiveHealthSettings, ScheduledTestingSettings, SessionAffinityRule,
+            PassiveHealthSettings, RequestProtocol, ScheduledTestingSettings, SessionAffinityRule,
             SessionAffinitySettings, SystemRuntimeSettings, UpstreamTimeoutDefaults,
         },
         persistence::{
@@ -1766,34 +1520,19 @@ mod tests {
         base_url: Option<&str>,
         system_settings: SystemRuntimeSettings,
     ) -> (CompiledRuntimeConfig, String) {
-        snapshot_with_format(
-            groups,
-            weights,
-            base_url,
-            system_settings,
-            ApiFormat::OpenAiChatCompletions,
-        )
-    }
-
-    fn snapshot_with_format(
-        groups: &[(i32, &str)],
-        weights: &[i32],
-        base_url: Option<&str>,
-        system_settings: SystemRuntimeSettings,
-        format: ApiFormat,
-    ) -> (CompiledRuntimeConfig, String) {
-        let (records, secret) = records_with_format(groups, weights, base_url, format);
+        let (records, secret) =
+            records_for_operation(groups, weights, base_url, ApiOperation::ChatCompletions);
         (
             compile_control_plane_with_system_settings(records, system_settings).unwrap(),
             secret,
         )
     }
 
-    fn records_with_format(
+    fn records_for_operation(
         groups: &[(i32, &str)],
         weights: &[i32],
         base_url: Option<&str>,
-        format: ApiFormat,
+        operation: ApiOperation,
     ) -> (ControlPlaneRecords, String) {
         assert_eq!(groups.len(), weights.len());
         let group_ids = (0..groups.len())
@@ -1850,9 +1589,6 @@ mod tests {
                 .map(|(id, _)| ChannelGroupRecord {
                     id: *id,
                     name: id.to_string(),
-                    api_format: format.as_str().into(),
-                    connector_kind: "general".into(),
-                    request_compression: "default".into(),
                     enabled: true,
                 })
                 .collect(),
@@ -1861,25 +1597,21 @@ mod tests {
                 .zip(group_ids.iter())
                 .map(|(id, group_id)| ChannelRecord {
                     credential: None,
-                    credential_binding_revision: Uuid::nil(),
+                    credential_binding_revision: *id,
                     id: *id,
                     channel_group_id: *group_id,
-                    api_format: format.as_str().into(),
-                    logical_channel_id: Uuid::nil(),
-                    access_id: Uuid::nil(),
-                    api_operation: None,
-                    connector_kind: String::new(),
-                    request_compression: String::new(),
-                    access_revision: Uuid::nil(),
-                    capability_revision: Uuid::nil(),
-                    transports: Vec::new(),
+                    logical_channel_id: *id,
+                    access_id: *id,
+                    api_operation: operation,
+                    connector_kind: crate::domain::ConnectorKind::OpenAiCompatible,
+                    request_compression: crate::domain::RequestCompression::Default,
+                    access_revision: *id,
+                    capability_revision: *id,
                     name: id.to_string(),
                     base_url: base_url
                         .map(ToOwned::to_owned)
                         .unwrap_or_else(|| format!("https://{id}.test")),
                     enabled: true,
-                    supports_websocket: format == ApiFormat::OpenAiResponses,
-                    supports_standalone_web_search: false,
                     auto_disabled: false,
                     auto_disable_allowed: false,
                     billing_multiplier: rust_decimal::Decimal::ONE,
@@ -1901,8 +1633,8 @@ mod tests {
             model_rules: vec![ModelRuleRecord {
                 id: Uuid::from_u128(1_002),
                 client_model: "model".into(),
-                api_format: format.as_str().into(),
-                api_operation: ApiOperation::legacy_default(format),
+                api_format: operation.api_format().as_str().into(),
+                api_operation: operation,
                 model_id: Uuid::from_u128(1_003),
                 model_enabled: true,
                 model_currency: "USD".into(),
@@ -1950,21 +1682,9 @@ mod tests {
                 [false, false, true],
             ),
         ] {
-            let (mut records, _) = records_with_format(
-                &[(1, "weighted_random")],
-                &[1],
-                None,
-                ApiFormat::OpenAiResponses,
-            );
-            let channel = &mut records.channels[0];
-            channel.api_operation = Some(operation);
-            channel.logical_channel_id = Uuid::from_u128(200);
-            channel.access_id = Uuid::from_u128(201);
-            channel.connector_kind = connector.as_str().into();
-            channel.request_compression = "default".into();
-            channel.transports = operation.transports().to_vec();
-            channel.supports_websocket = operation == ApiOperation::ResponsesWebSocket;
-            records.model_rules[0].api_operation = operation;
+            let (mut records, _) =
+                records_for_operation(&[(1, "weighted_random")], &[1], None, operation);
+            records.channels[0].connector_kind = connector;
             let config = compile_control_plane(records).unwrap();
             let channel = config.channels().next().unwrap();
             for (protocol, allowed) in [P::NonStream, P::Sse, P::WebSocket]
@@ -1981,27 +1701,21 @@ mod tests {
     }
 
     #[test]
-    fn explicit_codex_transport_contract_does_not_inherit_nonstream_fallback() {
+    fn codex_responses_selection_respects_the_compiled_protocol_mask() {
         use crate::domain::{CapabilityTransport as T, ConnectorKind, RequestProtocol as P};
-        let (mut records, _) = records_with_format(
+        let (mut records, _) = records_for_operation(
             &[(1, "weighted_random")],
             &[1],
             None,
-            ApiFormat::OpenAiResponses,
+            ApiOperation::Responses,
         );
-        records.channels[0].connector_kind = ConnectorKind::CodexOauth.as_str().into();
+        records.channels[0].connector_kind = ConnectorKind::CodexOauth;
         let config = compile_control_plane(records).unwrap();
-        let legacy = config
-            .channels()
-            .next()
-            .unwrap()
-            .as_ref()
-            .clone()
-            .with_transports(&[T::HttpSse]);
+        let configured = config.channels().next().unwrap().as_ref().clone();
         let capability =
             super::ChannelCapability::for_operation(ApiOperation::Responses, P::NonStream);
-        assert!(capability.permits(&legacy));
-        let explicit = legacy.restrict_transports(&[T::HttpSse]);
+        assert!(capability.permits(&configured));
+        let explicit = configured.restrict_transports(&[T::HttpSse]);
         assert!(!capability.permits(&explicit));
         assert!(
             super::ChannelCapability::for_operation(ApiOperation::Responses, P::Sse)
@@ -2041,7 +1755,14 @@ mod tests {
         secret: &str,
     ) -> super::SelectedRoute {
         let key = snapshot.authenticate(secret).unwrap();
-        match runtime.select(snapshot, &key, ApiFormat::OpenAiChatCompletions, "model") {
+        match runtime.select_operation_with_affinity(
+            snapshot,
+            &key,
+            ApiOperation::ChatCompletions,
+            RequestProtocol::NonStream,
+            "model",
+            None,
+        ) {
             SelectionResult::Selected(route) => route,
             _ => panic!("fixture must select a route"),
         }
@@ -2060,12 +1781,8 @@ mod tests {
         strategy: &str,
         candidates: &[(&str, i32)],
     ) -> (CompiledRuntimeConfig, String) {
-        let (mut records, secret) = records_with_format(
-            &[(0, strategy)],
-            &[1],
-            None,
-            ApiFormat::OpenAiChatCompletions,
-        );
+        let (mut records, secret) =
+            records_for_operation(&[(0, strategy)], &[1], None, ApiOperation::ChatCompletions);
         let channel_id = records.channels[0].id;
         records.channels[0].available_models = candidates
             .iter()
@@ -2114,10 +1831,11 @@ mod tests {
         let first_model = first.upstream_model.to_string();
         drop(first);
         let key = snapshot.authenticate(&secret).unwrap();
-        let SelectionResult::Selected(second) = runtime.select_with_affinity_excluding(
+        let SelectionResult::Selected(second) = runtime.select_operation_with_affinity_excluding(
             &snapshot,
             &key,
-            ApiFormat::OpenAiChatCompletions,
+            ApiOperation::ChatCompletions,
+            RequestProtocol::NonStream,
             "model",
             None,
             &[first_slot],
@@ -2134,11 +1852,11 @@ mod tests {
 
         // A Responses-format channel that configured only `responses` must not
         // serve standalone search.
-        let (mut records, secret) = records_with_format(
+        let (mut records, secret) = records_for_operation(
             &[(0, "weighted_random")],
             &[1],
             None,
-            ApiFormat::OpenAiResponses,
+            ApiOperation::Responses,
         );
         records.model_rules[0].api_operation = ApiOperation::Responses;
         let snapshot = compile_control_plane(records).unwrap();
@@ -2167,11 +1885,11 @@ mod tests {
 
         // An Images-format channel that configured only generation must not
         // serve image edits, while generation itself still selects.
-        let (mut records, secret) = records_with_format(
+        let (mut records, secret) = records_for_operation(
             &[(0, "weighted_random")],
             &[1],
             None,
-            ApiFormat::OpenAiImages,
+            ApiOperation::ImagesGeneration,
         );
         records.model_rules[0].api_operation = ApiOperation::ImagesGeneration;
         let snapshot = compile_control_plane(records).unwrap();
@@ -2207,19 +1925,12 @@ mod tests {
 
     #[test]
     fn websocket_preflight_does_not_advance_weights_or_claim_recovery_probes() {
-        let (mut records, secret) = records_with_format(
+        let (records, secret) = records_for_operation(
             &[(0, "weighted_round_robin")],
             &[1],
             None,
-            ApiFormat::OpenAiResponses,
+            ApiOperation::ResponsesWebSocket,
         );
-        records.model_rules[0].api_operation = ApiOperation::ResponsesWebSocket;
-        let channel = &mut records.channels[0];
-        channel.api_operation = Some(ApiOperation::ResponsesWebSocket);
-        channel.connector_kind = "general".into();
-        channel.request_compression = "default".into();
-        channel.transports = ApiOperation::ResponsesWebSocket.transports().to_vec();
-        channel.supports_websocket = true;
         let snapshot = compile_control_plane(records).unwrap();
         let clock = Arc::new(TestClock(AtomicU64::new(0)));
         let runtime = RoutingRuntime::with_seams(
@@ -2236,10 +1947,11 @@ mod tests {
         assert_eq!(round_robin_len(&runtime), 0);
         assert_eq!(runtime.pressure_snapshot().in_flight_requests, 0);
         let SelectionResult::Selected(mut failed) = runtime
-            .select_websocket_with_affinity_excluding(
+            .select_operation_with_affinity_excluding(
                 &snapshot,
                 &key,
-                ApiFormat::OpenAiResponses,
+                ApiOperation::ResponsesWebSocket,
+                RequestProtocol::WebSocket,
                 "model",
                 None,
                 &[],
@@ -2256,10 +1968,11 @@ mod tests {
         assert!(runtime.has_available_websocket_route(&snapshot, &key, |_| true));
         assert!(!runtime.health(&channel).half_open_probe);
         assert_eq!(runtime.health(&channel).in_flight, 0);
-        let SelectionResult::Selected(probe) = runtime.select_websocket_with_affinity_excluding(
+        let SelectionResult::Selected(probe) = runtime.select_operation_with_affinity_excluding(
             &snapshot,
             &key,
-            ApiFormat::OpenAiResponses,
+            ApiOperation::ResponsesWebSocket,
+            RequestProtocol::WebSocket,
             "model",
             None,
             &[],
@@ -2303,30 +2016,23 @@ mod tests {
             groups: vec![ChannelGroupRecord {
                 id: group_id,
                 name: "group".into(),
-                api_format: "open_ai_chat_completions".into(),
-                connector_kind: "general".into(),
-                request_compression: "default".into(),
                 enabled: true,
             }],
             channels: vec![ChannelRecord {
                 credential: None,
-                credential_binding_revision: Uuid::nil(),
+                credential_binding_revision: channel_id,
                 id: channel_id,
                 channel_group_id: group_id,
-                api_format: "open_ai_chat_completions".into(),
-                logical_channel_id: Uuid::nil(),
-                access_id: Uuid::nil(),
-                api_operation: None,
-                connector_kind: String::new(),
-                request_compression: String::new(),
-                access_revision: Uuid::nil(),
-                capability_revision: Uuid::nil(),
-                transports: Vec::new(),
+                logical_channel_id: channel_id,
+                access_id: channel_id,
+                api_operation: ApiOperation::ChatCompletions,
+                connector_kind: crate::domain::ConnectorKind::OpenAiCompatible,
+                request_compression: crate::domain::RequestCompression::Default,
+                access_revision: channel_id,
+                capability_revision: channel_id,
                 name: "channel".into(),
                 base_url: "https://upstream.test".into(),
                 enabled: true,
-                supports_websocket: false,
-                supports_standalone_web_search: false,
                 auto_disabled: false,
                 auto_disable_allowed: false,
                 billing_multiplier: rust_decimal::Decimal::ONE,
@@ -2404,8 +2110,13 @@ mod tests {
 
     #[test]
     fn stateful_transport_can_pin_a_preferred_channel_within_the_active_priority_tier() {
+        let websocket_snapshot = |groups: &[(i32, &str)], weights: &[i32]| {
+            let (records, secret) =
+                records_for_operation(groups, weights, None, ApiOperation::ResponsesWebSocket);
+            (compile_control_plane(records).unwrap(), secret)
+        };
         let (flat_snapshot, secret) =
-            snapshot(&[(0, "weighted_random"), (0, "weighted_random")], &[1, 1]);
+            websocket_snapshot(&[(0, "weighted_random"), (0, "weighted_random")], &[1, 1]);
         let runtime = RoutingRuntime::with_seams(
             PassiveHealthPolicy::default(),
             Arc::new(TestClock(AtomicU64::new(0))),
@@ -2414,33 +2125,33 @@ mod tests {
         runtime.reconcile(&flat_snapshot);
         let key = flat_snapshot.authenticate(&secret).unwrap();
         let rule = flat_snapshot
-            .model_rule(ApiFormat::OpenAiChatCompletions, "model")
+            .operation_rule(ApiOperation::ResponsesWebSocket, "model")
             .unwrap();
         let preferred = rule.tiers()[0].channel_ids()[1];
 
         let selected = runtime
-            .select_preferred_channel(
+            .select_preferred_websocket_candidate(
                 &flat_snapshot,
                 &key,
-                ApiFormat::OpenAiChatCompletions,
                 "model",
                 preferred,
+                "upstream",
                 None,
                 &[],
             )
             .expect("preferred channel should remain eligible");
         assert_eq!(selected.channel.id(), preferred);
-        let preferred_slot = selected.channel_slot;
+        let preferred_slot = selected.candidate_slot;
         drop(selected);
 
         assert!(
             runtime
-                .select_preferred_channel(
+                .select_preferred_websocket_candidate(
                     &flat_snapshot,
                     &key,
-                    ApiFormat::OpenAiChatCompletions,
                     "model",
                     preferred,
+                    "upstream",
                     None,
                     &[preferred_slot],
                 )
@@ -2448,20 +2159,20 @@ mod tests {
         );
 
         let (tiered_snapshot, tiered_secret) =
-            snapshot(&[(0, "weighted_random"), (10, "weighted_random")], &[1, 1]);
+            websocket_snapshot(&[(0, "weighted_random"), (10, "weighted_random")], &[1, 1]);
         runtime.reconcile(&tiered_snapshot);
         let tiered_key = tiered_snapshot.authenticate(&tiered_secret).unwrap();
         let tiered_rule = tiered_snapshot
-            .model_rule(ApiFormat::OpenAiChatCompletions, "model")
+            .operation_rule(ApiOperation::ResponsesWebSocket, "model")
             .unwrap();
         assert!(
             runtime
-                .select_preferred_channel(
+                .select_preferred_websocket_candidate(
                     &tiered_snapshot,
                     &tiered_key,
-                    ApiFormat::OpenAiChatCompletions,
                     "model",
                     tiered_rule.tiers()[1].channel_ids()[0],
+                    "upstream",
                     None,
                     &[],
                 )
@@ -2480,7 +2191,7 @@ mod tests {
             Arc::new(Tickets(Mutex::new(VecDeque::from([0, 1, 2, 3, 4])))),
         );
         let expected = snapshot
-            .model_rule(ApiFormat::OpenAiChatCompletions, "model")
+            .operation_rule(ApiOperation::ChatCompletions, "model")
             .unwrap()
             .tiers()[0]
             .channel_ids()
@@ -2520,10 +2231,11 @@ mod tests {
         let affinity =
             || SessionAffinityMatch::new(Arc::from("test-affinity"), fingerprint, [9; 32], ttl);
 
-        let mut first = match runtime.select_with_affinity(
+        let mut first = match runtime.select_operation_with_affinity(
             &snapshot,
             &key,
-            ApiFormat::OpenAiChatCompletions,
+            ApiOperation::ChatCompletions,
+            RequestProtocol::NonStream,
             "model",
             Some(affinity()),
         ) {
@@ -2535,10 +2247,11 @@ mod tests {
         first.lease.request_succeeded();
         drop(first);
 
-        let second = match runtime.select_with_affinity(
+        let second = match runtime.select_operation_with_affinity(
             &snapshot,
             &key,
-            ApiFormat::OpenAiChatCompletions,
+            ApiOperation::ChatCompletions,
+            RequestProtocol::NonStream,
             "model",
             Some(affinity()),
         ) {
@@ -2551,21 +2264,25 @@ mod tests {
 
     #[test]
     fn transport_mismatch_neither_erases_nor_rebinds_healthy_affinity() {
-        use crate::domain::{CapabilityTransport as T, RequestProtocol as P};
+        use crate::domain::{ConnectorKind, RequestProtocol as P};
+        let plugins = crate::test_plugins::codex_plugins();
         for alternate in [false, true] {
             let fingerprint = [7; 32];
             let ttl = Duration::from_secs(60);
-            let (mut records, secret) = records_with_format(
+            let (mut records, secret) = records_for_operation(
                 &[(0, "weighted_random"), (0, "weighted_random")],
                 &[1, 1],
                 None,
-                ApiFormat::OpenAiResponses,
+                ApiOperation::Responses,
             );
-            records.channels[0].transports = vec![T::HttpSse];
-            records.channels[1].transports = vec![if alternate { T::HttpJson } else { T::HttpSse }];
-            let snapshot = compile_control_plane_with_system_settings(
+            records.channels[0].connector_kind = ConnectorKind::CodexOauth;
+            if !alternate {
+                records.channels[1].connector_kind = ConnectorKind::CodexOauth;
+            }
+            let snapshot = crate::runtime_config::compile_control_plane_for_plugins(
                 records,
                 affinity_system_settings(fingerprint, ttl),
+                Some(&plugins),
             )
             .unwrap();
             let runtime = RoutingRuntime::with_seams(
@@ -2636,10 +2353,11 @@ mod tests {
         let affinity =
             || SessionAffinityMatch::new(Arc::from("test-affinity"), fingerprint, [8; 32], ttl);
 
-        let mut selected = match runtime.select_with_affinity(
+        let mut selected = match runtime.select_operation_with_affinity(
             &snapshot,
             &key,
-            ApiFormat::OpenAiChatCompletions,
+            ApiOperation::ChatCompletions,
+            RequestProtocol::NonStream,
             "model",
             Some(affinity()),
         ) {
@@ -2665,10 +2383,11 @@ mod tests {
         assert_eq!(cleared.cleared_entries, 1);
         assert_eq!(cleared.cache.total_entries, 0);
 
-        let mut selected = match runtime.select_with_affinity(
+        let mut selected = match runtime.select_operation_with_affinity(
             &snapshot,
             &key,
-            ApiFormat::OpenAiChatCompletions,
+            ApiOperation::ChatCompletions,
+            RequestProtocol::NonStream,
             "model",
             Some(affinity()),
         ) {
@@ -2704,10 +2423,11 @@ mod tests {
         let affinity =
             || SessionAffinityMatch::new(Arc::from("test-affinity"), fingerprint, [10; 32], ttl);
 
-        let mut first = match runtime.select_with_affinity(
+        let mut first = match runtime.select_operation_with_affinity(
             &snapshot,
             &key,
-            ApiFormat::OpenAiChatCompletions,
+            ApiOperation::ChatCompletions,
+            RequestProtocol::NonStream,
             "model",
             Some(affinity()),
         ) {
@@ -2718,10 +2438,11 @@ mod tests {
         first.lease.request_succeeded();
         drop(first);
 
-        let mut hit = match runtime.select_with_affinity(
+        let mut hit = match runtime.select_operation_with_affinity(
             &snapshot,
             &key,
-            ApiFormat::OpenAiChatCompletions,
+            ApiOperation::ChatCompletions,
+            RequestProtocol::NonStream,
             "model",
             Some(affinity()),
         ) {
@@ -2732,10 +2453,11 @@ mod tests {
         hit.lease.request_failed();
         drop(hit);
 
-        let next = match runtime.select_with_affinity(
+        let next = match runtime.select_operation_with_affinity(
             &snapshot,
             &key,
-            ApiFormat::OpenAiChatCompletions,
+            ApiOperation::ChatCompletions,
+            RequestProtocol::NonStream,
             "model",
             Some(affinity()),
         ) {
@@ -2767,10 +2489,11 @@ mod tests {
         let affinity =
             || SessionAffinityMatch::new(Arc::from("test-affinity"), fingerprint, [12; 32], ttl);
 
-        let mut first = match runtime.select_with_affinity(
+        let mut first = match runtime.select_operation_with_affinity(
             &snapshot,
             &key,
-            ApiFormat::OpenAiChatCompletions,
+            ApiOperation::ChatCompletions,
+            RequestProtocol::NonStream,
             "model",
             Some(affinity()),
         ) {
@@ -2782,10 +2505,11 @@ mod tests {
         drop(first);
 
         clock.advance(Duration::from_secs(61));
-        let after_expiry = match runtime.select_with_affinity(
+        let after_expiry = match runtime.select_operation_with_affinity(
             &snapshot,
             &key,
-            ApiFormat::OpenAiChatCompletions,
+            ApiOperation::ChatCompletions,
+            RequestProtocol::NonStream,
             "model",
             Some(affinity()),
         ) {
@@ -2808,7 +2532,7 @@ mod tests {
             Arc::new(Tickets(Mutex::new(VecDeque::new()))),
         );
         let ids = snapshot
-            .model_rule(ApiFormat::OpenAiChatCompletions, "model")
+            .operation_rule(ApiOperation::ChatCompletions, "model")
             .unwrap()
             .tiers()[0]
             .channel_ids()
@@ -2824,18 +2548,18 @@ mod tests {
 
     #[test]
     fn round_robin_state_follows_candidate_identity_when_slots_shift() {
-        let (old_records, secret) = records_with_format(
+        let (old_records, secret) = records_for_operation(
             &[(1, "weighted_round_robin"), (1, "weighted_round_robin")],
             &[2, 1],
             None,
-            ApiFormat::OpenAiChatCompletions,
+            ApiOperation::ChatCompletions,
         );
         let old = compile_control_plane(old_records).unwrap();
-        let (mut next_records, _) = records_with_format(
+        let (mut next_records, _) = records_for_operation(
             &[(1, "weighted_round_robin"), (1, "weighted_round_robin")],
             &[2, 1],
             None,
-            ApiFormat::OpenAiChatCompletions,
+            ApiOperation::ChatCompletions,
         );
         let first_channel_id = next_records.channels[0].id;
         next_records.channels[0]
@@ -2860,15 +2584,16 @@ mod tests {
         drop(select(&runtime, &old, &secret));
 
         let next_rule = next
-            .model_rule(ApiFormat::OpenAiChatCompletions, "model")
+            .operation_rule(ApiOperation::ChatCompletions, "model")
             .unwrap();
         let earlier_candidate_slot = next_rule.tiers()[0].candidates()[0].candidate_slot();
         let expected = next_rule.tiers()[1].channel_ids()[1];
         let key = next.authenticate(&secret).unwrap();
-        let SelectionResult::Selected(selected) = runtime.select_with_affinity_excluding(
+        let SelectionResult::Selected(selected) = runtime.select_operation_with_affinity_excluding(
             &next,
             &key,
-            ApiFormat::OpenAiChatCompletions,
+            ApiOperation::ChatCompletions,
+            RequestProtocol::NonStream,
             "model",
             None,
             &[earlier_candidate_slot],
@@ -2893,7 +2618,7 @@ mod tests {
         let channel = snapshot
             .channel(
                 snapshot
-                    .model_rule(ApiFormat::OpenAiChatCompletions, "model")
+                    .operation_rule(ApiOperation::ChatCompletions, "model")
                     .unwrap()
                     .tiers()[0]
                     .channel_ids()[0],
@@ -2906,22 +2631,26 @@ mod tests {
         second.lease.connection_failed();
         drop(second);
         assert!(matches!(
-            runtime.select(
+            runtime.select_operation_with_affinity(
                 &snapshot,
                 &snapshot.authenticate(&secret).unwrap(),
-                ApiFormat::OpenAiChatCompletions,
-                "model"
+                ApiOperation::ChatCompletions,
+                RequestProtocol::NonStream,
+                "model",
+                None
             ),
             SelectionResult::NoHealthyChannel { .. }
         ));
         clock.advance(Duration::from_secs(10));
         let mut probe = select(&runtime, &snapshot, &secret);
         assert!(matches!(
-            runtime.select(
+            runtime.select_operation_with_affinity(
                 &snapshot,
                 &snapshot.authenticate(&secret).unwrap(),
-                ApiFormat::OpenAiChatCompletions,
-                "model"
+                ApiOperation::ChatCompletions,
+                RequestProtocol::NonStream,
+                "model",
+                None
             ),
             SelectionResult::NoHealthyChannel { .. }
         ));
@@ -2954,21 +2683,25 @@ mod tests {
         drop(probe);
 
         assert!(matches!(
-            runtime.select(
+            runtime.select_operation_with_affinity(
                 &snapshot,
                 &snapshot.authenticate(&secret).unwrap(),
-                ApiFormat::OpenAiChatCompletions,
-                "model"
+                ApiOperation::ChatCompletions,
+                RequestProtocol::NonStream,
+                "model",
+                None
             ),
             SelectionResult::NoHealthyChannel { .. }
         ));
         clock.advance(Duration::from_secs(10));
         assert!(matches!(
-            runtime.select(
+            runtime.select_operation_with_affinity(
                 &snapshot,
                 &snapshot.authenticate(&secret).unwrap(),
-                ApiFormat::OpenAiChatCompletions,
-                "model"
+                ApiOperation::ChatCompletions,
+                RequestProtocol::NonStream,
+                "model",
+                None
             ),
             SelectionResult::Selected(_)
         ));
@@ -3007,8 +2740,14 @@ mod tests {
                 scope.spawn(move || {
                     let key = snapshot.authenticate(&secret).unwrap();
                     start.wait();
-                    let route =
-                        runtime.select(&snapshot, &key, ApiFormat::OpenAiChatCompletions, "model");
+                    let route = runtime.select_operation_with_affinity(
+                        &snapshot,
+                        &key,
+                        ApiOperation::ChatCompletions,
+                        RequestProtocol::NonStream,
+                        "model",
+                        None,
+                    );
                     if matches!(&route, SelectionResult::Selected(_)) {
                         selected.fetch_add(1, Ordering::SeqCst);
                     }
@@ -3041,7 +2780,7 @@ mod tests {
         let old_channel = initial
             .channel(
                 initial
-                    .model_rule(ApiFormat::OpenAiChatCompletions, "model")
+                    .operation_rule(ApiOperation::ChatCompletions, "model")
                     .unwrap()
                     .tiers()[0]
                     .channel_ids()[0],
@@ -3063,7 +2802,7 @@ mod tests {
         let replacement = reconfigured
             .channel(
                 reconfigured
-                    .model_rule(ApiFormat::OpenAiChatCompletions, "model")
+                    .operation_rule(ApiOperation::ChatCompletions, "model")
                     .unwrap()
                     .tiers()[0]
                     .channel_ids()[0],
@@ -3163,11 +2902,13 @@ mod tests {
                 0
             );
             assert!(matches!(
-                runtime.select(
+                runtime.select_operation_with_affinity(
                     &replacement,
                     &replacement.authenticate(&secret).unwrap(),
-                    ApiFormat::OpenAiChatCompletions,
-                    "model"
+                    ApiOperation::ChatCompletions,
+                    RequestProtocol::NonStream,
+                    "model",
+                    None
                 ),
                 SelectionResult::Selected(_)
             ));
@@ -3223,7 +2964,7 @@ mod tests {
         assert_eq!(round_robin_len(&runtime), 0);
         let old_identity = super::ChannelIdentity::from_channel(
             &old.channel(
-                old.model_rule(ApiFormat::OpenAiChatCompletions, "model")
+                old.operation_rule(ApiOperation::ChatCompletions, "model")
                     .unwrap()
                     .tiers()[0]
                     .channel_ids()[0],
@@ -3233,7 +2974,7 @@ mod tests {
         let next_identity = super::ChannelIdentity::from_channel(
             &next
                 .channel(
-                    next.model_rule(ApiFormat::OpenAiChatCompletions, "model")
+                    next.operation_rule(ApiOperation::ChatCompletions, "model")
                         .unwrap()
                         .tiers()[0]
                         .channel_ids()[0],
@@ -3286,7 +3027,7 @@ mod tests {
         drop(select(&runtime, &old, &secret));
 
         let expected = next
-            .model_rule(ApiFormat::OpenAiChatCompletions, "model")
+            .operation_rule(ApiOperation::ChatCompletions, "model")
             .unwrap()
             .tiers()[0]
             .channel_ids()[0];

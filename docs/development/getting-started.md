@@ -43,7 +43,7 @@ docker compose up -d
 
 `config/` 中的运行配置和密钥不提交。网关默认读取当前工作目录的 `./config/config.toml`，
 也接受显式 TOML 路径；不读取 `.env`，不使用 XDG 配置发现。
-启动时应用 migration，控制面初始为空。
+首次启动使用当前 v1 基线初始化新库。**切勿将新版本指向旧业务库或其 spool**；既有部署须先按[切换与回滚说明](../user/upgrades.md)保留旧环境，并准备独立空数据库及全新 spool。
 
 若主 checkout 已运行开发 PostgreSQL，复用该实例，而不是从不同 worktree 启动争用固定端口的
 Compose 项目。
@@ -91,7 +91,7 @@ python3 scripts/check-docs.py
 ### Rust 与双后端
 
 两组 workspace 测试都需要能创建临时数据库的 PostgreSQL 连接，以及按[插件测试说明](connector-plugins.md#验收边界)
-准备的真实 Codex 动态库。使用上面的本地 Compose 和十六进制密码时，在 Bash 中设置：
+准备的真实 Codex 动态库。PG 测试使用显式 `TEST_DATABASE_ADMIN_URL` 或测试入口支持的非空密码文件，不提供默认密码。使用本地 Compose 和十六进制密码时，在 Bash 中设置：
 
 ```bash
 export TEST_DATABASE_ADMIN_URL="postgres://ai_gateway:$(<config/postgres-password)@127.0.0.1:${AI_GATEWAY_POSTGRES_PORT:-5432}/postgres"

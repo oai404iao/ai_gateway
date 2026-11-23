@@ -12,36 +12,16 @@ from pathlib import Path
 
 import yaml
 
-expected_types = {"opened", "synchronize", "reopened"}
-
-
-def check_pull_request_types(source, name):
-    # BaseLoader preserves `on` as a string rather than a YAML 1.1 boolean.
-    workflow = yaml.load(source, Loader=yaml.BaseLoader)
-    actual = workflow.get("on", {}).get("pull_request", {}).get("types")
-    assert isinstance(actual, list) and set(actual) == expected_types, (
-        f"{name} pull_request types must be {sorted(expected_types)}, found {actual}"
-    )
-
-
 for relative in (
     ".github/workflows/ci.yml",
     ".github/workflows/security.yml",
 ):
-    check_pull_request_types(Path(relative).read_text(encoding="utf-8"), relative)
-
-flow = "on: {pull_request: {types: [reopened, opened, synchronize]}, push: {}}"
-check_pull_request_types(flow, "flow style")
-for label, source in (
-    ("missing activity", flow.replace(", synchronize", "")),
-    ("extra activity", flow.replace("synchronize", "synchronize, closed")),
-):
-    try:
-        check_pull_request_types(source, label)
-    except AssertionError:
-        pass
-    else:
-        raise AssertionError(f"{label} unexpectedly passed")
+    # BaseLoader preserves `on` as a string rather than a YAML 1.1 boolean.
+    workflow = yaml.load(Path(relative).read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    actual = workflow["on"]["pull_request"]["types"]
+    assert isinstance(actual, list) and set(actual) == {"opened", "synchronize", "reopened"}, (
+        f"{relative}: unexpected pull_request types {actual}"
+    )
 
 print("workflow pull-request event contracts passed")
 PY

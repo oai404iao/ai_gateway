@@ -85,23 +85,7 @@ pub struct UpstreamCredentialDetail {
     pub secret: Option<String>,
 }
 
-pub(crate) type CredentialBinding = (Uuid, Option<Uuid>, Option<Uuid>, Uuid);
-
-pub(crate) fn validate_legacy_auth(
-    name: &str,
-    base_url: &str,
-    kind: &str,
-    header: Option<&str>,
-    secret: Option<&str>,
-) -> bool {
-    if UpstreamAuth::compile(kind, header, secret).is_err() {
-        return false;
-    }
-    kind == "none"
-        || (!name.trim().is_empty()
-            && name.chars().count() <= 100
-            && CredentialTarget::parse(base_url).is_ok())
-}
+pub(crate) type CredentialBinding = (Uuid, Uuid);
 
 impl CredentialRecord {
     pub(crate) fn validate(&self) -> Result<(), RepositoryError> {
@@ -158,9 +142,7 @@ impl CredentialRecord {
     pub(crate) fn view(&self, bindings: &[CredentialBinding]) -> UpstreamCredentialView {
         let mut channel_ids = bindings
             .iter()
-            .filter_map(|(channel, credential, _, _)| {
-                (*credential == Some(self.id)).then_some(*channel)
-            })
+            .filter_map(|(channel, credential)| (*credential == self.id).then_some(*channel))
             .collect::<Vec<_>>();
         channel_ids.sort_unstable();
         UpstreamCredentialView {
@@ -258,11 +240,10 @@ pub(crate) async fn pg_records(
 pub(crate) async fn pg_bindings(
     connection: &mut PgConnection,
 ) -> Result<Vec<CredentialBinding>, RepositoryError> {
-    // Live canonical logical channels own credential scope, including disabled
-    // and unrouted drafts; the legacy physical channel table is no longer read.
+    // Disabled channels and unrouted drafts still own their credential binding.
     Ok(sqlx::query_as(
-        "SELECT c.id,c.credential_id,NULL::uuid,c.binding_revision FROM upstream_channels c \
-         WHERE c.deleted_at IS NULL ORDER BY c.id",
+        "SELECT id,credential_id FROM upstream_channels \
+         WHERE deleted_at IS NULL AND credential_id IS NOT NULL ORDER BY id",
     )
     .fetch_all(connection)
     .await?)
@@ -419,7 +400,7 @@ pub(crate) fn check_delete(
     }
     if bindings
         .iter()
-        .any(|(_, credential, _, _)| *credential == Some(record.id))
+        .any(|(_, credential)| *credential == record.id)
     {
         return Err(RepositoryError::CredentialInUse);
     }

@@ -71,13 +71,6 @@ fn fixture() -> (UpstreamTopologyRecords, SelfApiKeyPolicy) {
             routing_groups: vec![group],
             logical_channels: vec![channel],
             channel_capabilities: capabilities,
-            policy_grants: vec![ApiKeyPolicyChannelGrantRecord {
-                policy_id: POLICY,
-                channel_id: CHANNEL,
-                origin_kind: GrantOriginKind::Group,
-                origin_id: GROUP,
-                created_at: now,
-            }],
             ..Default::default()
         },
         SelfApiKeyPolicy {
@@ -149,8 +142,6 @@ fn individual_policy_grant_never_allows_issuing_a_whole_group() {
     let grant = ApiKeyPolicyChannelGrantRecord {
         policy_id: POLICY,
         channel_id: CHANNEL,
-        origin_kind: GrantOriginKind::Channel,
-        origin_id: CHANNEL,
         created_at: Utc::now(),
     };
     topology.policy_grants.push(grant);
@@ -170,9 +161,7 @@ fn individual_policy_grant_never_allows_issuing_a_whole_group() {
         [CHANNEL]
     );
 
-    topology
-        .policy_grants
-        .retain(|g| g.origin_kind == GrantOriginKind::Group);
+    topology.policy_grants.clear();
     assert!(options(&topology, Some(&policy)).1.is_empty());
     assert!(matches!(
         prepare(&topology, owner, &json!({}), &[], &[CHANNEL]),
@@ -187,10 +176,10 @@ fn only_changes_to_explicit_channel_selections_write_direct_grants() {
     for owner in [GrantOwner::Policy, GrantOwner::AdminKey] {
         let retained = prepare(&topology, owner, &before, &[], &[CHANNEL]).unwrap();
         assert!(retained.added.is_empty());
-        assert_eq!(retained.removed, [("group", GROUP)]);
+        assert!(retained.removed.is_empty());
         let removed = prepare(&topology, owner, &before, &[GROUP], &[]).unwrap();
         assert!(removed.added.is_empty());
-        assert_eq!(removed.removed, [("channel", CHANNEL)]);
+        assert_eq!(removed.removed, [CHANNEL]);
         assert_eq!(
             prepare(&topology, owner, &json!({}), &[GROUP], &[CHANNEL])
                 .unwrap()

@@ -54,7 +54,7 @@ usage 或必要总量缺失、已知字段损坏或溢出时为 unknown，不能
 通用解析器支持 `open_ai_chat_completions`、`open_ai_responses`、
 `open_ai_images` 和 `anthropic_messages`。连接器复用它时无需实现解析命令。
 选择是显式的，不按 URL、供应商域名或 `cached > input` 猜测语义。
-未声明该字段的协议 1/2/3 插件保持原有 OpenAI 兼容默认。
+未声明 `usage` 时，宿主按该操作的 API 格式选择通用解析器。
 
 需要专有字段解析时，插件可声明：
 
@@ -117,10 +117,9 @@ usage 解析只解释原始上游计数，不能决定路由、响应成败、�
 失败/取消请求继续零收费；成功 unknown usage 依现有结算策略处理，
 不清除不确定财务状态。
 
-新 Codex 插件使用协议 3，所有响应模式为 `passthrough`，usage 复用
+Codex 插件的响应模式为 `passthrough`，usage 复用
 `general/open_ai_responses`。HTTP Responses 只声明 SSE；无其他可用普通渠道时，
 non-stream 请求在派发前返回 `503 no_healthy_channel`，不破坏已建立的 SSE affinity。
-旧协议 2 的请求验证路径保持兼容。
 
 支持 Anthropic usage 方言不等于增加 Anthropic 数据面路由、请求转换或跨格式桥接。
 系统 E2E 使用 OpenAI 兼容响应包络模拟不同 usage 方言，不宣称原生 Anthropic 转发。

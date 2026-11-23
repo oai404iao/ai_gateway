@@ -51,7 +51,6 @@ PostgreSQL 会互相竞争，因此结果主要用于：
 - 同一台机器、同一运行参数下的版本对比。
 - 定位数据面热点。
 - 发现明显性能回退。
-- 为后续分布式压测提供基础。
 
 ## 总体架构
 
@@ -100,22 +99,7 @@ scripts/run-forwarding-perf.sh
 
 ## 数据库隔离
 
-性能工具默认读取：
-
-```text
-TEST_DATABASE_ADMIN_URL
-```
-
-未设置时，工具会优先读取生产 Compose 使用的
-`./config/postgres-password`，并构造指向 `postgres` 管理数据库的 URL。
-密码文件不存在时，为兼容旧开发环境才回退到：
-
-```text
-postgres://ai_gateway:ai_gateway@127.0.0.1:5432/postgres
-```
-
-生产 Compose 的新安装不使用该旧密码。也可以始终显式设置
-`TEST_DATABASE_ADMIN_URL`；URL 必须对密码中的特殊字符进行编码。
+管理连接优先使用 `--database-admin-url`，其次使用 `TEST_DATABASE_ADMIN_URL`。两者均未设置时，工具读取 `./config/postgres-password` 构造本机 `postgres` 管理库 URL；没有非空密码文件就报错，不猜测密码。显式 URL 中的密码须正确编码。
 
 该 URL 必须指向 `postgres` 等管理数据库，不能指向正常的 `ai_gateway`
 应用数据库。每次运行会创建：
@@ -235,16 +219,7 @@ Mock 不保存每个完整请求，只使用原子计数器记录：
 
 ## 请求日志完整性
 
-Gateway 当前使用可恢复的多阶段流水线持久化请求日志：
-
-- 派发前同步保存 intent 并预留 terminal slot；写失败拒绝派发，不伪造日志或费用。
-- 请求终态同步写入 slot 与本地 spool，不等待 PostgreSQL。
-- 有界队列只负责唤醒后台 Worker；队列满时合并通知，不丢弃 spool 事件。
-- spool 通过 `COPY FROM` 写入低索引 `request_log_ingest`。
-- ingress 先产生不可变 `request_metering_facts` 和独立 pending work；日志投影写入
-  `request_logs`，结算不扫描该查询表作为财务来源。
-- 结算消费 pending work，把 receipt、余额/额度变化与 pending 删除原子提交。
-- 关闭超时后未完成事件保留在 spool 或入口表，供下次启动恢复。
+[耐久化流水线](request-log-durability.md)在本地接收请求终态，异步写数据库并独立计量、结算和投影。
 
 因此只报告 RPS 会掩盖日志丢失。性能工具为每个场景使用独立 `client_model`，
 在 Gateway 优雅关闭后统计最终表和入口表中按 UUID 去重的耐久日志：
@@ -327,26 +302,4 @@ request-log-spool/
 
 ## 当前边界
 
-当前已实现：
-
-- 独立手动编排器。
-- 全新临时数据库。
-- 全新 release Gateway 实例。
-- Chat Completions 和 Responses。
-- JSON 与 SSE Mock。
-- 固定并发客户端。
-- 直连基线。
-- JSON/Markdown 报告。
-- 请求日志持久化率。
-
-当前 Harness 不生成 Images 请求；Images generation/edit 由 deterministic proxy integration
-tests 覆盖，不能把本工具的 Chat/Responses 结果外推为图片吞吐、base64 CPU 或磁盘 spool 结论。
-
-以下能力尚未实现，不应从当前报告推断：
-
-1. Open-model 固定 RPS 调度与 scheduler lag。
-2. 自动并发阶梯和饱和点识别。
-3. Gateway/Mock/客户端 CPU、RSS、FD 采样。
-4. 多客户端分片和远程压测。
-5. 长时间 SSE soak。
-6. 基线文件与自动相对回退阈值。
+固定并发的本机直连/代理对照只覆盖 Chat Completions 与 Responses 的 HTTP JSON/SSE。不生成 Images，不测图片 spool、WS、分布式发压、长时间 soak 或固定到达率下的排队；报告也不为生产容量或 CPU 使用率背书。

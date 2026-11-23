@@ -6,20 +6,15 @@ Responses WebSocket 把一条下游连接中的顺序 `response.create` 当作�
 
 ## 开启 WebSocket
 
-WebSocket Upgrade 在 HTTP 握手阶段验证 Gateway API Key 和 Responses `proxy`
-权限，但不消耗 RPM 或并发槽。该传输默认关闭，只有以下三层均开启才接受请求：
+使用 Gateway API Key 对 `GET /v1/responses` 发起 Upgrade。握手检查 `proxy` 权限，不占用请求的 RPM 或并发槽。启用需要：
 
-1. 管理员在 `/console/v1/system/settings` 中设置 `websocket.enabled = true`；
-2. 用户在个人设置页 `/account/settings` 中开启 WebSocket，对应
-   `GET/PUT /console/v1/me/settings` 的 `websocket_enabled`；
-3. 管理员配置独立的 `responses-ws` 能力和同操作路由，API Key 已授权所属逻辑渠道；
-   HTTP `responses` 能力和路由不能替代 WS 配置。
+1. 管理员设置 `/console/v1/system/settings` 的 `websocket.enabled = true`。
+2. 用户在个人设置开启 WebSocket（`/console/v1/me/settings` 的 `websocket_enabled`）。
+3. 管理员配置 `responses-ws` 能力和路由，并授权所属逻辑渠道给调用方 Key。
 
-系统或用户未开启 WS，或该 Key 没有任何可用 WS 路由时，握手返回 HTTP `426 websocket_unavailable`。握手时还不知道请求模型：若升级成功后才发现所选模型的 WS 传输不可用，或上游无法建立连接，网关发同码错误帧并关闭连接。未知或无权访问的模型仍返回 `404 model_not_found`，鉴权、准入、校验和停机错误保留各自的错误码。
+传输未开启，或 Key 没有任何可用 WS 路由时，握手返回 HTTP `426 websocket_unavailable`。若收到模型名后才发现传输不可用，则发送同码错误帧并关闭连接；未知或未授权模型返回 `404 model_not_found`。客户端可改走 HTTP，前提是已配置该操作的路由。
 
-遇到 426，由客户端决定是否改用 `POST /v1/responses`；网关不会把已发送的 WS 请求自动重放为 HTTP。
-
-握手成功时，`x-codex-websocket-max-message-bytes` 告知客户端网关自身的单条消息字节上限，不代表上游限制。若上游随后在其握手中声明更小的上限，网关在派发前检查最终准备好的消息。超过任一限制，或上游在本次请求首条文本事件之前以 1009 拒绝消息时，网关用 Close 1009 通知客户端；收到文本事件之后的上游断开不作为大小回退信号。
+下游握手响应 `x-codex-websocket-max-message-bytes` 声明网关的消息上限。网关也按上游握手声明的上限检查准备好的消息。超限或上游在首条文本事件前以 1009 拒绝消息时，下游收到 Close 1009。
 
 ## 发送与计量
 
@@ -62,14 +57,9 @@ Responses Lite 可以仅在每条 create 的 `client_metadata.ws_request_header_
 }
 ```
 
-连接池只记每条连接最近成功响应的 ID 摘要，不保存对话历史，也不改写供应商返回的 ID。同一 Session 内的上游应生成唯一的响应 ID。如果旧记录已随新响应或连接淘汰而消失，供应商随后再使用同一 ID，单凭客户端的 ID 无法区分两次响应。不保证 ID 唯一的上游不宜混用同一 Session 的增量续写。
+连接池只记每个连接最近成功响应的 ID 摘要，不保存对话内容。一个 Session 内的上游需生成唯一的响应 ID；ID 重用时，客户端无法仅凭该 ID 区分两次响应。
 
-上游返回 `websocket_connection_limit_reached`（包括服务端 60 分钟连接上限）或
-`previous_response_not_found` 时，Gateway 保留该控制错误帧、废弃对应上游连接，并允许客户端用完整
-请求建立新连接。这两类状态恢复错误不会触发渠道自动禁用或清除 Session affinity；Gateway 自身仍不
-重放已经发送的请求。
-
-上游握手失败时可按全局重试设置切换未尝试候选，消息一旦发送就不再自动重试。连接期间 Key 撤销或过期，下一条消息返回 `invalid_api_key`；关闭系统或用户 WS 开关，下一条消息返回 `426 websocket_unavailable` 并结束连接。
+上游返回 `websocket_connection_limit_reached` 或 `previous_response_not_found` 时，网关原样转发，废弃连接，不禁用渠道或清除 Session affinity。只有消息发出前的建连故障可按策略换候选；消息发出后不自动重试。会话中撤销 Key 或关闭 WS 时，下一条 create 会收到相应的 `invalid_api_key` 或 `websocket_unavailable`。
 
 ## 配置反向代理与连接池
 

@@ -327,7 +327,7 @@ export function RegistrationInvitationCodeDetailPage() {
                       <AlertTitle>{t("Invitation code is immutable")}</AlertTitle>
                       <AlertDescription>
                         {t(
-                          "The gateway stores only a hash. To replace the value, create a new registration code and disable this one.",
+                          "To replace this code, create a new one and disable this one.",
                         )}
                       </AlertDescription>
                     </Alert>
@@ -462,9 +462,7 @@ export function RegistrationInvitationCodeDetailPage() {
           }
         }}
         title={t("Registration invitation code")}
-        description={t(
-          "Save the code now. Future detail views show only its settings and usage.",
-        )}
+        description={t("Share this code only with people you want to invite.")}
         secret={createdSecret}
       />
     </>

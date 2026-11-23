@@ -8,8 +8,8 @@
 
 [English](README.md) · [文档](docs/README.md) · [发行版](https://github.com/oai404iao/ai_gateway/releases)
 
-`ai-gateway` 是自托管服务，让应用通过同一个 OpenAI 兼容地址调用多个上游。客户端只需提供网关 API Key
-和你指定的模型名。在 Console 中，你可以为这个名字配置上游模型、授权使用者，并设定用量单价。
+用 `ai-gateway`，应用可以通过同一个 OpenAI 兼容的 Base URL 调用多个上游。你负责托管网关、签发 API Key，
+并决定客户端可见的模型名。在 Console 中，为这些名字配置上游模型、授权使用者并设定用量单价。
 
 ## 发出第一条请求
 
@@ -19,6 +19,8 @@ PostgreSQL，配置第一条路由，再通过网关向上游发送 Chat Complet
 在服务器上运行，可用 [Docker Compose 部署发行镜像](docs/user/production-deployment.md)。
 Rust 二进制分别监听公共 API 和管理 Console；请通过 HTTPS 反向代理访问 Console。
 数据库默认使用 PostgreSQL，Linux 单机也可以[使用 SQLite](docs/user/sqlite.md)。
+
+**已有旧版实例？** 切换到当前存储基线需要新数据库和独立的空请求日志 spool。请先按[切换与回滚指南](docs/user/upgrades.md)保存原账本。
 
 ## 接入客户端与上游
 

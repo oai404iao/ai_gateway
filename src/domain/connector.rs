@@ -97,7 +97,7 @@ mod tests {
     }
 }
 
-/// Request-body compression selected by a channel group.
+/// Request-body compression selected for an operation capability.
 ///
 /// `Default` deliberately means no request compression. Keeping it as an
 /// explicit wire value leaves room for additional algorithms without changing
@@ -111,14 +111,6 @@ pub enum RequestCompression {
 }
 
 impl RequestCompression {
-    pub(crate) fn parse(value: &str) -> Option<Self> {
-        match value {
-            "default" => Some(Self::Default),
-            "zstd" => Some(Self::Zstd),
-            _ => None,
-        }
-    }
-
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {

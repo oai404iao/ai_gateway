@@ -117,7 +117,7 @@ async fn run_probe_round(
     let channels = snapshot
         .probe_channels()
         .filter(|channel| {
-            snapshot.group(channel.group_id()).is_some()
+            snapshot.group_enabled(channel.group_id())
                 && channel.test_model().is_some()
                 && match scheduled.mode() {
                     ScheduledTestingMode::Global => true,
@@ -550,9 +550,7 @@ fn finished_probe(
             model_rule_id: None,
             channel_group_id: Some(context.channel.group_id()),
             channel_id: Some(context.channel.id()),
-            upstream_credential: Some(crate::domain::RequestCredentialAttribution {
-                credential_id: context.channel.credential_id(),
-            }),
+            upstream_credential_id: context.channel.credential_id(),
             model_id: Some(context.billing_model.id()),
             outcome,
             response_status_code,
@@ -838,11 +836,14 @@ mod tests {
         .await;
         let model_id = Uuid::new_v4();
         let billing_model = scheduled_test_model(model_id);
-        let channel = CompiledChannel::new_with_policy_and_automation(
+        let channel = CompiledChannel::from_capability(
             Uuid::new_v4(),
             Uuid::new_v4(),
-            ApiFormat::OpenAiChatCompletions,
+            crate::domain::ChannelIdentity::for_test(crate::domain::ApiOperation::ChatCompletions),
+            crate::domain::ConnectorKind::OpenAiCompatible,
+            crate::domain::RequestCompression::Default,
             reqwest::Url::parse(&format!("http://{}", server.address)).unwrap(),
+            rust_decimal::Decimal::ONE,
             UpstreamAuth::None,
             HashSet::from([Arc::<str>::from("probe-model")]),
             true,
@@ -918,16 +919,16 @@ mod tests {
         .await;
         let model_id = Uuid::new_v4();
         let billing_model = scheduled_test_model(model_id);
-        let channel = CompiledChannel::new_with_policy_automation_and_billing(
+        let channel = CompiledChannel::from_capability(
             Uuid::new_v4(),
             Uuid::new_v4(),
-            ApiFormat::OpenAiChatCompletions,
+            crate::domain::ChannelIdentity::for_test(crate::domain::ApiOperation::ChatCompletions),
+            crate::domain::ConnectorKind::OpenAiCompatible,
+            crate::domain::RequestCompression::Default,
             reqwest::Url::parse(&format!("http://{}", server.address)).unwrap(),
             Decimal::new(15, 1),
             UpstreamAuth::None,
             HashSet::from([Arc::<str>::from("probe-model")]),
-            false,
-            false,
             false,
             false,
             Some(Arc::from("probe-model")),
@@ -987,18 +988,16 @@ mod tests {
         .await;
         let model_id = Uuid::new_v4();
         let billing_model = scheduled_test_model(model_id);
-        let channel = CompiledChannel::new_with_connector_policy_automation_and_billing(
+        let channel = CompiledChannel::from_capability(
             Uuid::new_v4(),
             Uuid::new_v4(),
-            ApiFormat::OpenAiResponses,
+            crate::domain::ChannelIdentity::for_test(crate::domain::ApiOperation::Responses),
             crate::domain::ConnectorKind::OpenAiCompatible,
             crate::domain::RequestCompression::Zstd,
             reqwest::Url::parse(&format!("http://{}", server.address)).unwrap(),
             Decimal::ONE,
             UpstreamAuth::None,
             HashSet::from([Arc::<str>::from("probe-model")]),
-            false,
-            false,
             false,
             false,
             Some(Arc::from("probe-model")),

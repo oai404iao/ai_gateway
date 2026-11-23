@@ -4,7 +4,7 @@
 //! [`ControlPlaneRecords`] the runtime compiler consumes. This is the only
 //! place that maps canonical owners (routing group, upstream access, logical
 //! channel, channel capability, operation rule) onto the compiled snapshot
-//! input, and it never consults the retired legacy configuration tables.
+//! input.
 //!
 //! Validation covers every non-deleted capability, access, group, logical
 //! channel, and credential, including disabled, unreferenced, and unrouted
@@ -24,10 +24,10 @@ use super::super::{
     ModelRuleRoutingTier, ProxyRecord, RepositoryError,
 };
 use super::{
-    ChannelCapabilityRecord, GrantOriginKind, LogicalChannelRecord, RoutingGroupRecord,
-    UpstreamAccessRecord, UpstreamTopologyRecords,
+    ChannelCapabilityRecord, LogicalChannelRecord, RoutingGroupRecord, UpstreamAccessRecord,
+    UpstreamTopologyRecords,
 };
-use crate::domain::{ApiOperation, ConnectorKind, CredentialTarget};
+use crate::domain::{ConnectorKind, CredentialTarget};
 
 /// Minimal identity of one priced model's routing profile. The adapter needs
 /// only the profile id, the owned model id, and the model enablement flag; the
@@ -89,7 +89,7 @@ pub(crate) enum CanonicalGraphError {
     InconsistentOperation { rule_id: Uuid },
     #[error("canonical model rule {rule_id} references an unknown routing capability")]
     UnknownRouteTarget { rule_id: Uuid },
-    #[error("canonical logical-channel grant has an invalid target or origin")]
+    #[error("canonical logical-channel grant has an invalid target")]
     UnknownGrantTarget,
 }
 
@@ -450,21 +450,16 @@ fn build_channels(live: &[LiveCapability<'_>]) -> Vec<ChannelRecord> {
                 credential_binding_revision: capability.logical.binding_revision,
                 id: capability.capability.id,
                 channel_group_id: capability.group.id,
-                api_format: settings.operation.api_format().as_str().to_owned(),
                 logical_channel_id: capability.logical.id,
                 access_id: capability.access.id,
-                api_operation: Some(settings.operation),
-                connector_kind: capability.connector_kind.as_str().to_owned(),
-                request_compression: settings.request_compression.as_str().to_owned(),
+                api_operation: settings.operation,
+                connector_kind: capability.connector_kind,
+                request_compression: settings.request_compression,
                 access_revision: capability.access.revision,
                 capability_revision: capability.capability.revision,
-                transports: settings.operation.transports().to_vec(),
                 name: capability.logical.name.clone(),
                 base_url: capability.access.base_url.clone(),
                 enabled: capability.enabled && settings.enabled,
-                supports_websocket: settings.operation == ApiOperation::ResponsesWebSocket,
-                supports_standalone_web_search: settings.operation
-                    == ApiOperation::StandaloneWebSearch,
                 auto_disabled: capability.capability.auto_disabled,
                 auto_disable_allowed: settings.auto_disable_allowed,
                 billing_multiplier: capability.capability.billing_multiplier,
@@ -494,11 +489,6 @@ fn build_groups(groups: &HashMap<Uuid, &RoutingGroupRecord>) -> Vec<ChannelGroup
         .map(|group| ChannelGroupRecord {
             id: group.id,
             name: group.name.clone(),
-            // Canonical routing groups own no protocol metadata; each channel
-            // capability owns its connector, compression, and operation.
-            api_format: String::new(),
-            connector_kind: String::new(),
-            request_compression: String::new(),
             enabled: group.enabled,
         })
         .collect()
@@ -562,8 +552,7 @@ fn build_model_rules(
                 {
                     return Err(CanonicalGraphError::UnknownRouteTarget { rule_id: rule.id });
                 }
-                // The internal channel_id of a canonical candidate is the
-                // capability UUID; there is no legacy channel lookup.
+                // The dispatch ID identifies a capability, not its logical channel.
                 candidates.push(ModelRuleRouteCandidate {
                     channel_id: candidate.capability_id,
                     upstream_model: candidate.upstream_model.clone(),
@@ -599,7 +588,7 @@ fn build_model_rules(
 }
 
 /// Routing authorizes capability IDs. Groups follow current membership, whereas
-/// direct access requires a channel-origin grant, not a dormant legacy selector.
+/// direct channel access requires a grant, not just a selected channel ID.
 fn fold_grants(
     mut api_keys: Vec<ApiKeyRecord>,
     grants: &[super::ApiKeyChannelGrantRecord],
@@ -620,17 +609,13 @@ fn fold_grants(
     }
     let mut direct_channels = HashMap::<Uuid, Vec<Uuid>>::new();
     for grant in grants {
-        if !known_channels.contains(&grant.channel_id)
-            || grant.origin_kind == GrantOriginKind::Capability
-        {
+        if !known_channels.contains(&grant.channel_id) {
             return Err(CanonicalGraphError::UnknownGrantTarget);
         }
-        if grant.origin_kind == GrantOriginKind::Channel && grant.origin_id == grant.channel_id {
-            direct_channels
-                .entry(grant.api_key_id)
-                .or_default()
-                .push(grant.channel_id);
-        }
+        direct_channels
+            .entry(grant.api_key_id)
+            .or_default()
+            .push(grant.channel_id);
     }
     for key in &mut api_keys {
         let mut allowed = Vec::new();
@@ -655,10 +640,10 @@ fn validate_policy_grants(
     grants: &[super::ApiKeyPolicyChannelGrantRecord],
     known_channels: &HashSet<Uuid>,
 ) -> Result<(), CanonicalGraphError> {
-    if grants.iter().any(|grant| {
-        !known_channels.contains(&grant.channel_id)
-            || grant.origin_kind == GrantOriginKind::Capability
-    }) {
+    if grants
+        .iter()
+        .any(|grant| !known_channels.contains(&grant.channel_id))
+    {
         return Err(CanonicalGraphError::UnknownGrantTarget);
     }
     Ok(())
@@ -666,7 +651,7 @@ fn validate_policy_grants(
 
 #[cfg(test)]
 mod tests {
-    use crate::domain::CapabilityTransport;
+    use crate::domain::ApiOperation;
     use chrono::{DateTime, Utc};
     use rust_decimal::Decimal;
     use serde_json::json;
@@ -730,18 +715,9 @@ mod tests {
         }
     }
 
-    fn settings(
-        operation: ApiOperation,
-        transports: Vec<CapabilityTransport>,
-    ) -> crate::domain::CapabilitySettings {
+    fn settings(operation: ApiOperation) -> crate::domain::CapabilitySettings {
         crate::domain::CapabilitySettings {
-            operation: if operation == ApiOperation::Responses
-                && transports == [CapabilityTransport::Websocket]
-            {
-                ApiOperation::ResponsesWebSocket
-            } else {
-                operation
-            },
+            operation,
             enabled: true,
             available_models: vec!["wire-model".into()],
             request_compression: crate::domain::RequestCompression::Default,
@@ -907,26 +883,8 @@ mod tests {
     #[test]
     fn each_capability_becomes_one_channel_with_owner_metadata() {
         let records = topology(vec![
-            capability(
-                100,
-                3,
-                settings(
-                    ApiOperation::Responses,
-                    vec![
-                        CapabilityTransport::HttpJson,
-                        CapabilityTransport::HttpSse,
-                        CapabilityTransport::Websocket,
-                    ],
-                ),
-            ),
-            capability(
-                101,
-                3,
-                settings(
-                    ApiOperation::StandaloneWebSearch,
-                    vec![CapabilityTransport::HttpJson],
-                ),
-            ),
+            capability(100, 3, settings(ApiOperation::Responses)),
+            capability(101, 3, settings(ApiOperation::StandaloneWebSearch)),
         ]);
         let resolved = resolve_runtime(&records, base(), &[], &[]).expect("resolve");
         assert_eq!(resolved.channels.len(), 2);
@@ -945,13 +903,14 @@ mod tests {
             .expect("responses channel");
         assert_eq!(responses.logical_channel_id, Uuid::from_u128(3));
         assert_eq!(responses.access_id, Uuid::from_u128(2));
-        assert_eq!(responses.api_operation, Some(ApiOperation::Responses));
-        assert_eq!(responses.connector_kind, "general");
-        assert_eq!(responses.request_compression, "default");
+        assert_eq!(responses.api_operation, ApiOperation::Responses);
+        assert_eq!(responses.connector_kind, ConnectorKind::OpenAiCompatible);
+        assert_eq!(
+            responses.request_compression,
+            crate::domain::RequestCompression::Default
+        );
         assert_eq!(responses.access_revision, Uuid::from_u128(502));
         assert_eq!(responses.capability_revision, Uuid::from_u128(1000));
-        assert!(!responses.supports_websocket);
-        assert!(!responses.supports_standalone_web_search);
         assert_eq!(responses.channel_group_id, Uuid::from_u128(1));
 
         let search = resolved
@@ -959,22 +918,12 @@ mod tests {
             .iter()
             .find(|channel| channel.id == Uuid::from_u128(101))
             .expect("search channel");
-        assert!(search.supports_standalone_web_search);
-        assert!(!search.supports_websocket);
-        assert_eq!(
-            search.api_operation,
-            Some(ApiOperation::StandaloneWebSearch)
-        );
-        assert_eq!(search.api_format, "open_ai_responses");
+        assert_eq!(search.api_operation, ApiOperation::StandaloneWebSearch);
     }
 
     #[test]
     fn model_rules_use_capability_uuids_and_profile_model_bindings() {
-        let mut records = topology(vec![capability(
-            100,
-            3,
-            settings(ApiOperation::Responses, vec![CapabilityTransport::HttpSse]),
-        )]);
+        let mut records = topology(vec![capability(100, 3, settings(ApiOperation::Responses))]);
         records.operation_rules = vec![rule(200, 60, ApiOperation::Responses)];
         records.operation_tiers = vec![OperationTierRecord {
             id: Uuid::from_u128(201),
@@ -1012,19 +961,8 @@ mod tests {
         use crate::routing::{PassiveHealthPolicy, RoutingRuntime, SelectionResult};
 
         let mut records = topology(vec![
-            capability(
-                100,
-                3,
-                settings(ApiOperation::Responses, vec![CapabilityTransport::HttpSse]),
-            ),
-            capability(
-                101,
-                3,
-                settings(
-                    ApiOperation::ImagesGeneration,
-                    vec![CapabilityTransport::HttpJson],
-                ),
-            ),
+            capability(100, 3, settings(ApiOperation::Responses)),
+            capability(101, 3, settings(ApiOperation::ImagesGeneration)),
         ]);
         let routes = [
             (ApiOperation::Responses, 100),
@@ -1050,29 +988,11 @@ mod tests {
             records.operation_tiers.push(tier);
         }
         records.routing_groups.push(group(4));
-        records.api_key_grants = vec![
-            ApiKeyChannelGrantRecord {
-                api_key_id: Uuid::from_u128(300),
-                channel_id: Uuid::from_u128(3),
-                origin_kind: GrantOriginKind::Group,
-                origin_id: Uuid::from_u128(1),
-                created_at: at(),
-            },
-            ApiKeyChannelGrantRecord {
-                api_key_id: Uuid::from_u128(300),
-                channel_id: Uuid::from_u128(3),
-                origin_kind: GrantOriginKind::Channel,
-                origin_id: Uuid::from_u128(3),
-                created_at: at(),
-            },
-            ApiKeyChannelGrantRecord {
-                api_key_id: Uuid::from_u128(302),
-                channel_id: Uuid::from_u128(3),
-                origin_kind: GrantOriginKind::Group,
-                origin_id: Uuid::from_u128(1),
-                created_at: at(),
-            },
-        ];
+        records.api_key_grants = vec![ApiKeyChannelGrantRecord {
+            api_key_id: Uuid::from_u128(300),
+            channel_id: Uuid::from_u128(3),
+            created_at: at(),
+        }];
         let routing = RoutingRuntime::new(PassiveHealthPolicy::default());
         for current_group in [4, 1, 4] {
             records.logical_channels[0].group_id = Uuid::from_u128(current_group);
@@ -1134,23 +1054,13 @@ mod tests {
     #[test]
     fn channel_grants_survive_capability_retirement_but_unknown_channels_fail_closed() {
         let mut records = topology(vec![
-            capability(
-                100,
-                3,
-                settings(ApiOperation::Responses, vec![CapabilityTransport::HttpSse]),
-            ),
-            capability(
-                102,
-                3,
-                settings(ApiOperation::Responses, vec![CapabilityTransport::HttpSse]),
-            ),
+            capability(100, 3, settings(ApiOperation::Responses)),
+            capability(102, 3, settings(ApiOperation::Responses)),
         ]);
         records.channel_capabilities[1].deleted_at = Some(at());
         let grant = |channel_id: u128| ApiKeyChannelGrantRecord {
             api_key_id: Uuid::from_u128(300),
             channel_id: Uuid::from_u128(channel_id),
-            origin_kind: GrantOriginKind::Channel,
-            origin_id: Uuid::from_u128(channel_id),
             created_at: at(),
         };
         let mut tombstoned_base = base();
@@ -1174,14 +1084,7 @@ mod tests {
 
     #[test]
     fn codex_connector_requires_compatible_credential_not_matching_channel_id() {
-        let mut records = topology(vec![capability(
-            100,
-            3,
-            settings(
-                ApiOperation::Responses,
-                vec![CapabilityTransport::HttpSse, CapabilityTransport::Websocket],
-            ),
-        )]);
+        let mut records = topology(vec![capability(100, 3, settings(ApiOperation::Responses))]);
         records.upstream_accesses = vec![access(
             2,
             ConnectorKind::CodexOauth,
@@ -1209,11 +1112,7 @@ mod tests {
 
     #[test]
     fn static_credential_scope_is_checked_against_every_live_binding() {
-        let mut records = topology(vec![capability(
-            100,
-            3,
-            settings(ApiOperation::Responses, vec![CapabilityTransport::HttpSse]),
-        )]);
+        let mut records = topology(vec![capability(100, 3, settings(ApiOperation::Responses))]);
         records.logical_channels = vec![logical(3, 1, 2, Some(400))];
         let wrong_scope = credential(400, "bearer", &["https://other.example"], false);
         assert_eq!(
@@ -1276,11 +1175,7 @@ mod tests {
 
     #[test]
     fn disabled_credentials_gate_static_and_codex_channels() {
-        let mut records = topology(vec![capability(
-            100,
-            3,
-            settings(ApiOperation::Responses, vec![CapabilityTransport::HttpSse]),
-        )]);
+        let mut records = topology(vec![capability(100, 3, settings(ApiOperation::Responses))]);
         records.logical_channels = vec![logical(3, 1, 2, Some(400))];
         let mut disabled = credential(400, "bearer", &["https://up.example"], false);
         disabled.enabled = false;
@@ -1324,11 +1219,7 @@ mod tests {
             }
         );
 
-        let mut records = topology(vec![capability(
-            100,
-            3,
-            settings(ApiOperation::Responses, vec![CapabilityTransport::HttpSse]),
-        )]);
+        let mut records = topology(vec![capability(100, 3, settings(ApiOperation::Responses))]);
         records.logical_channels[0].deleted_at = Some(at());
         assert_eq!(
             resolve_runtime(&records, base(), &[], &[]).unwrap_err(),
@@ -1353,10 +1244,7 @@ mod tests {
 
     #[test]
     fn disabled_and_unrouted_capabilities_are_still_validated() {
-        let mut invalid = settings(
-            ApiOperation::ChatCompletions,
-            vec![CapabilityTransport::HttpJson],
-        );
+        let mut invalid = settings(ApiOperation::ChatCompletions);
         invalid.request_compression = crate::domain::RequestCompression::Zstd;
         invalid.enabled = false;
         let records = topology(vec![capability(100, 3, invalid)]);
@@ -1370,11 +1258,7 @@ mod tests {
 
     #[test]
     fn missing_routing_profile_is_a_precise_error() {
-        let mut records = topology(vec![capability(
-            100,
-            3,
-            settings(ApiOperation::Responses, vec![CapabilityTransport::HttpSse]),
-        )]);
+        let mut records = topology(vec![capability(100, 3, settings(ApiOperation::Responses))]);
         records.operation_rules = vec![rule(200, 60, ApiOperation::Responses)];
         assert_eq!(
             resolve_runtime(&records, base(), &[], &[]).unwrap_err(),

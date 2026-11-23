@@ -2,7 +2,7 @@
 
 > 类型：外部参考与网关兼容边界。
 >
-> 最近核对：2026-08-04。外部连接时限等观察保留该日期，不代表重新核验。
+> 最近核对：2026-08-04。
 >
 > 权威来源：[Create a model response](https://developers.openai.com/api/reference/resources/responses/methods/create)、
 > [Streaming API responses](https://developers.openai.com/api/docs/guides/streaming-responses)、
@@ -15,8 +15,7 @@
 | 一次 JSON 或 SSE 调用 | `POST /v1/responses` | `responses` |
 | 顺序交互和连接级增量上下文 | `GET /v1/responses` Upgrade | `responses-ws` |
 
-两者都属于 `open_ai_responses`，但能力和模型操作路由分别配置，不能借用对方路由。
-订阅凭证后端另有[Codex 限制](codex-oauth-connect.md)，不是所有普通 Responses 都必须使用 SSE。
+两者都属于 `open_ai_responses`，要分别配置操作能力与模型路由。普通 HTTP 支持非流式请求；[Codex 订阅后端](codex-oauth-connect.md)要求 SSE。
 
 ## 最小请求
 
@@ -34,7 +33,7 @@ WebSocket 在握手中使用同一 Gateway Bearer Key，连接后发送：
 {"type":"response.create","model":"your-client-model","input":[{"role":"user","content":"Reply with OK."}]}
 ```
 
-等待本条终态后才能发下一条。不要把 HTTP `stream` 请求方式与 WS 事件封装混为一谈。
+等本轮终态到达后再发送下一条 create。
 
 ## 外部接口关键语义
 
@@ -66,33 +65,8 @@ Response 在途。`previous_response_id` 的增量缓存属于具体连接，断
 
 ### WebSocket 状态与复用
 
-Upgrade 验证 API Key，每个 `response.create` 再独立执行鉴权、准入、选路、日志和计费。
-系统、用户和选中操作能力的 WS 条件均须满足；不可用时用通用 `426 websocket_unavailable`，
-不泄露内部渠道或插件状态。
+每条 `response.create` 独立鉴权、准入、选路、记录用量和计费。完整输入按路由选择上游；增量输入只发给同一会话、最近成功响应 ID 匹配且仍符合授权的上游连接。无法命中时返回 `404 previous_response_not_found`，客户端应清除增量状态，发送完整请求。
 
-成功终态且无残留事件的上游连接才返回有界池。完整请求按当前路由选候选，而不是按空闲连接选渠道。池身份包括 API Key、
-下游握手身份、渠道及凭证/接入版本、上游模型、插件 generation、网络策略、目标和最终 Header。
-轮换或改绑不会因为密钥文本相同而复用旧身份。
+`websocket_connection_limit_reached` 和 `previous_response_not_found` 是状态恢复信号：原样转发错误，废弃连接，不禁用渠道。消息发出后不自动重试。客户端收到握手 `426` 或升级后的同码错误帧时，是否改用 HTTP 由客户端决定。
 
-池参数由运行时设置控制：默认最多 128 条空闲连接、空闲 300 秒、总龄 3300 秒；不是固定协议限制。
-同一精确身份只保留最近一条。非空 `previous_response_id` 必须匹配该 Session 范围内唯一可用连接的最近成功响应，否则在新派发前返回
-`404 previous_response_not_found`，由客户端重发完整请求。
-
-`websocket_connection_limit_reached`、`previous_response_not_found` 保留原形状，不做事件 patch，
-并废弃该连接；不因此自动禁用渠道或清掉 affinity。仅上游 Upgrade 前连接失败可故障转移；
-消息发出后不重试，不复制生成。
-
-下游 Upgrade 先于上游握手，所以上游握手响应 Header 和相应变换不能回填下游握手。
-请求 Header/JSON 和事件变换仍可生效。缺少时默认注入
-`OpenAI-Beta: responses_websockets=2026-02-06`，普通渠道 Header 变换可覆盖；Codex 由插件约束。
-
-## 接入检查
-
-1. 分别配置并测试 `responses`、`responses-ws`，确认路径、鉴权和模型目录。
-2. 核对 JSON usage，SSE `event:` 与 JSON `type`，以及成功、失败和断连终态。
-3. 核对 tools、文件/图片、持久化和 cache 字段，不把入口放行当能力证明。
-4. WS 测试连续请求、精确连接复用、断线后的完整重发、代理及自定义 Beta Header。
-5. 区分客户端 fallback 与服务端重试；网关消息发送后不重放。
-
-更多：[请求白名单](request-allowlists.md)、[Codex WS 研究](codex-responses-websocket.md)、
-[上游凭证轮换](../user/upstream-credentials.md)、[真实上游 smoke](../development/real-upstream-smoke.md)。
+系统开关、Header、消息大小、连接池与超时见[使用 WebSocket](../user/websocket.md)。Codex 选择增量、处理中断和回退的条件见[客户端参考](codex-responses-websocket.md)。

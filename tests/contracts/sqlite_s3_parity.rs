@@ -74,7 +74,7 @@ impl Backend {
                 .install_schema()
                 .await
                 .expect("infrastructure: SQLite schema must install"),
-            15
+            1
         );
         Self::Sqlite {
             directory,
@@ -342,7 +342,7 @@ async fn audit_for(repositories: &Repositories, action: &str, object_id: Uuid) -
         .unwrap()
         .into_iter()
         .find(|entry| entry.action == action && entry.object_id == object_id)
-        .unwrap_or_else(|| panic!("audit {action} for {object_id} must exist"))
+        .expect("expected audit entry for the requested action and object")
 }
 
 async fn listed_user(repositories: &Repositories, id: Uuid) -> ControlPlaneUser {
@@ -354,7 +354,7 @@ async fn listed_user(repositories: &Repositories, id: Uuid) -> ControlPlaneUser 
         .users
         .into_iter()
         .find(|user| user.id == id)
-        .unwrap_or_else(|| panic!("user {id} must be listed"))
+        .expect("expected user in the control-plane list")
 }
 
 async fn increase_balance(repositories: &Repositories, actor: Uuid, user_id: Uuid, amount: &str) {
@@ -3809,13 +3809,13 @@ async fn template_proxy_and_group_deletion_contract(repositories: Repositories) 
         .api_keys
         .iter()
         .find(|key| key.id == bound_key)
-        .expect("the key retains its explicit authorization origin");
+        .expect("the key retains its selected group");
     assert_eq!(key.allowed_group_ids, vec![world.group]);
     let policy = lists
         .api_key_policies
         .iter()
         .find(|policy| policy.id == world.policy)
-        .expect("the policy retains its explicit authorization origin");
+        .expect("the policy retains its selected group");
     assert_eq!(policy.allowed_group_ids, vec![world.group]);
 }
 

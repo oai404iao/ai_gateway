@@ -7,61 +7,22 @@ Codex 通过管理员安装并启用的原生插件接入；网关负责凭证�
 
 ## 本页内容
 
-- [理解格式与连接器](#决策)
+- [区分客户端格式与上游连接器](#格式与连接器)
 - [跟踪一次上游尝试](#运行时边界)
 - [管理凭证身份与维护](#持久化模型)
 - [判断 quota 与粘性行为](#quota-与-session-粘性)
 - [检查各操作的协议和重试限制](#请求与重试边界)
 - [保护敏感数据](#安全边界)
 
-## 决策
+## 格式与连接器
 
-连接器在网关进程内执行。`general` 静态内置，Codex 是独立仓库发布的 C ABI 动态库；
-不增加 sidecar、Unix Socket RPC、插件自有 HTTP 服务或 WASM 运行时。
-未安装、未启用或不兼容的插件不能回退为 `general`。
-客户端使用标准 `POST /v1/responses`、带 Upgrade 的
-`GET /v1/responses`、Codex 扩展 `POST /v1/alpha/search`、非流式 JSON
-`POST /v1/images/generations` 或 multipart `POST /v1/images/edits`；Connector 只改变选中
-format-specific channel 之后的上游准备过程。
-
-`ApiFormat` 与 `ConnectorKind` 必须分离：
-
-```text
-client format: OpenAiResponses | OpenAiImages
-client operation: Responses | ResponsesWebSocket | StandaloneWebSearch | ImagesGeneration | ImagesEdit
-upstream connector: CodexOauth
-```
-
-因此操作规则和 usage 解析仍使用对应的 Responses 或 Images 格式；API Key 授权逻辑渠道，不新增
-`ApiFormat::CodexResponses` / `CodexImages`，也不允许格式间转换。
+客户端协议决定校验、授权和选路，不决定凭证类型。Codex 能力属于 Responses HTTP（SSE）、Responses WS、独立搜索、Images generation 或 Images edit；网关不把其他客户端协议转成 Codex 格式。上游协议计划由已启用的 `codex` 插件生成，插件不可用时不能借用内置 `general` 代替。
 
 ## 运行时边界
 
-`UpstreamConnectorRegistry` 在进程启动时组装并注入 `ProxyService`。代理主循环只依赖
-统一 attempt 接口：
+[`UpstreamConnectorRegistry`](../../src/application/connector.rs) 根据所选渠道准备 attempt。Codex 使用绑定的凭证 UUID，从内存快照取得 Token、可用性及 generation；`PreparedCodexAttempt` 固定插件、设置、凭证和请求上下文。通用候选准备、Header 最后校验和网络派发仍在[宿主转发路径](relay-boundaries.md)。
 
-1. `prepare`：在发送前验证动态凭证与 affinity 状态；
-2. `adapt_body`：按 HTTP SSE、Responses WebSocket、standalone web search、Images JSON 或 multipart edit 应用
-   provider 请求约束；
-3. `upstream_url`：解析最终目标；
-4. `inject_headers`：在通用变换和 hop-by-hop 清理之后注入最终认证；
-5. `allows_automatic_retry`：声明 pre-header transport failure 是否可跨 channel 重试；
-6. `observe_response`：处理 `401` 等 provider 状态，不延迟客户端响应。
-
-普通 `OpenAiCompatible` attempt 保留原路径、原请求字节和 `UpstreamAuth`。Codex 细节集中在
-`src/application/codex/attempt.rs`；`src/application/proxy.rs` 不引用 Codex 类型、路径、
-Header 或错误分类。
-
-正式 HTTP 请求直接通过共享 reqwest client streaming 转发；WebSocket 使用共享的上游拨号、代理
-和有界连接池。worker 只维护凭证状态，不承载代理流量。
-
-出站身份、安装标识和合成工作区由插件独立设置定义，不再位于
-`system_settings.forwarding_policy.codex`。宿主只提供通用设置管理，不解释其字段或默认值。
-`PreparedCodexAttempt` 固定插件实例、编译后的设置、操作、请求上下文和凭证快照；
-HTTP、WebSocket、Search 与 Images 的一次 attempt 不会中途切换设置。
-OAuth、Models 和 quota 同样固定完整操作的代际。插件或设置变更会使旧 OAuth state 失效，
-但不能重放结果不确定的兑换/刷新，也不能清除 SQLite 后端已派发维护请求的 intent。
-设置迁移、热切换和加载上限见[插件生命周期](connector-plugins.md)。
+OAuth、模型发现、额度查询和刷新也固定代际。插件或设置变更会使旧 OAuth state 失效，但不会使结果未知的兑换、刷新变得可以重放。装载、设置迁移与代际发布见[插件生命周期](connector-plugins.md)。
 
 ## 持久化模型
 
@@ -78,7 +39,6 @@ OAuth、Models 和 quota 同样固定完整操作的代际。插件或设置变�
 
 导入账号只创建或更新凭证，绝不隐式创建接入、渠道、能力、授权或路由。
 权重、priority、selection strategy 和上游 wire model 属于客户端计价模型下的操作规则 candidate。
-旧投影通过迁移转存为逻辑渠道和独立操作能力，旧 Images 停用状态保持不变。
 管理员需要显式配置 Images 能力及其操作路由；凭证恢复不打开已关闭的能力。
 
 凭证的持久身份不是单独的 workspace account ID，而是
@@ -117,25 +77,11 @@ worker 每分钟加载数据库记录并先替换本地凭证快照，使其他�
 - 成功持久化后更新 Token、generation、identity 和错误状态，并发布独立凭证快照。
 
 PostgreSQL 与 SQLite 共享维护操作接口，而非完全相同的故障恢复实现；
-详见[持久化边界](persistence-boundaries.md)和[SQLite Codex 仓储](sqlite-codex.md)。
+详见[维护操作接口](persistence-interfaces.md#codex-外部副作用)和[SQLite Codex 仓储](sqlite-codex.md)。
 
-每次有效 quota 快照还会事务内维护
-`codex_quota_window_periods`。主窗口和次窗口各自最多有一个当前周期，周期起点由
-`reset_at - limit_window_seconds` 推导；每次观察更新末次使用率和观察时间，换窗时关闭旧周期并
-开启新周期。计划边界附近的换窗优先归类为自然重置；提前换窗再按推导出的实际周期起点匹配附近的
-手动 reset-credit 事件，因此即使 quota 观察延迟，仍可在恢复后补齐手动重置分类。quota
-请求发起时间同时作为快照版本，较晚返回的旧请求不能覆盖更新的凭证状态或窗口历史。历史不进入
-运行时凭证快照，也不直接改变普通数据面选路。Provider 在窗口始终为 `0%` 时可能按查询时间滑动
-`reset_at`；在首次观察到非零使用率之前，这些快照会更新同一个未锚定周期，而不会生成连续的
-`openai_official` 历史记录。历史读取还会过滤旧版本已经写入的零使用率
-`openai_official` 误报。
+有效额度观测与 `codex_quota_window_periods` 在同一事务更新。请求发起时间是观测版本，晚返回的旧快照不能覆盖新快照。主次窗口各自最多一个当前周期；在首次使用前，提供方可能不断推迟 `reset_at`，这些零使用率快照更新同一未锚定周期，不记为实际换窗。
 
-Console 读取当前或历史 quota 周期时，会按该周期的半开时间范围
-`[started_at, ended_at)` 聚合 `request_metering_facts.cost_amount`。当前周期的结束边界是
-`min(now(), scheduled_reset_at)`。聚合按不可变逐请求凭证归属覆盖全部逻辑渠道和操作，
-不按发起请求的 Gateway 用户或 API Key 过滤，因此展示的是该凭证在周期内承担的全部
-Gateway 计价 USD 花费，而不是查看者的个人花费。未计价请求不进入金额；尚无已计价请求的已知
-周期返回 `0`，尚未保存的窗口返回 `null`。主窗口与次窗口通常重叠，两个金额不可相加。
+窗口内 USD 费用按不可变的请求时凭证归属汇总，不随渠道改绑转移，主次窗口重叠时不能相加。[统计口径](statistics.md#凭证窗口费用)说明时间区间以及零费用和未知窗口的区别。
 
 worker、上游 `401` 恢复和多实例并发均传递 observed generation；如果其他执行者已经成功轮换，
 后续执行者直接结束，不能再次消费旧 refresh token。管理员显式手动刷新不带 observed generation，
@@ -202,99 +148,16 @@ WebSocket Session 从下游握手身份派生稳定 seed，使同一条下游连
 
 ## 请求与重试边界
 
-Codex HTTP attempt：
+| 操作 | 宿主执行与约束 |
+| --- | --- |
+| Responses HTTP | Codex 仅声明 SSE。无支持非流式请求的候选时，选路返回 `503 no_healthy_channel`，不派发。适配后才按能力配置压缩；成功流由宿主作 SSE 处理。 |
+| Responses WebSocket | 每条 `response.create` 独立准入，固定凭证、插件代际和上游连接。`previous_response_id` 需要命中干净的原连接；握手失败与消息已发送后的失败分开处理。 |
+| 独立搜索 | 独立操作、非流式 JSON，不使用 Responses 的 body 变换或压缩；没有可识别 usage 时不估算费用。 |
+| 图片生成与编辑 | 均不使用 affinity。edit 在宿主的有界回放存储上将图片流式编码，插件校验可表达的字段和图片数量；见[Images 实现](openai-images.md#codex-images)。 |
 
-- 要求 SSE streaming；
-- 强制 `stream=true`、`store=false`；
-- 在通用 JSON Transform 之后应用 Codex Responses HTTP body 白名单；
-- 把 flat `x-codex-installation-id` 与 turn metadata 中的 `installation_id` 替换为按逻辑凭证
-  稳定的 opaque UUID；`workspaces` 强制替换为插件设置中的单一合成 Git 工作区；
-- 缺失时创建 `client_metadata`，补齐 session/thread/turn/window、turn metadata 和
-  `prompt_cache_key`；已有非空身份值保留，不推测 request kind、sandbox、beta、subagent、
-  attestation、turn-state 或 residency，其他 metadata 和 W3C trace/baggage 保留；
-- 删除显式兼容的 `max_output_tokens` 和纯遥测字段；`previous_response_id` 只允许空值后删除；
-  其他已知但 provider 无法表达的非默认值以及未知字段返回客户端错误；
-- 若 Responses HTTP 操作能力的有效 `request_compression` 选择 `zstd`，通用代理层会在 Connector
-  完成 body 适配后使用 Zstandard level 3 编码，并生成
-  `Content-Encoding: zstd` 与 `Content-Type: application/json`；默认 `default` 不压缩；
-- 目标固定为所选渠道接入 Base URL 下的 `/responses`；
-- 注入 Bearer、存在 workspace account ID 时才注入 `ChatGPT-Account-ID`、可选 FedRAMP、
-  session/thread、User-Agent、
-  `originator` 和版本 Header。
-- `Accept-Encoding` 由通用 HTTP 代理层拥有；Codex Connector 不单独指定 coding，通用层向
-  上游声明 gzip、deflate、Brotli 与 Zstandard，并在 SSE 解析前流式解码。
-- 成功响应无论上游如何声明 `Content-Type`，都按 SSE 处理并向客户端规范化为
-  `text/event-stream`；非成功响应不强制改写。
+插件在管理员变换后执行请求准备和凭证级隐私归一化；宿主负责最终 Header、目标范围、传输和[原始上游用量](usage-normalization.md)。公共字段以[机器策略](../reference/request-allowlists.json)为准，供应商字段与默认值归插件维护。
 
-Codex WebSocket attempt：
-
-- 只接受 `response.create` 文本消息，并同样强制 `stream=true`、`store=false`；
-- 在通用 JSON Transform 之后应用独立的 Codex Responses WebSocket body 白名单，并删除
-  `max_output_tokens` 与显式纯遥测字段；
-- 保留客户端的 `previous_response_id`、`generate` 和 `client_metadata`；
-- 对 `client_metadata` 应用与 HTTP 相同的安装 ID/工作区归一化和缺失字段补全，不改写已有
-  Session/thread、turn-state 或其他 metadata；
-- 把所选渠道接入 Base URL 转成 `/responses` 的 `ws`/`wss` 目标；
-- 使用 Codex 同源的 WebSocket Beta、Bearer/可选 account、FedRAMP、session/thread、
-  User-Agent、`originator` 和版本 Header，不发送 HTTP SSE 专用的 `Accept`、
-  `Accept-Encoding` 或 `Content-Type`；
-- 成功终态后只复用无残留的同一上游连接，保留 connection-local
-  `previous_response_id` 状态。
-
-Codex standalone web search attempt：
-
-- 只接受 `ApiOperation::StandaloneWebSearch` 的非流式 JSON；
-- 在模型别名之后应用独立 Search body 白名单，允许 `id`、`model`、`reasoning`、`input`、
-  `commands`、`settings` 与 `max_output_tokens`，不添加 body override；
-- 不允许 Request JSON Transform，但继续应用 Header 和响应 Header Transform；
-- 目标固定为所选渠道接入 Base URL 下的 `/alpha/search`；
-- 保留合法的 `x-codex-turn-metadata`；turn metadata 缺失或无效时安全合成，安装 ID 与工作区
-  使用同一凭证级/插件设置投影；
-- 无条件把 `originator` 和 `User-Agent` 覆盖为快照中的全局 Codex Connector 身份，
-  并注入 Bearer、存在时的 account、可选 FedRAMP 和版本，只删除不属于 Search 的 image-turn
-  Header；session/thread/request/window/turn metadata 与 Responses 共用保留/缺失补全逻辑；
-- 成功响应按非流式 JSON 处理，`results` DTO 不解释、不重写；没有可识别 usage 时不估算 token
-  或费用。
-
-Codex Images generation attempt：
-
-- 只接受 `ApiOperation::ImagesGeneration` 的非流式 JSON；
-- 在模型别名和受限变换后应用 Codex Images generation body 白名单，只保留 wire type 字段；
-  `output_format=png`、`moderation=auto` 等契约列出的等价值被删除，无法表达的非默认值返回错误；
-- 目标固定为所选渠道接入 Base URL 下的 `/images/generations`；
-- 注入 Bearer/可选 account、FedRAMP、User-Agent、`originator` 和版本；保留有效的
-  `x-codex-image-turn-id`，缺失或不可用时补全；
-- 与 Responses 共用 session/thread/request/window/turn metadata 的保留/缺失补全逻辑；
-  installation/workspaces 仍执行隐私归一化，不增加 Responses body 字段或 Images affinity；
-- 把流式解码后的成功响应按普通 JSON 交给 Images usage collector，不按 SSE 解释。
-
-Codex Images edit attempt：
-
-- 只接受 `ApiOperation::ImagesEdit` 的非流式 multipart；
-- 复用 `ReplayableRequestBody` 顺序读取 image parts，并把最多五张图片增量 base64 编码为
-  JSON `images[].image_url` data URL；
-- 在客户端 multipart 白名单之后应用 Codex Images edit body 白名单，只保留
-  `prompt`、`background`、`model`、`n`、`quality` 与 `size`；
-- provider-specific 地拒绝 `mask`、第六张图片及无法等价删除的字段；客户端兼容字段和
-  `output_format=png` 等 provider 默认值按机器契约删除；
-- 目标固定为所选渠道接入 Base URL 下的 `/images/edits`；
-- 使用与 generation 相同的 Bearer/可选 account/FedRAMP、User-Agent、`originator`、版本，
-  以及会话身份和 `x-codex-image-turn-id` 的保留/缺失补全规则；
-- 成功响应继续按普通 JSON 与 Images usage collector 处理。
-
-preparation 失败可以在发送前换凭证。HTTP Codex attempt（包括 standalone web search）不启用普通 transport retry，因为
-reqwest 返回 pre-header error 时不能证明请求体未被上游接收。WebSocket 只允许在上游 Upgrade
-完成且尚未发送 `response.create` 前按全局重试策略换 channel；已经命中 affinity 或下游
-WebSocket pin 的 Codex Session fail closed，不换账户。消息发出后不重试。Responses 或 Images
-HTTP `401`、WebSocket 握手 `401` 或带 `status = 401` 的终态错误会按共享 credential ID 异步触发
-generation 去重 refresh；已经发送的图片请求不会重放。
-
-客户端入口和通用出站动作由
-[`request-allowlists.json`](../reference/request-allowlists.json) 定义；Codex 出口的
-Header/body 动作及隐私归一化由独立插件仓库维护。宿主不能复制一套 provider 字段表。
-维护分工见[`请求字段与 Header 白名单`](../reference/request-allowlists.md)。Codex Header policy 位于
-普通 Header Transform 与最终凭证/协议 Header 注入之间，因此自定义 Header 不能绕过 provider
-白名单，也不能覆盖最终认证。
+派发前未绑定的请求可以排除不可用候选。已绑定会话不改派到其他账号；HTTP 请求或 WS 消息一旦发出，不因 pre-header error、`401` 或连接丢失而重发。`401` 触发按凭证及 observed generation 去重的异步刷新，用于后续请求，不表示本次请求被上游忽略。
 
 ## 安全边界
 
@@ -307,21 +170,8 @@ Header/body 动作及隐私归一化由独立插件仓库维护。宿主不能�
 - Codex 客户端原始 installation ID、本地 workspace 路径、Git remote、commit 和 dirty 状态不
   发往订阅后端。安装 ID 按逻辑凭证稳定，workspace 使用插件配置的合成工作区；其他
   `client_metadata`、turn metadata 和 W3C trace/baggage 不在本功能中改写。
-- 当前 token 与普通 upstream API key 一样以数据库明文列保存；部署者必须保护 PostgreSQL、备份、
-  主机和 Console 管理权限。若未来增加列级加密，应使用明确的进程主密钥配置和轮换设计，不能在
-  Connector 内临时引入不可恢复的本地密钥。
+- Token 和普通上游 Key 持久化于数据库，保护数据库文件、备份、主机和 Console 管理权限；避免把秘密写入日志或放进测试报告。
 - OAuth 外部语义不是网关保证；见
   [Codex OAuth 与订阅后端接入参考](../reference/codex-oauth-connect.md)。
 
-## 新增下一种 Connector
-
-新增 provider 时：
-
-1. 在独立插件中声明有界 Connector ID、操作能力和协议版本；
-2. 通过 SDK 实现协议准备；若需要新的凭证生命周期，另行设计宿主状态与迁移；
-3. 使用原生加载器和 `UpstreamConnectorRegistry`，不修改标准 Connector 行为；
-4. 使用逻辑渠道与能力复用统一路由、代理、权限、日志和计费；
-5. 增加 provider migration、Console OpenAPI、生成类型和独立管理页；
-6. 明确 streaming、发送后重试、Session affinity、WebSocket 和 secret 存储边界；
-7. 添加协议 mock、数据库事务、端到端转发、quota/draining、并发 refresh 和脱敏测试；
-8. 在 `docs/reference/` 记录权威来源、核对日期和外部变化检查项。
+其他连接器的能力声明、命令与装载契约见[原生插件](connector-plugins.md)，宿主与插件的信任边界见[架构决策](../adr/connector-host-boundary.md)。

@@ -185,16 +185,9 @@ malformed foreign pointer, or native plugin misbehavior can bypass cleanup.
 These ABI ceilings do not replace the smaller settings, usage and response
 limits in the [command contract](docs/commands.md).
 
-Manifest fields
-`id`, `version`, `operations`, and `commands` are required; unknown fields fail
-closed. SDK 0.2 adds `protocol_version`: omission is legacy protocol 1, while
-settings-capable plugins and Codex require protocol 2 or 3.
-Protocol 3 adds explicit per-operation protocol/response descriptors and bounded
-JSON/SSE response commands plus optional upstream usage selection.
-Protocol 1/2 retain response pass-through; Codex also remains pass-through on
-protocol 3.
-Protocol 2/3 manifests are deliberately rejected by incompatible older hosts;
-the C ABI remains version 1 and the SDK package version remains `0.2.0`.
+All manifests require `id`, `version`, `protocol_version: 3`, `operations`, and
+`commands`; omitted or unknown fields fail closed. Each routable plugin supplies
+a descriptor for every declared operation. The native C ABI remains version 1.
 IDs match `[a-z][a-z0-9_-]{0,63}`; `general` is reserved. Version is
 nonempty printable ASCII (at most 128 bytes). Operations and commands must be
 nonempty unique strings using ASCII letters, digits, `_`, `-`, `.`, `/`;

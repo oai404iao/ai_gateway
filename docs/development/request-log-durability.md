@@ -22,19 +22,19 @@ PostgreSQL 使用 COPY 入口，Linux SQLite 使用事务批量 INSERT，共用�
 ```text
 派发前同步 intent + 预分配 terminal slot
   → 终态同步 slot → append-only spool
-  → durable ingress → fact + attribution + pending + ready
+  → durable ingress → fact（含凭证 ID）+ pending + ready
        ├─ unique receipt + balance/Key quota
        └─ request_logs projection → ingress ack
 ```
 
 完成选路的客户端逻辑请求在 Connector 准备/派发前同步
-`journal-v2/admissions/<request UUID>.json`，并为最大 1MiB 终态 payload 预分配 slot。
+`journal/admissions/<request UUID>.json`，并为最大 1MiB 终态 payload 预分配 slot。
 HTTP/SSE 重试共用一次预占；WS 每个 response.create（含 generate:false warmup）单独准入。
 正常结束与取消由同一个 CompletionGuard 完成。
 失败返回 HTTP/WS 503 request_log_unavailable，不派发、不伪造取消日志。
 
 路由前拒绝与 scheduled probe 不属于该准入范围，仍走原终态端口。
-取舍背景见[准入决策](request-log-admission-review.md)。
+准入的取舍见[财务耐久性决策](../adr/durable-metering.md)。
 
 DurableRequestLogSink 在完成时同步交接：
 
@@ -78,8 +78,7 @@ slot 是版本化二进制 journal，不是 JSON 或可直接导入的终态表�
 
 ### 目录与数据库必须配对
 
-每进程使用不同的 `request_logging.spool_directory`。根目录的 `spool.lock` 排他锁覆盖新旧布局；
-当前 writer、reader 和恢复扫描都使用其 `journal-v2/` 下的 `events.log`、`checkpoint` 和 `admissions/`。
+每进程使用独占的 `request_logging.spool_directory`。根目录只允许 `spool.lock` 和 `journal/`。writer、reader 和恢复扫描共享 `journal/` 中的 `events.log`、`checkpoint` 与 `admissions/`；根锁阻止两个进程并行写入。出现其他根目录项（包括 `journal-v2/` 或旧根级日志）就拒绝打开，不靠移动或清理证据完成初始化。
 Unix 目录/文件收紧为 0700/0600；重启沿用原目录与原业务数据库。
 切换环境必须同时切换 spool，避免把旧用户/Key UUID 写入新库。
 备份/恢复保存整套事件、checkpoint、admission 和数据库，不仅复制 events.log。
@@ -87,7 +86,7 @@ Unix 目录/文件收紧为 0700/0600；重启沿用原目录与原业务数据�
 ## 数据库接收、计量与投影
 
 PG request_log_ingest 通过 COPY FROM STDIN 批量保存二进制 payload，
-接收时不解析 JSON，允许重复 UUID；入口从低索引设计演进为计量/投影分阶段状态与重试索引。
+接收时不解析 JSON，允许重复 UUID；计量与投影各自保留处理状态及重试索引。
 SQLite 不模拟 COPY，使用有界绑定的整批事务 INSERT。
 两者只在接收成功提交后推进本地 checkpoint，部分成功不能确认整批。
 
@@ -100,7 +99,7 @@ SQLite 不模拟 COPY，使用有界绑定的整批事务 INSERT。
 数据库 guard 拒绝无 metered/事实/投影的提前删除。
 财务重放冲突和展示 duplicate_conflict 分别保留，不覆盖先前内容。
 
-failed/cancelled 在计量和投影前归零，旧积压不会恢复正费用或未知费用；
+failed/cancelled 在计量和投影前归零；
 成功仍需可信 usage/费用才能计价。
 结算与费用统计可早于日志可见，但持续投影失败仍消耗共享数据库空间与 I/O。
 
@@ -127,31 +126,9 @@ unknown、invalid、账户不匹配由 ai_gateway::metering_health 单独报告�
 
 ## journal 与升级边界
 
-本地恢复先按目录区分布局，数据库入口则按 payload 版本解码。`journal-v2/` 是本地目录名，
-不是 payload 版本。旧根目录中的终态和未知 intent 均不扫描、移动或删除，
-即使其中的 payload 可以解码也不会进入数据库。升级和回退步骤见[目录切换](../user/upgrades.md#请求日志目录切换)。
+本地恢复和数据库 ingress 的终态解码器只处理 `schema_version = 10`。来源与操作使用当前枚举，显式字段 `upstream_credential_id` 是 UUID 或 `null`。当前实例崩溃后，仍用配套原库、journal、checkpoint 和完整 slot 恢复；旧 payload 不解码，也没有把旧库 ingress、旧日志、slot 或未知 intent 转成新账本记录的入口。格式定义见 [journal codec](../../src/request_log_journal.rs) 和 [spool](../../src/request_log_spool.rs)。
 
-当前写 v9。已经提交到数据库入口的 v2–8 记录仍可解码；v1 因缺必需 error_summary 不支持。
-旧 operation 名称在解码时规范化，不改写历史财务记录。
-
-| 格式或字段 | 兼容行为 |
-| --- | --- |
-| v3 request_protocol | non_stream/sse/websocket；v2 由 streamed 推导，true 全按 SSE，不能恢复缺失的 WS 证据 |
-| reasoning_tokens | 旧 payload 缺字段按 0 |
-| reasoning_effort / fast_mode | 旧 payload 按 None / false |
-| v6 peak_pricing | 请求开始命中倍率 >1 的每周 UTC 窗口时 true；旧 v2–5 按 false，不读后来现价 |
-| v7 六操作 | 旧名归一化，Responses 根据协议识别 WS；财务重放兼容旧名 |
-| v8 credential attribution | 必须携带请求时凭证/明确无认证；旧 v2–7 为未知，查询只对未知用冻结注册表回退 |
-| v9 request_protocol | 新记录只存协议，不再额外写 `streamed` 布尔值 |
-
-peak 标记当时提高版本号，是为了让旧 worker 拒绝并保留新记录，而非忽略字段写 false。
-这个局部兼容机制**不**表示可以跨当前 schema 硬切换混跑。
-
-- 从写 v1 的版本升级，须先用旧版排空不支持的数据库入口记录。
-- 同一布局重启可按 checkpoint 和完整 slot 恢复；跨布局不能靠替换二进制接管本地积压。
-- 0063 删除物理 billed_at 并转移扣款权，全部旧 worker 停止后才能迁移，
-  不可只回退程序。它本身不改 journal。
-- v8 归属随事实同事务；渠道改绑不能改变在途/历史费用。
+从旧系统切换时，在旧版本结清可确定的积压，并保留待人工核对的证据。先停写成对备份，再给新基线分配**独立空数据库和全新 spool 根目录**。不要复制旧文件到新目录或伪造 checkpoint。切换与回退步骤见[升级与回滚](../user/upgrades.md)。
 
 ## 连接、批次与观测
 
@@ -206,7 +183,7 @@ free-space 检查不是绝对写入保证。
 - request_log_spool 单测：allocation、sync、CRC、截断、锁、slot 恢复、容量和 checkpoint。
 - PG/SQLite 财务契约：接收/ready/ack、冲突、投影阻塞、唯一回执、取消与重放。
 - [系统 E2E](system-e2e.md)：真实 Gateway 的 DB outage、局部 syscall 故障及 kill/restart。
-- [备份演练](persistence-rehearsal.md)、[SQLite 恢复](../user/sqlite.md)：库与本地证据成对恢复。
+- [SQLite 离线恢复](../user/sqlite.md)与[系统 E2E](system-e2e.md)：当前基线的库与本地证据成对恢复。
 
 这些证据不等于设备掉电认证或性能基准。
 配置来源为 src/runtime_config/mod.rs、两份模板；

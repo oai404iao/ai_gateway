@@ -100,7 +100,7 @@ function Workspace({ id, models, profiles, rules }: {
   return <div className="flex min-w-0 flex-col gap-5">
     {draft.navigationGuard}
     <PageHeader backTo={backTo} title={direct ? "Bulk configure routes" : "Onboard model"}
-      description={direct ? "Append candidates from multiple providers without changing existing pricing or routes." : undefined} />
+      description={direct ? "Add routing candidates without replacing existing candidates or prices." : undefined} />
     {unavailable ? <Alert><AlertTitle>{t(current ? "Enable this priced model before creating its routing profile." : "This client model is no longer available.")}</AlertTitle></Alert> : <>
       {!direct && <div ref={pricing} hidden={!!preview}><OnboardingPricing models={models} catalogRevision={revision} onReview={review} onEdit={draft.markDirty} /></div>}
       {preview && <>

@@ -660,8 +660,8 @@ struct TransformDocuments {
     chat_override: Value,
     responses_override: Value,
     responses_search_supported: bool,
-    responses_transports: Vec<ai_gateway::domain::CapabilityTransport>,
-    responses_request_compression: &'static str,
+    responses_http_enabled: bool,
+    responses_request_compression: ai_gateway::domain::RequestCompression,
     responses_plugin: Option<ai_gateway_connector_host::ConnectorPlugins>,
     images_override: Value,
     upstream_auth_kind: &'static str,
@@ -685,8 +685,8 @@ impl Default for TransformDocuments {
             chat_override: serde_json::json!({}),
             responses_override: serde_json::json!({}),
             responses_search_supported: true,
-            responses_transports: Vec::new(),
-            responses_request_compression: "default",
+            responses_http_enabled: true,
+            responses_request_compression: ai_gateway::domain::RequestCompression::Default,
             responses_plugin: None,
             images_override: serde_json::json!({}),
             upstream_auth_kind: "bearer",
@@ -792,80 +792,79 @@ fn configured_proxy_with_policy_and_transforms(
     let responses = Uuid::new_v4();
     let images = Uuid::new_v4();
     let images_alt = Uuid::new_v4();
-    let group = |id: Uuid, api_format: &str| ChannelGroupRecord {
+    let search = Uuid::new_v4();
+    let edit = Uuid::new_v4();
+    let edit_alt = Uuid::new_v4();
+    let chat_owner = Uuid::new_v4();
+    let responses_owner = Uuid::new_v4();
+    let images_owner = Uuid::new_v4();
+    let images_alt_owner = Uuid::new_v4();
+    let group = |id: Uuid| ChannelGroupRecord {
         id,
         name: id.to_string(),
-        api_format: api_format.to_owned(),
-        connector_kind: if api_format == "open_ai_responses"
-            && transforms.responses_plugin.is_some()
-        {
-            "fixture".into()
-        } else {
-            "general".into()
-        },
-        request_compression: if api_format == "open_ai_responses" {
-            transforms.responses_request_compression.into()
-        } else {
-            "default".into()
-        },
         enabled: true,
     };
     let template_id = transforms.template.as_ref().map(|_| Uuid::new_v4());
-    let channel = |id: Uuid, group_id: Uuid, api_format: &str| ChannelRecord {
-        credential: None,
-        credential_binding_revision: Uuid::nil(),
-        id,
-        channel_group_id: group_id,
-        api_format: api_format.into(),
-        logical_channel_id: Uuid::nil(),
-        access_id: Uuid::nil(),
-        api_operation: None,
-        connector_kind: String::new(),
-        request_compression: String::new(),
-        access_revision: Uuid::nil(),
-        capability_revision: Uuid::nil(),
-        transports: if api_format == "open_ai_responses" {
-            transforms.responses_transports.clone()
-        } else {
-            Vec::new()
-        },
-        name: id.to_string(),
-        base_url: upstream_url.into(),
-        enabled: true,
-        supports_websocket: false,
-        supports_standalone_web_search: api_format == "open_ai_responses"
-            && transforms.responses_search_supported,
-        auto_disabled: false,
-        auto_disable_allowed: false,
-        billing_multiplier: rust_decimal::Decimal::ONE,
-        proxy_id: None,
-        config_template_id: (api_format == "open_ai_chat_completions")
-            .then_some(template_id)
-            .flatten(),
-        override_document: match api_format {
-            "open_ai_chat_completions" => transforms.chat_override.clone(),
-            "open_ai_responses" => transforms.responses_override.clone(),
-            "open_ai_images" => transforms.images_override.clone(),
-            _ => serde_json::json!({}),
-        },
-        connect_timeout_ms: None,
-        response_header_timeout_ms: None,
-        stream_idle_timeout_ms: None,
-        upstream_auth_kind: transforms.upstream_auth_kind.into(),
-        upstream_auth_header_name: transforms.upstream_auth_header_name.map(str::to_owned),
-        upstream_api_key: transforms.upstream_api_key.map(str::to_owned),
-        available_models: match api_format {
-            "open_ai_chat_completions" => vec![
-                "same-model".into(),
-                "upstream-alias-model".into(),
-                "chat-only-model".into(),
-            ],
-            "open_ai_responses" => vec!["responses-model".into()],
-            "open_ai_images" => vec!["gpt-image-2".into()],
-            _ => vec![],
-        },
-        test_model: None,
-        test_pricing_model_id: None,
+    let channel = |id: Uuid, logical_channel_id: Uuid, group_id: Uuid, operation: ApiOperation| {
+        ChannelRecord {
+            credential: None,
+            credential_binding_revision: logical_channel_id,
+            id,
+            channel_group_id: group_id,
+            logical_channel_id,
+            access_id: logical_channel_id,
+            api_operation: operation,
+            connector_kind: if operation == ApiOperation::Responses
+                && transforms.responses_plugin.is_some()
+            {
+                ai_gateway::domain::ConnectorKind::parse("fixture").unwrap()
+            } else {
+                ai_gateway::domain::ConnectorKind::OpenAiCompatible
+            },
+            request_compression: if operation == ApiOperation::Responses {
+                transforms.responses_request_compression
+            } else {
+                ai_gateway::domain::RequestCompression::Default
+            },
+            access_revision: logical_channel_id,
+            capability_revision: id,
+            name: id.to_string(),
+            base_url: upstream_url.into(),
+            enabled: match operation {
+                ApiOperation::StandaloneWebSearch => transforms.responses_search_supported,
+                ApiOperation::Responses => transforms.responses_http_enabled,
+                _ => true,
+            },
+            auto_disabled: false,
+            auto_disable_allowed: false,
+            billing_multiplier: rust_decimal::Decimal::ONE,
+            proxy_id: None,
+            config_template_id: (operation == ApiOperation::ChatCompletions)
+                .then_some(template_id)
+                .flatten(),
+            override_document: match operation.api_format() {
+                ApiFormat::OpenAiChatCompletions => transforms.chat_override.clone(),
+                ApiFormat::OpenAiResponses => transforms.responses_override.clone(),
+                ApiFormat::OpenAiImages => transforms.images_override.clone(),
+            },
+            connect_timeout_ms: None,
+            response_header_timeout_ms: None,
+            stream_idle_timeout_ms: None,
+            upstream_auth_kind: transforms.upstream_auth_kind.into(),
+            upstream_auth_header_name: transforms.upstream_auth_header_name.map(str::to_owned),
+            upstream_api_key: transforms.upstream_api_key.map(str::to_owned),
+            available_models: match operation.api_format() {
+                ApiFormat::OpenAiChatCompletions => vec![
+                    "same-model".into(),
+                    "upstream-alias-model".into(),
+                    "chat-only-model".into(),
+                ],
+                ApiFormat::OpenAiResponses => vec!["responses-model".into()],
+                ApiFormat::OpenAiImages => vec!["gpt-image-2".into()],
+            },
+            test_model: None,
+            test_pricing_model_id: None,
+        }
     };
     let key = |secret: &str, groups: Vec<Uuid>, permissions: Vec<&str>| ApiKeyRecord {
         id: Uuid::new_v4(),
@@ -962,16 +961,44 @@ fn configured_proxy_with_policy_and_transforms(
             ),
         ],
         groups: vec![
-            group(chat_group, "open_ai_chat_completions"),
-            group(responses_group, "open_ai_responses"),
-            group(images_group, "open_ai_images"),
-            group(empty_chat_group, "open_ai_chat_completions"),
+            group(chat_group),
+            group(responses_group),
+            group(images_group),
+            group(empty_chat_group),
         ],
         channels: vec![
-            channel(chat, chat_group, "open_ai_chat_completions"),
-            channel(responses, responses_group, "open_ai_responses"),
-            channel(images, images_group, "open_ai_images"),
-            channel(images_alt, images_group, "open_ai_images"),
+            channel(chat, chat_owner, chat_group, ApiOperation::ChatCompletions),
+            channel(
+                responses,
+                responses_owner,
+                responses_group,
+                ApiOperation::Responses,
+            ),
+            channel(
+                search,
+                responses_owner,
+                responses_group,
+                ApiOperation::StandaloneWebSearch,
+            ),
+            channel(
+                images,
+                images_owner,
+                images_group,
+                ApiOperation::ImagesGeneration,
+            ),
+            channel(
+                images_alt,
+                images_alt_owner,
+                images_group,
+                ApiOperation::ImagesGeneration,
+            ),
+            channel(edit, images_owner, images_group, ApiOperation::ImagesEdit),
+            channel(
+                edit_alt,
+                images_alt_owner,
+                images_group,
+                ApiOperation::ImagesEdit,
+            ),
         ],
         models: vec![],
         model_rules: vec![
@@ -1003,13 +1030,13 @@ fn configured_proxy_with_policy_and_transforms(
                 "responses-model",
                 "responses-model",
                 ApiOperation::StandaloneWebSearch,
-                responses,
+                search,
             ),
             rule(
                 "search-alias",
                 "responses-model",
                 ApiOperation::StandaloneWebSearch,
-                responses,
+                search,
             ),
             {
                 let mut rule = rule(
@@ -1028,16 +1055,11 @@ fn configured_proxy_with_policy_and_transforms(
                 rule
             },
             {
-                let mut rule = rule(
-                    "gpt-image-2",
-                    "gpt-image-2",
-                    ApiOperation::ImagesEdit,
-                    images,
-                );
+                let mut rule = rule("gpt-image-2", "gpt-image-2", ApiOperation::ImagesEdit, edit);
                 rule.routing_tiers[0]
                     .candidates
                     .push(ModelRuleRouteCandidate {
-                        channel_id: images_alt,
+                        channel_id: edit_alt,
                         upstream_model: "gpt-image-2".into(),
                         weight: 1,
                     });
@@ -1060,16 +1082,11 @@ fn configured_proxy_with_policy_and_transforms(
                 rule
             },
             {
-                let mut rule = rule(
-                    "image-alias",
-                    "gpt-image-2",
-                    ApiOperation::ImagesEdit,
-                    images,
-                );
+                let mut rule = rule("image-alias", "gpt-image-2", ApiOperation::ImagesEdit, edit);
                 rule.routing_tiers[0]
                     .candidates
                     .push(ModelRuleRouteCandidate {
-                        channel_id: images_alt,
+                        channel_id: edit_alt,
                         upstream_model: "gpt-image-2".into(),
                         weight: 1,
                     });
@@ -1090,6 +1107,20 @@ fn configured_proxy_with_policy_and_transforms(
             })
             .unwrap_or_default(),
     };
+    if !transforms.responses_http_enabled {
+        let mut ws = records.channels[1].clone();
+        ws.id = Uuid::new_v4();
+        ws.capability_revision = Uuid::new_v4();
+        ws.api_operation = ApiOperation::ResponsesWebSocket;
+        ws.enabled = true;
+        records.model_rules.push(rule(
+            "responses-model",
+            "responses-model",
+            ApiOperation::ResponsesWebSocket,
+            ws.id,
+        ));
+        records.channels.push(ws);
+    }
     let OutboundTestPolicy {
         proxy,
         connect_timeout_ms,
@@ -1117,28 +1148,28 @@ fn configured_proxy_with_policy_and_transforms(
     client_key.quota_limit_amount = quota_limit_amount;
     client_key.quota_used_amount = quota_used_amount;
     let client_key_id = client_key.id;
-    let plugins = transforms.responses_plugin.unwrap_or_default();
-    let runtime = Arc::new(RuntimeConfig::new(
-        compile_control_plane_with_system_settings(
-            records,
-            SystemRuntimeSettings::new(
-                UpstreamTimeoutDefaults::new(
-                    Duration::from_secs(upstream_config.connect_timeout_seconds),
-                    Duration::from_secs(upstream_config.response_header_timeout_seconds),
-                    Duration::from_secs(upstream_config.stream_idle_timeout_seconds),
-                )
-                .with_images_response_header(Duration::from_secs(
-                    upstream_config.images_response_header_timeout_seconds,
-                ))
-                .with_standalone_web_search_response_header(Duration::from_secs(
-                    upstream_config.standalone_web_search_response_header_timeout_seconds,
-                )),
-                PassiveHealthSettings::default(),
-            ),
-        )
-        .unwrap()
-        .with_plugins(plugins),
-    ));
+    let snapshot = ai_gateway::runtime_config::compile_runtime_config_with_plugins(
+        ai_gateway::persistence::RuntimeConfigRecords {
+            control_plane: records,
+            plugin_records: Default::default(),
+            system_settings: ai_gateway::persistence::SystemSettingsRecord {
+                setting_key: ai_gateway::persistence::FORWARDING_SETTINGS_KEY.into(),
+                value: serde_json::json!({
+                    "upstream": {
+                        "connect_timeout_seconds": upstream_config.connect_timeout_seconds,
+                        "response_header_timeout_seconds": upstream_config.response_header_timeout_seconds,
+                        "stream_idle_timeout_seconds": upstream_config.stream_idle_timeout_seconds,
+                        "images_response_header_timeout_seconds": upstream_config.images_response_header_timeout_seconds,
+                        "standalone_web_search_response_header_timeout_seconds": upstream_config.standalone_web_search_response_header_timeout_seconds,
+                    },
+                    "passive_health": {"connection_failure_threshold": 3, "cooldown_seconds": 30},
+                    "session_affinity": ai_gateway::persistence::SystemSessionAffinitySettingsInput::default(),
+                }),
+                updated_at: chrono::Utc::now(),
+            }
+        }, &transforms.responses_plugin.unwrap_or_default(),
+    ).unwrap();
+    let runtime = Arc::new(RuntimeConfig::new(snapshot));
     let proxy =
         ProxyService::with_log_sink(Arc::clone(&runtime), 1_048_576, Arc::new(logs)).unwrap();
     ConfiguredProxy {
@@ -1351,23 +1382,19 @@ fn session_affinity_proxy(first_upstream_url: &str, second_upstream_url: &str) -
     let model_rule_id = Uuid::new_v4();
     let channel = |id: Uuid, name: &str, base_url: &str| ChannelRecord {
         credential: None,
-        credential_binding_revision: Uuid::nil(),
+        credential_binding_revision: id,
         id,
         channel_group_id: group_id,
-        api_format: "open_ai_chat_completions".into(),
-        logical_channel_id: Uuid::nil(),
-        access_id: Uuid::nil(),
-        api_operation: None,
-        connector_kind: String::new(),
-        request_compression: String::new(),
-        access_revision: Uuid::nil(),
-        capability_revision: Uuid::nil(),
-        transports: Vec::new(),
+        logical_channel_id: id,
+        access_id: id,
+        api_operation: ApiOperation::ChatCompletions,
+        connector_kind: ai_gateway::domain::ConnectorKind::OpenAiCompatible,
+        request_compression: ai_gateway::domain::RequestCompression::Default,
+        access_revision: id,
+        capability_revision: id,
         name: name.into(),
         base_url: base_url.into(),
         enabled: true,
-        supports_websocket: false,
-        supports_standalone_web_search: false,
         auto_disabled: false,
         auto_disable_allowed: false,
         billing_multiplier: rust_decimal::Decimal::ONE,
@@ -1405,9 +1432,6 @@ fn session_affinity_proxy(first_upstream_url: &str, second_upstream_url: &str) -
         groups: vec![ChannelGroupRecord {
             id: group_id,
             name: "affinity".into(),
-            api_format: "open_ai_chat_completions".into(),
-            connector_kind: "general".into(),
-            request_compression: "default".into(),
             enabled: true,
         }],
         channels: vec![
@@ -1865,18 +1889,43 @@ async fn user_group_fast_filter_removes_service_tier_from_forwarding_logs_and_bi
 }
 
 #[tokio::test]
-async fn unsupported_response_transports_never_dispatch_upstream() {
-    use ai_gateway::domain::CapabilityTransport as T;
-    for (transport, stream) in [
-        (T::Websocket, false),
-        (T::Websocket, true),
-        (T::HttpJson, true),
-        (T::HttpSse, false),
-    ] {
+async fn websocket_only_channels_never_dispatch_http_upstream() {
+    for stream in [false, true] {
         let harness = harness_with_transforms(TransformDocuments {
-            responses_transports: vec![transport],
+            responses_http_enabled: false,
             ..Default::default()
         })
+        .await;
+        let response = authorized_post(
+            &client(),
+            harness.url("/v1/responses"),
+            CLIENT_KEY,
+            serde_json::to_vec(&serde_json::json!({
+                "model": "responses-model", "input": "hello", "stream": stream
+            }))
+            .unwrap(),
+        )
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(body["error"]["code"], "no_healthy_channel");
+        assert!(harness.upstream_requests().is_empty());
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn unsupported_plugin_response_transports_never_dispatch_upstream() {
+    for (descriptor, stream) in [(0, true), (6, false)] {
+        let harness = response_adapter_harness(
+            0,
+            descriptor,
+            StatusCode::OK,
+            "application/json",
+            response_adapter_upstream_body(),
+        )
         .await;
         let response = authorized_post(
             &client(),
@@ -1933,9 +1982,9 @@ async fn responses_accepts_zstd_request_bodies_and_forwards_identity_by_default(
 }
 
 #[tokio::test]
-async fn responses_channel_group_can_compress_upstream_json_with_zstd() {
+async fn responses_capability_can_compress_upstream_json_with_zstd() {
     let harness = harness_with_transforms(TransformDocuments {
-        responses_request_compression: "zstd",
+        responses_request_compression: ai_gateway::domain::RequestCompression::Zstd,
         ..Default::default()
     })
     .await;
@@ -3328,6 +3377,7 @@ async fn responses_nonstream_usage_is_collected_without_buffering_the_response()
 fn response_fixture_plugin(
     target: &str,
     result_mode: u8,
+    descriptor_mode: u8,
 ) -> ai_gateway_connector_host::ConnectorPlugins {
     use ai_gateway_connector_host::{ConnectorPlugins, PluginConfig};
     use sha2::{Digest, Sha256};
@@ -3338,7 +3388,8 @@ fn response_fixture_plugin(
     let path = directory.path().join("response-fixture.so");
     let output = Command::new("cc")
         .args(["-shared", "-fPIC", "-Wall", "-Wextra", "-Werror"])
-        .arg("-DFIXTURE_PROTOCOL3")
+        .arg("-DFIXTURE_RESPONSE_ADAPTER")
+        .arg(format!("-DFIXTURE_DESCRIPTOR_MODE={descriptor_mode}"))
         .arg(format!("-DFIXTURE_TARGET_URL=\"{target}\""))
         .arg(format!("-DFIXTURE_RESPONSE_RESULT_MODE={result_mode}"))
         .arg(root.join("crates/connector-sdk/tests/fixture.c"))
@@ -3373,6 +3424,7 @@ fn response_fixture_plugin(
 #[cfg(target_os = "linux")]
 async fn response_adapter_harness(
     result_mode: u8,
+    descriptor_mode: u8,
     status: StatusCode,
     content_type: &'static str,
     body: Vec<u8>,
@@ -3409,7 +3461,7 @@ async fn response_adapter_harness(
     ))
     .await;
     let target = format!("http://{}/v1/responses", upstream.address);
-    let plugins = response_fixture_plugin(&target, result_mode);
+    let plugins = response_fixture_plugin(&target, result_mode, descriptor_mode);
     let logs = RecordingRequestLogSink::default();
     let configured = configured_proxy_with_policy_and_transforms(
         &format!("http://{}", upstream.address),
@@ -3474,6 +3526,7 @@ async fn post_adapter_response(harness: &Harness) -> reqwest::Response {
 async fn plugin_json_response_adaptation_strips_entity_headers_and_preserves_usage() {
     let harness = response_adapter_harness(
         3,
+        0,
         StatusCode::OK,
         "application/json; charset=utf-8",
         response_adapter_upstream_body(),
@@ -3520,6 +3573,7 @@ async fn plugin_json_response_failures_never_fall_back_or_retry() {
     for result_mode in [1, 2] {
         let harness = response_adapter_harness(
             result_mode,
+            0,
             StatusCode::OK,
             "application/json",
             response_adapter_upstream_body(),
@@ -3560,6 +3614,7 @@ async fn plugin_json_response_rejects_upstream_framing_and_content_type_mismatch
     ] {
         let harness = response_adapter_harness(
             0,
+            0,
             StatusCode::OK,
             content_type,
             response_adapter_upstream_body(),
@@ -3580,6 +3635,7 @@ async fn plugin_json_response_http_errors_bypass_adaptation() {
         br#"{"error":{"code":"rate_limited","message":"upstream failure"}}"#.to_vec();
     let harness = response_adapter_harness(
         1,
+        0,
         StatusCode::TOO_MANY_REQUESTS,
         "application/json",
         upstream_body.clone(),
@@ -3602,7 +3658,7 @@ async fn plugin_json_response_rejects_oversized_upstream_without_raw_fallback() 
     }))
     .unwrap();
     let harness =
-        response_adapter_harness(0, StatusCode::OK, "application/json", upstream_body).await;
+        response_adapter_harness(0, 0, StatusCode::OK, "application/json", upstream_body).await;
     let response = post_adapter_response(&harness).await;
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     let body: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();

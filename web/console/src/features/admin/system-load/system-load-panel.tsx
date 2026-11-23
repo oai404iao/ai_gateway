@@ -222,7 +222,7 @@ export function SystemLoadPanel() {
         <CardHeader>
           <CardTitle>{t("Current instance")}</CardTitle>
           <CardDescription>
-            {t("Auto-refreshes every 5 seconds. Metrics describe this gateway process, not a cluster aggregate.")}
+            {t("Metrics for this instance refresh every 5 seconds.")}
           </CardDescription>
           <CardAction>
             <Button

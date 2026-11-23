@@ -1,4 +1,4 @@
-//! Priced-model bindings, independent of legacy protocol-rule configuration.
+//! Priced-model routing profiles.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

@@ -25,8 +25,7 @@ OAuth flow 所有权与一次性消费、Token 更新、quota 观测/重置/历�
 当前身份不属于 pool，渠道通过显式 credential_id 绑定。
 维护代理与账号模型目录属于 OAuth 扩展；重新导入、启停和改名不重写渠道接入、
 能力目录或开关。删除前须解除全部未删除渠道引用。
-账号去重与旧 email 大小写匹配保持现有规则；
-导出完整性和可选代理秘密导出保持 PG 行为，审计不保存 Token 或代理密码。
+账号按相同身份规则去重；导出可包含代理秘密，审计不保存 Token 或代理密码。
 
 OAuth flow 仅所属管理员可读，在导入事务内消费；回滚不能提前消费。
 quota 观测沿用 90 秒窗口身份容差、15 分钟手动 reset 匹配及零使用窗口漂移规则，
@@ -34,9 +33,7 @@ quota 观测沿用 90 秒窗口身份容差、15 分钟手动 reset 匹配及零
 本人查询绑定活动用户及用户组授权的渠道组可见性，并按账号去重，
 不能由客户端参数扩大权限。
 
-费用读取不可变 request_metering_facts JOIN request_credential_identities，
-按请求发生时凭证归属，不按当前渠道绑定或旧“两个投影”推断。
-只有旧未知归属回退冻结注册表，明确无认证不回退。
+凭证费用过滤 `request_metering_facts.upstream_credential_id`；不按当前渠道绑定推断。NULL 是无认证，不归入任一凭证窗口。
 窗口按 started_at 闭开边界、cost 非 NULL，使用精确 CostSum，
 不读日志/回执、不转浮点、不按金额 TEXT 排序或 SUM。
 凭证视图、历史与费用在同一读快照中读取。
@@ -56,13 +53,11 @@ quota 观测沿用 90 秒窗口身份容差、15 分钟手动 reset 匹配及零
 5. 取消、超时、未知结果、提交或审计错误保留未决证据。
    refresh 错误状态与未解决 intent 原子保存；unchanged() 仅适用于 dispatch 前。
 
-0003_codex_operations.sql 引入私有 intent 表与更新 fence，
-后续拓扑迁移重新安装相应保护，不能修改旧 migration。
+SQLite 基线定义私有 intent 表与更新保护。
 intent 不含 Token、请求正文或 provider 响应，不自动过期，也不随重启清零。
 它不属于 PG/SQLite 业务 schema inventory 的同形对象。
 
-PG 分支保留跨 HTTP 的行锁事务，prepare_dispatch 是 no-op；
-这里没有顺便改变 PG 维护语义，也没有跨提供方/数据库原子提交。
+PG 分支持有跨 HTTP 的行锁事务，prepare_dispatch 是 no-op。两个后端都不保证提供方操作和数据库提交原子发生。
 
 ## 未知结果的恢复边界
 
@@ -74,7 +69,6 @@ PG 分支保留跨 HTTP 的行锁事务，prepare_dispatch 是 no-op；
 未知 reset 不能伪造“已兑换”或“已退款”，当前没有人工确认 API，
 也不能自动重试可能已经消费 credit 的 HTTP。
 备份/恢复必须保留 intent，刷新页面或重开库不是财务重置。
-拓扑迁移可能暂时撤 fence 回填元数据，但不得丢 intent，提交前必须恢复保护。
 
 ## 所有权与关闭
 
@@ -83,8 +77,7 @@ PG 分支保留跨 HTTP 的行锁事务，prepare_dispatch 是 no-op；
 关闭开始后新访问失败，未决 intent 仍在。
 跨进程 lease 继续保留到进程退出，详见[生命周期](sqlite-lifecycle.md)。
 
-serve、管理员 CLI 与离线成对备份已接入部署，
-不再是待开放的 S5 开发接口。恢复步骤见[SQLite 用户指南](../user/sqlite.md)。
+服务和维护命令共用同一文件所有权。恢复步骤见[SQLite 用户指南](../user/sqlite.md)。
 
 ## 验证
 
@@ -106,11 +99,6 @@ tests/contracts/sqlite_codex_application.rs 作为 Codex 模块单元契约编�
 故障注入 SQL 只在测试，不进入应用边界。
 这些测试与[系统 E2E](system-e2e.md)及成对恢复互补，
 不能证明设备断电或真实提供方每种不确定结果。
-
-历史验收中，2026-09-19 上游曾返回 missing/draining 等 503；
-2026-09-20 重新获授权后八项 smoke 通过。验收范围是当时环境与配置，不是
-当前上游可用性保证。Codex 非流式 Responses 测试验证预期 streaming_required 拒绝，
-并非支持非流式生成。后续付费回归须重新遵守[上游测试规范](real-upstream-smoke.md)。
 
 ## 相关文档
 

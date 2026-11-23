@@ -1,6 +1,7 @@
 """Isolated crash/replay and process-local durable admission fault acceptance."""
 
 import signal
+import shutil
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -10,7 +11,7 @@ from run import ROOT, check, request, set_upstream, verify_settlement, wait_unti
 from mock.upstream import Upstream
 
 
-JOURNAL = Path("spool/journal-v2")
+JOURNAL = Path("spool/journal")
 
 
 def stop_gateway(resources):
@@ -45,6 +46,26 @@ def build_injector(resources):
         str(ROOT / "e2e/spool-fault.c"), "-o", str(library),
     ], "build-fault-injector")
     return library
+
+
+def restore_postgres_pair(resources):
+    source = resources.database_name
+    restored = source + "_restored"
+    def docker(*args):
+        return resources.docker("exec", resources.container, *args)
+    archive = "/var/lib/postgresql/paired.dump"
+    docker("pg_dump", "-U", "postgres", "-Fc", "-f", archive, source)
+    spool = resources.directory / "spool"
+    snapshot = resources.directory / "stopped-spool"
+    spool.rename(snapshot)
+    shutil.copytree(snapshot, spool)
+    docker("createdb", "-U", "postgres", "-T", "template0", restored)
+    docker("pg_restore", "-U", "postgres", "--exit-on-error", "-d", restored, archive)
+    config = resources.directory / "gateway.toml"
+    text = config.read_text()
+    check(text.count(f'/{source}"') == 1, "test database URL not found")
+    config.write_text(text.replace(f'/{source}"', f'/{restored}"'))
+    resources.database_name = restored
 
 
 def exercise_faults(resources, binary, data, protocols, warmup_id):
@@ -90,12 +111,16 @@ def exercise_faults(resources, binary, data, protocols, warmup_id):
             checkpoint.unlink(missing_ok=True)
         else:
             checkpoint.write_bytes(old_checkpoint)
+        if resources.backend == "postgres":
+            restore_postgres_pair(resources)
         start_gateway(resources, binary, data, "gateway-duplicate-replay")
         wait_until(lambda: api("/system/load")["request_log"]["spool_pending_bytes"] == 0)
         wait_until(resources.ingress_empty)
         verify_settlement(data, protocols, warmup_id)
         check(upstream.post_count == 1, "recovery redispatched a model request")
         results.append({"id": "duplicate-replay-no-double-charge", "status": "passed"})
+        if resources.backend == "postgres":
+            results.append({"id": "postgres-offline-paired-restore", "status": "passed"})
 
     library = build_injector(resources)
     control = resources.directory / "spool-fault-mode"

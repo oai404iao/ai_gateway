@@ -30,16 +30,13 @@ const TEMPLATE: Uuid = Uuid::from_u128(0x441);
 const PROXY: Uuid = Uuid::from_u128(0x451);
 const PASSWORD_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA";
 
-#[path = "../../src/persistence/sqlite/schema.rs"]
-mod sqlite_migrations;
-
 async fn repository() -> (
     tempfile::TempDir,
     Arc<SqliteDatabase>,
     SqliteControlPlaneRepository,
 ) {
     let (directory, database) = database().await;
-    assert_eq!(database.install_schema().await.unwrap(), 15);
+    assert_eq!(database.install_schema().await.unwrap(), 1);
     let database = Arc::new(database);
     let repository = SqliteControlPlaneRepository::new(Arc::clone(&database));
     (directory, database, repository)
@@ -142,90 +139,6 @@ async fn seed_routing(database: &SqliteDatabase) {
     .await;
 }
 
-#[tokio::test]
-async fn removing_obsolete_columns_preserves_keys_grants_logs_audit_and_metering_after_reopen() {
-    let (directory, database) = database().await;
-    assert_eq!(
-        database
-            .migrate(&sqlite_migrations::MIGRATIONS[..12])
-            .await
-            .unwrap(),
-        12
-    );
-    seed_admin_and_user(&database).await;
-    seed_routing(&database).await;
-    let request = Uuid::from_u128(0x461);
-    execute(&database, &format!(
-        "INSERT INTO api_keys(id,user_id,name,secret_value,status,allowed_api_formats,permissions,
-            allowed_group_ids,quota_limit_amount,quota_used_amount,requests_per_minute,last_used_at)
-         VALUES ('{KEY}','{USER}','Upgrade','test-secret','active','[\"open_ai_responses\"]','[\"proxy\"]',
-            '[\"{GROUP}\"]','123','0.25',23,ag_now());
-         INSERT INTO api_key_channel_grants(api_key_id,channel_id,origin_kind,origin_id)
-         VALUES ('{KEY}','{CHANNEL}','group','{GROUP}');
-         INSERT INTO request_metering_facts(id,started_at,completed_at,user_id,api_key_id,request_source,
-            api_format,api_operation,request_protocol,client_model,outcome,cost_amount,peak_pricing)
-         VALUES ('{request}',ag_now(),ag_now(),'{USER}','{KEY}','client','open_ai_responses','responses',
-            'websocket','test','failed','0',false);
-         INSERT INTO request_settlements(request_id,cost_amount,currency) VALUES ('{request}','0',NULL);
-         INSERT INTO request_logs(id,started_at,completed_at,user_id,api_key_id,api_format,api_operation,
-            request_protocol,client_model,outcome,cost_amount,error_summary,attempts,streamed)
-         SELECT id,started_at,completed_at,user_id,api_key_id,api_format,api_operation,request_protocol,
-            client_model,outcome,cost_amount,'test failure','[{{\"number\":1}}]',0 FROM request_metering_facts;
-         INSERT INTO audit_logs(id,actor_user_id,actor_type,action,object_type,object_id,source_ip_prefix)
-         VALUES ('{request}','{ADMIN}','user','create','api_key','{KEY}','192.0.2.0/24');"
-    )).await;
-    const STATE: &str = "SELECT json_array(k.id,k.user_id,k.name,k.secret_value,k.status,k.permissions,
-        k.allowed_group_ids,k.quota_limit_amount,k.quota_used_amount,k.requests_per_minute,k.updated_at,
-        g.channel_id,g.origin_kind,g.origin_id,g.created_at,f.id,f.api_key_id,f.amount_state,s.cost_amount,
-        l.id,l.started_at,l.api_format,l.api_operation,l.request_protocol,l.cost_amount,l.error_summary,
-        a.occurred_at,a.actor_user_id,a.action,a.object_id)
-        FROM api_keys k JOIN api_key_channel_grants g ON g.api_key_id=k.id
-        JOIN request_metering_facts f ON f.api_key_id=k.id JOIN request_settlements s ON s.request_id=f.id
-        JOIN request_logs l ON l.id=f.id JOIN audit_logs a ON a.object_id=k.id";
-    const LOG_GUARDS: &str = "SELECT json_group_array(sql ORDER BY name) FROM sqlite_schema
-        WHERE (tbl_name='request_logs' AND type IN ('index','trigger')) OR name='request_log_ingest_ack_guard'";
-    let before: String = scalar(&database, STATE).await;
-    let guards: String = scalar(&database, LOG_GUARDS).await;
-    assert_eq!(database.install_schema().await.unwrap(), 3);
-    database.close().await;
-
-    let reopened = SqliteDatabase::open(&directory.path().join("gateway.sqlite"))
-        .await
-        .unwrap();
-    assert_eq!(reopened.install_schema().await.unwrap(), 0);
-    assert_eq!(scalar::<String>(&reopened, STATE).await, before);
-    assert_eq!(scalar::<String>(&reopened, LOG_GUARDS).await, guards);
-    assert_eq!(
-        scalar::<i64>(
-            &reopened,
-            "SELECT (SELECT count(*) FROM pragma_table_xinfo('api_keys') WHERE name IN ('allowed_api_formats','last_used_at'))
-                + (SELECT count(*) FROM pragma_table_xinfo('request_logs') WHERE name IN ('streamed','attempts'))
-                + (SELECT count(*) FROM pragma_table_xinfo('audit_logs') WHERE name='source_ip_prefix')"
-        )
-        .await,
-        0
-    );
-    assert_eq!(
-        scalar::<i64>(&reopened, "SELECT count(*) FROM pragma_foreign_key_check").await,
-        0
-    );
-    assert!(
-        execute_expect_error(&reopened, &format!("DELETE FROM api_keys WHERE id='{KEY}'"))
-            .await
-            .unwrap()
-            .contains("api_keys_no_hard_delete")
-    );
-    let mut tx = reopened.begin_write().await.unwrap();
-    assert!(
-        sqlx::query_scalar::<_, bool>("PRAGMA foreign_keys")
-            .fetch_one(&mut *tx)
-            .await
-            .unwrap()
-    );
-    tx.rollback().await.unwrap();
-    reopened.close().await;
-}
-
 async fn seed_template(database: &SqliteDatabase) {
     insert_template(database, false).await;
 }
@@ -324,8 +237,8 @@ async fn runtime_snapshot_is_coherent_and_includes_codex_state() {
     assert_eq!(compiled.channels().count(), 1);
     assert!(
         compiled
-            .model_rule(
-                ai_gateway::domain::ApiFormat::OpenAiChatCompletions,
+            .operation_rule(
+                ai_gateway::domain::ApiOperation::ChatCompletions,
                 "gpt-test"
             )
             .is_some()
@@ -488,9 +401,9 @@ async fn capability_deletion_withdraws_routes_and_preserves_channel_grants() {
              (id,user_id,name,secret_value,status,permissions,
               allowed_group_ids,allowed_channel_ids)
              VALUES ('{KEY}','{USER}','Bound key','sk-bound','active',
-                     '[\"proxy\"]','[\"{GROUP}\"]','[]');
-             INSERT INTO api_key_channel_grants(api_key_id,channel_id,origin_kind,origin_id)
-             VALUES ('{KEY}','{CHANNEL}','group','{GROUP}');"
+                     '[\"proxy\"]','[\"{GROUP}\"]','[\"{CHANNEL}\"]');
+             INSERT INTO api_key_channel_grants(api_key_id,channel_id)
+             VALUES ('{KEY}','{CHANNEL}');"
         ),
     )
     .await;
@@ -558,6 +471,7 @@ async fn capability_deletion_withdraws_routes_and_preserves_channel_grants() {
     assert!(repository.load().await.unwrap().channels.is_empty());
     let key = repository.own_api_key(USER, KEY).await.unwrap().unwrap();
     assert_eq!(key.allowed_group_ids, vec![GROUP]);
+    assert_eq!(key.allowed_channel_ids, vec![CHANNEL]);
     let audits = control_plane_audits(&repository).await;
     assert_eq!(
         audits
@@ -791,10 +705,7 @@ async fn self_service_and_admin_writes_enforce_versions_and_policies() {
                  (
                    SELECT json_group_array(id) FROM routing_groups WHERE deleted_at IS NULL
                  ),
-                 '[]',1);
-         INSERT INTO api_key_policy_channel_grants(policy_id,channel_id,origin_kind,origin_id)
-         SELECT '40200000-0000-0000-0000-000000000471',channel.id,'group',channel.group_id
-         FROM upstream_channels channel",
+                 '[]',1)",
     )
     .await;
     execute(

@@ -75,7 +75,7 @@ fn read_file(path: &Path) -> Result<File> {
                 && metadata.mode() & 0o003 == 0
                 && matches!(
                     path.file_name().and_then(|n| n.to_str()),
-                    Some("writer.lock" | "spool.lock")
+                    Some("spool.lock")
                 )))
     {
         return Err(invalid(
@@ -134,10 +134,7 @@ fn collect(
             collect(root, &relative, dirs, files, locks)?;
         } else {
             let file = read_file(&child.path())?;
-            if matches!(
-                child.file_name().to_str(),
-                Some("spool.lock" | "writer.lock")
-            ) {
+            if child.file_name() == "spool.lock" {
                 file.try_lock_exclusive()
                     .map_err(|_| invalid("spool is in use; stop the gateway before backup"))?;
                 locks.push(file);
@@ -156,10 +153,8 @@ pub async fn verify_database(path: &Path) -> Result<uuid::Uuid> {
     let result = async {
         let pools = database.pools()?;
         let mut connection = pools.writer.acquire().await?;
-        let count =
-            super::migrations::validate_history(&mut connection, super::schema::MIGRATIONS).await?;
-        if count != super::schema::MIGRATIONS.len() {
-            return Err(invalid("install all supported migrations before backup"));
+        if !super::schema::baseline_installed(&mut connection).await? {
+            return Err(invalid("backup requires the current database baseline"));
         }
         let checks: Vec<String> = sqlx::query_scalar("PRAGMA integrity_check")
             .fetch_all(&mut *connection)
@@ -202,6 +197,7 @@ pub async fn create(database: &Path, spool: &Path, destination: &Path) -> Result
             "backup destination must be new and disjoint from database and spool",
         ));
     }
+    crate::request_log_spool::validate_layout(spool)?;
     let database_id = verify_database(database).await?;
     let _owner = DatabaseOwner::acquire(database)?;
     let mut directories = Vec::new();
@@ -276,6 +272,7 @@ fn valid_relative(path: &Path) -> bool {
 pub async fn restore(source: &Path, destination: &Path) -> Result<()> {
     let source_lock = directory(source)?;
     source_lock.try_lock_exclusive()?;
+    crate::request_log_spool::validate_layout(&source.join("spool"))?;
     let database_lock = directory(&source.join("database"))?;
     database_lock
         .try_lock_exclusive()

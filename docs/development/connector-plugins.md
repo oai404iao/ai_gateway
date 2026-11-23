@@ -1,197 +1,34 @@
 # 原生连接器插件
 
-> 状态：当前。描述目录管理、动态代际、独立设置及渠道协议外置的实现与验收边界。
+> 状态：当前。
 
-原生插件把 provider 协议从网关中分离，同时沿用宿主的路由、网络和持久化。
-安装是管理员代码执行权限：插件与网关同进程、同权限，不受沙箱保护；摘要只验证字节身份，
-不证明发布者可信。用户操作步骤见[安装与管理](../user/connector-plugins.md)。
+`general` 由网关实现；Codex 由独立的 [ai-gateway-connectors](https://github.com/oai404iao/ai-gateway-connectors) 仓库构建。管理员[安装并启用制品](../user/connector-plugins.md)后，网关可以将渠道绑定到插件。安装、启用、路由和访问授权是不同操作。
 
-## 本页内容
+## 调用与职责
 
-- [划分宿主与插件职责](#职责与仓库)
-- [验证制品再加载](#加载与信任)
-- [协商 ABI 与协议](#abi-与协议版本)
-- [保存和迁移独立设置](#独立设置)
-- [发布新代际](#热切换与连接生命周期)
-- [保护管理操作](#管理-api-与操作安全)
-- [选择验收范围](#验收边界)
+宿主按 [C ABI 1 和命令协议 3](../../crates/connector-sdk/docs/commands.md) 调用动态库。同步调用分别传 JSON 元数据和原始 body，由分配方释放内存。宿主依据 `attempt.describe/v1` 发布操作支持的 transport、响应方式与用量解析器；这些描述只能收窄渠道能力。Codex 响应透传，使用实际 Responses 上游的[用量口径](usage-normalization.md)。通用插件还可以声明[同格式响应适配](connector-response-adapters.md)。
 
-## 职责与仓库
+宿主执行公共请求策略、选路、鉴权、网络、数据库事务与结算。插件在管理员变换之后构造供应商请求，处理身份、隐私、OAuth、模型和额度等供应商协议。宿主验证插件结果和最终出站请求，再派发网络调用；插件准备失败就结束该尝试。
 
-`general` 保持内置。外部插件由独立
-[ai-gateway-connectors](https://github.com/oai404iao/ai-gateway-connectors)
-仓库发布；网关维护 `crates/connector-sdk`、C ABI、加载器和通用管理。
-网关镜像和发行包不捆绑 Codex，不提供内置回退。
+## 安装与加载
 
-宿主拥有鉴权、授权、选路、准入、网络、文件、事务、日志、计量、结算和恢复。
-插件拥有渠道特有的协议、出站 Header/body 策略、安装标识、工作区和 Git 隐私处理、
-OAuth/Token/额度/模型请求构造及响应解释。插件不能执行自己的网络/数据库操作。
-五项 Codex 设置全部在插件中定义，宿主不解释字段或将其映射成隐私参数。
+`[plugins].directory` 是进程独占的私有目录。`incoming/` 接收完整 `.tar.gz`（投递方从 `.partial` 原子改名）；`staging/` 暂存上传；`artifacts/<id>/<digest>/` 存储不可变制品和许可证。目录投递与网页上传走同一安装器。重启后中断的安装任务标记为失败，重新安装需再次提交制品。
 
-公共客户端策略仍由 `docs/reference/request-allowlists.json` 和 `src/request_policy.rs` 管理。
-Codex 专有策略、默认值和安全归一化移入插件仓库；插件错误必须终止派发，
-不能跳过适配或回退为普通请求。公共 Fast 过滤、认证归属、目标范围、禁止 Header、
-请求大小和资源上限仍由宿主约束。
+宿主校验包成员、大小、文件权限、平台和摘要，再从 sealed memfd 加载刚验证的字节。摘要证明内容相同，不证明发布者可信：**原生插件以网关进程权限执行**。停用不会卸载已映射的库；达到进程加载上限需要维护重启。删除制品写入持久墓碑，周期扫描不会把已删制品重新登记。
 
-## 加载与信任
+## 设置、快照与在途请求
 
-进程 TOML 只指定 `[plugins].directory`，它必须是绝对、规范化的私有目录。
-目录布局：
+`plugin_artifacts` 记录库存，`plugin_states` 选择活动制品，`plugin_settings` 保存插件定义的设置，`plugin_install_jobs` 跟踪任务。管理员变更走 Console 一次性再认证。设置 ETag 绑定设置 revision 与所选摘要；启停使用状态 revision。插件提供设置描述、校验和编译，编译结果作为不可变 `settings` 随调用传入。设置 schema 的显式迁移同样经过校验和编译，失败时保留现有设置。
 
-```text
-plugins/
-├── incoming/                  # 完成投递的 .tar.gz
-├── staging/                   # 私有上传和安装事务
-└── artifacts/<id>/<digest>/   # 不可变制品及许可证
-```
-
-目录和文件不能通过符号链接替换。加载前校验权限和摘要，冻结到 sealed memfd，
-调用入口时使用同一份已验证字节。包的路径、文件类型、数量、大小和平台均受限，
-禁止链接、设备、路径穿越、重复和非规范成员名。
-SHA-256 摘要只接受 64 位小写十六进制，不自动转换大写输入。
-
-本地投递先写 `.partial`，完成后原子重命名为 `.tar.gz`。
-启动及周期扫描只登记制品，不执行未启用模块；已处理包标记 `.imported`，
-拒绝包标记 `.rejected`。网页安装与目录投递共用安装器。
-目录中的更高版本不会自动启用，安装也不自动创建路由或授权。
-目录持有进程生命周期独占锁。重新取得所有权后，仅清理宿主命名的遗留上传和
-未完成安装 staging，不扫描或清理其他目录；数据库任务另行标记中断。
-安装不支持断点恢复：重启后未完成任务标记为 `failed` / `interrupted`，
-遗留上传已清理，管理员必须重新上传，不能从任务记录恢复安装。
-插件生命周期管理面面向单实例，不提供多个管理进程共享数据库的分布式安装协调。
-
-死循环、段错误和 abort 不能靠 Tokio 超时安全终止；停用只影响后续业务可用性，
-不能隔离已执行的恶意代码。审核来源必须发生在启用之前。
-
-## ABI 与协议版本
-
-C 函数表仍使用 `ai_gateway_connector_entry_v1`，布局只包含整数、切片和函数指针。
-调用分开传递 JSON 元数据与原始 body；由分配方释放内存，不跨 ABI 传 Rust 对象、
-Future 或异步运行时。所有插件步骤须同步、确定性、有界、非阻塞。
-
-SDK 0.2 增加 manifest `protocol_version`，与 C ABI 版本分别管理。
-新版设置上下文从协议 2 开始支持，新 Codex 插件使用协议 3，旧协议 2 仍兼容。
-旧宿主因不接受新 manifest 字段而拒绝新版插件，
-不能在运行到某次请求时才发现身份参数协议不匹配。
-无设置的旧通用插件可以继续使用协议 1。
-详细契约见 [SDK 命令](../../crates/connector-sdk/docs/commands.md)。
-
-| 版本轴 | 决定什么 | 不能据此推断什么 |
-| --- | --- | --- |
-| C ABI 1 | 函数表与跨边界内存所有权 | 是否支持新命令或新设置上下文 |
-| protocol 1/2/3 | manifest 与命令协商 | Cargo SDK package 版本、管理员权限 |
-| settings schema | 插件字段及显式迁移 | 自动覆盖已有值或重置财务状态 |
-| 制品摘要 + 配置 revision | 一次操作使用的不可变代际 | 可以热卸载旧库 |
-
-协议 3 为通用插件增加显式 operation/protocol 能力描述和可选同格式 HTTP
-JSON/SSE 响应归一化。宿主在配置发布前验证能力，并按不可变设置代际缓存；
-编译后的渠道 transport 只能收窄，不能扩展原授权。Codex 协议 3 的响应保持透传，
-usage 按实际 Responses 上游接口复用通用解析，见 [usage 规范化](usage-normalization.md)。
-响应适配的有界状态、usage/终态保护及验收边界见
-[响应适配 SDK](connector-response-adapters.md)；原生 ABI 仍为 1。
-
-## 独立设置
-
-插件通过 `settings.describe/v1` 定义字段、默认值和 schema 版本。
-首版支持有界字符串、布尔值、整数和枚举；标签与帮助为本地化纯文本。
-不支持插件 JavaScript、HTML、任意 JSON 编辑器、秘密凭证字段或可执行表达式。
-描述和设置均有字段数及总大小上限。
-
-`settings.validate/v1` 只校验，不静默归一化或迁移。
-`settings.compile/v1` 返回插件自己的不透明运行配置。
-`settings.migrate/v1` 显式转换旧 schema，再经完整校验、编译和事务保存。
-迁移命令失败或迁移结果无效时拒绝变更，绝不静默改用默认设置。
-默认值只在首次选择制品时物化，升级不能悄悄覆盖管理员的已有值。
-
-宿主在每次非设置调用中注入保留的 `settings` 元数据，调用方不能覆盖。
-配置实例不可变，不使用模块全局可变设置，也不按请求查询数据库。
-系统设置 DTO、OpenAPI 和前端不包含 `codex` 子对象。
-
-## 持久化与发布
-
-数据库管理 `plugin_artifacts`、`plugin_states`、`plugin_settings` 和 `plugin_install_jobs`。
-磁盘只管理制品，数据库决定启用状态、活动摘要和设置，不维护另一个活动版本符号链接。
-删除制品使用持久墓碑，周期扫描不能将其重新安装；明确的管理员安装可以恢复同一制品。
-
-PG 0071 / SQLite 0011 在同一迁移事务中将旧五项值迁入独立设置，再移除旧文档字段。
-迁移不加载代码，不改凭证、渠道、余额或额度窗口。
-旧 Codex 设置保留为未启用插件记录，管理员完成安装并明确启用。
-两个后端不再回填系统设置中的 Codex 默认值。
-
-设置视图及其 ETag 使用独立的 `plugin_settings.revision`，同时绑定所选制品摘要。
-设置写入使旧设置 ETag 失效；不改设置或制品的启停不会使设置 ETag 失效。
-状态写入仍以 `plugin_states.revision` 做 CAS。
-修改在原有控制面串行门内执行：校验候选、事务写入、编译完整快照、提交审计、
-原子发布。无效候选不能只写数据库而继续运行旧设置。
-审计记录字段名和版本，不记录整个设置值。
-
-缺失、停用或加载失败的插件不阻止管理面恢复；其渠道在编译后的快照中不可派发，
-不能变成 `general`。配置和历史事实保留，正常插件与普通渠道继续工作。
-
-## 热切换与连接生命周期
-
-进程保留已加载制品；每个配置代际绑定制品摘要和配置 revision。
-新请求使用新快照，在途请求保持原代际直到完成。更新设置不重新加载 `.so`。
-禁止原地替换函数表、修改共享设置或在运行中调用 `dlclose`。
-
-旧代际排空后业务资源可释放，库映射保留到进程退出。
-目录缓存仅保留未配置的制品基础实例，受 `MAX_LOADED_ARTIFACTS`（64）硬上限约束；
-达到上限拒绝新的加载，需维护重启，不逐出任何已有实例。
-设置代际及其描述缓存只由快照和在途操作的 `Arc` 持有，最后一个引用释放后回收，
-不累计进入目录缓存；历史快照持有的活跃实例不会被强制回收。
-进程累计加载有固定次数和总字节上限，失败的原生初始化也消耗额度；
-达到上限需要维护重启，不能声称支持无限次热卸载。
-
-WebSocket 池键包含代际，旧代际连接不能返回新池或服务新的 continuation。
-当前 `response.create` 可以完成；失去精确连接状态时返回原有恢复错误，
-不能在新账号或新 socket 上重放 `previous_response_id`。
-
-OAuth、刷新、额度查询和模型发现也固定一次完整操作的插件实例。
-OAuth state 绑定代际，插件或设置改变后旧授权回调失效，必须重新授权。
-已派发兑换/刷新操作仍受宿主 generation 和后端恢复规则约束：PG 保留维护行锁语义，
-SQLite 使用耐久 intent/CAS。更新插件不能重置事实、重放不确定请求或清除 pending。
-插件没有自己的数据库 schema；改变宿主状态契约的更新
-必须配套宿主迁移，不能仅替换动态库。
-
-## 管理 API 与操作安全
-
-`/console/v1/plugins` 提供库存、详情、状态和设置，旧连接器列表接口继续展示活动能力。
-安装与发现返回持久任务，`/plugins/jobs/{id}` 查询结果；重启将未完成任务标记 interrupted，
-不自动重新执行安装或上游调用。
-
-安装、发现、状态修改、设置修改和删除端点需要管理员身份及 `/plugins/reauth`
-签发的短时、一次性授权，每次请求使用新的授权。
-任务轮询只需要普通 Bearer 会话，不消耗一次性授权；处理器重新验证当前活跃管理员身份。
-授权绑定用户、会话与认证版本，密码重置或换会话不能复用；服务器不记录密码和明文授权。
-数据库内再次验证管理员状态，撤权不能只依赖页面或旧 token。
-上传使用单独的流式大小限制，不提高普通 Console JSON 限制。
-
-删除当前版本或进程已加载版本被拒绝。先停用并取消版本选择，必要时重启，
-再移除库存记录。文件保留与清理不改变金额或凭证状态。
+宿主在控制面事务中编译候选快照，提交后原子发布。不可用插件的渠道不可派发，其他渠道和管理 API 仍可用。新请求使用新代际，在途请求持有原实例；WebSocket 的池键隔离代际，连续请求的 `previous_response_id` 需要命中原连接。OAuth state 同样绑定代际，期间切换插件或设置需要重新开始授权。维护操作仍按后端的锁或耐久 intent 结算，不因插件切换而重放外部请求。
 
 ## 验收边界
 
-在 Linux 上用真实制品验证宿主。默认脚本构建[协议 2 固定提交](../../tests/fixtures/codex-plugin.json)；`--protocol-3` 构建[协议 3 固定提交](../../tests/fixtures/codex-plugin-protocol-3.json)。这两种模式都对照 pin 核对原生描述符和包内元数据，而不只看包版本。切换测试环境变量不改变网关的插件安装或启用状态。
+在 Linux 构建[固定制品](../../tests/fixtures/codex-plugin.json)，生成的动态库用于真实宿主加载和回环转发验证。配置隔离测试库的方法见[开发环境](getting-started.md)。
 
-```bash
-plugin=$(scripts/prepare-connector-tests.sh) && \
-  AI_GATEWAY_TEST_CODEX_PLUGIN="$plugin" cargo test --locked -p ai-gateway-connector-host -- --include-ignored
-# 使用临时测试数据库，按开发环境指南配置 TEST_DATABASE_ADMIN_URL。
-plugin=$(scripts/prepare-connector-tests.sh --protocol-3) && \
-  AI_GATEWAY_TEST_CODEX_PLUGIN="$plugin" cargo test --locked --test control_plane_integration \
-    codex_connector_forwards_responses_and_images_with_shared_credentials -- --exact
+```sh
+export AI_GATEWAY_TEST_CODEX_PLUGIN="$(./scripts/prepare-connector-tests.sh)"
+cargo test --locked -p ai-gateway-connector-host -- --include-ignored
+cargo test --locked --test control_plane_integration \
+  codex_connector_forwards_responses_and_images_with_shared_credentials -- --exact
 ```
-
-按改变的边界选择证据，不能只用“库能加载”证明生命周期安全：
-
-| 改动 | 至少覆盖 |
-| --- | --- |
-| 安装/加载 | 路径、权限、摘要、平台和大小负例，任务中断恢复，墓碑，累计加载额度 |
-| 设置/管理 | 跨插件通用表单、一次性授权、CAS、旧 schema、首次默认值与显式迁移 |
-| 代际 | 在途固定、启停与重启、WS 池隔离、旧 OAuth state 失效 |
-| Codex | 实际外部库、隐私/稳定标识、维护 intent、generation 与既有金融恢复 |
-
-相应前端组件/浏览器、双后端 Rust 和[系统 E2E](system-e2e.md)记录宿主验收；
-独立插件仓库的 CI/发行包记录 provider 实现。转发兼容变化另按授权运行
-[真实上游 smoke](real-upstream-smoke.md)。安装或文档检查不能替代这些证据，
-历史成功报告也不表示后续制品已验证。

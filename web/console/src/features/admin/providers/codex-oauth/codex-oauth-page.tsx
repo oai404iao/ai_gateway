@@ -1117,7 +1117,7 @@ export default function CodexOauthPage() {
             <DialogTitle>{t("Connect Codex account")}</DialogTitle>
             <DialogDescription>
               {t(
-                "The gateway creates a short-lived PKCE flow. Authorize in a browser, then paste the complete localhost callback URL.",
+                "After authorizing in your browser, paste the full localhost callback URL here.",
               )}
             </DialogDescription>
           </DialogHeader>
@@ -1205,7 +1205,7 @@ export default function CodexOauthPage() {
             <DialogTitle>{t("Import Codex tokens")}</DialogTitle>
             <DialogDescription>
               {t(
-                "Tokens are validated against Codex before format-specific managed channels are created. They are not returned by the Console API.",
+                "Import validates the tokens with Codex. Assign new credentials to a channel before use.",
               )}
             </DialogDescription>
           </DialogHeader>
