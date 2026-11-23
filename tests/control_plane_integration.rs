@@ -41,10 +41,10 @@ use ai_gateway::{
     workers::{ControlPlaneReloader, DurableRequestLogWorker, RequestLogWorker},
 };
 use axum::{
-    Router,
+    Json, Router,
     body::{Body, Bytes},
     extract::{
-        OriginalUri, State,
+        DefaultBodyLimit, OriginalUri, State,
         ws::{Message as UpstreamWebSocketMessage, WebSocket, WebSocketUpgrade},
     },
     http::{
@@ -553,6 +553,9 @@ enum UpstreamMode {
 #[derive(Clone)]
 struct UpstreamState(Arc<Mutex<UpstreamMode>>);
 
+const CODEX_JSON_BODY_LIMIT: usize = 64 * 1024;
+type CodexJsonObject = serde_json::Map<String, serde_json::Value>;
+
 #[derive(Clone, Debug)]
 struct CapturedCodexRequest {
     authorization: Option<String>,
@@ -573,7 +576,7 @@ struct CapturedCodexRequest {
     turn_state: Option<String>,
     responses_lite: Option<String>,
     stainless_lang: Option<String>,
-    body: serde_json::Value,
+    body: CodexJsonObject,
 }
 
 #[derive(Clone, Debug)]
@@ -609,7 +612,7 @@ struct CapturedCodexSearchRequest {
     thread_id: Option<String>,
     client_request_id: Option<String>,
     content_type: Option<String>,
-    body: serde_json::Value,
+    body: CodexJsonObject,
 }
 
 #[derive(Clone, Debug)]
@@ -646,7 +649,7 @@ async fn codex_responses_upstream(
     State(state): State<CodexUpstreamState>,
     headers: HeaderMap,
     body: Bytes,
-) -> Response {
+) -> Result<Response, StatusCode> {
     let header = |name: &'static str| {
         headers
             .get(name)
@@ -655,12 +658,15 @@ async fn codex_responses_upstream(
     };
     let content_encoding = header("content-encoding");
     let decoded_body = match content_encoding.as_deref() {
-        Some(value) if value.eq_ignore_ascii_case("zstd") => {
-            Bytes::from(zstd::stream::decode_all(std::io::Cursor::new(body)).unwrap())
-        }
+        Some(value) if value.eq_ignore_ascii_case("zstd") => Bytes::from(
+            zstd::bulk::decompress(&body, CODEX_JSON_BODY_LIMIT)
+                .map_err(|_| StatusCode::BAD_REQUEST)?,
+        ),
         None => body,
-        Some(value) => panic!("unexpected Codex request content encoding: {value}"),
+        Some(_) => return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE),
     };
+    let Json(body) = Json::<CodexJsonObject>::from_bytes(&decoded_body)
+        .map_err(|rejection| rejection.status())?;
     let request_index = {
         let mut requests = state.http_requests.lock().unwrap();
         let request_index = requests.len();
@@ -683,7 +689,7 @@ async fn codex_responses_upstream(
             turn_state: header("x-codex-turn-state"),
             responses_lite: header("x-openai-internal-codex-responses-lite"),
             stainless_lang: header("x-stainless-lang"),
-            body: serde_json::from_slice(&decoded_body).unwrap(),
+            body,
         });
         request_index
     };
@@ -698,7 +704,7 @@ async fn codex_responses_upstream(
             "text/event-stream"
         },
     );
-    if request_index == 0 {
+    Ok(if request_index == 0 {
         let first = stream::once(async move { Ok::<Bytes, io::Error>(terminal) });
         let pending = stream::pending::<Result<Bytes, io::Error>>();
         response
@@ -706,13 +712,13 @@ async fn codex_responses_upstream(
             .unwrap()
     } else {
         response.body(Body::from(terminal)).unwrap()
-    }
+    })
 }
 
 async fn codex_search_upstream(
     State(state): State<CodexUpstreamState>,
     headers: HeaderMap,
-    body: Bytes,
+    Json(body): Json<CodexJsonObject>,
 ) -> Response {
     let header = |name: &'static str| {
         headers
@@ -736,7 +742,7 @@ async fn codex_search_upstream(
             thread_id: header("thread-id"),
             client_request_id: header("x-client-request-id"),
             content_type: header("content-type"),
-            body: serde_json::from_slice(&body).unwrap(),
+            body,
         });
     Response::builder()
         .status(StatusCode::OK)
@@ -1471,7 +1477,7 @@ async fn seed(pool: &PgPool) -> Seed {
         rule: Uuid::new_v4(),
         secret: format!("test-client-{}", Uuid::new_v4()),
         email: format!("test-user-{user}@example.test"),
-        password: "test-password-with-enough-length".into(),
+        password: Uuid::new_v4().to_string(),
         client_model: "upstream-v1".into(),
     };
     let password_hash = hash_console_password(seed.password.clone()).await.unwrap();
@@ -3082,11 +3088,13 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         Router::new()
             .route(
                 "/backend-api/codex/responses",
-                get(codex_responses_websocket_upstream).post(codex_responses_upstream),
+                get(codex_responses_websocket_upstream)
+                    .post(codex_responses_upstream)
+                    .layer(DefaultBodyLimit::max(CODEX_JSON_BODY_LIMIT)),
             )
             .route(
                 "/backend-api/codex/alpha/search",
-                post(codex_search_upstream),
+                post(codex_search_upstream).layer(DefaultBodyLimit::max(CODEX_JSON_BODY_LIMIT)),
             )
             .route(
                 "/backend-api/codex/images/generations",
@@ -3558,18 +3566,9 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         })
     );
     assert_eq!(turn_metadata["app_server_extra"], "preserve-me");
-    assert!(
-        !forwarded
-            .body
-            .to_string()
-            .contains("/home/alice/private-repo")
-    );
-    assert!(
-        !forwarded
-            .body
-            .to_string()
-            .contains("git@github.com:alice/private-repo.git")
-    );
+    let forwarded_body = serde_json::to_string(&forwarded.body).unwrap();
+    assert!(!forwarded_body.contains("/home/alice/private-repo"));
+    assert!(!forwarded_body.contains("git@github.com:alice/private-repo.git"));
     let header_turn_metadata: serde_json::Value =
         serde_json::from_str(forwarded.turn_metadata.as_deref().unwrap()).unwrap();
     assert_eq!(
@@ -5441,7 +5440,6 @@ async fn settled_usage_updates_the_live_soft_quota_before_snapshot_reload() {
     database.cleanup().await;
 }
 
-const TEST_PASSWORD: &str = "test-password-with-enough-length";
 const TEST_ED25519_PRIVATE_KEY: &[u8] = br#"-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIMrLMWiLkvZoPg8iIZRZC0qNdQQPyJV5dCAWdo0l6YBu
 -----END PRIVATE KEY-----
@@ -5469,10 +5467,10 @@ fn test_auth_config() -> AuthConfig {
     }
 }
 
-async fn admin_app(pool: PgPool, actor: Uuid) -> (ConsoleTestApp, Arc<RuntimeConfig>) {
+async fn admin_app(pool: PgPool, seed: &Seed) -> (ConsoleTestApp, Arc<RuntimeConfig>) {
     admin_app_with_models_dev(
         pool,
-        actor,
+        seed,
         ModelsDevClient::new(&ModelsSyncConfig::default()).unwrap(),
     )
     .await
@@ -5480,7 +5478,7 @@ async fn admin_app(pool: PgPool, actor: Uuid) -> (ConsoleTestApp, Arc<RuntimeCon
 
 async fn admin_app_with_models_dev(
     pool: PgPool,
-    actor: Uuid,
+    seed: &Seed,
     models_dev: ModelsDevClient,
 ) -> (ConsoleTestApp, Arc<RuntimeConfig>) {
     let repository = ControlPlaneRepository::new(pool.clone());
@@ -5512,10 +5510,7 @@ async fn admin_app_with_models_dev(
     )
     .unwrap();
     let session = auth
-        .login(
-            format!("test-user-{actor}@example.test"),
-            TEST_PASSWORD.into(),
-        )
+        .login(seed.email.clone(), seed.password.clone())
         .await
         .unwrap();
     (
@@ -5566,7 +5561,7 @@ async fn activate_invitation(
         .body(Body::from(
             serde_json::to_vec(&serde_json::json!({
                 "invitation_token": invitation_token,
-                "password": TEST_PASSWORD,
+                "password": Uuid::new_v4().to_string(),
             }))
             .unwrap(),
         ))
@@ -5599,7 +5594,7 @@ async fn admin_request_with_headers(
 async fn admin_key_create_publishes_immediately_and_audits_redacted() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
-    let (app, runtime) = admin_app(database.pool.clone(), seed.user).await;
+    let (app, runtime) = admin_app(database.pool.clone(), &seed).await;
     let response = admin_request(
         app,
         "POST",
@@ -5634,7 +5629,7 @@ async fn admin_key_create_publishes_immediately_and_audits_redacted() {
 async fn managed_users_are_versioned_audited_and_immediately_revoke_their_keys() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
-    let (app, runtime) = admin_app(database.pool.clone(), seed.user).await;
+    let (app, runtime) = admin_app(database.pool.clone(), &seed).await;
 
     let created = admin_request(
         app.clone(),
@@ -5828,7 +5823,7 @@ async fn managed_users_are_versioned_audited_and_immediately_revoke_their_keys()
 async fn managed_models_are_versioned_and_disabling_hides_attached_routes() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
-    let (app, runtime) = admin_app(database.pool.clone(), seed.user).await;
+    let (app, runtime) = admin_app(database.pool.clone(), &seed).await;
     let source_model_id = format!("managed-model-{}", Uuid::new_v4());
     let created = admin_request(
         app.clone(),
@@ -6080,7 +6075,7 @@ async fn models_dev_catalog_apply_is_explicit_and_updates_selected_existing_pric
         max_selections: 10,
     })
     .unwrap();
-    let (app, _) = admin_app_with_models_dev(database.pool.clone(), seed.user, models_dev).await;
+    let (app, _) = admin_app_with_models_dev(database.pool.clone(), &seed, models_dev).await;
 
     let preview = admin_request(
         app.clone(),
@@ -6476,7 +6471,7 @@ async fn models_dev_catalog_apply_is_explicit_and_updates_selected_existing_pric
 async fn admin_api_key_policies_persist_publish_and_are_audited_without_secrets() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
-    let (app, runtime) = admin_app(database.pool.clone(), seed.user).await;
+    let (app, runtime) = admin_app(database.pool.clone(), &seed).await;
     let created = admin_request(
         app.clone(),
         "POST",
@@ -6622,7 +6617,7 @@ async fn admin_api_key_policies_persist_publish_and_are_audited_without_secrets(
 async fn manual_channel_disable_publishes_an_unavailable_route() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
-    let (app, runtime) = admin_app(database.pool.clone(), seed.user).await;
+    let (app, runtime) = admin_app(database.pool.clone(), &seed).await;
     let audit_before: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_logs")
         .fetch_one(&database.pool)
         .await
@@ -6689,7 +6684,7 @@ async fn disabled_only_group_channel_can_remove_the_last_routed_model() {
         .await
         .unwrap();
 
-    let (app, runtime) = admin_app(database.pool.clone(), seed.user).await;
+    let (app, runtime) = admin_app(database.pool.clone(), &seed).await;
     let path = format!("/console/v1/routing/capabilities/{}", seed.channel);
     let detail = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
     assert_eq!(detail.status(), StatusCode::OK);
@@ -6789,7 +6784,7 @@ async fn adding_a_group_channel_does_not_change_existing_route_candidates() {
         100,
     )
     .await;
-    let (app, runtime) = admin_app(database.pool.clone(), seed.user).await;
+    let (app, runtime) = admin_app(database.pool.clone(), &seed).await;
     let response = admin_request(
         app.clone(),
         "POST",
@@ -6833,7 +6828,7 @@ async fn adding_a_group_channel_does_not_change_existing_route_candidates() {
 async fn model_incompatible_direct_channel_publishes_a_disconnected_route() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
-    let (app, runtime) = admin_app(database.pool.clone(), seed.user).await;
+    let (app, runtime) = admin_app(database.pool.clone(), &seed).await;
     let audit_before: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_logs")
         .fetch_one(&database.pool)
         .await
@@ -6911,7 +6906,7 @@ async fn model_incompatible_direct_channel_publishes_a_disconnected_route() {
 async fn proxy_template_management_exposes_editable_documents_and_keeps_audits_redacted() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
-    let (app, runtime) = admin_app(database.pool.clone(), seed.user).await;
+    let (app, runtime) = admin_app(database.pool.clone(), &seed).await;
     let proxy_password = "created-proxy-password";
     let proxy_username = "created-proxy-user";
     let template_value = "template-document-private-value";
@@ -7364,7 +7359,7 @@ async fn proxy_template_management_exposes_editable_documents_and_keeps_audits_r
 async fn revoked_api_key_cannot_be_reactivated() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
-    let (app, _) = admin_app(database.pool.clone(), seed.user).await;
+    let (app, _) = admin_app(database.pool.clone(), &seed).await;
     let revoked = admin_request(
         app.clone(),
         "POST",
@@ -7398,7 +7393,7 @@ async fn revoked_api_key_cannot_be_reactivated() {
 async fn overly_long_revoke_reason_is_a_safe_unprocessable_response() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
-    let (app, _) = admin_app(database.pool.clone(), seed.user).await;
+    let (app, _) = admin_app(database.pool.clone(), &seed).await;
     let response = admin_request(
         app,
         "POST",
@@ -7423,7 +7418,7 @@ async fn overly_long_revoke_reason_is_a_safe_unprocessable_response() {
 async fn independent_credentials_rotate_disable_and_restrict_all_bound_channels() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
-    let (app, runtime) = admin_app(database.pool.clone(), seed.user).await;
+    let (app, runtime) = admin_app(database.pool.clone(), &seed).await;
     let path = format!("/console/v1/routing/upstream-credentials/{}", seed.channel);
     let detail = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
     assert_eq!(detail.status(), StatusCode::OK);
@@ -7575,7 +7570,7 @@ async fn independent_credentials_rotate_disable_and_restrict_all_bound_channels(
 async fn channel_documents_are_rejected_and_never_escape_audit_allowlists() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
-    let (app, _) = admin_app(database.pool.clone(), seed.user).await;
+    let (app, _) = admin_app(database.pool.clone(), &seed).await;
     let path = format!("/console/v1/routing/capabilities/{}", seed.channel);
     let audits_before: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_logs")
         .fetch_one(&database.pool)
@@ -7689,7 +7684,7 @@ async fn channel_documents_are_rejected_and_never_escape_audit_allowlists() {
 async fn full_put_requires_current_etag_and_stale_update_does_not_audit() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
-    let (app, _) = admin_app(database.pool.clone(), seed.user).await;
+    let (app, _) = admin_app(database.pool.clone(), &seed).await;
     let path = format!("/console/v1/api-keys/{}", seed.key);
     let detail = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
     assert_eq!(detail.status(), StatusCode::OK);
@@ -7803,7 +7798,7 @@ async fn model_rule_hierarchy_routes_a_priced_client_model_to_an_unpriced_wire_m
             .await
             .unwrap();
     assert!(!upstream_price_exists);
-    let (app, runtime) = admin_app(database.pool.clone(), seed.user).await;
+    let (app, runtime) = admin_app(database.pool.clone(), &seed).await;
 
     assert_eq!(
         admin_request(
@@ -9085,7 +9080,7 @@ async fn saturated_request_log_queue_does_not_delay_proxy_responses_and_drains_a
 async fn console_members_are_limited_to_their_own_keys_and_logs() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
-    let (admin_app, _) = admin_app(database.pool.clone(), seed.user).await;
+    let (admin_app, _) = admin_app(database.pool.clone(), &seed).await;
 
     let invitation = admin_request(
         admin_app.clone(),
@@ -9207,7 +9202,7 @@ async fn console_members_are_limited_to_their_own_keys_and_logs() {
 async fn console_refresh_tokens_rotate_and_replay_is_rejected() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
-    let (app, _) = admin_app(database.pool.clone(), seed.user).await;
+    let (app, _) = admin_app(database.pool.clone(), &seed).await;
     let login = axum::http::Request::builder()
         .method("POST")
         .uri("/console/v1/auth/login")
@@ -9266,7 +9261,7 @@ async fn console_refresh_tokens_rotate_and_replay_is_rejected() {
 async fn console_auth_body_limit_returns_payload_too_large() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
-    let (app, _) = admin_app(database.pool.clone(), seed.user).await;
+    let (app, _) = admin_app(database.pool.clone(), &seed).await;
     let request = axum::http::Request::builder()
         .method("POST")
         .uri("/console/v1/auth/login")

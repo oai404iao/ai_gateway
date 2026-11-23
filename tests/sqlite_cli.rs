@@ -33,14 +33,17 @@ fn config(root: &Path) -> PathBuf {
     path
 }
 
-fn command(args: &[&str], password: bool) -> std::process::Output {
+fn command(args: &[&str]) -> std::process::Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_ai-gateway"));
     if let Some(index) = args.iter().position(|arg| *arg == "--config") {
         cmd.current_dir(Path::new(args[index + 1]).parent().unwrap());
     }
+    let password = args
+        .contains(&"--password-stdin")
+        .then(|| uuid::Uuid::new_v4().to_string());
     let mut process = cmd
         .args(args)
-        .stdin(if password {
+        .stdin(if password.is_some() {
             Stdio::piped()
         } else {
             Stdio::null()
@@ -49,15 +52,15 @@ fn command(args: &[&str], password: bool) -> std::process::Output {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    if password {
-        process
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(b"fixture-password-not-a-real-secret-1234\n")
-            .unwrap();
+    if let Some(password) = &password {
+        writeln!(process.stdin.take().unwrap(), "{password}").unwrap();
     }
-    process.wait_with_output().unwrap()
+    let output = process.wait_with_output().unwrap();
+    if let Some(password) = password {
+        assert!(!String::from_utf8_lossy(&output.stdout).contains(&password));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(&password));
+    }
+    output
 }
 
 #[test]
@@ -69,53 +72,44 @@ fn administrator_and_paired_snapshot_commands_reopen_and_reject_damage() {
     let root = directory.path();
     let config = config(root);
     let config = config.to_str().unwrap();
-    let output = command(
-        &[
-            "bootstrap-admin",
-            "--config",
-            config,
-            "--email",
-            "admin@example.test",
-            "--display-name",
-            "Admin",
-            "--password-stdin",
-        ],
-        true,
-    );
+    let output = command(&[
+        "bootstrap-admin",
+        "--config",
+        config,
+        "--email",
+        "admin@example.test",
+        "--display-name",
+        "Admin",
+        "--password-stdin",
+    ]);
     assert!(
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        command(
-            &[
-                "reset-admin-password",
-                "--config",
-                config,
-                "--email",
-                "admin@example.test",
-                "--password-stdin"
-            ],
-            true
-        )
+        command(&[
+            "reset-admin-password",
+            "--config",
+            config,
+            "--email",
+            "admin@example.test",
+            "--password-stdin"
+        ])
         .status
         .success()
     );
     assert!(
-        !command(
-            &[
-                "bootstrap-admin",
-                "--config",
-                config,
-                "--email",
-                "second@example.test",
-                "--display-name",
-                "Second",
-                "--password-stdin"
-            ],
-            true
-        )
+        !command(&[
+            "bootstrap-admin",
+            "--config",
+            config,
+            "--email",
+            "second@example.test",
+            "--display-name",
+            "Second",
+            "--password-stdin"
+        ])
         .status
         .success()
     );
@@ -135,32 +129,26 @@ fn administrator_and_paired_snapshot_commands_reopen_and_reject_damage() {
     )
     .unwrap();
     let snapshot = root.join("snapshot");
-    let output = command(
-        &[
-            "backup-sqlite",
-            "--config",
-            config,
-            "--destination",
-            snapshot.to_str().unwrap(),
-        ],
-        false,
-    );
+    let output = command(&[
+        "backup-sqlite",
+        "--config",
+        config,
+        "--destination",
+        snapshot.to_str().unwrap(),
+    ]);
     assert!(
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        !command(
-            &[
-                "backup-sqlite",
-                "--config",
-                config,
-                "--destination",
-                snapshot.to_str().unwrap()
-            ],
-            false
-        )
+        !command(&[
+            "backup-sqlite",
+            "--config",
+            config,
+            "--destination",
+            snapshot.to_str().unwrap()
+        ])
         .status
         .success()
     );
@@ -172,7 +160,7 @@ fn administrator_and_paired_snapshot_commands_reopen_and_reject_damage() {
         "--destination",
         restored.to_str().unwrap(),
     ];
-    let output = command(&args, false);
+    let output = command(&args);
     assert!(
         output.status.success(),
         "{}",
@@ -181,20 +169,17 @@ fn administrator_and_paired_snapshot_commands_reopen_and_reject_damage() {
     for &(path, bytes) in evidence {
         assert_eq!(fs::read(restored.join(path)).unwrap(), bytes);
     }
-    assert!(!command(&args, false).status.success());
+    assert!(!command(&args).status.success());
     fs::write(snapshot.join("spool/journal/events.log"), b"corrupt").unwrap();
     let failed = root.join("failed");
     assert!(
-        !command(
-            &[
-                "restore-sqlite",
-                "--source",
-                snapshot.to_str().unwrap(),
-                "--destination",
-                failed.to_str().unwrap()
-            ],
-            false
-        )
+        !command(&[
+            "restore-sqlite",
+            "--source",
+            snapshot.to_str().unwrap(),
+            "--destination",
+            failed.to_str().unwrap()
+        ])
         .status
         .success()
     );

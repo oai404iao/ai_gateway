@@ -342,7 +342,7 @@ async fn audit_for(repositories: &Repositories, action: &str, object_id: Uuid) -
         .unwrap()
         .into_iter()
         .find(|entry| entry.action == action && entry.object_id == object_id)
-        .unwrap_or_else(|| panic!("audit {action} for {object_id} must exist"))
+        .expect("expected audit entry for the requested action and object")
 }
 
 async fn listed_user(repositories: &Repositories, id: Uuid) -> ControlPlaneUser {
@@ -354,7 +354,7 @@ async fn listed_user(repositories: &Repositories, id: Uuid) -> ControlPlaneUser 
         .users
         .into_iter()
         .find(|user| user.id == id)
-        .unwrap_or_else(|| panic!("user {id} must be listed"))
+        .expect("expected user in the control-plane list")
 }
 
 async fn increase_balance(repositories: &Repositories, actor: Uuid, user_id: Uuid, amount: &str) {

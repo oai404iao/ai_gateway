@@ -405,23 +405,22 @@ async fn capture_model_and_retry_status(
     body: Bytes,
 ) -> Response {
     state.capture(&body);
-    let model = serde_json::from_slice::<serde_json::Value>(&body).unwrap()["model"]
-        .as_str()
+    let (status, reply) = match body.as_ref() {
+        br#"{"model":"wire-primary"}"# => (
+            StatusCode::TOO_MANY_REQUESTS,
+            r#"{"error":{"message":"retry"}}"#,
+        ),
+        br#"{"model":"wire-fallback"}"# => (StatusCode::OK, r#"{"id":"completion"}"#),
+        _ => (
+            StatusCode::BAD_REQUEST,
+            r#"{"error":{"message":"unexpected request"}}"#,
+        ),
+    };
+    Response::builder()
+        .status(status)
+        .header("content-type", "application/json")
+        .body(Body::from(reply))
         .unwrap()
-        .to_owned();
-    if model == "wire-primary" {
-        Response::builder()
-            .status(StatusCode::TOO_MANY_REQUESTS)
-            .header("content-type", "application/json")
-            .body(Body::from(r#"{"error":{"message":"retry"}} "#))
-            .unwrap()
-    } else {
-        Response::builder()
-            .status(StatusCode::OK)
-            .header("content-type", "application/json")
-            .body(Body::from(r#"{"id":"completion"}"#))
-            .unwrap()
-    }
 }
 
 #[tokio::test]
