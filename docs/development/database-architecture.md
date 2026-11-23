@@ -156,6 +156,7 @@ spool，再由新版本迁移与验证；不滚动混跑，也不把新 schema �
 | 0072 / SQLite 0012 | 移除 Codex 拼车：先隔离原受保护渠道及身份别名，再删除专属状态；普通计量与结算历史保留 |
 | 0073 / SQLite 0013 | 删除 `api_keys.allowed_api_formats` 列，保留 Key、渠道授权和计量记录 |
 | 0074 / SQLite 0014 | 删除 `request_logs.streamed`、`request_logs.attempts`、`api_keys.last_used_at`、`audit_logs.source_ip_prefix`，不转存旧值；保留既有 `request_protocol`、审计行和财务记录 |
+| 0075 / SQLite 0015 | 删除 Codex 授权流程中未使用的 `redirect_uri` 副本；回调验证与交换地址仍由插件决定，已有流程的 state 和 PKCE 数据不变 |
 
 0052 的 all target 使用默认权重 100；重叠 direct target 不重复增加路由，
 其非默认权重仍保留。0057 分离探测 wire model 与 pricing model。

@@ -70,11 +70,6 @@ impl RequestInterface {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum RequestPolicyLayer {
-    Client,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RequestPolicyLocation {
     Header,
     Body,
@@ -90,7 +85,6 @@ enum RequestPolicyFailure {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RequestPolicyError {
     connector_code: Option<&'static str>,
-    layer: RequestPolicyLayer,
     interface: RequestInterface,
     location: RequestPolicyLocation,
     failure: RequestPolicyFailure,
@@ -98,10 +92,9 @@ pub(crate) struct RequestPolicyError {
 }
 
 impl RequestPolicyError {
-    fn invalid_body(layer: RequestPolicyLayer, interface: RequestInterface) -> Self {
+    fn invalid_body(interface: RequestInterface) -> Self {
         Self {
             connector_code: None,
-            layer,
             interface,
             location: RequestPolicyLocation::Body,
             failure: RequestPolicyFailure::InvalidBody,
@@ -110,7 +103,6 @@ impl RequestPolicyError {
     }
 
     fn field(
-        layer: RequestPolicyLayer,
         interface: RequestInterface,
         location: RequestPolicyLocation,
         failure: RequestPolicyFailure,
@@ -118,7 +110,6 @@ impl RequestPolicyError {
     ) -> Self {
         Self {
             connector_code: None,
-            layer,
             interface,
             location,
             failure,
@@ -132,7 +123,6 @@ impl RequestPolicyError {
     ) -> Self {
         Self {
             connector_code: Some(code),
-            layer: RequestPolicyLayer::Client,
             interface,
             location: RequestPolicyLocation::Body,
             failure: RequestPolicyFailure::UnsupportedField,
@@ -148,9 +138,6 @@ impl RequestPolicyError {
         if self.failure == RequestPolicyFailure::InvalidBody {
             return "Request body must be a JSON object.".to_owned();
         }
-        let layer = match self.layer {
-            RequestPolicyLayer::Client => "client request",
-        };
         let location = match self.location {
             RequestPolicyLocation::Header => "header",
             RequestPolicyLocation::Body => "body field",
@@ -162,7 +149,7 @@ impl RequestPolicyError {
             RequestPolicyFailure::InvalidBody => unreachable!(),
         };
         format!(
-            "The {layer} {location} `{field}` {reason} for `{}`.",
+            "The client request {location} `{field}` {reason} for `{}`.",
             self.interface.as_str()
         )
     }
@@ -180,28 +167,20 @@ impl RequestPolicyError {
         if let Some(code) = self.connector_code {
             return code;
         }
-        match (self.layer, self.location, self.failure) {
-            (_, _, RequestPolicyFailure::InvalidBody) => "invalid_request",
-            (
-                RequestPolicyLayer::Client,
-                RequestPolicyLocation::Header,
-                RequestPolicyFailure::UnsupportedField,
-            ) => "request_header_unsupported",
-            (
-                RequestPolicyLayer::Client,
-                RequestPolicyLocation::Header,
-                RequestPolicyFailure::UnsupportedValue,
-            ) => "request_header_value_unsupported",
-            (
-                RequestPolicyLayer::Client,
-                RequestPolicyLocation::Body,
-                RequestPolicyFailure::UnsupportedField,
-            ) => "request_body_field_unsupported",
-            (
-                RequestPolicyLayer::Client,
-                RequestPolicyLocation::Body,
-                RequestPolicyFailure::UnsupportedValue,
-            ) => "request_body_field_value_unsupported",
+        match (self.location, self.failure) {
+            (_, RequestPolicyFailure::InvalidBody) => "invalid_request",
+            (RequestPolicyLocation::Header, RequestPolicyFailure::UnsupportedField) => {
+                "request_header_unsupported"
+            }
+            (RequestPolicyLocation::Header, RequestPolicyFailure::UnsupportedValue) => {
+                "request_header_value_unsupported"
+            }
+            (RequestPolicyLocation::Body, RequestPolicyFailure::UnsupportedField) => {
+                "request_body_field_unsupported"
+            }
+            (RequestPolicyLocation::Body, RequestPolicyFailure::UnsupportedValue) => {
+                "request_body_field_value_unsupported"
+            }
         }
     }
 }
@@ -248,32 +227,30 @@ impl<'de> serde::de::Visitor<'de> for RawMembers {
 }
 
 pub(crate) fn apply_json_body_policy(
-    layer: RequestPolicyLayer,
     interface: RequestInterface,
     body: Bytes,
 ) -> Result<AppliedJsonBody, RequestPolicyError> {
-    let policy = body_policy(layer, interface);
-    filter_json_members(layer, interface, body, |field, raw_value| {
+    let policy = body_policy(interface);
+    filter_json_members(interface, body, |field, raw_value| {
         let inspected_value = policy
             .ignore
             .get(field)
             .and_then(|rule| rule.accepted_values.as_ref())
             .map(|_| {
                 serde_json::from_str::<Value>(raw_value.get())
-                    .map_err(|_| RequestPolicyError::invalid_body(layer, interface))
+                    .map_err(|_| RequestPolicyError::invalid_body(interface))
             })
             .transpose()?;
-        field_disposition_for_policy(layer, interface, policy, field, inspected_value.as_ref())
+        field_disposition_for_policy(interface, policy, field, inspected_value.as_ref())
     })
 }
 
 fn filter_json_members(
-    layer: RequestPolicyLayer,
     interface: RequestInterface,
     body: Bytes,
     disposition: impl Fn(&str, &RawValue) -> Result<FieldDisposition, RequestPolicyError>,
 ) -> Result<AppliedJsonBody, RequestPolicyError> {
-    let invalid_body = |_| RequestPolicyError::invalid_body(layer, interface);
+    let invalid_body = |_| RequestPolicyError::invalid_body(interface);
     let mut json = serde_json::Deserializer::from_slice(&body);
     let members =
         serde::Deserializer::deserialize_map(&mut json, RawMembers).map_err(invalid_body)?;
@@ -313,7 +290,7 @@ pub(crate) fn apply_client_fast_mode_filter(
             changed: false,
         });
     }
-    filter_json_members(RequestPolicyLayer::Client, interface, body, |field, _| {
+    filter_json_members(interface, body, |field, _| {
         Ok(if field == "service_tier" {
             FieldDisposition::Ignore
         } else {
@@ -323,22 +300,14 @@ pub(crate) fn apply_client_fast_mode_filter(
 }
 
 pub(crate) fn body_field_disposition(
-    layer: RequestPolicyLayer,
     interface: RequestInterface,
     field: &str,
     value: Option<&Value>,
 ) -> Result<FieldDisposition, RequestPolicyError> {
-    field_disposition_for_policy(
-        layer,
-        interface,
-        body_policy(layer, interface),
-        field,
-        value,
-    )
+    field_disposition_for_policy(interface, body_policy(interface), field, value)
 }
 
 fn field_disposition_for_policy(
-    layer: RequestPolicyLayer,
     interface: RequestInterface,
     policy: &BodyPolicy,
     field: &str,
@@ -352,7 +321,6 @@ fn field_disposition_for_policy(
             value.is_none_or(|value| !accepted.iter().any(|candidate| candidate == value))
         }) {
             return Err(RequestPolicyError::field(
-                layer,
                 interface,
                 RequestPolicyLocation::Body,
                 RequestPolicyFailure::UnsupportedValue,
@@ -363,7 +331,6 @@ fn field_disposition_for_policy(
     }
     if contains_sorted(&policy.reject, field) {
         return Err(RequestPolicyError::field(
-            layer,
             interface,
             RequestPolicyLocation::Body,
             RequestPolicyFailure::UnsupportedField,
@@ -374,7 +341,6 @@ fn field_disposition_for_policy(
         UnknownAction::Allow => Ok(FieldDisposition::Allow),
         UnknownAction::Ignore => Ok(FieldDisposition::Ignore),
         UnknownAction::Reject => Err(RequestPolicyError::field(
-            layer,
             interface,
             RequestPolicyLocation::Body,
             RequestPolicyFailure::UnsupportedField,
@@ -388,13 +354,30 @@ pub(crate) fn filter_client_headers(
     headers: &HeaderMap,
 ) -> Result<HeaderMap, RequestPolicyError> {
     let connection_names = connection_header_names(headers);
-    filter_headers(
-        RequestPolicyLayer::Client,
-        interface,
-        &contract().client_headers,
-        headers,
-        Some(&connection_names),
-    )
+    let policy = &contract().client_headers;
+    let mut filtered = HeaderMap::new();
+    for (name, value) in headers {
+        let action = header_action(policy, name);
+        let internal_connection_header = connection_names.contains(name) || *name == CONNECTION;
+        match action {
+            UnknownAction::Allow => {
+                filtered.append(name.clone(), value.clone());
+            }
+            UnknownAction::Ignore if internal_connection_header => {
+                filtered.append(name.clone(), value.clone());
+            }
+            UnknownAction::Ignore => {}
+            UnknownAction::Reject => {
+                return Err(RequestPolicyError::field(
+                    interface,
+                    RequestPolicyLocation::Header,
+                    RequestPolicyFailure::UnsupportedField,
+                    name.as_str(),
+                ));
+            }
+        }
+    }
+    Ok(filtered)
 }
 
 #[must_use]
@@ -458,40 +441,6 @@ pub(crate) fn sanitize_outbound_request_headers(headers: &mut HeaderMap) {
     }
 }
 
-fn filter_headers(
-    layer: RequestPolicyLayer,
-    interface: RequestInterface,
-    policy: &HeaderPolicy,
-    headers: &HeaderMap,
-    internal_connection_names: Option<&HashSet<HeaderName>>,
-) -> Result<HeaderMap, RequestPolicyError> {
-    let mut filtered = HeaderMap::new();
-    for (name, value) in headers {
-        let action = header_action(policy, name);
-        let internal_connection_header = internal_connection_names
-            .is_some_and(|names| names.contains(name) || *name == CONNECTION);
-        match action {
-            UnknownAction::Allow => {
-                filtered.append(name.clone(), value.clone());
-            }
-            UnknownAction::Ignore if internal_connection_header => {
-                filtered.append(name.clone(), value.clone());
-            }
-            UnknownAction::Ignore => {}
-            UnknownAction::Reject => {
-                return Err(RequestPolicyError::field(
-                    layer,
-                    interface,
-                    RequestPolicyLocation::Header,
-                    RequestPolicyFailure::UnsupportedField,
-                    name.as_str(),
-                ));
-            }
-        }
-    }
-    Ok(filtered)
-}
-
 fn header_action(policy: &HeaderPolicy, name: &HeaderName) -> UnknownAction {
     let name = name.as_str();
     if contains_sorted(&policy.allow, name) {
@@ -519,15 +468,12 @@ fn connection_header_names(headers: &HeaderMap) -> HashSet<HeaderName> {
         .collect()
 }
 
-fn body_policy(_: RequestPolicyLayer, interface: RequestInterface) -> &'static BodyPolicy {
-    &interface_policy(interface).client_body
-}
-
-fn interface_policy(interface: RequestInterface) -> &'static InterfacePolicy {
-    contract()
+fn body_policy(interface: RequestInterface) -> &'static BodyPolicy {
+    &contract()
         .interfaces
         .get(interface.as_str())
         .expect("required request interface policy must exist")
+        .client_body
 }
 
 fn contract() -> &'static RequestPolicyContract {
@@ -761,12 +707,8 @@ mod tests {
         let original = Bytes::from_static(
             br#"{ "model" : "deepseek-chat", "messages" : [], "thinking" : {"type":"enabled"}, "enable_thinking" : true, "stream" : false }"#,
         );
-        let allowed = apply_json_body_policy(
-            RequestPolicyLayer::Client,
-            RequestInterface::ChatCompletions,
-            original.clone(),
-        )
-        .unwrap();
+        let allowed =
+            apply_json_body_policy(RequestInterface::ChatCompletions, original.clone()).unwrap();
         assert!(!allowed.changed);
         assert_eq!(allowed.body, original);
     }
@@ -776,12 +718,8 @@ mod tests {
         let original = Bytes::from_static(
             br#"{"model":"gpt-5-codex","input":[],"client_metadata":{"session_id":"session","thread_id":"thread"},"stream":true,"store":false}"#,
         );
-        let allowed = apply_json_body_policy(
-            RequestPolicyLayer::Client,
-            RequestInterface::ResponsesHttp,
-            original.clone(),
-        )
-        .unwrap();
+        let allowed =
+            apply_json_body_policy(RequestInterface::ResponsesHttp, original.clone()).unwrap();
         assert!(!allowed.changed);
         assert_eq!(allowed.body, original);
     }
@@ -805,12 +743,9 @@ mod tests {
                 let mut request = expected.clone();
                 request["request_country"] = value.clone();
                 request["access_programs"] = value;
-                let result = apply_json_body_policy(
-                    RequestPolicyLayer::Client,
-                    interface,
-                    serde_json::to_vec(&request).unwrap().into(),
-                )
-                .unwrap();
+                let result =
+                    apply_json_body_policy(interface, serde_json::to_vec(&request).unwrap().into())
+                        .unwrap();
                 assert!(result.changed);
                 assert_eq!(
                     serde_json::from_slice::<Value>(&result.body).unwrap(),
@@ -825,12 +760,9 @@ mod tests {
         let original = Bytes::from_static(
             br#"{"id":"session-123","model":"gpt-5-codex","reasoning":{"effort":"medium"},"input":"find it","commands":{"search_query":[{"q":"example"}]},"settings":{"external_web_access":true},"max_output_tokens":300}"#,
         );
-        let client = apply_json_body_policy(
-            RequestPolicyLayer::Client,
-            RequestInterface::StandaloneWebSearch,
-            original.clone(),
-        )
-        .unwrap();
+        let client =
+            apply_json_body_policy(RequestInterface::StandaloneWebSearch, original.clone())
+                .unwrap();
         assert!(!client.changed);
         assert_eq!(client.body, original);
     }
@@ -840,19 +772,12 @@ mod tests {
         for interface in REQUIRED_INTERFACES {
             if interface == RequestInterface::ImagesEdit {
                 assert_eq!(
-                    body_field_disposition(
-                        RequestPolicyLayer::Client,
-                        interface,
-                        "future_field",
-                        None
-                    )
-                    .unwrap(),
+                    body_field_disposition(interface, "future_field", None).unwrap(),
                     FieldDisposition::Ignore
                 );
                 continue;
             }
             let applied = apply_json_body_policy(
-                RequestPolicyLayer::Client,
                 interface,
                 Bytes::from_static(br#"{"model":"gpt-5","future_field":{"number":1e400}}"#),
             )
@@ -866,23 +791,14 @@ mod tests {
     fn client_multipart_policy_ignores_only_the_compatible_moderation_default() {
         let value = Value::String("auto".into());
         assert_eq!(
-            body_field_disposition(
-                RequestPolicyLayer::Client,
-                RequestInterface::ImagesEdit,
-                "moderation",
-                Some(&value),
-            )
-            .unwrap(),
+            body_field_disposition(RequestInterface::ImagesEdit, "moderation", Some(&value),)
+                .unwrap(),
             FieldDisposition::Ignore
         );
         let value = Value::String("low".into());
-        let error = body_field_disposition(
-            RequestPolicyLayer::Client,
-            RequestInterface::ImagesEdit,
-            "moderation",
-            Some(&value),
-        )
-        .unwrap_err();
+        let error =
+            body_field_disposition(RequestInterface::ImagesEdit, "moderation", Some(&value))
+                .unwrap_err();
         assert_eq!(error.code(), "request_body_field_value_unsupported");
     }
 

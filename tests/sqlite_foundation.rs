@@ -985,7 +985,7 @@ async fn repository_facades_dispatch_ordinary_operations_to_sqlite() {
     use uuid::Uuid;
 
     let (_directory, database) = database().await;
-    assert_eq!(database.install_schema().await.unwrap(), 14);
+    assert_eq!(database.install_schema().await.unwrap(), 15);
     let database = Arc::new(database);
 
     let auth = AuthRepository::from_sqlite(Arc::clone(&database));
@@ -1033,7 +1033,7 @@ async fn s4_pipeline_and_query_facades_share_one_sqlite_database() {
     };
 
     let (_directory, database) = database().await;
-    assert_eq!(database.install_schema().await.unwrap(), 14);
+    assert_eq!(database.install_schema().await.unwrap(), 15);
     let database = Arc::new(database);
 
     let repository = RequestLogRepository::from_sqlite(Arc::clone(&database));

@@ -4056,6 +4056,13 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
             .unwrap()
     };
 
+    let codex_protocol = runtime
+        .snapshot()
+        .plugins()
+        .get("codex")
+        .unwrap()
+        .manifest()
+        .protocol_version;
     let lite_input = serde_json::json!([
         {"type":"additional_tools","role":"developer","tools":[{"type":"function","name":"get_weather","parameters":{"type":"object"}}]},
         {"type":"message","role":"developer","content":[{"type":"input_text","text":"Answer briefly."}]},
@@ -4070,6 +4077,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
                 "stream": true,
                 "store": true,
                 "service_tier": "priority",
+                "prompt_cache_options": (codex_protocol == 3).then(|| serde_json::json!({"ttl":"30m"})),
                 "max_output_tokens": 1,
                 "metadata": {"client": "ignored by Codex"},
                 "client_metadata": {
@@ -4175,6 +4183,12 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     assert_eq!(forwarded.body["stream"], true);
     assert_eq!(forwarded.body["store"], false);
     assert_eq!(forwarded.body["prompt_cache_key"], "session-123");
+    if codex_protocol == 3 {
+        assert_eq!(
+            forwarded.body["prompt_cache_options"],
+            serde_json::json!({"ttl":"30m"})
+        );
+    }
     assert_eq!(
         forwarded.body["client_metadata"]["session_id"],
         "session-123"
@@ -4260,13 +4274,6 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         "codex"
     );
 
-    let codex_protocol = runtime
-        .snapshot()
-        .plugins()
-        .get("codex")
-        .unwrap()
-        .manifest()
-        .protocol_version;
     let (expected_status, expected_code, expected_outcome) = match codex_protocol {
         3 => (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -4497,9 +4504,14 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         None
     );
 
-    let image_request_body = Bytes::from_static(
-        br#"{ "model" : "gpt-image-2", "prompt" : "a red fox in a field", "output_format":"png", "moderation":"auto", "user":"ignored" }"#,
-    );
+    let mut generation = serde_json::json!({"model":"gpt-image-2","prompt":"a red fox in a field",
+        "output_format":"png","moderation":"auto","user":"ignored"});
+    if codex_protocol == 3 {
+        generation["output_format"] = "gif".into();
+        generation["frame_count"] = 4.into();
+        generation["frame_duration_ms"] = 250.into();
+    }
+    let image_request_body = Bytes::from(serde_json::to_vec(&generation).unwrap());
     let image_response = app
         .clone()
         .oneshot(
@@ -4591,7 +4603,13 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     let image_json: serde_json::Value = serde_json::from_slice(&image_request.body).unwrap();
     assert_eq!(image_json["model"], "gpt-image-2");
     assert_eq!(image_json["prompt"], "a red fox in a field");
-    assert!(image_json.get("output_format").is_none());
+    if codex_protocol == 3 {
+        assert_eq!(image_json["output_format"], "gif");
+        assert_eq!(image_json["frame_count"], 4);
+        assert_eq!(image_json["frame_duration_ms"], 250);
+    } else {
+        assert!(image_json.get("output_format").is_none());
+    }
     assert!(image_json.get("moderation").is_none());
     assert!(image_json.get("user").is_none());
     assert!(image_json.get("client_metadata").is_none());
@@ -4622,15 +4640,24 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
 
     let edit_boundary = "codex-edit-boundary";
     let mut edit_body = Vec::new();
-    for (name, value) in [
+    let mut edit_fields = vec![
         ("model", "gpt-image-2"),
         ("prompt", "add a red hat"),
         ("background", "auto"),
         ("quality", "high"),
         ("size", "1024x1024"),
-        ("output_format", "png"),
         ("moderation", "auto"),
-    ] {
+    ];
+    if codex_protocol == 3 {
+        edit_fields.extend([
+            ("output_format", "gif"),
+            ("frame_count", "8"),
+            ("frame_duration_ms", "100"),
+        ]);
+    } else {
+        edit_fields.push(("output_format", "png"));
+    }
+    for (name, value) in edit_fields {
         edit_body.extend_from_slice(format!("--{edit_boundary}\r\n").as_bytes());
         edit_body.extend_from_slice(
             format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
@@ -4729,7 +4756,13 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     assert_eq!(edit_json["background"], "auto");
     assert_eq!(edit_json["quality"], "high");
     assert_eq!(edit_json["size"], "1024x1024");
-    assert!(edit_json.get("output_format").is_none());
+    if codex_protocol == 3 {
+        assert_eq!(edit_json["output_format"], "gif");
+        assert_eq!(edit_json["frame_count"], 8);
+        assert_eq!(edit_json["frame_duration_ms"], 100);
+    } else {
+        assert!(edit_json.get("output_format").is_none());
+    }
     assert!(edit_json.get("moderation").is_none());
     assert!(edit_json.get("client_metadata").is_none());
     assert!(edit_json.get("prompt_cache_key").is_none());
@@ -4810,6 +4843,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
             "stream": false,
             "store": true,
             "generate": false,
+            "prompt_cache_options": (codex_protocol == 3).then(|| serde_json::json!({"ttl":"12h"})),
             "max_output_tokens": 1,
             "metadata": {"client": "ignored by Codex"},
             "client_metadata": {
@@ -4944,6 +4978,12 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     assert_eq!(websocket_requests[0]["stream"], true);
     assert_eq!(websocket_requests[0]["store"], false);
     assert_eq!(websocket_requests[0]["prompt_cache_key"], "session-123");
+    if codex_protocol == 3 {
+        assert_eq!(
+            websocket_requests[0]["prompt_cache_options"],
+            serde_json::json!({"ttl":"12h"})
+        );
+    }
     assert_eq!(websocket_requests[0]["generate"], false);
     assert_eq!(websocket_requests[0]["input"], lite_input);
     assert_eq!(

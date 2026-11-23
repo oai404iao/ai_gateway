@@ -1025,7 +1025,6 @@ impl<'r> FromRow<'r, sqlx::sqlite::SqliteRow> for CodexOauthFlowRecordRow {
                 .try_get::<Option<SqliteUuid>, _>("proxy_id")?
                 .map(|v| v.0),
             quota_threshold_percent: row.try_get::<i16, _>("quota_threshold_percent")?,
-            redirect_uri: row.try_get::<String, _>("redirect_uri")?,
             state_hash: row.try_get::<Vec<u8>, _>("state_hash")?,
             code_verifier: row.try_get::<String, _>("code_verifier")?,
             expires_at: row.try_get::<SqliteTimestamp, _>("expires_at")?.0,

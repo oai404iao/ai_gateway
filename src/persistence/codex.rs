@@ -147,7 +147,6 @@ pub struct CodexOauthFlowRecord {
     pub label: String,
     pub proxy_id: Option<Uuid>,
     pub quota_threshold_percent: i16,
-    pub redirect_uri: String,
     pub state_hash: Vec<u8>,
     pub code_verifier: String,
     pub expires_at: DateTime<Utc>,
@@ -783,12 +782,10 @@ impl PostgresControlPlaneRepository {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub async fn create_codex_oauth_flow(
         &self,
         actor_user_id: Uuid,
         input: CodexOauthStartInput,
-        redirect_uri: String,
         state_hash: Vec<u8>,
         code_verifier: String,
         expires_at: DateTime<Utc>,
@@ -800,17 +797,16 @@ impl PostgresControlPlaneRepository {
         let flow = sqlx::query_as::<_, CodexOauthFlowRecord>(
             "INSERT INTO codex_oauth_flows \
              (id,actor_user_id,label,proxy_id,quota_threshold_percent, \
-              redirect_uri,state_hash,code_verifier,expires_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) \
+              state_hash,code_verifier,expires_at) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8) \
              RETURNING id,actor_user_id,label,proxy_id, \
-                       quota_threshold_percent,redirect_uri,state_hash,code_verifier,expires_at",
+                       quota_threshold_percent,state_hash,code_verifier,expires_at",
         )
         .bind(id)
         .bind(actor_user_id)
         .bind(input.label.trim())
         .bind(input.proxy_id)
         .bind(input.quota_threshold_percent)
-        .bind(redirect_uri)
         .bind(state_hash)
         .bind(code_verifier)
         .bind(expires_at)
@@ -827,7 +823,7 @@ impl PostgresControlPlaneRepository {
     ) -> Result<Option<CodexOauthFlowRecord>, RepositoryError> {
         sqlx::query_as::<_, CodexOauthFlowRecord>(
             "SELECT id,actor_user_id,label,proxy_id, \
-                    quota_threshold_percent,redirect_uri,state_hash,code_verifier,expires_at \
+                    quota_threshold_percent,state_hash,code_verifier,expires_at \
              FROM codex_oauth_flows \
              WHERE id=$1 AND actor_user_id=$2 AND completed_at IS NULL AND expires_at>now()",
         )

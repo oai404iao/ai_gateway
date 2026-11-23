@@ -187,12 +187,10 @@ impl SqliteControlPlaneRepository {
         tx.commit().await?;
         Ok(changed)
     }
-    #[allow(clippy::too_many_arguments)]
     pub async fn create_codex_oauth_flow(
         &self,
         actor: Uuid,
         input: CodexOauthStartInput,
-        redirect_uri: String,
         state_hash: Vec<u8>,
         code_verifier: String,
         expires_at: DateTime<Utc>,
@@ -200,13 +198,21 @@ impl SqliteControlPlaneRepository {
         validate_credential_settings(&input.label, input.quota_threshold_percent)?;
         let mut tx = self.database.begin_write().await.map_err(open_failure)?;
         validate_codex_proxy(&mut tx, input.proxy_id).await?;
-        let row=sqlx::query_as::<_,CodexOauthFlowRecordRow>(
+        let row = sqlx::query_as::<_, CodexOauthFlowRecordRow>(
             "INSERT INTO codex_oauth_flows(id,actor_user_id,label,proxy_id,quota_threshold_percent,
-             redirect_uri,state_hash,code_verifier,expires_at) VALUES (?,?,?,?,?,?,?,?,?) RETURNING *")
-            .bind(SqliteUuid(Uuid::new_v4())).bind(SqliteUuid(actor))
-            .bind(input.label.trim()).bind(input.proxy_id.map(SqliteUuid)).bind(input.quota_threshold_percent)
-            .bind(redirect_uri).bind(state_hash).bind(code_verifier).bind(SqliteTimestamp(expires_at))
-            .fetch_one(&mut *tx).await?.0;
+             state_hash,code_verifier,expires_at) VALUES (?,?,?,?,?,?,?,?) RETURNING *",
+        )
+        .bind(SqliteUuid(Uuid::new_v4()))
+        .bind(SqliteUuid(actor))
+        .bind(input.label.trim())
+        .bind(input.proxy_id.map(SqliteUuid))
+        .bind(input.quota_threshold_percent)
+        .bind(state_hash)
+        .bind(code_verifier)
+        .bind(SqliteTimestamp(expires_at))
+        .fetch_one(&mut *tx)
+        .await?
+        .0;
         tx.commit().await?;
         Ok(row)
     }

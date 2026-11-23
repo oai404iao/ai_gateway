@@ -1674,7 +1674,7 @@ mod tests {
             let database = SqliteDatabase::open(&directory.path().join("gateway.sqlite"))
                 .await
                 .unwrap();
-            assert_eq!(database.install_schema().await.unwrap(), 14);
+            assert_eq!(database.install_schema().await.unwrap(), 15);
             let database = Arc::new(database);
             let logs = SqliteRequestLogRepository::new(Arc::clone(&database));
             Self {

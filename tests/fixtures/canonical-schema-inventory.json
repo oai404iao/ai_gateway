@@ -375,7 +375,6 @@
       "codex_oauth_flows_code_verifier_check",
       "codex_oauth_flows_label_check",
       "codex_oauth_flows_quota_threshold_percent_check",
-      "codex_oauth_flows_redirect_uri_check",
       "codex_oauth_flows_state_hash_check"
     ],
     "columns": [
@@ -384,7 +383,6 @@
       "label",
       "proxy_id",
       "quota_threshold_percent",
-      "redirect_uri",
       "state_hash",
       "code_verifier",
       "expires_at",
@@ -406,7 +404,6 @@
       "label": "varchar",
       "proxy_id": "uuid",
       "quota_threshold_percent": "int2",
-      "redirect_uri": "text",
       "state_hash": "bytea"
     }
   },

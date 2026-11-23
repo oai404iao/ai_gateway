@@ -51,6 +51,8 @@ Cargo manifest 不声明更低编译器兼容边界，也没有独立的旧版�
 
 ## 本地发布门禁
 
+先按[双后端测试准备步骤](getting-started.md#rust-与双后端)启动测试 PostgreSQL，并在运行门禁的同一 shell 导出 `TEST_DATABASE_ADMIN_URL` 和 `AI_GATEWAY_TEST_CODEX_PLUGIN`。后者应指向准备脚本生成的动态库；原生契约测试还会加载其同目录的测试制品。
+
 ```bash
 VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
 ./scripts/verify-release.sh "$VERSION"
@@ -64,7 +66,7 @@ VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
 - Production Compose 解析。
 - 完整 Docker 镜像构建、容器内精确版本、AGPL OCI label 和第三方许可证存在性检查。
 
-PostgreSQL 集成测试要求先启动 `docker compose up -d`。性能 Harness 仍然只能在
+性能 Harness 仍然只能在
 用户明确要求时运行；发布门禁不会执行它。只有转发路径发生变化时，才按
 `docs/development/real-upstream-smoke.md` 额外运行付费真实上游 smoke test。
 

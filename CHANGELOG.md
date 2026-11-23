@@ -9,6 +9,7 @@ Versioning.
 
 ### Removed
 
+- **Codex OAuth:** PostgreSQL and SQLite no longer store a redundant redirect URI on pending flows. The plugin still validates callback URLs and specifies the redirect URI during token exchange.
 - **Request logs:** Read `request_protocol` (`non_stream`, `sse`, or `websocket`) instead of `streamed` in Console responses and database queries. New journal entries also store only the protocol.
 - **Database upgrades:** PostgreSQL and SQLite drop `api_keys.last_used_at`, `request_logs.attempts` and `audit_logs.source_ip_prefix` without copying their old values. Retain a pre-upgrade backup if you need those values. Invitation-code usage, audit entries and settlement receipts remain intact.
 - **API keys:** Remove `allowed_api_formats` from Console create/update requests (`422` if supplied) and stop reading it from key responses. PostgreSQL and SQLite drop the column; existing key permissions, channel grants and operation routes still determine access.
@@ -19,6 +20,7 @@ Versioning.
 
 ### Changed
 
+- **Codex plugin inputs:** Identity preparation now receives only the session, thread and window headers it uses, and body adaptation no longer receives upstream authentication material. The gateway still verifies the credentials used for dispatch.
 - **Authorization change:** API keys that select a channel group now follow its membership automatically, including keys previously limited to a subset of that group. Moving a channel out removes group-derived access but not a separate direct grant. [Review existing group selections before upgrading.](docs/user/upgrades.md#渠道组授权变更)
 - **Console reporting:** Request logs display the requested model and upstream model; exact model filters and cost-report model rows use the requested identifier. System cost filters and channel totals now use logical channels across capabilities. The `codex_credential_id` filter and per-format/group fields on cost channel rows have been removed; credential quota history remains available.
 - The [Console](docs/user/console.md) now opens on a personal usage overview for both users and administrators. Use the shared navigation to follow model trends into request logs, manage API keys, or change account settings. Global reports and gateway configuration remain in the administrator-only management area.
@@ -26,6 +28,7 @@ Versioning.
 
 ### Fixed
 
+- Codex refreshes that return no token update no longer advance the credential's refresh timestamp or generation, including with older compatible plugins.
 - Editing a client model no longer overwrites its catalog source JSON unless you explicitly replace it. A conflicting save no longer reports a reload that did not happen.
 - Creating an upstream credential from a connector tab keeps that connector selected. Changing a plugin's active state refreshes the routing and credential forms' connector choices.
 - Standalone search validates channel timeouts against the search deadline, not the ordinary Responses deadline. Multipart errors from third-party Images plugins no longer claim Codex-specific limits.

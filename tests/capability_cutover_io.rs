@@ -2972,7 +2972,7 @@ mod sqlite_backend {
             &ai_gateway::persistence::capability_cutover::credential_ownership::upgrade(&projected),
         );
         transaction.commit().await.unwrap();
-        assert_eq!(database.install_schema().await.unwrap(), 8);
+        assert_eq!(database.install_schema().await.unwrap(), 9);
         let mut transaction = database.begin_write().await.unwrap();
         assert_topology(
             &expected,

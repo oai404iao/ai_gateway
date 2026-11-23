@@ -56,10 +56,17 @@ impl PreparedCodexAttempt {
             .map_err(|_| CodexCredentialUnavailable::Unavailable)?
             .capabilities
             .clone();
-        let request_context = plugin.call("attempt.context", &json!({
-            "operation":operation,"credential_id":credential_id,"request_id":Uuid::new_v4(),
-            "affinity_hash":affinity_hash,"headers":super::super::connector::plugin_header_metadata(client_headers),
-        }), &[]).map_err(|_| CodexCredentialUnavailable::Unavailable)?.metadata;
+        let request_context = plugin
+            .call(
+                "attempt.context",
+                &json!({
+                    "operation":operation,"credential_id":credential_id,"request_id":Uuid::new_v4(),
+                    "affinity_hash":affinity_hash,"headers":identity_headers(client_headers),
+                }),
+                &[],
+            )
+            .map_err(|_| CodexCredentialUnavailable::Unavailable)?
+            .metadata;
         Ok(Self {
             credential: runtime.credential(credential_id, affinity_cache_hit)?,
             plugin,
@@ -76,24 +83,14 @@ impl PreparedCodexAttempt {
         &self.plugin
     }
 
-    fn metadata(&self, protocol: RequestProtocol) -> Value {
-        json!({
-            "operation": self.operation,
-            "protocol": protocol,
-            "access_token": self.credential.access_token(),
-            "account_id": self.credential.account_id(),
-            "is_fedramp": self.credential.is_fedramp(),
-            "request_context": self.request_context,
-        })
-    }
-
     pub(crate) fn adapt_body(
         &self,
         body: Bytes,
         protocol: RequestProtocol,
     ) -> Result<Bytes, CodexAttemptError> {
+        let metadata = body_metadata(self.operation, protocol, &self.request_context);
         self.plugin
-            .call("attempt.body", &self.metadata(protocol), &body)
+            .call("attempt.body", &metadata, &body)
             .map(|out| Bytes::from(out.body))
             .map_err(plugin_error)
     }
@@ -130,8 +127,11 @@ impl PreparedCodexAttempt {
         headers: &mut HeaderMap,
         protocol: RequestProtocol,
     ) -> Result<(), CodexAttemptError> {
-        let mut metadata = self.metadata(protocol);
+        let mut metadata = body_metadata(self.operation, protocol, &self.request_context);
         metadata["headers"] = super::super::connector::plugin_header_metadata(headers);
+        metadata["access_token"] = json!(self.credential.access_token());
+        metadata["account_id"] = json!(self.credential.account_id());
+        metadata["is_fedramp"] = json!(self.credential.is_fedramp());
         let output = self
             .plugin
             .call("attempt.headers", &metadata, &[])
@@ -181,6 +181,28 @@ impl PreparedCodexAttempt {
     }
 }
 
+fn identity_headers(headers: &HeaderMap) -> Value {
+    Value::Object(
+        headers
+            .iter()
+            .filter_map(|(name, value)| match name.as_str() {
+                "session-id" | "thread-id" | "x-codex-window-id" => {
+                    Some((name.to_string(), Value::from(value.to_str().ok()?)))
+                }
+                _ => None,
+            })
+            .collect(),
+    )
+}
+
+fn body_metadata(
+    operation: ApiOperation,
+    protocol: RequestProtocol,
+    request_context: &Value,
+) -> Value {
+    json!({"operation":operation,"protocol":protocol,"request_context":request_context})
+}
+
 fn response_routing_hint(body: &Value) -> Option<HeaderValue> {
     let component = |s: &&str| {
         !s.is_empty()
@@ -226,6 +248,36 @@ fn plugin_error(error: PluginError) -> CodexAttemptError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_exposes_only_identity_headers_and_body_gets_no_credentials() {
+        let mut headers = HeaderMap::new();
+        for (name, value) in [
+            ("session-id", "session"),
+            ("thread-id", "thread"),
+            ("x-codex-window-id", "window"),
+            ("authorization", "Bearer downstream-secret"),
+            ("x-api-key", "downstream-secret"),
+            ("cookie", "id=private"),
+            ("x-custom", "private"),
+        ] {
+            headers.insert(name, HeaderValue::from_static(value));
+        }
+        assert_eq!(
+            identity_headers(&headers),
+            json!({"session-id":"session","thread-id":"thread","x-codex-window-id":"window"})
+        );
+        let context = json!({"session_id":"session"});
+        for (operation, protocol) in [
+            (ApiOperation::Responses, RequestProtocol::Sse),
+            (ApiOperation::ResponsesWebSocket, RequestProtocol::WebSocket),
+        ] {
+            assert_eq!(
+                body_metadata(operation, protocol, &context),
+                json!({"operation":operation,"protocol":protocol,"request_context":context})
+            );
+        }
+    }
 
     #[test]
     fn hint_uses_only_unambiguous_wire_model_and_tier() {
