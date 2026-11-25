@@ -24,6 +24,29 @@ test("an untouched account page can navigate without a discard prompt", async ({
   await expect(page.getByRole("alertdialog")).toHaveCount(0);
 });
 
+test("API key actions stay at the table edge while the data columns scroll", async ({ page }) => {
+  await page.setViewportSize({ width: 920, height: 800 });
+  await login(page);
+  await page.goto("/api-keys");
+  const table = page.getByRole("region", { name: "Keys" }).getByRole("table");
+  const action = table.getByRole("button", { name: "Actions for e2e key" });
+  const viewport = table.locator("..");
+  await expect(action).toBeInViewport({ ratio: 1 });
+  const before = (await action.boundingBox())!;
+  expect(await viewport.evaluate(el => {
+    el.scrollLeft = el.scrollWidth;
+    return el.scrollLeft;
+  })).toBeGreaterThan(0);
+  const after = (await action.boundingBox())!;
+  expect(Math.abs(after.x - before.x)).toBeLessThan(1);
+  await action.click();
+  await expect(page.getByRole("menuitem", { name: "View details" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(action).toBeFocused();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await expect.poll(() => viewport.evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+});
+
 for (const admin of [false, true]) {
   test(`${admin ? "admins" : "members"} land on their own overview with role-scoped navigation`, async ({ page }) => {
     const reads = new Set<string>();

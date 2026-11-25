@@ -183,13 +183,7 @@ function requestProtocolLabel(
   }
 }
 
-function TruncatedName({
-  value,
-  className,
-}: {
-  value: string | null;
-  className: string;
-}) {
+function TruncatedName({ value }: { value: string | null }) {
   if (!value) return "—";
   return (
     <Tooltip disableHoverablePopup>
@@ -197,10 +191,7 @@ function TruncatedName({
         render={
           <span
             tabIndex={0}
-            className={cn(
-              "block truncate outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              className,
-            )}
+            className="block truncate outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
         }
       >
@@ -221,33 +212,33 @@ function TokenUsage({ log }: { log: RequestLogView }) {
 
   return (
     <span className="flex flex-col gap-1.5 tabular-nums">
-      <span className="flex items-center gap-2">
+      <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
         <span
-          className="flex min-w-20 items-center gap-1.5"
+          className="flex max-w-full items-center gap-1"
           aria-label={uncachedInputLabel}
           title={uncachedInputLabel}
         >
           <ArrowUp className="size-4 shrink-0 text-primary" aria-hidden />
-          <span>{formatTokens(uncachedInput)}</span>
+          <span className="truncate">{formatTokens(uncachedInput)}</span>
         </span>
         {log.cached_input_tokens !== null && log.cached_input_tokens > 0 ? (
-          <Badge variant="success" aria-label={cachedInputLabel} title={cachedInputLabel}>
-            {formatTokens(log.cached_input_tokens)}
+          <Badge variant="success" className="max-w-full" aria-label={cachedInputLabel} title={cachedInputLabel}>
+            <span className="truncate">{formatTokens(log.cached_input_tokens)}</span>
           </Badge>
         ) : null}
       </span>
-      <span className="flex items-center gap-2">
+      <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
         <span
-          className="flex min-w-20 items-center gap-1.5"
+          className="flex max-w-full items-center gap-1"
           aria-label={outputLabel}
           title={outputLabel}
         >
           <ArrowDown className="size-4 shrink-0 text-info" aria-hidden />
-          <span>{formatTokens(log.output_tokens)}</span>
+          <span className="truncate">{formatTokens(log.output_tokens)}</span>
         </span>
         {log.reasoning_tokens !== null && log.reasoning_tokens > 0 ? (
-          <Badge variant="info" aria-label={reasoningLabel} title={reasoningLabel}>
-            {formatTokens(log.reasoning_tokens)}
+          <Badge variant="info" className="max-w-full" aria-label={reasoningLabel} title={reasoningLabel}>
+            <span className="truncate">{formatTokens(log.reasoning_tokens)}</span>
           </Badge>
         ) : null}
       </span>
@@ -281,10 +272,10 @@ function RequestModel({ log, compact = false }: { log: RequestLogView; compact?:
         </span>
       )}
       {effort || log.fast_mode ? (
-        <span className="flex flex-wrap gap-1.5">
+        <span className="flex max-w-full flex-wrap gap-1.5">
           {effort && (
-            <Badge variant="warning" aria-label={`${t("Reasoning effort")}: ${effort}`} title={`${t("Reasoning effort")}: ${effort}`}>
-              {effort}
+            <Badge variant="warning" className="max-w-full" aria-label={`${t("Reasoning effort")}: ${effort}`} title={`${t("Reasoning effort")}: ${effort}`}>
+              <span className="truncate">{effort}</span>
             </Badge>
           )}
           {log.fast_mode && (
@@ -313,7 +304,7 @@ function RequestDuration({ log }: { log: RequestLogView }) {
   const tpsLabel = `${t("TPS")}: ${tps}`;
 
   return (
-    <span className="flex flex-col gap-0.5 whitespace-nowrap tabular-nums">
+    <span className="flex flex-col gap-0.5 wrap-anywhere tabular-nums">
       <span
         className="text-xs text-muted-foreground"
         aria-label={ttftLabel}
@@ -339,7 +330,7 @@ function RequestCost({ log }: { log: RequestLogView }) {
   const { t } = useI18n();
 
   return (
-    <span className="flex flex-wrap items-center gap-1.5 tabular-nums">
+    <span className="flex flex-wrap items-center gap-1.5 wrap-anywhere tabular-nums">
       <span>{formatUsd(log.cost_amount)}</span>
       {log.peak_pricing ? (
         <Badge
@@ -384,13 +375,13 @@ function Inspector({ mobile, onClose, closeRef, controls, children }: {
     </Sheet>
   );
   return (
-    <aside aria-label={t("Request log")} className="sticky top-3 min-w-0 self-start border-l bg-background"
+    <aside aria-label={t("Request log")} className="order-first min-w-0 self-start border-b bg-background @min-[44rem]:sticky @min-[44rem]:top-3 @min-[44rem]:order-last @min-[44rem]:border-b-0 @min-[44rem]:border-l"
       onKeyDown={e => { if (e.key === "Escape") { e.stopPropagation(); onClose(); } }}>
       <header className="flex items-center gap-2 border-b bg-muted/30 px-3 py-2">
         <PanelRight className="size-4 text-primary" /><h2 className="mr-auto text-sm font-medium">{t("Request inspector")}</h2>
         {controls}<Button ref={closeRef} variant="ghost" size="icon-sm" aria-label={t("Close inspector")} onClick={onClose}><X /></Button>
       </header>
-      <div className="max-h-[calc(100dvh-6rem)] overflow-y-auto">{children}</div>
+      <div className="max-h-[55dvh] overflow-y-auto @min-[44rem]:max-h-[calc(100dvh-6rem)]">{children}</div>
     </aside>
   );
 }
@@ -434,7 +425,7 @@ export function RequestLogsView({
     });
   };
   const inspectorOpen = Boolean(selectedId);
-  useEffect(() => { if (inspectorOpen && !isMobile) inspectorClose.current?.focus({ preventScroll: true }); }, [inspectorOpen, isMobile]);
+  useEffect(() => { if (inspectorOpen && !isMobile) inspectorClose.current?.focus(); }, [inspectorOpen, isMobile]);
   const prefix = idSearch.trim().toLowerCase();
   const matchingRows = (query.data ?? []).filter(row => row.id.toLowerCase().startsWith(prefix));
   const index = matchingRows.findIndex(row => row.id === selectedId);
@@ -504,6 +495,7 @@ export function RequestLogsView({
     {
       key: "started",
       header: t("Started"),
+      basis: 7,
       render: (log) => (
         <span className="flex flex-col">
           <span>{formatDateTime(log.started_at)}</span>
@@ -514,7 +506,7 @@ export function RequestLogsView({
     {
       key: "model",
       header: t("Model"),
-      className: "min-w-36 max-w-56 whitespace-normal",
+      basis: 9,
       render: (log) => (
         <div aria-current={selectedId === log.id || undefined}>
           <RequestModel log={log} compact />
@@ -524,6 +516,7 @@ export function RequestLogsView({
     {
       key: "operation-protocol",
       header: t("Operation / protocol"),
+      basis: 6.5,
       render: (log) => (
         <span className="flex flex-col items-start gap-1">
           <span className="font-medium">
@@ -538,34 +531,29 @@ export function RequestLogsView({
     {
       key: "channel-group",
       header: t("Channel group"),
-      className: "w-44 max-w-44",
-      render: (log) => (
-        <TruncatedName value={log.channel_group_name} className="max-w-44" />
-      ),
+      basis: 6,
+      render: (log) => <TruncatedName value={log.channel_group_name} />,
     },
     ...(isSystemView
       ? [
           {
             key: "channel",
             header: t("Channel"),
-            className: "w-36 max-w-36",
-            render: (log: RequestLogView) => (
-              <TruncatedName value={log.channel_name} className="max-w-36" />
-            ),
+            basis: 5,
+            render: (log: RequestLogView) => <TruncatedName value={log.channel_name} />,
           },
           {
             key: "user",
             header: t("User"),
-            className: "w-36 max-w-36",
-            render: (log: RequestLogView) => (
-              <TruncatedName value={log.user_name} className="max-w-36" />
-            ),
+            basis: 5,
+            render: (log: RequestLogView) => <TruncatedName value={log.user_name} />,
           },
         ]
       : []),
     {
       key: "outcome",
       header: t("Outcome"),
+      basis: 6,
       render: (log) => (
         <Badge variant={outcomeVariant(log.outcome)}>{outcomeLabel(log.outcome)}</Badge>
       ),
@@ -573,17 +561,19 @@ export function RequestLogsView({
     {
       key: "tokens",
       header: t("Tokens"),
-      className: "min-w-44",
+      basis: 6.5,
       render: (log) => <TokenUsage log={log} />,
     },
     {
       key: "cost",
       header: t("Cost"),
+      basis: 5.25,
       render: (log) => <RequestCost log={log} />,
     },
     {
       key: "duration",
       header: t("Duration"),
+      basis: 5.25,
       className: "text-right",
       render: (log) => <RequestDuration log={log} />,
     },
@@ -592,7 +582,7 @@ export function RequestLogsView({
     {
       key: "request",
       header: t("Request log"),
-      className: "w-full whitespace-normal",
+      basis: 8,
       render: (log) => (
         <div className="flex flex-col items-start gap-1">
           <time dateTime={log.started_at} className="text-xs text-muted-foreground">
@@ -607,7 +597,7 @@ export function RequestLogsView({
 
   return (
     <Collapsible
-      className="flex min-w-0 flex-col gap-3"
+      className="@container flex min-w-0 flex-col gap-3"
       open={filtersOpen}
       onOpenChange={setFiltersOpen}
     >
@@ -915,7 +905,7 @@ export function RequestLogsView({
               </Field>
               <Field className="justify-end">
                 <FieldLabel className="sr-only">{t("Filter actions")}</FieldLabel>
-                <div className="flex gap-2">
+                <div className="flex min-w-0 flex-wrap gap-2">
                   <Button
                     type="submit"
                     className="flex-1"
@@ -942,7 +932,7 @@ export function RequestLogsView({
             </FieldGroup>
           </form>
       </CollapsibleContent>
-      <div className={cn("grid min-w-0 items-start", selectedId && !isMobile && "grid-cols-[minmax(0,1fr)_minmax(16rem,31%)]")}>
+      <div className={cn("grid min-w-0 items-start", selectedId && !isMobile && "@min-[44rem]:grid-cols-[minmax(0,1fr)_minmax(16rem,31%)]")}>
         <section aria-label={t("Requests")} className="min-w-0 [&_tr:has([aria-current=true])]:bg-accent/60">
           <AsyncResource
             isLoading={query.isLoading}

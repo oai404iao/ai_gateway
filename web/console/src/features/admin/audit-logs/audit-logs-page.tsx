@@ -37,15 +37,15 @@ export function AuditLogsPage() {
 
   const columns: Column<AuditLogView>[] = [
     {
-      key: "occurred",
+      key: "occurred", basis: 7.5,
       header: t("Occurred"),
       render: (log) => formatDateTime(log.occurred_at),
     },
-    { key: "action", header: t("Action"), render: (log) => <span className="font-mono text-xs">{log.action}</span> },
-    { key: "object", header: t("Object"), render: objectLabel },
-    { key: "actor", header: t("Actor"), render: (log) => log.actor_role ?? log.actor_type },
+    { key: "action", basis: 7, header: t("Action"), render: (log) => <span className="font-mono text-xs">{log.action}</span> },
+    { key: "object", basis: 9, header: t("Object"), render: objectLabel },
+    { key: "actor", basis: 4, header: t("Actor"), render: (log) => log.actor_role ?? log.actor_type },
     {
-      key: "correlation",
+      key: "correlation", basis: 5.5,
       header: t("Correlation"),
       render: (log) => (log.correlation_id ? log.correlation_id.slice(0, 8) : "—"),
     },

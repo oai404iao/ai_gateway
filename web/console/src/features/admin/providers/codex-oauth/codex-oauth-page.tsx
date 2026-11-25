@@ -853,7 +853,7 @@ export default function CodexOauthPage() {
                     <TableHead>{t("Quota")}</TableHead>
                     <TableHead>{t("Token")}</TableHead>
                     <TableHead>{t("Maintenance proxy")}</TableHead>
-                    <TableHead className="text-right">{t("Actions")}</TableHead>
+                    <TableHead pinned>{t("Actions")}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -959,7 +959,7 @@ export default function CodexOauthPage() {
                           {credential.proxy_id ? proxies.find((proxy) => proxy.id === credential.proxy_id)?.name ?? t("Proxy assigned") : t("Direct")}
                         </p>
                       </TableCell>
-                      <TableCell className="align-top">
+                      <TableCell pinned className="align-top">
                         <div className="flex flex-col items-end gap-1">
                           <div className="flex gap-1">
                             <Tooltip disableHoverablePopup>

@@ -375,7 +375,7 @@ function ModelEditor({ id }: { id: string }) {
       detailCard={
         !isNew && data ? (
           <Card>
-            <CardHeader>
+            <CardHeader className="wrap-anywhere">
               <CardTitle>{data.data.display_name}</CardTitle>
               {data.data.source_model_id !== data.data.display_name && <CardDescription className="font-mono">{data.data.source_model_id}</CardDescription>}
             </CardHeader>

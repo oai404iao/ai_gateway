@@ -75,7 +75,7 @@ export function ResourceDirectory<T>({ rows, columns, rowKey, rowName, rowHref, 
       <div className={cn("min-w-0 py-2 [&_tr:has([aria-pressed=true])]:bg-accent", selected && "hidden @min-[48rem]:block")}>
         <ResourceTable rows={matches} rowKey={rowKey} rowHref={rowHref} linkColumnKey={linkColumnKey} groupBy={groupBy} pagination={pagination}
           renderToolbar={renderToolbar ? (items) => renderToolbar(items, matches) : undefined}
-          columns={[...columns, { key: "inspect", header: "", className: "w-9", render: (row) => (
+          columns={[...columns, { key: "inspect", header: "", pinned: true, basis: 2.75, className: "w-11", render: (row) => (
             <Button id={`${inspectorHeading}-${rowKey(row)}`} variant="ghost" size="icon-sm" aria-label={t("Inspect {name}", { name: labels.get(rowKey(row))! })} aria-pressed={rowKey(row) === selectedId} onClick={() => inspect(row)}>
               <PanelRightOpen data-icon="inline-start" />
             </Button>

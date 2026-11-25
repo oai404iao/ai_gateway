@@ -186,7 +186,8 @@ test("desktop request logs retain the comparison table without growing for long 
   await login(page);
   const longModel = "synthetic-provider/" + "unbroken-model-identifier".repeat(16);
   await page.route((url) => url.pathname === "/console/v1/request-logs", (route) =>
-    route.fulfill({ json: [{ ...E2E_SYSTEM_REQUEST_LOG, client_model: longModel }] }),
+    route.fulfill({ json: [{ ...E2E_SYSTEM_REQUEST_LOG, client_model: longModel,
+      input_tokens: 8e18, cached_input_tokens: 4e18, output_tokens: 7e18, reasoning_tokens: 3e18 }] }),
   );
   await page.goto("/admin/request-logs");
   await expect(page.locator("html")).toHaveClass(/\bdark\b/);
@@ -200,6 +201,7 @@ test("desktop request logs retain the comparison table without growing for long 
   await expect(cell).toBeVisible();
   expect(await cell.evaluate((node) => node.getBoundingClientRect().width)).toBeLessThan(226);
   expect(await cell.evaluate((node) => node.getBoundingClientRect().height)).toBeLessThan(120);
+  expect(await table.locator("td").evaluateAll(cells => cells.every(cell => cell.scrollWidth <= cell.clientWidth + 1))).toBe(true);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(1440);
   await table.getByRole("button", { name: "View details" }).click();
   const inspector = page.getByRole("complementary", { name: "Request log" });
@@ -208,4 +210,111 @@ test("desktop request logs retain the comparison table without growing for long 
   await inspector.getByRole("button", { name: "Close inspector" }).press("Escape");
   await expect(inspector).toBeHidden();
   await expect(table.getByRole("button", { name: "View details" })).toBeFocused();
+});
+
+function tableLayout(table: Locator) {
+  return table.evaluate((node: HTMLTableElement) => {
+    const scroller = node.parentElement!;
+    const action = node.tBodies[0].rows[0].cells[node.rows[0].cells.length - 1];
+    const button = action.querySelector("button")!.getBoundingClientRect();
+    const viewport = scroller.getBoundingClientRect();
+    return {
+      available: scroller.clientWidth,
+      width: node.offsetWidth,
+      overflow: scroller.scrollWidth - scroller.clientWidth,
+      action: action.offsetWidth,
+      actionAtEdge: Math.abs(viewport.right - action.getBoundingClientRect().right) <= 1 &&
+        button.left >= viewport.left && button.right <= viewport.right,
+    };
+  });
+}
+
+test("system log columns share the table width and keep the action reachable in the split inspector", async ({ page }) => {
+  await login(page);
+  await page.goto("/admin/request-logs");
+  const table = page.getByRole("table");
+  const details = table.getByRole("button", { name: "View details" });
+  const model = table.getByRole("columnheader", { name: "Model", exact: true });
+  const modelWidth = () => model.evaluate(node => node.getBoundingClientRect().width);
+  const chooser = page.getByRole("button", { name: "Display columns" });
+  await expect(details).toBeVisible();
+  for (const width of [1372, 1440, 1552, 1618]) {
+    await page.setViewportSize({ width, height: 900 });
+    const layout = await tableLayout(table);
+    expect(layout, `viewport ${width}`).toMatchObject({ width: layout.available, overflow: 0, action: 44, actionAtEdge: true });
+  }
+
+  const full = await tableLayout(table);
+  const before = await modelWidth();
+  await chooser.click();
+  await page.getByRole("menuitemcheckbox", { name: "Channel group", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await expect(table.getByRole("columnheader", { name: "Channel group", exact: true })).toHaveCount(0);
+  expect(await modelWidth()).toBeGreaterThan(before);
+  expect(await tableLayout(table)).toEqual(full);
+
+  await details.press("Enter");
+  const inspector = page.getByRole("complementary", { name: "Request log" });
+  const close = inspector.getByRole("button", { name: "Close inspector" });
+  await expect(close).toBeFocused();
+  const split = await tableLayout(table);
+  expect(split.available).toBeLessThan(full.available);
+  expect(split.overflow).toBeGreaterThan(0);
+  expect(split.actionAtEdge).toBe(true);
+  const scroller = table.locator("..");
+  await scroller.evaluate(node => { node.scrollLeft = node.scrollWidth; });
+  expect(await tableLayout(table)).toMatchObject({ action: full.action, actionAtEdge: true });
+  await chooser.click();
+  for (const name of ["Channel", "User", "Cost"]) {
+    await page.getByRole("menuitemcheckbox", { name, exact: true }).click();
+  }
+  await page.keyboard.press("Escape");
+  await expect(table.getByRole("columnheader")).toHaveCount(7);
+  expect(await tableLayout(table)).toMatchObject({ available: split.available, width: split.available, overflow: 0, actionAtEdge: true });
+
+  await page.setViewportSize({ width: 820, height: 900 });
+  const inspectorRect = (await inspector.boundingBox())!;
+  const tableRect = (await table.boundingBox())!;
+  expect(tableRect.y).toBeGreaterThanOrEqual(inspectorRect.y + inspectorRect.height);
+  expect(await tableLayout(table)).toMatchObject({ actionAtEdge: true });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(820);
+  await close.press("Escape");
+  await expect(details).toBeFocused();
+});
+
+test("ordinary Chinese system logs fit without horizontal scrolling", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1618, height: 900 });
+  await page.emulateMedia({ colorScheme: "dark" });
+  await login(page);
+  await page.addInitScript(() => localStorage.setItem("ai-gateway-console.locale", "zh-CN"));
+  await page.route(url => url.pathname === "/console/v1/request-logs", route => route.fulfill({
+    json: [{ ...E2E_SYSTEM_REQUEST_LOG, client_model: "gpt-5.6-terra", upstream_model: "gpt-5.6-terra", channel_name: "JP_1", user_name: "系统管理员", channel_group_name: "测试 plus" }],
+  }));
+  await page.goto("/admin/request-logs");
+  const table = page.getByRole("table");
+  await expect(table.getByRole("button", { name: "查看详情" })).toBeVisible();
+  expect(await tableLayout(table)).toMatchObject({ overflow: 0, actionAtEdge: true });
+  const path = testInfo.outputPath("system-logs.png");
+  await table.screenshot({ path });
+  await testInfo.attach("System log table", { path, contentType: "image/png" });
+});
+
+test("opening the stacked inspector from a later row brings its controls into view", async ({ page }) => {
+  await page.setViewportSize({ width: 820, height: 650 });
+  await login(page);
+  const rows = Array.from({ length: 18 }, (_, i) => ({
+    ...E2E_SYSTEM_REQUEST_LOG, id: `00000000-0000-0000-0000-${String(i + 1).padStart(12, "0")}`,
+  }));
+  await page.route(url => url.pathname === "/console/v1/request-logs", route => route.fulfill({ json: rows }));
+  await page.route(url => url.pathname === `/console/v1/request-logs/${rows.at(-1)!.id}`, route => route.fulfill({ json: rows.at(-1) }));
+  await page.goto("/admin/request-logs");
+  const opener = page.getByRole("table").getByRole("button", { name: "View details" }).last();
+  await opener.scrollIntoViewIfNeeded();
+  await opener.press("Enter");
+  const close = page.getByRole("button", { name: "Close inspector" });
+  await expect(close).toBeFocused();
+  await expect(close).toBeInViewport({ ratio: 1 });
+  await close.press("Escape");
+  await expect(opener).toBeFocused();
+  await expect(opener).toBeInViewport({ ratio: 1 });
 });

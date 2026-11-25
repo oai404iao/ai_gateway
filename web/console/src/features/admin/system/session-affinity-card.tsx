@@ -446,7 +446,7 @@ export function SessionAffinityCard({
                       <TableHead>{t("Key sources")}</TableHead>
                       <TableHead>{t("TTL")}</TableHead>
                       <TableHead>{t("Valid cache entries")}</TableHead>
-                      <TableHead className="text-right">{t("Actions")}</TableHead>
+                      <TableHead pinned>{t("Actions")}</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -486,8 +486,8 @@ export function SessionAffinityCard({
                               : (cacheCounts.get(rule.name) ?? 0).toLocaleString()}
                           </Badge>
                         </TableCell>
-                        <TableCell>
-                          <div className="flex justify-end gap-1">
+                        <TableCell pinned>
+                          <div className="ml-auto flex flex-wrap justify-end gap-1 max-sm:w-24 sm:flex-nowrap">
                             <Button
                               type="button"
                               variant="ghost"

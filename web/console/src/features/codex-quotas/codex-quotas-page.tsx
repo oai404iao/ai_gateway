@@ -296,7 +296,7 @@ export function CodexQuotasPage() {
                         <TableHead>{t("Primary window")}</TableHead>
                         <TableHead>{t("Secondary window")}</TableHead>
                         <TableHead>{t("Last checked")}</TableHead>
-                        <TableHead className="text-right">
+                        <TableHead pinned>
                           {t("Quota history")}
                         </TableHead>
                       </TableRow>
@@ -337,7 +337,7 @@ export function CodexQuotasPage() {
                           <TableCell>
                             {formatDateTime(credential.quota_checked_at)}
                           </TableCell>
-                          <TableCell className="text-right">
+                          <TableCell pinned>
                             <Button
                               size="sm"
                               variant="outline"

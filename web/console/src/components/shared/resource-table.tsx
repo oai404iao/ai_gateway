@@ -1,4 +1,5 @@
 import { Fragment, type ReactNode, useEffect, useMemo, useState } from "react";
+import { PanelRightOpen } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import {
   Table,
@@ -18,6 +19,9 @@ export interface Column<T> {
   header: string;
   render: (row: T) => ReactNode;
   className?: string;
+  pinned?: boolean;
+  /** Minimum width in rem. Supply for all columns to share extra space proportionally. Pinned columns keep their basis. */
+  basis?: number;
 }
 
 interface ResourceTableProps<T> {
@@ -45,6 +49,7 @@ interface ResourceTableProps<T> {
 
 const DEFAULT_PAGE_SIZE = 20;
 const DEFAULT_PAGE_SIZE_OPTIONS = [10, 20, 50] as const;
+const ROW_ACTION_WIDTH = 2.75;
 
 /** A compact, clickable, grouped, and paginated data table used by list pages. */
 export function ResourceTable<T>({
@@ -103,19 +108,28 @@ export function ResourceTable<T>({
   if (rows.length === 0 && empty) {
     return <div>{empty}</div>;
   }
+  const proportional = columns.length > 0 && columns.every(column => column.basis !== undefined);
+  const cellClass = (column: Column<T>) => cn(proportional && !column.pinned && "whitespace-normal wrap-anywhere", column.className);
+  const dataBasis = columns.reduce((sum, column) => sum + (column.pinned ? 0 : column.basis ?? 0), 0);
+  const minWidth = columns.reduce((sum, column) => sum + (column.basis ?? 0), rowActionLabel ? ROW_ACTION_WIDTH : 0);
   return (
     <div className="flex min-w-0 flex-col gap-4">
       {renderToolbar?.(visibleRows)}
       <div className="min-w-0 overflow-clip rounded-md border bg-card">
-        <Table>
+        <Table className={cn(proportional && "table-fixed")} style={proportional ? { minWidth: `${minWidth}rem` } : undefined}>
+          {proportional && <colgroup>
+            {columns.map(column => <col key={column.key} style={{ width: column.pinned
+              ? `${column.basis}rem` : `${100 * column.basis! / dataBasis}%` }} />)}
+            {rowActionLabel && <col style={{ width: `${ROW_ACTION_WIDTH}rem` }} />}
+          </colgroup>}
           <TableHeader>
             <TableRow>
               {columns.map((column) => (
-                <TableHead key={column.key} className={column.className}>
+                <TableHead key={column.key} pinned={column.pinned} className={cellClass(column)}>
                   {column.header}
                 </TableHead>
               ))}
-              {rowActionLabel ? <TableHead><span className="sr-only">{rowActionLabel}</span></TableHead> : null}
+              {rowActionLabel ? <TableHead pinned className="w-11"><span className="sr-only">{rowActionLabel}</span></TableHead> : null}
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -155,7 +169,7 @@ export function ResourceTable<T>({
                     }
                   >
                     {columns.map((column) => (
-                      <TableCell key={column.key} className={column.className}>
+                      <TableCell key={column.key} pinned={column.pinned} className={cellClass(column)}>
                         {rowHref && column.key === linkColumnKey ? (
                           <Link to={rowHref(row)} className="rounded-sm font-medium underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-ring">
                             {column.render(row)}
@@ -164,9 +178,9 @@ export function ResourceTable<T>({
                       </TableCell>
                     ))}
                     {rowActionLabel ? (
-                      <TableCell>
-                        <Button variant="ghost" size="sm" onClick={() => onRowClick?.(row)}>
-                          {rowActionLabel}
+                      <TableCell pinned>
+                        <Button variant="ghost" size="icon-sm" aria-label={rowActionLabel} title={rowActionLabel} onClick={() => onRowClick?.(row)}>
+                          <PanelRightOpen />
                         </Button>
                       </TableCell>
                     ) : null}
