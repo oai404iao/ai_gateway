@@ -106,6 +106,8 @@ SQLite 使用相邻秩与 PG 插值公式实现百分位，见[精确查询](sql
 | 模型 | 按 client_model 和 API format 聚合（包括时间桶内的模型行）；与日志的精确模型筛选一致 |
 | 渠道 | 系统视图按逻辑渠道聚合，请求身份通过不可变注册表归属；不再按能力、组或格式拆行 |
 
+个人概览的上期对比只读 `GET /statistics/costs/summary`；当期趋势和明细仍读完整个人报表。两个端点的摘要口径相同。
+
 渠道费用行使用逻辑渠道的名称，重命名不拆分费用；不按同名渠道推断归属。个人响应不返回渠道明细。
 费用来源是事实而非日志或回执，不把 amount_state/结算资格过滤偷偷加入统计。
 金额必须精确聚合；SQLite 禁止原生 SUM/浮点，最终报告遵守既有 Decimal 结果边界。
@@ -156,11 +158,12 @@ API 只读周期/条目快照，不在页面请求时扫描事实。
 | GET /me/usage | 当前用户固定 365 天，无 user 参数 |
 | GET /statistics/channel-group-status | window=24h/3d/7d，任意登录用户 |
 | GET /statistics/costs | started_after/before、granularity、可选 api_key_id；个人范围 |
+| GET /statistics/costs/summary | 个人范围；只接受必填的 started_after/before，无时间桶、模型和渠道明细 |
 | GET /system/statistics/costs | 管理员；再加 user_id、逻辑 channel_id |
 | GET /statistics/spend-leaderboard | period=day/week/month（默认 day）、可选 period_start、limit |
 | GET /system/load | 管理员，实时单实例指标，不是统计历史 |
 
-无效时间/粒度/周期/limit、个人端点系统筛选按 OpenAPI 返回 422；系统花费接口拒绝未知参数。
+无效时间范围、粒度、周期或 limit 返回 422。个人完整报表拒绝系统级筛选（422）；摘要接口缺少时间边界或含未知参数返回 400。
 响应类型由 OpenAPI 生成，不能在前端手改。
 
 维护验证重点：

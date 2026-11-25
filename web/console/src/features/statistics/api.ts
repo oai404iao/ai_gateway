@@ -4,6 +4,7 @@ import type {
   ChannelGroupStatusReport,
   ChannelGroupStatusWindow,
   CostStatisticsReport,
+  CostStatisticsSummary,
   PersonalUsageReport,
   StatisticsGranularity,
 } from "@/api/types";
@@ -41,6 +42,13 @@ export function usePersonalUsage() {
   return useQuery({
     queryKey: ["console", "statistics", "personal-usage"] as const,
     queryFn: () => apiGet<PersonalUsageReport>("/me/usage"),
+  });
+}
+
+export function useOwnCostSummary(bounds: Pick<CostStatisticsFilters, "started_after" | "started_before">) {
+  return useQuery({
+    queryKey: ["console", "own", "statistics", "cost-summary", bounds] as const,
+    queryFn: () => apiGet<CostStatisticsSummary>(`/statistics/costs/summary?${queryString(bounds)}`),
   });
 }
 

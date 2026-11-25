@@ -244,10 +244,9 @@ async fn exercise_authorization(repository: ai_gateway::persistence::ControlPlan
         ["open_ai_chat_completions", "open_ai_images"]
     );
     let policy = repository
-        .control_plane_lists()
+        .admin_api_key_policies()
         .await
         .unwrap()
-        .api_key_policies
         .into_iter()
         .find(|p| p.id == POLICY)
         .unwrap();
@@ -573,10 +572,9 @@ async fn exercise_channel_authority_and_route_withdrawal(
         .await
         .unwrap();
     let policy = repository
-        .control_plane_lists()
+        .admin_api_key_policies()
         .await
         .unwrap()
-        .api_key_policies
         .into_iter()
         .find(|p| p.id == POLICY)
         .unwrap();
@@ -1156,10 +1154,9 @@ async fn exercise_model_lifecycle(repository: &ai_gateway::persistence::ControlP
     );
 
     let model = repository
-        .control_plane_lists()
+        .admin_models()
         .await
         .unwrap()
-        .models
         .into_iter()
         .find(|model| model.id == MODEL)
         .unwrap();
@@ -1318,10 +1315,9 @@ async fn exercise_self_service_channel_boundary(
             .unwrap();
     }
     let policy = repository
-        .control_plane_lists()
+        .admin_api_key_policies()
         .await
         .unwrap()
-        .api_key_policies
         .into_iter()
         .find(|p| p.id == POLICY)
         .unwrap();

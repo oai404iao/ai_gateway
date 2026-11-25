@@ -226,10 +226,7 @@ async fn catalog_and_probe_contract(repositories: Repositories) {
         repository.ensure_system_probe_identity().await.unwrap(),
         identity
     );
-    assert_eq!(
-        repository.control_plane_lists().await.unwrap().users.len(),
-        1
-    );
+    assert_eq!(repository.admin_users().await.unwrap().len(), 1);
     let input = |source: &str, price: &str, local| {
         let model = ai_gateway::models_dev::ModelsDevModel {
             model_id: source.into(),
@@ -348,10 +345,9 @@ async fn audit_for(repositories: &Repositories, action: &str, object_id: Uuid) -
 async fn listed_user(repositories: &Repositories, id: Uuid) -> ControlPlaneUser {
     repositories
         .control_plane
-        .control_plane_lists()
+        .admin_users()
         .await
         .unwrap()
-        .users
         .into_iter()
         .find(|user| user.id == id)
         .expect("expected user in the control-plane list")
@@ -822,16 +818,18 @@ async fn control_plane_contract(repositories: Repositories) {
     let world = world(&repositories).await;
     let repository = &repositories.control_plane;
 
-    let lists = repository.control_plane_lists().await.unwrap();
-    assert_eq!(lists.users.len(), 2);
-    assert!(lists.users.iter().any(|user| user.id == world.admin));
-    assert!(lists.users.iter().any(|user| user.id == world.user));
+    let users = repository.admin_users().await.unwrap();
+    let api_key_policies = repository.admin_api_key_policies().await.unwrap();
+    let api_keys = repository.admin_api_keys().await.unwrap();
+    assert_eq!(users.len(), 2);
+    assert!(users.iter().any(|user| user.id == world.admin));
+    assert!(users.iter().any(|user| user.id == world.user));
     let topology = repository.topology().await.unwrap();
     assert_eq!(topology.routing_groups.len(), 1);
     assert_eq!(topology.logical_channels.len(), 1);
     assert_eq!(topology.logical_channels[0].access_id, world.access);
-    assert_eq!(lists.api_key_policies.len(), 1);
-    assert!(lists.api_keys.is_empty());
+    assert_eq!(api_key_policies.len(), 1);
+    assert!(api_keys.is_empty());
 
     let channel = listed_channel(&repositories, world.channel).await;
     assert_eq!(channel.name, "Parity Channel");
@@ -873,10 +871,9 @@ async fn control_plane_contract(repositories: Repositories) {
     )
     .await;
     let listed = repository
-        .control_plane_lists()
+        .admin_proxies()
         .await
         .unwrap()
-        .proxies
         .into_iter()
         .find(|proxy| proxy.id == created.id)
         .unwrap();
@@ -904,10 +901,9 @@ async fn control_plane_contract(repositories: Repositories) {
     assert_eq!(updated.action, "update");
     assert_eq!(
         repository
-            .control_plane_lists()
+            .admin_proxies()
             .await
             .unwrap()
-            .proxies
             .into_iter()
             .find(|proxy| proxy.id == created.id)
             .unwrap()
@@ -1501,10 +1497,9 @@ fn admin_api_key_create(user: Uuid, group: Uuid, name: &str) -> ApiKeyCreate {
 async fn listed_user_group(repositories: &Repositories, id: Uuid) -> ControlPlaneUserGroup {
     repositories
         .control_plane
-        .control_plane_lists()
+        .admin_user_groups()
         .await
         .unwrap()
-        .user_groups
         .into_iter()
         .find(|group| group.id == id)
         .unwrap_or_else(|| panic!("user group {id} must be listed"))
@@ -1513,10 +1508,9 @@ async fn listed_user_group(repositories: &Repositories, id: Uuid) -> ControlPlan
 async fn listed_model(repositories: &Repositories, id: Uuid) -> ControlPlaneModel {
     repositories
         .control_plane
-        .control_plane_lists()
+        .admin_models()
         .await
         .unwrap()
-        .models
         .into_iter()
         .find(|model| model.id == id)
         .unwrap_or_else(|| panic!("model {id} must be listed"))
@@ -1635,10 +1629,9 @@ async fn operation_graph(repositories: &Repositories, profile: Uuid) -> Operatio
 async fn listed_key(repositories: &Repositories, id: Uuid) -> ControlPlaneApiKey {
     repositories
         .control_plane
-        .control_plane_lists()
+        .admin_api_keys()
         .await
         .unwrap()
-        .api_keys
         .into_iter()
         .find(|key| key.id == id)
         .unwrap_or_else(|| panic!("api key {id} must be listed"))
@@ -1647,10 +1640,9 @@ async fn listed_key(repositories: &Repositories, id: Uuid) -> ControlPlaneApiKey
 async fn listed_policy(repositories: &Repositories, id: Uuid) -> ControlPlaneApiKeyPolicy {
     repositories
         .control_plane
-        .control_plane_lists()
+        .admin_api_key_policies()
         .await
         .unwrap()
-        .api_key_policies
         .into_iter()
         .find(|policy| policy.id == id)
         .unwrap_or_else(|| panic!("api key policy {id} must be listed"))
@@ -1659,10 +1651,9 @@ async fn listed_policy(repositories: &Repositories, id: Uuid) -> ControlPlaneApi
 async fn listed_proxy(repositories: &Repositories, id: Uuid) -> ControlPlaneProxy {
     repositories
         .control_plane
-        .control_plane_lists()
+        .admin_proxies()
         .await
         .unwrap()
-        .proxies
         .into_iter()
         .find(|proxy| proxy.id == id)
         .unwrap_or_else(|| panic!("proxy {id} must be listed"))
@@ -1671,10 +1662,9 @@ async fn listed_proxy(repositories: &Repositories, id: Uuid) -> ControlPlaneProx
 async fn listed_template(repositories: &Repositories, id: Uuid) -> ControlPlaneConfigTemplate {
     repositories
         .control_plane
-        .control_plane_lists()
+        .admin_config_templates()
         .await
         .unwrap()
-        .config_templates
         .into_iter()
         .find(|template| template.id == id)
         .unwrap_or_else(|| panic!("config template {id} must be listed"))
@@ -1920,12 +1910,18 @@ async fn user_group_lifecycle_contract(repositories: Repositories) {
     );
     assert!(
         repository
-            .control_plane_lists()
+            .admin_user_groups()
             .await
             .unwrap()
-            .user_groups
             .iter()
             .all(|group| group.id != created.id)
+    );
+    assert!(
+        repository
+            .admin_user_group(created.id)
+            .await
+            .unwrap()
+            .is_none()
     );
     let code = repositories
         .auth
@@ -2141,13 +2137,14 @@ async fn user_lifecycle_contract(repositories: Repositories) {
     );
     assert!(
         repository
-            .control_plane_lists()
+            .admin_users()
             .await
             .unwrap()
-            .users
             .iter()
             .all(|user| user.id != deleted.id)
     );
+    assert!(repository.admin_user(deleted.id).await.unwrap().is_none());
+    assert!(repository.admin_api_key(key).await.unwrap().is_none());
     assert!(repository.own_api_keys(user).await.unwrap().is_empty());
     assert!(repository.own_api_key(user, key).await.unwrap().is_none());
     assert!(
@@ -2478,13 +2475,13 @@ async fn model_routing_lifecycle_contract(repositories: Repositories) {
     );
     assert!(
         repository
-            .control_plane_lists()
+            .admin_models()
             .await
             .unwrap()
-            .models
             .iter()
             .all(|model| model.id != deleted.id)
     );
+    assert!(repository.admin_model(deleted.id).await.unwrap().is_none());
     assert!(
         !repository
             .model_source_versions()
@@ -2635,12 +2632,18 @@ async fn admin_api_key_and_policy_contract(repositories: Repositories) {
     );
     assert!(
         repository
-            .control_plane_lists()
+            .admin_api_keys()
             .await
             .unwrap()
-            .api_keys
             .iter()
             .all(|key| key.id != deleted.id)
+    );
+    assert!(
+        repository
+            .admin_api_key(deleted.id)
+            .await
+            .unwrap()
+            .is_none()
     );
     assert!(
         repository
@@ -3649,14 +3652,7 @@ async fn template_proxy_and_group_deletion_contract(repositories: Repositories) 
     )
     .await;
     assert_eq!(deleted.action, "delete");
-    assert!(
-        repository
-            .control_plane_lists()
-            .await
-            .unwrap()
-            .proxies
-            .is_empty()
-    );
+    assert!(repository.admin_proxies().await.unwrap().is_empty());
     assert!(repository.load().await.unwrap().proxies.is_empty());
 
     // Deletion cannot cascade across routes, capabilities, or fixed grants.
@@ -3763,7 +3759,8 @@ async fn template_proxy_and_group_deletion_contract(repositories: Repositories) 
         );
     }
 
-    let lists = repository.control_plane_lists().await.unwrap();
+    let api_keys = repository.admin_api_keys().await.unwrap();
+    let api_key_policies = repository.admin_api_key_policies().await.unwrap();
     let topology = repository.topology().await.unwrap();
     assert_ne!(
         topology
@@ -3805,14 +3802,12 @@ async fn template_proxy_and_group_deletion_contract(repositories: Repositories) 
     assert!(!graph.rule.enabled);
     assert!(graph.tiers.is_empty());
     assert!(graph.candidates.is_empty());
-    let key = lists
-        .api_keys
+    let key = api_keys
         .iter()
         .find(|key| key.id == bound_key)
         .expect("the key retains its selected group");
     assert_eq!(key.allowed_group_ids, vec![world.group]);
-    let policy = lists
-        .api_key_policies
+    let policy = api_key_policies
         .iter()
         .find(|policy| policy.id == world.policy)
         .expect("the policy retains its selected group");
@@ -3835,14 +3830,15 @@ async fn observable_state(repositories: &Repositories) -> Value {
             "key_grants": topology.api_key_grants,
             "policy_grants": topology.policy_grants,
         },
-        "lists": serde_json::to_value(
-            repositories
-                .control_plane
-                .control_plane_lists()
-                .await
-                .unwrap()
-        )
-        .unwrap(),
+        "lists": {
+            "users": repositories.control_plane.admin_users().await.unwrap(),
+            "user_groups": repositories.control_plane.admin_user_groups().await.unwrap(),
+            "api_keys": repositories.control_plane.admin_api_keys().await.unwrap(),
+            "api_key_policies": repositories.control_plane.admin_api_key_policies().await.unwrap(),
+            "proxies": repositories.control_plane.admin_proxies().await.unwrap(),
+            "models": repositories.control_plane.admin_models().await.unwrap(),
+            "config_templates": repositories.control_plane.admin_config_templates().await.unwrap(),
+        },
         "settings": serde_json::to_value(
             repositories
                 .control_plane
@@ -4529,6 +4525,54 @@ async fn authorization_and_etag_rollback_contract(repositories: Repositories) {
 }
 
 #[tokio::test]
+async fn admin_resource_details_match_lists_on_both_backends() {
+    run_contract(|repositories| async move {
+        let world = world(&repositories).await;
+        let repo = &repositories.control_plane;
+        for mutation in [
+            ControlPlaneMutation::CreateApiKey(admin_api_key_create(
+                world.user,
+                world.group,
+                "Detail key",
+            )),
+            ControlPlaneMutation::CreateModel(model_input("detail-model", "Detail model")),
+            ControlPlaneMutation::CreateProxy(proxy_input("Detail proxy")),
+        ] {
+            commit_mutation(&repositories, world.admin, mutation).await;
+        }
+        macro_rules! check_details {
+            ($list:ident, $detail:ident) => {{
+                let listed = repo.$list().await.unwrap();
+                assert!(!listed.is_empty());
+                for row in listed {
+                    let detail = repo.$detail(row.id).await.unwrap().unwrap();
+                    assert_eq!(
+                        serde_json::to_value(detail).unwrap(),
+                        serde_json::to_value(row).unwrap()
+                    );
+                }
+                assert!(repo.$detail(Uuid::nil()).await.unwrap().is_none());
+            }};
+        }
+        check_details!(admin_users, admin_user);
+        check_details!(admin_user_groups, admin_user_group);
+        check_details!(admin_api_keys, admin_api_key);
+        check_details!(admin_api_key_policies, admin_api_key_policy);
+        check_details!(admin_models, admin_model);
+        check_details!(admin_proxies, admin_proxy);
+        let probe = repo.ensure_system_probe_identity().await.unwrap();
+        assert!(repo.admin_user(probe.user_id).await.unwrap().is_none());
+        assert!(
+            repo.admin_api_key(probe.api_key_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn control_plane_projection_contract_matches_across_backends() {
     run_contract(control_plane_projection_contract).await;
 }
@@ -4641,12 +4685,9 @@ async fn control_plane_projection_contract(repositories: Repositories) {
         )
         .await;
     }
-    let lists = repository.control_plane_lists().await.unwrap();
-    let model_ids = lists
-        .models
-        .iter()
-        .map(|model| model.id)
-        .collect::<Vec<_>>();
+    let models = repository.admin_models().await.unwrap();
+    let user_groups = repository.admin_user_groups().await.unwrap();
+    let model_ids = models.iter().map(|model| model.id).collect::<Vec<_>>();
     let mut sorted_ids = model_ids.clone();
     sorted_ids.sort_unstable();
     assert_eq!(model_ids, sorted_ids, "models are ordered by id");
@@ -4661,8 +4702,7 @@ async fn control_plane_projection_contract(repositories: Repositories) {
     let mut sorted_groups = group_ids.clone();
     sorted_groups.sort_unstable();
     assert_eq!(group_ids, sorted_groups, "channel groups are ordered by id");
-    let user_group_names = lists
-        .user_groups
+    let user_group_names = user_groups
         .iter()
         .map(|group| group.name.clone())
         .collect::<Vec<_>>();

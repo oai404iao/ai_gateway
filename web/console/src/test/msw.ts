@@ -237,6 +237,9 @@ export const handlers = [
   http.get("/console/v1/statistics/channel-group-status", () =>
     HttpResponse.json(CHANNEL_GROUP_STATUS_REPORT),
   ),
+  http.get("/console/v1/statistics/costs/summary", () =>
+    HttpResponse.json(OWN_COST_STATISTICS_REPORT.summary),
+  ),
   http.get("/console/v1/statistics/costs", () =>
     HttpResponse.json(OWN_COST_STATISTICS_REPORT),
   ),

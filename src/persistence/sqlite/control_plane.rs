@@ -11,7 +11,8 @@
 //! credential and token lifecycle operations live in the Codex repository;
 //! canonical topology writes are shared with PostgreSQL.
 //!
-//! Reads run inside a transaction so one snapshot spans every record query.
+//! Multi-query snapshot reads run inside a transaction. Each ordinary admin
+//! list or detail read projects only the requested resource.
 //! Prepared-change ordering and mutation results match
 //! the PostgreSQL repository's neutral contracts.
 
@@ -30,18 +31,17 @@ use crate::{
     persistence::{
         ApiKeyPolicyInput, ChannelBatchUpdateInput, ConfigTemplateMutationInput, ConsoleApiKey,
         ConsoleAuditLog, ControlPlaneApiKey, ControlPlaneApiKeyPolicy, ControlPlaneConfigTemplate,
-        ControlPlaneConfigTemplateDetail, ControlPlaneLists, ControlPlaneModel,
-        ControlPlaneMutation, ControlPlaneProxy, ControlPlaneRecords, ControlPlaneUser,
-        ControlPlaneUserGroup, DEFAULT_ADMIN_GROUP_ID, DEFAULT_USER_GROUP_ID,
-        FORWARDING_SETTINGS_KEY, ModelInput, ModelRuleCreateInput, ModelSourceVersions,
-        MutationResult, ProxyCreateInput, ProxyInput, ProxyRecord, RepositoryError,
-        RuntimeConfigRecords, SYSTEM_PROBE_API_KEY_ID, SYSTEM_PROBE_API_KEY_NAME,
-        SYSTEM_PROBE_DISPLAY_NAME, SYSTEM_PROBE_USER_ID, SelfApiKeyCreate, SelfApiKeyCurrent,
-        SelfApiKeyOptions, SelfApiKeyPolicy, SelfApiKeyUpdate, SystemProbeIdentity,
-        SystemSettingsInput, SystemSettingsRecord, SystemSettingsView, UserBatchUpdateInput,
-        UserGroupInput, UserInput, UserSettingsInput, UserSettingsView, UserUpdateInput,
-        deleted_api_key_secret, generate_api_key_secret, system_settings_audit_value,
-        system_settings_view,
+        ControlPlaneConfigTemplateDetail, ControlPlaneModel, ControlPlaneMutation,
+        ControlPlaneProxy, ControlPlaneRecords, ControlPlaneUser, ControlPlaneUserGroup,
+        DEFAULT_ADMIN_GROUP_ID, DEFAULT_USER_GROUP_ID, FORWARDING_SETTINGS_KEY, ModelInput,
+        ModelRuleCreateInput, ModelSourceVersions, MutationResult, ProxyCreateInput, ProxyInput,
+        ProxyRecord, RepositoryError, RuntimeConfigRecords, SYSTEM_PROBE_API_KEY_ID,
+        SYSTEM_PROBE_API_KEY_NAME, SYSTEM_PROBE_DISPLAY_NAME, SYSTEM_PROBE_USER_ID,
+        SelfApiKeyCreate, SelfApiKeyCurrent, SelfApiKeyOptions, SelfApiKeyPolicy, SelfApiKeyUpdate,
+        SystemProbeIdentity, SystemSettingsInput, SystemSettingsRecord, SystemSettingsView,
+        UserBatchUpdateInput, UserGroupInput, UserInput, UserSettingsInput, UserSettingsView,
+        UserUpdateInput, deleted_api_key_secret, generate_api_key_secret,
+        system_settings_audit_value, system_settings_view,
         upstream_topology::authorization::{self, GrantOwner},
         validate_system_settings_input,
     },
@@ -298,6 +298,28 @@ impl SystemSettingsRow {
 // Console reads
 // ---------------------------------------------------------------------------
 
+macro_rules! admin_resource {
+    ($list:ident, $detail:ident, $row:ident, $view:ty, $select:literal, $list_tail:literal, $detail_tail:literal) => {
+        pub async fn $list(&self) -> Result<Vec<$view>, RepositoryError> {
+            sqlx::query_as::<_, $row>(concat!($select, $list_tail))
+                .fetch_all(&mut *self.read().await?)
+                .await?
+                .into_iter()
+                .map($row::into_view)
+                .collect()
+        }
+
+        pub async fn $detail(&self, id: Uuid) -> Result<Option<$view>, RepositoryError> {
+            sqlx::query_as::<_, $row>(concat!($select, $detail_tail))
+                .bind(SqliteUuid(id))
+                .fetch_optional(&mut *self.read().await?)
+                .await?
+                .map($row::into_view)
+                .transpose()
+        }
+    };
+}
+
 impl SqliteControlPlaneRepository {
     pub async fn system_settings(&self) -> Result<SystemSettingsView, RepositoryError> {
         let mut reader = self.read().await?;
@@ -326,23 +348,12 @@ impl SqliteControlPlaneRepository {
         Ok(row.map(UserSettingsRow::into_view))
     }
 
-    /// Every Console list query runs on one read snapshot so cross-referenced
-    /// routing status is computed from a consistent set of channels and groups.
-    pub async fn control_plane_lists(&self) -> Result<ControlPlaneLists, RepositoryError> {
-        let mut connection = self.read().await?;
-        let mut transaction = connection.begin().await?;
-        let lists = self.control_plane_lists_transaction(&mut transaction).await;
-        transaction.commit().await?;
-        lists
-    }
-
-    async fn control_plane_lists_transaction(
-        &self,
-        transaction: &mut Transaction<'_, Sqlite>,
-    ) -> Result<ControlPlaneLists, RepositoryError> {
-        let connection = &mut **transaction;
-        let users = sqlx::query_as::<_, ControlPlaneUserRow>(
-            "SELECT u.id,u.email,u.display_name,u.role,u.status, \
+    admin_resource!(
+        admin_users,
+        admin_user,
+        ControlPlaneUserRow,
+        ControlPlaneUser,
+        "SELECT u.id,u.email,u.display_name,u.role,u.status, \
                     (u.password_hash IS NULL AND u.email IS NOT NULL \
                      AND u.status IN ('invited','suspended','disabled')) AS can_reissue_invitation, \
                     u.password_change_required,u.temporary_password_expires_at,u.user_group_id, \
@@ -352,15 +363,17 @@ impl SqliteControlPlaneRepository {
                     u.websocket_enabled,u.balance_amount,u.created_at,u.updated_at \
              FROM users AS u \
              JOIN user_groups AS g ON g.id=u.user_group_id AND g.deleted_at IS NULL \
-             WHERE u.is_system=0 AND u.deleted_at IS NULL ORDER BY u.id",
-        )
-        .fetch_all(&mut *connection)
-        .await?
-        .into_iter()
-        .map(ControlPlaneUserRow::into_view)
-        .collect::<Result<Vec<_>, _>>()?;
-        let user_groups = sqlx::query_as::<_, ControlPlaneUserGroupRow>(
-            "SELECT g.id,g.name,g.description,g.default_api_key_policy_id, \
+             WHERE u.is_system=0 AND u.deleted_at IS NULL",
+        " ORDER BY u.id",
+        " AND u.id=?"
+    );
+
+    admin_resource!(
+        admin_user_groups,
+        admin_user_group,
+        ControlPlaneUserGroupRow,
+        ControlPlaneUserGroup,
+        "SELECT g.id,g.name,g.description,g.default_api_key_policy_id, \
                     COALESCE((SELECT json_group_array(visibility.channel_group_id) \
                               FROM user_group_codex_quota_visibility AS visibility \
                               WHERE visibility.user_group_id=g.id \
@@ -372,81 +385,79 @@ impl SqliteControlPlaneRepository {
                     g.created_at,g.updated_at \
              FROM user_groups AS g \
              LEFT JOIN users AS u ON u.user_group_id=g.id \
-             WHERE g.deleted_at IS NULL \
-             GROUP BY g.id \
-             ORDER BY (g.system_role IS NULL),g.system_role,g.name,g.id",
-        )
-        .fetch_all(&mut *connection)
-        .await?
-        .into_iter()
-        .map(ControlPlaneUserGroupRow::into_view)
-        .collect::<Result<Vec<_>, _>>()?;
-        let models = sqlx::query_as::<_, ControlPlaneModelRow>(
-            "SELECT id,source_model_id,display_name,provider_name,enabled,price_unit_tokens, \
+             WHERE g.deleted_at IS NULL",
+        " GROUP BY g.id ORDER BY (g.system_role IS NULL),g.system_role,g.name,g.id",
+        " AND g.id=? GROUP BY g.id"
+    );
+
+    admin_resource!(
+        admin_models,
+        admin_model,
+        ControlPlaneModelRow,
+        ControlPlaneModel,
+        "SELECT id,source_model_id,display_name,provider_name,enabled,price_unit_tokens, \
                     input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price, \
                     price_effective_at,advanced_billing,last_synced_at,created_at,updated_at \
-             FROM models WHERE deleted_at IS NULL ORDER BY id",
-        )
-        .fetch_all(&mut *connection)
-        .await?
-        .into_iter()
-        .map(ControlPlaneModelRow::into_view)
-        .collect::<Result<Vec<_>, _>>()?;
-        let api_keys = sqlx::query_as::<_, ControlPlaneApiKeyRow>(
-            "SELECT k.id,k.user_id,u.status AS user_status,k.name,k.secret_value AS secret,k.status, \
+             FROM models WHERE deleted_at IS NULL",
+        " ORDER BY id",
+        " AND id=?"
+    );
+
+    admin_resource!(
+        admin_api_keys,
+        admin_api_key,
+        ControlPlaneApiKeyRow,
+        ControlPlaneApiKey,
+        "SELECT k.id,k.user_id,u.status AS user_status,k.name,k.secret_value AS secret,k.status, \
                     k.expires_at,k.permissions,k.allowed_group_ids, \
                     k.allowed_channel_ids,k.requests_per_minute,k.max_concurrent_requests, \
                     k.quota_limit_amount,k.quota_used_amount,k.updated_at \
              FROM api_keys AS k \
              JOIN users AS u ON u.id=k.user_id \
-             WHERE k.is_system=0 AND k.deleted_at IS NULL AND u.deleted_at IS NULL ORDER BY k.id",
-        )
-        .fetch_all(&mut *connection)
-        .await?
-        .into_iter()
-        .map(ControlPlaneApiKeyRow::into_view)
-        .collect::<Result<Vec<_>, _>>()?;
-        let api_key_policies = sqlx::query_as::<_, ControlPlaneApiKeyPolicyRow>(
-            "SELECT id,name,allowed_group_ids,allowed_channel_ids,enabled,created_at,updated_at \
-             FROM api_key_policies ORDER BY id",
-        )
-        .fetch_all(&mut *connection)
-        .await?
-        .into_iter()
-        .map(ControlPlaneApiKeyPolicyRow::into_view)
-        .collect::<Result<Vec<_>, _>>()?;
-        let proxies = sqlx::query_as::<_, ControlPlaneProxyRow>(
-            "SELECT id,name,proxy_url,no_proxy_hosts,enabled, \
+             WHERE k.is_system=0 AND k.deleted_at IS NULL AND u.deleted_at IS NULL",
+        " ORDER BY k.id",
+        " AND k.id=?"
+    );
+
+    admin_resource!(
+        admin_api_key_policies,
+        admin_api_key_policy,
+        ControlPlaneApiKeyPolicyRow,
+        ControlPlaneApiKeyPolicy,
+        "SELECT id,name,allowed_group_ids,allowed_channel_ids,enabled,created_at,updated_at \
+             FROM api_key_policies",
+        " ORDER BY id",
+        " WHERE id=?"
+    );
+
+    admin_resource!(
+        admin_proxies,
+        admin_proxy,
+        ControlPlaneProxyRow,
+        ControlPlaneProxy,
+        "SELECT id,name,proxy_url,no_proxy_hosts,enabled, \
                     (username IS NOT NULL OR password IS NOT NULL) AS credential_configured, \
                     created_at,updated_at \
-             FROM proxies ORDER BY id",
-        )
-        .fetch_all(&mut *connection)
-        .await?
-        .into_iter()
-        .map(ControlPlaneProxyRow::into_view)
-        .collect::<Result<Vec<_>, _>>()?;
-        let config_templates = sqlx::query_as::<_, ControlPlaneConfigTemplateRow>(
+             FROM proxies",
+        " ORDER BY id",
+        " WHERE id=?"
+    );
+
+    pub async fn admin_config_templates(
+        &self,
+    ) -> Result<Vec<ControlPlaneConfigTemplate>, RepositoryError> {
+        Ok(sqlx::query_as::<_, ControlPlaneConfigTemplateRow>(
             "SELECT id,name,description, \
                     CASE WHEN json_type(document,'$.api_format')='text' \
                          THEN json_extract(document,'$.api_format') END AS api_format, \
                     enabled,created_at,updated_at \
              FROM config_templates ORDER BY id",
         )
-        .fetch_all(&mut *connection)
+        .fetch_all(&mut *self.read().await?)
         .await?
         .into_iter()
         .map(ControlPlaneConfigTemplateRow::into_view)
-        .collect();
-        Ok(ControlPlaneLists {
-            users,
-            user_groups,
-            models,
-            api_keys,
-            api_key_policies,
-            proxies,
-            config_templates,
-        })
+        .collect())
     }
 
     /// Used by proxy diagnostics on behalf of the parent backend facade.

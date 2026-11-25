@@ -251,6 +251,33 @@ async fn runtime_snapshot_is_coherent_and_includes_codex_state() {
 }
 
 #[tokio::test]
+async fn admin_reads_do_not_decode_unrequested_tables_or_rows() {
+    let (_directory, database, repository) = repository().await;
+    seed_admin_and_user(&database).await;
+    seed_template_and_proxy(&database).await;
+    // Inject one row that fails DTO decoding, without changing the valid proxy.
+    execute(
+        &database,
+        "ALTER TABLE proxies RENAME TO proxy_rows;
+         CREATE VIEW proxies AS SELECT id,name,proxy_url,username,password,no_proxy_hosts,
+                    enabled,created_at,updated_at FROM proxy_rows UNION ALL
+             SELECT '40000000-0000-0000-0000-000000000099','Bad','http://bad',
+                    NULL,NULL,'not an array',1,created_at,updated_at FROM proxy_rows;",
+    )
+    .await;
+
+    assert!(matches!(
+        repository.admin_proxies().await,
+        Err(RepositoryError::Validation)
+    ));
+    assert_eq!(repository.admin_users().await.unwrap().len(), 2);
+    assert_eq!(
+        repository.admin_proxy(PROXY).await.unwrap().unwrap().id,
+        PROXY
+    );
+}
+
+#[tokio::test]
 async fn console_reads_expose_lists_details_audit_and_self_service_options() {
     let (_directory, database, repository) = repository().await;
     seed_admin_and_user(&database).await;
@@ -274,12 +301,16 @@ async fn console_reads_expose_lists_details_audit_and_self_service_options() {
     )
     .await;
 
-    let lists = repository.control_plane_lists().await.unwrap();
-    assert_eq!(lists.users.len(), 2);
-    assert_eq!(lists.users[0].id, ADMIN);
-    assert_eq!(lists.users[1].balance_amount.to_string(), "0");
-    assert_eq!(lists.api_keys.len(), 1);
-    assert_eq!(lists.api_keys[0].secret, "sk-test-secret");
+    let users = repository.admin_users().await.unwrap();
+    let api_keys = repository.admin_api_keys().await.unwrap();
+    let proxies = repository.admin_proxies().await.unwrap();
+    let config_templates = repository.admin_config_templates().await.unwrap();
+    let user_groups = repository.admin_user_groups().await.unwrap();
+    assert_eq!(users.len(), 2);
+    assert_eq!(users[0].id, ADMIN);
+    assert_eq!(users[1].balance_amount.to_string(), "0");
+    assert_eq!(api_keys.len(), 1);
+    assert_eq!(api_keys[0].secret, "sk-test-secret");
     let topology = repository.topology().await.unwrap();
     assert_eq!(topology.logical_channels.len(), 1);
     assert_eq!(
@@ -295,17 +326,16 @@ async fn console_reads_expose_lists_details_audit_and_self_service_options() {
     assert!(topology.channel_capabilities[0].settings.enabled);
     assert!(topology.logical_channels[0].enabled);
     assert!(topology.routing_groups[0].enabled);
-    assert_eq!(lists.proxies.len(), 1);
+    assert_eq!(proxies.len(), 1);
     // Proxy listing and audit strip the credential component.
-    assert_eq!(lists.proxies[0].proxy_url, "http://proxy.example.test:8080");
-    assert!(lists.proxies[0].credential_configured);
+    assert_eq!(proxies[0].proxy_url, "http://proxy.example.test:8080");
+    assert!(proxies[0].credential_configured);
     assert_eq!(
-        lists.config_templates[0].api_format.as_deref(),
+        config_templates[0].api_format.as_deref(),
         Some("open_ai_chat_completions")
     );
     // The system group carries its live member count.
-    let group = lists
-        .user_groups
+    let group = user_groups
         .iter()
         .find(|group| group.id == DEFAULT_USER_GROUP_ID)
         .unwrap();
@@ -960,10 +990,9 @@ async fn user_settings_and_batches_apply_exactly_once() {
     ));
 
     let user_before = repository
-        .control_plane_lists()
+        .admin_users()
         .await
         .unwrap()
-        .users
         .into_iter()
         .find(|user| user.id == USER)
         .unwrap();
@@ -976,10 +1005,9 @@ async fn user_settings_and_batches_apply_exactly_once() {
     let (mutations, _) = change.commit().await.unwrap();
     assert_eq!(mutations.len(), 1);
     let after = repository
-        .control_plane_lists()
+        .admin_users()
         .await
         .unwrap()
-        .users
         .into_iter()
         .find(|user| user.id == USER)
         .unwrap();
@@ -1349,10 +1377,9 @@ async fn invalid_management_inputs_fail_before_writing() {
     ));
     assert!(
         repository
-            .control_plane_lists()
+            .admin_api_key_policies()
             .await
             .unwrap()
-            .api_key_policies
             .is_empty()
     );
     assert!(repository.load().await.unwrap().groups.is_empty());

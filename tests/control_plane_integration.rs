@@ -405,9 +405,10 @@ async fn system_probe_identity_is_an_internal_active_administrator() {
     assert!(identity.2);
     assert!(identity.3);
 
-    let lists = repository.control_plane_lists().await.unwrap();
-    assert!(lists.users.iter().all(|user| user.id != first.user_id));
-    assert!(lists.api_keys.iter().all(|key| key.id != first.api_key_id));
+    let users = repository.admin_users().await.unwrap();
+    let api_keys = repository.admin_api_keys().await.unwrap();
+    assert!(users.iter().all(|user| user.id != first.user_id));
+    assert!(api_keys.iter().all(|key| key.id != first.api_key_id));
 
     let now = Utc::now();
     let model_id = Uuid::new_v4();
@@ -3068,10 +3069,9 @@ async fn codex_credentials_export_secrets_and_protect_assigned_proxies_from_dele
         .unwrap();
     assert!(
         coordinator
-            .lists()
+            .admin_proxies()
             .await
             .unwrap()
-            .proxies
             .iter()
             .all(|item| item.id != proxy.id)
     );

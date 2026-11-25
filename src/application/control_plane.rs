@@ -13,11 +13,13 @@ use crate::{
     domain::AutomaticDisableTrigger,
     persistence::{
         ApiHostsView, ChannelBatchUpdateInput, CodexCredentialBatchInput, CodexCredentialCreate,
-        CodexCredentialUpdateInput, ConsoleApiKey, ConsoleAuditLog,
-        ControlPlaneConfigTemplateDetail, ControlPlaneLists, ControlPlaneMutation,
-        ControlPlaneRepository, ModelSourceVersions, MutationResult, PreparedControlPlaneChange,
-        RepositoryError, SelfApiKeyCreate, SelfApiKeyOptions, SelfApiKeyUpdate, SyncedModelInput,
-        SystemSettingsView, UserBatchUpdateInput, UserSettingsInput, UserSettingsView,
+        CodexCredentialUpdateInput, ConsoleApiKey, ConsoleAuditLog, ControlPlaneApiKey,
+        ControlPlaneApiKeyPolicy, ControlPlaneConfigTemplate, ControlPlaneConfigTemplateDetail,
+        ControlPlaneModel, ControlPlaneMutation, ControlPlaneProxy, ControlPlaneRepository,
+        ControlPlaneUser, ControlPlaneUserGroup, ModelSourceVersions, MutationResult,
+        PreparedControlPlaneChange, RepositoryError, SelfApiKeyCreate, SelfApiKeyOptions,
+        SelfApiKeyUpdate, SyncedModelInput, SystemSettingsView, UserBatchUpdateInput,
+        UserSettingsInput, UserSettingsView,
     },
     routing::{
         PassiveHealthPolicy, RoutingRuntime, SessionAffinityCacheClearResult,
@@ -180,8 +182,78 @@ impl ControlPlaneCoordinator {
         Ok(correlation_id)
     }
 
-    pub async fn lists(&self) -> Result<ControlPlaneLists, ControlPlaneError> {
-        Ok(self.repository.control_plane_lists().await?)
+    pub async fn admin_users(&self) -> Result<Vec<ControlPlaneUser>, ControlPlaneError> {
+        Ok(self.repository.admin_users().await?)
+    }
+
+    pub async fn admin_user(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<ControlPlaneUser>, ControlPlaneError> {
+        Ok(self.repository.admin_user(id).await?)
+    }
+
+    pub async fn admin_user_groups(&self) -> Result<Vec<ControlPlaneUserGroup>, ControlPlaneError> {
+        Ok(self.repository.admin_user_groups().await?)
+    }
+
+    pub async fn admin_user_group(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<ControlPlaneUserGroup>, ControlPlaneError> {
+        Ok(self.repository.admin_user_group(id).await?)
+    }
+
+    pub async fn admin_models(&self) -> Result<Vec<ControlPlaneModel>, ControlPlaneError> {
+        Ok(self.repository.admin_models().await?)
+    }
+
+    pub async fn admin_model(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<ControlPlaneModel>, ControlPlaneError> {
+        Ok(self.repository.admin_model(id).await?)
+    }
+
+    pub async fn admin_api_keys(&self) -> Result<Vec<ControlPlaneApiKey>, ControlPlaneError> {
+        Ok(self.repository.admin_api_keys().await?)
+    }
+
+    pub async fn admin_api_key(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<ControlPlaneApiKey>, ControlPlaneError> {
+        Ok(self.repository.admin_api_key(id).await?)
+    }
+
+    pub async fn admin_api_key_policies(
+        &self,
+    ) -> Result<Vec<ControlPlaneApiKeyPolicy>, ControlPlaneError> {
+        Ok(self.repository.admin_api_key_policies().await?)
+    }
+
+    pub async fn admin_api_key_policy(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<ControlPlaneApiKeyPolicy>, ControlPlaneError> {
+        Ok(self.repository.admin_api_key_policy(id).await?)
+    }
+
+    pub async fn admin_proxies(&self) -> Result<Vec<ControlPlaneProxy>, ControlPlaneError> {
+        Ok(self.repository.admin_proxies().await?)
+    }
+
+    pub async fn admin_proxy(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<ControlPlaneProxy>, ControlPlaneError> {
+        Ok(self.repository.admin_proxy(id).await?)
+    }
+
+    pub async fn admin_config_templates(
+        &self,
+    ) -> Result<Vec<ControlPlaneConfigTemplate>, ControlPlaneError> {
+        Ok(self.repository.admin_config_templates().await?)
     }
 
     pub async fn config_template_detail(
