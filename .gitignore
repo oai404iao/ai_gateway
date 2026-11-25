@@ -8,6 +8,7 @@ __pycache__/
 
 # Local tooling and editor state
 /.worktrees/
+/.lavish/
 .idea/
 .vscode/
 *.swp

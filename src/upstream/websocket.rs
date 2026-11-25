@@ -214,7 +214,7 @@ mod credential_tests {
     }
 
     #[test]
-    fn connector_identity_isolates_even_legacy_channels_with_identical_auth_and_target() {
+    fn connector_identity_isolates_channels_with_identical_auth_and_target() {
         let first = key_with_connector(
             ConnectorKind::parse("plugin-first").unwrap(),
             None,

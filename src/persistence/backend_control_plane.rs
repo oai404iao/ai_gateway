@@ -823,18 +823,6 @@ impl ControlPlaneRepository {
         }
     }
 
-    pub async fn set_codex_user_id_if_missing(
-        &self,
-        channel_id: Uuid,
-        user_id: &str,
-    ) -> Result<bool, RepositoryError> {
-        match &self.backend {
-            Backend::Postgres(r) => r.set_codex_user_id_if_missing(channel_id, user_id).await,
-            #[cfg(feature = "sqlite-backend")]
-            Backend::Sqlite(r) => r.set_codex_user_id_if_missing(channel_id, user_id).await,
-        }
-    }
-
     pub async fn export_codex_credentials(
         &self,
         input: CodexCredentialExportInput,

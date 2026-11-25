@@ -277,7 +277,7 @@ async fn sliding_zero_official_and_natural_windows_match() {
     run(6).await;
 }
 #[tokio::test]
-async fn legacy_identity_proxy_exports_and_batch_rollback_match() {
+async fn identity_proxy_exports_and_batch_rollback_match() {
     run(7).await;
 }
 
@@ -791,8 +791,7 @@ async fn window_edges(c: Context) {
 async fn identity_and_proxy_export(backend: &Backend, c: Context) {
     let proxy = Uuid::new_v4();
     backend.exec(&format!("INSERT INTO proxies(id,name,proxy_url,username,password)
-        VALUES ('{proxy}','Export proxy','http://proxy.example.test','fixture-user','fixture-password');
-        UPDATE codex_oauth_credentials SET user_id=NULL,updated_at=now() WHERE channel_id='{}';",c.id)).await;
+        VALUES ('{proxy}','Export proxy','http://proxy.example.test','fixture-user','fixture-password');")).await;
     let mut input = c.input.clone();
     input.email = Some("FIRST@EXAMPLE.TEST".into());
     input.proxy_id = Some(proxy);

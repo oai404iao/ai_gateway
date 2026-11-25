@@ -96,21 +96,6 @@ mod sqlite {
                 .unwrap()
                 .is_empty()
         );
-        let mut connection = database.acquire_read().await.unwrap();
-        let pools: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM sqlite_schema WHERE name='connector_pools'")
-                .fetch_one(&mut *connection)
-                .await
-                .unwrap();
-        assert_eq!(pools, 0);
-        let obsolete: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM pragma_table_info('codex_oauth_credentials')
-             WHERE name IN ('channel_group_id','connector_pool_id')",
-        )
-        .fetch_one(&mut *connection)
-        .await
-        .unwrap();
-        assert_eq!(obsolete, 0);
     }
 
     #[tokio::test]

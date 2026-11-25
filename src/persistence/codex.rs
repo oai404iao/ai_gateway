@@ -666,33 +666,6 @@ impl PostgresControlPlaneRepository {
         .map_err(RepositoryError::from)
     }
 
-    pub async fn set_codex_user_id_if_missing(
-        &self,
-        channel_id: Uuid,
-        user_id: &str,
-    ) -> Result<bool, RepositoryError> {
-        if user_id.trim().is_empty() || user_id.len() > 300 {
-            return Err(RepositoryError::Validation);
-        }
-        let updated = sqlx::query(
-            "UPDATE codex_oauth_credentials AS target \
-             SET user_id=$2 \
-             WHERE target.channel_id=$1 AND target.user_id IS NULL \
-               AND target.deleted_at IS NULL \
-               AND NOT EXISTS( \
-                   SELECT 1 FROM codex_oauth_credentials AS existing \
-                   WHERE existing.account_id IS NOT DISTINCT FROM target.account_id \
-                     AND existing.user_id=$2 \
-                     AND existing.deleted_at IS NULL \
-               )",
-        )
-        .bind(channel_id)
-        .bind(user_id.trim())
-        .execute(&self.pool)
-        .await?;
-        Ok(updated.rows_affected() == 1)
-    }
-
     pub async fn export_codex_credentials(
         &self,
         input: CodexCredentialExportInput,

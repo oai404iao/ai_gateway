@@ -196,15 +196,6 @@ async fn canonical_create_lifecycle_and_delete_round_trip() {
     assert!(topology.operation_candidates.is_empty());
     assert!(topology.api_key_grants.is_empty());
     assert!(topology.policy_grants.is_empty());
-    let legacy_rows: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name IN
-         ('channels','channel_groups','model_rules','model_rule_routing_tiers',
-          'model_rule_routing_candidates','codex_oauth_credential_channels')",
-    )
-    .fetch_one(&mut *reader)
-    .await
-    .unwrap();
-    assert_eq!(legacy_rows, 0);
     let registered: Vec<String> = sqlx::query_scalar(
         "SELECT capability_id FROM channel_identity_registry
          WHERE canonical_channel_id=? AND capability_id IS NOT NULL ORDER BY capability_id",

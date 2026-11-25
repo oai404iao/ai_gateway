@@ -1753,14 +1753,7 @@ async fn codex_business_credentials_are_unique_per_workspace_member() {
         RoutingRuntime::new(PassiveHealthPolicy::default()),
     );
 
-    let mut legacy_member_a =
-        business_codex_credential(codex_group, "member-a", "member-a@example.test", "user-a");
-    legacy_member_a.user_id = None;
     let member_a = coordinator
-        .create_codex_credential(seed.user, legacy_member_a, None)
-        .await
-        .unwrap();
-    let migrated_member_a = coordinator
         .create_codex_credential(
             seed.user,
             business_codex_credential(codex_group, "member-a", "member-a@example.test", "user-a"),
@@ -1768,8 +1761,6 @@ async fn codex_business_credentials_are_unique_per_workspace_member() {
         )
         .await
         .unwrap();
-    assert_eq!(migrated_member_a.id, member_a.id);
-    assert_eq!(migrated_member_a.action, "update");
 
     let member_b = coordinator
         .create_codex_credential(

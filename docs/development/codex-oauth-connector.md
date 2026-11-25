@@ -45,8 +45,8 @@ OAuth、模型发现、额度查询和刷新也固定代际。插件或设置变
 `(account_id?, user_id)`，并要求 account ID 与 user ID 至少存在一个。
 `user_id` 优先来自 `chatgpt_user_id`，兼容同 namespace 的 `user_id` 和 JWT 顶层 `sub`
 fallback。这样同一 Business workspace 中的多个成员可以分别成为凭证，而没有 workspace
-account ID 的个人凭证按 user ID 独立保存。缺少 user claim 的旧 workspace Token 仍按
-account/email 回退匹配，服务启动时会从已保存 Token 尽力补齐旧记录的 user ID。
+account ID 的个人凭证按 user ID 独立保存。缺少 user claim 的 workspace Token 仍按
+account/email 回退匹配。
 身份匹配全局进行，不以渠道组为范围；历史重复身份保留，匹配不唯一时拒绝导入，不静默合并金融身份。
 
 删除前必须解除所有活动渠道引用，且不能存在未完成维护操作。
