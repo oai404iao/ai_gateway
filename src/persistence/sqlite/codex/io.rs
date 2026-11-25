@@ -169,23 +169,6 @@ async fn visible_channels(
 }
 
 impl SqliteControlPlaneRepository {
-    pub async fn set_codex_user_id_if_missing(
-        &self,
-        id: Uuid,
-        user_id: &str,
-    ) -> Result<bool, RepositoryError> {
-        if user_id.trim().is_empty() || user_id.len() > 300 {
-            return Err(RepositoryError::Validation);
-        }
-        let mut tx = self.database.begin_write().await.map_err(open_failure)?;
-        let changed=sqlx::query("UPDATE codex_oauth_credentials AS target SET updated_at=ag_now(),user_id=?2
-            WHERE target.channel_id=?1 AND target.user_id IS NULL AND target.deleted_at IS NULL AND NOT EXISTS(
-            SELECT 1 FROM codex_oauth_credentials existing
-            WHERE existing.account_id IS target.account_id AND existing.user_id=?2 AND existing.deleted_at IS NULL)")
-            .bind(SqliteUuid(id)).bind(user_id.trim()).execute(&mut *tx).await?.rows_affected()==1;
-        tx.commit().await?;
-        Ok(changed)
-    }
     pub async fn create_codex_oauth_flow(
         &self,
         actor: Uuid,

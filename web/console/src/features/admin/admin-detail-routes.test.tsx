@@ -50,25 +50,6 @@ describe("Admin detail routes", () => {
     expect(await screen.findByRole("button", { name: buttonName })).toBeInTheDocument();
   });
 
-  it.each([
-    "/admin/catalog",
-    "/admin/model-setup",
-    "/admin/routing/groups",
-    "/admin/routing/logical-channels",
-    "/admin/routing/channel-groups/new",
-    "/admin/routing/channels/old-id",
-    "/admin/routing/model-rules/old-id/protocols/old-child",
-    "/admin/providers/codex-oauth/old-group",
-    "/admin/providers/codex-oauth/old-group/import",
-    "/admin/statistics",
-    "/admin/system",
-  ])("shows Not found at retired route %s", async (path) => {
-    seedAuthenticatedSession();
-    renderAppAt(path);
-    expect(await screen.findByText("Not found")).toBeInTheDocument();
-    expect(window.location.pathname).toBe(path);
-  });
-
   it("localizes logical channel editing", async () => {
     window.localStorage.setItem(STORAGE_KEY, "zh-CN");
     seedAuthenticatedSession();

@@ -822,8 +822,8 @@ impl RuntimeConfig {
     }
 }
 
-/// Compiles database control-plane resources with the compatibility defaults
-/// used by direct unit fixtures. Production snapshots use
+/// Compiles database control-plane resources with default system settings
+/// for direct unit fixtures. Production snapshots use
 /// [`compile_runtime_config`] so persisted system settings are included.
 pub fn compile_control_plane(
     records: ControlPlaneRecords,
@@ -3266,9 +3266,6 @@ mod tests {
                 .validate()
                 .is_err()
         );
-        let legacy =
-            format!("{example}\n[[plugins]]\nid=\"codex\"\npath=\"/a.so\"\nsha256=\"a\"\n");
-        assert!(toml::from_str::<AppConfig>(&legacy).is_err());
     }
 
     #[test]

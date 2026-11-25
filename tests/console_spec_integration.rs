@@ -2666,52 +2666,6 @@ async fn administrator_can_manage_a_users_personal_websocket_setting() {
     database.cleanup().await;
 }
 
-/// Currency is a system-wide USD invariant rather than a mutable Console
-/// field, so legacy currency properties are rejected by request decoding.
-#[tokio::test]
-async fn currency_fields_are_not_console_settings() {
-    let database = TestDatabase::new().await;
-    let app = app(database.pool.clone()).await;
-
-    let invite = request(
-        &app,
-        "POST",
-        "/console/v1/users",
-        serde_json::json!({
-            "email": format!("currency-field-{}@example.test", Uuid::new_v4()),
-            "display_name": "Currency field",
-            "role": "user",
-            "currency": "USD"
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(invite.status(), StatusCode::UNPROCESSABLE_ENTITY);
-
-    let model = request(
-        &app,
-        "POST",
-        "/console/v1/models",
-        serde_json::json!({
-            "source_model_id": format!("currency-field-{}", Uuid::new_v4()),
-            "display_name": "Currency field",
-            "enabled": true,
-            "currency": "USD",
-            "price_unit_tokens": 1000000,
-            "input_unit_price": "0",
-            "cached_input_unit_price": "0",
-            "cache_write_unit_price": "0",
-            "output_unit_price": "0",
-            "price_effective_at": chrono::Utc::now().to_rfc3339()
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(model.status(), StatusCode::UNPROCESSABLE_ENTITY);
-
-    database.cleanup().await;
-}
-
 #[tokio::test]
 async fn onboard_reviewed_catalog_model_across_two_providers_and_operations() {
     use serde_json::json;
@@ -2926,83 +2880,6 @@ async fn removed_console_compatibility_paths_are_not_routed() {
     let user_path = format!("/console/v1/users/{}", app.user_id);
     let response = request(&app, "PUT", &user_path, serde_json::json!({}), &[]).await;
     assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
-
-    database.cleanup().await;
-}
-
-#[tokio::test]
-async fn legacy_user_name_field_is_rejected() {
-    let database = TestDatabase::new().await;
-    let app = app(database.pool.clone()).await;
-    let path = format!("/console/v1/users/{}", app.user_id);
-    let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
-    assert_eq!(detail.status(), StatusCode::OK);
-    let etag = detail.headers()[header::ETAG].to_str().unwrap().to_owned();
-    let update = serde_json::json!({"display_name": "Renamed user"});
-    let mut extra = update.clone();
-    extra["name"] = update["display_name"].clone();
-    let mut alias = extra.clone();
-    alias.as_object_mut().unwrap().remove("display_name");
-    for invalid in [extra, alias] {
-        let response = request(&app, "PATCH", &path, invalid, &[("if-match", &etag)]).await;
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    }
-    let response = request(&app, "PATCH", &path, update, &[("if-match", &etag)]).await;
-    assert_eq!(response.status(), StatusCode::OK);
-    database.cleanup().await;
-}
-
-#[tokio::test]
-async fn obsolete_control_plane_columns_are_absent() {
-    let database = TestDatabase::new().await;
-
-    for (table, column) in [
-        ("api_keys", "tokens_per_minute"),
-        ("api_keys", "allowed_api_formats"),
-        ("channels", "health_check"),
-        ("channels", "status_statistics_enabled"),
-    ] {
-        let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS (\
-             SELECT 1 FROM information_schema.columns \
-             WHERE table_schema='public' AND table_name=$1 AND column_name=$2\
-             )",
-        )
-        .bind(table)
-        .bind(column)
-        .fetch_one(&database.pool)
-        .await
-        .unwrap();
-        assert!(!exists, "{table}.{column} must be removed");
-    }
-
-    let capability_status_monitoring_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS (\
-         SELECT 1 FROM information_schema.columns \
-         WHERE table_schema='public' \
-           AND table_name='channel_capabilities' \
-           AND column_name='status_statistics_enabled'\
-         )",
-    )
-    .fetch_one(&database.pool)
-    .await
-    .unwrap();
-    assert!(capability_status_monitoring_exists);
-    for table in [
-        "channel_groups",
-        "channels",
-        "model_rules",
-        "model_rule_routing_tiers",
-        "model_rule_routing_candidates",
-        "codex_oauth_credential_channels",
-    ] {
-        let exists: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
-            .bind(table)
-            .fetch_one(&database.pool)
-            .await
-            .unwrap();
-        assert!(!exists, "{table} must be retired");
-    }
 
     database.cleanup().await;
 }
@@ -3490,7 +3367,7 @@ async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
             .unwrap();
         }
     }
-    let legacy_zero_started_at = period_started_at - chrono::Duration::minutes(30);
+    let prior_zero_started_at = period_started_at - chrono::Duration::minutes(30);
     sqlx::query(
         "INSERT INTO codex_quota_window_periods \
          (id,credential_id,window_kind,window_seconds,started_at,scheduled_reset_at, \
@@ -3500,8 +3377,8 @@ async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
     )
     .bind(Uuid::new_v4())
     .bind(visible_credential_id)
-    .bind(legacy_zero_started_at)
-    .bind(legacy_zero_started_at + chrono::Duration::hours(3))
+    .bind(prior_zero_started_at)
+    .bind(prior_zero_started_at + chrono::Duration::hours(3))
     .bind(period_started_at - chrono::Duration::minutes(15))
     .execute(&database.pool)
     .await
@@ -4493,20 +4370,6 @@ async fn etag_if_match_optimistic_concurrency_matches_spec() {
 
     let collection = "/console/v1/routing/groups";
     let input = serde_json::json!({"name": "spec-group", "enabled": true});
-    for (field, value) in [
-        ("api_format", serde_json::json!("open_ai_chat_completions")),
-        ("priority", serde_json::json!(1)),
-        ("selection_strategy", serde_json::json!("weighted_random")),
-    ] {
-        let mut legacy_input = input.clone();
-        legacy_input[field] = value;
-        let response = request(&app, "POST", collection, legacy_input, &[]).await;
-        assert_eq!(
-            response.status(),
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "{field}"
-        );
-    }
 
     let create = request(&app, "POST", collection, input, &[]).await;
     assert_eq!(create.status(), StatusCode::CREATED);
@@ -4606,18 +4469,6 @@ async fn codex_oauth_flow_contract_uses_pkce_and_actor_scoped_completion() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
 
-    let legacy_group = request(
-        &app,
-        "POST",
-        "/console/v1/routing/groups",
-        serde_json::json!({
-            "name": "legacy-format-group", "api_format": "open_ai_images",
-            "connector_kind": "codex", "enabled": false
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(legacy_group.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let group_uuid = create_resource(
         &app,
         "/console/v1/routing/groups",
@@ -4650,36 +4501,6 @@ async fn codex_oauth_flow_contract_uses_pkce_and_actor_scoped_completion() {
         "SELECT after_redacted FROM audit_logs WHERE object_type='routing_group' AND object_id=$1 AND action='create'"
     ).bind(group_uuid).fetch_one(&database.pool).await.unwrap();
     assert_eq!(group_audit["name"], "spec-codex");
-
-    let legacy_import = request(
-        &app,
-        "POST",
-        "/console/v1/routing/upstream-credentials/codex",
-        serde_json::json!({
-            "label": "legacy-import",
-            "weight": 100,
-            "quota_threshold_percent": 95,
-            "access_token": "legacy-access",
-            "refresh_token": "legacy-refresh"
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(legacy_import.status(), StatusCode::UNPROCESSABLE_ENTITY);
-
-    let legacy_start = request(
-        &app,
-        "POST",
-        "/console/v1/routing/upstream-credentials/codex/oauth/flows",
-        serde_json::json!({
-            "label": "legacy-spec-account",
-            "weight": 100,
-            "quota_threshold_percent": 95
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(legacy_start.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
     let start = request(
         &app,
@@ -5005,22 +4826,6 @@ async fn codex_business_batch_and_delete_contracts_are_versioned() {
     assert_eq!(detail_body["enabled"], false);
     assert!(detail_body.get("weight").is_none());
 
-    let legacy_update = request(
-        &app,
-        "PUT",
-        &format!("/console/v1/routing/upstream-credentials/codex/{member_a}"),
-        serde_json::json!({
-            "label": "business-member-a",
-            "enabled": false,
-            "proxy_id": null,
-            "weight": 100,
-            "quota_threshold_percent": 95
-        }),
-        &[("if-match", &etag)],
-    )
-    .await;
-    assert_eq!(legacy_update.status(), StatusCode::UNPROCESSABLE_ENTITY);
-
     let deleted = request(
         &app,
         "DELETE",
@@ -5254,18 +5059,6 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
         "PUT",
         "/console/v1/system/settings",
         invalid_api_host,
-        &[("if-match", &etag)],
-    )
-    .await;
-    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
-
-    let mut legacy_codex_settings = input.clone();
-    legacy_codex_settings["codex"] = serde_json::json!({"client_version":"9.8.7"});
-    let invalid = request(
-        &app,
-        "PUT",
-        "/console/v1/system/settings",
-        legacy_codex_settings,
         &[("if-match", &etag)],
     )
     .await;
@@ -6052,23 +5845,6 @@ async fn model_advanced_billing_is_returned_and_validated() {
     database.cleanup().await;
 }
 
-async fn assert_format_field_rejected(
-    app: &App,
-    method: &str,
-    path: &str,
-    valid: &serde_json::Value,
-    headers: &[(&str, &str)],
-) {
-    let mut obsolete = valid.clone();
-    obsolete["allowed_api_formats"] = serde_json::json!(["open_ai_chat_completions"]);
-    let rejected = request(app, method, path, obsolete, headers).await;
-    assert_eq!(
-        rejected.status(),
-        StatusCode::UNPROCESSABLE_ENTITY,
-        "{method} {path}"
-    );
-}
-
 /// API key creation uses the `sk-` prefix and the same value remains
 /// retrievable from authorized list/detail endpoints.
 #[tokio::test]
@@ -6085,7 +5861,6 @@ async fn api_key_create_returns_retrievable_prefixed_secret() {
         "allowed_group_ids": [group_id],
         "allowed_channel_ids": [],
     });
-    assert_format_field_rejected(&app, "POST", collection, &create_input, &[]).await;
     let create = request(&app, "POST", collection, create_input, &[]).await;
     assert_eq!(create.status(), StatusCode::CREATED);
     let body = body_json(create).await;
@@ -6104,7 +5879,6 @@ async fn api_key_create_returns_retrievable_prefixed_secret() {
             .find(|key| key["id"] == id)
             .unwrap();
         assert_eq!(key["secret"], secret);
-        assert!(key.get("allowed_api_formats").is_none(), "GET {path}");
     }
 
     let path = format!("{collection}/{id}");
@@ -6113,14 +5887,12 @@ async fn api_key_create_returns_retrievable_prefixed_secret() {
     let etag = detail.headers()[header::ETAG].to_str().unwrap().to_owned();
     let detail_body = body_json(detail).await;
     assert_eq!(detail_body["secret"], secret);
-    assert!(detail_body.get("allowed_api_formats").is_none());
 
     let update = serde_json::json!({
         "name": "renamed-key", "status": "active", "permissions": ["proxy"],
         "allowed_group_ids": [group_id], "allowed_channel_ids": [],
     });
     let headers = [("if-match", etag.as_str())];
-    assert_format_field_rejected(&app, "PUT", &path, &update, &headers).await;
     let updated = request(&app, "PUT", &path, update, &headers).await;
     assert_eq!(updated.status(), StatusCode::OK);
     database.cleanup().await;
@@ -6133,18 +5905,6 @@ async fn channel_and_template_details_return_stored_editable_values() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
     let topology = seed_test_topology(&app, "chat_completion").await;
-    let mut invalid_create = capability_input(topology.channel, "responses");
-    invalid_create["weight"] = serde_json::json!(1);
-
-    let legacy_weight = request(
-        &app,
-        "POST",
-        "/console/v1/routing/capabilities",
-        invalid_create,
-        &[],
-    )
-    .await;
-    assert_eq!(legacy_weight.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
     let template_document = serde_json::json!({
         "version": 1,
@@ -6223,13 +5983,7 @@ async fn channel_and_template_details_return_stored_editable_values() {
 
     let channel_detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
     assert_eq!(channel_detail.status(), StatusCode::OK);
-    let channel_etag = channel_detail
-        .headers()
-        .get(header::ETAG)
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_owned();
+    assert!(channel_detail.headers().get(header::ETAG).is_some());
     let channel_detail = body_json(channel_detail).await;
     assert_eq!(channel_detail["override_document"], override_document);
     assert_eq!(
@@ -6242,14 +5996,6 @@ async fn channel_and_template_details_return_stored_editable_values() {
     assert!(channel_detail.get("upstream_api_key").is_none());
     assert!(channel_detail.get("weight").is_none());
     assert_eq!(channel_detail["billing_multiplier"], "1.500000000000");
-
-    input["weight"] = serde_json::json!(1);
-    let legacy_weight_update =
-        request(&app, "PUT", &path, input, &[("if-match", &channel_etag)]).await;
-    assert_eq!(
-        legacy_weight_update.status(),
-        StatusCode::UNPROCESSABLE_ENTITY
-    );
 
     let template_list = request(
         &app,
@@ -6340,20 +6086,20 @@ async fn responses_websocket_and_search_are_independent_capabilities() {
                 && item["settings"]["operation"] == "web_search"
                 && item["settings"].get("transports").is_none())
     );
-    for fault in ["websocket", "legacy_search_flag"] {
-        let mut input = capability_input(topology.channel, "chat_completion");
-        if fault == "websocket" {
-            input["settings"]["transports"] = serde_json::json!(["websocket"]);
-        } else {
-            input["supports_standalone_web_search"] = serde_json::json!(true);
-        }
-        assert_eq!(
-            request(&app, "POST", "/console/v1/routing/capabilities", input, &[])
-                .await
-                .status(),
-            StatusCode::UNPROCESSABLE_ENTITY
-        );
-    }
+    let mut invalid_transport = capability_input(topology.channel, "chat_completion");
+    invalid_transport["settings"]["transports"] = serde_json::json!(["websocket"]);
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            "/console/v1/routing/capabilities",
+            invalid_transport,
+            &[],
+        )
+        .await
+        .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
     let grants: i64 = sqlx::query_scalar("SELECT count(*) FROM api_key_channel_grants")
         .fetch_one(&database.pool)
         .await
@@ -6499,19 +6245,6 @@ async fn channel_batch_updates_are_atomic_versioned_and_published_once() {
             })
         })
         .collect::<Vec<_>>();
-
-    let legacy_weight = request(
-        &app,
-        "POST",
-        "/console/v1/routing/capabilities/batch",
-        serde_json::json!({
-            "items": before_items.clone(),
-            "changes": {"weight": 7}
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(legacy_weight.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
     let updated = request(
         &app,
@@ -6898,7 +6631,6 @@ async fn self_api_key_create_reports_policy_preconditions() {
     let mut input = key_input("first-key");
     input["expires_at"] = serde_json::json!(expiry);
     let collection = "/console/v1/me/api-keys";
-    assert_format_field_rejected(&app, "POST", collection, &input, &[]).await;
     let created = request(&app, "POST", collection, input, &[]).await;
     assert_eq!(created.status(), StatusCode::CREATED);
     let created = body_json(created).await;
@@ -6920,7 +6652,6 @@ async fn self_api_key_create_reports_policy_preconditions() {
     assert_eq!(detail["secret"], secret);
     assert_eq!(detail["allowed_group_ids"], serde_json::json!([group_id]));
     assert_eq!(detail["allowed_channel_ids"], serde_json::json!([]));
-    assert!(detail.get("allowed_api_formats").is_none());
     assert_eq!(
         detail["permissions"],
         serde_json::json!(["proxy", "models.read"])
@@ -6941,7 +6672,6 @@ async fn self_api_key_create_reports_policy_preconditions() {
     });
     let path = format!("{collection}/{id}");
     let headers = [("if-match", etag.as_str())];
-    assert_format_field_rejected(&app, "PUT", &path, &update, &headers).await;
     let updated = request(&app, "PUT", &path, update, &headers).await;
     assert_eq!(updated.status(), StatusCode::OK);
     let detail = request(

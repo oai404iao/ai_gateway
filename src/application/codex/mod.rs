@@ -150,9 +150,6 @@ impl CodexConnectorService {
             refresh_locks: Arc::new(Mutex::new(HashMap::new())),
             quota_locks: Arc::new(Mutex::new(HashMap::new())),
         };
-        if let Ok(bound) = service.pin() {
-            bound.backfill_missing_user_ids().await?;
-        }
         service.reload_runtime().await?;
         Ok(service)
     }
@@ -586,9 +583,6 @@ impl CodexConnectorService {
     }
 
     pub async fn run_maintenance(&self) -> Result<(), CodexConnectorError> {
-        if let Ok(bound) = self.pin() {
-            bound.backfill_missing_user_ids().await?;
-        }
         let records = self.repository.load_codex_credentials().await?;
         self.credentials.replace(records.clone());
         let service = self.clone();
@@ -989,36 +983,6 @@ impl CodexConnectorService {
     async fn reload_runtime(&self) -> Result<(), CodexConnectorError> {
         self.credentials
             .replace(self.repository.load_codex_credentials().await?);
-        Ok(())
-    }
-
-    async fn backfill_missing_user_ids(&self) -> Result<(), CodexConnectorError> {
-        for record in self.repository.load_codex_credentials().await? {
-            if record.user_id.is_some() {
-                continue;
-            }
-            let user_id = [&record.id_token, &record.access_token]
-                .into_iter()
-                .filter_map(|token| {
-                    self.plugin
-                        .as_deref()
-                        .and_then(|plugin| parse_identity(plugin, token).ok())
-                })
-                .filter(|identity| {
-                    identity
-                        .account_id
-                        .as_deref()
-                        .is_none_or(|account_id| record.account_id.as_deref() == Some(account_id))
-                })
-                .find_map(|identity| identity.user_id);
-            let Some(user_id) = user_id else {
-                continue;
-            };
-            let _ = self
-                .repository
-                .set_codex_user_id_if_missing(record.channel_id, &user_id)
-                .await?;
-        }
         Ok(())
     }
 }
