@@ -1411,6 +1411,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/statistics/costs/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Returns only the authenticated user's totals for a nonempty interval of at most 366 days, with the same metrics as the personal cost report summary. Does not compute model or bucket breakdowns. */
+        get: operations["getOwnCostSummary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/statistics/spend-leaderboard": {
         parameters: {
             query?: never;
@@ -7336,6 +7353,34 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CostStatisticsReport"];
+                };
+            };
+            400: components["responses"]["InvalidQuery"];
+            401: components["responses"]["Unauthorized"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    getOwnCostSummary: {
+        parameters: {
+            query: {
+                /** @description Inclusive interval start. */
+                started_after: components["schemas"]["DateTime"];
+                /** @description Exclusive interval end. */
+                started_before: components["schemas"]["DateTime"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Owner-scoped cost and usage totals. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CostStatisticsSummary"];
                 };
             };
             400: components["responses"]["InvalidQuery"];

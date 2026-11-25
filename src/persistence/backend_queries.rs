@@ -2,15 +2,16 @@
 //! request-log views, channel-group status, personal usage, cost statistics,
 //! spend-leaderboard snapshots.
 
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::RepositoryError;
 use super::postgres_control_plane::{
     ChannelGroupStatusReport, ChannelGroupStatusWindow, ConsoleRequestLog, CostStatisticsFilter,
-    CostStatisticsReport, PersonalUsageReport, PostgresMeteringQueries, PostgresRequestLogQueries,
-    RequestLogFilter, SpendLeaderboardFilter, SpendLeaderboardRefresh, SpendLeaderboardReport,
+    CostStatisticsReport, CostStatisticsSummary, PersonalUsageReport, PostgresMeteringQueries,
+    PostgresRequestLogQueries, RequestLogFilter, SpendLeaderboardFilter, SpendLeaderboardRefresh,
+    SpendLeaderboardReport, StatisticsGranularity,
 };
 
 #[cfg(feature = "sqlite-backend")]
@@ -190,6 +191,33 @@ impl MeteringQueries {
                 queries.personal_usage(user_id, ended_on).await
             }
         }
+    }
+
+    pub async fn own_cost_summary(
+        &self,
+        user_id: Uuid,
+        started_at: DateTime<Utc>,
+        ended_at: DateTime<Utc>,
+    ) -> Result<CostStatisticsSummary, RepositoryError> {
+        let duration = ended_at - started_at;
+        if duration <= chrono::Duration::zero() || duration > StatisticsGranularity::Day.max_range()
+        {
+            return Err(RepositoryError::Validation);
+        }
+        let totals = match &self.backend {
+            MeteringQueriesBackend::Postgres(queries) => {
+                queries
+                    .own_cost_totals(user_id, started_at, ended_at)
+                    .await?
+            }
+            #[cfg(feature = "sqlite-backend")]
+            MeteringQueriesBackend::Sqlite(queries) => {
+                queries
+                    .own_cost_totals(user_id, started_at, ended_at)
+                    .await?
+            }
+        };
+        Ok(totals.into_summary(duration))
     }
 
     pub async fn cost_statistics(

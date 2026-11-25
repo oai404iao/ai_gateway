@@ -129,6 +129,10 @@ pub fn router(state: ConsoleState) -> Router {
         )
         .route("/console/v1/statistics/costs", get(get_own_cost_statistics))
         .route(
+            "/console/v1/statistics/costs/summary",
+            get(get_own_cost_summary),
+        )
+        .route(
             "/console/v1/statistics/spend-leaderboard",
             get(get_spend_leaderboard),
         );
@@ -730,6 +734,13 @@ struct ChannelGroupStatusQuery {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct CostSummaryQuery {
+    started_after: DateTime<Utc>,
+    started_before: DateTime<Utc>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CostStatisticsQuery {
     #[serde(default)]
     started_after: Option<DateTime<Utc>>,
@@ -1175,11 +1186,8 @@ async fn get_own_codex_quota_window_history(
 
 async fn list_users(
     State(state): State<ConsoleState>,
-) -> Result<Json<serde_json::Value>, ConsoleError> {
-    Ok(Json(
-        serde_json::to_value(state.coordinator.lists().await?.users)
-            .expect("Console user DTO serializes"),
-    ))
+) -> Result<Json<Vec<crate::persistence::ControlPlaneUser>>, ConsoleError> {
+    Ok(Json(state.coordinator.admin_users().await?))
 }
 
 async fn invite_user(
@@ -1218,7 +1226,7 @@ async fn get_user(
     State(state): State<ConsoleState>,
     Path(id): Path<Uuid>,
 ) -> Result<Response, ConsoleError> {
-    get_resource(state, id, Resource::User).await
+    admin_resource_response(state.coordinator.admin_user(id).await?)
 }
 
 async fn reissue_user_invitation(
@@ -1309,11 +1317,8 @@ async fn update_users_batch(
 
 async fn list_user_groups(
     State(state): State<ConsoleState>,
-) -> Result<Json<serde_json::Value>, ConsoleError> {
-    Ok(Json(
-        serde_json::to_value(state.coordinator.lists().await?.user_groups)
-            .expect("Console user-group DTO serializes"),
-    ))
+) -> Result<Json<Vec<crate::persistence::ControlPlaneUserGroup>>, ConsoleError> {
+    Ok(Json(state.coordinator.admin_user_groups().await?))
 }
 
 async fn create_user_group(
@@ -1333,7 +1338,7 @@ async fn get_user_group(
     State(state): State<ConsoleState>,
     Path(id): Path<Uuid>,
 ) -> Result<Response, ConsoleError> {
-    get_resource(state, id, Resource::UserGroup).await
+    admin_resource_response(state.coordinator.admin_user_group(id).await?)
 }
 
 async fn update_user_group(
@@ -1465,11 +1470,8 @@ async fn update_registration_invitation_code(
 
 async fn list_api_key_policies(
     State(state): State<ConsoleState>,
-) -> Result<Json<serde_json::Value>, ConsoleError> {
-    Ok(Json(
-        serde_json::to_value(state.coordinator.lists().await?.api_key_policies)
-            .expect("Console policy DTO serializes"),
-    ))
+) -> Result<Json<Vec<crate::persistence::ControlPlaneApiKeyPolicy>>, ConsoleError> {
+    Ok(Json(state.coordinator.admin_api_key_policies().await?))
 }
 
 async fn create_api_key_policy(
@@ -1489,7 +1491,7 @@ async fn get_api_key_policy(
     State(state): State<ConsoleState>,
     Path(id): Path<Uuid>,
 ) -> Result<Response, ConsoleError> {
-    get_resource(state, id, Resource::ApiKeyPolicy).await
+    admin_resource_response(state.coordinator.admin_api_key_policy(id).await?)
 }
 
 async fn update_api_key_policy(
@@ -1513,11 +1515,8 @@ async fn update_api_key_policy(
 
 async fn list_models(
     State(state): State<ConsoleState>,
-) -> Result<Json<serde_json::Value>, ConsoleError> {
-    Ok(Json(
-        serde_json::to_value(state.coordinator.lists().await?.models)
-            .expect("Console model DTO serializes"),
-    ))
+) -> Result<Json<Vec<crate::persistence::ControlPlaneModel>>, ConsoleError> {
+    Ok(Json(state.coordinator.admin_models().await?))
 }
 
 async fn list_model_options(
@@ -1615,7 +1614,7 @@ async fn get_model(
     State(state): State<ConsoleState>,
     Path(id): Path<Uuid>,
 ) -> Result<Response, ConsoleError> {
-    get_resource(state, id, Resource::Model).await
+    admin_resource_response(state.coordinator.admin_model(id).await?)
 }
 
 async fn update_model(
@@ -1657,11 +1656,8 @@ async fn delete_model(
 
 async fn list_api_keys(
     State(state): State<ConsoleState>,
-) -> Result<Json<serde_json::Value>, ConsoleError> {
-    Ok(Json(
-        serde_json::to_value(state.coordinator.lists().await?.api_keys)
-            .expect("Console API-key DTO serializes"),
-    ))
+) -> Result<Json<Vec<crate::persistence::ControlPlaneApiKey>>, ConsoleError> {
+    Ok(Json(state.coordinator.admin_api_keys().await?))
 }
 
 async fn create_api_key(
@@ -1676,7 +1672,7 @@ async fn get_api_key(
     State(state): State<ConsoleState>,
     Path(id): Path<Uuid>,
 ) -> Result<Response, ConsoleError> {
-    get_resource(state, id, Resource::ApiKey).await
+    admin_resource_response(state.coordinator.admin_api_key(id).await?)
 }
 
 async fn update_api_key(
@@ -2456,11 +2452,8 @@ async fn create_rule(
 
 async fn list_proxies(
     State(state): State<ConsoleState>,
-) -> Result<Json<serde_json::Value>, ConsoleError> {
-    Ok(Json(
-        serde_json::to_value(state.coordinator.lists().await?.proxies)
-            .expect("Console proxy DTO serializes"),
-    ))
+) -> Result<Json<Vec<crate::persistence::ControlPlaneProxy>>, ConsoleError> {
+    Ok(Json(state.coordinator.admin_proxies().await?))
 }
 
 async fn create_proxy(
@@ -2482,7 +2475,7 @@ async fn get_proxy(
     State(state): State<ConsoleState>,
     Path(id): Path<Uuid>,
 ) -> Result<Response, ConsoleError> {
-    get_resource(state, id, Resource::Proxy).await
+    admin_resource_response(state.coordinator.admin_proxy(id).await?)
 }
 
 async fn update_proxy(
@@ -2523,11 +2516,8 @@ async fn delete_proxy(
 
 async fn list_config_templates(
     State(state): State<ConsoleState>,
-) -> Result<Json<serde_json::Value>, ConsoleError> {
-    Ok(Json(
-        serde_json::to_value(state.coordinator.lists().await?.config_templates)
-            .expect("Console template DTO serializes"),
-    ))
+) -> Result<Json<Vec<crate::persistence::ControlPlaneConfigTemplate>>, ConsoleError> {
+    Ok(Json(state.coordinator.admin_config_templates().await?))
 }
 
 async fn create_config_template(
@@ -2607,6 +2597,24 @@ async fn get_channel_group_status(
         _ => return Err(ConsoleError::Validation),
     };
     Ok(Json(state.request_logs.channel_group_status(window).await?))
+}
+
+async fn get_own_cost_summary(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Query(query): Query<CostSummaryQuery>,
+) -> Result<Json<crate::persistence::CostStatisticsSummary>, ConsoleError> {
+    Ok(Json(
+        state
+            .request_logs
+            .metering()
+            .own_cost_summary(
+                principal.user_id(),
+                query.started_after,
+                query.started_before,
+            )
+            .await?,
+    ))
 }
 
 async fn get_own_cost_statistics(
@@ -2776,55 +2784,8 @@ async fn reload(
     }))
 }
 
-enum Resource {
-    User,
-    UserGroup,
-    ApiKeyPolicy,
-    Model,
-    ApiKey,
-    Proxy,
-}
-
-async fn get_resource(
-    state: ConsoleState,
-    id: Uuid,
-    resource: Resource,
-) -> Result<Response, ConsoleError> {
-    let lists = state.coordinator.lists().await?;
-    let value = match resource {
-        Resource::User => lists
-            .users
-            .into_iter()
-            .find(|item| item.id == id)
-            .map(to_json),
-        Resource::UserGroup => lists
-            .user_groups
-            .into_iter()
-            .find(|item| item.id == id)
-            .map(to_json),
-        Resource::ApiKeyPolicy => lists
-            .api_key_policies
-            .into_iter()
-            .find(|item| item.id == id)
-            .map(to_json),
-        Resource::Model => lists
-            .models
-            .into_iter()
-            .find(|item| item.id == id)
-            .map(to_json),
-        Resource::ApiKey => lists
-            .api_keys
-            .into_iter()
-            .find(|item| item.id == id)
-            .map(to_json),
-        Resource::Proxy => lists
-            .proxies
-            .into_iter()
-            .find(|item| item.id == id)
-            .map(to_json),
-    }
-    .ok_or(ConsoleError::NotFound)?;
-    resource_response(value)
+fn admin_resource_response<T: Serialize>(resource: Option<T>) -> Result<Response, ConsoleError> {
+    resource_response(to_json(resource.ok_or(ConsoleError::NotFound)?))
 }
 
 fn resource_response(value: serde_json::Value) -> Result<Response, ConsoleError> {

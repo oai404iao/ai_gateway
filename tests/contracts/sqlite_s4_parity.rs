@@ -370,6 +370,22 @@ async fn aggregate_boundary(db: &Backend, now: DateTime<Utc>) -> Value {
         .cost_statistics(filter(now))
         .await
         .unwrap();
+    let interval = filter(now);
+    let metering = db.logs().queries().metering();
+    let summary = metering
+        .own_cost_summary(USER, interval.started_at, interval.ended_at)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(summary).unwrap(),
+        serde_json::to_value(&report.summary).unwrap()
+    );
+    let empty = metering
+        .own_cost_summary(OTHER, interval.started_at, interval.ended_at)
+        .await
+        .unwrap();
+    assert_eq!(empty.request_count, 0);
+    assert_eq!(empty.cost_amount, Decimal::ZERO);
     assert_eq!(report.summary.request_count, 80000);
     assert_eq!(
         report.summary.cost_amount,
@@ -540,6 +556,9 @@ async fn query_contract(db: &Backend, now: DateTime<Utc>) -> Value {
         };
         let mut item = event(i, now - chrono::Duration::minutes(i as i64 * 40), outcome);
         item.ttft_ms = Some((i * 17) as i32);
+        if i == 0 {
+            item.channel_id = None;
+        }
         if outcome != RequestLogOutcome::Succeeded {
             item.billing = None;
         }
@@ -617,7 +636,32 @@ async fn query_contract(db: &Backend, now: DateTime<Utc>) -> Value {
             ..filter(now)
         },
     ] {
-        costs.push(serde_json::to_value(reports.cost_statistics(f).await.unwrap()).unwrap());
+        let mut detailed = reports.cost_statistics(f.clone()).await.unwrap();
+        let expected_count = if f.user_id == Some(OTHER) {
+            0
+        } else if f.channel_id.is_some() {
+            36
+        } else {
+            37
+        };
+        assert_eq!(detailed.summary.request_count, expected_count);
+        if expected_count > 0 {
+            assert_eq!(detailed.channels.len(), 1);
+            assert_eq!(detailed.channels[0].request_count, 36);
+        }
+        costs.push(serde_json::to_value(&detailed).unwrap());
+        detailed.channels.clear();
+        let without_channels = reports
+            .cost_statistics(CostStatisticsFilter {
+                include_channel_details: false,
+                ..f
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(without_channels).unwrap(),
+            serde_json::to_value(detailed).unwrap()
+        );
     }
     let mut status = Vec::new();
     for window in [

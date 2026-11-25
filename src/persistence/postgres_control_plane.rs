@@ -9,11 +9,12 @@ use std::{
 };
 
 use chrono::{DateTime, Datelike, NaiveDate, Timelike, Utc, Weekday};
+use futures_util::TryStreamExt;
 use regex::Regex;
 use reqwest::header::HeaderName;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sqlx::{FromRow, PgPool, Postgres, QueryBuilder, Transaction};
+use sqlx::{FromRow, PgPool, Postgres, QueryBuilder, Row, Transaction, ValueRef};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -1063,16 +1064,6 @@ pub struct MutationResult {
     pub correlation_id: Option<Uuid>,
 }
 
-#[derive(Serialize)]
-pub struct ControlPlaneLists {
-    pub users: Vec<ControlPlaneUser>,
-    pub user_groups: Vec<ControlPlaneUserGroup>,
-    pub models: Vec<ControlPlaneModel>,
-    pub api_keys: Vec<ControlPlaneApiKey>,
-    pub api_key_policies: Vec<ControlPlaneApiKeyPolicy>,
-    pub proxies: Vec<ControlPlaneProxy>,
-    pub config_templates: Vec<ControlPlaneConfigTemplate>,
-}
 #[derive(Serialize, FromRow)]
 pub struct ControlPlaneUser {
     pub id: Uuid,
@@ -1903,6 +1894,24 @@ impl PostgresRequestLogQueries {
 }
 
 impl PostgresMeteringQueries {
+    pub(super) async fn own_cost_totals(
+        &self,
+        user_id: Uuid,
+        started_at: DateTime<Utc>,
+        ended_at: DateTime<Utc>,
+    ) -> Result<CostSummaryRow, RepositoryError> {
+        Ok(sqlx::query_as::<_, CostSummaryRow>(
+            "SELECT count(*) AS request_count, count(cost_amount) AS priced_request_count,
+                    COALESCE(sum(COALESCE(input_tokens,0) + COALESCE(output_tokens,0)),0)::bigint AS total_tokens,
+                    COALESCE(sum(input_tokens),0)::bigint AS input_tokens,
+                    COALESCE(sum(cached_input_tokens),0)::bigint AS cached_input_tokens,
+                    COALESCE(sum(cache_write_tokens),0)::bigint AS cache_write_tokens,
+                    COALESCE(sum(output_tokens),0)::bigint AS output_tokens,
+                    COALESCE(sum(cost_amount),0) AS cost_amount
+             FROM request_metering_facts WHERE user_id=$1 AND started_at >= $2 AND started_at < $3",
+        ).bind(user_id).bind(started_at).bind(ended_at).fetch_one(&self.pool).await?)
+    }
+
     pub async fn personal_usage(
         &self,
         user_id: Uuid,
@@ -2011,164 +2020,49 @@ impl PostgresRequestLogQueries {
             });
         }
 
-        let overall_rows = sqlx::query_as::<_, StatusModelMetricRow>(
-            "SELECT log.api_format::text AS api_format,
-                    COALESCE(log.upstream_model, log.client_model) AS model,
-                    count(*)::bigint AS request_count,
-                    count(*) FILTER (WHERE log.outcome <> 'cancelled')::bigint
-                        AS success_rate_request_count,
-                    count(*) FILTER (WHERE log.outcome = 'succeeded')::bigint AS succeeded_count,
-                    percentile_cont(0.9) WITHIN GROUP (ORDER BY log.ttft_ms::double precision)
-                        FILTER (WHERE log.outcome = 'succeeded' AND log.ttft_ms IS NOT NULL)
-                        AS p90_ttft_ms,
-                    percentile_cont(0.5) WITHIN GROUP (
-                        ORDER BY log.output_tokens_per_second::double precision
-                    ) FILTER (
-                        WHERE log.outcome = 'succeeded'
-                          AND log.output_tokens_per_second IS NOT NULL
-                    ) AS p50_tps
-             FROM request_logs AS log
-             JOIN group_identity_registry AS group_identity ON group_identity.id=log.channel_group_id
-             JOIN routing_groups AS channel_group ON channel_group.id=group_identity.canonical_group_id
-             JOIN channel_identity_registry AS identity ON identity.id=log.channel_id
-             JOIN upstream_channels AS channel ON channel.id=identity.canonical_channel_id
-             JOIN channel_capabilities AS capability ON capability.channel_id=channel.id
-               AND capability.operation=log.api_operation
-             WHERE capability.status_statistics_enabled AND capability.deleted_at IS NULL
-               AND channel.deleted_at IS NULL AND channel_group.deleted_at IS NULL
-               AND log.started_at >= $1
-               AND log.started_at < $2
-             GROUP BY log.api_format, COALESCE(log.upstream_model, log.client_model)
-             ORDER BY log.api_format, COALESCE(log.upstream_model, log.client_model)",
-        )
-        .bind(started_at)
-        .bind(ended_at)
-        .fetch_all(&self.pool)
-        .await?;
-        for row in overall_rows {
+        let mut rows =
+            sqlx::query_as::<_, StatusMetricRow>(include_str!("channel_group_status_postgres.sql"))
+                .bind(started_at)
+                .bind(ended_at)
+                .bind(window.bucket_seconds())
+                .fetch(&self.pool);
+        while let Some(row) = rows.try_next().await? {
             let key = (row.api_format.clone(), row.model.clone());
-            overall_models.insert(key, row.into_metric());
-        }
-
-        let group_rows = sqlx::query_as::<_, StatusChannelGroupMetricRow>(
-            "SELECT channel_group.id AS channel_group_id,
-                    log.api_format::text AS api_format,
-                    COALESCE(log.upstream_model, log.client_model) AS model,
-                    count(*)::bigint AS request_count,
-                    count(*) FILTER (WHERE log.outcome <> 'cancelled')::bigint
-                        AS success_rate_request_count,
-                    count(*) FILTER (WHERE log.outcome = 'succeeded')::bigint AS succeeded_count,
-                    percentile_cont(0.9) WITHIN GROUP (ORDER BY log.ttft_ms::double precision)
-                        FILTER (WHERE log.outcome = 'succeeded' AND log.ttft_ms IS NOT NULL)
-                        AS p90_ttft_ms,
-                    percentile_cont(0.5) WITHIN GROUP (
-                        ORDER BY log.output_tokens_per_second::double precision
-                    ) FILTER (
-                        WHERE log.outcome = 'succeeded'
-                          AND log.output_tokens_per_second IS NOT NULL
-                    ) AS p50_tps
-             FROM request_logs AS log
-             JOIN group_identity_registry AS group_identity ON group_identity.id=log.channel_group_id
-             JOIN routing_groups AS channel_group ON channel_group.id=group_identity.canonical_group_id
-             JOIN channel_identity_registry AS identity ON identity.id=log.channel_id
-             JOIN upstream_channels AS channel ON channel.id=identity.canonical_channel_id
-             JOIN channel_capabilities AS capability ON capability.channel_id=channel.id
-               AND capability.operation=log.api_operation
-             WHERE capability.status_statistics_enabled AND capability.deleted_at IS NULL
-               AND channel.deleted_at IS NULL AND channel_group.deleted_at IS NULL
-               AND log.started_at >= $1
-               AND log.started_at < $2
-             GROUP BY channel_group.id, log.api_format,
-                      COALESCE(log.upstream_model, log.client_model)
-             ORDER BY channel_group.id, log.api_format,
-                      COALESCE(log.upstream_model, log.client_model)",
-        )
-        .bind(started_at)
-        .bind(ended_at)
-        .fetch_all(&self.pool)
-        .await?;
-        for row in group_rows {
-            let Some(index) = group_indexes
-                .get(&(row.channel_group_id, row.api_format.clone()))
-                .copied()
-            else {
+            let rate = success_rate(row.success_rate_request_count, row.succeeded_count);
+            let Some(group_id) = row.channel_group_id else {
+                overall_models.insert(
+                    key,
+                    ChannelGroupStatusModelMetric {
+                        api_format: row.api_format,
+                        model: row.model,
+                        request_count: row.request_count,
+                        success_rate: rate,
+                        p90_ttft_ms: row.p90_ttft_ms,
+                        p50_tps: row.p50_tps,
+                    },
+                );
                 continue;
             };
-            let key = (row.api_format.clone(), row.model.clone());
-            let metric = groups[index]
-                .models
-                .entry(key.clone())
-                .or_insert_with(|| empty_channel_group_status_group_model(&key.0, &key.1));
-            metric.request_count = row.request_count;
-            metric.success_rate = success_rate(row.success_rate_request_count, row.succeeded_count);
-            metric.p90_ttft_ms = row.p90_ttft_ms;
-            metric.p50_tps = row.p50_tps;
-        }
-
-        let history_rows = sqlx::query_as::<_, StatusBucketMetricRow>(
-            "SELECT channel_group.id AS channel_group_id,
-                    log.api_format::text AS api_format,
-                    COALESCE(log.upstream_model, log.client_model) AS model,
-                    to_timestamp(
-                        floor(extract(epoch FROM log.started_at) / $3::double precision)
-                        * $3::double precision
-                    ) AS bucket_started_at,
-                    count(*)::bigint AS request_count,
-                    count(*) FILTER (WHERE log.outcome <> 'cancelled')::bigint
-                        AS success_rate_request_count,
-                    count(*) FILTER (WHERE log.outcome = 'succeeded')::bigint AS succeeded_count,
-                    percentile_cont(0.9) WITHIN GROUP (ORDER BY log.ttft_ms::double precision)
-                        FILTER (WHERE log.outcome = 'succeeded' AND log.ttft_ms IS NOT NULL)
-                        AS p90_ttft_ms,
-                    percentile_cont(0.5) WITHIN GROUP (
-                        ORDER BY log.output_tokens_per_second::double precision
-                    ) FILTER (
-                        WHERE log.outcome = 'succeeded'
-                          AND log.output_tokens_per_second IS NOT NULL
-                    ) AS p50_tps
-             FROM request_logs AS log
-             JOIN group_identity_registry AS group_identity ON group_identity.id=log.channel_group_id
-             JOIN routing_groups AS channel_group ON channel_group.id=group_identity.canonical_group_id
-             JOIN channel_identity_registry AS identity ON identity.id=log.channel_id
-             JOIN upstream_channels AS channel ON channel.id=identity.canonical_channel_id
-             JOIN channel_capabilities AS capability ON capability.channel_id=channel.id
-               AND capability.operation=log.api_operation
-             WHERE capability.status_statistics_enabled AND capability.deleted_at IS NULL
-               AND channel.deleted_at IS NULL AND channel_group.deleted_at IS NULL
-               AND log.started_at >= $1
-               AND log.started_at < $2
-             GROUP BY channel_group.id, log.api_format,
-                      COALESCE(log.upstream_model, log.client_model),
-                      bucket_started_at
-             ORDER BY channel_group.id, log.api_format,
-                      COALESCE(log.upstream_model, log.client_model),
-                      bucket_started_at",
-        )
-        .bind(started_at)
-        .bind(ended_at)
-        .bind(window.bucket_seconds())
-        .fetch_all(&self.pool)
-        .await?;
-        for row in history_rows {
-            let Some(index) = group_indexes
-                .get(&(row.channel_group_id, row.api_format.clone()))
-                .copied()
-            else {
+            let Some(&index) = group_indexes.get(&(group_id, row.api_format.clone())) else {
                 continue;
             };
-            let key = (row.api_format.clone(), row.model.clone());
-            groups[index]
-                .models
-                .entry(key.clone())
-                .or_insert_with(|| empty_channel_group_status_group_model(&key.0, &key.1))
-                .history
-                .push(ChannelGroupStatusBucket {
-                    started_at: row.bucket_started_at,
+            let metric = groups[index].models.entry(key).or_insert_with(|| {
+                empty_channel_group_status_group_model(&row.api_format, &row.model)
+            });
+            if let Some(started_at) = row.bucket_started_at {
+                metric.history.push(ChannelGroupStatusBucket {
+                    started_at,
                     request_count: row.request_count,
-                    success_rate: success_rate(row.success_rate_request_count, row.succeeded_count),
+                    success_rate: rate,
                     p90_ttft_ms: row.p90_ttft_ms,
                     p50_tps: row.p50_tps,
                 });
+            } else {
+                metric.request_count = row.request_count;
+                metric.success_rate = rate;
+                metric.p90_ttft_ms = row.p90_ttft_ms;
+                metric.p50_tps = row.p50_tps;
+            }
         }
 
         Ok(ChannelGroupStatusReport {
@@ -2204,63 +2098,24 @@ impl PostgresMeteringQueries {
             return Err(RepositoryError::Validation);
         }
 
-        let scope = format!(
-            "FROM {COST_FACTS_SQL}
-             WHERE started_at >= $1 AND started_at < $2
-               AND ($3::uuid IS NULL OR user_id = $3)
-               AND ($4::uuid IS NULL OR api_key_id = $4)
-               AND ($5::uuid IS NULL OR logical_channel_id = $5)"
-        );
-        let summary = sqlx::query_as::<_, CostSummaryRow>(sqlx::AssertSqlSafe(format!(
-            "SELECT count(*)::bigint AS request_count,
+        let (channel_columns, channel_group, channel_having) = if filter.include_channel_details {
+            (
+                "logical_channel_id AS id, logical_channel_name AS name,",
+                ", (logical_channel_id, logical_channel_name)",
+                "HAVING GROUPING(logical_channel_id) = 1 OR logical_channel_id IS NOT NULL",
+            )
+        } else {
+            ("NULL::uuid AS id, NULL::text AS name,", "", "")
+        };
+        // Bucket/model groups partition the entire filtered population, including
+        // unattributed facts. Roll up those groups, not the overlapping channel totals.
+        let sql = format!(
+            "WITH grouped AS (
+             SELECT {} AS bucket_started_at, client_model AS model,
+                    api_format::text AS api_format,
+                    {channel_columns}
+                    count(*)::bigint AS request_count,
                     count(cost_amount)::bigint AS priced_request_count,
-                    COALESCE(
-                        sum(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)),
-                        0
-                    )::bigint AS total_tokens,
-                    COALESCE(sum(input_tokens), 0)::bigint AS input_tokens,
-                    COALESCE(sum(cached_input_tokens), 0)::bigint AS cached_input_tokens,
-                    COALESCE(sum(cache_write_tokens), 0)::bigint AS cache_write_tokens,
-                    COALESCE(sum(output_tokens), 0)::bigint AS output_tokens,
-                    COALESCE(sum(cost_amount), 0) AS cost_amount
-             {scope}"
-        )))
-        .bind(filter.started_at)
-        .bind(filter.ended_at)
-        .bind(filter.user_id)
-        .bind(filter.api_key_id)
-        .bind(filter.channel_id)
-        .fetch_one(&self.pool)
-        .await?;
-
-        let bucket_sql = format!(
-            "SELECT {} AS bucket_started_at,
-                    client_model AS model,
-                    api_format::text AS api_format,
-                    count(*)::bigint AS request_count,
-                    COALESCE(
-                        sum(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)),
-                        0
-                    )::bigint AS total_tokens,
-                    COALESCE(sum(cost_amount), 0) AS cost_amount
-             {scope}
-             GROUP BY bucket_started_at, client_model, api_format
-             ORDER BY bucket_started_at, client_model, api_format",
-            filter.granularity.bucket_expression()
-        );
-        let bucket_rows = sqlx::query_as::<_, CostBucketMetricRow>(sqlx::AssertSqlSafe(bucket_sql))
-            .bind(filter.started_at)
-            .bind(filter.ended_at)
-            .bind(filter.user_id)
-            .bind(filter.api_key_id)
-            .bind(filter.channel_id)
-            .fetch_all(&self.pool)
-            .await?;
-
-        let model_rows = sqlx::query_as::<_, CostModelMetricRow>(sqlx::AssertSqlSafe(format!(
-            "SELECT client_model AS model,
-                    api_format::text AS api_format,
-                    count(*)::bigint AS request_count,
                     count(*) FILTER (WHERE outcome <> 'cancelled')::bigint
                         AS success_rate_request_count,
                     count(*) FILTER (WHERE outcome = 'succeeded')::bigint AS succeeded_count,
@@ -2273,72 +2128,66 @@ impl PostgresMeteringQueries {
                     COALESCE(sum(cache_write_tokens), 0)::bigint AS cache_write_tokens,
                     COALESCE(sum(output_tokens), 0)::bigint AS output_tokens,
                     COALESCE(sum(cost_amount), 0) AS cost_amount
-             {scope}
-             GROUP BY client_model, api_format
-             ORDER BY client_model, api_format"
-        )))
-        .bind(filter.started_at)
-        .bind(filter.ended_at)
-        .bind(filter.user_id)
-        .bind(filter.api_key_id)
-        .bind(filter.channel_id)
-        .fetch_all(&self.pool)
-        .await?;
+             FROM {COST_FACTS_SQL}
+             WHERE started_at >= $1 AND started_at < $2
+               AND ($3::uuid IS NULL OR user_id = $3)
+               AND ($4::uuid IS NULL OR api_key_id = $4)
+               AND ($5::uuid IS NULL OR logical_channel_id = $5)
+             GROUP BY GROUPING SETS ((bucket_started_at, client_model, api_format){channel_group})
+             {channel_having}
+             )
+             SELECT * FROM grouped
+             UNION ALL
+             SELECT NULL, model, api_format, NULL, NULL,
+                    COALESCE(sum(request_count), 0)::bigint,
+                    COALESCE(sum(priced_request_count), 0)::bigint,
+                    COALESCE(sum(success_rate_request_count), 0)::bigint,
+                    COALESCE(sum(succeeded_count), 0)::bigint,
+                    COALESCE(sum(total_tokens), 0)::bigint,
+                    COALESCE(sum(input_tokens), 0)::bigint,
+                    COALESCE(sum(cached_input_tokens), 0)::bigint,
+                    COALESCE(sum(cache_write_tokens), 0)::bigint,
+                    COALESCE(sum(output_tokens), 0)::bigint,
+                    COALESCE(sum(cost_amount), 0)
+             FROM grouped WHERE model IS NOT NULL
+             GROUP BY GROUPING SETS ((), (model, api_format))
+             ORDER BY name, id, bucket_started_at, model, api_format",
+            filter.granularity.bucket_expression()
+        );
+        let mut summary = None;
+        let mut bucket_rows = Vec::new();
+        let mut model_rows = Vec::new();
+        let mut channels = Vec::new();
+        {
+            let mut rows = sqlx::query(sqlx::AssertSqlSafe(sql))
+                .bind(filter.started_at)
+                .bind(filter.ended_at)
+                .bind(filter.user_id)
+                .bind(filter.api_key_id)
+                .bind(filter.channel_id)
+                .fetch(&self.pool);
+            // Grouping sets null the omitted dimensions. Bucket start and client model
+            // are non-null on facts; HAVING excludes the unattributed channel group only.
+            while let Some(row) = rows.try_next().await? {
+                if !row.try_get_raw("bucket_started_at")?.is_null() {
+                    bucket_rows.push(CostBucketMetricRow::from_row(&row)?);
+                } else if !row.try_get_raw("model")?.is_null() {
+                    model_rows.push(CostModelMetricRow::from_row(&row)?);
+                } else if !row.try_get_raw("id")?.is_null() {
+                    channels.push(CostChannelMetricRow::from_row(&row)?.into_metric());
+                } else {
+                    summary = Some(CostSummaryRow::from_row(&row)?);
+                }
+            }
+        }
 
-        let channels = if filter.include_channel_details {
-            sqlx::query_as::<_, CostChannelMetricRow>(sqlx::AssertSqlSafe(format!(
-                "SELECT logical_channel_id AS id, logical_channel_name AS name,
-                        count(*)::bigint AS request_count,
-                        count(*) FILTER (WHERE log.outcome <> 'cancelled')::bigint
-                            AS success_rate_request_count,
-                        count(*) FILTER (WHERE log.outcome = 'succeeded')::bigint
-                            AS succeeded_count,
-                        COALESCE(
-                            sum(COALESCE(log.input_tokens, 0) + COALESCE(log.output_tokens, 0)),
-                            0
-                        )::bigint AS total_tokens,
-                        COALESCE(sum(log.input_tokens), 0)::bigint AS input_tokens,
-                        COALESCE(sum(log.cached_input_tokens), 0)::bigint
-                            AS cached_input_tokens,
-                        COALESCE(sum(log.cache_write_tokens), 0)::bigint
-                            AS cache_write_tokens,
-                        COALESCE(sum(log.output_tokens), 0)::bigint AS output_tokens,
-                        COALESCE(sum(log.cost_amount), 0) AS cost_amount
-                 {scope} AND logical_channel_id IS NOT NULL
-                 GROUP BY logical_channel_id, logical_channel_name
-                 ORDER BY logical_channel_name, logical_channel_id"
-            )))
-            .bind(filter.started_at)
-            .bind(filter.ended_at)
-            .bind(filter.user_id)
-            .bind(filter.api_key_id)
-            .bind(filter.channel_id)
-            .fetch_all(&self.pool)
-            .await?
-            .into_iter()
-            .map(CostChannelMetricRow::into_metric)
-            .collect()
-        } else {
-            Vec::new()
-        };
-
-        let duration_minutes = duration.num_milliseconds().max(1) as f64 / 60_000.0;
         Ok(CostStatisticsReport {
             started_at: filter.started_at,
             ended_at: filter.ended_at,
             granularity: filter.granularity.as_str().into(),
-            summary: CostStatisticsSummary {
-                request_count: summary.request_count,
-                priced_request_count: summary.priced_request_count,
-                total_tokens: summary.total_tokens,
-                input_tokens: summary.input_tokens,
-                cached_input_tokens: summary.cached_input_tokens,
-                cache_write_tokens: summary.cache_write_tokens,
-                output_tokens: summary.output_tokens,
-                average_rpm: summary.request_count as f64 / duration_minutes,
-                average_tpm: summary.total_tokens as f64 / duration_minutes,
-                cost_amount: summary.cost_amount,
-            },
+            summary: summary
+                .ok_or(sqlx::Error::RowNotFound)?
+                .into_summary(duration),
             buckets: fold_cost_buckets(
                 bucket_rows,
                 filter.started_at,
@@ -3262,47 +3111,11 @@ struct TrackedChannelGroupRow {
 }
 
 #[derive(FromRow)]
-struct StatusModelMetricRow {
+struct StatusMetricRow {
+    channel_group_id: Option<Uuid>,
+    bucket_started_at: Option<DateTime<Utc>>,
     api_format: String,
     model: String,
-    request_count: i64,
-    success_rate_request_count: i64,
-    succeeded_count: i64,
-    p90_ttft_ms: Option<f64>,
-    p50_tps: Option<f64>,
-}
-
-impl StatusModelMetricRow {
-    fn into_metric(self) -> ChannelGroupStatusModelMetric {
-        ChannelGroupStatusModelMetric {
-            api_format: self.api_format,
-            model: self.model,
-            request_count: self.request_count,
-            success_rate: success_rate(self.success_rate_request_count, self.succeeded_count),
-            p90_ttft_ms: self.p90_ttft_ms,
-            p50_tps: self.p50_tps,
-        }
-    }
-}
-
-#[derive(FromRow)]
-struct StatusChannelGroupMetricRow {
-    channel_group_id: Uuid,
-    api_format: String,
-    model: String,
-    request_count: i64,
-    success_rate_request_count: i64,
-    succeeded_count: i64,
-    p90_ttft_ms: Option<f64>,
-    p50_tps: Option<f64>,
-}
-
-#[derive(FromRow)]
-struct StatusBucketMetricRow {
-    channel_group_id: Uuid,
-    api_format: String,
-    model: String,
-    bucket_started_at: DateTime<Utc>,
     request_count: i64,
     success_rate_request_count: i64,
     succeeded_count: i64,
@@ -3377,15 +3190,33 @@ pub(super) struct PersonalUsageDayRow {
 }
 
 #[derive(FromRow)]
-struct CostSummaryRow {
-    request_count: i64,
-    priced_request_count: i64,
-    total_tokens: i64,
-    input_tokens: i64,
-    cached_input_tokens: i64,
-    cache_write_tokens: i64,
-    output_tokens: i64,
-    cost_amount: rust_decimal::Decimal,
+pub(super) struct CostSummaryRow {
+    pub(super) request_count: i64,
+    pub(super) priced_request_count: i64,
+    pub(super) total_tokens: i64,
+    pub(super) input_tokens: i64,
+    pub(super) cached_input_tokens: i64,
+    pub(super) cache_write_tokens: i64,
+    pub(super) output_tokens: i64,
+    pub(super) cost_amount: rust_decimal::Decimal,
+}
+
+impl CostSummaryRow {
+    pub(super) fn into_summary(self, duration: chrono::Duration) -> CostStatisticsSummary {
+        let minutes = duration.num_milliseconds().max(1) as f64 / 60_000.0;
+        CostStatisticsSummary {
+            request_count: self.request_count,
+            priced_request_count: self.priced_request_count,
+            total_tokens: self.total_tokens,
+            input_tokens: self.input_tokens,
+            cached_input_tokens: self.cached_input_tokens,
+            cache_write_tokens: self.cache_write_tokens,
+            output_tokens: self.output_tokens,
+            average_rpm: self.request_count as f64 / minutes,
+            average_tpm: self.total_tokens as f64 / minutes,
+            cost_amount: self.cost_amount,
+        }
+    }
 }
 
 #[derive(FromRow)]
@@ -4079,6 +3910,23 @@ pub(crate) fn deleted_api_key_secret(id: Uuid) -> String {
     format!("deleted-api-key-{id}")
 }
 
+macro_rules! admin_resource {
+    ($list:ident, $detail:ident, $view:ty, $select:literal, $list_tail:literal, $detail_tail:literal) => {
+        pub async fn $list(&self) -> Result<Vec<$view>, RepositoryError> {
+            Ok(sqlx::query_as(concat!($select, $list_tail))
+                .fetch_all(&self.pool)
+                .await?)
+        }
+
+        pub async fn $detail(&self, id: Uuid) -> Result<Option<$view>, RepositoryError> {
+            Ok(sqlx::query_as(concat!($select, $detail_tail))
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?)
+        }
+    };
+}
+
 impl PostgresControlPlaneRepository {
     pub async fn topology(&self) -> Result<super::UpstreamTopologyRecords, RepositoryError> {
         let mut transaction = self.pool.begin().await?;
@@ -4486,9 +4334,11 @@ impl PostgresControlPlaneRepository {
         }))
     }
 
-    pub async fn control_plane_lists(&self) -> Result<ControlPlaneLists, RepositoryError> {
-        let users = sqlx::query_as::<_, ControlPlaneUser>(
-            "SELECT u.id,u.email,u.display_name,u.role,u.status, \
+    admin_resource!(
+        admin_users,
+        admin_user,
+        ControlPlaneUser,
+        "SELECT u.id,u.email,u.display_name,u.role,u.status, \
                     (u.password_hash IS NULL AND u.email IS NOT NULL AND u.status IN ('invited','suspended','disabled')) AS can_reissue_invitation, \
                     u.password_change_required,u.temporary_password_expires_at, \
                     u.user_group_id,u.default_api_key_policy_id, \
@@ -4496,12 +4346,16 @@ impl PostgresControlPlaneRepository {
                     u.websocket_enabled,u.balance_amount,u.created_at,u.updated_at \
              FROM users AS u \
              JOIN user_groups AS g ON g.id=u.user_group_id AND g.deleted_at IS NULL \
-             WHERE NOT u.is_system AND u.deleted_at IS NULL ORDER BY u.id",
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        let user_groups = sqlx::query_as::<_, ControlPlaneUserGroup>(
-            "SELECT g.id,g.name,g.description,g.default_api_key_policy_id, \
+             WHERE NOT u.is_system AND u.deleted_at IS NULL",
+        " ORDER BY u.id",
+        " AND u.id=$1"
+    );
+
+    admin_resource!(
+        admin_user_groups,
+        admin_user_group,
+        ControlPlaneUserGroup,
+        "SELECT g.id,g.name,g.description,g.default_api_key_policy_id, \
                     ARRAY( \
                         SELECT visibility.channel_group_id \
                         FROM user_group_codex_quota_visibility AS visibility \
@@ -4514,26 +4368,55 @@ impl PostgresControlPlaneRepository {
                     g.created_at,g.updated_at \
              FROM user_groups AS g \
              LEFT JOIN users AS u ON u.user_group_id=g.id \
-             WHERE g.deleted_at IS NULL \
-             GROUP BY g.id \
-             ORDER BY g.system_role NULLS LAST,g.name,g.id",
+             WHERE g.deleted_at IS NULL",
+        " GROUP BY g.id ORDER BY g.system_role NULLS LAST,g.name,g.id",
+        " AND g.id=$1 GROUP BY g.id"
+    );
+
+    admin_resource!(
+        admin_models,
+        admin_model,
+        ControlPlaneModel,
+        "SELECT id,source_model_id,display_name,provider_name,enabled,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,advanced_billing,last_synced_at,created_at,updated_at FROM models WHERE deleted_at IS NULL",
+        " ORDER BY id",
+        " AND id=$1"
+    );
+
+    admin_resource!(
+        admin_api_keys,
+        admin_api_key,
+        ControlPlaneApiKey,
+        "SELECT k.id, k.user_id, u.status AS user_status, k.name, k.secret_value AS secret, k.status, k.expires_at, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount, k.updated_at FROM api_keys k JOIN users u ON u.id=k.user_id WHERE NOT k.is_system AND k.deleted_at IS NULL AND u.deleted_at IS NULL",
+        " ORDER BY k.id",
+        " AND k.id=$1"
+    );
+
+    admin_resource!(
+        admin_api_key_policies,
+        admin_api_key_policy,
+        ControlPlaneApiKeyPolicy,
+        "SELECT id,name,allowed_group_ids,allowed_channel_ids,enabled,created_at,updated_at FROM api_key_policies",
+        " ORDER BY id",
+        " WHERE id=$1"
+    );
+
+    admin_resource!(
+        admin_proxies,
+        admin_proxy,
+        ControlPlaneProxy,
+        "SELECT id,name,regexp_replace(regexp_replace(proxy_url, '^([^:/?#]+://)[^/?#]*@', E'\\\\1'), '[?#].*$', '') AS proxy_url,no_proxy_hosts,enabled,(username IS NOT NULL OR password IS NOT NULL) AS credential_configured,created_at,updated_at FROM proxies",
+        " ORDER BY id",
+        " WHERE id=$1"
+    );
+
+    pub async fn admin_config_templates(
+        &self,
+    ) -> Result<Vec<ControlPlaneConfigTemplate>, RepositoryError> {
+        Ok(sqlx::query_as(
+            "SELECT id,name,description,document->>'api_format' AS api_format,enabled,created_at,updated_at FROM config_templates ORDER BY id",
         )
         .fetch_all(&self.pool)
-        .await?;
-        let models = sqlx::query_as::<_, ControlPlaneModel>("SELECT id,source_model_id,display_name,provider_name,enabled,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,advanced_billing,last_synced_at,created_at,updated_at FROM models WHERE deleted_at IS NULL ORDER BY id").fetch_all(&self.pool).await?;
-        let api_keys = sqlx::query_as::<_, ControlPlaneApiKey>("SELECT k.id, k.user_id, u.status AS user_status, k.name, k.secret_value AS secret, k.status, k.expires_at, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount, k.updated_at FROM api_keys k JOIN users u ON u.id=k.user_id WHERE NOT k.is_system AND k.deleted_at IS NULL AND u.deleted_at IS NULL ORDER BY k.id").fetch_all(&self.pool).await?;
-        let api_key_policies = sqlx::query_as::<_, ControlPlaneApiKeyPolicy>("SELECT id,name,allowed_group_ids,allowed_channel_ids,enabled,created_at,updated_at FROM api_key_policies ORDER BY id").fetch_all(&self.pool).await?;
-        let proxies = sqlx::query_as::<_, ControlPlaneProxy>("SELECT id,name,regexp_replace(regexp_replace(proxy_url, '^([^:/?#]+://)[^/?#]*@', E'\\\\1'), '[?#].*$', '') AS proxy_url,no_proxy_hosts,enabled,(username IS NOT NULL OR password IS NOT NULL) AS credential_configured,created_at,updated_at FROM proxies ORDER BY id").fetch_all(&self.pool).await?;
-        let config_templates = sqlx::query_as::<_, ControlPlaneConfigTemplate>("SELECT id,name,description,document->>'api_format' AS api_format,enabled,created_at,updated_at FROM config_templates ORDER BY id").fetch_all(&self.pool).await?;
-        Ok(ControlPlaneLists {
-            users,
-            user_groups,
-            models,
-            api_keys,
-            api_key_policies,
-            proxies,
-            config_templates,
-        })
+        .await?)
     }
 
     pub(crate) async fn proxy_record(

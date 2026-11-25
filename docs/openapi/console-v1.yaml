@@ -2618,6 +2618,33 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "422": { $ref: "#/components/responses/Unprocessable" }
 
+  /statistics/costs/summary:
+    get:
+      tags: [Self, Statistics]
+      operationId: getOwnCostSummary
+      description: Returns only the authenticated user's totals for a nonempty interval of at most 366 days, with the same metrics as the personal cost report summary. Does not compute model or bucket breakdowns.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: started_after
+          in: query
+          required: true
+          description: Inclusive interval start.
+          schema: { $ref: "#/components/schemas/DateTime" }
+        - name: started_before
+          in: query
+          required: true
+          description: Exclusive interval end.
+          schema: { $ref: "#/components/schemas/DateTime" }
+      responses:
+        "200":
+          description: Owner-scoped cost and usage totals.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CostStatisticsSummary" }
+        "400": { $ref: "#/components/responses/InvalidQuery" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
   /statistics/spend-leaderboard:
     get:
       tags: [Statistics]

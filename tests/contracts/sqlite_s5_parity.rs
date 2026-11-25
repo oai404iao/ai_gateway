@@ -863,10 +863,9 @@ async fn identity_and_proxy_export(backend: &Backend, c: Context) {
     assert!(!audit.contains("fixture-password"));
     let proxy_view = c
         .repo
-        .control_plane_lists()
+        .admin_proxies()
         .await
         .unwrap()
-        .proxies
         .into_iter()
         .find(|item| item.id == proxy)
         .unwrap();

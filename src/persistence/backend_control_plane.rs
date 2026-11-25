@@ -12,11 +12,12 @@ use super::{
     CodexCredentialExportBundle, CodexCredentialExportInput, CodexCredentialRecord,
     CodexCredentialUpdateInput, CodexCredentialView, CodexOauthFlowRecord, CodexOauthStartInput,
     CodexQuotaReset, CodexQuotaResetOutcome, CodexQuotaUpdate, CodexQuotaWindowHistory,
-    CodexRefresh, ConsoleApiKey, ConsoleAuditLog, ControlPlaneConfigTemplateDetail,
-    ControlPlaneLists, ControlPlaneMutation, ControlPlaneRecords, ModelSourceVersions,
-    MutationResult, PostgresControlPlaneRepository, ProxyRecord, RepositoryError,
-    RuntimeConfigRecords, SelfApiKeyCreate, SelfApiKeyOptions, SelfApiKeyUpdate,
-    SelfCodexQuotaCredentialView, SelfCodexQuotaWindowHistory, SyncedModelInput,
+    CodexRefresh, ConsoleApiKey, ConsoleAuditLog, ControlPlaneApiKey, ControlPlaneApiKeyPolicy,
+    ControlPlaneConfigTemplate, ControlPlaneConfigTemplateDetail, ControlPlaneModel,
+    ControlPlaneMutation, ControlPlaneProxy, ControlPlaneRecords, ControlPlaneUser,
+    ControlPlaneUserGroup, ModelSourceVersions, MutationResult, PostgresControlPlaneRepository,
+    ProxyRecord, RepositoryError, RuntimeConfigRecords, SelfApiKeyCreate, SelfApiKeyOptions,
+    SelfApiKeyUpdate, SelfCodexQuotaCredentialView, SelfCodexQuotaWindowHistory, SyncedModelInput,
     SystemProbeIdentity, SystemSettingsInput, SystemSettingsView, UserBatchUpdateInput,
     UserSettingsInput, UserSettingsView, control_plane_write::PostgresPreparedControlPlaneChange,
 };
@@ -33,6 +34,18 @@ enum Backend {
     Postgres(PostgresControlPlaneRepository),
     #[cfg(feature = "sqlite-backend")]
     Sqlite(SqliteControlPlaneRepository),
+}
+
+macro_rules! admin_read {
+    ($name:ident, $result:ty $(, $argument:ident: $argument_type:ty)?) => {
+        pub async fn $name(&self $(, $argument: $argument_type)?) -> Result<$result, RepositoryError> {
+            match &self.backend {
+                Backend::Postgres(repository) => repository.$name($($argument)?).await,
+                #[cfg(feature = "sqlite-backend")]
+                Backend::Sqlite(repository) => repository.$name($($argument)?).await,
+            }
+        }
+    };
 }
 
 macro_rules! plugin_job_write {
@@ -322,13 +335,19 @@ impl ControlPlaneRepository {
         }
     }
 
-    pub async fn control_plane_lists(&self) -> Result<ControlPlaneLists, RepositoryError> {
-        match &self.backend {
-            Backend::Postgres(repository) => repository.control_plane_lists().await,
-            #[cfg(feature = "sqlite-backend")]
-            Backend::Sqlite(repository) => repository.control_plane_lists().await,
-        }
-    }
+    admin_read!(admin_users, Vec<ControlPlaneUser>);
+    admin_read!(admin_user, Option<ControlPlaneUser>, id: Uuid);
+    admin_read!(admin_user_groups, Vec<ControlPlaneUserGroup>);
+    admin_read!(admin_user_group, Option<ControlPlaneUserGroup>, id: Uuid);
+    admin_read!(admin_models, Vec<ControlPlaneModel>);
+    admin_read!(admin_model, Option<ControlPlaneModel>, id: Uuid);
+    admin_read!(admin_api_keys, Vec<ControlPlaneApiKey>);
+    admin_read!(admin_api_key, Option<ControlPlaneApiKey>, id: Uuid);
+    admin_read!(admin_api_key_policies, Vec<ControlPlaneApiKeyPolicy>);
+    admin_read!(admin_api_key_policy, Option<ControlPlaneApiKeyPolicy>, id: Uuid);
+    admin_read!(admin_proxies, Vec<ControlPlaneProxy>);
+    admin_read!(admin_proxy, Option<ControlPlaneProxy>, id: Uuid);
+    admin_read!(admin_config_templates, Vec<ControlPlaneConfigTemplate>);
 
     pub async fn control_plane_config_template_detail(
         &self,

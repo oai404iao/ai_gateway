@@ -22,11 +22,15 @@ describe("Gateway overview", () => {
   it.each([["member", seedUserSession], ["administrator", seedAuthenticatedSession]] as const)(
     "queries only owner resources and drills into the failed request for a %s", async (_, seed) => {
       seed();
-      const costs: URLSearchParams[] = [], logs: URLSearchParams[] = [], system: string[] = [];
+      const costs: URLSearchParams[] = [], summaries: URLSearchParams[] = [], logs: URLSearchParams[] = [], system: string[] = [];
       server.use(
         http.get("/console/v1/statistics/costs", ({ request }) => {
           costs.push(new URL(request.url).searchParams);
           return HttpResponse.json(report);
+        }),
+        http.get("/console/v1/statistics/costs/summary", ({ request }) => {
+          summaries.push(new URL(request.url).searchParams);
+          return HttpResponse.json(report.summary);
         }),
         http.get("/console/v1/me/request-logs", ({ request }) => {
           logs.push(new URL(request.url).searchParams);
@@ -61,6 +65,9 @@ describe("Gateway overview", () => {
       const start = day.searchParams.get("started_after")!, end = day.searchParams.get("started_before")!;
       expect(Date.parse(end)-Date.parse(start)).toBe(86_400_000);
       await waitFor(() => expect(costs.some(q => q.get("started_after") === start && q.get("started_before") === end && q.get("granularity") === "hour")).toBe(true));
+      expect(costs).toHaveLength(2); // one full report per visited range
+      const prior = overviewWindow(Date.parse(end), "24h", true);
+      await waitFor(() => expect(Object.fromEntries(summaries.at(-1)!)).toEqual(prior));
       expect(costs.every(q => !q.has("user_id") && !q.has("channel_id"))).toBe(true);
       await user.click(screen.getByRole("tab", {name: "Failed requests"}));
       const failed = await screen.findByRole("tabpanel", {name: "Failed requests"});

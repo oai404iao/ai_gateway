@@ -7458,6 +7458,29 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     assert_eq!(status["groups"][0]["id"], group_id.to_string());
     assert!(status["groups"][0]["models"][0]["history"].is_array());
 
+    let week = request(
+        &app,
+        "GET",
+        "/console/v1/statistics/channel-group-status?window=7d",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(week.status(), StatusCode::OK);
+    let week = body_json(week).await;
+    let group_model = &week["groups"][0]["models"][0];
+    for model in [&week["models"][0], group_model] {
+        assert_eq!(model["request_count"], 4);
+        assert_eq!(model["p90_ttft_ms"], 460.0);
+        assert_eq!(model["p50_tps"], 20.0);
+    }
+    let history = group_model["history"].as_array().unwrap();
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[0]["p90_ttft_ms"], 100.0);
+    assert!(history[0]["p50_tps"].is_null());
+    assert_eq!(history[1]["p90_ttft_ms"], 500.0);
+    assert_eq!(history[1]["p50_tps"], 20.0);
+
     let range_start = (started_at - chrono::Duration::hours(1))
         .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let range_end = (started_at + chrono::Duration::hours(1))
@@ -7764,6 +7787,43 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     assert_eq!(user_costs.status(), StatusCode::OK);
     let user_costs = body_json(user_costs).await;
     assert_eq!(user_costs["summary"]["request_count"], 1);
+    let summary_url = format!(
+        "/console/v1/statistics/costs/summary?started_after={range_start}&started_before={range_end}"
+    );
+    let summary = request_with_token(
+        &app,
+        &regular_session.access_token,
+        "GET",
+        &summary_url,
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(summary.status(), StatusCode::OK);
+    assert_eq!(body_json(summary).await, user_costs["summary"]);
+    for (url, status) in [
+        (
+            format!("{summary_url}&user_id={}", app.user_id),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            format!(
+                "/console/v1/statistics/costs/summary?started_after={range_end}&started_before={range_start}"
+            ),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+    ] {
+        let invalid = request_with_token(
+            &app,
+            &regular_session.access_token,
+            "GET",
+            &url,
+            serde_json::json!({}),
+            &[],
+        )
+        .await;
+        assert_eq!(invalid.status(), status);
+    }
     let user_cost_amount = user_costs["summary"]["cost_amount"]
         .as_str()
         .unwrap()

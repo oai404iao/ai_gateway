@@ -16,12 +16,11 @@ use crate::{
         ChannelGroupStatusBucket, ChannelGroupStatusGroup, ChannelGroupStatusGroupModel,
         ChannelGroupStatusModelMetric, ChannelGroupStatusReport, ChannelGroupStatusWindow,
         ConsoleRequestLog, CostStatisticsChannel, CostStatisticsFilter, CostStatisticsReport,
-        CostStatisticsSummary, PersonalUsageReport, RepositoryError, RequestLogFilter,
-        SpendLeaderboardEntry, SpendLeaderboardFilter, SpendLeaderboardRefresh,
-        SpendLeaderboardReport,
+        PersonalUsageReport, RepositoryError, RequestLogFilter, SpendLeaderboardEntry,
+        SpendLeaderboardFilter, SpendLeaderboardRefresh, SpendLeaderboardReport,
         postgres_control_plane::{
-            COST_FACTS_SQL, CostBucketMetricRow, CostModelMetricRow, PersonalUsageDayRow,
-            fold_cost_buckets, fold_cost_models, fold_personal_usage,
+            COST_FACTS_SQL, CostBucketMetricRow, CostModelMetricRow, CostSummaryRow,
+            PersonalUsageDayRow, fold_cost_buckets, fold_cost_models, fold_personal_usage,
             redact_self_service_request_log, success_rate,
         },
     },
@@ -619,6 +618,28 @@ impl SqliteMeteringQueries {
         Ok(fold_personal_usage(rows, started_on, ended_on))
     }
 
+    pub(in crate::persistence) async fn own_cost_totals(
+        &self,
+        user_id: Uuid,
+        started_at: DateTime<Utc>,
+        ended_at: DateTime<Utc>,
+    ) -> Result<CostSummaryRow, RepositoryError> {
+        let mut connection = self.database.acquire_read().await.map_err(open_failure)?;
+        let mut rows = sqlx::query_as::<_, UsageFactRow>(
+            "SELECT input_tokens,cached_input_tokens,cache_write_tokens,output_tokens,cost_amount
+             FROM request_metering_facts WHERE user_id=? AND started_at >= ? AND started_at < ?",
+        )
+        .bind(SqliteUuid(user_id))
+        .bind(SqliteTimestamp(started_at))
+        .bind(SqliteTimestamp(ended_at))
+        .fetch(&mut *connection);
+        let mut summary = CostSummaryAccumulator::default();
+        while let Some(row) = rows.try_next().await? {
+            summary.add(&row)?;
+        }
+        summary.finish()
+    }
+
     pub async fn cost_statistics(
         &self,
         filter: CostStatisticsFilter,
@@ -635,6 +656,16 @@ impl SqliteMeteringQueries {
 
         let bucket_seconds = filter.granularity.bucket_seconds();
         let mut connection = self.database.acquire_read().await.map_err(open_failure)?;
+        let source = if filter.include_channel_details || filter.channel_id.is_some() {
+            COST_FACTS_SQL
+        } else {
+            "request_metering_facts AS log"
+        };
+        let channel_columns = if filter.include_channel_details {
+            "logical_channel_id, logical_channel_name"
+        } else {
+            "NULL AS logical_channel_id, NULL AS logical_channel_name"
+        };
         let mut query = QueryBuilder::<Sqlite>::new(format!(
             "SELECT log.started_at AS started_at, log.api_format AS api_format, \
                     log.client_model AS model, \
@@ -642,8 +673,8 @@ impl SqliteMeteringQueries {
                     log.cached_input_tokens AS cached_input_tokens, \
                     log.cache_write_tokens AS cache_write_tokens, \
                     log.output_tokens AS output_tokens, log.cost_amount AS cost_amount, \
-                    logical_channel_id, logical_channel_name \
-             FROM {COST_FACTS_SQL} WHERE log.started_at >= "
+                    {channel_columns} \
+             FROM {source} WHERE log.started_at >= "
         ));
         query.push_bind(SqliteTimestamp(filter.started_at));
         query.push(" AND log.started_at < ");
@@ -660,7 +691,7 @@ impl SqliteMeteringQueries {
         }
         if let Some(channel_id) = filter.channel_id {
             query
-                .push(" AND logical_channel_id = ")
+                .push(" AND log.logical_channel_id = ")
                 .push_bind(SqliteUuid(channel_id));
         }
         {
@@ -670,7 +701,7 @@ impl SqliteMeteringQueries {
             while let Some(row) = stream.try_next().await? {
                 let bucket =
                     row.started_at.0.timestamp().div_euclid(bucket_seconds) * bucket_seconds;
-                summary.add(&row)?;
+                summary.add(&row.usage)?;
                 buckets
                     .entry((bucket, row.api_format.clone(), row.model.clone()))
                     .or_default()
@@ -729,23 +760,11 @@ impl SqliteMeteringQueries {
             .map(|((name, id), accumulator)| accumulator.into_channel(id, name))
             .collect::<Result<Vec<_>, RepositoryError>>()?;
 
-        let duration_minutes = duration.num_milliseconds().max(1) as f64 / 60_000.0;
         Ok(CostStatisticsReport {
             started_at: filter.started_at,
             ended_at: filter.ended_at,
             granularity: filter.granularity.as_str().into(),
-            summary: CostStatisticsSummary {
-                request_count: summary.request_count,
-                priced_request_count: summary.priced_request_count,
-                total_tokens: summary.total_tokens,
-                input_tokens: summary.input_tokens,
-                cached_input_tokens: summary.cached_input_tokens,
-                cache_write_tokens: summary.cache_write_tokens,
-                output_tokens: summary.output_tokens,
-                average_rpm: summary.request_count as f64 / duration_minutes,
-                average_tpm: summary.total_tokens as f64 / duration_minutes,
-                cost_amount: summary.cost_amount.finish()?,
-            },
+            summary: summary.finish()?.into_summary(duration),
             buckets: fold_cost_buckets(
                 bucket_rows,
                 filter.started_at,
@@ -856,19 +875,25 @@ struct CostFactRow {
     api_format: String,
     model: String,
     outcome: String,
+    logical_channel_id: Option<SqliteUuid>,
+    logical_channel_name: Option<String>,
+    #[sqlx(flatten)]
+    usage: UsageFactRow,
+}
+
+#[derive(FromRow)]
+struct UsageFactRow {
     input_tokens: Option<i64>,
     cached_input_tokens: Option<i64>,
     cache_write_tokens: Option<i64>,
     output_tokens: Option<i64>,
     cost_amount: Option<SqliteAmount>,
-    logical_channel_id: Option<SqliteUuid>,
-    logical_channel_name: Option<String>,
 }
 
 /// PostgreSQL computes `COALESCE(input_tokens,0) + COALESCE(output_tokens,0)`
 /// with `bigint` arithmetic; a sum outside the column range must fail instead of
 /// wrapping.
-fn fact_total_tokens(row: &CostFactRow) -> Result<i64, RepositoryError> {
+fn fact_total_tokens(row: &UsageFactRow) -> Result<i64, RepositoryError> {
     row.input_tokens
         .unwrap_or(0)
         .checked_add(row.output_tokens.unwrap_or(0))
@@ -877,7 +902,7 @@ fn fact_total_tokens(row: &CostFactRow) -> Result<i64, RepositoryError> {
 
 /// Sums `cost_amount` only when the row is priced, matching `count(cost_amount)`
 /// and `COALESCE(sum(cost_amount),0)`.
-fn add_cost(target: &mut CostSum, row: &CostFactRow) -> Result<bool, RepositoryError> {
+fn add_cost(target: &mut CostSum, row: &UsageFactRow) -> Result<bool, RepositoryError> {
     let Some(cost_amount) = row.cost_amount else {
         return Ok(false);
     };
@@ -886,7 +911,7 @@ fn add_cost(target: &mut CostSum, row: &CostFactRow) -> Result<bool, RepositoryE
 }
 
 fn add_usage(
-    row: &CostFactRow,
+    row: &UsageFactRow,
     total_tokens: &mut i64,
     input_tokens: &mut i64,
     cached_input_tokens: &mut i64,
@@ -920,7 +945,20 @@ struct CostSummaryAccumulator {
 }
 
 impl CostSummaryAccumulator {
-    fn add(&mut self, row: &CostFactRow) -> Result<(), RepositoryError> {
+    fn finish(self) -> Result<CostSummaryRow, RepositoryError> {
+        Ok(CostSummaryRow {
+            request_count: self.request_count,
+            priced_request_count: self.priced_request_count,
+            total_tokens: self.total_tokens,
+            input_tokens: self.input_tokens,
+            cached_input_tokens: self.cached_input_tokens,
+            cache_write_tokens: self.cache_write_tokens,
+            output_tokens: self.output_tokens,
+            cost_amount: self.cost_amount.finish()?,
+        })
+    }
+
+    fn add(&mut self, row: &UsageFactRow) -> Result<(), RepositoryError> {
         checked_add_count(&mut self.request_count, 1)?;
         if add_cost(&mut self.cost_amount, row)? {
             checked_add_count(&mut self.priced_request_count, 1)?;
@@ -946,8 +984,8 @@ struct CostAccumulator {
 impl CostAccumulator {
     fn add(&mut self, row: &CostFactRow) -> Result<(), RepositoryError> {
         checked_add_count(&mut self.request_count, 1)?;
-        add_cost(&mut self.cost_amount, row)?;
-        checked_add_count(&mut self.total_tokens, fact_total_tokens(row)?)
+        add_cost(&mut self.cost_amount, &row.usage)?;
+        checked_add_count(&mut self.total_tokens, fact_total_tokens(&row.usage)?)
     }
 }
 
@@ -973,9 +1011,9 @@ impl CostBreakdownAccumulator {
         if row.outcome == "succeeded" {
             checked_add_count(&mut self.succeeded_count, 1)?;
         }
-        add_cost(&mut self.cost_amount, row)?;
+        add_cost(&mut self.cost_amount, &row.usage)?;
         add_usage(
-            row,
+            &row.usage,
             &mut self.total_tokens,
             &mut self.input_tokens,
             &mut self.cached_input_tokens,

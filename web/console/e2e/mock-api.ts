@@ -992,6 +992,9 @@ export async function mockConsoleApi(page: Page): Promise<void> {
         },
       });
     }
+    if (path === "/console/v1/statistics/costs/summary" && method === "GET") {
+      return route.fulfill({ status: 200, json: OWN_COST_STATISTICS_REPORT.summary });
+    }
     if (path === "/console/v1/statistics/costs" && method === "GET") {
       return route.fulfill({
         status: 200,

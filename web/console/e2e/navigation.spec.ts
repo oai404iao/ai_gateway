@@ -75,6 +75,7 @@ for (const admin of [false, true]) {
     await page.getByRole("tab", { name: "Recent requests" }).click();
     await expect(page.getByText("gateway-e2e-model", { exact: true })).toBeVisible();
     expect(reads).toContain("/statistics/costs");
+    expect(reads).toContain("/statistics/costs/summary");
     expect(reads).toContain("/me/request-logs");
     expect(reads.has("/request-logs")).toBe(false);
     expect(reads.has("/system/statistics/costs")).toBe(false);

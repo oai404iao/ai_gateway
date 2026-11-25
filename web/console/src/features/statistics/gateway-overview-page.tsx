@@ -14,7 +14,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useOwnRequestLogs } from "@/features/request-logs/api";
 import { formatDurationMs, formatTokens, formatUsd } from "@/lib/formatters";
 import { apiFormatLabel } from "@/lib/permissions";
-import { useCostStatistics } from "./api";
+import { useCostStatistics, useOwnCostSummary } from "./api";
 import { UsageTrend } from "./usage-trend";
 import {
   byRequestVolume,
@@ -166,7 +166,7 @@ export function GatewayOverviewPage() {
   const [end] = useState(() => Math.floor(Date.now() / 1000) * 1000);
   const bounds = overviewWindow(end, period);
   const report = useCostStatistics("own", { ...bounds, granularity: "hour" });
-  const prior = useCostStatistics("own", { ...overviewWindow(end, period, true), granularity: "day" });
+  const prior = useOwnCostSummary(overviewWindow(end, period, true));
   const range = new Intl.DateTimeFormat(locale, {
     month: "short",
     day: "numeric",
@@ -206,7 +206,7 @@ export function GatewayOverviewPage() {
           <UsageTrend
             key={period}
             report={report.data}
-            comparison={prior.data?.summary}
+            comparison={prior.data}
             comparisonLabel={t(period === "7d" ? "vs. last week" : "vs. previous day")}
             groupByDay={period === "7d"}
           />

@@ -63,7 +63,9 @@ security headers, listener tests, and embedding details.
 ## Navigate the Console
 
 After sign-in, `/` shows the current account’s overview for both users and
-administrators. `/statistics` is the personal usage report. Use the desktop
+administrators. The overview fetches only a summary for the previous period
+and loads the plot separately from its metric cards. `/statistics` is the
+personal usage report. Use the desktop
 sidebar or the mobile dock to switch workspaces. **Find page** (`Ctrl+K` or
 `⌘K`) and the dock’s **More** button search the pages available to the account. The
 avatar menu contains account details, preferences, sessions and sign-out.
