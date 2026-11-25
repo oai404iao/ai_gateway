@@ -29,14 +29,14 @@ describe("ModelPricingPage", () => {
     renderAppAt(`/admin/models/${MODEL.id}/pricing`);
     await user.click(await screen.findByRole("combobox", { name: "Comparison model" }));
     await user.click(await screen.findByRole("option", { name: `${other.display_name} (${other.source_model_id})` }));
-    expect(screen.getByLabelText("Comparison estimate")).toHaveTextContent("$2.70");
-    expect(screen.getByLabelText("Draft estimate")).toHaveTextContent("$0.0027");
+    expect(screen.getByLabelText("Comparison estimate")).toHaveTextContent("2.7 USD");
+    expect(screen.getByLabelText("Draft estimate")).toHaveTextContent("0.0027 USD");
     fireEvent.change(screen.getByLabelText("Uncached input tokens"), { target: { value: 20000 } });
-    expect(screen.getByLabelText("Draft estimate")).toHaveTextContent("$0.0042");
+    expect(screen.getByLabelText("Draft estimate")).toHaveTextContent("0.0042 USD");
     expect(screen.getByRole("button", { name: "Save model pricing" })).toBeDisabled();
     fireEvent.change(screen.getByLabelText(/^Input unit price/i), { target: { value: "0.25" } });
-    expect(screen.getByLabelText("Draft estimate")).toHaveTextContent("$0.0062");
-    expect(screen.getByLabelText("Comparison estimate")).toHaveTextContent("$4.20");
+    expect(screen.getByLabelText("Draft estimate")).toHaveTextContent("0.0062 USD");
+    expect(screen.getByLabelText("Comparison estimate")).toHaveTextContent("4.2 USD");
   });
 
   it("abbreviates the displayed token unit without changing the editable value", async () => {

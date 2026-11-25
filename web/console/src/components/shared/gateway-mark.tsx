@@ -20,7 +20,7 @@ export function GatewayMark({ className, ...props }: GatewayMarkProps) {
     >
       <path
         d="m23 9-3-2.5h-8.5L7 11v10l4.5 4.5H20l3-2.5"
-        className="text-brand-foreground"
+        className="text-primary-foreground"
         stroke="currentColor"
         strokeWidth="4"
         strokeLinecap="round"
@@ -28,7 +28,7 @@ export function GatewayMark({ className, ...props }: GatewayMarkProps) {
       />
       <path
         d="M16.5 16H24v6.5"
-        className="text-brand-accent"
+        className="text-primary-foreground"
         stroke="currentColor"
         strokeWidth="4"
         strokeLinecap="round"

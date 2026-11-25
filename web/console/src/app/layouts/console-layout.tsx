@@ -1,5 +1,6 @@
 import { Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, Outlet, useLocation, useNavigate } from "react-router";
+import { motion } from "motion/react";
 import {
   ArrowUpRight,
   ChevronDown,
@@ -9,7 +10,6 @@ import {
   Monitor,
   Moon,
   Search,
-  ShieldCheck,
   SlidersHorizontal,
   Sun,
 } from "lucide-react";
@@ -17,6 +17,7 @@ import { toast } from "sonner";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
+import { Frame, FramePanel } from "@/components/ui/frame";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -38,7 +39,6 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { accountInitials } from "@/lib/account-initials";
 import { roleLabel } from "@/lib/permissions";
 import { useSession } from "@/lib/use-session";
-import { cn } from "@/lib/utils";
 import {
   accountPages,
   audit,
@@ -63,7 +63,7 @@ function ThemeToggle() {
   const { theme, setTheme } = useTheme();
   const { t } = useI18n();
   return (
-    <DropdownMenu>
+    <DropdownMenu modal={false}>
       <DropdownMenuTrigger render={<Button variant="ghost" size="icon" aria-label={t("Toggle theme")} />}>
         <Sun className="dark:hidden" />
         <Moon className="hidden dark:block" />
@@ -103,15 +103,17 @@ function UserMenu() {
   };
 
   return (
-    <DropdownMenu>
+    <DropdownMenu modal={false}>
       <DropdownMenuTrigger
         render={
-          <Button variant="ghost" size="sm" aria-label={t("Account menu")} title={user?.display_name} />
+          <Button className={styles.account} variant="ghost" size="sm"
+            aria-label={t("Account menu")} title={user?.display_name} />
         }
       >
-        <Avatar className="size-8">
-          <AvatarFallback className="bg-accent text-accent-foreground">{initials}</AvatarFallback>
+        <Avatar size="sm">
+          <AvatarFallback>{initials}</AvatarFallback>
         </Avatar>
+        <span className={styles.accountName}>{user?.display_name ?? user?.email}</span>
         <ChevronDown data-icon="inline-end" className="opacity-60" />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-56">
@@ -147,12 +149,12 @@ function PageLink({
   label = item.label,
 }: {
   item: NavItem;
-  current: boolean;
+  current: boolean | "location";
   label?: string;
 }) {
   const { t } = useI18n();
   return (
-    <Link to={item.path} className={styles.navLink} aria-current={current ? "page" : undefined}>
+    <Link to={item.path} className={styles.navLink} aria-current={current === true ? "page" : current || undefined}>
       <item.icon aria-hidden="true" /> <span>{t(label)}</span>
     </Link>
   );
@@ -206,33 +208,42 @@ function ManagementNavigation({ pathname, mobile }: { pathname: string; mobile: 
           <CollapsibleContent className={styles.mobileTree}>{links}</CollapsibleContent>
         </Collapsible>
       ) : (
-        <>
-          <strong>
-            <SlidersHorizontal aria-hidden="true" />
-            {t("Management")}
-          </strong>
-          {links}
-        </>
+        links
       )}
     </nav>
   );
 }
 
+const ShortcutLink = motion.create(Link);
+const managementShortcuts = [
+  [models, "bg-indigo-600 text-white"],
+  [users, "bg-orange-600 text-white"],
+  [globalLogs, "bg-sky-600 text-white"],
+  [audit, "bg-primary text-primary-foreground"],
+] as const;
+
 function ManagementShortcuts() {
   const { t } = useI18n();
   return (
-    <section className={styles.shortcuts} aria-label={t("Gateway management")}>
-      <h2>
-        <ShieldCheck aria-hidden="true" />
-        {t("Gateway management")}
-      </h2>
-      <div>
-        {[models, users, globalLogs, audit].map((item) => (
-          <Link key={item.path} to={item.path}>
-            {t(item.label)} <ArrowUpRight aria-hidden="true" />
-          </Link>
-        ))}
-      </div>
+    <section className="@container" aria-labelledby="management-shortcuts">
+      <h2 id="management-shortcuts" className="mb-2 text-sm font-semibold">{t("Gateway management")}</h2>
+      <Frame>
+        <div className="grid grid-cols-2 gap-1 @3xl:grid-cols-4">
+          {managementShortcuts.map(([item, tone]) => (
+            <FramePanel key={item.path} className="p-0">
+              <ShortcutLink to={item.path} className={styles.shortcut} initial={false}
+                animate="rest" whileHover="point" whileFocus="point">
+                <item.icon className={`${styles.shortcutIcon} ${tone}`} aria-hidden="true" />
+                <span className={styles.shortcutLabel}>{t(item.label)}</span>
+                <motion.span className={styles.shortcutArrow} aria-hidden="true"
+                  variants={{ rest: { x: 0, y: 0 }, point: { x: 2, y: -2 } }}>
+                  <ArrowUpRight size={14} />
+                </motion.span>
+              </ShortcutLink>
+            </FramePanel>
+          ))}
+        </div>
+      </Frame>
     </section>
   );
 }
@@ -244,10 +255,21 @@ export function ConsoleLayout() {
   const mobile = useIsMobile();
   const [finding, setFinding] = useState(false);
   const main = useRef<HTMLElement>(null);
+  const navigation = useRef<HTMLDivElement>(null);
   const previous = useRef(pathname);
   const admin = user?.role === "admin";
   const managed = admin && pathname.startsWith("/admin/");
   const service = services.some((item) => pageMatches(item, pathname));
+  useLayoutEffect(() => {
+    const rail = navigation.current;
+    const link = rail?.querySelector('[aria-current="page"]');
+    if (!rail || !link) return;
+    // Reveal the active branch without scrolling the page or taking focus from its content.
+    const { top, bottom } = link.getBoundingClientRect();
+    const bounds = rail.getBoundingClientRect();
+    if (top < bounds.top) rail.scrollTop += top - bounds.top;
+    else if (bottom > bounds.bottom) rail.scrollTop += bottom - bounds.bottom;
+  }, [pathname, mobile]);
   useLayoutEffect(() => {
     if (previous.current === pathname) return;
     previous.current = pathname;
@@ -272,74 +294,69 @@ export function ConsoleLayout() {
     window.addEventListener("keydown", shortcut);
     return () => window.removeEventListener("keydown", shortcut);
   }, []);
+  const finder = (
+    <Button
+      className={styles.finder}
+      variant={mobile ? "ghost" : "outline"}
+      size={mobile ? "icon" : "sm"}
+      onClick={() => setFinding(true)}
+      aria-label={t("Find page")}
+      aria-haspopup="dialog"
+      aria-keyshortcuts="Control+K Meta+K"
+    >
+      <Search data-icon="inline-start" />
+      {!mobile && <>
+        {t("Find page")}
+        <kbd className={styles.kbd}>{/Mac|iPhone|iPad/.test(navigator.platform) ? "⌘ K" : "Ctrl K"}</kbd>
+      </>}
+    </Button>
+  );
+  const tools = (
+    <div className={styles.tools}>
+      <UserMenu />
+      <LocaleToggle />
+      <ThemeToggle />
+    </div>
+  );
+  const serviceNav = service && (
+    <nav aria-label={t("Service navigation")} className={styles.services}>
+      {services.map((item) => (
+        <PageLink item={item} key={item.path} current={pageMatches(item, pathname)} />
+      ))}
+    </nav>
+  );
   return (
     <div className={styles.shell}>
       <a className={styles.skip} href="#gateway-content">
         {t("Skip to content")}
       </a>
-      <header className={styles.header}>
-        <div className={cn(styles.width, styles.top)}>
+      <div className={styles.rail}>
+        <header className={styles.header}>
           <Link to="/" aria-label={t("Gateway home")}>
             <Brand compact />
           </Link>
-          <span className={styles.instance}>{t("Main gateway")}</span>
-          <div className={styles.tools}>
-            <Button
-              variant={mobile ? "ghost" : "outline"}
-              size="sm"
-              onClick={() => setFinding(true)}
-              aria-label={t("Find page")}
-              aria-keyshortcuts="Control+K Meta+K"
-            >
-              <Search data-icon="inline-start" />
-              <span className={styles.searchLabel}>{t("Find page")}</span>
-              <kbd className={styles.kbd}>
-                {/Mac|iPhone|iPad/.test(navigator.platform) ? "⌘ K" : "Ctrl K"}
-              </kbd>
-            </Button>
-            <LocaleToggle />
-            <ThemeToggle />
-            <UserMenu />
+          {mobile && <>{finder}{tools}</>}
+        </header>
+        {!mobile && <>
+          {finder}
+          <div className={styles.navigation} ref={navigation}>
+            <nav className={styles.workspace} aria-label={t("Console navigation")}>
+              <span className={styles.groupLabel}>{t("Main gateway")}</span>
+              {workspace.map((item) => (
+                <PageLink key={item.path} item={item} current={pageMatches(item, pathname)} />
+              ))}
+              <PageLink item={services[0]} label="Services" current={service && "location"} />
+              {serviceNav}
+              {admin && (
+                <div className={styles.adminGate}>
+                  <PageLink item={{ ...models, icon: SlidersHorizontal }} label="Management" current={managed && "location"} />
+                </div>
+              )}
+            </nav>
+            {managed && <ManagementNavigation key={pathname} pathname={pathname} mobile={false} />}
           </div>
-        </div>
-        {!mobile && (
-          <nav className={cn(styles.width, styles.topNav)} aria-label={t("Console navigation")}>
-            {workspace.map((item) => (
-              <PageLink key={item.path} item={item} current={pageMatches(item, pathname)} />
-            ))}
-            <PageLink item={services[0]} label="Services" current={service} />
-            {admin && (
-              <span className={styles.adminGate}>
-                <PageLink
-                  item={{ ...models, icon: SlidersHorizontal }}
-                  label="Management"
-                  current={managed}
-                />
-              </span>
-            )}
-          </nav>
-        )}
-      </header>
-      {service && (
-        <nav aria-label={t("Service navigation")} className={cn(styles.width, styles.services)}>
-          {services.map((item) => (
-            <PageLink item={item} key={item.path} current={pageMatches(item, pathname)} />
-          ))}
-        </nav>
-      )}
-      <div className={cn(styles.width, styles.stage, managed && styles.managed)}>
-        {managed && <ManagementNavigation key={pathname} pathname={pathname} mobile={mobile} />}
-        <main
-          id="gateway-content"
-          ref={main}
-          tabIndex={-1}
-          className="flex min-w-0 flex-col gap-6 outline-none"
-        >
-          <Suspense fallback={<RouteFallback />}>
-            <Outlet />
-          </Suspense>
-          {admin && pathname === "/" && <ManagementShortcuts />}
-        </main>
+          {tools}
+        </>}
       </div>
       {mobile && (
         <nav className={styles.dock} aria-label={t("Mobile navigation")}>
@@ -357,6 +374,21 @@ export function ConsoleLayout() {
           </button>
         </nav>
       )}
+      <div className={styles.stage}>
+        {mobile && serviceNav}
+        {mobile && managed && <ManagementNavigation key={pathname} pathname={pathname} mobile />}
+        <main
+          id="gateway-content"
+          ref={main}
+          tabIndex={-1}
+          className="flex min-w-0 flex-col gap-6 outline-none"
+        >
+          <Suspense fallback={<RouteFallback />}>
+            <Outlet />
+          </Suspense>
+          {admin && pathname === "/" && <ManagementShortcuts />}
+        </main>
+      </div>
       <PageFinder admin={admin} open={finding} onOpenChange={setFinding} />
     </div>
   );

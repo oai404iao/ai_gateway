@@ -2,26 +2,29 @@
 
 import { currentLocale, translate } from "@/app/i18n";
 
-export function formatDecimal(value: string | null | undefined, fractionDigits = 6): string {
-  if (value === null || value === undefined || value === "") return "—";
-  const number = Number(value);
-  if (!Number.isFinite(number)) return value;
-  return number.toLocaleString(currentLocale(), {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: fractionDigits,
-  });
+type Amount = string | number | null | undefined;
+
+/** Use without a suffix when the heading already identifies the currency. */
+export function formatUsdAmount(value: Amount): string {
+  if (value == null || (typeof value === "string" && !value.trim())) return "—";
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "—";
+  if (numeric === 0) return "0";
+  const format = new Intl.NumberFormat(currentLocale(), { maximumFractionDigits: 5 });
+  // A ledger decimal just below 0.00001 may already round up to it as a JS number.
+  const belowMinimum = typeof value === "string" && !/[eE]/.test(value)
+    ? /^[+-]?0*\.0{5}/.test(value.trim())
+    : Math.abs(numeric) < 0.00001;
+  if (belowMinimum) {
+    return `${numeric < 0 ? ">" : "<"}${format.format(numeric < 0 ? -0.00001 : 0.00001)}`;
+  }
+  // Pass decimal strings directly to Intl so grouping and rounding retain ledger precision.
+  return format.format(value as number | Intl.StringNumericLiteral);
 }
 
-export function formatUsd(value: string | null | undefined): string {
-  if (value === null || value === undefined || value === "") return "—";
-  const number = Number(value);
-  const amount = Number.isFinite(number)
-    ? number.toLocaleString(currentLocale(), {
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 6,
-      })
-    : value;
-  return `${amount} USD`;
+export function formatUsd(value: Amount): string {
+  const amount = formatUsdAmount(value);
+  return amount === "—" ? amount : `${amount} USD`;
 }
 
 /**
@@ -53,26 +56,23 @@ export function formatEstimatedQuotaTotal(
     : "—";
 }
 
-export function formatTokens(value: number | null | undefined): string {
-  if (value === null || value === undefined) return "—";
+export function formatExactTokens(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "—";
   return value.toLocaleString(currentLocale());
 }
 
-export function formatCompactTokens(value: number | null | undefined): string {
-  if (value === null || value === undefined) return "—";
-  const absoluteValue = Math.abs(value);
-  const unit =
-    absoluteValue >= 1_000_000_000
-      ? { divisor: 1_000_000_000, suffix: "B" }
-      : absoluteValue >= 1_000_000
-        ? { divisor: 1_000_000, suffix: "M" }
-        : absoluteValue >= 1_000
-          ? { divisor: 1_000, suffix: "K" }
-          : null;
-  if (!unit) return formatTokens(value);
-  return `${(value / unit.divisor).toLocaleString(currentLocale(), {
-    maximumFractionDigits: 2,
-  })}${unit.suffix}`;
+const tokenUnits = ["", "K", "M", "B"] as const;
+
+export function formatTokens(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "—";
+  let scaled = value;
+  let unit = 0;
+  // Promote before formatting a value that would round to 1,000 in this unit.
+  while (unit < tokenUnits.length - 1 && Math.abs(scaled) >= 999.995) {
+    scaled /= 1_000;
+    unit++;
+  }
+  return scaled.toLocaleString(currentLocale(), { maximumFractionDigits: 2 }) + tokenUnits[unit];
 }
 
 export function formatBytes(value: number | null | undefined): string {

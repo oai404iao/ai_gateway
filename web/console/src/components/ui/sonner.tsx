@@ -18,13 +18,13 @@ const Toaster = ({ ...props }: ToasterProps) => {
           <CircleCheckIcon className="size-4" />
         ),
         info: (
-          <InfoIcon className="size-4" />
+          <InfoIcon className="size-4 text-info" />
         ),
         warning: (
-          <TriangleAlertIcon className="size-4" />
+          <TriangleAlertIcon className="size-4 text-warning-foreground dark:text-warning" />
         ),
         error: (
-          <OctagonXIcon className="size-4" />
+          <OctagonXIcon className="size-4 text-destructive" />
         ),
         loading: (
           <Spinner />

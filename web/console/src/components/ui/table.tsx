@@ -6,7 +6,7 @@ function Table({ className, ...props }: React.ComponentProps<"table">) {
   return (
     <div
       data-slot="table-container"
-      className="relative w-full overflow-x-auto"
+      className="relative isolate w-full min-w-0 overflow-x-auto"
     >
       <table
         data-slot="table"
@@ -21,7 +21,7 @@ function TableHeader({ className, ...props }: React.ComponentProps<"thead">) {
   return (
     <thead
       data-slot="table-header"
-      className={cn("bg-muted/60 [&_tr]:border-b", className)}
+      className={cn("[&_tr]:border-b", className)}
       {...props}
     />
   )
@@ -63,12 +63,16 @@ function TableRow({ className, ...props }: React.ComponentProps<"tr">) {
   )
 }
 
-function TableHead({ className, ...props }: React.ComponentProps<"th">) {
+// Sticky cells need an opaque surface while data scrolls underneath.
+const pinnedActionClass = "sticky right-0 z-1 w-px bg-card text-right shadow-[-1px_0_var(--border)] in-[tr:hover]:bg-muted in-[tr[data-state=selected]]:bg-muted"
+
+function TableHead({ className, pinned, ...props }: React.ComponentProps<"th"> & { pinned?: boolean }) {
   return (
     <th
       data-slot="table-head"
       className={cn(
-        "h-9 px-2 text-left align-middle text-xs font-medium whitespace-nowrap text-muted-foreground [&:has([role=checkbox])]:pr-0",
+        "h-9 px-2 text-left align-middle text-xs font-medium whitespace-nowrap text-foreground [&:has([role=checkbox])]:pr-0",
+        pinned && pinnedActionClass,
         className
       )}
       {...props}
@@ -76,12 +80,13 @@ function TableHead({ className, ...props }: React.ComponentProps<"th">) {
   )
 }
 
-function TableCell({ className, ...props }: React.ComponentProps<"td">) {
+function TableCell({ className, pinned, ...props }: React.ComponentProps<"td"> & { pinned?: boolean }) {
   return (
     <td
       data-slot="table-cell"
       className={cn(
         "p-2 align-middle whitespace-nowrap [&:has([role=checkbox])]:pr-0",
+        pinned && pinnedActionClass,
         className
       )}
       {...props}

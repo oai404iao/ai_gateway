@@ -65,7 +65,7 @@ import {
   formatDateTime,
   formatDateTimeLocalInput,
 } from "@/lib/dates";
-import { formatCompactTokens, formatUsd } from "@/lib/formatters";
+import { formatTokens, formatUsd } from "@/lib/formatters";
 import { apiFormatLabel } from "@/lib/permissions";
 import { useI18n } from "@/app/i18n";
 import { UsageTrend } from "./usage-trend";
@@ -82,13 +82,7 @@ interface CostFilterDraft {
 
 type QuickRange = "today" | "this_week" | "this_month";
 
-const CHART_COLORS = [
-  "var(--success)",
-  "var(--info)",
-  "var(--warning)",
-  "var(--primary)",
-  "var(--destructive)",
-];
+const CHART_COLORS = [1, 2, 3, 4, 5].map((i) => `var(--chart-${i})`);
 
 function defaultDraft(): CostFilterDraft {
   const endedAt = new Date();
@@ -214,13 +208,6 @@ function numericAmount(value: string): number {
 function formatRate(value: number | null): string {
   if (value === null) return "—";
   return `${(value * 100).toLocaleString(undefined, { maximumFractionDigits: 1 })}%`;
-}
-
-function formatCompact(value: number): string {
-  return value.toLocaleString(undefined, {
-    notation: "compact",
-    maximumFractionDigits: 2,
-  });
 }
 
 function cacheRate(inputTokens: number, cachedInputTokens: number): number | null {
@@ -459,17 +446,17 @@ export function CostStatisticsPanel({
     {
       key: "tokens",
       header: t("Total tokens"),
-      render: (model) => formatCompactTokens(model.total_tokens),
+      render: (model) => formatTokens(model.total_tokens),
     },
     {
       key: "input_tokens",
       header: t("Input tokens"),
-      render: (model) => formatCompactTokens(model.input_tokens),
+      render: (model) => formatTokens(model.input_tokens),
     },
     {
       key: "cached_input_tokens",
       header: t("Cache hit tokens"),
-      render: (model) => formatCompactTokens(model.cached_input_tokens),
+      render: (model) => formatTokens(model.cached_input_tokens),
     },
     {
       key: "cache_rate",
@@ -480,12 +467,12 @@ export function CostStatisticsPanel({
     {
       key: "cache_write_tokens",
       header: t("Cache write tokens"),
-      render: (model) => formatCompactTokens(model.cache_write_tokens),
+      render: (model) => formatTokens(model.cache_write_tokens),
     },
     {
       key: "output_tokens",
       header: t("Output tokens"),
-      render: (model) => formatCompactTokens(model.output_tokens),
+      render: (model) => formatTokens(model.output_tokens),
     },
     {
       key: "cost",
@@ -512,17 +499,17 @@ export function CostStatisticsPanel({
     {
       key: "tokens",
       header: t("Total tokens"),
-      render: (channel) => formatCompactTokens(channel.total_tokens),
+      render: (channel) => formatTokens(channel.total_tokens),
     },
     {
       key: "input_tokens",
       header: t("Input tokens"),
-      render: (channel) => formatCompactTokens(channel.input_tokens),
+      render: (channel) => formatTokens(channel.input_tokens),
     },
     {
       key: "cached_input_tokens",
       header: t("Cache hit tokens"),
-      render: (channel) => formatCompactTokens(channel.cached_input_tokens),
+      render: (channel) => formatTokens(channel.cached_input_tokens),
     },
     {
       key: "cache_rate",
@@ -533,12 +520,12 @@ export function CostStatisticsPanel({
     {
       key: "cache_write_tokens",
       header: t("Cache write tokens"),
-      render: (channel) => formatCompactTokens(channel.cache_write_tokens),
+      render: (channel) => formatTokens(channel.cache_write_tokens),
     },
     {
       key: "output_tokens",
       header: t("Output tokens"),
-      render: (channel) => formatCompactTokens(channel.output_tokens),
+      render: (channel) => formatTokens(channel.output_tokens),
     },
     {
       key: "cost",
@@ -783,24 +770,24 @@ export function CostStatisticsPanel({
               />
               <SummaryCard
                 title={t("Total tokens")}
-                value={formatCompactTokens(data.summary.total_tokens)}
+                value={formatTokens(data.summary.total_tokens)}
                 description={
                   <div className="grid grid-cols-2 gap-x-3 gap-y-1">
                     <span>
                       {t("Input tokens")}:{" "}
-                      {formatCompactTokens(data.summary.input_tokens)}
+                      {formatTokens(data.summary.input_tokens)}
                     </span>
                     <span>
                       {t("Cache hit tokens")}:{" "}
-                      {formatCompactTokens(data.summary.cached_input_tokens)}
+                      {formatTokens(data.summary.cached_input_tokens)}
                     </span>
                     <span>
                       {t("Cache write tokens")}:{" "}
-                      {formatCompactTokens(data.summary.cache_write_tokens)}
+                      {formatTokens(data.summary.cache_write_tokens)}
                     </span>
                     <span>
                       {t("Output tokens")}:{" "}
-                      {formatCompactTokens(data.summary.output_tokens)}
+                      {formatTokens(data.summary.output_tokens)}
                     </span>
                     <span className="col-span-2">
                       {t("Cache rate")}:{" "}
@@ -824,7 +811,7 @@ export function CostStatisticsPanel({
               />
               <SummaryCard
                 title={t("Average TPM")}
-                value={formatCompactTokens(data.summary.average_tpm)}
+                value={formatTokens(data.summary.average_tpm)}
                 icon={Zap}
               />
             </div>
@@ -857,14 +844,15 @@ export function CostStatisticsPanel({
                       <YAxis
                         tickLine={false}
                         axisLine={false}
-                        width={48}
-                        tickFormatter={(value) => formatCompact(Number(value))}
+                        width="auto"
+                        tickFormatter={formatUsd}
                       />
                       <ChartTooltip
                         cursor={false}
                         content={
                           <ChartTooltipContent
                             indicator="line"
+                            valueFormatter={formatUsd}
                             labelFormatter={(value) => formatDateTime(String(value))}
                           />
                         }
@@ -889,14 +877,14 @@ export function CostStatisticsPanel({
               <UsageTrend key={`${data.started_at}/${data.ended_at}/${data.granularity}/${filters.api_key_id ?? ""}`} report={data} groupByDay={data.granularity === "hour" && data.buckets.length > 48} apiKeyId={filters.api_key_id}/>
               <dl className="flex flex-wrap gap-x-6 gap-y-3 text-xs tabular-nums">
                 {[
-                  ["Input tokens", formatCompactTokens(data.summary.input_tokens)],
-                  ["Cache hit tokens", formatCompactTokens(data.summary.cached_input_tokens)],
-                  ["Cache write tokens", formatCompactTokens(data.summary.cache_write_tokens)],
+                  ["Input tokens", formatTokens(data.summary.input_tokens)],
+                  ["Cache hit tokens", formatTokens(data.summary.cached_input_tokens)],
+                  ["Cache write tokens", formatTokens(data.summary.cache_write_tokens)],
                   ["Cache rate", formatRate(cacheRate(data.summary.input_tokens, data.summary.cached_input_tokens))],
-                  ["Output tokens", formatCompactTokens(data.summary.output_tokens)],
+                  ["Output tokens", formatTokens(data.summary.output_tokens)],
                   ["Priced requests", data.summary.priced_request_count.toLocaleString()],
                   ["Average RPM", data.summary.average_rpm.toLocaleString(undefined, { maximumFractionDigits: 2 })],
-                  ["Average TPM", formatCompactTokens(data.summary.average_tpm)],
+                  ["Average TPM", formatTokens(data.summary.average_tpm)],
                 ].map(([label,value]) => <div key={label}><dt className="text-muted-foreground">{t(label)}</dt><dd className="mt-1 font-medium">{value}</dd></div>)}
               </dl>
             </>}

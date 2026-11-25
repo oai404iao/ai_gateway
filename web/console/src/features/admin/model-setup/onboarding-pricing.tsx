@@ -11,8 +11,9 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useModelSyncPreview } from "@/features/admin/api";
 import { modelLabel } from "@/features/admin/models/model-label";
+import { formatPricingTokens } from "@/features/admin/models/pricing-tokens";
 import { isNonNegativeRustDecimal } from "@/lib/decimal";
-import { formatTokens } from "@/lib/formatters";
+import { formatUsdAmount } from "@/lib/formatters";
 
 import { existingSelection, priceFields as rates, type PricedSelection, type Quote, type Rates } from "./onboarding-price";
 
@@ -20,9 +21,9 @@ export function PriceSummary({ quote }: { quote: Quote }) {
   const { t } = useI18n();
   const advanced = quote.advanced_billing;
   return <div className="flex min-w-0 flex-col gap-2">
-    <p className="text-sm font-medium">{t("Base prices · {currency} / {tokens} tokens", { currency: "USD", tokens: formatTokens(quote.price_unit_tokens) })}</p>
+    <p className="text-sm font-medium">{t("Base prices · {currency} / {tokens} tokens", { currency: "USD", tokens: formatPricingTokens(quote.price_unit_tokens) })}</p>
     <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">{rates.map(([key, label]) => <div className="min-w-0" key={key}>
-      <dt className="text-xs text-muted-foreground">{t(label)}</dt><dd className="wrap-anywhere text-sm tabular-nums">{quote[key]}</dd>
+      <dt className="text-xs text-muted-foreground">{t(label)}</dt><dd className="wrap-anywhere text-sm tabular-nums">{formatUsdAmount(quote[key])}</dd>
     </div>)}</dl>
     {advanced && (advanced.long_context_tiers.length || advanced.request_multipliers.length || advanced.time_multipliers?.length) ?
       <div className="text-sm">{t("Advanced billing")}<JsonViewer value={advanced} /></div> : null}

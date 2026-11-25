@@ -196,7 +196,7 @@ export function CodexImportProxyManager({
                     <TableHead>{t("Imported proxy")}</TableHead>
                     <TableHead>{t("Endpoint")}</TableHead>
                     <TableHead>{t("Map to existing")}</TableHead>
-                    <TableHead className="text-right">{t("Actions")}</TableHead>
+                    <TableHead pinned>{t("Actions")}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -261,7 +261,7 @@ export function CodexImportProxyManager({
                           </SelectContent>
                         </Select>
                       </TableCell>
-                      <TableCell className="text-right">
+                      <TableCell pinned>
                         <Button
                           variant="outline"
                           size="sm"
@@ -294,7 +294,7 @@ export function CodexImportProxyManager({
                   <TableHead>{t("Name")}</TableHead>
                   <TableHead>{t("Proxy URL")}</TableHead>
                   <TableHead>{t("Status")}</TableHead>
-                  <TableHead className="text-right">{t("Actions")}</TableHead>
+                  <TableHead pinned>{t("Actions")}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -317,7 +317,7 @@ export function CodexImportProxyManager({
                       <TableCell>
                         <StatusBadge value={proxy.enabled} />
                       </TableCell>
-                      <TableCell>
+                      <TableCell pinned>
                         <div className="flex justify-end gap-1">
                           <Button
                             variant="ghost"

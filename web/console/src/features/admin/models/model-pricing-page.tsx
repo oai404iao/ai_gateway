@@ -66,7 +66,7 @@ import {
   multiplyDecimal,
 } from "@/lib/decimal";
 import { formatDateTime } from "@/lib/dates";
-import { formatCompactTokens } from "@/lib/formatters";
+import { formatPricingTokens } from "./pricing-tokens";
 import { cn } from "@/lib/utils";
 import { ModelPriceComparison } from "./model-price-comparison";
 
@@ -926,7 +926,7 @@ export function ModelPricingPage() {
                     <DetailField label={t("Model")} value={data.data.source_model_id} mono />
                     <DetailField
                       label={t("Price unit tokens")}
-                      value={formatCompactTokens(form.watch("price_unit_tokens"))}
+                      value={formatPricingTokens(form.watch("price_unit_tokens"))}
                     />
                     <DetailField label={t("Price windows")} value={watchedWindows.length} />
                     <DetailField label={t("Window start weekdays")} value={weekdaySummary} />

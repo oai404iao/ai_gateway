@@ -46,7 +46,7 @@ import {
 import { ApiError } from "@/api/errors";
 import type { ModelInput } from "@/api/types";
 import { formatDateTime } from "@/lib/dates";
-import { formatDecimal } from "@/lib/formatters";
+import { formatUsd } from "@/lib/formatters";
 import { useI18n } from "@/app/i18n";
 import {
   adminPath,
@@ -375,7 +375,7 @@ function ModelEditor({ id }: { id: string }) {
       detailCard={
         !isNew && data ? (
           <Card>
-            <CardHeader>
+            <CardHeader className="wrap-anywhere">
               <CardTitle>{data.data.display_name}</CardTitle>
               {data.data.source_model_id !== data.data.display_name && <CardDescription className="font-mono">{data.data.source_model_id}</CardDescription>}
             </CardHeader>
@@ -388,11 +388,11 @@ function ModelEditor({ id }: { id: string }) {
                 <DetailField label={t("Provider")} value={data.data.provider_name ?? "—"} />
                 <DetailField
                   label={t("Input price")}
-                  value={formatDecimal(data.data.input_unit_price)}
+                  value={formatUsd(data.data.input_unit_price)}
                 />
                 <DetailField
                   label={t("Output price")}
-                  value={formatDecimal(data.data.output_unit_price)}
+                  value={formatUsd(data.data.output_unit_price)}
                 />
                 <DetailField
                   label={t("Effective")}

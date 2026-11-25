@@ -24,7 +24,7 @@ describe("ModelsPage", () => {
   it.each([
     [999, "999"],
     [1_000, "1K"],
-    [1_001, "1,001"],
+    [1_001, "1K (1,001)"],
     [1_000_000, "1M"],
     [1_000_000_000, "1B"],
   ])("shows base prices per %i tokens as %s in the list and details", async (tokens, unit) => {
@@ -41,7 +41,7 @@ describe("ModelsPage", () => {
     expect(within(model).getByText("Cache hit price")).toBeInTheDocument();
     expect(within(model).getByText("Output price")).toBeInTheDocument();
     expect(within(model).getByText("0.123")).toBeInTheDocument();
-    expect(within(model).getByText("0.000000001")).toBeInTheDocument();
+    expect(within(model).getByText("<0.00001")).toBeInTheDocument();
     expect(within(model).getByText("0.456")).toBeInTheDocument();
     await user.click(model);
     expect(within(screen.getByRole("region", { name: "Operation routing" }))

@@ -575,7 +575,7 @@ export default function CodexImportPage() {
                       <TableHead>{t("Proxy")}</TableHead>
                       <TableHead>{t("Threshold")}</TableHead>
                       <TableHead>{t("Status")}</TableHead>
-                      <TableHead className="text-right">
+                      <TableHead pinned>
                         {t("Actions")}
                       </TableHead>
                     </TableRow>
@@ -705,7 +705,7 @@ export default function CodexImportPage() {
                               </p>
                             ) : null}
                           </TableCell>
-                          <TableCell className="align-top">
+                          <TableCell pinned className="align-top">
                             <div className="flex justify-end gap-1">
                               <Button
                                 variant="ghost"

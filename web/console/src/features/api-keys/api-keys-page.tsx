@@ -204,28 +204,32 @@ export function ApiKeysPage() {
   const columns: Column<ApiKeyView>[] = [
     {
       key: "name",
+      basis: 8,
       header: t("Name"),
       render: (key) => <span className="font-medium">{key.name}</span>,
     },
     {
       key: "status",
+      basis: 4.5,
       header: t("Status"),
       render: (key) => <StatusBadge value={key.status} />,
     },
     {
       key: "secret",
+      basis: 11.5,
       header: t("API key"),
-      render: (key) => <ApiKeyValue value={key.secret} className="min-w-44" />,
-      className: "min-w-52",
+      render: (key) => <ApiKeyValue value={key.secret} className="min-w-0" />,
     },
     {
       key: "groups",
+      basis: 7,
       header: t("Channel groups"),
       render: (key) => formatList(key.allowed_group_ids.map((id) =>
         targetGroups.find((group) => group.id === id)?.name ?? t("Unavailable channel group"))),
     },
     {
       key: "channels",
+      basis: 8,
       header: t("Logical channels"),
       render: (key) => formatList(key.allowed_channel_ids.map((id) => {
         const channel = targetChannels.find((channel) => channel.id === id);
@@ -236,21 +240,24 @@ export function ApiKeysPage() {
     },
     {
       key: "permissions",
+      basis: 7,
       header: t("Permissions"),
       render: (key) => formatList(key.permissions),
     },
     {
       key: "expiry",
+      basis: 6.5,
       header: t("Expires"),
       render: (key) => formatExpiry(key.expires_at),
     },
     {
       key: "updated",
+      basis: 5.5,
       header: t("Updated"),
       render: (key) => formatRelative(key.updated_at),
     },
     {
-      key: "actions", header: t("Actions"), className: "w-12 text-right",
+      key: "actions", header: t("Actions"), pinned: true, basis: 3.75,
       render: key => <DropdownMenu><DropdownMenuTrigger aria-label={t("Actions for {name}", { name: key.name })} render={<Button variant="ghost" size="icon-sm" />}><Ellipsis /></DropdownMenuTrigger>
         <DropdownMenuContent align="end" onClick={event => event.stopPropagation()}><DropdownMenuGroup>
           <DropdownMenuItem onClick={() => navigate(withReturnTo(`/api-keys/${key.id}`, origin))}>{t("View details")}</DropdownMenuItem>

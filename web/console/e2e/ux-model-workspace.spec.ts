@@ -121,9 +121,9 @@ for (const [width, height] of [[1440, 900], [1280, 720]]) {
     expect(await page.evaluate(() => scrollY)).toBe(windowY);
     expect((await panePosition(row(page))).scrollTop).toBe(listY);
     const detail = page.getByRole("region", { name: "Operation routing" });
-    await expect(detail.getByText("0.123456789123456789")).toBeVisible();
-    await expect(detail.getByText("Base prices · USD / 1,001 tokens")).toBeVisible();
-    await expect(row(page).getByText("0.123456789123456789")).toBeVisible();
+    await expect(detail.getByText("0.12346")).toBeVisible();
+    await expect(detail.getByText("Base prices · USD / 1K (1,001) tokens")).toBeVisible();
+    await expect(row(page).getByText("0.12346")).toBeVisible();
     const enterEditor = page.getByRole("button", { name: "Go to selected model configuration" });
     await page.keyboard.press("Tab");
     await expect(enterEditor).toBeFocused();

@@ -14,7 +14,7 @@ import {
 export function LocaleToggle() {
   const { locale, setLocale, t } = useI18n();
   return (
-    <DropdownMenu>
+    <DropdownMenu modal={false}>
       <DropdownMenuTrigger
         render={<Button variant="ghost" size="icon" aria-label={t("Language")} />}
       >

@@ -52,6 +52,7 @@ describe("SpendLeaderboardPage", () => {
     expect(rows[0]).toHaveTextContent("Ada Lovelace");
     expect(rows[0]).toHaveTextContent("721.95 USD");
     expect(rows[0]).toHaveTextContent("37.8%");
+    expect(rows[0]).toHaveTextContent("98.3M");
     expect(rows[1]).toHaveTextContent("Diego Rivera");
     expect(screen.getByText("1,912.06 USD")).toBeInTheDocument();
     expect(screen.getByText("Shanghai time · Asia/Shanghai")).toBeInTheDocument();

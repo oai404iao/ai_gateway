@@ -1,34 +1,31 @@
 import { useId, useMemo, useState } from "react";
-import { Activity, ArrowRight, ChevronLeft, ChevronRight, Layers, Wallet } from "lucide-react";
-import { Area, AreaChart, CartesianGrid, ReferenceArea, ReferenceLine, XAxis, YAxis } from "recharts";
+import { motion, useReducedMotion } from "motion/react";
+import { Activity, ArrowRight, ChevronLeft, ChevronRight, Coins, Layers, Minus, TrendingDown, TrendingUp } from "lucide-react";
+import { Line, LineChart, CartesianGrid, ReferenceArea, ReferenceLine, XAxis, YAxis } from "recharts";
 import type { CostStatisticsReport, CostStatisticsSummary } from "@/api/types";
 import { useI18n } from "@/app/i18n";
 import { EmptyState } from "@/components/shared/empty-state";
 import { NavigationLink } from "@/components/shared/navigation-link";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
-import { formatCompactTokens, formatUsd } from "@/lib/formatters";
+import { Frame, FramePanel } from "@/components/ui/frame";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { formatTokens, formatUsd, formatUsdAmount } from "@/lib/formatters";
 import { apiFormatLabel } from "@/lib/permissions";
-import { cn } from "@/lib/utils";
 import { byRequestVolume, modelIdentity, ownLogsLink, usageSlices, type UsageMetric } from "./usage-window";
+import styles from "./usage-trend.module.css";
 
 const metrics = [
   ["request_count", "Requests", Activity],
   ["total_tokens", "Total tokens", Layers],
-  ["cost_amount", "Total cost", Wallet],
+  ["cost_amount", "Total cost", Coins],
 ] as const;
 
-function displayMetric(key: UsageMetric, value: number, locale: string, compact = false) {
-  if (key === "cost_amount")
-    return compact
-      ? new Intl.NumberFormat(locale, {
-          style: "currency",
-          currency: "USD",
-          currencyDisplay: "narrowSymbol",
-          maximumFractionDigits: value > 0 && value < 0.01 ? 6 : 2,
-        }).format(value)
-      : formatUsd(String(value));
-  return compact ? formatCompactTokens(value) : value.toLocaleString(locale);
+function displayMetric(key: UsageMetric, value: number | string, locale: string, compactRequests = false) {
+  if (key === "cost_amount") return formatUsd(value);
+  if (key === "total_tokens") return formatTokens(Number(value));
+  return Number(value).toLocaleString(locale, compactRequests ? { notation: "compact", maximumFractionDigits: 2 } : undefined);
 }
 
 export function UsageTrend({
@@ -47,7 +44,8 @@ export function UsageTrend({
   const { t, locale } = useI18n();
   const [metric, setMetric] = useState<UsageMetric>("request_count");
   const [selected, setSelected] = useState<number | null>(null);
-  const uid = useId().replace(/:/g, "");
+  const indicatorId = useId();
+  const reducedMotion = useReducedMotion();
   const slices = useMemo(() => usageSlices(report, groupByDay), [report, groupByDay]);
   const index = Math.min(selected ?? slices.length - 1, slices.length - 1);
   const slice = slices[index];
@@ -88,70 +86,61 @@ export function UsageTrend({
   const unpriced = report.summary.request_count > 0 && !report.summary.priced_request_count;
 
   return (
-    <section
-      aria-label={t("Usage trends")}
-      className="grid min-w-0 gap-5 border-y py-5 md:grid-cols-[minmax(10rem,16%)_minmax(0,1fr)] md:gap-7 md:py-7"
-    >
-      <div
-        role="group"
+    <Frame role="region" aria-label={t("Usage trends")} className="min-w-0 gap-1">
+      <ToggleGroup
+        value={[metric]}
+        onValueChange={([next]) => {
+          if (metrics.some(([key]) => key === next)) setMetric(next as UsageMetric);
+        }}
         aria-label={t("Chart metric")}
-        className="grid min-w-0 grid-cols-3 gap-1 border-b pb-3 md:flex md:flex-col md:justify-center md:border-r md:border-b-0 md:pr-4 md:pb-0"
+        className="grid w-full min-w-0 grid-cols-3 items-stretch gap-1"
       >
         {metrics.map(([key, label, Icon]) => {
-          const value = Number(report.summary[key]);
+          const value = report.summary[key];
           const previous = Number(comparison?.[key]);
-          const hasDelta = previous > 0 && !(key === "cost_amount" && unpriced);
-          const delta = hasDelta ? value / previous - 1 : null;
+          const missing = key === "cost_amount" && unpriced;
+          const delta = previous > 0 && !missing ? Number(value) / previous - 1 : null;
+          const Trend = delta === null || delta === 0 ? Minus : delta > 0 ? TrendingUp : TrendingDown;
           return (
-            <button
-              type="button"
-              key={key}
-              aria-pressed={metric === key}
-              onClick={() => setMetric(key)}
-              className={cn(
-                "relative flex min-w-0 flex-col items-start gap-1 rounded-md px-2 py-2 text-start outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring md:p-3",
-                metric === key &&
-                  "bg-accent after:absolute after:inset-x-2 after:bottom-0 after:h-0.5 after:rounded-full after:bg-chart-1 md:after:inset-y-3 md:after:left-0 md:after:w-0.5 md:after:h-auto",
-              )}
-            >
-              <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                <Icon className="size-3.5 shrink-0" />
-                {t(label)}
-              </span>
-              <strong
-                className="max-w-full break-all text-xl leading-tight font-semibold tracking-tight tabular-nums md:text-3xl"
-                title={displayMetric(key, value, locale)}
-              >
-                {key === "cost_amount" && unpriced ? "—" : displayMetric(key, value, locale, true)}
+            <ToggleGroupItem value={key} key={key} className={styles.metric}>
+              <span className={styles.label}><Icon aria-hidden="true" />{t(label)}</span>
+              <strong className={styles.reading} title={missing ? "—" : displayMetric(key, value, locale)}>
+                {missing ? "—" : displayMetric(key, value, locale, true)}
               </strong>
               {comparisonLabel && (
-                <span className="text-[11px] text-muted-foreground">
-                  {delta === null
-                    ? "—"
-                    : delta.toLocaleString(locale, {
-                        style: "percent",
-                        maximumFractionDigits: 1,
-                        signDisplay: "exceptZero",
-                      })}{" "}
-                  {comparisonLabel}
+                <span className={styles.comparison}>
+                  {delta === null ? "—" : (
+                    <Badge variant="secondary" className={styles.delta}>
+                      <Trend aria-hidden="true" />
+                      {delta.toLocaleString(locale, { style: "percent", maximumFractionDigits: 1, signDisplay: "exceptZero" })}
+                    </Badge>
+                  )}
+                  <span>{comparisonLabel}</span>
                 </span>
               )}
-            </button>
+              {metric === key && <motion.span
+                aria-hidden="true"
+                initial={false}
+                layoutId={reducedMotion ? undefined : indicatorId}
+                className={styles.indicator}
+                transition={{ duration: 0.16, ease: "easeOut" }}
+              />}
+            </ToggleGroupItem>
           );
         })}
-      </div>
-      <div className="min-w-0">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-          <div className="flex items-baseline gap-2">
-            <h2 className="font-semibold">{t("Model trends")}</h2>
-            <span className="text-xs text-muted-foreground">
-              {unit} / {t(report.granularity === "hour" ? "hour" : "day")}
+      </ToggleGroup>
+      <FramePanel className="min-w-0 bg-card p-0">
+        <div className="flex flex-wrap items-center justify-between gap-x-5 gap-y-3 px-3 pt-4 pb-2 sm:px-5 sm:pt-5">
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <h2 className="text-base font-semibold tracking-tight">{t("Model trends")}</h2>
+            <span className="text-xs text-muted-foreground tabular-nums">
+              {unit} / {t(report.granularity === "hour" ? "hour" : "day")} · UTC
             </span>
           </div>
           <div className="flex min-w-0 flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
             {series.map((s) => (
               <span className="inline-flex min-w-0 items-center gap-1" key={s.key}>
-                <i className="size-2 shrink-0 rounded-full" style={{ background: config[s.key].color }} />
+                <i aria-hidden className="h-0.5 w-3 shrink-0 rounded-full" style={{ background: config[s.key].color }} />
                 <span className="max-w-44 truncate" title={s.name}>
                   {s.name}
                 </span>
@@ -165,8 +154,8 @@ export function UsageTrend({
             className="min-h-52"
           />
         ) : (
-          <ChartContainer config={config} className="aspect-auto h-56 w-full sm:h-64">
-            <AreaChart
+          <ChartContainer config={config} className="aspect-auto h-44 w-full px-2 text-[11px] tabular-nums sm:h-56 sm:px-4">
+            <LineChart
               data={points}
               accessibilityLayer
               margin={{ left: 2, right: 8, top: 12, bottom: 2 }}
@@ -179,15 +168,7 @@ export function UsageTrend({
                 }
               }}
             >
-              <defs>
-                {series.map((s) => (
-                  <linearGradient key={s.key} id={`${uid}-${s.key}`} x1="0" y1="0" x2="0" y2="1">
-                    <stop stopColor={config[s.key].color} stopOpacity={0.26} />
-                    <stop offset="1" stopColor={config[s.key].color} stopOpacity={0.02} />
-                  </linearGradient>
-                ))}
-              </defs>
-              <CartesianGrid vertical={false} strokeDasharray="3 4" />
+              <CartesianGrid vertical={false} stroke="var(--border)" strokeDasharray="2 4" />
               <XAxis
                 dataKey="time"
                 ticks={ticks}
@@ -198,51 +179,53 @@ export function UsageTrend({
                 minTickGap={12}
               />
               <YAxis
-                width={42}
+                width={metric === "cost_amount" ? "auto" : 42}
                 allowDecimals={metric === "cost_amount"}
-                tickFormatter={(v) =>
-                  Number(v).toLocaleString(locale, { notation: "compact", maximumSignificantDigits: 3 })
-                }
+                tickFormatter={(v) => metric === "cost_amount" ? formatUsdAmount(v) :
+                  metric === "total_tokens" ? formatTokens(v) :
+                  Number(v).toLocaleString(locale, { notation: "compact", maximumSignificantDigits: 3 })}
                 tickLine={false}
                 axisLine={false}
               />
               {slice &&
                 (slice.first === slice.last ? (
-                  <ReferenceLine x={slice.first} stroke="var(--chart-1)" strokeDasharray="3 3" />
+                  <ReferenceLine x={slice.first} stroke="var(--muted-foreground)" strokeDasharray="3 3" />
                 ) : (
                   <ReferenceArea
                     x1={slice.first}
                     x2={slice.last}
-                    fill="var(--chart-1)"
-                    fillOpacity={0.08}
+                    fill="var(--muted-foreground)"
+                    fillOpacity={0.07}
                   />
                 ))}
               <ChartTooltip
                 content={
                   <ChartTooltipContent
+                    valueFormatter={(value) => displayMetric(metric, value, locale)}
                     labelFormatter={(v) => (typeof v === "string" ? `${stamp(v, true)} UTC` : v)}
                   />
                 }
               />
               {series.map((s) => (
-                <Area
-                  type="monotone"
+                <Line
+                  type="linear"
                   dataKey={s.key}
                   key={s.key}
                   stroke={config[s.key].color}
                   strokeWidth={2}
-                  fill={`url(#${uid}-${s.key})`}
+                  dot={points.length === 1 ? { r: 3 } : false}
+                  activeDot={{ r: 4, stroke: "var(--card)", strokeWidth: 2 }}
                   isAnimationActive={false}
                 />
               ))}
-            </AreaChart>
+            </LineChart>
           </ChartContainer>
         )}
         {slice && (
-          <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs">
-            <div className="flex flex-wrap items-center gap-1.5">
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 border-t px-3 py-2.5 text-xs sm:px-5">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
               <Button
-                variant="ghost"
+                variant="outline"
                 size="icon-xs"
                 aria-label={t("Previous interval")}
                 disabled={index === 0}
@@ -250,18 +233,8 @@ export function UsageTrend({
               >
                 <ChevronLeft />
               </Button>
-              <span aria-live="polite">
-                <span className="text-muted-foreground">{t("Selected interval")} </span>
-                {stamp(slice.start, !daily)} ·{" "}
-                <strong>
-                  {metric === "cost_amount" && unpriced
-                    ? "—"
-                    : displayMetric(metric, slice.values[metric], locale)}
-                  {metric !== "cost_amount" && ` ${unit}`}
-                </strong>
-              </span>
               <Button
-                variant="ghost"
+                variant="outline"
                 size="icon-xs"
                 aria-label={t("Next interval")}
                 disabled={index === slices.length - 1}
@@ -269,6 +242,16 @@ export function UsageTrend({
               >
                 <ChevronRight />
               </Button>
+              <span aria-live="polite" className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 tabular-nums">
+                <span className="text-muted-foreground">{t("Selected interval")}</span>
+                <time dateTime={new Date(slice.start).toISOString()}>{stamp(slice.start, !daily)} UTC</time>
+                <strong className="border-l pl-2 font-semibold">
+                  {metric === "cost_amount" && unpriced
+                    ? "—"
+                    : displayMetric(metric, slice.values[metric], locale)}
+                  {metric !== "cost_amount" && ` ${unit}`}
+                </strong>
+              </span>
             </div>
             <NavigationLink
               variant="ghost"
@@ -286,7 +269,7 @@ export function UsageTrend({
             </NavigationLink>
           </div>
         )}
-      </div>
-    </section>
+      </FramePanel>
+    </Frame>
   );
 }
