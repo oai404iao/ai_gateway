@@ -22,7 +22,7 @@ import type {
   ChannelGroupStatusWindow,
 } from "@/api/types";
 import { formatDateTime } from "@/lib/dates";
-import { formatDurationMs } from "@/lib/formatters";
+import { formatDurationMs, formatTokens } from "@/lib/formatters";
 import { apiFormatLabel } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/app/i18n";
@@ -44,12 +44,12 @@ function formatRate(value: number | null): string {
 
 function formatTps(value: number | null): string {
   if (value === null) return "—";
-  return `${value.toLocaleString(undefined, { maximumFractionDigits: 1 })} tok/s`;
+  return `${formatTokens(value)} tok/s`;
 }
 
 function statusClass(bucket: ChannelGroupStatusBucket | undefined): string {
   if (!bucket || bucket.request_count === 0 || bucket.success_rate === null) return "bg-muted";
-  if (bucket.success_rate >= 0.98) return "bg-success";
+  if (bucket.success_rate >= 0.98) return "bg-primary";
   if (bucket.success_rate >= 0.9) return "bg-warning";
   return "bg-destructive";
 }

@@ -28,6 +28,16 @@ async function renderAppAt(path: string) {
 }
 
 describe("RequestLogsView", () => {
+  it("compacts usage in the table but keeps the exact token breakdown available", async () => {
+    seedUserSession();
+    server.use(http.get("/console/v1/me/request-logs", () => HttpResponse.json([
+      { ...REQUEST_LOG, input_tokens: 1_234_569, cached_input_tokens: 2, cost_amount: "0.0000008" },
+    ])));
+    await renderAppAt("/usage/request-logs");
+    expect(await screen.findByLabelText("Uncached input: 1,234,567")).toHaveTextContent("1.23M");
+    expect(screen.getByText("<0.00001 USD")).toBeVisible();
+  });
+
   it("keeps the personal request-log table owner-scoped even for administrators", async () => {
     seedAuthenticatedSession();
     const queries: URLSearchParams[] = [];
@@ -79,7 +89,7 @@ describe("RequestLogsView", () => {
     expect(screen.queryByLabelText("Peak pricing")).not.toBeInTheDocument();
     expect(screen.getByLabelText("TTFT: 100 ms")).toBeVisible();
     expect(screen.getByLabelText("Total duration: 1 s")).toBeVisible();
-    expect(screen.getByLabelText("TPS: 4.4 tok/s")).toBeVisible();
+    expect(screen.getByLabelText("TPS: 4.44 tok/s")).toBeVisible();
 
     await user.click(screen.getByRole("button", { name: "Filters (0)" }));
     const apiKey = await screen.findByRole("combobox", { name: "API key" });

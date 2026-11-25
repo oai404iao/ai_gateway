@@ -1,8 +1,9 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { MemoryRouter } from "react-router";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { STORAGE_KEY } from "@/app/i18n";
 import { AppProviders } from "@/app/providers";
 import { OWN_COST_STATISTICS_REPORT as report, REQUEST_LOG } from "@/test/fixtures";
 import { seedAuthenticatedSession, seedUserSession, server } from "@/test/msw";
@@ -53,7 +54,7 @@ describe("Gateway overview", () => {
       const tokens = screen.getByRole("button", {name: /^Total tokens/});
       await user.click(tokens);
       expect(tokens).toHaveAttribute("aria-pressed", "true");
-      expect(screen.getByText("16,000,000 Tokens")).toBeVisible();
+      expect(screen.getByText("16M Tokens")).toBeVisible();
 
       await user.click(screen.getByRole("button", {name: "Last 24 hours"}));
       const day = urlOf(screen.getByRole("link", {name: "Usage report"}));
@@ -72,6 +73,43 @@ describe("Gateway overview", () => {
       expect(system).toEqual([]);
     },
   );
+
+  it("formats token and cost tooltips without replacing their series labels in Chinese", async () => {
+    seedUserSession();
+    const locale = localStorage.getItem(STORAGE_KEY);
+    localStorage.setItem(STORAGE_KEY, "zh-CN");
+    // jsdom has no layout; give the responsive chart a measurable viewport.
+    const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      return this.classList.contains("recharts-responsive-container") ? new DOMRect(0, 0, 600, 240) : new DOMRect();
+    });
+    try {
+      const modelCost = "0.00000001";
+      const bucket = report.buckets[0];
+      server.use(http.get("/console/v1/statistics/costs", () => HttpResponse.json({
+        ...report,
+        summary: { ...report.summary, cost_amount: "9007199254740991.123456" },
+        buckets: [{ ...bucket, cost_amount: modelCost, models: [{ ...bucket.models[0], cost_amount: modelCost }] }, report.buckets[1]],
+      })));
+      renderOverview();
+      const user = userEvent.setup();
+      const cost = await screen.findByRole("button", { name: /^总花费/ });
+      expect(cost).toHaveTextContent("9,007,199,254,740,991.12346 USD");
+      const chart = await screen.findByRole("application");
+      const tooltip = within(chart.parentElement!.querySelector<HTMLElement>(".recharts-tooltip-wrapper")!);
+      await user.click(screen.getByRole("button", { name: /^总 Token/ }));
+      fireEvent.focus(chart);
+      expect(await tooltip.findByText("16M")).toBeVisible();
+      expect(tooltip.getByText(bucket.models[0].model)).toBeVisible();
+      await user.click(cost);
+      fireEvent.focus(chart);
+      expect(await tooltip.findByText("<0.00001 USD")).toBeVisible();
+      expect(tooltip.getByText(bucket.models[0].model)).toBeVisible();
+    } finally {
+      rect.mockRestore();
+      if (locale === null) localStorage.removeItem(STORAGE_KEY);
+      else localStorage.setItem(STORAGE_KEY, locale);
+    }
+  });
 
   it("keeps separate drill-downs for one requested model used in two formats", async () => {
     seedUserSession();

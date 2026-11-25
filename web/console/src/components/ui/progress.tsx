@@ -8,11 +8,12 @@ function Progress({
   value,
   ...props
 }: ProgressPrimitive.Root.Props) {
+  // Keep Base UI's fixed, visually hidden marker in the progress bar's coordinate space.
   return (
     <ProgressPrimitive.Root
       value={value}
       data-slot="progress"
-      className={cn("flex flex-wrap gap-3", className)}
+      className={cn("flex flex-wrap gap-3 contain-layout", className)}
       {...props}
     >
       {children}

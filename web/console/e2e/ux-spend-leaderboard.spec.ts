@@ -87,7 +87,14 @@ async function firstViewport(page: Page, locator: Locator) {
   const toolbar = await page.getByRole("banner").boundingBox();
   expect(bounds!.y).toBeGreaterThanOrEqual(toolbar!.y + toolbar!.height);
   const dock = page.getByRole("navigation", { name: /Mobile navigation|移动导航/ });
-  if (await dock.isVisible()) expect(bounds!.y + bounds!.height).toBeLessThanOrEqual((await dock.boundingBox())!.y);
+  if (await dock.isVisible()) {
+    const nav = (await dock.boundingBox())!;
+    if (await page.evaluate(() => matchMedia("(max-width: 24rem)").matches)) {
+      expect(bounds!.y).toBeGreaterThanOrEqual(nav.y + nav.height);
+    } else {
+      expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(nav.y);
+    }
+  }
 }
 
 async function screenshot(page: Page, name: string, info: TestInfo) {
@@ -120,6 +127,7 @@ for (const [layout, width, height] of [["wide", 1440, 900], ["narrow", 390, 844]
     await firstViewport(page, page.getByRole("status").filter({ hasText: /^2026年\s*7月\s*24日$/ }));
     await firstViewport(page, page.getByText("1,912.06 USD", { exact: true }));
     await expect(rankings.first().getByText(/37\.8%/)).toBeVisible();
+    await expect(rankings.first().getByText("98.3M", { exact: true })).toBeVisible();
     expect(await page.evaluate(() => scrollY)).toBe(0);
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
     expect(lastQuery(queries)).toEqual({ period: "day", limit: "50" });
@@ -275,7 +283,7 @@ test("pagination uses server rank and the whole period denominator, not the visi
   await press(page, page.getByRole("button", { name: "Go to next page" }));
   await expect(rows.first()).toContainText("Participant 21");
   await expect(rows.first().getByRole("cell", { name: /^(?:Rank )?#?21$/ })).toBeVisible();
-  await expect(page.getByText("1,000.00 USD", { exact: true })).toBeVisible();
+  await expect(page.getByText("1,000 USD", { exact: true })).toBeVisible();
   await expect(page.getByText("Showing 21-40 of 50", { exact: true })).toBeVisible();
   expect(queries).toHaveLength(1);
   await press(page, rankingPeriod(page).getByRole("button", { name: "Weekly ranking" }));
@@ -292,7 +300,7 @@ test("pagination uses server rank and the whole period denominator, not the visi
   await page.keyboard.press("Enter");
   await expect(rows).toHaveCount(50);
   await expect(rows.last()).toContainText("Participant 50");
-  await expect(rows.last().getByRole("cell", { name: "0.00 USD", exact: true })).toBeVisible();
+  await expect(rows.last().getByRole("cell", { name: "0 USD", exact: true })).toBeVisible();
 });
 
 test("loading, missing and empty snapshots are distinct; errors can retry to one and two ranked users", async ({ page }) => {
@@ -328,7 +336,7 @@ test("loading, missing and empty snapshots are distinct; errors can retry to one
   await press(page, rankingPeriod(page).getByRole("button", { name: "Weekly ranking" }));
   await expect(tableRows(page)).toHaveCount(1);
   await expect(tableRows(page).first().getByRole("cell", { name: "—", exact: true })).toBeVisible();
-  await expect(tableRows(page).first().getByText("0.00 USD", { exact: true })).toBeVisible();
+  await expect(tableRows(page).first().getByText("0 USD", { exact: true })).toBeVisible();
   await press(page, rankingPeriod(page).getByRole("button", { name: "Monthly ranking" }));
   const retry = page.getByRole("button", { name: "Retry", exact: true });
   await expect(retry).toBeVisible();
@@ -340,13 +348,13 @@ test("loading, missing and empty snapshots are distinct; errors can retry to one
   const tiny = tableRows(page).last();
   await expect(tiny).toContainText("Tiny but non-zero");
   await expect(tiny.getByRole("cell", { name: "<0.1%", exact: true })).toBeVisible();
-  await expect(tiny.getByRole("cell", { name: /0\.000000000001\s+USD/ })).toBeVisible();
+  await expect(tiny.getByRole("cell", { name: "<0.00001 USD", exact: true })).toBeVisible();
 });
 
-test("320px Chinese dark view wraps a long name and exact USD amount without a hidden column", async ({ page }, info) => {
+test("320px Chinese dark view wraps a long name and rounded USD amount without a hidden column", async ({ page }, info) => {
   await page.setViewportSize({ width: 320, height: 720 });
   const longName = "华中华南西南联合研发及长模型团队".repeat(5);
-  const amount = "12345678912345678.123456";
+  const amount = "12345678912345679.123456";
   const report = { ...auditReport, total_cost_amount: amount, entries: [entry(1, longName, amount)] };
   await signIn(page, () => report, { locale: "zh-CN", theme: "dark" });
   await expect(page.locator("html")).toHaveClass(/\bdark\b/);
@@ -354,10 +362,10 @@ test("320px Chinese dark view wraps a long name and exact USD amount without a h
   const row = rankedList(page, "用户排名").getByRole("listitem");
   await expect(row).toHaveCount(1);
   await expect(row.getByText(longName, { exact: true })).toBeVisible();
-  await expect(row.getByText("12,345,678,912,345,678.123456 USD", { exact: true })).toBeVisible();
+  await expect(row.getByText("12,345,678,912,345,679.12346 USD", { exact: true })).toBeVisible();
   await expect(row.getByText(/100%/)).toBeVisible();
   await expect(row.getByText(/6,800/)).toBeVisible();
-  await expect(row.getByText(/98,300,000/)).toBeVisible();
+  await expect(row.getByText("98.3M", { exact: true })).toBeVisible();
   const graphic = await row.ariaSnapshot();
   expect(graphic).toContain(longName);
   expect(graphic).toContain("100%");

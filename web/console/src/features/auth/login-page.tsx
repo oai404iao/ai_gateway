@@ -65,6 +65,7 @@ export function LoginPage() {
               id="email"
               className="h-10"
               type="email"
+              placeholder="name@example.com"
               autoComplete="email"
               aria-invalid={Boolean(errors.email)}
               {...register("email")}
@@ -77,6 +78,7 @@ export function LoginPage() {
               <InputGroupInput
                 id="password"
                 type={showPassword ? "text" : "password"}
+                placeholder="••••••••••••"
                 autoComplete="current-password"
                 aria-invalid={Boolean(errors.password)}
                 {...register("password")}

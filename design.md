@@ -15,15 +15,14 @@ description: Console 桌面与移动工作区的导航、概览图表、密集�
 ## 2. 表达与读者
 
 - [SHOULD] 面向反复比较数据与调整配置的读者，让标题、图表和表格共享左边线，数字沿列对齐。
-- [SHOULD] 用中性底色和细分隔线组织连续内容；紫色用于当前选择、焦点和主要操作，不表示成功或失败。
 - [SHOULD] 文案使用直接的动作与结果描述，不在界面展示实现机制或设计推理。
 
 ## 3. 页面结构与构图
 
-- [MUST] 工作区复用 `ConsoleLayout`。桌面上方第一行左放品牌、右放查找与头像，下一行放全局导航；
-  进入 `useIsMobile` 窄屏断点时保留第一行，用底部浮动导航代替横排行。给正文末尾留出导航和设备安全区的高度。
-- [SHOULD] 顶栏与正文使用同一居中容器。只有需要分区导航的工作区才分出窄列；窄屏将局部导航移到正文上方，不为没有局部导航的页面留空列。
-- [SHOULD] 概览从标题、时间范围和视图控件开始。桌面将可比较的指标纵排在趋势图旁；窄屏将指标排在图表上方。明细紧接图表，以表头与行分隔线承接，不重复整组指标。
+- [MUST] 工作区复用 `ConsoleLayout`。桌面侧栏顶部放品牌与查找，中部导航可独立滚动，底部保留账户与偏好入口。
+  进入 `useIsMobile` 窄屏断点时，品牌与账户移到页首，常用入口通常固定在底部，正文末尾为导航与设备安全区留出高度。宽度不超过 24rem 时，常用入口在页首品牌行下方随正文滚动，不覆盖图表时段与操作。
+- [SHOULD] 局部导航在同一侧栏展开，不再占一列。窄屏将其移到正文上方，让表格与编辑器使用完整宽度。
+- [SHOULD] 概览将时间范围放在标题旁，可切换的指标横列于折线图上方；选中指标有底线，数值列靠右对齐。明细紧接图表，不重复整组指标。
 - [SHOULD] 密集列表先显示标题与操作，再放视图、紧凑筛选和表格；优先让首条记录可见，宽表格只在自身容器内横向滚动。
 - [SHOULD] 主从编辑工作区在宽屏并列显示选择区和编辑区；窄屏保留现有列表/详情切换，
   不将完整列表堆在编辑器上方，也不把两栏压缩到无法操作。
@@ -42,13 +41,18 @@ description: Console 桌面与移动工作区的导航、概览图表、密集�
 
 ### 颜色与表面
 
-- [MUST] 统一使用 shadcn `base-nova` 和集中定义的 CSS 变量。
-  新的语义颜色同时定义明暗主题，不在业务组件硬编码另一套调色板。
-- [MUST] 背景、文本、边框、焦点和状态使用 `background`、`foreground`、`border`、
-  `ring`、`destructive`、`success`、`warning`、`info` 等现有 token。
-- [SHOULD] 在同一画布上用留白和 `border` 区分区块，避免给每组数据单独加阴影。菜单、对话框和底部浮动导航可用边框与阴影与底层内容分开。
-- [SHOULD] 顶层当前项用下划线或色条区分；局部选中项可用浅色填充。键盘焦点保留独立的 `ring`，不要把 hover 当作选中。
-- [MUST] 主题切换覆盖所有界面表面，包括 toast；不得给通知单独建立主题来源。
+- [MUST] Console 的基础色取自 [ReUI Shared KPI Panels](https://reui.io/blocks/application/card/card-28) **Base / Nova / Neutral** 默认预览的明、暗主题。`src/index.css` 保存其同名语义变量；数值以该文件为准。其他 Block 的局部示例色不替代全局 `primary`。
+
+| 用途 | 色彩来源与应用 |
+| --- | --- |
+| 画布、侧栏与控件 | 使用预览的 `background`、`sidebar`、`primary`、`accent`、`ring` 与相应前景色。亮色模式保留浅侧栏；当前页用 `sidebar-accent` 和字重，焦点另用 `sidebar-ring`。 |
+| 指标与图表容器 | 按 Shared KPI Panels：Frame 为 `muted` 的 50% 透明度、面板为 `card`、边线为 `border`，值与标签分别用 `foreground` 和 `muted-foreground`。切换指标仅移动 `primary` 底线，不改变面板色。 |
+| 快捷入口 | 按 [ReUI Topic Shortcuts](https://reui.io/blocks/application/card/card-41) 的 **靛蓝、橙、天蓝 600** 实色图标底与白色线条；其余入口用中性 `primary`。色块限于图标，不铺满卡片。 |
+| 状态与通知 | 按 [ReUI Badge](https://reui.io/docs/badge) 与[语义色定义](https://reui.io/docs/styling)使用紫色 `info`、黄色 `warning`、红色 `destructive`。成功态是非绿色例外，用 ReUI `secondary` 中性底与前景，保留状态文字或勾号。用量变化不是健康状态，只显示有符号的数值和方向。 |
+| 多序列统计 | 沿用 [shadcn-admin 的明暗图表色](https://github.com/satnaing/shadcn-admin/blob/e16c87f213a5ba5e45964e9b67c792105ec74d26/src/styles/theme.css)：依次取上游 `chart-1`、`chart-3`、`chart-4`、`chart-5`，跳过含绿色的第二组；第五序列沿用其[单序列图的 primary](https://github.com/satnaing/shadcn-admin/blob/e16c87f213a5ba5e45964e9b67c792105ec74d26/src/features/dashboard/components/overview.tsx)。图例、曲线和明细引用同一序列色，不用状态色拼盘。 |
+| 资源表格 | 按 [shadcn-admin Tasks Table](https://github.com/satnaing/shadcn-admin/blob/e16c87f213a5ba5e45964e9b67c792105ec74d26/src/features/tasks/components/tasks-table.tsx)使用整体细边框、无独立色带的表头，悬停和选中分别用 `muted/50` 与 `muted`。分页与筛选在表框外。 |
+
+- [MUST] 以上角色在明暗主题、菜单和 toast 中一致；页面不得另定义品牌色或按指标混色。
 
 ### 图标与数据
 
@@ -76,6 +80,7 @@ description: Console 桌面与移动工作区的导航、概览图表、密集�
 | 页面与内嵌区标题 | `PageHeader`、`embedded` 变体 | `src/components/shared/page-header.tsx` |
 | 页面容器与断点 | `ConsoleLayout`、`AuthLayout`、`useIsMobile` | `src/app/layouts/`、`src/hooks/use-mobile.ts` |
 | 操作与状态 | `Button`、`Badge`、`Alert` | `src/components/ui/` |
+| 同组面板 | coss ui `Frame`、`FramePanel` | `src/components/ui/frame.tsx` |
 | 加载反馈 | `Spinner`、`Skeleton` | `src/components/ui/` |
 | 数据展示 | `Table`、`ChartContainer`、`JsonViewer` | `src/components/ui/`、`src/components/shared/` |
 
@@ -86,7 +91,9 @@ description: Console 桌面与移动工作区的导航、概览图表、密集�
 ## 6. 文案与数字格式
 
 - [SHOULD] 标题说明对象，按钮说明动作，错误信息说明用户可以采取的下一步。
-- [MUST] 数量、金额、比例、时长与时间保留对应单位及必要精度，不改变数据含义。
+- [MUST] 概览、图表（含提示）、列表与详情摘要中的 Token 按十进制千进位：少于 1,000 不加后缀，其余按量级用 `K`、`M`、`B`，最多两位小数，不补零；舍入达到下一档时进位。中英文共用后缀，如 `999`、`1.25K`、`2.3M`、`1B`。请求数不是 Token。
+- [MUST] 只读金额按语言分组，最多五位小数，四舍五入后去掉末尾零；保留币种，列头或坐标轴已有单位时可只显示数值。`24.50000` 显示为 `24.5 USD`，真实零为 `0 USD`；绝对值不足 `0.00001` 的非零金额显示为 `<0.00001 USD`（负值为 `>-0.00001 USD`），缺失为 `—`。
+- [MUST] 账单核对与定价阈值可补充分组的精确 Token 整数。编辑、复制原值与原始 JSON 不使用展示格式；计算、排序与提交始终使用原始数值。
 - [SHOULD] 可比较的数值使用 `tabular-nums`；未知值用缺失标记，与实际的零区分。标识符和原始 JSON 使用等宽字体；普通说明不伪装成代码标签。
 - [SHOULD] 资源以名称、设备、模型调用名或其他可辨识内容为主标签；内部 ID 仅用于消歧、复制或排障，放在需要它的详情中。
 - [SHOULD] 标题下默认不加副文案；只在范围、单位、权限或操作后果会影响决策时添加说明，放在相关内容旁；
@@ -96,7 +103,6 @@ description: Console 桌面与移动工作区的导航、概览图表、密集�
 
 - [SHOULD] 不把所有管理页面改成居中 hero 和卡片网格。
 - [SHOULD] 不为普通元数据添加胶囊标签，不嵌套无意义的卡片。
-- [SHOULD] 不添加装饰性图标底板或随机彩色区块。
 - [MUST] 不通过隐藏页面横向溢出掩盖布局问题，不缩小正文来容纳宽表格。
 
 ## 8. 实现与集成

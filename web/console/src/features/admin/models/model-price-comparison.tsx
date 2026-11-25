@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useModels } from "@/features/admin/api";
 import { isNonNegativeDecimal } from "@/lib/decimal";
+import { formatUsd } from "@/lib/formatters";
 import { modelLabel } from "./model-label";
 
 const buckets = [
@@ -19,7 +20,7 @@ const buckets = [
 type BaseRates = Pick<ControlPlaneModel, (typeof buckets)[number][0] | "price_unit_tokens">;
 
 export function ModelPriceComparison({ model, draft }: { model: ControlPlaneModel; draft: BaseRates }) {
-  const { t, locale } = useI18n();
+  const { t } = useI18n();
   const models = useModels();
   const [expanded, setExpanded] = useState(false);
   const panelId = useId();
@@ -27,7 +28,6 @@ export function ModelPriceComparison({ model, draft }: { model: ControlPlaneMode
   const [workload, setWorkload] = useState(["10000", "0", "0", "2000"]);
   const options = [model, ...(models.data ?? []).filter((item) => item.id !== model.id)];
   const comparison = options.find((item) => item.id === otherId) ?? model;
-  const usd = new Intl.NumberFormat(locale, { style: "currency", currency: "USD", maximumFractionDigits: 9 });
   const validCount = (value: string) => /^\d+$/.test(value) && Number.isSafeInteger(Number(value));
   const estimate = (rates: BaseRates) => {
     if (!workload.every(validCount) || !Number.isSafeInteger(rates.price_unit_tokens) || rates.price_unit_tokens <= 0 || !buckets.every(([key]) => isNonNegativeDecimal(rates[key]))) return null;
@@ -54,8 +54,8 @@ export function ModelPriceComparison({ model, draft }: { model: ControlPlaneMode
           return <div key={i} className="min-w-0 px-3 first:pl-0">
             <p className="text-xs text-muted-foreground">{t(i === 0 ? "Draft base rates" : "Saved base rates")}</p>
             <p className="my-1 break-all font-mono text-xs">{item.source_model_id}</p>
-            <output aria-label={t(i === 0 ? "Draft estimate" : "Comparison estimate")} className="block break-all text-xl font-semibold tabular-nums">{costs ? usd.format(costs.reduce((a, b) => a + b, 0)) : "—"}</output>
-            <dl className="mt-2 grid gap-1 text-xs">{buckets.map(([, label], j) => <div key={label} className="flex flex-wrap justify-between gap-x-2"><dt className="text-muted-foreground">{t(label)}</dt><dd className="tabular-nums">{costs ? usd.format(costs[j]) : "—"}</dd></div>)}</dl>
+            <output aria-label={t(i === 0 ? "Draft estimate" : "Comparison estimate")} className="block break-all text-xl font-semibold tabular-nums">{formatUsd(costs?.reduce((a, b) => a + b, 0))}</output>
+            <dl className="mt-2 grid gap-1 text-xs">{buckets.map(([, label], j) => <div key={label} className="flex flex-wrap justify-between gap-x-2"><dt className="text-muted-foreground">{t(label)}</dt><dd className="tabular-nums">{formatUsd(costs?.[j])}</dd></div>)}</dl>
           </div>;
         })}
       </div>

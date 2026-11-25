@@ -91,7 +91,7 @@ describe("CatalogPage", () => {
 
   it("discards a conflicting preview and requires a new selection before applying again", async () => {
     seedAuthenticatedSession();
-    const changed = { ...model, output_unit_price: "0.60000001", preview_token: "b".repeat(64) };
+    const changed = { ...model, output_unit_price: "0.60000601", preview_token: "b".repeat(64) };
     const applied: unknown[] = [];
     let previewCount = 0;
     server.use(
@@ -126,7 +126,7 @@ describe("CatalogPage", () => {
     await user.click(fetchButton);
     const refreshed = await selectRow();
     await user.click(screen.getByRole("button", { name: "Billing details" }));
-    expect(screen.getByText(changed.output_unit_price)).toBeVisible();
+    expect(screen.getByText("0.60001")).toBeVisible();
     expect(screen.getByText(/\/service_tier = "priority"/)).toBeVisible();
     expect(refreshed).not.toBeChecked();
     expect(applied).toHaveLength(1);

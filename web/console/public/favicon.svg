@@ -1,9 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <rect width="32" height="32" rx="8" fill="#0f172a"/>
+  <rect width="32" height="32" rx="8" fill="oklch(0.205 0 0)"/>
   <path
     d="m23 9-3-2.5h-8.5L7 11v10l4.5 4.5H20l3-2.5"
     fill="none"
-    stroke="#f8fafc"
+    stroke="oklch(0.985 0 0)"
     stroke-width="4"
     stroke-linecap="round"
     stroke-linejoin="round"
@@ -11,7 +11,7 @@
   <path
     d="M16.5 16H24v6.5"
     fill="none"
-    stroke="#5eead4"
+    stroke="oklch(0.985 0 0)"
     stroke-width="4"
     stroke-linecap="round"
     stroke-linejoin="round"

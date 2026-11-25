@@ -64,7 +64,7 @@ security headers, listener tests, and embedding details.
 
 After sign-in, `/` shows the current account’s overview for both users and
 administrators. `/statistics` is the personal usage report. Use the desktop
-header or the mobile dock to switch workspaces. **Find page** (`Ctrl+K` or
+sidebar or the mobile dock to switch workspaces. **Find page** (`Ctrl+K` or
 `⌘K`) and the dock’s **More** button search the pages available to the account. The
 avatar menu contains account details, preferences, sessions and sign-out.
 
@@ -150,7 +150,7 @@ and commit both. `pnpm generate:api:check` is the drift gate.
 ## Page and form conventions
 
 Use Tailwind CSS v4 and the checked-in shadcn/ui `base-nova` wrappers backed by
-Base UI. Custom triggers use `render`, not Radix `asChild`.
+Base UI. The `@coss` registry supplements these wrappers with [Frame](https://coss.com/ui/docs/components/frame) for grouped panels. Tables and charts keep using the shared Table and Recharts-backed Chart components. Custom triggers use `render`, not Radix `asChild`.
 
 - Follow [`design.md`](../../design.md) for visual rules: centralized CSS variables,
   Lucide icons, and Motion (`motion/react`) for application animations. Keep

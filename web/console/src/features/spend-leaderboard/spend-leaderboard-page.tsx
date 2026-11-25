@@ -13,6 +13,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { decimalPercentShare } from "@/lib/decimal";
+import { formatTokens, formatUsd } from "@/lib/formatters";
 import { useSpendLeaderboard } from "./api";
 
 const LEADERBOARD_LIMIT = 50;
@@ -77,19 +78,18 @@ function Share({ value, compact = false }: { value: ReturnType<typeof decimalPer
   );
 }
 
-function RankingRows({ entries, total, labelId, formatAmount }: {
+function RankingRows({ entries, total, labelId }: {
   entries: SpendLeaderboardEntry[];
   total: string;
   labelId: string;
-  formatAmount: (value: string) => string;
 }) {
   const { t, locale } = useI18n();
   const rows = entries.map((entry) => ({
     entry,
-    amount: formatAmount(entry.cost_amount),
+    amount: formatUsd(entry.cost_amount),
     share: decimalPercentShare(entry.cost_amount, total),
     requests: entry.priced_request_count.toLocaleString(locale),
-    tokens: entry.total_tokens.toLocaleString(locale),
+    tokens: formatTokens(entry.total_tokens),
   }));
 
   return (
@@ -159,12 +159,6 @@ export function SpendLeaderboardPage() {
   const pageCount = Math.max(1, Math.ceil(count / pageSize));
   const page = Math.min(requestedPage, pageCount);
   const hasSnapshot = Boolean(data?.refreshed_at || count);
-  const amounts = new Intl.NumberFormat(locale, { minimumFractionDigits: 2, maximumFractionDigits: 6 });
-  const formatAmount = (value: string) => {
-    const magnitude = Math.abs(Number(value));
-    const display = magnitude > 0 && magnitude < 0.000001 ? value : amounts.format(value as Intl.StringNumericLiteral);
-    return `${display} USD`;
-  };
   const changeStart = (start?: string) => {
     setPeriodStart(start);
     setPage(1);
@@ -237,7 +231,7 @@ export function SpendLeaderboardPage() {
             <CardHeader className="flex flex-wrap items-end justify-between gap-x-6 gap-y-2 border-b py-4">
               <div className="flex min-w-0 flex-col gap-1">
                 <p className="text-xs text-muted-foreground">{t("Total recorded cost for the period")}</p>
-                <p className="text-3xl font-semibold tracking-tight wrap-anywhere tabular-nums sm:text-4xl">{formatAmount(data.total_cost_amount)}</p>
+                <p className="text-3xl font-semibold tracking-tight wrap-anywhere tabular-nums sm:text-4xl">{formatUsd(data.total_cost_amount)}</p>
               </div>
               <div className="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground sm:text-right">
                 {data.refreshed_at && (
@@ -262,7 +256,7 @@ export function SpendLeaderboardPage() {
               <EmptyState title={t(hasSnapshot ? "No priced requests in this period" : "No snapshot yet")} />
             ) : (
               <RankingRows entries={data.entries.slice((page - 1) * pageSize, page * pageSize)}
-                total={data.total_cost_amount} labelId={rankingsHeading} formatAmount={formatAmount} />
+                total={data.total_cost_amount} labelId={rankingsHeading} />
             )}
             {count > PAGE_SIZES[0] && (
               <TablePagination page={page} pageSize={pageSize} pageCount={pageCount} totalItems={count}

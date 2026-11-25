@@ -20,7 +20,8 @@ import { API_OPERATIONS, apiOperationLabel } from "@/lib/permissions";
 import { groupModelsByProvider } from "./model-groups";
 import type { ModelDirectoryContext } from "./model-workspace-layout";
 import { adminPath } from "@/features/admin/model-setup/model-setup-navigation";
-import { formatCompactTokens, formatTokens } from "@/lib/formatters";
+import { formatUsdAmount } from "@/lib/formatters";
+import { formatPricingTokens } from "./pricing-tokens";
 import { usePageOrigin, withReturnTo } from "@/lib/page-navigation";
 import type { ControlPlaneModel } from "@/api/types";
 import styles from "./models-page.module.css";
@@ -35,10 +36,7 @@ type DirectoryHistory = { listKey: string; steps: number };
 
 function ModelPrices({ model, compact = false }: { model: ControlPlaneModel; compact?: boolean }) {
   const { t } = useI18n();
-  const unit = model.price_unit_tokens;
-  const divisor = unit >= 1e9 ? 1e9 : unit >= 1e6 ? 1e6 : 1e3;
-  const tokens = unit >= 1e3 && unit % (divisor / 100) !== 0
-    ? formatTokens(unit) : formatCompactTokens(unit);
+  const tokens = formatPricingTokens(model.price_unit_tokens);
   return (
     <span className="flex w-full flex-col gap-1 text-xs">
       <span>{compact ? t("{currency} / {tokens} tokens", { currency: "USD", tokens }) : t(
@@ -48,7 +46,7 @@ function ModelPrices({ model, compact = false }: { model: ControlPlaneModel; com
         {priceColumns.map(([label, field]) => (
           <span key={field} className="flex min-w-0 flex-col gap-1">
             <span className={cn(compact && "sr-only")}>{t(label)}</span>
-            <span className="wrap-anywhere tabular-nums">{model[field]}</span>
+            <span className="wrap-anywhere tabular-nums">{formatUsdAmount(model[field])}</span>
           </span>
         ))}
       </span>

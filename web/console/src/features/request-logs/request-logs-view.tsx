@@ -5,6 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from "@/components/ui/input-group";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Combobox, ComboboxContent, ComboboxEmpty, ComboboxInput, ComboboxItem, ComboboxList } from "@/components/ui/combobox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuGroup, DropdownMenuCheckboxItem } from "@/components/ui/dropdown-menu";
@@ -40,7 +42,7 @@ import type {
   RequestLogView,
 } from "@/api/types";
 import { dateTimeLocalToIso, formatDateTime, formatDateTimeLocalInput, formatRelative } from "@/lib/dates";
-import { formatDecimal, formatDurationMs, formatTokens, formatUsd } from "@/lib/formatters";
+import { formatExactTokens, formatDurationMs, formatTokens, formatUsd } from "@/lib/formatters";
 import { API_FORMATS, API_OPERATIONS, apiFormatLabel, apiOperationLabel, outcomeLabel, outcomeVariant } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/app/i18n";
@@ -212,10 +214,10 @@ function TruncatedName({
 function TokenUsage({ log }: { log: RequestLogView }) {
   const { t } = useI18n();
   const uncachedInput = tokenRemainder(log.input_tokens, log.cached_input_tokens);
-  const uncachedInputLabel = `${t("Uncached input")}: ${formatTokens(uncachedInput)}`;
-  const cachedInputLabel = `${t("Cached input")}: ${formatTokens(log.cached_input_tokens)}`;
-  const outputLabel = `${t("Output tokens")}: ${formatTokens(log.output_tokens)}`;
-  const reasoningLabel = `${t("Reasoning tokens")}: ${formatTokens(log.reasoning_tokens)}`;
+  const uncachedInputLabel = `${t("Uncached input")}: ${formatExactTokens(uncachedInput)}`;
+  const cachedInputLabel = `${t("Cached input")}: ${formatExactTokens(log.cached_input_tokens)}`;
+  const outputLabel = `${t("Output tokens")}: ${formatExactTokens(log.output_tokens)}`;
+  const reasoningLabel = `${t("Reasoning tokens")}: ${formatExactTokens(log.reasoning_tokens)}`;
 
   return (
     <span className="flex flex-col gap-1.5 tabular-nums">
@@ -225,7 +227,7 @@ function TokenUsage({ log }: { log: RequestLogView }) {
           aria-label={uncachedInputLabel}
           title={uncachedInputLabel}
         >
-          <ArrowUp className="size-4 shrink-0 text-success" aria-hidden />
+          <ArrowUp className="size-4 shrink-0 text-primary" aria-hidden />
           <span>{formatTokens(uncachedInput)}</span>
         </span>
         {log.cached_input_tokens !== null && log.cached_input_tokens > 0 ? (
@@ -297,7 +299,7 @@ function RequestModel({ log, compact = false }: { log: RequestLogView; compact?:
 }
 
 function formatOutputTps(value: string | null): string {
-  const formatted = formatDecimal(value, 1);
+  const formatted = formatTokens(value == null ? null : Number(value));
   return formatted === "—" ? formatted : `${formatted} tok/s`;
 }
 
@@ -527,9 +529,9 @@ export function RequestLogsView({
           <span className="font-medium">
             {apiOperationLabel(log.api_operation)}
           </span>
-          <Badge variant="outline">
+          <span className="text-xs text-muted-foreground">
             {requestProtocolLabel(log.request_protocol, t)}
-          </Badge>
+          </span>
         </span>
       ),
     },
@@ -582,6 +584,7 @@ export function RequestLogsView({
     {
       key: "duration",
       header: t("Duration"),
+      className: "text-right",
       render: (log) => <RequestDuration log={log} />,
     },
   ];
@@ -608,29 +611,35 @@ export function RequestLogsView({
       open={filtersOpen}
       onOpenChange={setFiltersOpen}
     >
-      <PageHeader title={title} />
-      <div className="flex min-w-0 items-center gap-1 overflow-x-auto border-b" role="group" aria-label={t("Outcome")}>
-        {(["", "succeeded", "failed", "rejected", "cancelled"] as const).map(value => (
-          <button key={value} type="button" aria-pressed={(filters.outcome ?? "") === value}
-            className="shrink-0 border-b-2 border-transparent px-2 py-2 text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring aria-pressed:border-primary aria-pressed:text-foreground"
-            onClick={() => runQuery({ ...filters, outcome: value || undefined })}>
-            {value ? outcomeLabel(value) : t("All")}
-          </button>
-        ))}
-      </div>
+      <PageHeader title={title} actions={
+        <ToggleGroup
+          size="sm" variant="outline" spacing={0}
+          className="max-w-full flex-wrap"
+          aria-label={t("Outcome")} value={[filters.outcome ?? "all"]}
+          onValueChange={([value]) => {
+            if (value) runQuery({ ...filters, outcome: OUTCOMES.find(outcome => outcome === value) });
+          }}
+        >
+          <ToggleGroupItem value="all">{t("All")}</ToggleGroupItem>
+          {OUTCOMES.map(outcome => (
+            <ToggleGroupItem key={outcome} value={outcome}>{outcomeLabel(outcome)}</ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+      } />
         <div className="flex min-w-0 flex-col gap-2">
           <div className="flex items-center gap-2 border-b pb-2">
-          <form className="mr-auto flex min-w-0 max-w-72 flex-1 items-center gap-1" onSubmit={e => {
+          <form className="mr-auto min-w-0 max-w-72 flex-1" onSubmit={e => {
             e.preventDefault(); const id = idSearch.trim(); if (uuid.test(id)) setSelectedId(id);
           }}>
-            <Search className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-            <Input aria-label={t("Find request ID")} placeholder={t("Find request ID")} value={idSearch} type="search" autoComplete="off" spellCheck={false}
-              className="h-8 border-0 bg-transparent px-1 shadow-none" onChange={e => setIdSearch(e.target.value)} />
-            {uuid.test(idSearch.trim()) ? <Button type="submit" size="sm" variant="ghost">{t("View details")}</Button> : null}
+            <InputGroup>
+              <InputGroupInput aria-label={t("Find request ID")} placeholder={t("Find request ID")} value={idSearch} type="search" autoComplete="off" spellCheck={false} onChange={e => setIdSearch(e.target.value)} />
+              <InputGroupAddon><Search aria-hidden /></InputGroupAddon>
+              {uuid.test(idSearch.trim()) && <InputGroupAddon align="inline-end"><InputGroupButton type="submit">{t("View details")}</InputGroupButton></InputGroupAddon>}
+            </InputGroup>
           </form>
           <CollapsibleTrigger
             ref={filterToggle}
-            render={<Button variant="outline" className="self-start scroll-mt-20" />}
+            render={<Button variant="outline" size="sm" className="self-start scroll-mt-20" />}
           >
             {t("Filters ({count})", { count: appliedConditions.length })}
             <ListFilter data-icon="inline-end" />

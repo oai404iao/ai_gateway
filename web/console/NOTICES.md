@@ -37,6 +37,8 @@ The source files in `src/components/ui/` were initially added through the
 shadcn/ui CLI and are maintained as project source. Their upstream MIT
 attribution is preserved in the generated third-party materials.
 
+`src/components/ui/frame.tsx` is adapted from the [coss ui Frame](https://coss.com/ui/docs/components/frame), © 2025 coss.com and Origin UI. Its MIT notice is included in `public/coss-ui-LICENSE.txt` and copied into `dist/`.
+
 `public/favicon.svg` and the custom symbols in `public/icons.svg` are
 project-owned artwork. Brand names and marks depicted by social-media symbols
 remain the property of their respective owners; use is nominative and does not

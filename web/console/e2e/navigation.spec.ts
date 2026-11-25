@@ -153,6 +153,61 @@ test("mobile bottom navigation provides direct core routes and searches other pa
   await expect(page.getByRole("heading", { name: "Spend leaderboard", level: 1 })).toBeVisible();
 });
 
+test("a short desktop rail reveals the selected settings page without moving focus out of content", async ({ page }) => {
+  await page.setViewportSize({ width: 960, height: 480 });
+  await login(page);
+  await page.getByRole("button", { name: "Find page" }).click();
+  const finder = page.getByRole("dialog", { name: "Find page" });
+  await finder.getByRole("combobox").fill("Upstream timeouts");
+  await page.keyboard.press("Enter");
+  const active = page.getByRole("navigation", { name: "Management navigation" })
+    .getByRole("link", { name: "Upstream timeouts", exact: true });
+  await expect(active).toHaveAttribute("aria-current", "page");
+  await expect(active).toBeInViewport({ ratio: 0.99 });
+  await expect(page.getByRole("button", { name: "Account menu" })).toBeInViewport({ ratio: 1 });
+  await expect(page.getByRole("main")).toBeFocused();
+  expect(await page.evaluate(() => window.scrollY)).toBe(0);
+});
+
+test("a narrow overview keeps skip navigation, interval text and all three detail tabs reachable", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 684 });
+  await login(page);
+  await page.goto("/");
+  const tabs = page.getByRole("tablist", { name: "Usage details" });
+  await expect(tabs).toBeVisible();
+  await page.keyboard.press("Tab");
+  const skip = page.getByRole("link", { name: "Skip to content" });
+  await expect(skip).toBeFocused();
+  await expect(skip).toBeInViewport({ ratio: 1 });
+  await skip.press("Enter");
+  await expect(page.getByRole("main")).toBeFocused();
+
+  const time = page.getByRole("region", { name: "Usage trends" }).locator("time");
+  await time.scrollIntoViewIfNeeded();
+  expect(await time.evaluate(el => {
+    const r = el.getBoundingClientRect();
+    return document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) === el;
+  })).toBe(true);
+  await tabs.getByRole("tab", { name: "Model distribution" }).focus();
+  await page.keyboard.press("End");
+  await page.keyboard.press("Enter");
+  await expect(tabs.getByRole("tab", { name: "Failed requests" })).toHaveAttribute("aria-selected", "true");
+  expect(await tabs.evaluate(el => el.scrollHeight === el.clientHeight && el.scrollWidth === el.clientWidth)).toBe(true);
+});
+
+test("opening a theme menu does not lock the overview's management shortcuts below the fold", async ({ page }) => {
+  await page.setViewportSize({ width: 1552, height: 860 });
+  await login(page);
+  await expect(page.getByRole("tabpanel").getByRole("table")).toBeVisible();
+  await page.evaluate(() => document.fonts.ready);
+  await page.getByRole("button", { name: "Toggle theme" }).click();
+  await expect(page.getByRole("menuitemradio", { name: "Dark", exact: true })).toBeVisible();
+  const shortcut = page.getByRole("region", { name: "Gateway management" }).getByRole("link").last();
+  await page.mouse.move(900, 700);
+  await page.mouse.wheel(0, 900);
+  await expect(shortcut).toBeInViewport({ ratio: 1 });
+});
+
 test("browser Back, tabs and parent links share the same draft protection", async ({ page }) => {
   await login(page);
   const origin = `/admin/routing/channels?group=${E2E_ROUTING_GROUP_ID}`;

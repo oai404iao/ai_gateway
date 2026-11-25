@@ -7,11 +7,12 @@ import { AsyncResource } from "@/components/shared/async-resource";
 import { NavigationLink } from "@/components/shared/navigation-link";
 import { PageHeader } from "@/components/shared/page-header";
 import { StatusBadge } from "@/components/shared/status-badge";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useOwnRequestLogs } from "@/features/request-logs/api";
-import { formatCompactTokens, formatDurationMs, formatUsd } from "@/lib/formatters";
+import { formatDurationMs, formatTokens, formatUsd } from "@/lib/formatters";
 import { apiFormatLabel } from "@/lib/permissions";
 import { useCostStatistics } from "./api";
 import { UsageTrend } from "./usage-trend";
@@ -37,7 +38,7 @@ function ModelLedger({ report, bounds }: { report: CostStatisticsReport; bounds:
       <TableHeader>
         <TableRow>
           {["Requested model", "Request share", "Requests", "Success rate", "Total tokens", "Total cost"].map((h) => (
-            <TableHead key={h}>{t(h)}</TableHead>
+            <TableHead key={h} className={h === "Requested model" ? undefined : "text-right"}>{t(h)}</TableHead>
           ))}
         </TableRow>
       </TableHeader>
@@ -64,7 +65,7 @@ function ModelLedger({ report, bounds }: { report: CostStatisticsReport; bounds:
                   {apiFormatLabel(row.api_format)}
                 </span>
               </TableCell>
-              <TableCell>
+              <TableCell className="text-right">
                 <span className="inline-flex items-center gap-2">
                   <i aria-hidden className="hidden h-1 w-16 overflow-hidden rounded-full bg-muted sm:block">
                     <span
@@ -75,16 +76,16 @@ function ModelLedger({ report, bounds }: { report: CostStatisticsReport; bounds:
                   {share.toLocaleString(locale, { style: "percent", maximumFractionDigits: 1 })}
                 </span>
               </TableCell>
-              <TableCell>{row.request_count.toLocaleString(locale)}</TableCell>
-              <TableCell>
+              <TableCell className="text-right">{row.request_count.toLocaleString(locale)}</TableCell>
+              <TableCell className="text-right">
                 {row.success_rate === null
                   ? "—"
                   : row.success_rate.toLocaleString(locale, { style: "percent", maximumFractionDigits: 1 })}
               </TableCell>
-              <TableCell title={row.total_tokens.toLocaleString(locale)}>
-                {formatCompactTokens(row.total_tokens)}
+              <TableCell className="text-right">
+                {formatTokens(row.total_tokens)}
               </TableCell>
-              <TableCell>{formatUsd(row.cost_amount)}</TableCell>
+              <TableCell className="text-right">{formatUsd(row.cost_amount)}</TableCell>
             </TableRow>
           );
         })}
@@ -120,7 +121,7 @@ function RequestLedger({ bounds, failed }: { bounds: UsageBounds; failed: boolea
         <TableHeader>
           <TableRow>
             {["Time", "Requested model", "Outcome", "Duration", "Total tokens", "Total cost"].map((h) => (
-              <TableHead key={h}>
+              <TableHead key={h} className={["Duration", "Total tokens", "Total cost"].includes(h) ? "text-right" : undefined}>
                 {t(h)}
                 {h === "Time" && " · UTC"}
               </TableHead>
@@ -143,13 +144,13 @@ function RequestLedger({ bounds, failed }: { bounds: UsageBounds; failed: boolea
               <TableCell>
                 <StatusBadge value={row.outcome} />
               </TableCell>
-              <TableCell>{formatDurationMs(row.total_duration_ms)}</TableCell>
-              <TableCell>
+              <TableCell className="text-right">{formatDurationMs(row.total_duration_ms)}</TableCell>
+              <TableCell className="text-right">
                 {row.input_tokens === null || row.output_tokens === null
                   ? "—"
-                  : formatCompactTokens(row.input_tokens + row.output_tokens)}
+                  : formatTokens(row.input_tokens + row.output_tokens)}
               </TableCell>
-              <TableCell>{formatUsd(row.cost_amount)}</TableCell>
+              <TableCell className="text-right">{formatUsd(row.cost_amount)}</TableCell>
             </TableRow>
           ))}
         </TableBody>
@@ -211,9 +212,9 @@ export function GatewayOverviewPage() {
           />
         )}
       </AsyncResource>
-      <Tabs value={tab} onValueChange={(v) => setTab(String(v))}>
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b pb-1">
-          <TabsList variant="line" aria-label={t("Usage details")}>
+      <Tabs render={<Card size="sm" />} className="min-w-0 gap-0 py-0" value={tab} onValueChange={(v) => setTab(String(v))}>
+        <CardHeader className="flex min-w-0 flex-row flex-wrap items-center justify-between gap-2 border-b py-2.5">
+          <TabsList className="max-w-full flex-wrap justify-start group-data-horizontal/tabs:h-auto" aria-label={t("Usage details")}>
             <TabsTrigger value="models">{t("Model distribution")}</TabsTrigger>
             <TabsTrigger value="recent">{t("Recent requests")}</TabsTrigger>
             <TabsTrigger value="failed">{t("Failed requests")}</TabsTrigger>
@@ -226,26 +227,28 @@ export function GatewayOverviewPage() {
             {t("Request Logs")}
             <ArrowUpRight data-icon="inline-end" />
           </NavigationLink>
-        </div>
-        <TabsContent value="models">
-          {report.data && (
-            <>
-              <ModelLedger report={report.data} bounds={bounds} />
-              {report.data.models.length > 10 && (
-                <NavigationLink variant="link" to={reportUrl}>
-                  {t("View all models")}
-                  <ArrowUpRight data-icon="inline-end" />
-                </NavigationLink>
-              )}
-            </>
-          )}
-        </TabsContent>
-        <TabsContent value="recent">
-          {tab === "recent" && <RequestLedger bounds={bounds} failed={false} />}
-        </TabsContent>
-        <TabsContent value="failed">
-          {tab === "failed" && <RequestLedger bounds={bounds} failed />}
-        </TabsContent>
+        </CardHeader>
+        <CardContent className="min-w-0 px-0">
+          <TabsContent value="models">
+            {report.data && (
+              <>
+                <ModelLedger report={report.data} bounds={bounds} />
+                {report.data.models.length > 10 && (
+                  <NavigationLink variant="link" to={reportUrl}>
+                    {t("View all models")}
+                    <ArrowUpRight data-icon="inline-end" />
+                  </NavigationLink>
+                )}
+              </>
+            )}
+          </TabsContent>
+          <TabsContent value="recent">
+            {tab === "recent" && <RequestLedger bounds={bounds} failed={false} />}
+          </TabsContent>
+          <TabsContent value="failed">
+            {tab === "failed" && <RequestLedger bounds={bounds} failed />}
+          </TabsContent>
+        </CardContent>
       </Tabs>
     </div>
   );

@@ -341,9 +341,20 @@ test.describe("Console SPA smoke", () => {
     await expect(page.getByRole("main")).not.toContainText(E2E_CODEX_CREDENTIAL_ID);
     await expect(page.getByText("96%")).toBeVisible();
     await expect(page.getByText("4.75 USD")).toBeVisible();
-    await expect(page.getByText("24.50 USD")).toBeVisible();
-    await expect(page.getByText("4.947917 USD")).toBeVisible();
-    await expect(page.getByText("204.166667 USD")).toBeVisible();
+    await expect(page.getByText("24.5 USD")).toBeVisible();
+    await expect(page.getByText("4.94792 USD")).toBeVisible();
+    await expect(page.getByText("204.16667 USD")).toBeVisible();
+    for (const [name, value] of [["Primary window", "96"], ["Secondary window", "12"]] as const) {
+      const bar = page.getByRole("progressbar", { name });
+      await expect(bar).toHaveAttribute("aria-valuenow", value);
+      const cell = page.getByRole("cell").filter({ has: bar });
+      expect(await cell.evaluate(el => {
+        const box = el.getBoundingClientRect();
+        const contents = document.createRange();
+        contents.selectNodeContents(el);
+        return Array.from(contents.getClientRects()).every(rect => rect.top >= box.top && rect.bottom <= box.bottom);
+      }), `${name} contents fit vertically in their cell`).toBe(true);
+    }
     await expect(page.getByText("Personal Plus")).toHaveCount(0);
     await expect(
       page.getByRole("button", { name: /refresh quota/i }),
@@ -368,7 +379,7 @@ test.describe("Console SPA smoke", () => {
     ).toBeVisible();
     await expect(page.getByText("Natural reset")).toBeVisible();
     await expect(page.getByRole("cell", { name: "4.75 USD" })).toBeVisible();
-    await expect(page.getByRole("cell", { name: "4.947917 USD" })).toBeVisible();
+    await expect(page.getByRole("cell", { name: "4.94792 USD" })).toBeVisible();
     await expect(page.getByRole("button", { name: "View costs" })).toHaveCount(0);
   });
 
@@ -620,7 +631,7 @@ test.describe("Console SPA smoke", () => {
     await expect(page.getByText("Personal Plus")).toBeVisible();
     await expect(page.getByText("96% used")).toBeVisible();
     await expect(page.getByText("4.75 USD")).toBeVisible();
-    await expect(page.getByText("4.947917 USD")).toBeVisible();
+    await expect(page.getByText("4.94792 USD")).toBeVisible();
     await expect(page.getByText("Draining", { exact: true })).toBeVisible();
 
     const editButton = page.getByRole("button", {
@@ -717,7 +728,7 @@ test.describe("Console SPA smoke", () => {
       }),
     ).toBeVisible();
     await expect(page.getByRole("cell", { name: "4.75 USD" })).toBeVisible();
-    await expect(page.getByRole("cell", { name: "4.947917 USD" })).toBeVisible();
+    await expect(page.getByRole("cell", { name: "4.94792 USD" })).toBeVisible();
     await expect(page.getByRole("button", { name: "View costs" })).toHaveCount(0);
   });
 
@@ -805,7 +816,7 @@ test.describe("Console SPA smoke", () => {
     await expect(page.getByLabel("Peak pricing")).toBeVisible();
     await expect(page.getByLabel("TTFT: 120 ms")).toBeVisible();
     await expect(page.getByLabel("Total duration: 1 s")).toBeVisible();
-    await expect(page.getByLabel("TPS: 4.5 tok/s")).toBeVisible();
+    await expect(page.getByLabel("TPS: 4.55 tok/s")).toBeVisible();
 
     const waitForPersonalLogQuery = () =>
       page.waitForRequest((request) => {

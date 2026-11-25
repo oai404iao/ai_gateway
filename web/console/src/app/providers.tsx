@@ -58,7 +58,7 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
           <ThemeProvider>
             <TooltipProvider>
               <SessionGate>{children}</SessionGate>
-              <Toaster richColors closeButton />
+              <Toaster closeButton />
             </TooltipProvider>
           </ThemeProvider>
         </I18nProvider>

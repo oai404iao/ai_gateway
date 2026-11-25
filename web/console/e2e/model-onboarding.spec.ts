@@ -75,7 +75,7 @@ test.describe("联合上架", () => {
       await testInfo.attach(`确认价格 ${width}×${height}`, { body: await page.screenshot(), contentType: "image/png" });
       await page.getByRole("button", { name: "预览路由候选" }).click();
       await expect(page.getByRole("heading", { name: /2 · 路由候选/ })).toBeFocused();
-      await expect(page.getByText(/^基础价格 · USD \/ (?:1M|1,000,000) Token$/)).toBeVisible();
+      await expect(page.getByText("基础价格 · USD / 1M Token", { exact: true })).toBeVisible();
       const missing = page.getByRole("checkbox", { name: /登记并路由.*南岭.*Responses$/ });
       await expect(missing).not.toBeChecked();
       await expect(page.getByText("2 项操作 · 3 个新候选 · 0 项模型登记")).toBeVisible();

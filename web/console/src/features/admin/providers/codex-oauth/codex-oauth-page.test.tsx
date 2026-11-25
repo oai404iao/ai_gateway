@@ -201,11 +201,11 @@ describe("CodexOauthPage", () => {
       }),
     ).toBeInTheDocument();
     expect(within(dialog).getByText("Manual reset credit")).toBeInTheDocument();
-    expect(within(dialog).getByText("4.947917 USD")).toBeInTheDocument();
+    expect(within(dialog).getByText("4.94792 USD")).toBeInTheDocument();
     expect(within(dialog).queryByRole("button", { name: "View costs" })).not.toBeInTheDocument();
     await user.click(within(dialog).getByRole("tab", {name: /Secondary window/}));
     expect(within(dialog).getByText("OpenAI official reset")).toBeVisible();
-    expect(within(dialog).getByText("24.50 USD")).toBeVisible();
+    expect(within(dialog).getByText("24.5 USD")).toBeVisible();
   });
 
   it("shows credential action tooltips on focus and dismisses them on blur", async () => {

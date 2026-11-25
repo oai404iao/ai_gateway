@@ -19,10 +19,10 @@ import { useI18n, type ConsoleLocale } from "@/app/i18n";
 
 const INTENSITY_CLASSES = [
   "bg-muted",
-  "bg-success/20",
-  "bg-success/40",
-  "bg-success/70",
-  "bg-success",
+  "bg-primary/20",
+  "bg-primary/40",
+  "bg-primary/70",
+  "bg-primary",
 ] as const;
 
 interface UsageWeek {

@@ -19,7 +19,8 @@ import {
 import type { ModelSyncPreviewModel, ModelSyncSelection } from "@/api/types";
 import { ApiError } from "@/api/errors";
 import { formatDateTime } from "@/lib/dates";
-import { formatTokens } from "@/lib/formatters";
+import { formatUsd, formatUsdAmount } from "@/lib/formatters";
+import { formatPricingTokens } from "@/features/admin/models/pricing-tokens";
 import { useI18n } from "@/app/i18n";
 
 function actionVariant(action: ModelSyncPreviewModel["action"]) {
@@ -34,7 +35,7 @@ function BillingDetails({ model }: { model: ModelSyncPreviewModel }) {
   const prices = [
     { label: t("Base prices"), rates: model },
     ...long_context_tiers.map((tier) => ({
-      label: t("Input tokens ≥ {threshold}", { threshold: formatTokens(tier.input_tokens_threshold) }),
+      label: t("Input tokens ≥ {threshold}", { threshold: formatPricingTokens(tier.input_tokens_threshold) }),
       rates: tier,
     })),
   ];
@@ -58,7 +59,7 @@ function BillingDetails({ model }: { model: ModelSyncPreviewModel }) {
                 ] as const).map(([name, value]) => (
                   <div key={name} className="flex justify-between gap-3">
                     <dt className="text-muted-foreground">{t(name)}</dt>
-                    <dd className="tabular-nums">{value}</dd>
+                    <dd className="tabular-nums">{formatUsdAmount(value)}</dd>
                   </div>
                 ))}
               </dl>
@@ -183,7 +184,7 @@ export function CatalogPage({ embedded = false }: { embedded?: boolean } = {}) {
       header: t("Input price"),
       render: (model) => (
         <div className="flex flex-col items-start gap-1">
-          <span className="tabular-nums">{model.input_unit_price}</span>
+          <span className="tabular-nums">{formatUsd(model.input_unit_price)}</span>
           <BillingDetails model={model} />
         </div>
       ),
