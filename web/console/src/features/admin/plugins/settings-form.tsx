@@ -9,7 +9,7 @@ import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/c
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
+import { useConfigurationDraft } from "@/hooks/use-configuration-draft";
 
 function localized(text: PluginLocalizedText | undefined, locale: string): string {
   return text?.[locale] ?? text?.en ?? Object.values(text ?? {})[0] ?? "";

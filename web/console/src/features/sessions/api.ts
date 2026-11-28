@@ -8,7 +8,7 @@ const SESSIONS_KEY = ["console", "me", "sessions"] as const;
 export function useSessions() {
   return useQuery({
     queryKey: SESSIONS_KEY,
-    queryFn: () => apiGet<ConsoleSession[]>("/me/sessions"),
+    queryFn: ({ signal }) => apiGet<ConsoleSession[]>("/me/sessions", signal),
   });
 }
 

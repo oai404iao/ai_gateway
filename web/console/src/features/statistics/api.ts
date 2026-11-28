@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { apiGet } from "@/api/client";
 import type {
   ChannelGroupStatusReport,
@@ -31,24 +31,28 @@ function queryString(values: Record<string, string | undefined>): string {
 export function useChannelGroupStatus(window: ChannelGroupStatusWindow) {
   return useQuery({
     queryKey: ["console", "statistics", "channel-group-status", window] as const,
-    queryFn: () =>
+    queryFn: ({ signal }) =>
       apiGet<ChannelGroupStatusReport>(
         `/statistics/channel-group-status?${queryString({ window })}`,
+        signal,
       ),
+    placeholderData: keepPreviousData,
   });
 }
 
 export function usePersonalUsage() {
   return useQuery({
     queryKey: ["console", "statistics", "personal-usage"] as const,
-    queryFn: () => apiGet<PersonalUsageReport>("/me/usage"),
+    queryFn: ({ signal }) => apiGet<PersonalUsageReport>("/me/usage", signal),
   });
 }
 
 export function useOwnCostSummary(bounds: Pick<CostStatisticsFilters, "started_after" | "started_before">) {
   return useQuery({
     queryKey: ["console", "own", "statistics", "cost-summary", bounds] as const,
-    queryFn: () => apiGet<CostStatisticsSummary>(`/statistics/costs/summary?${queryString(bounds)}`),
+    queryFn: ({ signal }) =>
+      apiGet<CostStatisticsSummary>(`/statistics/costs/summary?${queryString(bounds)}`, signal),
+    placeholderData: keepPreviousData,
   });
 }
 
@@ -59,7 +63,7 @@ export function useCostStatistics(
   const systemScope = scope === "system";
   return useQuery({
     queryKey: ["console", scope, "statistics", "costs", filters] as const,
-    queryFn: () =>
+    queryFn: ({ signal }) =>
       apiGet<CostStatisticsReport>(
         `${systemScope ? "/system/statistics/costs" : "/statistics/costs"}?${queryString({
           started_after: filters.started_after,
@@ -69,6 +73,8 @@ export function useCostStatistics(
           api_key_id: filters.api_key_id,
           channel_id: systemScope ? filters.channel_id : undefined,
         })}`,
+        signal,
       ),
+    placeholderData: keepPreviousData,
   });
 }

@@ -188,6 +188,11 @@ function ManagementLinks({ items, pathname }: { items: (NavItem | NavGroup)[]; p
 function ManagementNavigation({ pathname, mobile }: { pathname: string; mobile: boolean }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
+  const [prevPathname, setPrevPathname] = useState(pathname);
+  if (prevPathname !== pathname) {
+    setPrevPathname(pathname);
+    if (open) setOpen(false);
+  }
   const current = navPages(managementGroups).find(({ item }) => pageMatches(item, pathname));
   const links = <ManagementLinks items={managementGroups} pathname={pathname} />;
   return (
@@ -353,7 +358,7 @@ export function ConsoleLayout() {
                 </div>
               )}
             </nav>
-            {managed && <ManagementNavigation key={pathname} pathname={pathname} mobile={false} />}
+            {managed && <ManagementNavigation pathname={pathname} mobile={false} />}
           </div>
           {tools}
         </>}
@@ -376,7 +381,7 @@ export function ConsoleLayout() {
       )}
       <div className={styles.stage}>
         {mobile && serviceNav}
-        {mobile && managed && <ManagementNavigation key={pathname} pathname={pathname} mobile />}
+        {mobile && managed && <ManagementNavigation pathname={pathname} mobile />}
         <main
           id="gateway-content"
           ref={main}

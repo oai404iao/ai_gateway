@@ -141,6 +141,17 @@ export function apiDelete(path: string, signal?: AbortSignal): Promise<void> {
   return consoleFetch(path, { method: "DELETE", signal }).then(ensureOk);
 }
 
+export function buildQuery(params: object): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && value !== "") {
+      search.set(key, String(value));
+    }
+  }
+  const query = search.toString();
+  return query ? `?${query}` : "";
+}
+
 /**
  * Refreshes the access token using the HttpOnly refresh cookie.
  * Concurrent callers share one rotation; a failure clears the session.

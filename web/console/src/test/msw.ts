@@ -115,7 +115,15 @@ export const handlers = [
   http.delete("/console/v1/me/sessions", () => new HttpResponse(null, { status: 204 })),
   http.delete("/console/v1/me/sessions/:id", () => new HttpResponse(null, { status: 204 })),
 
-  http.get("/console/v1/me/api-keys", () => HttpResponse.json([OWN_API_KEY])),
+  http.get("/console/v1/me/api-keys", ({ request }) => {
+    const url = new URL(request.url);
+    const status = url.searchParams.get("status");
+    const q = url.searchParams.get("q")?.trim().toLowerCase() ?? "";
+    const items = [OWN_API_KEY].filter(
+      (key) => (!status || key.status === status) && (!q || key.name.toLowerCase().includes(q)),
+    );
+    return HttpResponse.json({ items, next_cursor: null, total: items.length });
+  }),
   http.get("/console/v1/me/codex-quotas", () =>
     HttpResponse.json([OWN_CODEX_QUOTA]),
   ),
@@ -142,7 +150,16 @@ export const handlers = [
     ),
   ),
 
-  http.get("/console/v1/users", () => HttpResponse.json([CONTROL_PLANE_USER])),
+  http.get("/console/v1/users", ({ request }) => {
+    const q = new URL(request.url).searchParams.get("q")?.trim().toLowerCase() ?? "";
+    const items = [CONTROL_PLANE_USER].filter(
+      (user) =>
+        !q ||
+        user.display_name.toLowerCase().includes(q) ||
+        (user.email?.toLowerCase().includes(q) ?? false),
+    );
+    return HttpResponse.json({ items, next_cursor: null, total: items.length });
+  }),
   http.get("/console/v1/users/:id", () =>
     HttpResponse.json(CONTROL_PLANE_USER, {
       headers: { ETag: `"${CONTROL_PLANE_USER.updated_at}"` },
@@ -197,7 +214,20 @@ export const handlers = [
       headers: { ETag: `"${API_KEY_POLICY.updated_at}"` },
     }),
   ),
-  http.get("/console/v1/api-keys", () => HttpResponse.json([ADMIN_API_KEY])),
+  http.get("/console/v1/api-keys", ({ request }) => {
+    const url = new URL(request.url);
+    const userId = url.searchParams.get("user_id");
+    const q = url.searchParams.get("q")?.trim().toLowerCase() ?? "";
+    const items = [ADMIN_API_KEY].filter(
+      (key) => (!userId || key.user_id === userId) && (!q || key.name.toLowerCase().includes(q)),
+    );
+    return HttpResponse.json({ items, next_cursor: null, total: items.length });
+  }),
+  http.get("/console/v1/api-keys/:id", () =>
+    HttpResponse.json(ADMIN_API_KEY, {
+      headers: { ETag: `"${ADMIN_API_KEY.updated_at}"` },
+    }),
+  ),
   http.get("/console/v1/models", () => HttpResponse.json([MODEL])),
   http.get("/console/v1/model-options", () => HttpResponse.json([MODEL.source_model_id])),
   http.get("/console/v1/models/:id", () =>
@@ -231,8 +261,12 @@ export const handlers = [
       headers: { ETag: `"${CONFIG_TEMPLATE.updated_at}"` },
     }),
   ),
-  http.get("/console/v1/request-logs", () => HttpResponse.json([])),
-  http.get("/console/v1/me/request-logs", () => HttpResponse.json([])),
+  http.get("/console/v1/request-logs", () =>
+    HttpResponse.json({ items: [], next_cursor: null }),
+  ),
+  http.get("/console/v1/me/request-logs", () =>
+    HttpResponse.json({ items: [], next_cursor: null }),
+  ),
   http.get("/console/v1/me/usage", () => HttpResponse.json(PERSONAL_USAGE_REPORT)),
   http.get("/console/v1/statistics/channel-group-status", () =>
     HttpResponse.json(CHANNEL_GROUP_STATUS_REPORT),
@@ -259,7 +293,9 @@ export const handlers = [
       cache: SESSION_AFFINITY_CACHE_REPORT,
     }),
   ),
-  http.get("/console/v1/audit-logs", () => HttpResponse.json([])),
+  http.get("/console/v1/audit-logs", () =>
+    HttpResponse.json({ items: [], next_cursor: null }),
+  ),
   http.get("/console/v1/system/settings", () =>
     HttpResponse.json(SYSTEM_SETTINGS, {
       headers: { ETag: `"${SYSTEM_SETTINGS.updated_at}"` },

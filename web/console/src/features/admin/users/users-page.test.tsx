@@ -8,7 +8,7 @@ import type { InviteUserInput } from "@/api/types"
 import { AppProviders } from "@/app/providers"
 import { AppRouter } from "@/app/router"
 import { server, seedAuthenticatedSession } from "@/test/msw"
-import { DEFAULT_USER_GROUP } from "@/test/fixtures"
+import { CONTROL_PLANE_USER, DEFAULT_USER_GROUP } from "@/test/fixtures"
 
 function renderAppAt(path: string) {
   window.history.replaceState({}, "", path)
@@ -64,4 +64,32 @@ describe("UsersPage", () => {
     expect(await screen.findByText("Invitation token")).toBeInTheDocument()
   })
 
+  it("preserves selected users across server-paginated pages", async () => {
+    seedAuthenticatedSession()
+    const userPage2 = {
+      ...CONTROL_PLANE_USER,
+      id: "00000000-0000-0000-0000-000000000099",
+      display_name: "Second Page User",
+      email: "second@example.test",
+    }
+    server.use(
+      http.get("/console/v1/users", ({ request }) => {
+        const cursor = new URL(request.url).searchParams.get("cursor")
+        if (cursor === "page-2") {
+          return HttpResponse.json({ items: [userPage2], next_cursor: null, total: 2 })
+        }
+        return HttpResponse.json({ items: [CONTROL_PLANE_USER], next_cursor: "page-2", total: 2 })
+      }),
+    )
+    const user = userEvent.setup()
+    renderAppAt("/admin/users")
+
+    await user.click(await screen.findByRole("checkbox", { name: `Select ${CONTROL_PLANE_USER.display_name}` }))
+    expect(screen.getByRole("status")).toHaveTextContent("1 users selected")
+
+    await user.click(screen.getByRole("button", { name: "Go to next page" }))
+    await user.click(await screen.findByRole("checkbox", { name: `Select ${userPage2.display_name}` }))
+    expect(screen.getByRole("status")).toHaveTextContent("2 users selected")
+    expect(screen.getByRole("button", { name: "Batch edit (2)" })).toBeEnabled()
+  })
 })

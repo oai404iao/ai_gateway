@@ -7,6 +7,7 @@ import {
   RouterProvider,
   createBrowserRouter,
   createRoutesFromElements,
+  useLocation,
 } from "react-router";
 import { NavigationLink } from "@/components/shared/navigation-link";
 import { EmptyState } from "@/components/shared/empty-state";
@@ -235,7 +236,11 @@ const PluginDetailPage = lazy(() =>
 
 function RequireAuth() {
   const { isAuthenticated, user } = useSession();
-  if (!isAuthenticated) return <Navigate to="/login" replace />;
+  const location = useLocation();
+  if (!isAuthenticated) {
+    const from = `${location.pathname}${location.search}${location.hash}`;
+    return <Navigate to="/login" replace state={{ from }} />;
+  }
   return <Outlet key={sessionScope(user)} />;
 }
 
@@ -253,9 +258,25 @@ function RequireFullSession() {
   return <Outlet />;
 }
 
+function Forbidden() {
+  const { t } = useI18n();
+  return (
+    <EmptyState
+      title={t("Access denied")}
+      description={t("Administrator access is required to view this page.")}
+      className="min-h-80 border"
+      actions={
+        <NavigationLink to="/">
+          {t("Back to overview")}
+        </NavigationLink>
+      }
+    />
+  );
+}
+
 function RequireAdmin() {
   const { user } = useSession();
-  if (user?.role !== "admin") return <Navigate to="/" replace />;
+  if (user?.role !== "admin") return <Forbidden />;
   return <Outlet />;
 }
 

@@ -1,5 +1,5 @@
 import { useRef } from "react";
-import { useNavigate } from "react-router";
+import { useLocation, useNavigate } from "react-router";
 import { Combobox } from "@base-ui/react/combobox";
 import { CornerDownLeft, Search } from "lucide-react";
 import { Dialog, DialogClose, DialogContent, DialogTitle } from "@/components/ui/dialog";
@@ -18,6 +18,7 @@ export function PageFinder({
   onOpenChange: (open: boolean) => void;
 }) {
   const { t } = useI18n();
+  const { pathname } = useLocation();
   const navigate = useNavigate();
   const input = useRef<HTMLInputElement>(null);
   const navigating = useRef(false);
@@ -51,7 +52,7 @@ export function PageFinder({
           }
           onValueChange={(item) => {
             if (item) {
-              navigating.current = item.path !== window.location.pathname;
+              navigating.current = item.path !== pathname;
               onOpenChange(false);
               void navigate(item.path);
             }

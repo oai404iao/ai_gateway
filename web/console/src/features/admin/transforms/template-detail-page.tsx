@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router";
 import { useReturnPath } from "@/lib/page-navigation";
-import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
+import { useConfigurationDraft } from "@/hooks/use-configuration-draft";
 import { z } from "zod";
 import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -52,9 +52,15 @@ export function ConfigTemplateDetailPage() {
   const [validation, setValidation] = useState<z.ZodError | null>(null);
   const [documentValidation, setDocumentValidation] = useState<string | null>(null);
   const draft = useConfigurationDraft(submitting);
+  const baselineRef = useRef<typeof data>(undefined);
 
   useEffect(() => {
-    if (data) {
+    baselineRef.current = undefined;
+  }, [id]);
+
+  useEffect(() => {
+    if (data && data !== baselineRef.current && !draft.dirty) {
+      baselineRef.current = data;
       setState({
         name: data.data.name,
         description: data.data.description,
@@ -63,7 +69,7 @@ export function ConfigTemplateDetailPage() {
       });
       setDocumentValidation(null);
     }
-  }, [data]);
+  }, [data, draft.dirty]);
 
   const patch = (partial: Partial<FormState>) => {
     draft.markDirty();

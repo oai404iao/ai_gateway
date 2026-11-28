@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router";
 import { z } from "zod";
 import { toast } from "sonner";
@@ -34,7 +34,7 @@ import { modelLabel } from "@/features/admin/models/model-label";
 import { resourceLabels } from "@/lib/resource-labels";
 import type { ApiOperation, OperationRuleInput, OperationTierInput } from "@/api/types";
 import { OperationRuleTierEditor } from "./operation-rule-tier-editor";
-import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
+import { useConfigurationDraft } from "@/hooks/use-configuration-draft";
 import { useReturnPath, withReturnTo } from "@/lib/page-navigation";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -164,15 +164,24 @@ export function OperationRuleDetailPage({
     }
   };
 
+  const baselineRef = useRef<typeof query.data>(undefined);
+
   useEffect(() => {
-    if (!rule) return;
-    setState({
-      model_routing_profile_id: rule.model_routing_profile_id,
-      operation: rule.operation,
-      enabled: rule.enabled,
-      routing_tiers: rule.routing_tiers,
-    });
-  }, [rule]);
+    baselineRef.current = undefined;
+  }, [id]);
+
+  useEffect(() => {
+    if (query.data && query.data !== baselineRef.current) {
+      baselineRef.current = query.data;
+      const loaded = query.data.data;
+      setState({
+        model_routing_profile_id: loaded.model_routing_profile_id,
+        operation: loaded.operation,
+        enabled: loaded.enabled,
+        routing_tiers: loaded.routing_tiers,
+      });
+    }
+  }, [query.data]);
 
   const modelProfile = profiles.data?.find((profile) => profile.model_id === modelId);
   const modelProfileId = modelProfile?.id ?? createdProfileId;

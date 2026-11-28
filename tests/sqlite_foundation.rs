@@ -975,6 +975,7 @@ async fn s4_pipeline_and_query_facades_share_one_sqlite_database() {
 
     for filter in [RequestLogFilter {
         limit: 10,
+        cursor: None,
         user_id: None,
         api_key_id: None,
         model: None,
@@ -985,12 +986,20 @@ async fn s4_pipeline_and_query_facades_share_one_sqlite_database() {
         started_before: None,
         billed: None,
     }] {
-        assert!(queries.list_all(filter.clone()).await.unwrap().is_empty());
+        assert!(
+            queries
+                .list_all(filter.clone())
+                .await
+                .unwrap()
+                .items
+                .is_empty()
+        );
         assert!(
             standalone_queries
                 .list_all(filter)
                 .await
                 .unwrap()
+                .items
                 .is_empty()
         );
         assert!(

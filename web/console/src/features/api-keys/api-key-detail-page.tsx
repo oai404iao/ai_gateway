@@ -21,7 +21,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { PageHeader } from "@/components/shared/page-header";
 import { AsyncResource } from "@/components/shared/async-resource";
 import { useReturnPath } from "@/lib/page-navigation";
-import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
+import { useConfigurationDraft } from "@/hooks/use-configuration-draft";
 import { ApiKeyValue } from "@/components/shared/api-key-value";
 import {
   RoutingTargetFields,

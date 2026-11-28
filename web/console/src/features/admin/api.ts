@@ -1,13 +1,16 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiGet, apiGetDetail, apiPost, apiPut, apiSend } from "@/api/client";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { apiGet, apiGetDetail, apiPost, apiPut, apiSend, buildQuery } from "@/api/client";
 import { CONNECTORS_KEY } from "./connectors/api";
 import type {
+  AdminApiKeyListQuery,
+  AdminApiKeyPage,
   AdminApiKeyView,
   ApiKeyCreateInput,
   ApiKeyPolicyInput,
   ApiKeyPolicyView,
   ApiKeyUpdateInput,
-  AuditLogView,
+  AuditLogPage,
+  AuditLogQuery,
   ChannelModelDiscoveryInput,
   ChannelModelDiscoveryResponse,
   ConfigTemplateCreateInput,
@@ -47,6 +50,8 @@ import type {
   UserBatchUpdateResponse,
   UserGroupInput,
   UserGroupView,
+  UserListQuery,
+  UserPage,
   UserUpdateInput,
   UpstreamCredentialView,
   UpstreamAccessView,
@@ -80,8 +85,10 @@ function makeDetail<T>(basePath: string, key: (id: string) => readonly string[])
   return (id: string) => {
     const query = useQuery({
       queryKey: key(id),
-      queryFn: () => apiGetDetail<T>(`${basePath}/${id}`),
+      queryFn: ({ signal }) => apiGetDetail<T>(`${basePath}/${id}`, signal),
       enabled: Boolean(id) && id !== "new",
+      staleTime: 0,
+      refetchOnWindowFocus: true,
     });
     return {
       data: query.data,
@@ -323,7 +330,17 @@ export function useDeleteUpstreamCredential(id: string) {
 // ---- Users ----
 const USERS_KEY = ["console", "users"] as const;
 const userDetailKey = (id: string) => ["console", "users", id] as const;
-export const useUsers = makeList<ControlPlaneUser>("/users", USERS_KEY);
+export function useUsers(
+  params: UserListQuery = {},
+  options?: { enabled?: boolean },
+) {
+  return useQuery({
+    queryKey: [...USERS_KEY, params] as const,
+    queryFn: ({ signal }) => apiGet<UserPage>(`/users${buildQuery(params)}`, signal),
+    placeholderData: keepPreviousData,
+    enabled: options?.enabled ?? true,
+  });
+}
 export const useUser = makeDetail<ControlPlaneUser>("/users", userDetailKey);
 export function useInviteUser() {
   const queryClient = useQueryClient();
@@ -542,7 +559,18 @@ export function useDeleteModel(id: string) {
 // ---- Admin API Keys ----
 const ADMIN_KEYS_KEY = ["console", "admin-api-keys"] as const;
 const adminKeyDetailKey = (id: string) => ["console", "admin-api-keys", id] as const;
-export const useAdminApiKeys = makeList<AdminApiKeyView>("/api-keys", ADMIN_KEYS_KEY);
+export function useAdminApiKeys(
+  params: AdminApiKeyListQuery = {},
+  options?: { enabled?: boolean },
+) {
+  return useQuery({
+    queryKey: [...ADMIN_KEYS_KEY, params] as const,
+    queryFn: ({ signal }) =>
+      apiGet<AdminApiKeyPage>(`/api-keys${buildQuery(params)}`, signal),
+    placeholderData: keepPreviousData,
+    enabled: options?.enabled ?? true,
+  });
+}
 export const useAdminApiKey = makeDetail<AdminApiKeyView>("/api-keys", adminKeyDetailKey);
 export const useCreateAdminApiKey = makeCreate<ApiKeyCreateInput, MutationResponse>(
   "/api-keys",
@@ -669,10 +697,11 @@ export function useApplyCatalogModels() {
 }
 
 // ---- Audit logs + system ----
-export function useAuditLogs(limit: number) {
+export function useAuditLogs(params: AuditLogQuery = {}) {
   return useQuery({
-    queryKey: ["console", "audit-logs", limit] as const,
-    queryFn: () => apiGet<AuditLogView[]>(`/audit-logs?limit=${limit}`),
+    queryKey: ["console", "audit-logs", params] as const,
+    queryFn: ({ signal }) => apiGet<AuditLogPage>(`/audit-logs${buildQuery(params)}`, signal),
+    placeholderData: keepPreviousData,
   });
 }
 export function useReload() {
@@ -690,6 +719,8 @@ export function useSystemSettings() {
   return useQuery({
     queryKey: SYSTEM_SETTINGS_KEY,
     queryFn: () => apiGetDetail<SystemSettings>("/system/settings"),
+    staleTime: 0,
+    refetchOnWindowFocus: true,
   });
 }
 export function useUpdateSystemSettings() {
@@ -705,8 +736,8 @@ export function useUpdateSystemSettings() {
 export function useSessionAffinityCache() {
   return useQuery({
     queryKey: SESSION_AFFINITY_CACHE_KEY,
-    queryFn: () =>
-      apiGet<SessionAffinityCacheReport>("/system/session-affinity/cache"),
+    queryFn: ({ signal }) =>
+      apiGet<SessionAffinityCacheReport>("/system/session-affinity/cache", signal),
     refetchInterval: 5_000,
   });
 }

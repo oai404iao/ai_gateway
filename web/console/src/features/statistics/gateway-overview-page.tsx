@@ -110,11 +110,12 @@ function RequestLedger({ bounds, failed }: { bounds: UsageBounds; failed: boolea
     second: "2-digit",
     hourCycle: "h23",
   });
+  const rows = query.data?.items ?? [];
   return (
     <AsyncResource
       isLoading={query.isLoading}
       error={query.error}
-      isEmpty={query.data?.length === 0}
+      isEmpty={rows.length === 0}
       emptyTitle="No requests in this period"
     >
       <Table className="tabular-nums">
@@ -129,7 +130,7 @@ function RequestLedger({ bounds, failed }: { bounds: UsageBounds; failed: boolea
           </TableRow>
         </TableHeader>
         <TableBody>
-          {query.data?.map((row) => (
+          {rows.map((row) => (
             <TableRow key={row.id}>
               <TableCell>
                 <Link

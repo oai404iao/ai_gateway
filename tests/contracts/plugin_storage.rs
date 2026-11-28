@@ -1,5 +1,7 @@
 //! Plugin storage contracts shared by isolated PostgreSQL and SQLite fixtures.
 
+use ai_gateway::persistence::PageOptions;
+
 use ai_gateway::persistence::{
     ControlPlaneMutation, ControlPlaneRepository, PluginArtifactInput, PluginJobCompletion,
     PluginSaveInput, PluginSettingsInput, RepositoryError,
@@ -551,7 +553,14 @@ async fn interrupted_restart_contract(repository: &ControlPlaneRepository) {
         serde_json::to_value(artifacts_after).unwrap(),
         serde_json::to_value(artifacts_before).unwrap()
     );
-    let audits = repository.audit_logs(100).await.unwrap();
+    let audits = repository
+        .audit_logs(PageOptions {
+            limit: Some(100),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .items;
     for id in [queued, running] {
         let job = repository.plugin_install_job(id).await.unwrap().unwrap();
         assert_eq!(job.status, "failed");

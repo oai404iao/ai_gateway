@@ -631,6 +631,18 @@ export const E2E_SYSTEM_REQUEST_LOG = {
   channel_name: "upstream-channel-name-long-enough-to-overflow-the-request-log-column",
 };
 
+function paginateMock<T>(items: T[], url: URL, includeTotal = false) {
+  const limit = Math.max(1, Number(url.searchParams.get("limit") ?? 50) || 50);
+  const offset = Math.max(0, Number(url.searchParams.get("cursor") ?? 0) || 0);
+  const slice = items.slice(offset, offset + limit);
+  const nextOffset = offset + slice.length;
+  return {
+    items: slice,
+    next_cursor: nextOffset < items.length ? String(nextOffset) : null,
+    ...(includeTotal ? { total: items.length } : {}),
+  };
+}
+
 export async function mockConsoleApi(page: Page): Promise<void> {
   let websocketEnabled = false;
   let authenticated = false;
@@ -777,7 +789,8 @@ export async function mockConsoleApi(page: Page): Promise<void> {
     if (path === "/console/v1/me/request-logs" && method === "GET") {
       const model = url.searchParams.get("model");
       const log = { ...E2E_PERSONAL_REQUEST_LOG, user_id: session.user.id };
-      return route.fulfill({ status: 200, json: !model || model === log.client_model ? [log] : [] });
+      const rows = !model || model === log.client_model ? [log] : [];
+      return route.fulfill({ status: 200, json: paginateMock(rows, url) });
     }
     if (
       path === `/console/v1/me/request-logs/${E2E_PERSONAL_REQUEST_LOG.id}` &&
@@ -786,7 +799,11 @@ export async function mockConsoleApi(page: Page): Promise<void> {
       return route.fulfill({ status: 200, json: { ...E2E_PERSONAL_REQUEST_LOG, user_id: session.user.id } });
     }
     if (path === "/console/v1/users" && method === "GET") {
-      return route.fulfill({ status: 200, json: [E2E_USER, E2E_ADMIN_USER] });
+      const q = (url.searchParams.get("q") ?? "").trim().toLowerCase();
+      const rows = [E2E_USER, E2E_ADMIN_USER].filter((user) =>
+        !q || [user.display_name, user.email, user.username].some((value) => value?.toLowerCase().includes(q)),
+      );
+      return route.fulfill({ status: 200, json: paginateMock(rows, url, true) });
     }
     if (
       path === `/console/v1/users/${E2E_USER.id}` &&
@@ -811,7 +828,25 @@ export async function mockConsoleApi(page: Page): Promise<void> {
       });
     }
     if (path === "/console/v1/api-keys" && method === "GET") {
-      return route.fulfill({ status: 200, json: [] });
+      const q = (url.searchParams.get("q") ?? "").trim().toLowerCase();
+      const userId = url.searchParams.get("user_id");
+      const status = url.searchParams.get("status");
+      const allKeys = [
+        { ...E2E_API_KEY, user_id: E2E_USER.id, user_name: E2E_USER.display_name },
+      ];
+      const rows = allKeys.filter((key) =>
+        (!userId || key.user_id === userId) &&
+        (!status || key.status === status) &&
+        (!q || key.name.toLowerCase().includes(q)),
+      );
+      return route.fulfill({ status: 200, json: paginateMock(rows, url, true) });
+    }
+    if (path === `/console/v1/api-keys/${E2E_API_KEY.id}` && method === "GET") {
+      return route.fulfill({
+        status: 200,
+        headers: { ETag: `"${E2E_API_KEY.updated_at}"` },
+        json: { ...E2E_API_KEY, user_id: E2E_USER.id, user_name: E2E_USER.display_name },
+      });
     }
     if (path === "/console/v1/user-groups" && method === "GET") {
       return route.fulfill({ status: 200, json: E2E_USER_GROUPS });
@@ -943,9 +978,15 @@ export async function mockConsoleApi(page: Page): Promise<void> {
       });
     }
     if (path === "/console/v1/me/api-keys" && method === "GET") {
+      const q = (url.searchParams.get("q") ?? "").trim().toLowerCase();
+      const status = url.searchParams.get("status");
+      const rows = [E2E_API_KEY].filter((key) =>
+        (!status || key.status === status) &&
+        (!q || key.name.toLowerCase().includes(q)),
+      );
       return route.fulfill({
         status: 200,
-        json: [E2E_API_KEY],
+        json: paginateMock(rows, url, true),
       });
     }
     if (
@@ -1188,7 +1229,17 @@ export async function mockConsoleApi(page: Page): Promise<void> {
     }
     if (path === "/console/v1/request-logs" && method === "GET") {
       const model = url.searchParams.get("model");
-      return route.fulfill({ status: 200, json: !model || model === E2E_SYSTEM_REQUEST_LOG.client_model ? [E2E_SYSTEM_REQUEST_LOG] : [] });
+      const userId = url.searchParams.get("user_id");
+      const apiKeyId = url.searchParams.get("api_key_id");
+      const rows = (!model || model === E2E_SYSTEM_REQUEST_LOG.client_model) &&
+        (!userId || userId === E2E_SYSTEM_REQUEST_LOG.user_id) &&
+        (!apiKeyId || apiKeyId === E2E_SYSTEM_REQUEST_LOG.api_key_id)
+        ? [E2E_SYSTEM_REQUEST_LOG]
+        : [];
+      return route.fulfill({ status: 200, json: paginateMock(rows, url) });
+    }
+    if (path === "/console/v1/audit-logs" && method === "GET") {
+      return route.fulfill({ status: 200, json: paginateMock([], url) });
     }
     if (
       path === `/console/v1/request-logs/${E2E_SYSTEM_REQUEST_LOG.id}` &&

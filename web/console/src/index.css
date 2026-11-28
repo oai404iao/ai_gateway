@@ -108,9 +108,9 @@
     --sidebar-accent-foreground: oklch(0.985 0 0);
     --sidebar-border: oklch(1 0 0 / 10%);
     --sidebar-ring: oklch(0.556 0 0);
-    --info-foreground: var(--color-violet-600);
-    --warning-foreground: var(--color-yellow-600);
-    --destructive-foreground: var(--color-red-600);
+    --info-foreground: var(--color-violet-300);
+    --warning-foreground: var(--color-yellow-400);
+    --destructive-foreground: var(--color-red-400);
     --chart-1: oklch(0.488 0.243 264.376);
     --chart-2: oklch(0.769 0.188 70.08);
     --chart-3: oklch(0.627 0.265 303.9);

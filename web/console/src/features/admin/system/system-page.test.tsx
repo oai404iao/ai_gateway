@@ -332,4 +332,34 @@ describe("SystemPage", () => {
     await waitFor(() => expect(clearedRule).toBe("codex-responses"));
     expect(await screen.findByText("Cleared 3 cached entries.")).toBeInTheDocument();
   });
+
+  it("saves the active section even when an unmounted section has invalid values", async () => {
+    seedAuthenticatedSession();
+    let savedBody: SystemSettingsInput | null = null;
+    server.use(
+      http.get("/console/v1/system/settings", () =>
+        HttpResponse.json(
+          {
+            ...SYSTEM_SETTINGS,
+            scheduled_testing: { ...SYSTEM_SETTINGS.scheduled_testing, prompt: "" },
+          },
+          { headers: { ETag: '"v1"' } },
+        ),
+      ),
+      http.put("/console/v1/system/settings", async ({ request }) => {
+        savedBody = (await request.json()) as SystemSettingsInput;
+        return HttpResponse.json({ id: "settings", correlation_id: "settings-updated" });
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderApp("upstream");
+    const timeout = await screen.findByLabelText("Connect timeout (seconds)");
+    await user.clear(timeout);
+    await user.type(timeout, "12");
+    await user.click(screen.getByRole("button", { name: "Save system settings" }));
+
+    await waitFor(() => expect(savedBody).not.toBeNull());
+    expect(savedBody).toMatchObject({ upstream: { connect_timeout_seconds: 12 } });
+  });
 });

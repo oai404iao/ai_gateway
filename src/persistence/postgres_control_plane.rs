@@ -29,6 +29,8 @@ use crate::{
     request_log_journal::EncodedRequestLog,
 };
 
+use super::{ApiKeyListFilter, PageOptions, PageResult, UserListFilter, pagination::KeysetPage};
+
 /// Singleton row that supplies database-backed process-wide runtime settings.
 pub const FORWARDING_SETTINGS_KEY: &str = "forwarding_policy";
 pub const SYSTEM_PROBE_USER_ID: Uuid = Uuid::from_u128(0x2c2e_3fd5_07e6_4c44_b5c7_cfe4_7bda_2b10);
@@ -1211,9 +1213,12 @@ pub struct ConsoleRequestLog {
 
 /// Server-side request-log filters. The Console API decodes and validates
 /// query strings before constructing this typed repository input.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct RequestLogFilter {
+    #[serde(skip)]
     pub limit: i64,
+    #[serde(skip)]
+    pub cursor: Option<String>,
     pub user_id: Option<Uuid>,
     pub api_key_id: Option<Uuid>,
     pub model: Option<String>,
@@ -1223,6 +1228,45 @@ pub struct RequestLogFilter {
     pub started_after: Option<DateTime<Utc>>,
     pub started_before: Option<DateTime<Utc>>,
     pub billed: Option<bool>,
+}
+
+impl RequestLogFilter {
+    pub(super) fn window(&self, owner: Option<Uuid>) -> Result<KeysetPage, RepositoryError> {
+        if self
+            .api_format
+            .as_deref()
+            .is_some_and(|value| ApiFormat::parse(value).is_none())
+            || self.api_operation.as_deref().is_some_and(|value| {
+                !matches!(
+                    value,
+                    "chat_completion"
+                        | "responses"
+                        | "responses-ws"
+                        | "web_search"
+                        | "images_generation"
+                        | "images_edit"
+                )
+            })
+            || self.outcome.as_deref().is_some_and(|value| {
+                !matches!(value, "succeeded" | "failed" | "rejected" | "cancelled")
+            })
+            || self
+                .model
+                .as_deref()
+                .is_some_and(|value| value.trim().is_empty() || value.len() > 300)
+            || self
+                .started_after
+                .zip(self.started_before)
+                .is_some_and(|(after, before)| after > before)
+        {
+            return Err(RepositoryError::Validation);
+        }
+        KeysetPage::new(
+            self.limit,
+            self.cursor.as_deref(),
+            ("request_logs", owner, self),
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1583,6 +1627,7 @@ pub struct ControlPlaneApiKey {
     pub max_concurrent_requests: Option<i32>,
     pub quota_limit_amount: Option<rust_decimal::Decimal>,
     pub quota_used_amount: rust_decimal::Decimal,
+    pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -1861,9 +1906,9 @@ impl PostgresRequestLogQueries {
         &self,
         user_id: Uuid,
         filter: RequestLogFilter,
-    ) -> Result<Vec<ConsoleRequestLog>, RepositoryError> {
+    ) -> Result<PageResult<ConsoleRequestLog>, RepositoryError> {
         let mut logs = query_console_request_logs(&self.pool, Some(user_id), filter).await?;
-        for log in &mut logs {
+        for log in &mut logs.items {
             redact_self_service_request_log(log);
         }
         Ok(logs)
@@ -1884,7 +1929,7 @@ impl PostgresRequestLogQueries {
     pub async fn list_all(
         &self,
         filter: RequestLogFilter,
-    ) -> Result<Vec<ConsoleRequestLog>, RepositoryError> {
+    ) -> Result<PageResult<ConsoleRequestLog>, RepositoryError> {
         query_console_request_logs(&self.pool, None, filter).await
     }
 
@@ -3012,34 +3057,8 @@ async fn query_console_request_logs(
     pool: &PgPool,
     owner_user_id: Option<Uuid>,
     filter: RequestLogFilter,
-) -> Result<Vec<ConsoleRequestLog>, RepositoryError> {
-    if filter
-        .api_format
-        .as_deref()
-        .is_some_and(|value| ApiFormat::parse(value).is_none())
-        || filter.api_operation.as_deref().is_some_and(|value| {
-            !matches!(
-                value,
-                "chat_completion"
-                    | "responses"
-                    | "responses-ws"
-                    | "web_search"
-                    | "images_generation"
-                    | "images_edit"
-            )
-        })
-        || filter.outcome.as_deref().is_some_and(|value| {
-            !matches!(value, "succeeded" | "failed" | "rejected" | "cancelled")
-        })
-        || filter
-            .model
-            .as_deref()
-            .is_some_and(|value| value.trim().is_empty() || value.len() > 300)
-        || filter.started_after > filter.started_before
-    {
-        return Err(RepositoryError::Validation);
-    }
-
+) -> Result<PageResult<ConsoleRequestLog>, RepositoryError> {
+    let page = filter.window(owner_user_id)?;
     let mut query = QueryBuilder::<Postgres>::new(format!(
         "SELECT {CONSOLE_REQUEST_LOG_COLUMNS}
          FROM request_logs AS log
@@ -3091,14 +3110,12 @@ async fn query_console_request_logs(
             query.push(" AND receipt.settled_at IS NULL");
         }
     }
-    query
-        .push(" ORDER BY log.started_at DESC, log.id DESC LIMIT ")
-        .push_bind(filter.limit.clamp(1, 100));
-    query
+    page.push_postgres(&mut query, "log.started_at", "log.id");
+    let items = query
         .build_query_as::<ConsoleRequestLog>()
         .fetch_all(pool)
-        .await
-        .map_err(RepositoryError::from)
+        .await?;
+    Ok(page.finish(items, None, |log| (log.started_at, log.id)))
 }
 
 #[derive(FromRow)]
@@ -3927,6 +3944,96 @@ macro_rules! admin_resource {
     };
 }
 
+const ADMIN_USER_COLUMNS: &str = "u.id,u.email,u.display_name,u.role,u.status, \
+                    (u.password_hash IS NULL AND u.email IS NOT NULL AND u.status IN ('invited','suspended','disabled')) AS can_reissue_invitation, \
+                    u.password_change_required,u.temporary_password_expires_at, \
+                    u.user_group_id,u.default_api_key_policy_id, \
+                    COALESCE(u.default_api_key_policy_id,g.default_api_key_policy_id) AS effective_api_key_policy_id, \
+                    u.websocket_enabled,u.balance_amount,u.created_at,u.updated_at";
+const ADMIN_USER_FROM: &str = "FROM users AS u \
+             JOIN user_groups AS g ON g.id=u.user_group_id AND g.deleted_at IS NULL \
+             WHERE NOT u.is_system AND u.deleted_at IS NULL";
+
+fn filtered_admin_users(
+    columns: &str,
+    filter: &UserListFilter,
+    pattern: Option<&str>,
+) -> QueryBuilder<Postgres> {
+    let mut query = QueryBuilder::new(format!("SELECT {columns} {ADMIN_USER_FROM}"));
+    if let Some(role) = filter.role {
+        query.push(" AND u.role = ").push_bind(role.as_str());
+    }
+    if let Some(status) = &filter.status {
+        query.push(" AND u.status = ").push_bind(status.clone());
+    }
+    if let Some(group_id) = filter.user_group_id {
+        query.push(" AND u.user_group_id = ").push_bind(group_id);
+    }
+    push_search(&mut query, pattern, &["u.email", "u.display_name"]);
+    query
+}
+
+const ADMIN_API_KEY_COLUMNS: &str = "k.id, k.user_id, u.status AS user_status, k.name, k.secret_value AS secret, k.status, k.expires_at, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount, k.created_at, k.updated_at";
+const ADMIN_API_KEY_FROM: &str = "FROM api_keys k JOIN users u ON u.id=k.user_id WHERE NOT k.is_system AND k.deleted_at IS NULL AND u.deleted_at IS NULL";
+
+fn filtered_admin_api_keys(
+    columns: &str,
+    user_id: Option<Uuid>,
+    status: Option<&str>,
+    pattern: Option<&str>,
+) -> QueryBuilder<Postgres> {
+    let mut query = QueryBuilder::new(format!("SELECT {columns} {ADMIN_API_KEY_FROM}"));
+    if let Some(user_id) = user_id {
+        query.push(" AND k.user_id = ").push_bind(user_id);
+    }
+    if let Some(status) = status {
+        query.push(" AND k.status = ").push_bind(status.to_owned());
+    }
+    push_search(
+        &mut query,
+        pattern,
+        &["k.name", "u.email", "u.display_name"],
+    );
+    query
+}
+
+const AUDIT_LOG_COLUMNS: &str = "id,occurred_at,actor_user_id,actor_type,actor_role,action,object_type,object_id,before_redacted,after_redacted,correlation_id,reason";
+
+const OWN_API_KEY_COLUMNS: &str = "id,name,secret_value AS secret,status,expires_at, \
+                    permissions,allowed_group_ids,allowed_channel_ids,requests_per_minute,max_concurrent_requests, \
+                    quota_limit_amount,quota_used_amount,created_at,updated_at";
+
+fn filtered_own_api_keys(
+    columns: &str,
+    user_id: Uuid,
+    status: Option<&str>,
+    pattern: Option<&str>,
+) -> QueryBuilder<Postgres> {
+    let mut query = QueryBuilder::new(format!(
+        "SELECT {columns} FROM api_keys AS k WHERE NOT k.is_system AND k.deleted_at IS NULL AND k.user_id = "
+    ));
+    query.push_bind(user_id);
+    if let Some(status) = status {
+        query.push(" AND k.status = ").push_bind(status.to_owned());
+    }
+    push_search(&mut query, pattern, &["k.name"]);
+    query
+}
+
+fn push_search(query: &mut QueryBuilder<Postgres>, pattern: Option<&str>, columns: &[&str]) {
+    if let Some(pattern) = pattern {
+        query.push(" AND (");
+        let mut terms = query.separated(" OR ");
+        for column in columns {
+            terms
+                .push(format!("{column} ILIKE "))
+                .push_bind_unseparated(pattern.to_owned())
+                .push_unseparated(" ESCAPE '\\'");
+        }
+        terms.push_unseparated(")");
+    }
+}
+
 impl PostgresControlPlaneRepository {
     pub async fn topology(&self) -> Result<super::UpstreamTopologyRecords, RepositoryError> {
         let mut transaction = self.pool.begin().await?;
@@ -4334,22 +4441,38 @@ impl PostgresControlPlaneRepository {
         }))
     }
 
-    admin_resource!(
-        admin_users,
-        admin_user,
-        ControlPlaneUser,
-        "SELECT u.id,u.email,u.display_name,u.role,u.status, \
-                    (u.password_hash IS NULL AND u.email IS NOT NULL AND u.status IN ('invited','suspended','disabled')) AS can_reissue_invitation, \
-                    u.password_change_required,u.temporary_password_expires_at, \
-                    u.user_group_id,u.default_api_key_policy_id, \
-                    COALESCE(u.default_api_key_policy_id,g.default_api_key_policy_id) AS effective_api_key_policy_id, \
-                    u.websocket_enabled,u.balance_amount,u.created_at,u.updated_at \
-             FROM users AS u \
-             JOIN user_groups AS g ON g.id=u.user_group_id AND g.deleted_at IS NULL \
-             WHERE NOT u.is_system AND u.deleted_at IS NULL",
-        " ORDER BY u.id",
-        " AND u.id=$1"
-    );
+    pub async fn admin_users(
+        &self,
+        filter: UserListFilter,
+    ) -> Result<PageResult<ControlPlaneUser>, RepositoryError> {
+        let page =
+            filter
+                .page
+                .window(("users", filter.role, &filter.status, filter.user_group_id))?;
+        let total = filtered_admin_users("count(*)", &filter, page.pattern())
+            .build_query_scalar()
+            .fetch_one(&self.pool)
+            .await?;
+        let mut query = filtered_admin_users(ADMIN_USER_COLUMNS, &filter, page.pattern());
+        page.push_postgres(&mut query, "u.created_at", "u.id");
+        let items = query
+            .build_query_as::<ControlPlaneUser>()
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(page.finish(items, Some(total), |item| (item.created_at, item.id)))
+    }
+
+    pub async fn admin_user(&self, id: Uuid) -> Result<Option<ControlPlaneUser>, RepositoryError> {
+        let mut query = QueryBuilder::new(format!(
+            "SELECT {ADMIN_USER_COLUMNS} {ADMIN_USER_FROM} AND u.id = "
+        ));
+        query.push_bind(id);
+        let row = query
+            .build_query_as::<ControlPlaneUser>()
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row)
+    }
 
     admin_resource!(
         admin_user_groups,
@@ -4382,14 +4505,49 @@ impl PostgresControlPlaneRepository {
         " AND id=$1"
     );
 
-    admin_resource!(
-        admin_api_keys,
-        admin_api_key,
-        ControlPlaneApiKey,
-        "SELECT k.id, k.user_id, u.status AS user_status, k.name, k.secret_value AS secret, k.status, k.expires_at, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount, k.updated_at FROM api_keys k JOIN users u ON u.id=k.user_id WHERE NOT k.is_system AND k.deleted_at IS NULL AND u.deleted_at IS NULL",
-        " ORDER BY k.id",
-        " AND k.id=$1"
-    );
+    pub async fn admin_api_keys(
+        &self,
+        user_id: Option<Uuid>,
+        filter: ApiKeyListFilter,
+    ) -> Result<PageResult<ControlPlaneApiKey>, RepositoryError> {
+        let page = filter.page.window(("api_keys", user_id, &filter.status))?;
+        let total = filtered_admin_api_keys(
+            "count(*)",
+            user_id,
+            filter.status.as_deref(),
+            page.pattern(),
+        )
+        .build_query_scalar()
+        .fetch_one(&self.pool)
+        .await?;
+        let mut query = filtered_admin_api_keys(
+            ADMIN_API_KEY_COLUMNS,
+            user_id,
+            filter.status.as_deref(),
+            page.pattern(),
+        );
+        page.push_postgres(&mut query, "k.created_at", "k.id");
+        let items = query
+            .build_query_as::<ControlPlaneApiKey>()
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(page.finish(items, Some(total), |item| (item.created_at, item.id)))
+    }
+
+    pub async fn admin_api_key(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<ControlPlaneApiKey>, RepositoryError> {
+        let mut query = QueryBuilder::new(format!(
+            "SELECT {ADMIN_API_KEY_COLUMNS} {ADMIN_API_KEY_FROM} AND k.id = "
+        ));
+        query.push_bind(id);
+        let row = query
+            .build_query_as::<ControlPlaneApiKey>()
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row)
+    }
 
     admin_resource!(
         admin_api_key_policies,
@@ -4446,29 +4604,56 @@ impl PostgresControlPlaneRepository {
         .map_err(RepositoryError::from)
     }
 
-    pub async fn audit_logs(&self, limit: i64) -> Result<Vec<ConsoleAuditLog>, RepositoryError> {
-        sqlx::query_as::<_, ConsoleAuditLog>(
-            "SELECT id,occurred_at,actor_user_id,actor_type,actor_role,action,object_type,object_id,before_redacted,after_redacted,correlation_id,reason FROM audit_logs ORDER BY occurred_at DESC,id DESC LIMIT $1",
-        )
-        .bind(limit.clamp(1, 100))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(RepositoryError::from)
+    pub async fn audit_logs(
+        &self,
+        options: PageOptions,
+    ) -> Result<PageResult<ConsoleAuditLog>, RepositoryError> {
+        let page = options.window("audit_logs")?;
+        let mut query = QueryBuilder::new(format!(
+            "SELECT {AUDIT_LOG_COLUMNS} FROM audit_logs WHERE TRUE"
+        ));
+        push_search(
+            &mut query,
+            page.pattern(),
+            &["action", "object_type", "object_id::text", "correlation_id"],
+        );
+        page.push_postgres(&mut query, "occurred_at", "id");
+        let items = query
+            .build_query_as::<ConsoleAuditLog>()
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(page.finish(items, None, |item| (item.occurred_at, item.id)))
     }
 
-    pub async fn own_api_keys(&self, user_id: Uuid) -> Result<Vec<ConsoleApiKey>, RepositoryError> {
-        sqlx::query_as::<_, ConsoleApiKey>(
-            "SELECT id,name,secret_value AS secret,status,expires_at, \
-                    permissions,allowed_group_ids,allowed_channel_ids,requests_per_minute,max_concurrent_requests, \
-                    quota_limit_amount,quota_used_amount,created_at,updated_at \
-             FROM api_keys \
-             WHERE user_id=$1 AND NOT is_system AND deleted_at IS NULL \
-             ORDER BY created_at DESC,id DESC",
+    pub async fn own_api_keys(
+        &self,
+        user_id: Uuid,
+        filter: ApiKeyListFilter,
+    ) -> Result<PageResult<ConsoleApiKey>, RepositoryError> {
+        let page = filter
+            .page
+            .window(("own_api_keys", user_id, &filter.status))?;
+        let total = filtered_own_api_keys(
+            "count(*)",
+            user_id,
+            filter.status.as_deref(),
+            page.pattern(),
         )
-        .bind(user_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(RepositoryError::from)
+        .build_query_scalar()
+        .fetch_one(&self.pool)
+        .await?;
+        let mut query = filtered_own_api_keys(
+            OWN_API_KEY_COLUMNS,
+            user_id,
+            filter.status.as_deref(),
+            page.pattern(),
+        );
+        page.push_postgres(&mut query, "k.created_at", "k.id");
+        let items = query
+            .build_query_as::<ConsoleApiKey>()
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(page.finish(items, Some(total), |item| (item.created_at, item.id)))
     }
 
     pub async fn own_api_key(

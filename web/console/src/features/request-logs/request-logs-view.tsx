@@ -1,5 +1,5 @@
-import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Columns3, ListFilter, PanelRight, Search, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ChevronLeft, ChevronRight, Columns3, ListFilter, Search, X } from "lucide-react";
 import { useSearchParams } from "react-router";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
@@ -18,381 +18,58 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
-import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
 import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/shared/page-header";
 import { AsyncResource } from "@/components/shared/async-resource";
+import { CursorPagination } from "@/components/shared/cursor-pagination";
 import { DetailField } from "@/components/shared/detail-field";
+import {
+  ApiKeyFilterCombobox,
+  UserFilterCombobox,
+} from "@/components/shared/entity-filter-comboboxes";
 import { ResourceTable, type Column } from "@/components/shared/resource-table";
+import { useAdminApiKey, useUser } from "@/features/admin/api";
+import { useOwnApiKey } from "@/features/api-keys/api";
 import { useModelOptions, useRequestLog } from "@/features/request-logs/api";
 import type {
-  ApiKeyView,
-  ControlPlaneUser,
   AdminRequestLogQuery,
   RequestLogView,
 } from "@/api/types";
-import { dateTimeLocalToIso, formatDateTime, formatDateTimeLocalInput, formatRelative } from "@/lib/dates";
-import { formatExactTokens, formatDurationMs, formatTokens, formatUsd } from "@/lib/formatters";
+import { formatDateTime, formatDateTimeLocalInput, formatRelative } from "@/lib/dates";
 import { API_FORMATS, API_OPERATIONS, apiFormatLabel, apiOperationLabel, outcomeLabel, outcomeVariant } from "@/lib/permissions";
+import { useCursorPagination } from "@/lib/use-cursor-pagination";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/app/i18n";
 import { useIsMobile } from "@/hooks/use-mobile";
-
-const LIMITS = [25, 50, 100] as const;
-const OUTCOMES = ["succeeded", "failed", "rejected", "cancelled"] as const;
-const uuid = /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i;
-
-type ApiFormatFilter = NonNullable<AdminRequestLogQuery["api_format"]>;
-type ApiOperationFilter = NonNullable<AdminRequestLogQuery["api_operation"]>;
-type OutcomeFilter = NonNullable<AdminRequestLogQuery["outcome"]>;
-
-interface RequestLogListResult {
-  data: RequestLogView[] | undefined;
-  isLoading: boolean;
-  isFetching: boolean;
-  error: unknown;
-  refetch: () => Promise<unknown>;
-}
-
-type UseRequestLogs = (filters: AdminRequestLogQuery) => RequestLogListResult;
-
-interface RequestLogApiKeyOption extends Pick<ApiKeyView, "id" | "name"> {
-  user_id?: string;
-}
-
-interface RequestLogFilterDraft {
-  limit: (typeof LIMITS)[number];
-  user_id: string;
-  api_key_id: string;
-  model: string;
-  api_format: "" | ApiFormatFilter;
-  api_operation: "" | ApiOperationFilter;
-  outcome: "" | OutcomeFilter;
-  started_after: string;
-  started_before: string;
-  billed: "" | "true" | "false";
-}
-
-const emptyFilters: RequestLogFilterDraft = {
-  limit: 50,
-  user_id: "",
-  api_key_id: "",
-  model: "",
-  api_format: "",
-  api_operation: "",
-  outcome: "",
-  started_after: "",
-  started_before: "",
-  billed: "",
-};
-
-const REQUEST_LOG_FILTER_KEYS = [
-  "limit",
-  "user_id",
-  "api_key_id",
-  "model",
-  "api_format",
-  "api_operation",
-  "outcome",
-  "started_after",
-  "started_before",
-  "billed",
-] as const satisfies readonly (keyof AdminRequestLogQuery)[];
-
-function readFilters(search: string, system: boolean): AdminRequestLogQuery {
-  const params = new URLSearchParams(search);
-  const identifier = (key: string) => {
-    const value = params.get(key);
-    return value && uuid.test(value) ? value : undefined;
-  };
-  const instant = (key: string) => {
-    const value = params.get(key);
-    if (!value || !/(?:Z|[+-]\d\d:\d\d)$/i.test(value) || !Number.isFinite(Date.parse(value))) return undefined;
-    return value;
-  };
-  return {
-    limit: LIMITS.find(v => String(v) === params.get("limit")) ?? 50,
-    user_id: system ? identifier("user_id") : undefined, api_key_id: identifier("api_key_id"),
-    model: params.get("model")?.trim() || undefined,
-    api_format: API_FORMATS.find(v => v === params.get("api_format")),
-    api_operation: API_OPERATIONS.find(v => v === params.get("api_operation")),
-    outcome: OUTCOMES.find(v => v === params.get("outcome")),
-    started_after: instant("started_after"), started_before: instant("started_before"),
-    billed: params.get("billed") === "true" ? true : params.get("billed") === "false" ? false : undefined,
-  };
-}
-
-function filterDraft(query: AdminRequestLogQuery): RequestLogFilterDraft {
-  return {
-    limit: LIMITS.find(value => value === query.limit) ?? 50,
-    user_id: query.user_id ?? "",
-    api_key_id: query.api_key_id ?? "",
-    model: query.model ?? "",
-    api_format: query.api_format ?? "",
-    api_operation: query.api_operation ?? "",
-    outcome: query.outcome ?? "",
-    started_after: formatDateTimeLocalInput(query.started_after, true),
-    started_before: formatDateTimeLocalInput(query.started_before, true),
-    billed: query.billed === undefined ? "" : query.billed ? "true" : "false",
-  };
-}
-
-interface RequestLogsViewProps {
-  title: string;
-  basePath: string;
-  useLogs: UseRequestLogs;
-  scope: "own" | "system";
-  users?: ControlPlaneUser[];
-  apiKeys?: RequestLogApiKeyOption[];
-}
-
-function optionalText(value: string): string | undefined {
-  const trimmed = value.trim();
-  return trimmed || undefined;
-}
-
-function tokenRemainder(
-  total: number | null | undefined,
-  subset: number | null | undefined,
-): number | null {
-  if (total === null || total === undefined) return null;
-  return Math.max(0, total - (subset ?? 0));
-}
-
-function requestProtocolLabel(
-  protocol: RequestLogView["request_protocol"],
-  t: (value: string) => string,
-) {
-  switch (protocol) {
-    case "non_stream":
-      return t("Non-stream");
-    case "sse":
-      return "SSE";
-    case "websocket":
-      return t("WebSocket");
-  }
-}
-
-function TruncatedName({ value }: { value: string | null }) {
-  if (!value) return "—";
-  return (
-    <Tooltip disableHoverablePopup>
-      <TooltipTrigger
-        render={
-          <span
-            tabIndex={0}
-            className="block truncate outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          />
-        }
-      >
-        {value}
-      </TooltipTrigger>
-      <TooltipContent className="break-words">{value}</TooltipContent>
-    </Tooltip>
-  );
-}
-
-function TokenUsage({ log }: { log: RequestLogView }) {
-  const { t } = useI18n();
-  const uncachedInput = tokenRemainder(log.input_tokens, log.cached_input_tokens);
-  const uncachedInputLabel = `${t("Uncached input")}: ${formatExactTokens(uncachedInput)}`;
-  const cachedInputLabel = `${t("Cached input")}: ${formatExactTokens(log.cached_input_tokens)}`;
-  const outputLabel = `${t("Output tokens")}: ${formatExactTokens(log.output_tokens)}`;
-  const reasoningLabel = `${t("Reasoning tokens")}: ${formatExactTokens(log.reasoning_tokens)}`;
-
-  return (
-    <span className="flex flex-col gap-1.5 tabular-nums">
-      <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
-        <span
-          className="flex max-w-full items-center gap-1"
-          aria-label={uncachedInputLabel}
-          title={uncachedInputLabel}
-        >
-          <ArrowUp className="size-4 shrink-0 text-primary" aria-hidden />
-          <span className="truncate">{formatTokens(uncachedInput)}</span>
-        </span>
-        {log.cached_input_tokens !== null && log.cached_input_tokens > 0 ? (
-          <Badge variant="success" className="max-w-full" aria-label={cachedInputLabel} title={cachedInputLabel}>
-            <span className="truncate">{formatTokens(log.cached_input_tokens)}</span>
-          </Badge>
-        ) : null}
-      </span>
-      <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
-        <span
-          className="flex max-w-full items-center gap-1"
-          aria-label={outputLabel}
-          title={outputLabel}
-        >
-          <ArrowDown className="size-4 shrink-0 text-info" aria-hidden />
-          <span className="truncate">{formatTokens(log.output_tokens)}</span>
-        </span>
-        {log.reasoning_tokens !== null && log.reasoning_tokens > 0 ? (
-          <Badge variant="info" className="max-w-full" aria-label={reasoningLabel} title={reasoningLabel}>
-            <span className="truncate">{formatTokens(log.reasoning_tokens)}</span>
-          </Badge>
-        ) : null}
-      </span>
-    </span>
-  );
-}
-
-function reasoningEffortLabel(value: string): string {
-  if (value === "xhigh") return "XHigh";
-  return `${value.charAt(0).toUpperCase()}${value.slice(1)}`;
-}
-
-function RequestModel({ log, compact = false }: { log: RequestLogView; compact?: boolean }) {
-  const { t } = useI18n();
-  const effort = log.reasoning_effort
-    ? reasoningEffortLabel(log.reasoning_effort)
-    : null;
-
-  const sameModel = log.client_model === log.upstream_model;
-
-  return (
-    <span className="flex min-w-0 flex-col items-start gap-0.5 wrap-anywhere">
-      <span className={cn(compact && "line-clamp-2")}>
-        <span className="text-xs text-muted-foreground">{sameModel ? t("Requested & upstream") : t("Requested model")}: </span>
-        <span className="font-medium">{log.client_model}</span>
-      </span>
-      {!sameModel && (
-        <span className={cn("text-xs", compact && "line-clamp-2")}>
-          <span className="text-muted-foreground">{t("Upstream model")}: </span>
-          <span>{log.upstream_model ?? t("Not recorded")}</span>
-        </span>
-      )}
-      {effort || log.fast_mode ? (
-        <span className="flex max-w-full flex-wrap gap-1.5">
-          {effort && (
-            <Badge variant="warning" className="max-w-full" aria-label={`${t("Reasoning effort")}: ${effort}`} title={`${t("Reasoning effort")}: ${effort}`}>
-              <span className="truncate">{effort}</span>
-            </Badge>
-          )}
-          {log.fast_mode && (
-            <Badge variant="success" aria-label={t("Fast mode")} title={t("Fast mode")}>
-              Fast
-            </Badge>
-          )}
-        </span>
-      ) : null}
-    </span>
-  );
-}
-
-function formatOutputTps(value: string | null): string {
-  const formatted = formatTokens(value == null ? null : Number(value));
-  return formatted === "—" ? formatted : `${formatted} tok/s`;
-}
-
-function RequestDuration({ log }: { log: RequestLogView }) {
-  const { t } = useI18n();
-  const ttft = formatDurationMs(log.ttft_ms);
-  const total = formatDurationMs(log.total_duration_ms);
-  const tps = formatOutputTps(log.output_tokens_per_second);
-  const ttftLabel = `${t("TTFT")}: ${ttft}`;
-  const totalLabel = `${t("Total duration")}: ${total}`;
-  const tpsLabel = `${t("TPS")}: ${tps}`;
-
-  return (
-    <span className="flex flex-col gap-0.5 wrap-anywhere tabular-nums">
-      <span
-        className="text-xs text-muted-foreground"
-        aria-label={ttftLabel}
-        title={ttftLabel}
-      >
-        {ttft}
-      </span>
-      <span aria-label={totalLabel} title={totalLabel}>
-        {total}
-      </span>
-      <span
-        className="text-xs text-muted-foreground"
-        aria-label={tpsLabel}
-        title={tpsLabel}
-      >
-        {tps}
-      </span>
-    </span>
-  );
-}
-
-function RequestCost({ log }: { log: RequestLogView }) {
-  const { t } = useI18n();
-
-  return (
-    <span className="flex flex-wrap items-center gap-1.5 wrap-anywhere tabular-nums">
-      <span>{formatUsd(log.cost_amount)}</span>
-      {log.peak_pricing ? (
-        <Badge
-          variant="warning"
-          aria-label={t("Peak pricing")}
-          title={t("Peak pricing")}
-        >
-          {t("Peak")}
-        </Badge>
-      ) : null}
-    </span>
-  );
-}
-
-function toQuery(draft: RequestLogFilterDraft): AdminRequestLogQuery {
-  return {
-    limit: draft.limit,
-    user_id: optionalText(draft.user_id),
-    api_key_id: optionalText(draft.api_key_id),
-    model: optionalText(draft.model),
-    api_format: draft.api_format || undefined,
-    api_operation: draft.api_operation || undefined,
-    outcome: draft.outcome || undefined,
-    started_after: dateTimeLocalToIso(draft.started_after) ?? undefined,
-    started_before: dateTimeLocalToIso(draft.started_before) ?? undefined,
-    billed: draft.billed === "" ? undefined : draft.billed === "true",
-  };
-}
-
-function Inspector({ mobile, onClose, closeRef, controls, children }: {
-  mobile: boolean; onClose: () => void; closeRef: RefObject<HTMLButtonElement | null>;
-  controls: ReactNode; children: ReactNode;
-}) {
-  const { t } = useI18n();
-  if (mobile) return (
-    <Sheet open onOpenChange={open => { if (!open) onClose(); }}>
-      <SheetContent className="overflow-y-auto data-[side=right]:w-full">
-        <SheetHeader className="border-b pr-12"><SheetTitle>{t("Request log")}</SheetTitle>
-          {controls}</SheetHeader>
-        {children}
-      </SheetContent>
-    </Sheet>
-  );
-  return (
-    <aside aria-label={t("Request log")} className="order-first min-w-0 self-start border-b bg-background @min-[44rem]:sticky @min-[44rem]:top-3 @min-[44rem]:order-last @min-[44rem]:border-b-0 @min-[44rem]:border-l"
-      onKeyDown={e => { if (e.key === "Escape") { e.stopPropagation(); onClose(); } }}>
-      <header className="flex items-center gap-2 border-b bg-muted/30 px-3 py-2">
-        <PanelRight className="size-4 text-primary" /><h2 className="mr-auto text-sm font-medium">{t("Request inspector")}</h2>
-        {controls}<Button ref={closeRef} variant="ghost" size="icon-sm" aria-label={t("Close inspector")} onClick={onClose}><X /></Button>
-      </header>
-      <div className="max-h-[55dvh] overflow-y-auto @min-[44rem]:max-h-[calc(100dvh-6rem)]">{children}</div>
-    </aside>
-  );
-}
-
+import {
+  emptyFilters,
+  filterDraft,
+  LIMITS,
+  OUTCOMES,
+  readFilters,
+  REQUEST_LOG_FILTER_KEYS,
+  toQuery,
+  uuid,
+  type ApiFormatFilter,
+  type ApiOperationFilter,
+  type OutcomeFilter,
+  type RequestLogFilterDraft,
+  type RequestLogsViewProps,
+} from "./request-logs-filters";
+import {
+  Inspector,
+  RequestCost,
+  RequestDuration,
+  RequestModel,
+  requestProtocolLabel,
+  TokenUsage,
+  TruncatedName,
+} from "./request-logs-cells";
 export function RequestLogsView({
   title,
   basePath,
   useLogs,
   scope,
-  users = [],
-  apiKeys = [],
 }: RequestLogsViewProps) {
   const { t } = useI18n();
   const isSystemView = scope === "system";
@@ -405,9 +82,18 @@ export function RequestLogsView({
   filterParams.delete("id");
   const search = filterParams.toString();
   const filters = useMemo(() => readFilters(search, isSystemView), [search, isSystemView]);
+  const cursorPagination = useCursorPagination();
+  const resetCursor = cursorPagination.reset;
+  useEffect(() => {
+    resetCursor();
+  }, [search, resetCursor]);
   const [draft, setDraft] = useState(() => filterDraft(filters));
-  useEffect(() => { setDraft(filterDraft(filters)); }, [filters]);
-  const query = useLogs(filters);
+  const [prevFilters, setPrevFilters] = useState(filters);
+  if (prevFilters !== filters) {
+    setPrevFilters(filters);
+    setDraft(filterDraft(filters));
+  }
+  const query = useLogs({ ...filters, cursor: cursorPagination.cursor });
   const requestedId = params.get("id");
   const selectedId = requestedId && uuid.test(requestedId) ? requestedId : null;
   const [idSearch, setIdSearch] = useState("");
@@ -427,26 +113,22 @@ export function RequestLogsView({
   const inspectorOpen = Boolean(selectedId);
   useEffect(() => { if (inspectorOpen && !isMobile) inspectorClose.current?.focus(); }, [inspectorOpen, isMobile]);
   const prefix = idSearch.trim().toLowerCase();
-  const matchingRows = (query.data ?? []).filter(row => row.id.toLowerCase().startsWith(prefix));
+  const rows = query.data?.items ?? [];
+  const matchingRows = rows.filter(row => row.id.toLowerCase().startsWith(prefix));
   const index = matchingRows.findIndex(row => row.id === selectedId);
   const detail = useRequestLog(basePath, selectedId);
 
-  const availableApiKeys = useMemo(
-    () => apiKeys.filter((key) => !draft.user_id || key.user_id === draft.user_id),
-    [apiKeys, draft.user_id],
-  );
-  const userNamesById = useMemo(
-    () => new Map(users.map((user) => [user.id, user.display_name])),
-    [users],
-  );
-  const apiKeyLabel = (key: RequestLogApiKeyOption) => {
-    const ownerName = key.user_id ? userNamesById.get(key.user_id) : undefined;
-    return isSystemView && ownerName ? `${key.name} · ${ownerName}` : key.name;
-  };
-  const appliedApiKey = apiKeys.find((key) => key.id === filters.api_key_id);
+  const appliedUser = useUser(isSystemView && filters.user_id ? filters.user_id : "").data?.data;
+  const appliedAdminKey = useAdminApiKey(isSystemView && filters.api_key_id ? filters.api_key_id : "").data?.data;
+  const appliedOwnKey = useOwnApiKey(!isSystemView && filters.api_key_id ? filters.api_key_id : "").data?.data;
+  const draftAdminKey = useAdminApiKey(isSystemView && draft.api_key_id ? draft.api_key_id : "").data?.data;
+  const appliedApiKey = isSystemView ? appliedAdminKey : appliedOwnKey;
+  const appliedApiKeyLabel = appliedApiKey
+    ? (isSystemView && appliedUser ? `${appliedApiKey.name} · ${appliedUser.display_name}` : appliedApiKey.name)
+    : undefined;
   const filterLabels: [string, string | undefined][] = [
-    ["User", isSystemView && filters.user_id ? (userNamesById.get(filters.user_id) ?? t("Unavailable")) : undefined],
-    ["API key", appliedApiKey ? apiKeyLabel(appliedApiKey) : filters.api_key_id && t("Unavailable")],
+    ["User", isSystemView && filters.user_id ? (appliedUser?.display_name ?? t("Unavailable")) : undefined],
+    ["API key", appliedApiKeyLabel ?? (filters.api_key_id ? t("Unavailable") : undefined)],
     ["Requested model", filters.model],
     ["API format", filters.api_format && apiFormatLabel(filters.api_format)],
     ["Operation", filters.api_operation && apiOperationLabel(filters.api_operation)],
@@ -454,8 +136,8 @@ export function RequestLogsView({
     ["Billing", filters.billed === undefined ? undefined : t(filters.billed ? "Billed" : "Unbilled")],
     ["From", filters.started_after && formatDateTime(filters.started_after)],
     ["To", filters.started_before && formatDateTime(filters.started_before)],
-    ["Results", filters.limit !== undefined && filters.limit !== emptyFilters.limit
-      ? t("Last {count}", { count: filters.limit })
+    ["Rows per page", filters.limit !== undefined && filters.limit !== emptyFilters.limit
+      ? t("{count} per page", { count: filters.limit })
       : undefined],
   ];
   const appliedConditions = filterLabels.flatMap(([label, value]) => value ? [{ label, value }] : []);
@@ -670,66 +352,33 @@ export function RequestLogsView({
               {isSystemView ? (
                 <Field>
                   <FieldLabel htmlFor="request-log-user">{t("User")}</FieldLabel>
-                  <Select
-                    value={draft.user_id || "__all__"}
-                    onValueChange={(value) => {
-                      const userId = value === "__all__" ? "" : value;
-                      const selectedKey = apiKeys.find(
-                        (key) => key.id === draft.api_key_id,
-                      );
+                  <UserFilterCombobox
+                    id="request-log-user"
+                    ariaLabel={t("User")}
+                    value={draft.user_id}
+                    onValueChange={(userId) => {
                       updateDraft({
                         user_id: userId,
                         api_key_id:
                           draft.api_key_id &&
-                          (!userId || selectedKey?.user_id === userId)
+                          (!userId || draftAdminKey?.user_id === userId)
                             ? draft.api_key_id
                             : "",
                       });
                     }}
-                  >
-                    <SelectTrigger id="request-log-user" className="w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectGroup>
-                      <SelectItem value="__all__">{t("All users")}</SelectItem>
-                      {draft.user_id && !userNamesById.has(draft.user_id) && <SelectItem value={draft.user_id} disabled>{t("Unavailable")}</SelectItem>}
-                        {users.map((user) => (
-                          <SelectItem key={user.id} value={user.id}>
-                            {user.display_name}
-                            {user.email ? ` · ${user.email}` : ""}
-                          </SelectItem>
-                        ))}
-                      </SelectGroup>
-                    </SelectContent>
-                  </Select>
+                  />
                 </Field>
               ) : null}
               <Field>
                 <FieldLabel htmlFor="request-log-api-key">{t("API key")}</FieldLabel>
-                <Select
-                  value={draft.api_key_id || "__all__"}
-                  onValueChange={(value) =>
-                    updateDraft({
-                      api_key_id: value === "__all__" ? "" : value,
-                    })
-                  }
-                >
-                  <SelectTrigger id="request-log-api-key" className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                    <SelectItem value="__all__">{t("All API keys")}</SelectItem>
-                    {draft.api_key_id && !availableApiKeys.some(key => key.id === draft.api_key_id) && <SelectItem value={draft.api_key_id} disabled>{t("Unavailable")}</SelectItem>}
-                      {availableApiKeys.map((key) => (
-                        <SelectItem key={key.id} value={key.id}>
-                          {apiKeyLabel(key)}
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
+                <ApiKeyFilterCombobox
+                  id="request-log-api-key"
+                  ariaLabel={t("API key")}
+                  scope={scope}
+                  userId={isSystemView ? draft.user_id : undefined}
+                  value={draft.api_key_id}
+                  onValueChange={(apiKeyId) => updateDraft({ api_key_id: apiKeyId })}
+                />
               </Field>
               <Field className={cn(!isSystemView && "xl:col-span-2")}>
                 <FieldLabel htmlFor="request-log-model">{t("Requested model")}</FieldLabel>
@@ -882,7 +531,7 @@ export function RequestLogsView({
                 />
               </Field>
               <Field>
-                <FieldLabel htmlFor="request-log-limit">{t("Results")}</FieldLabel>
+                <FieldLabel htmlFor="request-log-limit">{t("Rows per page")}</FieldLabel>
                 <Select
                   value={String(draft.limit)}
                   onValueChange={(value) =>
@@ -896,7 +545,7 @@ export function RequestLogsView({
                     <SelectGroup>
                       {LIMITS.map((value) => (
                         <SelectItem key={value} value={String(value)}>
-                          {t("Last {count}", { count: value })}
+                          {t("{count} per page", { count: value })}
                         </SelectItem>
                       ))}
                     </SelectGroup>
@@ -946,6 +595,19 @@ export function RequestLogsView({
               rowKey={(log) => log.id}
               onRowClick={(log) => setSelectedId(log.id)}
               rowActionLabel={t("View details")}
+              pagination={false}
+            />
+            <CursorPagination
+              page={cursorPagination.page}
+              pageSize={filters.limit ?? 50}
+              pageSizeOptions={LIMITS}
+              onPageSizeChange={(limit) => runQuery({ ...filters, limit })}
+              hasPrevious={cursorPagination.hasPrevious}
+              hasNext={Boolean(query.data?.next_cursor)}
+              onPrevious={cursorPagination.goPrevious}
+              onNext={() => cursorPagination.goNext(query.data?.next_cursor)}
+              itemCount={rows.length}
+              isFetching={query.isFetching}
             />
           </AsyncResource>
           <p className="mt-3 text-xs text-muted-foreground">{t("The gateway does not store request bodies or successful response bodies. Bounded upstream error details may be retained.")}</p>

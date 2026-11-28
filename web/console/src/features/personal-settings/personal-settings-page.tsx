@@ -8,7 +8,7 @@ import { AsyncResource } from "@/components/shared/async-resource";
 import { AccountPage } from "@/features/profile/account-page";
 import { useUpdateUserSettings, useUserSettings } from "@/features/personal-settings/api";
 import { useI18n } from "@/app/i18n";
-import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
+import { useConfigurationDraft } from "@/hooks/use-configuration-draft";
 
 export function PersonalSettingsPage() {
   const { t } = useI18n();

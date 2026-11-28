@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router";
 import { useReturnPath } from "@/lib/page-navigation";
-import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
+import { useConfigurationDraft } from "@/hooks/use-configuration-draft";
 import { z } from "zod";
 import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -72,9 +72,15 @@ export function ApiKeyPolicyDetailPage() {
   const [submitting, setSubmitting] = useState(false);
   const [validation, setValidation] = useState<z.ZodError | null>(null);
   const draft = useConfigurationDraft(submitting);
+  const baselineRef = useRef<typeof data>(undefined);
 
   useEffect(() => {
-    if (data) {
+    baselineRef.current = undefined;
+  }, [id]);
+
+  useEffect(() => {
+    if (data && data !== baselineRef.current && !draft.dirty) {
+      baselineRef.current = data;
       setState({
         name: data.data.name,
         allowed_group_ids: data.data.allowed_group_ids,
@@ -82,7 +88,7 @@ export function ApiKeyPolicyDetailPage() {
         enabled: data.data.enabled,
       });
     }
-  }, [data]);
+  }, [data, draft.dirty]);
 
   const targetGroups = useMemo<RoutingTargetGroup[]>(
     () =>

@@ -10,19 +10,16 @@ use rust_decimal::Decimal;
 use sqlx::{Connection, FromRow, QueryBuilder, Sqlite};
 use uuid::Uuid;
 
-use crate::{
-    domain::ApiFormat,
-    persistence::{
-        ChannelGroupStatusBucket, ChannelGroupStatusGroup, ChannelGroupStatusGroupModel,
-        ChannelGroupStatusModelMetric, ChannelGroupStatusReport, ChannelGroupStatusWindow,
-        ConsoleRequestLog, CostStatisticsChannel, CostStatisticsFilter, CostStatisticsReport,
-        PersonalUsageReport, RepositoryError, RequestLogFilter, SpendLeaderboardEntry,
-        SpendLeaderboardFilter, SpendLeaderboardRefresh, SpendLeaderboardReport,
-        postgres_control_plane::{
-            COST_FACTS_SQL, CostBucketMetricRow, CostModelMetricRow, CostSummaryRow,
-            PersonalUsageDayRow, fold_cost_buckets, fold_cost_models, fold_personal_usage,
-            redact_self_service_request_log, success_rate,
-        },
+use crate::persistence::{
+    ChannelGroupStatusBucket, ChannelGroupStatusGroup, ChannelGroupStatusGroupModel,
+    ChannelGroupStatusModelMetric, ChannelGroupStatusReport, ChannelGroupStatusWindow,
+    ConsoleRequestLog, CostStatisticsChannel, CostStatisticsFilter, CostStatisticsReport,
+    PageResult, PersonalUsageReport, RepositoryError, RequestLogFilter, SpendLeaderboardEntry,
+    SpendLeaderboardFilter, SpendLeaderboardRefresh, SpendLeaderboardReport,
+    postgres_control_plane::{
+        COST_FACTS_SQL, CostBucketMetricRow, CostModelMetricRow, CostSummaryRow,
+        PersonalUsageDayRow, fold_cost_buckets, fold_cost_models, fold_personal_usage,
+        redact_self_service_request_log, success_rate,
     },
 };
 
@@ -64,9 +61,9 @@ impl SqliteRequestLogQueries {
         &self,
         user_id: Uuid,
         filter: RequestLogFilter,
-    ) -> Result<Vec<ConsoleRequestLog>, RepositoryError> {
+    ) -> Result<PageResult<ConsoleRequestLog>, RepositoryError> {
         let mut logs = self.query_logs(Some(user_id), filter).await?;
-        for log in &mut logs {
+        for log in &mut logs.items {
             redact_self_service_request_log(log);
         }
         Ok(logs)
@@ -87,7 +84,7 @@ impl SqliteRequestLogQueries {
     pub async fn list_all(
         &self,
         filter: RequestLogFilter,
-    ) -> Result<Vec<ConsoleRequestLog>, RepositoryError> {
+    ) -> Result<PageResult<ConsoleRequestLog>, RepositoryError> {
         self.query_logs(None, filter).await
     }
 
@@ -127,8 +124,8 @@ impl SqliteRequestLogQueries {
         &self,
         owner_user_id: Option<Uuid>,
         filter: RequestLogFilter,
-    ) -> Result<Vec<ConsoleRequestLog>, RepositoryError> {
-        validate_request_log_filter(&filter)?;
+    ) -> Result<PageResult<ConsoleRequestLog>, RepositoryError> {
+        let page = filter.window(owner_user_id)?;
         let mut query =
             QueryBuilder::<Sqlite>::new(format!("{CONSOLE_REQUEST_LOG_SELECT} WHERE TRUE"));
         if let Some(user_id) = owner_user_id {
@@ -177,17 +174,16 @@ impl SqliteRequestLogQueries {
                 query.push(" AND receipt.settled_at IS NULL");
             }
         }
-        query
-            .push(" ORDER BY log.started_at DESC, log.id DESC LIMIT ")
-            .push_bind(filter.limit.clamp(1, 100));
+        page.push_sqlite(&mut query, "log.started_at", "log.id");
         let mut connection = self.database.acquire_read().await.map_err(open_failure)?;
-        Ok(query
+        let items = query
             .build_query_as::<ConsoleRequestLogRow>()
             .fetch_all(&mut *connection)
             .await?
             .into_iter()
             .map(ConsoleRequestLogRow::into_log)
-            .collect())
+            .collect();
+        Ok(page.finish(items, None, |log| (log.started_at, log.id)))
     }
 
     /// Aggregates the channel-group status view from `request_logs`.
@@ -379,38 +375,6 @@ impl SqliteRequestLogQueries {
             groups: report_groups,
         })
     }
-}
-
-/// Mirrors the PostgreSQL filter validation exactly, including treating a
-/// whitespace-only model and a reversed time range as invalid.
-fn validate_request_log_filter(filter: &RequestLogFilter) -> Result<(), RepositoryError> {
-    if filter
-        .api_format
-        .as_deref()
-        .is_some_and(|value| ApiFormat::parse(value).is_none())
-        || filter.api_operation.as_deref().is_some_and(|value| {
-            !matches!(
-                value,
-                "chat_completion"
-                    | "responses"
-                    | "responses-ws"
-                    | "web_search"
-                    | "images_generation"
-                    | "images_edit"
-            )
-        })
-        || filter.outcome.as_deref().is_some_and(|value| {
-            !matches!(value, "succeeded" | "failed" | "rejected" | "cancelled")
-        })
-        || filter
-            .model
-            .as_deref()
-            .is_some_and(|value| value.trim().is_empty() || value.len() > 300)
-        || filter.started_after > filter.started_before
-    {
-        return Err(RepositoryError::Validation);
-    }
-    Ok(())
 }
 
 const CONSOLE_REQUEST_LOG_SELECT: &str = "SELECT log.id,log.started_at,log.completed_at,log.user_id,\

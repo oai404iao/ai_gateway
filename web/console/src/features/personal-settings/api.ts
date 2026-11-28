@@ -7,7 +7,7 @@ const USER_SETTINGS_KEY = ["console", "me", "settings"] as const;
 export function useUserSettings() {
   return useQuery({
     queryKey: USER_SETTINGS_KEY,
-    queryFn: () => apiGet<UserSettings>("/me/settings"),
+    queryFn: ({ signal }) => apiGet<UserSettings>("/me/settings", signal),
   });
 }
 

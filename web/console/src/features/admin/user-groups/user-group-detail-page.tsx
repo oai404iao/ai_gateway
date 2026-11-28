@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router";
 import { useReturnPath } from "@/lib/page-navigation";
-import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
+import { useConfigurationDraft } from "@/hooks/use-configuration-draft";
 import { z } from "zod";
 import { toast } from "sonner";
 import { ApiError } from "@/api/errors";
@@ -90,9 +90,15 @@ export function UserGroupDetailPage() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const pending = create.isPending || update.isPending || remove.isPending;
   const draft = useConfigurationDraft(pending);
+  const baselineRef = useRef<typeof detail.data>(undefined);
 
   useEffect(() => {
-    if (detail.data) {
+    baselineRef.current = undefined;
+  }, [id]);
+
+  useEffect(() => {
+    if (detail.data && detail.data !== baselineRef.current && !draft.dirty) {
+      baselineRef.current = detail.data;
       setState({
         name: detail.data.data.name,
         description: detail.data.data.description ?? "",
@@ -103,7 +109,7 @@ export function UserGroupDetailPage() {
         filter_fast_mode: detail.data.data.filter_fast_mode,
       });
     }
-  }, [detail.data]);
+  }, [detail.data, draft.dirty]);
 
   const group = detail.data?.data;
   const patch = (partial: Partial<FormState>) => {

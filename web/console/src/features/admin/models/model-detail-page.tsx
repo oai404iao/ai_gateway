@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router";
-import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
+import { useConfigurationDraft } from "@/hooks/use-configuration-draft";
 import { ConfigurationSaveBar } from "@/features/admin/model-setup/configuration-save-bar";
 import { NavigationLink } from "@/components/shared/navigation-link";
 import { usePageOrigin, withReturnTo } from "@/lib/page-navigation";

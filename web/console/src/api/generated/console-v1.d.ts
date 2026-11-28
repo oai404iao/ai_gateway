@@ -200,6 +200,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** @description Own API keys. Searches key names. */
         get: operations["listOwnApiKeys"];
         put?: never;
         post: operations["createOwnApiKey"];
@@ -305,7 +306,8 @@ export interface paths {
         /**
          * @description Returns only request logs owned by the authenticated user. Concrete
          *     channel identity and the user display name are redacted for every
-         *     self-service caller, including administrators.
+         *     self-service caller, including administrators. The owner comes from the
+         *     authenticated session. A `user_id` query parameter returns `400`.
          */
         get: operations["listOwnRequestLogs"];
         put?: never;
@@ -412,6 +414,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** @description Users. Searches email addresses and display names. */
         get: operations["listUsers"];
         put?: never;
         post: operations["inviteUser"];
@@ -722,6 +725,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** @description API keys. Searches key names, owner email addresses, and owner display names. */
         get: operations["listApiKeys"];
         put?: never;
         post: operations["createApiKey"];
@@ -1489,6 +1493,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /** @description Audit events. Searches the action, object type, object ID, and correlation ID. */
         get: operations["listAuditLogs"];
         put?: never;
         post?: never;
@@ -2356,6 +2361,56 @@ export interface components {
             capacity: number;
             /** Format: double */
             utilization_percent: number | null;
+        };
+        ApiKeyPage: {
+            items: components["schemas"]["ApiKeyView"][];
+            /** @description Continuation token, or null on the last page. */
+            next_cursor: string | null;
+            /**
+             * Format: int64
+             * @description Total matching items across all pages.
+             */
+            total?: number | null;
+        };
+        UserPage: {
+            items: components["schemas"]["ControlPlaneUser"][];
+            /** @description Continuation token, or null on the last page. */
+            next_cursor: string | null;
+            /**
+             * Format: int64
+             * @description Total matching items across all pages.
+             */
+            total?: number | null;
+        };
+        AdminApiKeyPage: {
+            items: components["schemas"]["AdminApiKeyView"][];
+            /** @description Continuation token, or null on the last page. */
+            next_cursor: string | null;
+            /**
+             * Format: int64
+             * @description Total matching items across all pages.
+             */
+            total?: number | null;
+        };
+        RequestLogPage: {
+            items: components["schemas"]["RequestLogView"][];
+            /** @description Continuation token, or null on the last page. */
+            next_cursor: string | null;
+            /**
+             * Format: int64
+             * @description Omitted for log pages.
+             */
+            total?: number | null;
+        };
+        AuditLogPage: {
+            items: components["schemas"]["AuditLogView"][];
+            /** @description Continuation token, or null on the last page. */
+            next_cursor: string | null;
+            /**
+             * Format: int64
+             * @description Omitted for log pages.
+             */
+            total?: number | null;
         };
         /** @description Access is the union of current members of the selected groups and independently granted logical channels. Group membership changes take effect when the updated snapshot is published; the key need not be edited. */
         ApiKeyView: {
@@ -3835,6 +3890,16 @@ export interface components {
         /** @description ETag from the preceding GET; stale values yield `409`. */
         IfMatch: string;
         Limit: number;
+        /** @description Opaque base64url continuation token from the previous page. Reuse it with the same endpoint and filters. Invalid or mismatched tokens return `422`. */
+        Cursor: string;
+        /** @description Case-insensitive substring search. Leading and trailing whitespace is trimmed. An empty search matches all rows within the other filters. */
+        SearchQuery: string;
+        UserListRole: "user" | "admin";
+        UserListStatus: "invited" | "active" | "suspended" | "disabled";
+        UserListGroupId: string;
+        /** @description Administrator-only owner filter. */
+        ApiKeyListUserId: string;
+        ApiKeyListStatus: "active" | "disabled" | "revoked";
         /** @description Administrator-only owner filter. */
         RequestLogUserId: string;
         RequestLogApiKeyId: string;
@@ -4243,23 +4308,32 @@ export interface operations {
     };
     listOwnApiKeys: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: components["parameters"]["Limit"];
+                /** @description Opaque base64url continuation token from the previous page. Reuse it with the same endpoint and filters. Invalid or mismatched tokens return `422`. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Case-insensitive substring search. Leading and trailing whitespace is trimmed. An empty search matches all rows within the other filters. */
+                q?: components["parameters"]["SearchQuery"];
+                status?: components["parameters"]["ApiKeyListStatus"];
+            };
             header?: never;
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Own API keys. */
+            /** @description Page ordered by `created_at` and `id`, both descending. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiKeyView"][];
+                    "application/json": components["schemas"]["ApiKeyPage"];
                 };
             };
+            400: components["responses"]["InvalidQuery"];
             401: components["responses"]["Unauthorized"];
+            422: components["responses"]["Unprocessable"];
         };
     };
     createOwnApiKey: {
@@ -4495,6 +4569,8 @@ export interface operations {
         parameters: {
             query?: {
                 limit?: components["parameters"]["Limit"];
+                /** @description Opaque base64url continuation token from the previous page. Reuse it with the same endpoint and filters. Invalid or mismatched tokens return `422`. */
+                cursor?: components["parameters"]["Cursor"];
                 api_key_id?: components["parameters"]["RequestLogApiKeyId"];
                 /** @description Exact client-requested model identifier. Does not match an upstream alias. */
                 model?: components["parameters"]["RequestLogModel"];
@@ -4511,16 +4587,18 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Owner-scoped request logs with self-service redaction. */
+            /** @description Page ordered by `started_at` and `id`, both descending. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RequestLogView"][];
+                    "application/json": components["schemas"]["RequestLogPage"];
                 };
             };
+            400: components["responses"]["InvalidQuery"];
             401: components["responses"]["Unauthorized"];
+            422: components["responses"]["Unprocessable"];
         };
     };
     getOwnRequestLog: {
@@ -4619,24 +4697,35 @@ export interface operations {
     };
     listUsers: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: components["parameters"]["Limit"];
+                /** @description Opaque base64url continuation token from the previous page. Reuse it with the same endpoint and filters. Invalid or mismatched tokens return `422`. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Case-insensitive substring search. Leading and trailing whitespace is trimmed. An empty search matches all rows within the other filters. */
+                q?: components["parameters"]["SearchQuery"];
+                role?: components["parameters"]["UserListRole"];
+                status?: components["parameters"]["UserListStatus"];
+                user_group_id?: components["parameters"]["UserListGroupId"];
+            };
             header?: never;
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Users. */
+            /** @description Page ordered by `created_at` and `id`, both descending. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ControlPlaneUser"][];
+                    "application/json": components["schemas"]["UserPage"];
                 };
             };
+            400: components["responses"]["InvalidQuery"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            422: components["responses"]["Unprocessable"];
         };
     };
     inviteUser: {
@@ -5455,24 +5544,35 @@ export interface operations {
     };
     listApiKeys: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: components["parameters"]["Limit"];
+                /** @description Opaque base64url continuation token from the previous page. Reuse it with the same endpoint and filters. Invalid or mismatched tokens return `422`. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Case-insensitive substring search. Leading and trailing whitespace is trimmed. An empty search matches all rows within the other filters. */
+                q?: components["parameters"]["SearchQuery"];
+                /** @description Administrator-only owner filter. */
+                user_id?: components["parameters"]["ApiKeyListUserId"];
+                status?: components["parameters"]["ApiKeyListStatus"];
+            };
             header?: never;
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description All API keys. */
+            /** @description Page ordered by `created_at` and `id`, both descending. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AdminApiKeyView"][];
+                    "application/json": components["schemas"]["AdminApiKeyPage"];
                 };
             };
+            400: components["responses"]["InvalidQuery"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            422: components["responses"]["Unprocessable"];
         };
     };
     createApiKey: {
@@ -7248,6 +7348,8 @@ export interface operations {
         parameters: {
             query?: {
                 limit?: components["parameters"]["Limit"];
+                /** @description Opaque base64url continuation token from the previous page. Reuse it with the same endpoint and filters. Invalid or mismatched tokens return `422`. */
+                cursor?: components["parameters"]["Cursor"];
                 /** @description Administrator-only owner filter. */
                 user_id?: components["parameters"]["RequestLogUserId"];
                 api_key_id?: components["parameters"]["RequestLogApiKeyId"];
@@ -7266,17 +7368,19 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description All request logs. */
+            /** @description Page ordered by `started_at` and `id`, both descending. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RequestLogView"][];
+                    "application/json": components["schemas"]["RequestLogPage"];
                 };
             };
+            400: components["responses"]["InvalidQuery"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            422: components["responses"]["Unprocessable"];
         };
     };
     getRequestLog: {
@@ -7459,6 +7563,10 @@ export interface operations {
         parameters: {
             query?: {
                 limit?: components["parameters"]["Limit"];
+                /** @description Opaque base64url continuation token from the previous page. Reuse it with the same endpoint and filters. Invalid or mismatched tokens return `422`. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Case-insensitive substring search. Leading and trailing whitespace is trimmed. An empty search matches all rows within the other filters. */
+                q?: components["parameters"]["SearchQuery"];
             };
             header?: never;
             path?: never;
@@ -7466,17 +7574,19 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Audit events. */
+            /** @description Page ordered by `occurred_at` and `id`, both descending. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AuditLogView"][];
+                    "application/json": components["schemas"]["AuditLogPage"];
                 };
             };
+            400: components["responses"]["InvalidQuery"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            422: components["responses"]["Unprocessable"];
         };
     };
     listConnectorPlugins: {

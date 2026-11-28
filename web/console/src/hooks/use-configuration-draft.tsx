@@ -34,8 +34,14 @@ export function useConfigurationDraft(
     bypass.current = true;
     setDirty(false);
   };
+  const prevExternalDirty = useRef(externalDirty);
   useEffect(() => {
-    if (externalDirty) bypass.current = false;
+    // Only clear bypass when externalDirty transitions from clean to dirty,
+    // so markSaved() before form.reset() settles cannot be clobbered.
+    if (externalDirty && !prevExternalDirty.current) {
+      bypass.current = false;
+    }
+    prevExternalDirty.current = externalDirty;
   }, [externalDirty]);
   const navigate = useCallback(
     (to: string, options?: NavigateOptions) => {

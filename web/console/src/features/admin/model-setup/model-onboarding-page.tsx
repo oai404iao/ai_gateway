@@ -13,7 +13,7 @@ import { useModels, useOnboardModel, useOperationRules, useReloadOnboarding, use
 import { OnboardingCandidates } from "./onboarding-candidates";
 import { OnboardingPricing, PriceSummary } from "./onboarding-pricing";
 import { existingSelection, type PricedSelection } from "./onboarding-price";
-import { useConfigurationDraft } from "./use-configuration-draft";
+import { useConfigurationDraft } from "@/hooks/use-configuration-draft";
 
 export function ModelOnboardingPage() {
   const { id } = useParams();

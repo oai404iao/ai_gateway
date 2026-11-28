@@ -41,15 +41,17 @@ import {
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { AsyncResource } from "@/components/shared/async-resource";
 import { EmptyState } from "@/components/shared/empty-state";
+import {
+  ApiKeyFilterCombobox,
+  UserFilterCombobox,
+} from "@/components/shared/entity-filter-comboboxes";
 import { ResourceTable, type Column } from "@/components/shared/resource-table";
 import { StatusBadge } from "@/components/shared/status-badge";
 import {
-  useAdminApiKeys,
+  useAdminApiKey,
   useRoutingGroups,
   useLogicalChannels,
-  useUsers,
 } from "@/features/admin/api";
-import { useOwnApiKeys } from "@/features/api-keys/api";
 import {
   useCostStatistics,
   type CostStatisticsFilters,
@@ -60,186 +62,28 @@ import type {
   CostStatisticsModel,
   StatisticsGranularity,
 } from "@/api/types";
-import {
-  dateTimeLocalToIso,
-  formatDateTime,
-  formatDateTimeLocalInput,
-} from "@/lib/dates";
+import { formatDateTime } from "@/lib/dates";
 import { formatTokens, formatUsd } from "@/lib/formatters";
 import { apiFormatLabel } from "@/lib/permissions";
 import { useI18n } from "@/app/i18n";
 import { UsageTrend } from "./usage-trend";
-import { modelIdentity, overviewWindow, ownLogsLink, type UsageMetric } from "./usage-window";
+import { modelIdentity, ownLogsLink, type UsageMetric } from "./usage-window";
 
-interface CostFilterDraft {
-  started_after: string;
-  started_before: string;
-  granularity: StatisticsGranularity;
-  user_id: string;
-  api_key_id: string;
-  channel_id: string;
-}
-
-type QuickRange = "today" | "this_week" | "this_month";
-
-const CHART_COLORS = [1, 2, 3, 4, 5].map((i) => `var(--chart-${i})`);
-
-function defaultDraft(): CostFilterDraft {
-  const endedAt = new Date();
-  endedAt.setSeconds(0, 0);
-  const startedAt = new Date(endedAt);
-  startedAt.setHours(0, 0, 0, 0);
-  return {
-    started_after: formatDateTimeLocalInput(startedAt.toISOString(), true),
-    started_before: formatDateTimeLocalInput(endedAt.toISOString(), true),
-    granularity: "hour",
-    user_id: "",
-    api_key_id: "",
-    channel_id: "",
-  };
-}
-
-function draftFromSearchParams(
-  search: URLSearchParams,
-  scope: CostStatisticsScope,
-): CostFilterDraft {
-  const draft = defaultDraft();
-  if (scope === "own" && !search.has("started_after") && !search.has("started_before")) {
-    const bounds = overviewWindow(Math.floor(Date.now() / 1000) * 1000, "7d");
-    draft.started_after = formatDateTimeLocalInput(bounds.started_after, true);
-    draft.started_before = formatDateTimeLocalInput(bounds.started_before, true);
-  }
-  const startedAfter = search.get("started_after");
-  const startedBefore = search.get("started_before");
-  const granularity = search.get("granularity");
-  if (startedAfter && formatDateTimeLocalInput(startedAfter, true)) {
-    draft.started_after = formatDateTimeLocalInput(startedAfter, true);
-  }
-  if (startedBefore && formatDateTimeLocalInput(startedBefore, true)) {
-    draft.started_before = formatDateTimeLocalInput(startedBefore, true);
-  }
-  if (granularity === "hour" || granularity === "day") {
-    draft.granularity = granularity;
-  }
-  draft.api_key_id = search.get("api_key_id") ?? "";
-  if (scope === "system") {
-    draft.user_id = search.get("user_id") ?? "";
-    draft.channel_id = search.get("channel_id") ?? "";
-  }
-  return draft;
-}
-
-function quickRangeDraft(
-  range: QuickRange,
-  current: CostFilterDraft,
-  now = new Date(),
-): CostFilterDraft {
-  const endedAt = new Date(now);
-  endedAt.setSeconds(0, 0);
-  const startedAt = new Date(endedAt);
-  if (range === "today") {
-    startedAt.setHours(0, 0, 0, 0);
-  } else if (range === "this_week") {
-    const daysSinceMonday = (startedAt.getDay() + 6) % 7;
-    startedAt.setDate(startedAt.getDate() - daysSinceMonday);
-    startedAt.setHours(0, 0, 0, 0);
-  } else {
-    startedAt.setDate(1);
-    startedAt.setHours(0, 0, 0, 0);
-  }
-  return {
-    ...current,
-    started_after: formatDateTimeLocalInput(startedAt.toISOString(), true),
-    started_before: formatDateTimeLocalInput(endedAt.toISOString(), true),
-    granularity: range === "today" ? "hour" : "day",
-  };
-}
-
-function toFilters(draft: CostFilterDraft): CostStatisticsFilters | null {
-  const startedAfter = dateTimeLocalToIso(draft.started_after);
-  const startedBefore = dateTimeLocalToIso(draft.started_before);
-  if (!startedAfter || !startedBefore) return null;
-  return {
-    started_after: startedAfter,
-    started_before: startedBefore,
-    granularity: draft.granularity,
-    user_id: draft.user_id || undefined,
-    api_key_id: draft.api_key_id || undefined,
-    channel_id: draft.channel_id || undefined,
-  };
-}
-
-function sameCostStatisticsFilters(
-  left: CostStatisticsFilters,
-  right: CostStatisticsFilters,
-): boolean {
-  return (
-    left.started_after === right.started_after &&
-    left.started_before === right.started_before &&
-    left.granularity === right.granularity &&
-    left.user_id === right.user_id &&
-    left.api_key_id === right.api_key_id &&
-    left.channel_id === right.channel_id
-  );
-}
-
-function searchParamsForFilters(
-  filters: CostStatisticsFilters,
-  scope: CostStatisticsScope,
-): URLSearchParams {
-  const search = new URLSearchParams({
-    started_after: filters.started_after,
-    started_before: filters.started_before,
-    granularity: filters.granularity,
-  });
-  if (filters.api_key_id) search.set("api_key_id", filters.api_key_id);
-  if (scope === "system") {
-    if (filters.user_id) search.set("user_id", filters.user_id);
-    if (filters.channel_id) search.set("channel_id", filters.channel_id);
-  }
-  return search;
-}
-
-function numericAmount(value: string): number {
-  const amount = Number(value);
-  return Number.isFinite(amount) ? amount : 0;
-}
-
-function formatRate(value: number | null): string {
-  if (value === null) return "—";
-  return `${(value * 100).toLocaleString(undefined, { maximumFractionDigits: 1 })}%`;
-}
-
-function cacheRate(inputTokens: number, cachedInputTokens: number): number | null {
-  return inputTokens > 0 ? cachedInputTokens / inputTokens : null;
-}
-
-function SummaryCard({
-  title,
-  value,
-  description,
-  icon: Icon,
-}: {
-  title: string;
-  value: React.ReactNode;
-  description?: React.ReactNode;
-  icon: typeof Hash;
-}) {
-  return (
-    <Card size="sm">
-      <CardHeader>
-        <CardDescription>{title}</CardDescription>
-        <CardAction>
-          <Icon className="size-4 text-muted-foreground" />
-        </CardAction>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-1">
-        <CardTitle className="text-2xl tabular-nums">{value}</CardTitle>
-        {description && <CardDescription className="text-xs">{description}</CardDescription>}
-      </CardContent>
-    </Card>
-  );
-}
+import {
+  cacheRate,
+  CHART_COLORS,
+  defaultDraft,
+  draftFromSearchParams,
+  formatRate,
+  numericAmount,
+  quickRangeDraft,
+  sameCostStatisticsFilters,
+  searchParamsForFilters,
+  toFilters,
+  type CostFilterDraft,
+  type QuickRange,
+} from "./cost-statistics-helpers";
+import { SummaryCard } from "./cost-statistics-summary-card";
 
 export function CostStatisticsPanel({
   scope,
@@ -265,11 +109,9 @@ export function CostStatisticsPanel({
     filters,
   );
   const isSystemView = scope === "system";
-  const users = useUsers(isSystemView);
-  const adminApiKeys = useAdminApiKeys(isSystemView);
   const channels = useLogicalChannels(isSystemView);
   const channelGroups = useRoutingGroups(isSystemView);
-  const ownApiKeys = useOwnApiKeys(!isSystemView);
+  const selectedAdminKey = useAdminApiKey(isSystemView && draft.api_key_id ? draft.api_key_id : "");
   const { t } = useI18n();
 
   const runQuery = (next: CostStatisticsFilters) => {
@@ -281,16 +123,6 @@ export function CostStatisticsPanel({
     setFilters(next);
   };
 
-  const userNames = resourceLabels((users.data ?? []).map(user => ({id: user.id, name: user.email ? `${user.display_name} · ${user.email}` : user.display_name})));
-  const filteredKeys = isSystemView
-    ? (adminApiKeys.data ?? [])
-        .filter((key) => !draft.user_id || key.user_id === draft.user_id)
-        .map((key) => {
-          const ownerName = !draft.user_id && userNames.get(key.user_id);
-          return { id: key.id, name: ownerName ? `${key.name} · ${ownerName}` : key.name };
-        })
-    : (ownApiKeys.data ?? []).map((key) => ({ id: key.id, name: key.name }));
-  const keyNames = resourceLabels(filteredKeys);
   const channelGroupNames = new Map(
     (channelGroups.data ?? []).map((group) => [group.id, group.name]),
   );
@@ -628,68 +460,39 @@ export function CostStatisticsPanel({
             {isSystemView ? (
               <Field>
                 <FieldLabel htmlFor="statistics_user">{t("User")}</FieldLabel>
-                <Select
-                  value={draft.user_id || "__all__"}
-                  onValueChange={(value) => {
-                    const userId = value === "__all__" ? "" : value;
+                <UserFilterCombobox
+                  id="statistics_user"
+                  ariaLabel={t("User")}
+                  value={draft.user_id}
+                  onValueChange={(userId) => {
                     setDraft((current) => ({
                       ...current,
                       user_id: userId,
                       api_key_id:
                         current.api_key_id &&
-                        adminApiKeys.data?.some(
-                          (key) =>
-                            key.id === current.api_key_id &&
-                            (!userId || key.user_id === userId),
-                        )
+                        (!userId || selectedAdminKey.data?.data.user_id === userId)
                           ? current.api_key_id
                           : "",
                     }));
                   }}
-                >
-                  <SelectTrigger id="statistics_user">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                      <SelectItem value="__all__">{t("All users")}</SelectItem>
-                      {draft.user_id && !userNames.has(draft.user_id) && <SelectItem value={draft.user_id} disabled>{t("Unavailable")}</SelectItem>}
-                      {users.data?.map((user) => (
-                        <SelectItem key={user.id} value={user.id}>
-                          {userNames.get(user.id)}
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
+                />
               </Field>
             ) : null}
             <Field>
               <FieldLabel htmlFor="statistics_api_key">{t("API key")}</FieldLabel>
-              <Select
-                value={draft.api_key_id || "__all__"}
-                onValueChange={(value) =>
+              <ApiKeyFilterCombobox
+                id="statistics_api_key"
+                ariaLabel={t("API key")}
+                scope={scope}
+                userId={isSystemView ? draft.user_id : undefined}
+                value={draft.api_key_id}
+                onValueChange={(apiKeyId) =>
                   setDraft((current) => ({
                     ...current,
-                    api_key_id: value === "__all__" ? "" : value,
+                    api_key_id: apiKeyId,
                   }))
                 }
-              >
-                <SelectTrigger id="statistics_api_key">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    <SelectItem value="__all__">{t("All API keys")}</SelectItem>
-                    {draft.api_key_id && !filteredKeys.some(key => key.id === draft.api_key_id) && <SelectItem value={draft.api_key_id} disabled>{t("Unavailable")}</SelectItem>}
-                    {filteredKeys.map((key) => (
-                      <SelectItem key={key.id} value={key.id}>
-                        {keyNames.get(key.id)}
-                      </SelectItem>
-                    ))}
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
+              />
             </Field>
             {isSystemView ? (
               <Field>

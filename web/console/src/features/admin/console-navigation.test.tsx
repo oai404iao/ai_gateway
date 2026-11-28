@@ -51,4 +51,18 @@ describe("Console navigation contracts", () => {
     const back = await screen.findByRole("link", { name: "Back to capabilities" });
     expect(back).toHaveAttribute("href", "/admin/routing/capabilities");
   });
+
+  it("preserves expanded management navigation group across route changes", async () => {
+    renderAt("/admin/models");
+    const user = userEvent.setup();
+    const usersToggle = await screen.findByRole("button", { name: "Members and access" });
+    expect(usersToggle).toHaveAttribute("aria-expanded", "false");
+
+    await user.click(usersToggle);
+    expect(usersToggle).toHaveAttribute("aria-expanded", "true");
+
+    await user.click(screen.getByRole("link", { name: "Users" }));
+    expect(await screen.findByRole("heading", { level: 1, name: "Users" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Members and access" })).toHaveAttribute("aria-expanded", "true");
+  });
 });

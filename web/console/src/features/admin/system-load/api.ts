@@ -5,7 +5,7 @@ import type { SystemLoadReport } from "@/api/types";
 export function useSystemLoad() {
   return useQuery({
     queryKey: ["console", "system", "load"] as const,
-    queryFn: () => apiGet<SystemLoadReport>("/system/load"),
+    queryFn: ({ signal }) => apiGet<SystemLoadReport>("/system/load", signal),
     refetchInterval: 5_000,
   });
 }

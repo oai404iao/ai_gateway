@@ -34,7 +34,10 @@ describe("Gateway overview", () => {
         }),
         http.get("/console/v1/me/request-logs", ({ request }) => {
           logs.push(new URL(request.url).searchParams);
-          return HttpResponse.json([{ ...REQUEST_LOG, outcome: "failed", response_status_code: 503 }]);
+          return HttpResponse.json({
+            items: [{ ...REQUEST_LOG, outcome: "failed", response_status_code: 503 }],
+            next_cursor: null,
+          });
         }),
         http.get(/\/console\/v1\/(system\/statistics\/costs|request-logs)$/, ({ request }) => {
           system.push(request.url);
@@ -141,5 +144,33 @@ describe("Gateway overview", () => {
       [Date.parse("2026-07-20T00:35:00Z"),Date.parse("2026-07-20T01:00:00Z")],
       [Date.parse("2026-07-20T01:00:00Z"),Date.parse("2026-07-20T01:12:00Z")],
     ]);
+  });
+
+  it("keeps previous overview data visible while switching time windows", async () => {
+    seedUserSession();
+    let resolveNext!: (value: Response) => void;
+    const nextPending = new Promise<Response>((resolve) => {
+      resolveNext = resolve;
+    });
+    server.use(
+      http.get("/console/v1/statistics/costs", () => HttpResponse.json(report)),
+      http.get("/console/v1/statistics/costs/summary", () => HttpResponse.json(report.summary)),
+    );
+    const user = userEvent.setup();
+    renderOverview();
+    const ledger = await screen.findByRole("tabpanel", { name: "Model distribution" });
+    expect(await within(ledger).findByText(report.models[0].model)).toBeVisible();
+
+    server.use(
+      http.get("/console/v1/statistics/costs", () => nextPending),
+    );
+    await user.click(screen.getByRole("button", { name: "Last 24 hours" }));
+    expect(within(ledger).getByText(report.models[0].model)).toBeVisible();
+
+    resolveNext(HttpResponse.json({
+      ...report,
+      models: [{ ...report.models[0], model: "window-updated-model" }],
+    }));
+    expect(await within(ledger).findByText("window-updated-model")).toBeVisible();
   });
 });

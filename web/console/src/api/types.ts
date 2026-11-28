@@ -93,13 +93,16 @@ export type SessionAffinityCacheClearResponse = S["SessionAffinityCacheClearResp
 
 // Resources (views)
 export type ApiKeyView = S["ApiKeyView"];
+export type ApiKeyPage = S["ApiKeyPage"];
 export type AdminApiKeyView = S["AdminApiKeyView"];
+export type AdminApiKeyPage = S["AdminApiKeyPage"];
 export type ApiKeyPolicyView = S["ApiKeyPolicyView"];
 export type SelfApiKeyOptions = S["SelfApiKeyOptions"];
 export type SelfApiKeyGroupOption = S["SelfApiKeyGroupOption"];
 export type SelfApiKeyChannelOption = S["SelfApiKeyChannelOption"];
 export type ApiHostsView = S["ApiHostsView"];
 export type ControlPlaneUser = S["ControlPlaneUser"];
+export type UserPage = S["UserPage"];
 export type UserGroupView = S["UserGroupView"];
 export type RegistrationInvitationCodeView = S["RegistrationInvitationCodeView"];
 export type ControlPlaneModel = S["ControlPlaneModel"];
@@ -132,7 +135,9 @@ export type ConfigTemplateDetailView = S["ConfigTemplateDetailView"];
 
 // Observability + catalog
 export type RequestLogView = S["RequestLogView"];
+export type RequestLogPage = S["RequestLogPage"];
 export type AuditLogView = S["AuditLogView"];
+export type AuditLogPage = S["AuditLogPage"];
 export type PersonalUsageReport = S["PersonalUsageReport"];
 export type PersonalUsageDay = S["PersonalUsageDay"];
 export type ChannelGroupStatusReport = S["ChannelGroupStatusReport"];
@@ -206,4 +211,8 @@ export type ModelImportRequest = S["ModelImportRequest"];
 export type ModelSyncPreviewRequest = S["ModelSyncPreviewRequest"];
 export type OwnRequestLogQuery = NonNullable<operations["listOwnRequestLogs"]["parameters"]["query"]>;
 export type AdminRequestLogQuery = NonNullable<operations["listAllRequestLogs"]["parameters"]["query"]>;
+export type UserListQuery = NonNullable<operations["listUsers"]["parameters"]["query"]>;
+export type AdminApiKeyListQuery = NonNullable<operations["listApiKeys"]["parameters"]["query"]>;
+export type OwnApiKeyListQuery = NonNullable<operations["listOwnApiKeys"]["parameters"]["query"]>;
+export type AuditLogQuery = NonNullable<operations["listAuditLogs"]["parameters"]["query"]>;
 export type SystemSettingsInput = S["SystemSettingsInput"];

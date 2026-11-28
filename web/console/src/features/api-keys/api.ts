@@ -1,9 +1,11 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiGet, apiGetDetail, apiPost, apiPut, apiSend } from "@/api/client";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { apiGet, apiGetDetail, apiPost, apiPut, apiSend, buildQuery } from "@/api/client";
 import type {
   ApiHostsView,
+  ApiKeyPage,
   ApiKeyView,
   MutationResponse,
+  OwnApiKeyListQuery,
   RevokeInput,
   SelfApiKeyCreateInput,
   SelfApiKeyOptions,
@@ -17,18 +19,22 @@ function detailKey(id: string) {
   return ["console", "me", "api-keys", id] as const;
 }
 
-export function useOwnApiKeys(enabled = true) {
+export function useOwnApiKeys(
+  params: OwnApiKeyListQuery = {},
+  options?: { enabled?: boolean },
+) {
   return useQuery({
-    queryKey: LIST_KEY,
-    queryFn: () => apiGet<ApiKeyView[]>("/me/api-keys"),
-    enabled,
+    queryKey: [...LIST_KEY, params] as const,
+    queryFn: ({ signal }) => apiGet<ApiKeyPage>(`/me/api-keys${buildQuery(params)}`, signal),
+    placeholderData: keepPreviousData,
+    enabled: options?.enabled ?? true,
   });
 }
 
 export function useOwnApiKeyOptions(enabled = true) {
   return useQuery({
     queryKey: ["console", "me", "api-key-options"] as const,
-    queryFn: () => apiGet<SelfApiKeyOptions>("/me/api-key-options"),
+    queryFn: ({ signal }) => apiGet<SelfApiKeyOptions>("/me/api-key-options", signal),
     enabled,
   });
 }
@@ -36,7 +42,7 @@ export function useOwnApiKeyOptions(enabled = true) {
 export function useApiHosts() {
   return useQuery({
     queryKey: API_HOSTS_KEY,
-    queryFn: () => apiGet<ApiHostsView>("/me/api-hosts"),
+    queryFn: ({ signal }) => apiGet<ApiHostsView>("/me/api-hosts", signal),
   });
 }
 
@@ -44,6 +50,9 @@ export function useOwnApiKey(id: string) {
   return useQuery({
     queryKey: detailKey(id),
     queryFn: ({ signal }) => apiGetDetail<ApiKeyView>(`/me/api-keys/${id}`, signal),
+    enabled: Boolean(id),
+    staleTime: 0,
+    refetchOnWindowFocus: true,
   });
 }
 

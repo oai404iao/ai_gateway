@@ -2,12 +2,14 @@ import { useState } from "react";
 import { History } from "lucide-react";
 import type {
   CodexQuotaResetReason,
+  SelfCodexQuotaCredentialView,
   SelfCodexQuotaWindowPeriod,
 } from "@/api/types";
 import { useI18n } from "@/app/i18n";
 import { AsyncResource } from "@/components/shared/async-resource";
 import { EmptyState } from "@/components/shared/empty-state";
 import { PageHeader } from "@/components/shared/page-header";
+import { ResourceTable, type Column } from "@/components/shared/resource-table";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -25,14 +27,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Progress } from "@/components/ui/progress";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import {
   Tabs,
   TabsContent,
@@ -184,77 +178,86 @@ function QuotaWindowPeriodsTable({
   periods: SelfCodexQuotaWindowPeriod[];
 }) {
   const { t } = useI18n();
-  if (periods.length === 0) {
-    return (
-      <EmptyState
-        title={t("No periods for this window")}
-        description={t("The provider has not reported this quota window yet.")}
-        className="py-10"
-      />
-    );
-  }
+  const columns: Column<SelfCodexQuotaWindowPeriod>[] = [
+    {
+      key: "period",
+      header: t("Period"),
+      className: "min-w-64 align-top",
+      render: (period) => (
+        <div className="flex flex-col gap-1">
+          <span className="font-medium">
+            {formatDateTime(period.started_at)}
+          </span>
+          <span className="text-xs text-muted-foreground">
+            {period.ended_at
+              ? t("Ended {time}", {
+                  time: formatDateTime(period.ended_at),
+                })
+              : t("Scheduled reset {time}", {
+                  time: formatDateTime(period.scheduled_reset_at),
+                })}
+          </span>
+          <Badge variant="outline" className="w-fit">
+            {windowDuration(period.window_seconds)}
+          </Badge>
+        </div>
+      ),
+    },
+    {
+      key: "usage",
+      header: t("Usage"),
+      className: "align-top tabular-nums",
+      render: (period) => `${period.initial_used_percent}% → ${period.last_used_percent}%`,
+    },
+    {
+      key: "spend",
+      header: t("Period spend"),
+      className: "align-top tabular-nums",
+      render: (period) => formatUsd(period.cost_amount),
+    },
+    {
+      key: "estimated",
+      header: t("Estimated total quota"),
+      className: "align-top tabular-nums",
+      render: (period) =>
+        formatEstimatedQuotaTotal(
+          period.cost_amount,
+          period.last_used_percent,
+        ),
+    },
+    {
+      key: "ended-by",
+      header: t("Ended by"),
+      className: "align-top",
+      render: (period) => (
+        <Badge variant={resetReasonVariant(period.reset_reason)}>
+          {t(resetReasonLabel(period.reset_reason))}
+        </Badge>
+      ),
+    },
+    {
+      key: "last-observed",
+      header: t("Last observed"),
+      className: "align-top",
+      render: (period) => formatDateTime(period.last_observed_at),
+    },
+  ];
   return (
-    <div className="min-w-0 border-y">
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>{t("Period")}</TableHead>
-            <TableHead>{t("Usage")}</TableHead>
-            <TableHead>{t("Period spend")}</TableHead>
-            <TableHead>{t("Estimated total quota")}</TableHead>
-            <TableHead>{t("Ended by")}</TableHead>
-            <TableHead>{t("Last observed")}</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {periods.map((period) => (
-            <TableRow
-              key={`${period.window_kind}:${period.started_at}:${period.scheduled_reset_at}`}
-            >
-              <TableCell className="min-w-64 align-top">
-                <div className="flex flex-col gap-1">
-                  <span className="font-medium">
-                    {formatDateTime(period.started_at)}
-                  </span>
-                  <span className="text-xs text-muted-foreground">
-                    {period.ended_at
-                      ? t("Ended {time}", {
-                          time: formatDateTime(period.ended_at),
-                        })
-                      : t("Scheduled reset {time}", {
-                          time: formatDateTime(period.scheduled_reset_at),
-                        })}
-                  </span>
-                  <Badge variant="outline" className="w-fit">
-                    {windowDuration(period.window_seconds)}
-                  </Badge>
-                </div>
-              </TableCell>
-              <TableCell className="align-top tabular-nums">
-                {period.initial_used_percent}% → {period.last_used_percent}%
-              </TableCell>
-              <TableCell className="align-top tabular-nums">
-                {formatUsd(period.cost_amount)}
-              </TableCell>
-              <TableCell className="align-top tabular-nums">
-                {formatEstimatedQuotaTotal(
-                  period.cost_amount,
-                  period.last_used_percent,
-                )}
-              </TableCell>
-              <TableCell className="align-top">
-                <Badge variant={resetReasonVariant(period.reset_reason)}>
-                  {t(resetReasonLabel(period.reset_reason))}
-                </Badge>
-              </TableCell>
-              <TableCell className="align-top">
-                {formatDateTime(period.last_observed_at)}
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-    </div>
+    <ResourceTable
+      columns={columns}
+      rows={periods}
+      rowKey={(period) =>
+        `${period.window_kind}:${period.started_at}:${period.scheduled_reset_at}`
+      }
+      empty={
+        <EmptyState
+          title={t("No periods for this window")}
+          description={t("The provider has not reported this quota window yet.")}
+          className="py-10"
+        />
+      }
+      pagination={false}
+    />
   );
 }
 
@@ -267,6 +270,74 @@ export function CodexQuotasPage() {
     id: account.id,
     name: accounts.length > 1 && account.plan_type ? `${t("Codex account")} · ${account.plan_type}` : t("Codex account"),
   })));
+  const columns: Column<SelfCodexQuotaCredentialView>[] = [
+    {
+      key: "name",
+      header: t("Name"),
+      render: (credential) => accountLabels.get(credential.id)!,
+    },
+    {
+      key: "subscription",
+      header: t("Subscription"),
+      render: (credential) => (
+        <Badge variant="secondary">
+          {credential.plan_type ?? t("Unknown")}
+        </Badge>
+      ),
+    },
+    {
+      key: "primary",
+      header: t("Primary window"),
+      render: (credential) => (
+        <QuotaWindow
+          label="Primary window"
+          percent={credential.primary_used_percent}
+          seconds={credential.primary_window_seconds}
+          resetAt={credential.primary_reset_at}
+          costAmount={credential.primary_window_cost_amount}
+        />
+      ),
+    },
+    {
+      key: "secondary",
+      header: t("Secondary window"),
+      render: (credential) => (
+        <QuotaWindow
+          label="Secondary window"
+          percent={credential.secondary_used_percent}
+          seconds={credential.secondary_window_seconds}
+          resetAt={credential.secondary_reset_at}
+          costAmount={credential.secondary_window_cost_amount}
+        />
+      ),
+    },
+    {
+      key: "last-checked",
+      header: t("Last checked"),
+      render: (credential) => formatDateTime(credential.quota_checked_at),
+    },
+    {
+      key: "actions",
+      header: t("Quota history"),
+      pinned: true,
+      render: (credential) => {
+        const label = accountLabels.get(credential.id)!;
+        return (
+          <Button
+            size="sm"
+            variant="outline"
+            aria-label={t("View quota history for {name}", {
+              name: label,
+            })}
+            onClick={() => setHistoryCredential({ id: credential.id, label })}
+          >
+            <History data-icon="inline-start" />
+            {t("Quota history")}
+          </Button>
+        );
+      },
+    },
+  ];
 
   return (
     <div className="flex flex-col gap-6">
@@ -287,75 +358,12 @@ export function CodexQuotasPage() {
                 <CardDescription>{t("Spend includes requests from everyone using the credential.")}</CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="min-w-0 border-y">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>{t("Name")}</TableHead>
-                        <TableHead>{t("Subscription")}</TableHead>
-                        <TableHead>{t("Primary window")}</TableHead>
-                        <TableHead>{t("Secondary window")}</TableHead>
-                        <TableHead>{t("Last checked")}</TableHead>
-                        <TableHead pinned>
-                          {t("Quota history")}
-                        </TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {accounts.map((credential) => {
-                        const label = accountLabels.get(credential.id)!;
-                        return (
-                        <TableRow key={credential.id}>
-                          <TableCell>{label}</TableCell>
-                          <TableCell>
-                            <Badge variant="secondary">
-                              {credential.plan_type ?? t("Unknown")}
-                            </Badge>
-                          </TableCell>
-                          <TableCell>
-                            <QuotaWindow
-                              label="Primary window"
-                              percent={credential.primary_used_percent}
-                              seconds={credential.primary_window_seconds}
-                              resetAt={credential.primary_reset_at}
-                              costAmount={
-                                credential.primary_window_cost_amount
-                              }
-                            />
-                          </TableCell>
-                          <TableCell>
-                            <QuotaWindow
-                              label="Secondary window"
-                              percent={credential.secondary_used_percent}
-                              seconds={credential.secondary_window_seconds}
-                              resetAt={credential.secondary_reset_at}
-                              costAmount={
-                                credential.secondary_window_cost_amount
-                              }
-                            />
-                          </TableCell>
-                          <TableCell>
-                            {formatDateTime(credential.quota_checked_at)}
-                          </TableCell>
-                          <TableCell pinned>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              aria-label={t("View quota history for {name}", {
-                                name: label,
-                              })}
-                              onClick={() => setHistoryCredential({ id: credential.id, label })}
-                            >
-                              <History data-icon="inline-start" />
-                              {t("Quota history")}
-                            </Button>
-                          </TableCell>
-                        </TableRow>
-                        );
-                      })}
-                    </TableBody>
-                  </Table>
-                </div>
+                <ResourceTable
+                  columns={columns}
+                  rows={accounts}
+                  rowKey={(credential) => credential.id}
+                  pagination={false}
+                />
               </CardContent>
             </Card>
         </div>

@@ -1,5 +1,7 @@
 //! Additive model onboarding must be all-or-nothing on both storage engines.
 
+use ai_gateway::persistence::PageOptions;
+
 use super::*;
 use ai_gateway::{
     models_dev::ModelsDevModel,
@@ -37,7 +39,15 @@ async fn onboarding_contract(repositories: Repositories) {
     let manual = || OnboardingModel::Create(Box::new(model_input("onboarded", "New Model")));
     let request = |model, operations| ModelOnboardingInput { model, operations };
     let before = runtime.snapshot();
-    let audit_len = repo.audit_logs(100).await.unwrap().len();
+    let audit_len = repo
+        .audit_logs(PageOptions {
+            limit: Some(100),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .items
+        .len();
     let register = candidate("new-wire", cap.updated_at, 1, true);
     let missing = candidate("missing-wire", cap.updated_at, 3, false);
     assert!(matches!(
@@ -54,7 +64,17 @@ async fn onboarding_contract(repositories: Repositories) {
     assert!(Arc::ptr_eq(&before, &runtime.snapshot()));
     assert!(repo.model_source_versions().await.unwrap().is_empty());
     assert!(repo.routing_profiles().await.unwrap().is_empty());
-    assert_eq!(repo.audit_logs(100).await.unwrap().len(), audit_len);
+    assert_eq!(
+        repo.audit_logs(PageOptions {
+            limit: Some(100),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .items
+        .len(),
+        audit_len
+    );
     assert_eq!(
         listed_capability(&repositories, w.capability)
             .await
@@ -74,7 +94,14 @@ async fn onboarding_contract(repositories: Repositories) {
             .operation_rule(ApiOperation::ChatCompletions, "onboarded")
             .is_some()
     );
-    let audits = repo.audit_logs(100).await.unwrap();
+    let audits = repo
+        .audit_logs(PageOptions {
+            limit: Some(100),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .items;
     assert_eq!(audits.len(), audit_len + 4);
     let correlation = &audits
         .iter()

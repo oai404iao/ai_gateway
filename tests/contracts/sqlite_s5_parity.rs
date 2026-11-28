@@ -1,5 +1,7 @@
 //! Shared Codex contracts; external calls are represented by opaque repository operation guards.
 
+use ai_gateway::persistence::PageOptions;
+
 use super::*;
 #[path = "sqlite_s5_faults.rs"]
 mod faults;
@@ -642,7 +644,15 @@ async fn quota(c: Context) {
             .count(),
         2
     );
-    let audit = c.repo.audit_logs(100).await.unwrap();
+    let audit = c
+        .repo
+        .audit_logs(PageOptions {
+            limit: Some(100),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .items;
     assert_eq!(
         audit.iter().filter(|a| a.action == "reset_quota").count(),
         1
@@ -708,9 +718,13 @@ async fn refresh(c: Context) {
         .unwrap();
     assert_eq!(
         c.repo
-            .audit_logs(100)
+            .audit_logs(PageOptions {
+                limit: Some(100),
+                ..Default::default()
+            })
             .await
             .unwrap()
+            .items
             .iter()
             .filter(|a| a.action == "reset_quota")
             .count(),
@@ -857,7 +871,17 @@ async fn identity_and_proxy_export(backend: &Backend, c: Context) {
     let after = c.repo.codex_credential(c.id).await.unwrap().unwrap();
     assert!(after.enabled);
     assert_eq!(after.updated_at, before.updated_at);
-    let audit = serde_json::to_string(&c.repo.audit_logs(100).await.unwrap()).unwrap();
+    let audit = serde_json::to_string(
+        &c.repo
+            .audit_logs(PageOptions {
+                limit: Some(100),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .items,
+    )
+    .unwrap();
     assert!(!audit.contains("First-refresh-token"));
     assert!(!audit.contains("fixture-password"));
     let proxy_view = c

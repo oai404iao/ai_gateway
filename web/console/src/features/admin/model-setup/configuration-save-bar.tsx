@@ -10,7 +10,7 @@ export function ConfigurationSaveBar({
 }) {
   const { t } = useI18n();
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-background p-4">
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border bg-background p-4">
       <span className="text-xs text-muted-foreground" role="status">
         {t(dirty ? "Unsaved changes" : "No pending edits")}
       </span>

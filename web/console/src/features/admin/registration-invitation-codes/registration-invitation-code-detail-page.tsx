@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Controller, useForm } from "react-hook-form";
 import { useParams } from "react-router";
 import { useReturnPath, withReturnTo } from "@/lib/page-navigation";
-import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
+import { useConfigurationDraft } from "@/hooks/use-configuration-draft";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { toast } from "sonner";
@@ -145,9 +145,16 @@ export function RegistrationInvitationCodeDetailPage() {
     resolver: zodResolver(schema),
     defaultValues: empty,
   });
+  const baselineRef = useRef<typeof detail.data>(undefined);
 
   useEffect(() => {
-    if (detail.data) {
+    baselineRef.current = undefined;
+    form.reset(empty);
+  }, [id, form]);
+
+  useEffect(() => {
+    if (detail.data && detail.data !== baselineRef.current && !form.formState.isDirty) {
+      baselineRef.current = detail.data;
       form.reset({
         name: detail.data.data.name,
         invitation_code: "",
@@ -158,7 +165,7 @@ export function RegistrationInvitationCodeDetailPage() {
         initial_balance_amount: detail.data.data.initial_balance_amount,
       });
     }
-  }, [detail.data, form]);
+  }, [detail.data, form, form.formState.isDirty]);
 
   useEffect(() => {
     if (!isNew || form.getValues("user_group_id") || !groups.data) return;

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -21,7 +21,7 @@ import {
 import { useI18n } from "@/app/i18n";
 import type { RoutingGroupInput } from "@/api/types";
 import { useReturnPath, withReturnTo } from "@/lib/page-navigation";
-import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
+import { useConfigurationDraft } from "@/hooks/use-configuration-draft";
 
 const schema = z.object({
   name: z.string().trim().min(1).max(100),
@@ -44,15 +44,22 @@ export function GroupDetailPage() {
   const group = query.data?.data;
   const busy = create.isPending || update.isPending || remove.isPending;
   const { navigate, navigationGuard, markSaved } = useConfigurationDraft(busy, form.formState.isDirty);
+  const baselineRef = useRef<typeof query.data>(undefined);
 
   useEffect(() => {
-    if (group) {
+    baselineRef.current = undefined;
+    form.reset(defaults);
+  }, [id, form]);
+
+  useEffect(() => {
+    if (query.data && query.data !== baselineRef.current && !form.formState.isDirty) {
+      baselineRef.current = query.data;
       form.reset({
-        name: group.name,
-        enabled: group.enabled,
+        name: query.data.data.name,
+        enabled: query.data.data.enabled,
       });
     }
-  }, [group, form]);
+  }, [query.data, form, form.formState.isDirty]);
 
   const submit = form.handleSubmit(async (values) => {
     const input: RoutingGroupInput = values;
