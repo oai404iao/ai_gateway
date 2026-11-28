@@ -658,7 +658,8 @@ def settled_request_logs(data, key_id, expected_count):
 
     def ready():
         nonlocal settled
-        logs, _ = request(data["console"], f"/console/v1/request-logs?api_key_id={key_id}", token=data["token"])
+        logs_page, _ = request(data["console"], f"/console/v1/request-logs?api_key_id={key_id}", token=data["token"])
+        logs = logs_page["items"]
         if len(logs) != expected_count or any(log["billed_at"] is None for log in logs):
             return False
         settled = logs

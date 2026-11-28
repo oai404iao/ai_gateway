@@ -287,7 +287,7 @@ class HarnessTests(unittest.TestCase):
         ]:
             def fake_request(_base, path, **_kwargs):
                 if "request-logs" in path:
-                    return [{**log, "cost_amount": cost}], {}
+                    return {"items": [{**log, "cost_amount": cost}], "next_cursor": None}, {}
                 return {"balance_amount": balance}, {}
 
             with patch("run.request", side_effect=fake_request):
@@ -317,7 +317,7 @@ class HarnessTests(unittest.TestCase):
                         rows["warmup"][field], rows[swap_with][field] = rows[swap_with][field], rows["warmup"][field]
                 def api(_base, path, **_kwargs):
                     if "request-logs" in path:
-                        return list(rows.values()), {}
+                        return {"items": list(rows.values()), "next_cursor": None}, {}
                     return {"quota_used_amount": "0.000027", "balance_amount": "99.999973"}, {}
                 warmup_id = websocket_warmup_id({"http"}, rows.values(), ["warmup", "generation", "generation"])
                 self.assertEqual(warmup_id, "warmup")

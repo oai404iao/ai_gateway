@@ -71,7 +71,7 @@ def verify_usage_settlement(data, key_id, baseline, capability_id):
     def ready():
         nonlocal logs
         logs = request(data["console"], f"/console/v1/request-logs?api_key_id={key_id}",
-                       token=data["token"])[0]
+                       token=data["token"])[0]["items"]
         return len(logs) == 5 and all(log["billed_at"] for log in logs)
     wait_until(ready)
     check(Counter(log["request_protocol"] for log in logs) == {"non_stream": 3, "sse": 2},

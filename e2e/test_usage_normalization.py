@@ -82,7 +82,7 @@ class UsageNormalizationTests(unittest.TestCase):
                 changed[0]["cost_amount"] = "0.000009"
             def api(_base, path, **_kwargs):
                 if "request-logs" in path:
-                    return changed, {}
+                    return {"items": changed, "next_cursor": None}, {}
                 if path.endswith("/me"):
                     return {"balance_amount": "100" if fault == "balance" else "99.999970"}, {}
                 return {"quota_used_amount": "0" if fault == "quota" else "0.000030"}, {}
