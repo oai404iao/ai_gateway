@@ -145,4 +145,3 @@ export function formatRate(value: number | null): string {
 export function cacheRate(inputTokens: number, cachedInputTokens: number): number | null {
   return inputTokens > 0 ? cachedInputTokens / inputTokens : null;
 }
-

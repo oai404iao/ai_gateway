@@ -127,4 +127,3 @@ export function toQuery(draft: RequestLogFilterDraft): AdminRequestLogQuery {
     billed: draft.billed === "" ? undefined : draft.billed === "true",
   };
 }
-

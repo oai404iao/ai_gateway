@@ -219,4 +219,3 @@ export function Inspector({ mobile, onClose, closeRef, controls, children }: {
     </aside>
   );
 }
-

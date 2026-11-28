@@ -677,4 +677,3 @@ export function serializeDocument(document: VisualDocument, apiFormat: ApiFormat
   }
   return JSON.stringify(result, null, 2);
 }
-

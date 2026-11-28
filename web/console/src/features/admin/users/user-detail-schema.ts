@@ -46,4 +46,3 @@ export const emptyStatusValues: StatusValues = {
 export function isManageableStatus(value: string): value is ManageableStatus {
   return manageableStatuses.some((status) => status === value);
 }
-
