@@ -10,17 +10,18 @@ const CODEX_QUOTAS_KEY = ["console", "me", "codex-quotas"] as const;
 export function useOwnCodexQuotas() {
   return useQuery({
     queryKey: CODEX_QUOTAS_KEY,
-    queryFn: () =>
-      apiGet<SelfCodexQuotaCredentialView[]>("/me/codex-quotas"),
+    queryFn: ({ signal }) =>
+      apiGet<SelfCodexQuotaCredentialView[]>("/me/codex-quotas", signal),
   });
 }
 
 export function useOwnCodexQuotaWindowHistory(id: string) {
   return useQuery({
     queryKey: [...CODEX_QUOTAS_KEY, id, "windows"] as const,
-    queryFn: () =>
+    queryFn: ({ signal }) =>
       apiGet<SelfCodexQuotaWindowHistory>(
         `/me/codex-quotas/${id}/windows?limit=100`,
+        signal,
       ),
     enabled: Boolean(id),
   });

@@ -8,18 +8,19 @@ use uuid::Uuid;
 use crate::domain::AutomaticDisableTrigger;
 
 use super::{
-    ChannelBatchUpdateInput, CodexCredentialBatchInput, CodexCredentialCreate,
+    ApiKeyListFilter, ChannelBatchUpdateInput, CodexCredentialBatchInput, CodexCredentialCreate,
     CodexCredentialExportBundle, CodexCredentialExportInput, CodexCredentialRecord,
     CodexCredentialUpdateInput, CodexCredentialView, CodexOauthFlowRecord, CodexOauthStartInput,
     CodexQuotaReset, CodexQuotaResetOutcome, CodexQuotaUpdate, CodexQuotaWindowHistory,
     CodexRefresh, ConsoleApiKey, ConsoleAuditLog, ControlPlaneApiKey, ControlPlaneApiKeyPolicy,
     ControlPlaneConfigTemplate, ControlPlaneConfigTemplateDetail, ControlPlaneModel,
     ControlPlaneMutation, ControlPlaneProxy, ControlPlaneRecords, ControlPlaneUser,
-    ControlPlaneUserGroup, ModelSourceVersions, MutationResult, PostgresControlPlaneRepository,
-    ProxyRecord, RepositoryError, RuntimeConfigRecords, SelfApiKeyCreate, SelfApiKeyOptions,
-    SelfApiKeyUpdate, SelfCodexQuotaCredentialView, SelfCodexQuotaWindowHistory, SyncedModelInput,
-    SystemProbeIdentity, SystemSettingsInput, SystemSettingsView, UserBatchUpdateInput,
-    UserSettingsInput, UserSettingsView, control_plane_write::PostgresPreparedControlPlaneChange,
+    ControlPlaneUserGroup, ModelSourceVersions, MutationResult, PageOptions, PageResult,
+    PostgresControlPlaneRepository, ProxyRecord, RepositoryError, RuntimeConfigRecords,
+    SelfApiKeyCreate, SelfApiKeyOptions, SelfApiKeyUpdate, SelfCodexQuotaCredentialView,
+    SelfCodexQuotaWindowHistory, SyncedModelInput, SystemProbeIdentity, SystemSettingsInput,
+    SystemSettingsView, UserBatchUpdateInput, UserListFilter, UserSettingsInput, UserSettingsView,
+    control_plane_write::PostgresPreparedControlPlaneChange,
 };
 
 #[cfg(feature = "sqlite-backend")]
@@ -37,12 +38,12 @@ enum Backend {
 }
 
 macro_rules! admin_read {
-    ($name:ident, $result:ty $(, $argument:ident: $argument_type:ty)?) => {
-        pub async fn $name(&self $(, $argument: $argument_type)?) -> Result<$result, RepositoryError> {
+    ($name:ident, $result:ty $(, $argument:ident: $argument_type:ty)*) => {
+        pub async fn $name(&self $(, $argument: $argument_type)*) -> Result<$result, RepositoryError> {
             match &self.backend {
-                Backend::Postgres(repository) => repository.$name($($argument)?).await,
+                Backend::Postgres(repository) => repository.$name($($argument),*).await,
                 #[cfg(feature = "sqlite-backend")]
-                Backend::Sqlite(repository) => repository.$name($($argument)?).await,
+                Backend::Sqlite(repository) => repository.$name($($argument),*).await,
             }
         }
     };
@@ -335,13 +336,13 @@ impl ControlPlaneRepository {
         }
     }
 
-    admin_read!(admin_users, Vec<ControlPlaneUser>);
+    admin_read!(admin_users, PageResult<ControlPlaneUser>, filter: UserListFilter);
     admin_read!(admin_user, Option<ControlPlaneUser>, id: Uuid);
     admin_read!(admin_user_groups, Vec<ControlPlaneUserGroup>);
     admin_read!(admin_user_group, Option<ControlPlaneUserGroup>, id: Uuid);
     admin_read!(admin_models, Vec<ControlPlaneModel>);
     admin_read!(admin_model, Option<ControlPlaneModel>, id: Uuid);
-    admin_read!(admin_api_keys, Vec<ControlPlaneApiKey>);
+    admin_read!(admin_api_keys, PageResult<ControlPlaneApiKey>, user_id: Option<Uuid>, filter: ApiKeyListFilter);
     admin_read!(admin_api_key, Option<ControlPlaneApiKey>, id: Uuid);
     admin_read!(admin_api_key_policies, Vec<ControlPlaneApiKeyPolicy>);
     admin_read!(admin_api_key_policy, Option<ControlPlaneApiKeyPolicy>, id: Uuid);
@@ -364,21 +365,8 @@ impl ControlPlaneRepository {
         }
     }
 
-    pub async fn audit_logs(&self, limit: i64) -> Result<Vec<ConsoleAuditLog>, RepositoryError> {
-        match &self.backend {
-            Backend::Postgres(repository) => repository.audit_logs(limit).await,
-            #[cfg(feature = "sqlite-backend")]
-            Backend::Sqlite(repository) => repository.audit_logs(limit).await,
-        }
-    }
-
-    pub async fn own_api_keys(&self, user_id: Uuid) -> Result<Vec<ConsoleApiKey>, RepositoryError> {
-        match &self.backend {
-            Backend::Postgres(repository) => repository.own_api_keys(user_id).await,
-            #[cfg(feature = "sqlite-backend")]
-            Backend::Sqlite(repository) => repository.own_api_keys(user_id).await,
-        }
-    }
+    admin_read!(audit_logs, PageResult<ConsoleAuditLog>, options: PageOptions);
+    admin_read!(own_api_keys, PageResult<ConsoleApiKey>, user_id: Uuid, filter: ApiKeyListFilter);
 
     pub async fn own_api_key(
         &self,

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -57,7 +57,7 @@ import type {
   RequestCompression,
 } from "@/api/types";
 import { usePageOrigin, useReturnPath, withReturnTo } from "@/lib/page-navigation";
-import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
+import { useConfigurationDraft } from "@/hooks/use-configuration-draft";
 import { useConnectorPlugins } from "@/features/admin/connectors/api";
 import { modelDiscoveryInput, supportsModelDiscovery } from "./model-discovery-input";
 import { modelLabel } from "@/features/admin/models/model-label";
@@ -186,11 +186,19 @@ export function CapabilityDetailPage({ capabilityId, channelId, embedded = false
     }
   };
 
+  const baselineRef = useRef<typeof query.data>(undefined);
+
   useEffect(() => {
-    if (capability) {
-      const settings = capability.settings;
+    baselineRef.current = undefined;
+  }, [id]);
+
+  useEffect(() => {
+    if (query.data && query.data !== baselineRef.current && !form.formState.isDirty) {
+      baselineRef.current = query.data;
+      const loaded = query.data.data;
+      const settings = loaded.settings;
       form.reset({
-        channel_id: capability.channel_id,
+        channel_id: loaded.channel_id,
         operation: settings.operation,
         enabled: settings.enabled,
         available_models: settings.available_models,
@@ -198,13 +206,13 @@ export function CapabilityDetailPage({ capabilityId, channelId, embedded = false
         test_model: settings.test_model ?? "",
         test_pricing_model_id: settings.test_pricing_model_id ?? "",
         auto_disable_allowed: settings.auto_disable_allowed,
-        status_statistics_enabled: capability.status_statistics_enabled,
-        config_template_id: capability.config_template_id ?? "",
-        override_document: JSON.stringify(capability.override_document ?? {}, null, 2),
-        billing_multiplier: capability.billing_multiplier,
+        status_statistics_enabled: loaded.status_statistics_enabled,
+        config_template_id: loaded.config_template_id ?? "",
+        override_document: JSON.stringify(loaded.override_document ?? {}, null, 2),
+        billing_multiplier: loaded.billing_multiplier,
       });
     }
-  }, [capability, form]);
+  }, [query.data, form, form.formState.isDirty]);
 
   const submit = form.handleSubmit(async (values) => {
     if (transformError) return;

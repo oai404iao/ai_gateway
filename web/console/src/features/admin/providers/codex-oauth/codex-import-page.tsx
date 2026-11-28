@@ -8,16 +8,13 @@ import {
   WandSparkles,
 } from "lucide-react";
 import { useReturnPath } from "@/lib/page-navigation";
-import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
+import { useConfigurationDraft } from "@/hooks/use-configuration-draft";
 import { toast } from "sonner";
-import type {
-  CodexCredentialImportInput,
-  ProxyView,
-} from "@/api/types";
-import { ApiError } from "@/api/errors";
+import type { CodexCredentialImportInput } from "@/api/types";
 import { useI18n } from "@/app/i18n";
 import { ErrorAlert } from "@/components/shared/async-resource";
 import { PageHeader } from "@/components/shared/page-header";
+import { ResourceTable, type Column } from "@/components/shared/resource-table";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -30,17 +27,8 @@ import {
 } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import {
   Field,
   FieldDescription,
-  FieldError,
   FieldGroup,
   FieldLabel,
 } from "@/components/ui/field";
@@ -54,15 +42,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
-import { Switch } from "@/components/ui/switch";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import {
   Tabs,
   TabsContent,
@@ -81,9 +60,18 @@ import { CodexImportProxyManager } from "./codex-import-proxy-manager";
 import { CodexAccountIdentity } from "./codex-account-identity";
 import { useImportCodexCredential } from "./api";
 
-const NO_PROXY = "__none__";
-const MAX_FILE_BYTES = 5 * 1024 * 1024;
-const MAX_FILES = 20;
+import {
+  codexImportError,
+  CredentialEditorDialog,
+  credentialErrors,
+  credentialWarnings,
+  ImportStatusBadge,
+  matchExistingProxy,
+  MAX_FILE_BYTES,
+  MAX_FILES,
+  NO_PROXY,
+  SummaryCard,
+} from "./codex-import-dialog";
 
 export default function CodexImportPage() {
   const { t } = useI18n();
@@ -548,199 +536,208 @@ export default function CodexImportPage() {
                 </Button>
               </div>
 
-              <div className="overflow-x-auto rounded-xl border">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>
+              <ResourceTable
+                columns={[
+                  {
+                    key: "select",
+                    header: (
+                      <Checkbox
+                        aria-label={t("Select all credentials")}
+                        checked={
+                          credentials.length > 0 &&
+                          credentials.every((credential) => credential.selected)
+                        }
+                        onCheckedChange={(checked) =>
+                          setCredentials((current) =>
+                            current.map((credential) => ({
+                              ...credential,
+                              selected: Boolean(checked),
+                            })),
+                          )
+                        }
+                      />
+                    ),
+                    className: "align-top",
+                    render: (credential) => {
+                      const index = credentials.indexOf(credential);
+                      return (
                         <Checkbox
-                          aria-label={t("Select all credentials")}
-                          checked={
-                            credentials.length > 0 &&
-                            credentials.every(
-                              (credential) => credential.selected,
-                            )
-                          }
+                          aria-label={t("Select credential {number}", {
+                            number: index + 1,
+                          })}
+                          checked={credential.selected}
+                          disabled={credential.status === "imported"}
                           onCheckedChange={(checked) =>
-                            setCredentials((current) =>
-                              current.map((credential) => ({
-                                ...credential,
-                                selected: Boolean(checked),
-                              })),
-                            )
+                            patchCredential(credential.id, {
+                              selected: Boolean(checked),
+                            })
                           }
                         />
-                      </TableHead>
-                      <TableHead>{t("Credential")}</TableHead>
-                      <TableHead>{t("Proxy")}</TableHead>
-                      <TableHead>{t("Threshold")}</TableHead>
-                      <TableHead>{t("Status")}</TableHead>
-                      <TableHead pinned>
-                        {t("Actions")}
-                      </TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {credentials.map((credential, index) => {
-                      const errors = credentialErrors(
-                        credential,
-                        validProxyIds,
                       );
-                      const warnings = credentialWarnings(
-                        credential,
-                        importedProxies,
-                      );
+                    },
+                  },
+                  {
+                    key: "credential",
+                    header: t("Credential"),
+                    className: "min-w-72 align-top",
+                    render: (credential) => {
+                      const index = credentials.indexOf(credential);
+                      const errors = credentialErrors(credential, validProxyIds);
+                      const warnings = credentialWarnings(credential, importedProxies);
                       return (
-                        <TableRow key={credential.id}>
-                          <TableCell className="align-top">
-                            <Checkbox
-                              aria-label={t("Select credential {number}", {
-                                number: index + 1,
-                              })}
-                              checked={credential.selected}
-                              disabled={credential.status === "imported"}
-                              onCheckedChange={(checked) =>
-                                patchCredential(credential.id, {
-                                  selected: Boolean(checked),
-                                })
-                              }
-                            />
-                          </TableCell>
-                          <TableCell className="min-w-72 align-top">
-                            <Input
-                              aria-label={t("Label for credential {number}", {
-                                number: index + 1,
-                              })}
-                              value={credential.label}
-                              onChange={(event) =>
-                                patchCredential(credential.id, {
-                                  label: event.target.value,
-                                })
-                              }
-                            />
-                            <div className="mt-2 flex flex-wrap gap-1">
-                              <Badge variant="outline">
-                                {credential.source}
+                        <>
+                          <Input
+                            aria-label={t("Label for credential {number}", {
+                              number: index + 1,
+                            })}
+                            value={credential.label}
+                            onChange={(event) =>
+                              patchCredential(credential.id, {
+                                label: event.target.value,
+                              })
+                            }
+                          />
+                          <div className="mt-2 flex flex-wrap gap-1">
+                            <Badge variant="outline">
+                              {credential.source}
+                            </Badge>
+                            {credential.email ? (
+                              <Badge variant="secondary">
+                                {credential.email}
                               </Badge>
-                              {credential.email ? (
-                                <Badge variant="secondary">
-                                  {credential.email}
-                                </Badge>
-                              ) : null}
-                            </div>
-                            <CodexAccountIdentity accountId={credential.account_id} userId={credential.user_id} />
-                            {errors.map((error) => (
-                              <p
-                                className="mt-1 text-xs text-destructive"
-                                key={error}
-                              >
-                                {t(error)}
-                              </p>
-                            ))}
-                            {warnings.map((warning) => (
-                              <p
-                                className="mt-1 text-xs text-warning-foreground"
-                                key={warning}
-                              >
-                                {t(warning)}
-                              </p>
-                            ))}
-                          </TableCell>
-                          <TableCell className="min-w-56 align-top">
-                            <Select
-                              value={credential.proxy_id || NO_PROXY}
-                              onValueChange={(value) =>
-                                patchCredential(credential.id, {
-                                  proxy_id:
-                                    value === NO_PROXY ? "" : value,
-                                })
-                              }
-                            >
-                              <SelectTrigger
-                                aria-label={t("Proxy for {label}", {
-                                  label: credential.label,
-                                })}
-                              >
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectGroup>
-                                  <SelectItem value={NO_PROXY}>
-                                    {t("Direct")}
-                                  </SelectItem>
-                                  {enabledProxies.map((proxy) => (
-                                    <SelectItem
-                                      key={proxy.id}
-                                      value={proxy.id}
-                                    >
-                                      {proxy.name}
-                                    </SelectItem>
-                                  ))}
-                                </SelectGroup>
-                              </SelectContent>
-                            </Select>
-                          </TableCell>
-                          <TableCell className="min-w-28 align-top">
-                            <Input
-                              aria-label={t("Threshold for {label}", {
-                                label: credential.label,
-                              })}
-                              type="number"
-                              min={1}
-                              max={100}
-                              value={credential.quota_threshold_percent}
-                              onChange={(event) =>
-                                patchCredential(credential.id, {
-                                  quota_threshold_percent:
-                                    event.target.value,
-                                })
-                              }
-                            />
-                          </TableCell>
-                          <TableCell className="align-top">
-                            <ImportStatusBadge credential={credential} />
-                            {credential.result_message ? (
-                              <p className="mt-2 max-w-48 text-xs text-muted-foreground">
-                                {credential.result_message}
-                              </p>
                             ) : null}
-                          </TableCell>
-                          <TableCell pinned className="align-top">
-                            <div className="flex justify-end gap-1">
-                              <Button
-                                variant="ghost"
-                                size="icon-sm"
-                                aria-label={t("Edit tokens for {label}", {
-                                  label: credential.label,
-                                })}
-                                onClick={() => setEditingId(credential.id)}
-                              >
-                                <Pencil />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="icon-sm"
-                                aria-label={t("Remove {label}", {
-                                  label: credential.label,
-                                })}
-                                onClick={() =>
-                                  setCredentials((current) =>
-                                    current.filter(
-                                      (item) => item.id !== credential.id,
-                                    ),
-                                  )
-                                }
-                              >
-                                <Trash2 />
-                              </Button>
-                            </div>
-                          </TableCell>
-                        </TableRow>
+                          </div>
+                          <CodexAccountIdentity accountId={credential.account_id} userId={credential.user_id} />
+                          {errors.map((error) => (
+                            <p
+                              className="mt-1 text-xs text-destructive"
+                              key={error}
+                            >
+                              {t(error)}
+                            </p>
+                          ))}
+                          {warnings.map((warning) => (
+                            <p
+                              className="mt-1 text-xs text-warning-foreground"
+                              key={warning}
+                            >
+                              {t(warning)}
+                            </p>
+                          ))}
+                        </>
                       );
-                    })}
-                  </TableBody>
-                </Table>
-              </div>
+                    },
+                  },
+                  {
+                    key: "proxy",
+                    header: t("Proxy"),
+                    className: "min-w-56 align-top",
+                    render: (credential) => (
+                      <Select
+                        value={credential.proxy_id || NO_PROXY}
+                        onValueChange={(value) =>
+                          patchCredential(credential.id, {
+                            proxy_id: value === NO_PROXY ? "" : value,
+                          })
+                        }
+                      >
+                        <SelectTrigger
+                          aria-label={t("Proxy for {label}", {
+                            label: credential.label,
+                          })}
+                        >
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectGroup>
+                            <SelectItem value={NO_PROXY}>
+                              {t("Direct")}
+                            </SelectItem>
+                            {enabledProxies.map((proxy) => (
+                              <SelectItem key={proxy.id} value={proxy.id}>
+                                {proxy.name}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                    ),
+                  },
+                  {
+                    key: "threshold",
+                    header: t("Threshold"),
+                    className: "min-w-28 align-top",
+                    render: (credential) => (
+                      <Input
+                        aria-label={t("Threshold for {label}", {
+                          label: credential.label,
+                        })}
+                        type="number"
+                        min={1}
+                        max={100}
+                        value={credential.quota_threshold_percent}
+                        onChange={(event) =>
+                          patchCredential(credential.id, {
+                            quota_threshold_percent: event.target.value,
+                          })
+                        }
+                      />
+                    ),
+                  },
+                  {
+                    key: "status",
+                    header: t("Status"),
+                    className: "align-top",
+                    render: (credential) => (
+                      <>
+                        <ImportStatusBadge credential={credential} />
+                        {credential.result_message ? (
+                          <p className="mt-2 max-w-48 text-xs text-muted-foreground">
+                            {credential.result_message}
+                          </p>
+                        ) : null}
+                      </>
+                    ),
+                  },
+                  {
+                    key: "actions",
+                    header: t("Actions"),
+                    pinned: true,
+                    className: "align-top",
+                    render: (credential) => (
+                      <div className="flex justify-end gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={t("Edit tokens for {label}", {
+                            label: credential.label,
+                          })}
+                          onClick={() => setEditingId(credential.id)}
+                        >
+                          <Pencil />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={t("Remove {label}", {
+                            label: credential.label,
+                          })}
+                          onClick={() =>
+                            setCredentials((current) =>
+                              current.filter((item) => item.id !== credential.id),
+                            )
+                          }
+                        >
+                          <Trash2 />
+                        </Button>
+                      </div>
+                    ),
+                  },
+                ] satisfies Column<CodexCredentialImportDraft>[]}
+                rows={credentials}
+                rowKey={(credential) => credential.id}
+                pagination={false}
+              />
 
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <p className="text-sm text-muted-foreground">
@@ -772,235 +769,4 @@ export default function CodexImportPage() {
       />
     </div>
   );
-}
-
-function CredentialEditorDialog({
-  credential,
-  onChange,
-  onClose,
-}: {
-  credential: CodexCredentialImportDraft | null;
-  onChange: (patch: Partial<CodexCredentialImportDraft>) => void;
-  onClose: () => void;
-}) {
-  const { t } = useI18n();
-  return (
-    <Dialog
-      open={Boolean(credential)}
-      onOpenChange={(open) => !open && onClose()}
-    >
-      <DialogContent className="max-h-[calc(100svh-2rem)] overflow-y-auto sm:max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>{t("Edit credential secrets")}</DialogTitle>
-          <DialogDescription>
-            {t(
-              "Review or replace imported tokens and identity fields. Values remain in memory until import.",
-            )}
-          </DialogDescription>
-        </DialogHeader>
-        {credential ? (
-          <FieldGroup>
-            <Field orientation="horizontal">
-              <FieldLabel htmlFor="codex-import-enabled">
-                {t("Enabled after import")}
-              </FieldLabel>
-              <Switch
-                id="codex-import-enabled"
-                checked={credential.enabled}
-                onCheckedChange={(enabled) =>
-                  onChange({ enabled: Boolean(enabled) })
-                }
-              />
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="codex-import-account-id">
-                {t("Account ID override (optional)")}
-              </FieldLabel>
-              <Input
-                id="codex-import-account-id"
-                value={credential.account_id}
-                onChange={(event) =>
-                  onChange({ account_id: event.target.value })
-                }
-              />
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="codex-import-user-id">
-                {t("User ID override (optional)")}
-              </FieldLabel>
-              <Input
-                id="codex-import-user-id"
-                value={credential.user_id}
-                onChange={(event) => onChange({ user_id: event.target.value })}
-              />
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="codex-import-id-token">
-                {t("ID token (optional)")}
-              </FieldLabel>
-              <Textarea
-                id="codex-import-id-token"
-                value={credential.id_token}
-                onChange={(event) =>
-                  onChange({ id_token: event.target.value })
-                }
-                rows={4}
-                spellCheck={false}
-                className="font-mono text-xs"
-              />
-              <FieldDescription>
-                {t(
-                  "When omitted, the gateway reads identity claims from the access token.",
-                )}
-              </FieldDescription>
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="codex-import-access-token">
-                {t("Access token")}
-              </FieldLabel>
-              <Textarea
-                id="codex-import-access-token"
-                value={credential.access_token}
-                onChange={(event) =>
-                  onChange({ access_token: event.target.value })
-                }
-                rows={5}
-                spellCheck={false}
-                className="font-mono text-xs"
-                aria-invalid={!credential.access_token.trim()}
-              />
-              {!credential.access_token.trim() ? (
-                <FieldError>{t("Access token is required.")}</FieldError>
-              ) : null}
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="codex-import-refresh-token">
-                {t("Refresh token")}
-              </FieldLabel>
-              <Textarea
-                id="codex-import-refresh-token"
-                value={credential.refresh_token}
-                onChange={(event) =>
-                  onChange({ refresh_token: event.target.value })
-                }
-                rows={5}
-                spellCheck={false}
-                className="font-mono text-xs"
-                aria-invalid={!credential.refresh_token.trim()}
-              />
-              {!credential.refresh_token.trim() ? (
-                <FieldError>{t("Refresh token is required.")}</FieldError>
-              ) : null}
-            </Field>
-          </FieldGroup>
-        ) : null}
-        <DialogFooter>
-          <Button onClick={onClose}>{t("Done")}</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function SummaryCard({ label, value }: { label: string; value: number }) {
-  return (
-    <Card>
-      <CardHeader>
-        <CardDescription>{label}</CardDescription>
-        <CardTitle className="text-2xl">{value}</CardTitle>
-      </CardHeader>
-    </Card>
-  );
-}
-
-function ImportStatusBadge({
-  credential,
-}: {
-  credential: CodexCredentialImportDraft;
-}) {
-  const { t } = useI18n();
-  if (credential.status === "imported") {
-    return <Badge variant="success">{t("Imported")}</Badge>;
-  }
-  if (credential.status === "failed") {
-    return <Badge variant="destructive">{t("Failed")}</Badge>;
-  }
-  if (credential.status === "importing") {
-    return <Badge variant="info">{t("Importing")}</Badge>;
-  }
-  return <Badge variant="secondary">{t("Pending")}</Badge>;
-}
-
-function credentialErrors(
-  credential: CodexCredentialImportDraft,
-  validProxyIds: Set<string>,
-): string[] {
-  const errors = credential.errors.filter((error) =>
-    error.startsWith("Duplicate of import row"),
-  );
-  const threshold = Number(credential.quota_threshold_percent);
-  if (!credential.label.trim()) errors.push("Label is required.");
-  if (!credential.access_token.trim()) errors.push("Access token is required.");
-  if (!credential.refresh_token.trim()) errors.push("Refresh token is required.");
-  if (!Number.isInteger(threshold) || threshold < 1 || threshold > 100) {
-    errors.push("Quota threshold must be from 1 to 100.");
-  }
-  if (credential.proxy_id && !validProxyIds.has(credential.proxy_id)) {
-    errors.push("The assigned proxy is missing or disabled.");
-  }
-  return [...new Set(errors)];
-}
-
-function credentialWarnings(
-  credential: CodexCredentialImportDraft,
-  importedProxies: ImportedProxyDraft[],
-): string[] {
-  const warnings = [...credential.warnings];
-  if (
-    credential.source_proxy_key &&
-    !credential.proxy_id &&
-    importedProxies.some(
-      (proxy) => proxy.source_key === credential.source_proxy_key,
-    )
-  ) {
-    warnings.push(
-      "The source proxy is not mapped; this credential will use a direct connection.",
-    );
-  }
-  return [...new Set(warnings)];
-}
-
-function matchExistingProxy(
-  imported: ImportedProxyDraft,
-  existing: ProxyView[],
-): ProxyView | undefined {
-  return (
-    existing.find(
-      (proxy) =>
-        proxy.name === imported.name && proxy.proxy_url === imported.proxy_url,
-    ) ??
-    existing.find((proxy) => proxy.proxy_url === imported.proxy_url)
-  );
-}
-
-function codexImportError(
-  error: unknown,
-  t: (key: string, values?: Record<string, string | number>) => string,
-): string {
-  if (error instanceof ApiError) {
-    switch (error.code) {
-      case "codex_account_changed":
-        return t("The supplied workspace or user ID does not match the token.");
-      case "codex_network_policy_invalid":
-        return t("The selected outbound proxy is unavailable.");
-      case "codex_refresh_token_invalid":
-        return t("The refresh token is no longer valid.");
-      case "codex_models_invalid":
-        return t("The account returned no supported Codex models.");
-      case "codex_credential_invalid":
-        return t("The credential tokens are invalid.");
-    }
-    return error.message;
-  }
-  return error instanceof Error ? error.message : t("Import failed");
 }

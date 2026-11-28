@@ -8,7 +8,7 @@ const PROFILE_KEY = ["console", "me", "profile"] as const;
 export function useProfile() {
   return useQuery({
     queryKey: PROFILE_KEY,
-    queryFn: () => apiGet<ConsoleProfile>("/me"),
+    queryFn: ({ signal }) => apiGet<ConsoleProfile>("/me", signal),
   });
 }
 

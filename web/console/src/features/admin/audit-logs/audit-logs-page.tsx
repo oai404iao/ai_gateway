@@ -1,13 +1,6 @@
+import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router";
 import { useI18n } from "@/app/i18n";
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { PageHeader } from "@/components/shared/page-header";
 import { AsyncResource } from "@/components/shared/async-resource";
 import { DetailField } from "@/components/shared/detail-field";
@@ -15,10 +8,12 @@ import { JsonViewer } from "@/components/shared/json-viewer";
 import type { Column } from "@/components/shared/resource-table";
 import { ResourceDirectory } from "@/features/admin/components/resource-directory";
 import { useAuditLogs } from "@/features/admin/api";
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
+import { useCursorPagination } from "@/lib/use-cursor-pagination";
 import type { AuditLogView } from "@/api/types";
 import { formatDateTime } from "@/lib/dates";
 
-const LIMITS = [50, 100];
+const LIMITS = [25, 50, 100] as const;
 
 function objectLabel(log: AuditLogView): string {
   for (const snapshot of [log.after_redacted, log.before_redacted]) {
@@ -32,8 +27,41 @@ function objectLabel(log: AuditLogView): string {
 export function AuditLogsPage() {
   const { t } = useI18n();
   const [params, setParams] = useSearchParams();
-  const limit = Number(params.get("limit")) === 50 ? 50 : 100;
-  const { data, isLoading, error } = useAuditLogs(limit);
+  const [search, setSearch] = useState(() => params.get("q") ?? "");
+  const debouncedSearch = useDebouncedValue(search, 300);
+  const trimmedSearch = debouncedSearch.trim();
+  const limitParam = Number(params.get("limit"));
+  const limit = LIMITS.includes(limitParam as (typeof LIMITS)[number]) ? limitParam : 50;
+  const cursorPagination = useCursorPagination();
+  const resetCursor = cursorPagination.reset;
+
+  useEffect(() => {
+    resetCursor();
+  }, [trimmedSearch, limit, resetCursor]);
+
+  const { data, isLoading, isFetching, error } = useAuditLogs({
+    limit,
+    cursor: cursorPagination.cursor,
+    q: trimmedSearch || undefined,
+  });
+  const rows = data?.items ?? [];
+
+  const handleSearchChange = (value: string) => {
+    setSearch(value);
+    setParams((current) => {
+      const next = new URLSearchParams(current);
+      if (value) next.set("q", value); else next.delete("q");
+      return next;
+    }, { replace: true });
+  };
+
+  const handlePageSizeChange = (nextLimit: number) => {
+    setParams((current) => {
+      const next = new URLSearchParams(current);
+      if (nextLimit === 50) next.delete("limit"); else next.set("limit", String(nextLimit));
+      return next;
+    }, { replace: true });
+  };
 
   const columns: Column<AuditLogView>[] = [
     {
@@ -53,42 +81,32 @@ export function AuditLogsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader
-        title="Audit Logs"
-        actions={
-          <Select value={String(limit)} onValueChange={(value) => setParams((current) => {
-            const next = new URLSearchParams(current);
-            next.set("limit", String(value));
-            next.delete("page");
-            return next;
-          }, { replace: true })}>
-            <SelectTrigger aria-label={t("Result limit")} className="w-32">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                {LIMITS.map((value) => (
-                  <SelectItem key={value} value={String(value)}>
-                    {t("Last {count}", { count: value })}
-                  </SelectItem>
-                ))}
-              </SelectGroup>
-            </SelectContent>
-          </Select>
-        }
-      />
+      <PageHeader title="Audit Logs" />
           <AsyncResource
             isLoading={isLoading}
             error={error}
-            isEmpty={data?.length === 0}
+            isEmpty={rows.length === 0 && !trimmedSearch}
             emptyTitle="No audit events"
           >
             <ResourceDirectory
               columns={columns}
-              rows={data ?? []}
+              rows={rows}
               rowKey={(log) => log.id}
               rowName={(log) => `${log.action} · ${objectLabel(log)}`}
               searchText={(log) => [log.action, objectLabel(log), log.object_type, log.object_id, log.actor_role, log.actor_user_id, log.correlation_id].join(" ")}
+              server={{
+                search,
+                onSearchChange: handleSearchChange,
+                page: cursorPagination.page,
+                pageSize: limit,
+                pageSizeOptions: LIMITS,
+                onPageSizeChange: handlePageSizeChange,
+                hasPrevious: cursorPagination.hasPrevious,
+                hasNext: Boolean(data?.next_cursor),
+                onPrevious: cursorPagination.goPrevious,
+                onNext: () => cursorPagination.goNext(data?.next_cursor),
+                isFetching,
+              }}
               renderProperties={(selected) => <dl className="mt-3 grid gap-3 border-t pt-3">
               <DetailField label="Occurred" value={formatDateTime(selected.occurred_at)} />
               <DetailField label="Event ID" value={selected.id} mono />

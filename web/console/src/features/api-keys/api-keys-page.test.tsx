@@ -87,10 +87,11 @@ describe("ApiKeysPage", () => {
     await screen.findByText(OWN_API_KEY.name);
     await user.click(screen.getByRole("button", {name: /^Revoked/}));
     expect(await screen.findByText("No matching API keys")).toBeVisible();
-    await user.click(screen.getByRole("button", {name: /^All \d/}));
+    await user.click(screen.getByRole("button", {name: /^All/}));
     await user.type(screen.getByRole("searchbox", {name:"Filter key names"}), "not-in-inventory");
-    expect(screen.getByText("No matching API keys")).toBeVisible();
+    expect(await screen.findByText("No matching API keys")).toBeVisible();
     await user.clear(screen.getByRole("searchbox", {name:"Filter key names"}));
+    await screen.findByText(OWN_API_KEY.name);
     await user.click(screen.getByRole("button", {name:`Actions for ${OWN_API_KEY.name}`}));
     await user.click(await screen.findByRole("menuitem", {name:"Edit"}));
     const editor = within(await screen.findByRole("dialog", {name:"Edit API key"}));
@@ -118,9 +119,13 @@ describe("ApiKeysPage", () => {
       api_formats: ["open_ai_responses"],
     }));
     server.use(
-      http.get("/console/v1/me/api-keys", () => HttpResponse.json([{
-        ...OWN_API_KEY, allowed_group_ids: [], allowed_channel_ids: channels.map((channel) => channel.id),
-      }])),
+      http.get("/console/v1/me/api-keys", () => HttpResponse.json({
+        items: [{
+          ...OWN_API_KEY, allowed_group_ids: [], allowed_channel_ids: channels.map((channel) => channel.id),
+        }],
+        next_cursor: null,
+        total: 1,
+      })),
       http.get("/console/v1/me/api-key-options", () => HttpResponse.json({
         policy_id: null, policy_name: null, policy_enabled: false,
         groups: [], channels,

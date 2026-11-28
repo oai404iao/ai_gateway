@@ -5,6 +5,8 @@
 //! are written once and must hold for both backends. Infrastructure setup failures
 //! are reported as such; a contract mismatch names the backend that diverged.
 
+use ai_gateway::persistence::PageOptions;
+
 use std::{os::unix::fs::PermissionsExt, str::FromStr, sync::Arc};
 
 use ai_gateway::{
@@ -226,7 +228,15 @@ async fn catalog_and_probe_contract(repositories: Repositories) {
         repository.ensure_system_probe_identity().await.unwrap(),
         identity
     );
-    assert_eq!(repository.admin_users().await.unwrap().len(), 1);
+    assert_eq!(
+        repository
+            .admin_users(Default::default())
+            .await
+            .unwrap()
+            .items
+            .len(),
+        1
+    );
     let input = |source: &str, price: &str, local| {
         let model = ai_gateway::models_dev::ModelsDevModel {
             model_id: source.into(),
@@ -334,9 +344,13 @@ async fn commit_self_key(
 async fn audit_for(repositories: &Repositories, action: &str, object_id: Uuid) -> ConsoleAuditLog {
     repositories
         .control_plane
-        .audit_logs(100)
+        .audit_logs(PageOptions {
+            limit: Some(100),
+            ..Default::default()
+        })
         .await
         .unwrap()
+        .items
         .into_iter()
         .find(|entry| entry.action == action && entry.object_id == object_id)
         .expect("expected audit entry for the requested action and object")
@@ -345,9 +359,10 @@ async fn audit_for(repositories: &Repositories, action: &str, object_id: Uuid) -
 async fn listed_user(repositories: &Repositories, id: Uuid) -> ControlPlaneUser {
     repositories
         .control_plane
-        .admin_users()
+        .admin_users(Default::default())
         .await
         .unwrap()
+        .items
         .into_iter()
         .find(|user| user.id == id)
         .expect("expected user in the control-plane list")
@@ -818,9 +833,17 @@ async fn control_plane_contract(repositories: Repositories) {
     let world = world(&repositories).await;
     let repository = &repositories.control_plane;
 
-    let users = repository.admin_users().await.unwrap();
+    let users = repository
+        .admin_users(Default::default())
+        .await
+        .unwrap()
+        .items;
     let api_key_policies = repository.admin_api_key_policies().await.unwrap();
-    let api_keys = repository.admin_api_keys().await.unwrap();
+    let api_keys = repository
+        .admin_api_keys(None, Default::default())
+        .await
+        .unwrap()
+        .items;
     assert_eq!(users.len(), 2);
     assert!(users.iter().any(|user| user.id == world.admin));
     assert!(users.iter().any(|user| user.id == world.user));
@@ -985,7 +1008,14 @@ async fn control_plane_contract(repositories: Repositories) {
         Some(RepositoryError::NotFound)
     ));
 
-    let audits = repository.audit_logs(100).await.unwrap();
+    let audits = repository
+        .audit_logs(PageOptions {
+            limit: Some(100),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .items;
     for (action, object_type) in [
         ("create", "routing_group"),
         ("create", "upstream_access"),
@@ -1060,12 +1090,21 @@ async fn self_service_contract(repositories: Repositories) {
     );
     assert!(
         repository
-            .own_api_keys(world.admin)
+            .own_api_keys(world.admin, Default::default())
             .await
             .unwrap()
+            .items
             .is_empty()
     );
-    assert_eq!(repository.own_api_keys(world.user).await.unwrap().len(), 1);
+    assert_eq!(
+        repository
+            .own_api_keys(world.user, Default::default())
+            .await
+            .unwrap()
+            .items
+            .len(),
+        1
+    );
 
     // A target outside the user's policy is rejected without writing.
     let outside = commit_mutation(
@@ -1230,9 +1269,10 @@ async fn self_service_contract(repositories: Repositories) {
     );
     assert!(
         repository
-            .own_api_keys(world.user)
+            .own_api_keys(world.user, Default::default())
             .await
             .unwrap()
+            .items
             .is_empty()
     );
 }
@@ -1343,9 +1383,13 @@ async fn prepared_change_contract(repositories: Repositories) {
     );
     assert!(
         !repository
-            .audit_logs(100)
+            .audit_logs(PageOptions {
+                limit: Some(100),
+                ..Default::default()
+            })
             .await
             .unwrap()
+            .items
             .iter()
             .any(|audit| audit.action == "self_revoke" && audit.object_id == key.id)
     );
@@ -1380,9 +1424,13 @@ async fn prepared_change_contract(repositories: Repositories) {
     );
     assert!(
         !repository
-            .audit_logs(100)
+            .audit_logs(PageOptions {
+                limit: Some(100),
+                ..Default::default()
+            })
             .await
             .unwrap()
+            .items
             .iter()
             .any(|audit| audit.object_id == dropped)
     );
@@ -1629,9 +1677,10 @@ async fn operation_graph(repositories: &Repositories, profile: Uuid) -> Operatio
 async fn listed_key(repositories: &Repositories, id: Uuid) -> ControlPlaneApiKey {
     repositories
         .control_plane
-        .admin_api_keys()
+        .admin_api_keys(None, Default::default())
         .await
         .unwrap()
+        .items
         .into_iter()
         .find(|key| key.id == id)
         .unwrap_or_else(|| panic!("api key {id} must be listed"))
@@ -2137,21 +2186,33 @@ async fn user_lifecycle_contract(repositories: Repositories) {
     );
     assert!(
         repository
-            .admin_users()
+            .admin_users(Default::default())
             .await
             .unwrap()
+            .items
             .iter()
             .all(|user| user.id != deleted.id)
     );
     assert!(repository.admin_user(deleted.id).await.unwrap().is_none());
     assert!(repository.admin_api_key(key).await.unwrap().is_none());
-    assert!(repository.own_api_keys(user).await.unwrap().is_empty());
+    assert!(
+        repository
+            .own_api_keys(user, Default::default())
+            .await
+            .unwrap()
+            .items
+            .is_empty()
+    );
     assert!(repository.own_api_key(user, key).await.unwrap().is_none());
     assert!(
         repository
-            .audit_logs(100)
+            .audit_logs(PageOptions {
+                limit: Some(100),
+                ..Default::default()
+            })
             .await
             .unwrap()
+            .items
             .iter()
             .any(|audit| {
                 audit.action == "delete" && audit.object_type == "user" && audit.object_id == user
@@ -2632,9 +2693,10 @@ async fn admin_api_key_and_policy_contract(repositories: Repositories) {
     );
     assert!(
         repository
-            .admin_api_keys()
+            .admin_api_keys(None, Default::default())
             .await
             .unwrap()
+            .items
             .iter()
             .all(|key| key.id != deleted.id)
     );
@@ -2647,9 +2709,10 @@ async fn admin_api_key_and_policy_contract(repositories: Repositories) {
     );
     assert!(
         repository
-            .own_api_keys(world.user)
+            .own_api_keys(world.user, Default::default())
             .await
             .unwrap()
+            .items
             .is_empty()
     );
 
@@ -3090,9 +3153,18 @@ async fn reusable_upstream_identity_contract(repositories: Repositories) {
         serde_json::to_string(&repository.upstream_credentials().await.unwrap()).unwrap();
     assert!(!serialized.contains("identity-rotated-secret"));
     assert!(
-        !serde_json::to_string(&repository.audit_logs(100).await.unwrap())
-            .unwrap()
-            .contains("identity-rotated-secret")
+        !serde_json::to_string(
+            &repository
+                .audit_logs(PageOptions {
+                    limit: Some(100),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .items
+        )
+        .unwrap()
+        .contains("identity-rotated-secret")
     );
 }
 
@@ -3759,7 +3831,11 @@ async fn template_proxy_and_group_deletion_contract(repositories: Repositories) 
         );
     }
 
-    let api_keys = repository.admin_api_keys().await.unwrap();
+    let api_keys = repository
+        .admin_api_keys(None, Default::default())
+        .await
+        .unwrap()
+        .items;
     let api_key_policies = repository.admin_api_key_policies().await.unwrap();
     let topology = repository.topology().await.unwrap();
     assert_ne!(
@@ -3831,9 +3907,9 @@ async fn observable_state(repositories: &Repositories) -> Value {
             "policy_grants": topology.policy_grants,
         },
         "lists": {
-            "users": repositories.control_plane.admin_users().await.unwrap(),
+            "users": repositories.control_plane.admin_users(Default::default()).await.unwrap().items,
             "user_groups": repositories.control_plane.admin_user_groups().await.unwrap(),
-            "api_keys": repositories.control_plane.admin_api_keys().await.unwrap(),
+            "api_keys": repositories.control_plane.admin_api_keys(None, Default::default()).await.unwrap().items,
             "api_key_policies": repositories.control_plane.admin_api_key_policies().await.unwrap(),
             "proxies": repositories.control_plane.admin_proxies().await.unwrap(),
             "models": repositories.control_plane.admin_models().await.unwrap(),
@@ -3849,9 +3925,9 @@ async fn observable_state(repositories: &Repositories) -> Value {
         .unwrap(),
         "audits": repositories
             .control_plane
-            .audit_logs(100)
+            .audit_logs(PageOptions { limit: Some(100), ..Default::default() })
             .await
-            .unwrap()
+            .unwrap().items
             .len(),
     })
 }
@@ -4541,8 +4617,8 @@ async fn admin_resource_details_match_lists_on_both_backends() {
             commit_mutation(&repositories, world.admin, mutation).await;
         }
         macro_rules! check_details {
-            ($list:ident, $detail:ident) => {{
-                let listed = repo.$list().await.unwrap();
+            ($list:expr, $detail:ident) => {{
+                let listed = $list;
                 assert!(!listed.is_empty());
                 for row in listed {
                     let detail = repo.$detail(row.id).await.unwrap().unwrap();
@@ -4554,12 +4630,24 @@ async fn admin_resource_details_match_lists_on_both_backends() {
                 assert!(repo.$detail(Uuid::nil()).await.unwrap().is_none());
             }};
         }
-        check_details!(admin_users, admin_user);
-        check_details!(admin_user_groups, admin_user_group);
-        check_details!(admin_api_keys, admin_api_key);
-        check_details!(admin_api_key_policies, admin_api_key_policy);
-        check_details!(admin_models, admin_model);
-        check_details!(admin_proxies, admin_proxy);
+        check_details!(
+            repo.admin_users(Default::default()).await.unwrap().items,
+            admin_user
+        );
+        check_details!(repo.admin_user_groups().await.unwrap(), admin_user_group);
+        check_details!(
+            repo.admin_api_keys(None, Default::default())
+                .await
+                .unwrap()
+                .items,
+            admin_api_key
+        );
+        check_details!(
+            repo.admin_api_key_policies().await.unwrap(),
+            admin_api_key_policy
+        );
+        check_details!(repo.admin_models().await.unwrap(), admin_model);
+        check_details!(repo.admin_proxies().await.unwrap(), admin_proxy);
         let probe = repo.ensure_system_probe_identity().await.unwrap();
         assert!(repo.admin_user(probe.user_id).await.unwrap().is_none());
         assert!(
@@ -4660,7 +4748,14 @@ async fn control_plane_projection_contract(repositories: Repositories) {
     assert_eq!(read_back.settings.api_hosts.len(), 2);
 
     // D. audit ordering: newest first.
-    let audits = repository.audit_logs(100).await.unwrap();
+    let audits = repository
+        .audit_logs(PageOptions {
+            limit: Some(100),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .items;
     let mut sorted = audits.clone();
     sorted.sort_by(|left, right| {
         right
@@ -5541,4 +5636,115 @@ async fn proxy_credential_stripping_contract(repositories: Repositories) {
         listed_proxy(&repositories, created.id).await.proxy_url,
         "http://proxy.example.test:9090"
     );
+}
+
+#[tokio::test]
+async fn console_directory_search_and_cursor_scope_match_across_backends() {
+    use ai_gateway::persistence::{ApiKeyListFilter, UserListFilter};
+
+    run_contract(|repositories| async move {
+        let world = world(&repositories).await;
+        let repo = &repositories.control_plane;
+        let users = repo
+            .admin_users(UserListFilter {
+                page: PageOptions {
+                    q: Some("  USER@EXAMPLE  ".into()),
+                    ..Default::default()
+                },
+                role: Some(UserRole::User),
+                status: Some("active".into()),
+                user_group_id: Some(DEFAULT_USER_GROUP_ID),
+            })
+            .await
+            .unwrap();
+        assert_eq!(users.total, Some(1));
+        assert_eq!(
+            users.items.iter().map(|user| user.id).collect::<Vec<_>>(),
+            [world.user]
+        );
+        assert_eq!(users.next_cursor, None);
+
+        let mut key_ids = Vec::new();
+        for (owner, name) in [
+            (world.user, r"Token %_\ literal"),
+            (world.user, r"Token X_\ percent-decoy"),
+            (world.user, r"Token %X\ underscore-decoy"),
+            (world.user, r"Token %_X backslash-decoy"),
+            (world.admin, r"Token %_\ other-owner"),
+        ] {
+            key_ids.push(
+                commit_mutation(
+                    &repositories,
+                    world.admin,
+                    ControlPlaneMutation::CreateApiKey(admin_api_key_create(
+                        owner,
+                        world.group,
+                        name,
+                    )),
+                )
+                .await
+                .id,
+            );
+        }
+
+        let key_filter = |cursor| ApiKeyListFilter {
+            page: PageOptions {
+                limit: Some(1),
+                q: Some(r"  TOKEN %_\  ".into()),
+                cursor,
+            },
+            status: Some("active".into()),
+        };
+        let own = repo
+            .own_api_keys(world.user, key_filter(None))
+            .await
+            .unwrap();
+        assert_eq!(own.total, Some(1));
+        assert_eq!(
+            own.items.iter().map(|key| key.id).collect::<Vec<_>>(),
+            [key_ids[0]]
+        );
+        assert_eq!(own.next_cursor, None);
+
+        let admin = repo.admin_api_keys(None, key_filter(None)).await.unwrap();
+        assert_eq!(admin.total, Some(2));
+        assert_eq!(admin.items.len(), 1);
+        let first_id = admin.items[0].id;
+        let cursor = admin.next_cursor.unwrap();
+        let last = repo
+            .admin_api_keys(None, key_filter(Some(cursor.clone())))
+            .await
+            .unwrap();
+        assert_eq!(last.total, Some(2));
+        assert_eq!(last.items.len(), 1);
+        assert_eq!(last.next_cursor, None);
+        assert_eq!(
+            std::collections::BTreeSet::from([first_id, last.items[0].id]),
+            std::collections::BTreeSet::from([key_ids[0], key_ids[4]])
+        );
+        assert!(matches!(
+            repo.admin_api_keys(Some(world.user), key_filter(Some(cursor)))
+                .await,
+            Err(RepositoryError::Validation)
+        ));
+
+        let audit = repo
+            .audit_logs(PageOptions {
+                q: Some(key_ids[0].to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            audit
+                .items
+                .iter()
+                .map(|event| event.object_id)
+                .collect::<Vec<_>>(),
+            [key_ids[0]]
+        );
+        assert_eq!(audit.total, None);
+        assert_eq!(audit.next_cursor, None);
+    })
+    .await;
 }

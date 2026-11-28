@@ -11,15 +11,19 @@ it("discards fresh personal data when the authenticated owner changes on the sam
   seedAuthenticatedSession();
   server.use(
     http.get("/console/v1/me/api-keys", ({ request }) =>
-      HttpResponse.json([
-        {
-          ...OWN_API_KEY,
-          name:
-            request.headers.get("Authorization") === `Bearer ${ADMIN_ACCESS_TOKEN}`
-              ? "First owner credential"
-              : "Second owner credential",
-        },
-      ]),
+      HttpResponse.json({
+        items: [
+          {
+            ...OWN_API_KEY,
+            name:
+              request.headers.get("Authorization") === `Bearer ${ADMIN_ACCESS_TOKEN}`
+                ? "First owner credential"
+                : "Second owner credential",
+          },
+        ],
+        next_cursor: null,
+        total: 1,
+      }),
     ),
   );
   window.history.replaceState(null, "", "/api-keys");

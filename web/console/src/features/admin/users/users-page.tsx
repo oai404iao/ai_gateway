@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router";
 import { usePageOrigin, withReturnTo } from "@/lib/page-navigation";
 import { Controller, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -45,18 +46,34 @@ import { formatUsd } from "@/lib/formatters";
 import { formatRelative } from "@/lib/dates";
 import { ROLES, roleLabel } from "@/lib/permissions";
 import { useSession } from "@/lib/use-session";
+import { useCursorPagination } from "@/lib/use-cursor-pagination";
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useI18n } from "@/app/i18n";
 import type { ControlPlaneUser, UserRole } from "@/api/types";
 
+const USER_PAGE_SIZES = [10, 20, 50] as const;
+
 export function UsersPage() {
   const origin = usePageOrigin();
-  const users = useUsers();
+  const [params, setParams] = useSearchParams();
+  const [search, setSearch] = useState(() => params.get("q") ?? "");
+  const debouncedSearch = useDebouncedValue(search, 300);
+  const sizeParam = Number(params.get("pageSize") ?? 20);
+  const pageSize = USER_PAGE_SIZES.includes(sizeParam as (typeof USER_PAGE_SIZES)[number]) ? sizeParam : 20;
+  const cursorPagination = useCursorPagination();
+  const resetCursor = cursorPagination.reset;
+  const trimmedSearch = debouncedSearch.trim();
+  const users = useUsers({
+    limit: pageSize,
+    cursor: cursorPagination.cursor,
+    q: trimmedSearch || undefined,
+  });
   const groups = useUserGroups();
   const policies = useApiKeyPolicies();
   const invite = useInviteUser();
   const { user: currentUser } = useSession();
   const { t } = useI18n();
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [selectedMap, setSelectedMap] = useState<Map<string, ControlPlaneUser>>(() => new Map());
   const [batchOpen, setBatchOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
   const inviteTrigger = useRef<HTMLButtonElement>(null);
@@ -89,12 +106,25 @@ export function UsersPage() {
   });
 
   useEffect(() => {
-    const available = new Set((users.data ?? []).map((user) => user.id));
-    setSelected((current) => {
-      const next = new Set([...current].filter((id) => available.has(id)));
-      return next.size === current.size ? current : next;
+    resetCursor();
+  }, [trimmedSearch, pageSize, resetCursor]);
+
+  useEffect(() => {
+    const items = users.data?.items;
+    if (!items?.length) return;
+    setSelectedMap((current) => {
+      if (current.size === 0) return current;
+      let changed = false;
+      const next = new Map(current);
+      for (const user of items) {
+        if (next.has(user.id) && next.get(user.id) !== user) {
+          next.set(user.id, user);
+          changed = true;
+        }
+      }
+      return changed ? next : current;
     });
-  }, [users.data]);
+  }, [users.data?.items]);
 
   useEffect(() => {
     if (form.getValues("user_group_id")) return;
@@ -108,27 +138,45 @@ export function UsersPage() {
     }
   }, [form, groups.data]);
 
-  const selectedUsers = useMemo(
-    () => (users.data ?? []).filter((user) => selected.has(user.id)),
-    [selected, users.data],
-  );
-  const allUsers = users.data ?? [];
+  const selectedUsers = useMemo(() => [...selectedMap.values()], [selectedMap]);
+  const allUsers = users.data?.items ?? [];
   const groupName = (id: string) =>
     groups.data?.find((group) => group.id === id)?.name ?? t("Unavailable");
   const policyName = (id: string | null) =>
     id ? policies.data?.find((policy) => policy.id === id)?.name ?? t("Unavailable") : t("None");
 
   const toggleUser = (user: ControlPlaneUser) => {
-    setSelected((current) => {
-      const next = new Set(current);
+    setSelectedMap((current) => {
+      const next = new Map(current);
       if (next.has(user.id)) next.delete(user.id);
-      else next.add(user.id);
+      else next.set(user.id, user);
       return next;
     });
   };
 
   const addToSelection = (rows: ControlPlaneUser[]) => {
-    setSelected((current) => new Set([...current, ...rows.map((user) => user.id)]));
+    setSelectedMap((current) => {
+      const next = new Map(current);
+      for (const user of rows) next.set(user.id, user);
+      return next;
+    });
+  };
+
+  const handleSearchChange = (value: string) => {
+    setSearch(value);
+    setParams((current) => {
+      const next = new URLSearchParams(current);
+      if (value) next.set("q", value); else next.delete("q");
+      return next;
+    }, { replace: true });
+  };
+
+  const handlePageSizeChange = (nextSize: number) => {
+    setParams((current) => {
+      const next = new URLSearchParams(current);
+      if (nextSize === 20) next.delete("pageSize"); else next.set("pageSize", String(nextSize));
+      return next;
+    }, { replace: true });
   };
 
   const onRoleChange = (
@@ -188,7 +236,7 @@ export function UsersPage() {
       render: (user) => (
         <Checkbox
           aria-label={`${t("Select")} ${user.display_name}`}
-          checked={selected.has(user.id)}
+          checked={selectedMap.has(user.id)}
           onCheckedChange={() => toggleUser(user)}
         />
       ),
@@ -251,7 +299,7 @@ export function UsersPage() {
             <AsyncResource
               isLoading={users.isLoading || groups.isLoading || policies.isLoading}
               error={users.error ?? groups.error ?? policies.error}
-              isEmpty={users.data?.length === 0}
+              isEmpty={allUsers.length === 0 && !trimmedSearch}
               emptyTitle={t("No records")}
             >
               <ResourceDirectory
@@ -263,26 +311,30 @@ export function UsersPage() {
                 linkColumnKey="name"
                 selectionColumnKey="selected"
                 rowHref={(user) => withReturnTo(`/admin/users/${user.id}`, origin)}
-                renderToolbar={(pageUsers, matches) => (
+                server={{
+                  search,
+                  onSearchChange: handleSearchChange,
+                  total: users.data?.total,
+                  page: cursorPagination.page,
+                  pageSize,
+                  pageSizeOptions: USER_PAGE_SIZES,
+                  onPageSizeChange: handlePageSizeChange,
+                  hasPrevious: cursorPagination.hasPrevious,
+                  hasNext: Boolean(users.data?.next_cursor),
+                  onPrevious: cursorPagination.goPrevious,
+                  onNext: () => cursorPagination.goNext(users.data?.next_cursor),
+                  isFetching: users.isFetching,
+                }}
+                renderToolbar={(pageUsers) => (
                   <div className="flex flex-wrap items-center gap-2">
                     <Button
                       variant="outline"
                       size="sm"
-                      disabled={pageUsers.every((user) => selected.has(user.id))}
+                      disabled={pageUsers.length === 0 || pageUsers.every((user) => selectedMap.has(user.id))}
                       onClick={() => addToSelection(pageUsers)}
                     >
                       {t("Select {count} on this page", { count: pageUsers.length })}
                     </Button>
-                    {matches.length > pageUsers.length ? (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={matches.every((user) => selected.has(user.id))}
-                        onClick={() => addToSelection(matches)}
-                      >
-                        {t("Select all {count} users", { count: matches.length })}
-                      </Button>
-                    ) : null}
                     <span role="status" className="text-sm text-muted-foreground">
                       {t("{count} users selected", { count: selectedUsers.length })}
                     </span>
@@ -290,7 +342,7 @@ export function UsersPage() {
                       variant="ghost"
                       size="sm"
                       disabled={selectedUsers.length === 0}
-                      onClick={() => setSelected(new Set())}
+                      onClick={() => setSelectedMap(new Map())}
                     >
                       {t("Clear selection")}
                     </Button>
@@ -492,7 +544,7 @@ export function UsersPage() {
         policies={policies.data ?? []}
         currentUserId={currentUser?.id}
         onOpenChange={setBatchOpen}
-        onApplied={() => setSelected(new Set())}
+        onApplied={() => setSelectedMap(new Map())}
         triggerId={batchDialogTriggerId}
       />
 

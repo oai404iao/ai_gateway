@@ -27,7 +27,7 @@ import { formatUsd } from "@/lib/formatters";
 import { formatDateTime as formatTs } from "@/lib/dates";
 import { roleLabel } from "@/lib/permissions";
 import { useI18n } from "@/app/i18n";
-import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
+import { useConfigurationDraft } from "@/hooks/use-configuration-draft";
 
 export function ProfilePage() {
   const { data: profile, isLoading, error } = useProfile();

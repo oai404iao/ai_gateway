@@ -22,24 +22,25 @@ use chrono::{DateTime, Utc};
 use regex::Regex;
 use rust_decimal::{Decimal, RoundingStrategy};
 use serde_json::{Value, json};
-use sqlx::{Connection, FromRow, Sqlite, Transaction, pool::PoolConnection};
+use sqlx::{Connection, FromRow, QueryBuilder, Sqlite, Transaction, pool::PoolConnection};
 use uuid::Uuid;
 
 use crate::{
     domain::AutomaticDisableTrigger,
     models_dev::ModelsDevModel,
     persistence::{
-        ApiKeyPolicyInput, ChannelBatchUpdateInput, ConfigTemplateMutationInput, ConsoleApiKey,
-        ConsoleAuditLog, ControlPlaneApiKey, ControlPlaneApiKeyPolicy, ControlPlaneConfigTemplate,
-        ControlPlaneConfigTemplateDetail, ControlPlaneModel, ControlPlaneMutation,
-        ControlPlaneProxy, ControlPlaneRecords, ControlPlaneUser, ControlPlaneUserGroup,
-        DEFAULT_ADMIN_GROUP_ID, DEFAULT_USER_GROUP_ID, FORWARDING_SETTINGS_KEY, ModelInput,
-        ModelRuleCreateInput, ModelSourceVersions, MutationResult, ProxyCreateInput, ProxyInput,
-        ProxyRecord, RepositoryError, RuntimeConfigRecords, SYSTEM_PROBE_API_KEY_ID,
-        SYSTEM_PROBE_API_KEY_NAME, SYSTEM_PROBE_DISPLAY_NAME, SYSTEM_PROBE_USER_ID,
-        SelfApiKeyCreate, SelfApiKeyCurrent, SelfApiKeyOptions, SelfApiKeyPolicy, SelfApiKeyUpdate,
-        SystemProbeIdentity, SystemSettingsInput, SystemSettingsRecord, SystemSettingsView,
-        UserBatchUpdateInput, UserGroupInput, UserInput, UserSettingsInput, UserSettingsView,
+        ApiKeyListFilter, ApiKeyPolicyInput, ChannelBatchUpdateInput, ConfigTemplateMutationInput,
+        ConsoleApiKey, ConsoleAuditLog, ControlPlaneApiKey, ControlPlaneApiKeyPolicy,
+        ControlPlaneConfigTemplate, ControlPlaneConfigTemplateDetail, ControlPlaneModel,
+        ControlPlaneMutation, ControlPlaneProxy, ControlPlaneRecords, ControlPlaneUser,
+        ControlPlaneUserGroup, DEFAULT_ADMIN_GROUP_ID, DEFAULT_USER_GROUP_ID,
+        FORWARDING_SETTINGS_KEY, ModelInput, ModelRuleCreateInput, ModelSourceVersions,
+        MutationResult, PageOptions, PageResult, ProxyCreateInput, ProxyInput, ProxyRecord,
+        RepositoryError, RuntimeConfigRecords, SYSTEM_PROBE_API_KEY_ID, SYSTEM_PROBE_API_KEY_NAME,
+        SYSTEM_PROBE_DISPLAY_NAME, SYSTEM_PROBE_USER_ID, SelfApiKeyCreate, SelfApiKeyCurrent,
+        SelfApiKeyOptions, SelfApiKeyPolicy, SelfApiKeyUpdate, SystemProbeIdentity,
+        SystemSettingsInput, SystemSettingsRecord, SystemSettingsView, UserBatchUpdateInput,
+        UserGroupInput, UserInput, UserListFilter, UserSettingsInput, UserSettingsView,
         UserUpdateInput, deleted_api_key_secret, generate_api_key_secret,
         system_settings_audit_value, system_settings_view,
         upstream_topology::authorization::{self, GrantOwner},
@@ -320,6 +321,108 @@ macro_rules! admin_resource {
     };
 }
 
+const ADMIN_USER_COLUMNS: &str = "u.id,u.email,u.display_name,u.role,u.status, \
+                    (u.password_hash IS NULL AND u.email IS NOT NULL \
+                     AND u.status IN ('invited','suspended','disabled')) AS can_reissue_invitation, \
+                    u.password_change_required,u.temporary_password_expires_at,u.user_group_id, \
+                    u.default_api_key_policy_id, \
+                    COALESCE(u.default_api_key_policy_id,g.default_api_key_policy_id) \
+                        AS effective_api_key_policy_id, \
+                    u.websocket_enabled,u.balance_amount,u.created_at,u.updated_at";
+const ADMIN_USER_FROM: &str = "FROM users AS u \
+             JOIN user_groups AS g ON g.id=u.user_group_id AND g.deleted_at IS NULL \
+             WHERE u.is_system=0 AND u.deleted_at IS NULL";
+
+fn filtered_admin_users(
+    columns: &str,
+    filter: &UserListFilter,
+    pattern: Option<&str>,
+) -> QueryBuilder<Sqlite> {
+    let mut query = QueryBuilder::new(format!("SELECT {columns} {ADMIN_USER_FROM}"));
+    if let Some(role) = filter.role {
+        query.push(" AND u.role = ").push_bind(role.as_str());
+    }
+    if let Some(status) = &filter.status {
+        query.push(" AND u.status = ").push_bind(status.clone());
+    }
+    if let Some(group_id) = filter.user_group_id {
+        query
+            .push(" AND u.user_group_id = ")
+            .push_bind(SqliteUuid(group_id));
+    }
+    push_search(&mut query, pattern, &["u.email", "u.display_name"]);
+    query
+}
+
+const ADMIN_API_KEY_COLUMNS: &str = "k.id,k.user_id,u.status AS user_status,k.name,k.secret_value AS secret,k.status, \
+                    k.expires_at,k.permissions,k.allowed_group_ids, \
+                    k.allowed_channel_ids,k.requests_per_minute,k.max_concurrent_requests, \
+                    k.quota_limit_amount,k.quota_used_amount,k.created_at,k.updated_at";
+const ADMIN_API_KEY_FROM: &str = "FROM api_keys AS k \
+             JOIN users AS u ON u.id=k.user_id \
+             WHERE k.is_system=0 AND k.deleted_at IS NULL AND u.deleted_at IS NULL";
+
+fn filtered_admin_api_keys(
+    columns: &str,
+    user_id: Option<Uuid>,
+    status: Option<&str>,
+    pattern: Option<&str>,
+) -> QueryBuilder<Sqlite> {
+    let mut query = QueryBuilder::new(format!("SELECT {columns} {ADMIN_API_KEY_FROM}"));
+    if let Some(user_id) = user_id {
+        query
+            .push(" AND k.user_id = ")
+            .push_bind(SqliteUuid(user_id));
+    }
+    if let Some(status) = status {
+        query.push(" AND k.status = ").push_bind(status.to_owned());
+    }
+    push_search(
+        &mut query,
+        pattern,
+        &["k.name", "u.email", "u.display_name"],
+    );
+    query
+}
+
+const AUDIT_LOG_COLUMNS: &str = "id,occurred_at,actor_user_id,actor_type,actor_role,action,object_type,object_id, \
+                    before_redacted,after_redacted,correlation_id,reason";
+
+const OWN_API_KEY_COLUMNS: &str = "id,name,secret_value AS secret,status,expires_at, \
+                    permissions,allowed_group_ids,allowed_channel_ids,requests_per_minute, \
+                    max_concurrent_requests,quota_limit_amount,quota_used_amount,created_at,updated_at";
+
+fn filtered_own_api_keys(
+    columns: &str,
+    user_id: Uuid,
+    status: Option<&str>,
+    pattern: Option<&str>,
+) -> QueryBuilder<Sqlite> {
+    let mut query = QueryBuilder::new(format!(
+        "SELECT {columns} FROM api_keys AS k WHERE k.is_system=0 AND k.deleted_at IS NULL AND k.user_id = "
+    ));
+    query.push_bind(SqliteUuid(user_id));
+    if let Some(status) = status {
+        query.push(" AND k.status = ").push_bind(status.to_owned());
+    }
+    push_search(&mut query, pattern, &["k.name"]);
+    query
+}
+
+fn push_search(query: &mut QueryBuilder<Sqlite>, pattern: Option<&str>, columns: &[&str]) {
+    if let Some(pattern) = pattern {
+        query.push(" AND (");
+        let mut terms = query.separated(" OR ");
+        for column in columns {
+            terms
+                .push(format!("LOWER({column}) LIKE LOWER("))
+                .push_bind_unseparated(pattern.to_owned())
+                .push_unseparated(") ESCAPE '\\'");
+        }
+        terms.push_unseparated(")");
+    }
+}
+
 impl SqliteControlPlaneRepository {
     pub async fn system_settings(&self) -> Result<SystemSettingsView, RepositoryError> {
         let mut reader = self.read().await?;
@@ -348,25 +451,43 @@ impl SqliteControlPlaneRepository {
         Ok(row.map(UserSettingsRow::into_view))
     }
 
-    admin_resource!(
-        admin_users,
-        admin_user,
-        ControlPlaneUserRow,
-        ControlPlaneUser,
-        "SELECT u.id,u.email,u.display_name,u.role,u.status, \
-                    (u.password_hash IS NULL AND u.email IS NOT NULL \
-                     AND u.status IN ('invited','suspended','disabled')) AS can_reissue_invitation, \
-                    u.password_change_required,u.temporary_password_expires_at,u.user_group_id, \
-                    u.default_api_key_policy_id, \
-                    COALESCE(u.default_api_key_policy_id,g.default_api_key_policy_id) \
-                        AS effective_api_key_policy_id, \
-                    u.websocket_enabled,u.balance_amount,u.created_at,u.updated_at \
-             FROM users AS u \
-             JOIN user_groups AS g ON g.id=u.user_group_id AND g.deleted_at IS NULL \
-             WHERE u.is_system=0 AND u.deleted_at IS NULL",
-        " ORDER BY u.id",
-        " AND u.id=?"
-    );
+    pub async fn admin_users(
+        &self,
+        filter: UserListFilter,
+    ) -> Result<PageResult<ControlPlaneUser>, RepositoryError> {
+        let page =
+            filter
+                .page
+                .window(("users", filter.role, &filter.status, filter.user_group_id))?;
+        let mut reader = self.read().await?;
+        let total = filtered_admin_users("count(*)", &filter, page.pattern())
+            .build_query_scalar()
+            .fetch_one(&mut *reader)
+            .await?;
+        let mut query = filtered_admin_users(ADMIN_USER_COLUMNS, &filter, page.pattern());
+        page.push_sqlite(&mut query, "u.created_at", "u.id");
+        let items = query
+            .build_query_as::<ControlPlaneUserRow>()
+            .fetch_all(&mut *reader)
+            .await?
+            .into_iter()
+            .map(ControlPlaneUserRow::into_view)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(page.finish(items, Some(total), |item| (item.created_at, item.id)))
+    }
+
+    pub async fn admin_user(&self, id: Uuid) -> Result<Option<ControlPlaneUser>, RepositoryError> {
+        let mut reader = self.read().await?;
+        let mut query = QueryBuilder::new(format!(
+            "SELECT {ADMIN_USER_COLUMNS} {ADMIN_USER_FROM} AND u.id = "
+        ));
+        query.push_bind(SqliteUuid(id));
+        let row = query
+            .build_query_as::<ControlPlaneUserRow>()
+            .fetch_optional(&mut *reader)
+            .await?;
+        row.map(ControlPlaneUserRow::into_view).transpose()
+    }
 
     admin_resource!(
         admin_user_groups,
@@ -403,21 +524,54 @@ impl SqliteControlPlaneRepository {
         " AND id=?"
     );
 
-    admin_resource!(
-        admin_api_keys,
-        admin_api_key,
-        ControlPlaneApiKeyRow,
-        ControlPlaneApiKey,
-        "SELECT k.id,k.user_id,u.status AS user_status,k.name,k.secret_value AS secret,k.status, \
-                    k.expires_at,k.permissions,k.allowed_group_ids, \
-                    k.allowed_channel_ids,k.requests_per_minute,k.max_concurrent_requests, \
-                    k.quota_limit_amount,k.quota_used_amount,k.updated_at \
-             FROM api_keys AS k \
-             JOIN users AS u ON u.id=k.user_id \
-             WHERE k.is_system=0 AND k.deleted_at IS NULL AND u.deleted_at IS NULL",
-        " ORDER BY k.id",
-        " AND k.id=?"
-    );
+    pub async fn admin_api_keys(
+        &self,
+        user_id: Option<Uuid>,
+        filter: ApiKeyListFilter,
+    ) -> Result<PageResult<ControlPlaneApiKey>, RepositoryError> {
+        let page = filter.page.window(("api_keys", user_id, &filter.status))?;
+        let mut reader = self.read().await?;
+        let total = filtered_admin_api_keys(
+            "count(*)",
+            user_id,
+            filter.status.as_deref(),
+            page.pattern(),
+        )
+        .build_query_scalar()
+        .fetch_one(&mut *reader)
+        .await?;
+        let mut query = filtered_admin_api_keys(
+            ADMIN_API_KEY_COLUMNS,
+            user_id,
+            filter.status.as_deref(),
+            page.pattern(),
+        );
+        page.push_sqlite(&mut query, "k.created_at", "k.id");
+        let items = query
+            .build_query_as::<ControlPlaneApiKeyRow>()
+            .fetch_all(&mut *reader)
+            .await?
+            .into_iter()
+            .map(ControlPlaneApiKeyRow::into_view)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(page.finish(items, Some(total), |item| (item.created_at, item.id)))
+    }
+
+    pub async fn admin_api_key(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<ControlPlaneApiKey>, RepositoryError> {
+        let mut reader = self.read().await?;
+        let mut query = QueryBuilder::new(format!(
+            "SELECT {ADMIN_API_KEY_COLUMNS} {ADMIN_API_KEY_FROM} AND k.id = "
+        ));
+        query.push_bind(SqliteUuid(id));
+        let row = query
+            .build_query_as::<ControlPlaneApiKeyRow>()
+            .fetch_optional(&mut *reader)
+            .await?;
+        row.map(ControlPlaneApiKeyRow::into_view).transpose()
+    }
 
     admin_resource!(
         admin_api_key_policies,
@@ -492,34 +646,64 @@ impl SqliteControlPlaneRepository {
             .transpose()
     }
 
-    pub async fn audit_logs(&self, limit: i64) -> Result<Vec<ConsoleAuditLog>, RepositoryError> {
+    pub async fn audit_logs(
+        &self,
+        options: PageOptions,
+    ) -> Result<PageResult<ConsoleAuditLog>, RepositoryError> {
+        let page = options.window("audit_logs")?;
         let mut reader = self.read().await?;
-        let rows = sqlx::query_as::<_, ConsoleAuditLogRow>(
-            "SELECT id,occurred_at,actor_user_id,actor_type,actor_role,action,object_type,object_id, \
-                    before_redacted,after_redacted,correlation_id,reason \
-             FROM audit_logs ORDER BY occurred_at DESC,id DESC LIMIT ?",
-        )
-        .bind(limit.clamp(1, 100))
-        .fetch_all(&mut *reader)
-        .await?;
-        rows.into_iter()
+        let mut query = QueryBuilder::new(format!(
+            "SELECT {AUDIT_LOG_COLUMNS} FROM audit_logs WHERE TRUE"
+        ));
+        push_search(
+            &mut query,
+            page.pattern(),
+            &["action", "object_type", "object_id", "correlation_id"],
+        );
+        page.push_sqlite(&mut query, "occurred_at", "id");
+        let items = query
+            .build_query_as::<ConsoleAuditLogRow>()
+            .fetch_all(&mut *reader)
+            .await?
+            .into_iter()
             .map(ConsoleAuditLogRow::into_view)
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(page.finish(items, None, |item| (item.occurred_at, item.id)))
     }
 
-    pub async fn own_api_keys(&self, user_id: Uuid) -> Result<Vec<ConsoleApiKey>, RepositoryError> {
+    pub async fn own_api_keys(
+        &self,
+        user_id: Uuid,
+        filter: ApiKeyListFilter,
+    ) -> Result<PageResult<ConsoleApiKey>, RepositoryError> {
+        let page = filter
+            .page
+            .window(("own_api_keys", user_id, &filter.status))?;
         let mut reader = self.read().await?;
-        let rows = sqlx::query_as::<_, ConsoleApiKeyRow>(
-            "SELECT id,name,secret_value AS secret,status,expires_at, \
-                    permissions,allowed_group_ids,allowed_channel_ids,requests_per_minute, \
-                    max_concurrent_requests,quota_limit_amount,quota_used_amount,created_at,updated_at \
-             FROM api_keys WHERE user_id=? AND is_system=0 AND deleted_at IS NULL \
-             ORDER BY created_at DESC,id DESC",
+        let total = filtered_own_api_keys(
+            "count(*)",
+            user_id,
+            filter.status.as_deref(),
+            page.pattern(),
         )
-        .bind(SqliteUuid(user_id))
-        .fetch_all(&mut *reader)
+        .build_query_scalar()
+        .fetch_one(&mut *reader)
         .await?;
-        rows.into_iter().map(ConsoleApiKeyRow::into_view).collect()
+        let mut query = filtered_own_api_keys(
+            OWN_API_KEY_COLUMNS,
+            user_id,
+            filter.status.as_deref(),
+            page.pattern(),
+        );
+        page.push_sqlite(&mut query, "k.created_at", "k.id");
+        let items = query
+            .build_query_as::<ConsoleApiKeyRow>()
+            .fetch_all(&mut *reader)
+            .await?
+            .into_iter()
+            .map(ConsoleApiKeyRow::into_view)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(page.finish(items, Some(total), |item| (item.created_at, item.id)))
     }
 
     pub async fn own_api_key(
@@ -699,6 +883,7 @@ struct ControlPlaneApiKeyRow {
     max_concurrent_requests: Option<i32>,
     quota_limit_amount: Option<SqliteAmount>,
     quota_used_amount: SqliteAmount,
+    created_at: SqliteTimestamp,
     updated_at: SqliteTimestamp,
 }
 
@@ -719,6 +904,7 @@ impl ControlPlaneApiKeyRow {
             max_concurrent_requests: self.max_concurrent_requests,
             quota_limit_amount: self.quota_limit_amount.map(|value| value.0),
             quota_used_amount: self.quota_used_amount.0,
+            created_at: self.created_at.0,
             updated_at: self.updated_at.0,
         })
     }

@@ -1,5 +1,6 @@
 import { Component, type ReactNode } from "react";
 import { AlertCircle } from "lucide-react";
+import { translate } from "@/app/i18n";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 
@@ -30,11 +31,11 @@ export class ErrorBoundary extends Component<Props, State> {
         <div className="flex flex-col gap-4 p-6">
           <Alert variant="destructive">
             <AlertCircle data-icon="inline-start" />
-            <AlertTitle>Something went wrong</AlertTitle>
+            <AlertTitle>{translate("Something went wrong")}</AlertTitle>
             <AlertDescription>{this.state.error.message}</AlertDescription>
           </Alert>
           <Button variant="outline" className="self-start" onClick={this.reset}>
-            Try again
+            {translate("Try again")}
           </Button>
         </div>
       );

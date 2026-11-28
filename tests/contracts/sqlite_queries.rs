@@ -336,8 +336,8 @@ async fn settle(queries: &Queries, ids: &[Uuid]) {
 async fn request_log_views_apply_owner_scope_redaction_and_receipt_billing() {
     let queries = Queries::new().await;
     seed(&queries).await;
-    let mine = Uuid::new_v4();
-    let theirs = Uuid::new_v4();
+    let mine = Uuid::from_u128(1);
+    let theirs = Uuid::from_u128(2);
     let unsettled = Uuid::new_v4();
     let facts = [
         Fact::succeeded(mine, "2026-09-18T12:00:00.000000Z", "1.25"),
@@ -345,7 +345,7 @@ async fn request_log_views_apply_owner_scope_redaction_and_receipt_billing() {
             id: theirs,
             user_id: OTHER_USER,
             api_key_id: OTHER_KEY,
-            ..Fact::succeeded(theirs, "2026-09-18T12:00:01.000000Z", "0.5")
+            ..Fact::succeeded(theirs, "2026-09-18T12:00:00.000000Z", "0.5")
         },
         Fact {
             client_model: "query-model-large",
@@ -366,7 +366,8 @@ async fn request_log_views_apply_owner_scope_redaction_and_receipt_billing() {
             ..Default::default()
         })
         .await
-        .unwrap();
+        .unwrap()
+        .items;
     assert_eq!(
         all.iter().map(|log| log.id).collect::<Vec<_>>(),
         vec![unsettled, theirs, mine]
@@ -377,6 +378,33 @@ async fn request_log_views_apply_owner_scope_redaction_and_receipt_billing() {
     assert_eq!(all[2].channel_id, Some(CHANNEL));
     assert_eq!(all[2].channel_name.as_deref(), Some("Query channel"));
     assert_eq!(all[2].user_name.as_deref(), Some("Query user"));
+
+    let first = queries
+        .request_logs
+        .list_all(RequestLogFilter {
+            limit: 2,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        first.items.iter().map(|log| log.id).collect::<Vec<_>>(),
+        [unsettled, theirs]
+    );
+    let last = queries
+        .request_logs
+        .list_all(RequestLogFilter {
+            limit: 2,
+            cursor: Some(first.next_cursor.unwrap()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        last.items.iter().map(|log| log.id).collect::<Vec<_>>(),
+        [mine]
+    );
+    assert_eq!(last.next_cursor, None);
 
     // The self-service view is owner-scoped and redacts channel attribution.
     let own = queries
@@ -389,7 +417,8 @@ async fn request_log_views_apply_owner_scope_redaction_and_receipt_billing() {
             },
         )
         .await
-        .unwrap();
+        .unwrap()
+        .items;
     assert_eq!(
         own.iter().map(|log| log.id).collect::<Vec<_>>(),
         vec![unsettled, mine]
@@ -426,12 +455,18 @@ async fn request_log_views_apply_owner_scope_redaction_and_receipt_billing() {
         .request_logs
         .list_for_user(USER, model_filter.clone())
         .await
-        .unwrap();
+        .unwrap()
+        .items;
     assert_eq!(
         own_model.iter().map(|log| log.id).collect::<Vec<_>>(),
         [mine]
     );
-    let all_model = queries.request_logs.list_all(model_filter).await.unwrap();
+    let all_model = queries
+        .request_logs
+        .list_all(model_filter)
+        .await
+        .unwrap()
+        .items;
     assert_eq!(
         all_model.iter().map(|log| log.id).collect::<Vec<_>>(),
         [theirs, mine]
@@ -451,7 +486,8 @@ async fn request_log_views_apply_owner_scope_redaction_and_receipt_billing() {
             ..Default::default()
         })
         .await
-        .unwrap();
+        .unwrap()
+        .items;
     assert_eq!(
         filtered.iter().map(|log| log.id).collect::<Vec<_>>(),
         vec![mine]
@@ -464,7 +500,8 @@ async fn request_log_views_apply_owner_scope_redaction_and_receipt_billing() {
             ..Default::default()
         })
         .await
-        .unwrap();
+        .unwrap()
+        .items;
     assert_eq!(
         unbilled.iter().map(|log| log.id).collect::<Vec<_>>(),
         vec![unsettled]

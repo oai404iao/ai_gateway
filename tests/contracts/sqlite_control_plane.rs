@@ -1,6 +1,8 @@
 //! SQLite canonical control-plane contracts: coherent snapshots, fixed grants,
 //! child-first deletion, versioned mutations, health, audits, and rollback.
 
+use ai_gateway::persistence::PageOptions;
+
 use super::*;
 use ai_gateway::{
     persistence::{
@@ -73,9 +75,13 @@ async fn control_plane_audits(
     repository: &SqliteControlPlaneRepository,
 ) -> Vec<ai_gateway::persistence::ConsoleAuditLog> {
     repository
-        .audit_logs(100)
+        .audit_logs(PageOptions {
+            limit: Some(100),
+            ..Default::default()
+        })
         .await
         .unwrap()
+        .items
         .into_iter()
         .filter(|audit| audit.object_type != "system_settings")
         .collect()
@@ -270,7 +276,15 @@ async fn admin_reads_do_not_decode_unrequested_tables_or_rows() {
         repository.admin_proxies().await,
         Err(RepositoryError::Validation)
     ));
-    assert_eq!(repository.admin_users().await.unwrap().len(), 2);
+    assert_eq!(
+        repository
+            .admin_users(Default::default())
+            .await
+            .unwrap()
+            .items
+            .len(),
+        2
+    );
     assert_eq!(
         repository.admin_proxy(PROXY).await.unwrap().unwrap().id,
         PROXY
@@ -301,14 +315,24 @@ async fn console_reads_expose_lists_details_audit_and_self_service_options() {
     )
     .await;
 
-    let users = repository.admin_users().await.unwrap();
-    let api_keys = repository.admin_api_keys().await.unwrap();
+    let users = repository
+        .admin_users(Default::default())
+        .await
+        .unwrap()
+        .items;
+    let api_keys = repository
+        .admin_api_keys(None, Default::default())
+        .await
+        .unwrap()
+        .items;
     let proxies = repository.admin_proxies().await.unwrap();
     let config_templates = repository.admin_config_templates().await.unwrap();
     let user_groups = repository.admin_user_groups().await.unwrap();
     assert_eq!(users.len(), 2);
-    assert_eq!(users[0].id, ADMIN);
-    assert_eq!(users[1].balance_amount.to_string(), "0");
+    let admin = users.iter().find(|user| user.id == ADMIN).unwrap();
+    let user = users.iter().find(|user| user.id == USER).unwrap();
+    assert_eq!(admin.role, "admin");
+    assert_eq!(user.balance_amount.to_string(), "0");
     assert_eq!(api_keys.len(), 1);
     assert_eq!(api_keys[0].secret, "sk-test-secret");
     let topology = repository.topology().await.unwrap();
@@ -378,10 +402,21 @@ async fn console_reads_expose_lists_details_audit_and_self_service_options() {
         KEY.to_string()
     );
 
-    let keys = repository.own_api_keys(USER).await.unwrap();
+    let keys = repository
+        .own_api_keys(USER, Default::default())
+        .await
+        .unwrap()
+        .items;
     assert_eq!(keys.len(), 1);
     assert_eq!(keys[0].secret, "sk-test-secret");
-    assert!(repository.own_api_keys(ADMIN).await.unwrap().is_empty());
+    assert!(
+        repository
+            .own_api_keys(ADMIN, Default::default())
+            .await
+            .unwrap()
+            .items
+            .is_empty()
+    );
     assert!(
         repository.own_api_key(ADMIN, KEY).await.unwrap().is_none(),
         "another user's key is not visible"
@@ -840,7 +875,15 @@ async fn self_service_and_admin_writes_enforce_versions_and_policies() {
             .err(),
         Some(RepositoryError::ApiKeyTargetNotAllowed)
     ));
-    assert_eq!(repository.own_api_keys(USER).await.unwrap().len(), 1);
+    assert_eq!(
+        repository
+            .own_api_keys(USER, Default::default())
+            .await
+            .unwrap()
+            .items
+            .len(),
+        1
+    );
     assert_eq!(
         serde_json::to_value(repository.topology().await.unwrap().api_key_grants).unwrap(),
         grants_before
@@ -933,7 +976,14 @@ async fn self_service_and_admin_writes_enforce_versions_and_policies() {
             .is_none(),
         "a deleted key is hidden from ordinary reads"
     );
-    assert!(repository.own_api_keys(USER).await.unwrap().is_empty());
+    assert!(
+        repository
+            .own_api_keys(USER, Default::default())
+            .await
+            .unwrap()
+            .items
+            .is_empty()
+    );
     assert_eq!(
         scalar::<String>(
             &database,
@@ -990,9 +1040,10 @@ async fn user_settings_and_batches_apply_exactly_once() {
     ));
 
     let user_before = repository
-        .admin_users()
+        .admin_users(Default::default())
         .await
         .unwrap()
+        .items
         .into_iter()
         .find(|user| user.id == USER)
         .unwrap();
@@ -1005,9 +1056,10 @@ async fn user_settings_and_batches_apply_exactly_once() {
     let (mutations, _) = change.commit().await.unwrap();
     assert_eq!(mutations.len(), 1);
     let after = repository
-        .admin_users()
+        .admin_users(Default::default())
         .await
         .unwrap()
+        .items
         .into_iter()
         .find(|user| user.id == USER)
         .unwrap();

@@ -102,9 +102,13 @@ for (const admin of [false, true]) {
       await expect(page.locator('a[href^="/admin/"]')).toHaveCount(0);
       for (const path of ["/admin/models", "/admin/system/upstream"]) {
         await page.goto(path);
-        await expect(page).toHaveURL("/");
+        await expect(page).toHaveURL(path);
+        await expect(page.getByText("Access denied", { exact: true })).toBeVisible();
+        await expect(page.getByRole("link", { name: "Back to overview" })).toHaveAttribute("href", "/");
         await expect(page.getByRole("navigation", { name: "Management navigation" })).toHaveCount(0);
       }
+      await page.getByRole("link", { name: "Back to overview" }).click();
+      await expect(page).toHaveURL("/");
       await expect(nav.getByRole("link", { name: "Overview" })).toBeVisible();
       expect([...reads].filter(path => !path.startsWith("/me") && !path.startsWith("/statistics/"))).toEqual([]);
     }

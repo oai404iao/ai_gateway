@@ -33,16 +33,16 @@ use crate::{
     },
     domain::{ConsolePrincipal, UserRole},
     persistence::{
-        ApiKeyCreate, ApiKeyPolicyInput, ApiKeyUpdate, ChannelGroupStatusWindow,
+        ApiKeyCreate, ApiKeyListFilter, ApiKeyPolicyInput, ApiKeyUpdate, ChannelGroupStatusWindow,
         CodexCredentialBatchInput, CodexCredentialExportBundle, CodexCredentialExportInput,
         CodexCredentialImportInput, CodexCredentialUpdateInput, CodexCredentialView,
         CodexOauthStartInput, CodexQuotaWindowHistory, ConfigTemplateCreateInput,
         ConfigTemplateInput, ConsoleApiKey, ControlPlaneMutation, CostStatisticsFilter,
-        InviteUserInput, ModelInput, ModelRuleCreateInput, ProxyCreateInput, ProxyInput,
-        RequestLogFilter, SelfApiKeyCreate, SelfApiKeyUpdate, SelfCodexQuotaCredentialView,
-        SelfCodexQuotaWindowHistory, SpendLeaderboardFilter, SpendLeaderboardPeriod,
-        StatisticsGranularity, SystemSettingsInput, UserBatchUpdateInput, UserGroupInput,
-        UserSettingsInput, UserUpdateInput,
+        InviteUserInput, ModelInput, ModelRuleCreateInput, PageOptions, PageResult,
+        ProxyCreateInput, ProxyInput, RequestLogFilter, SelfApiKeyCreate, SelfApiKeyUpdate,
+        SelfCodexQuotaCredentialView, SelfCodexQuotaWindowHistory, SpendLeaderboardFilter,
+        SpendLeaderboardPeriod, StatisticsGranularity, SystemSettingsInput, UserBatchUpdateInput,
+        UserGroupInput, UserListFilter, UserSettingsInput, UserUpdateInput,
     },
     runtime_config::ConfigError,
 };
@@ -703,26 +703,83 @@ const fn default_true() -> bool {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LogQuery {
-    #[serde(default)]
     limit: Option<i64>,
-    #[serde(default)]
+    cursor: Option<String>,
     user_id: Option<Uuid>,
-    #[serde(default)]
     api_key_id: Option<Uuid>,
-    #[serde(default)]
     model: Option<String>,
-    #[serde(default)]
     api_format: Option<String>,
-    #[serde(default)]
     api_operation: Option<String>,
-    #[serde(default)]
     outcome: Option<String>,
-    #[serde(default)]
     started_after: Option<DateTime<Utc>>,
-    #[serde(default)]
     started_before: Option<DateTime<Utc>>,
-    #[serde(default)]
     billed: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OwnLogQuery {
+    limit: Option<i64>,
+    cursor: Option<String>,
+    api_key_id: Option<Uuid>,
+    model: Option<String>,
+    api_format: Option<String>,
+    api_operation: Option<String>,
+    outcome: Option<String>,
+    started_after: Option<DateTime<Utc>>,
+    started_before: Option<DateTime<Utc>>,
+    billed: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuditLogQuery {
+    limit: Option<i64>,
+    cursor: Option<String>,
+    q: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UserListQuery {
+    limit: Option<i64>,
+    cursor: Option<String>,
+    q: Option<String>,
+    role: Option<UserRole>,
+    status: Option<String>,
+    user_group_id: Option<Uuid>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AdminApiKeyListQuery {
+    limit: Option<i64>,
+    cursor: Option<String>,
+    q: Option<String>,
+    user_id: Option<Uuid>,
+    status: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OwnApiKeyListQuery {
+    limit: Option<i64>,
+    cursor: Option<String>,
+    q: Option<String>,
+    status: Option<String>,
+}
+
+fn api_key_list_filter(
+    page: PageOptions,
+    status: Option<String>,
+) -> Result<ApiKeyListFilter, ConsoleError> {
+    if status
+        .as_deref()
+        .is_some_and(|status| !matches!(status, "active" | "disabled" | "revoked"))
+    {
+        return Err(ConsoleError::Validation);
+    }
+    Ok(ApiKeyListFilter { page, status })
 }
 
 #[derive(Deserialize)]
@@ -785,7 +842,26 @@ impl LogQuery {
     fn into_filter(self) -> RequestLogFilter {
         RequestLogFilter {
             limit: self.limit.unwrap_or(50),
+            cursor: self.cursor,
             user_id: self.user_id,
+            api_key_id: self.api_key_id,
+            model: self.model,
+            api_format: self.api_format,
+            api_operation: self.api_operation,
+            outcome: self.outcome,
+            started_after: self.started_after,
+            started_before: self.started_before,
+            billed: self.billed,
+        }
+    }
+}
+
+impl OwnLogQuery {
+    fn into_filter(self) -> RequestLogFilter {
+        RequestLogFilter {
+            limit: self.limit.unwrap_or(50),
+            cursor: self.cursor,
+            user_id: None,
             api_key_id: self.api_key_id,
             model: self.model,
             api_format: self.api_format,
@@ -1020,9 +1096,21 @@ fn session_user_agent(headers: &HeaderMap) -> Option<String> {
 async fn list_own_api_keys(
     State(state): State<ConsoleState>,
     Extension(principal): Extension<ConsolePrincipal>,
-) -> Result<Json<Vec<ConsoleApiKey>>, ConsoleError> {
+    Query(query): Query<OwnApiKeyListQuery>,
+) -> Result<Json<PageResult<ConsoleApiKey>>, ConsoleError> {
+    let filter = api_key_list_filter(
+        PageOptions {
+            limit: query.limit,
+            cursor: query.cursor,
+            q: query.q,
+        },
+        query.status,
+    )?;
     Ok(Json(
-        state.coordinator.own_api_keys(principal.user_id()).await?,
+        state
+            .coordinator
+            .own_api_keys(principal.user_id(), filter)
+            .await?,
     ))
 }
 
@@ -1122,8 +1210,8 @@ fn api_key_response(key: ConsoleApiKey) -> Result<Response, ConsoleError> {
 async fn list_own_request_logs(
     State(state): State<ConsoleState>,
     Extension(principal): Extension<ConsolePrincipal>,
-    Query(query): Query<LogQuery>,
-) -> Result<Json<Vec<crate::persistence::ConsoleRequestLog>>, ConsoleError> {
+    Query(query): Query<OwnLogQuery>,
+) -> Result<Json<PageResult<crate::persistence::ConsoleRequestLog>>, ConsoleError> {
     Ok(Json(
         state
             .request_logs
@@ -1186,8 +1274,26 @@ async fn get_own_codex_quota_window_history(
 
 async fn list_users(
     State(state): State<ConsoleState>,
-) -> Result<Json<Vec<crate::persistence::ControlPlaneUser>>, ConsoleError> {
-    Ok(Json(state.coordinator.admin_users().await?))
+    Query(query): Query<UserListQuery>,
+) -> Result<Json<PageResult<crate::persistence::ControlPlaneUser>>, ConsoleError> {
+    if query
+        .status
+        .as_deref()
+        .is_some_and(|status| !matches!(status, "invited" | "active" | "suspended" | "disabled"))
+    {
+        return Err(ConsoleError::Validation);
+    }
+    let filter = UserListFilter {
+        page: PageOptions {
+            limit: query.limit,
+            cursor: query.cursor,
+            q: query.q,
+        },
+        role: query.role,
+        status: query.status,
+        user_group_id: query.user_group_id,
+    };
+    Ok(Json(state.coordinator.admin_users(filter).await?))
 }
 
 async fn invite_user(
@@ -1656,8 +1762,22 @@ async fn delete_model(
 
 async fn list_api_keys(
     State(state): State<ConsoleState>,
-) -> Result<Json<Vec<crate::persistence::ControlPlaneApiKey>>, ConsoleError> {
-    Ok(Json(state.coordinator.admin_api_keys().await?))
+    Query(query): Query<AdminApiKeyListQuery>,
+) -> Result<Json<PageResult<crate::persistence::ControlPlaneApiKey>>, ConsoleError> {
+    let filter = api_key_list_filter(
+        PageOptions {
+            limit: query.limit,
+            cursor: query.cursor,
+            q: query.q,
+        },
+        query.status,
+    )?;
+    Ok(Json(
+        state
+            .coordinator
+            .admin_api_keys(query.user_id, filter)
+            .await?,
+    ))
 }
 
 async fn create_api_key(
@@ -2568,7 +2688,7 @@ async fn update_config_template(
 async fn list_all_request_logs(
     State(state): State<ConsoleState>,
     Query(query): Query<LogQuery>,
-) -> Result<Json<Vec<crate::persistence::ConsoleRequestLog>>, ConsoleError> {
+) -> Result<Json<PageResult<crate::persistence::ConsoleRequestLog>>, ConsoleError> {
     Ok(Json(
         state.request_logs.list_all(query.into_filter()).await?,
     ))
@@ -2697,14 +2817,14 @@ async fn get_spend_leaderboard(
 
 async fn list_audit_logs(
     State(state): State<ConsoleState>,
-    Query(query): Query<LogQuery>,
-) -> Result<Json<Vec<crate::persistence::ConsoleAuditLog>>, ConsoleError> {
-    Ok(Json(
-        state
-            .coordinator
-            .audit_logs(query.limit.unwrap_or(50))
-            .await?,
-    ))
+    Query(query): Query<AuditLogQuery>,
+) -> Result<Json<PageResult<crate::persistence::ConsoleAuditLog>>, ConsoleError> {
+    let options = PageOptions {
+        limit: query.limit,
+        cursor: query.cursor,
+        q: query.q,
+    };
+    Ok(Json(state.coordinator.audit_logs(options).await?))
 }
 
 async fn list_connector_plugins(State(state): State<ConsoleState>) -> Json<serde_json::Value> {

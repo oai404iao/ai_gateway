@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -21,7 +21,7 @@ import {
 } from "@/features/admin/api";
 import { useI18n } from "@/app/i18n";
 import { usePageOrigin, useReturnPath, withReturnTo } from "@/lib/page-navigation";
-import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
+import { useConfigurationDraft } from "@/hooks/use-configuration-draft";
 import { useConnectorPlugins } from "@/features/admin/connectors/api";
 
 const schema = z.object({
@@ -64,16 +64,31 @@ export function CredentialDetailPage() {
     ? "/admin/routing/upstream-credentials?connector=codex" : "/admin/routing/upstream-credentials");
   const busy = create.isPending || update.isPending || remove.isPending;
   const { navigate, navigationGuard, markSaved } = useConfigurationDraft(busy, form.formState.isDirty);
+  const baselineRef = useRef<typeof query.data>(undefined);
   useEffect(() => {
-    if (credential && !credential.provider_managed) {
+    baselineRef.current = undefined;
+    form.reset({
+      ...defaults,
+      connector_kind: isNew ? params.get("connector") ?? defaults.connector_kind : defaults.connector_kind,
+    });
+  }, [id, isNew, params, form]);
+  useEffect(() => {
+    if (
+      query.data &&
+      !query.data.data.provider_managed &&
+      query.data !== baselineRef.current &&
+      !form.formState.isDirty
+    ) {
+      baselineRef.current = query.data;
+      const loaded = query.data.data;
       form.reset({
-        name: credential.name, kind: credential.kind as "bearer" | "header",
-        connector_kind: credential.connector_kind,
-        header_name: credential.header_name ?? "", secret: "",
-        allowed_base_urls: credential.allowed_base_urls, enabled: credential.enabled,
+        name: loaded.name, kind: loaded.kind as "bearer" | "header",
+        connector_kind: loaded.connector_kind,
+        header_name: loaded.header_name ?? "", secret: "",
+        allowed_base_urls: loaded.allowed_base_urls, enabled: loaded.enabled,
       });
     }
-  }, [credential, form]);
+  }, [query.data, form, form.formState.isDirty]);
 
   const fail = async (error: unknown) => {
     if (error instanceof ApiError && error.isConflict) {

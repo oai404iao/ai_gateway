@@ -31,9 +31,9 @@
   max-width: 100%;
   overflow-wrap: anywhere;
   font-size: clamp(1.25rem, 2.5vw, 2.1rem);
-  font-weight: 620;
+  font-weight: 600;
   line-height: 1.15;
-  letter-spacing: -.045em;
+  letter-spacing: -0.025em;
   font-variant-numeric: tabular-nums;
 }
 .comparison {
@@ -63,7 +63,7 @@
   border-radius: 2px 2px 0 0;
   pointer-events: none;
 }
-@media (max-width: 639px) {
+@media (max-width: 767px) {
   .label { font-size: .75rem; }
   .label svg { display: none; }
   .comparison { flex-direction: column; align-items: flex-start; }

@@ -111,7 +111,7 @@ test.describe("mobile request logs", () => {
           (!params.has("outcome") || row.outcome === params.get("outcome")) &&
           (!params.has("billed") || String(row.billed_at !== null) === params.get("billed")),
         );
-        await route.fulfill({ json: rows });
+        await route.fulfill({ json: { items: rows, next_cursor: null } });
       });
       await page.route((url) => url.pathname === `${api}/${first.id}`, async (route) => {
         expect(route.request().method()).toBe("GET");
@@ -131,7 +131,9 @@ test.describe("mobile request logs", () => {
       await expectFirstViewport(detailButton);
       await expect(row.locator("time")).toHaveAttribute("datetime", first.started_at);
       await expect(row).toContainText("Failed");
-      expect(queries.map((params) => params.toString())).toEqual(["limit=50"]);
+      const initialCount = queries.length;
+      expect(initialCount).toBeGreaterThanOrEqual(1);
+      expect(queries.every((params) => params.toString() === "limit=50")).toBe(true);
 
       await filters.click();
       await expect(page.getByRole("combobox", { name: "User", exact: true })).toHaveCount(personal ? 0 : 1);
@@ -142,7 +144,7 @@ test.describe("mobile request logs", () => {
       await filters.click();
       await expect(filters).toHaveText("Filters (0)");
       await expectFirstViewport(earlier);
-      expect(queries).toHaveLength(1);
+      expect(queries).toHaveLength(initialCount);
 
       await filters.click();
       await expect(outcome).toContainText("Failed");
@@ -154,7 +156,7 @@ test.describe("mobile request logs", () => {
       await expect(summary.getByRole("listitem")).toHaveText(["Outcome: Failed", "Billing: Unbilled"]);
       await expect(row).toBeVisible();
       await expect(earlier).toHaveCount(0);
-      expect(queries.map((params) => Object.fromEntries(params))).toEqual([
+      expect(queries.slice(initialCount - 1).map((params) => Object.fromEntries(params))).toEqual([
         { limit: "50" },
         { limit: "50", outcome: "failed", billed: "false" },
       ]);
@@ -186,8 +188,8 @@ test("desktop request logs retain the comparison table without growing for long 
   await login(page);
   const longModel = "synthetic-provider/" + "unbroken-model-identifier".repeat(16);
   await page.route((url) => url.pathname === "/console/v1/request-logs", (route) =>
-    route.fulfill({ json: [{ ...E2E_SYSTEM_REQUEST_LOG, client_model: longModel,
-      input_tokens: 8e18, cached_input_tokens: 4e18, output_tokens: 7e18, reasoning_tokens: 3e18 }] }),
+    route.fulfill({ json: { items: [{ ...E2E_SYSTEM_REQUEST_LOG, client_model: longModel,
+      input_tokens: 8e18, cached_input_tokens: 4e18, output_tokens: 7e18, reasoning_tokens: 3e18 }], next_cursor: null } }),
   );
   await page.goto("/admin/request-logs");
   await expect(page.locator("html")).toHaveClass(/\bdark\b/);
@@ -288,7 +290,7 @@ test("ordinary Chinese system logs fit without horizontal scrolling", async ({ p
   await login(page);
   await page.addInitScript(() => localStorage.setItem("ai-gateway-console.locale", "zh-CN"));
   await page.route(url => url.pathname === "/console/v1/request-logs", route => route.fulfill({
-    json: [{ ...E2E_SYSTEM_REQUEST_LOG, client_model: "gpt-5.6-terra", upstream_model: "gpt-5.6-terra", channel_name: "JP_1", user_name: "系统管理员", channel_group_name: "测试 plus" }],
+    json: { items: [{ ...E2E_SYSTEM_REQUEST_LOG, client_model: "gpt-5.6-terra", upstream_model: "gpt-5.6-terra", channel_name: "JP_1", user_name: "系统管理员", channel_group_name: "测试 plus" }], next_cursor: null },
   }));
   await page.goto("/admin/request-logs");
   const table = page.getByRole("table");
@@ -305,7 +307,7 @@ test("opening the stacked inspector from a later row brings its controls into vi
   const rows = Array.from({ length: 18 }, (_, i) => ({
     ...E2E_SYSTEM_REQUEST_LOG, id: `00000000-0000-0000-0000-${String(i + 1).padStart(12, "0")}`,
   }));
-  await page.route(url => url.pathname === "/console/v1/request-logs", route => route.fulfill({ json: rows }));
+  await page.route(url => url.pathname === "/console/v1/request-logs", route => route.fulfill({ json: { items: rows, next_cursor: null } }));
   await page.route(url => url.pathname === `/console/v1/request-logs/${rows.at(-1)!.id}`, route => route.fulfill({ json: rows.at(-1) }));
   await page.goto("/admin/request-logs");
   const opener = page.getByRole("table").getByRole("button", { name: "View details" }).last();
@@ -317,4 +319,75 @@ test("opening the stacked inspector from a later row brings its controls into vi
   await close.press("Escape");
   await expect(opener).toBeFocused();
   await expect(opener).toBeInViewport({ ratio: 1 });
+});
+
+test("request logs paginate past 100 rows with cursor pagination and remote-search filters", async ({ page }) => {
+  await login(page);
+  const allRows = Array.from({ length: 120 }, (_, i) => ({
+    ...E2E_SYSTEM_REQUEST_LOG,
+    id: `00000000-0000-4000-8000-${String(i + 1).padStart(12, "0")}`,
+    client_model: `model-${String(i + 1).padStart(3, "0")}`,
+  }));
+  const logQueries: URLSearchParams[] = [];
+  const userQueries: URLSearchParams[] = [];
+
+  await page.route((url) => url.pathname === "/console/v1/request-logs", (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    logQueries.push(params);
+    const limit = Math.max(1, Number(params.get("limit") ?? 50) || 50);
+    const offset = Math.max(0, Number(params.get("cursor") ?? 0) || 0);
+    const slice = allRows.slice(offset, offset + limit);
+    const nextOffset = offset + slice.length;
+    return route.fulfill({
+      json: {
+        items: slice,
+        next_cursor: nextOffset < allRows.length ? String(nextOffset) : null,
+      },
+    });
+  });
+
+  await page.route((url) => url.pathname === "/console/v1/users", (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    userQueries.push(params);
+    return route.fulfill({
+      json: {
+        items: [
+          {
+            id: E2E_USER.id,
+            email: E2E_USER.email,
+            display_name: "Matched Remote User",
+            role: E2E_USER.role,
+            status: E2E_USER.status,
+            user_group_id: E2E_USER.user_group_id,
+            balance_amount: E2E_USER.balance_amount,
+            updated_at: E2E_USER.updated_at,
+          },
+        ],
+        next_cursor: null,
+        total: 1,
+      },
+    });
+  });
+
+  await page.goto("/admin/request-logs");
+  expect(userQueries).toHaveLength(0);
+  await expect(page.getByText("model-001")).toBeVisible();
+  await expect(page.getByText("Page 1")).toBeVisible();
+
+  await page.getByRole("button", { name: "Go to next page" }).click();
+  await expect(page.getByText("model-051")).toBeVisible();
+  await expect(page.getByText("Page 2")).toBeVisible();
+
+  await page.getByRole("button", { name: "Go to next page" }).click();
+  await expect(page.getByText("model-101")).toBeVisible();
+  await expect(page.getByText("model-120")).toBeVisible();
+  await expect(page.getByText("Page 3")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Go to next page" })).toBeDisabled();
+
+  await page.getByRole("button", { name: "Filters (0)" }).click();
+  const userCombo = page.getByRole("combobox", { name: "User" });
+  await userCombo.click();
+  await userCombo.fill("Matched");
+  await expect.poll(() => userQueries.some((p) => p.get("limit") === "20" && p.get("q") === "Matched")).toBe(true);
+  await expect(page.getByRole("option", { name: /Matched Remote User/ })).toBeVisible();
 });

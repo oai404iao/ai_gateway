@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { usePageOrigin, withReturnTo } from "@/lib/page-navigation";
-import { useListPagination } from "@/lib/use-list-pagination";
+import { useCursorPagination } from "@/lib/use-cursor-pagination";
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -26,6 +27,7 @@ import {
 } from "@/components/shared/routing-target-fields";
 import { PageHeader } from "@/components/shared/page-header";
 import { AsyncResource } from "@/components/shared/async-resource";
+import { CursorPagination } from "@/components/shared/cursor-pagination";
 import { ApiKeyValue } from "@/components/shared/api-key-value";
 import { DecimalField, NullableNumberField } from "@/components/shared/decimal-field";
 import { ResourceTable, type Column } from "@/components/shared/resource-table";
@@ -93,33 +95,53 @@ function createErrorMessage(error: unknown, t: (key: string) => string): string 
   return error instanceof Error ? error.message : t("Create failed");
 }
 
+const API_KEY_PAGE_SIZES = [10, 20, 50] as const;
+
 export function ApiKeysPage() {
   const navigate = useNavigate();
   const origin = usePageOrigin();
-  const pagination = useListPagination();
   const isMobile = useIsMobile();
-  const { data: keys, isLoading, error } = useOwnApiKeys();
+  const [params, setParams] = useSearchParams();
+  const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search, 300);
+  const trimmedSearch = debouncedSearch.trim();
+  const activeStatus = API_KEY_STATUSES.find((value) => value === params.get("status")) ?? "";
+  const sizeParam = Number(params.get("pageSize") ?? 20);
+  const pageSize = API_KEY_PAGE_SIZES.includes(sizeParam as (typeof API_KEY_PAGE_SIZES)[number]) ? sizeParam : 20;
+  const cursorPagination = useCursorPagination();
+  const resetCursor = cursorPagination.reset;
+
+  useEffect(() => {
+    resetCursor();
+  }, [trimmedSearch, activeStatus, pageSize, resetCursor]);
+
+  const { data: keyPage, isLoading, isFetching, error } = useOwnApiKeys({
+    limit: pageSize,
+    cursor: cursorPagination.cursor,
+    q: trimmedSearch || undefined,
+    status: activeStatus || undefined,
+  });
+  const keys = keyPage?.items ?? [];
   const create = useCreateOwnApiKey();
   const apiHosts = useApiHosts();
   const { t } = useI18n();
-  const [params, setParams] = useSearchParams();
   const createOpen = params.get("create") === "1";
   const setCreateOpen = (open: boolean) => {
     const next = new URLSearchParams(params);
     if (open) next.set("create", "1"); else next.delete("create");
     setParams(next, { replace: true, preventScrollReset: true });
   };
-  const [search, setSearch] = useState("");
-  const activeStatus = API_KEY_STATUSES.find(value => value === params.get("status")) ?? "";
-  const needle = search.trim().toLocaleLowerCase();
-  const matched = (keys ?? []).filter(key =>
-    (!activeStatus || key.status === activeStatus) && key.name.toLocaleLowerCase().includes(needle),
-  );
   const selectStatus = (status: string) => {
     const next = new URLSearchParams(params);
-    next.delete("page");
     if (status) next.set("status", status); else next.delete("status");
     setParams(next, { replace: true, preventScrollReset: true });
+  };
+  const handlePageSizeChange = (nextSize: number) => {
+    setParams((current) => {
+      const next = new URLSearchParams(current);
+      if (nextSize === 20) next.delete("pageSize"); else next.set("pageSize", String(nextSize));
+      return next;
+    }, { replace: true });
   };
   const [submitting, setSubmitting] = useState(false);
   const [copiedHost, setCopiedHost] = useState<string | null>(null);
@@ -281,16 +303,29 @@ export function ApiKeysPage() {
           className="inline-flex shrink-0 items-center gap-1.5 border-b-2 border-transparent px-2 py-2 text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring aria-pressed:border-primary aria-pressed:text-foreground"
           onClick={() => selectStatus(value)}>
           {value ? t(value === "active" ? "Active" : value === "disabled" ? "Disabled" : "Revoked") : t("All")}
-          {keys && <> <span className="font-mono text-[10px] text-muted-foreground">{keys.filter(key => !value || key.status === value).length}</span></>}
+          {value === activeStatus && keyPage?.total != null && <> <span className="font-mono text-[10px] text-muted-foreground">{keyPage.total}</span></>}
         </button>)}
       </div>
-      <label className="flex max-w-72 items-center gap-1 text-muted-foreground"><Search className="size-4 shrink-0" /><Input type="search" value={search} aria-label={t("Filter key names")} placeholder={t("Filter key names")} className="h-8 border-0 px-1 shadow-none" onChange={e => { setSearch(e.target.value); if (pagination.page !== 1) pagination.onPageChange(1); }} /></label>
+      <label className="flex max-w-72 items-center gap-1 text-muted-foreground"><Search className="size-4 shrink-0" /><Input type="search" value={search} aria-label={t("Filter key names")} placeholder={t("Filter key names")} className="h-8 border-0 px-1 shadow-none" onChange={e => setSearch(e.target.value)} /></label>
       <section aria-label={t("Keys")} className="min-w-0">
-        <AsyncResource isLoading={isLoading} error={error} isEmpty={!matched.length}
-          emptyTitle={t(keys?.length ? "No matching API keys" : "No API keys")}
-          emptyDescription={t(keys?.length ? "Try another key name or status." : "Create an API key to send requests.")}>
-          <ResourceTable columns={isMobile ? columns.filter(col => ["name", "status", "actions"].includes(col.key)) : columns} rows={matched} rowKey={key => key.id}
-            rowHref={key => withReturnTo(`/api-keys/${key.id}`, origin)} onRowClick={key => navigate(withReturnTo(`/api-keys/${key.id}`, origin))} pagination={pagination} />
+        <AsyncResource isLoading={isLoading} error={error} isEmpty={keys.length === 0}
+          emptyTitle={t(activeStatus || trimmedSearch ? "No matching API keys" : "No API keys")}
+          emptyDescription={t(activeStatus || trimmedSearch ? "Try another key name or status." : "Create an API key to send requests.")}>
+          <ResourceTable columns={isMobile ? columns.filter(col => ["name", "status", "actions"].includes(col.key)) : columns} rows={keys} rowKey={key => key.id}
+            rowHref={key => withReturnTo(`/api-keys/${key.id}`, origin)} onRowClick={key => navigate(withReturnTo(`/api-keys/${key.id}`, origin))} pagination={false} />
+          <CursorPagination
+            page={cursorPagination.page}
+            pageSize={pageSize}
+            pageSizeOptions={API_KEY_PAGE_SIZES}
+            onPageSizeChange={handlePageSizeChange}
+            hasPrevious={cursorPagination.hasPrevious}
+            hasNext={Boolean(keyPage?.next_cursor)}
+            onPrevious={cursorPagination.goPrevious}
+            onNext={() => cursorPagination.goNext(keyPage?.next_cursor)}
+            itemCount={keys.length}
+            total={keyPage?.total}
+            isFetching={isFetching}
+          />
         </AsyncResource>
       </section>
       <section className="mt-3 grid min-w-0 gap-3 border-t py-4 md:grid-cols-[minmax(12rem,1fr)_minmax(0,2fr)]">

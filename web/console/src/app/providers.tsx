@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { MotionConfig } from "motion/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -25,8 +25,15 @@ function createSessionCache(scope: string) {
 function SessionGate({ children }: { children: React.ReactNode }) {
   const { status, user } = useSession();
   const scope = sessionScope(user);
-  const [cache, setCache] = useState(() => createSessionCache(scope));
-  useEffect(() => () => cache.client.clear(), [cache]);
+  const cache = useMemo(() => createSessionCache(scope), [scope]);
+  const prevCacheRef = useRef(cache);
+  useEffect(() => {
+    const prev = prevCacheRef.current;
+    if (prev !== cache) {
+      prev.client.clear();
+      prevCacheRef.current = cache;
+    }
+  }, [cache]);
   const booted = useRef(false);
 
   useEffect(() => {
@@ -35,11 +42,6 @@ function SessionGate({ children }: { children: React.ReactNode }) {
     void refreshAccessToken();
   }, []);
 
-  // Swap before descendants render so even a fresh cached /me result cannot cross accounts.
-  if (scope !== cache.scope) {
-    setCache(createSessionCache(scope));
-    return null;
-  }
   if (status === "loading") {
     return (
       <div className="flex min-h-svh items-center justify-center">

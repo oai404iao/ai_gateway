@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -35,7 +35,7 @@ import {
 import { useI18n } from "@/app/i18n";
 import type { LogicalChannelInput } from "@/api/types";
 import { useReturnPath, withReturnTo } from "@/lib/page-navigation";
-import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
+import { useConfigurationDraft } from "@/hooks/use-configuration-draft";
 
 const NONE = "__none__";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -79,6 +79,7 @@ export function LogicalChannelDetailPage() {
   const channel = query.data?.data;
   const busy = create.isPending || update.isPending || remove.isPending;
   const { navigate, navigationGuard, markSaved } = useConfigurationDraft(busy, form.formState.isDirty);
+  const baselineRef = useRef<typeof query.data>(undefined);
   const access = accesses.data?.find((item) => item.id === form.watch("access_id"));
   const compatibleCredentials = credentials.data?.filter((credential) =>
     credential.id === form.watch("credential_id") ||
@@ -87,16 +88,36 @@ export function LogicalChannelDetailPage() {
   );
 
   useEffect(() => {
-    if (channel) {
+    baselineRef.current = undefined;
+    form.reset(defaults);
+  }, [id, form]);
+
+  useEffect(() => {
+    if (query.data && query.data !== baselineRef.current) {
+      baselineRef.current = query.data;
+      const loaded = query.data.data;
       form.reset({
-        group_id: channel.group_id,
-        access_id: channel.access_id,
-        credential_id: channel.credential_id ?? NONE,
-        name: channel.name,
-        enabled: channel.enabled,
+        group_id: loaded.group_id,
+        access_id: loaded.access_id,
+        credential_id: loaded.credential_id ?? NONE,
+        name: loaded.name,
+        enabled: loaded.enabled,
       });
     }
-  }, [channel, form, view]);
+  }, [query.data, form]);
+
+  useEffect(() => {
+    if (view !== "settings" && query.data && form.formState.isDirty) {
+      const loaded = query.data.data;
+      form.reset({
+        group_id: loaded.group_id,
+        access_id: loaded.access_id,
+        credential_id: loaded.credential_id ?? NONE,
+        name: loaded.name,
+        enabled: loaded.enabled,
+      });
+    }
+  }, [view, query.data, form, form.formState.isDirty]);
 
   const submit = form.handleSubmit(async (values) => {
     const input: LogicalChannelInput = {

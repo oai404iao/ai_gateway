@@ -4,11 +4,27 @@ import { ArrowUpRight, ChevronLeft, ChevronRight, PanelRightOpen, Search, X } fr
 import { useI18n } from "@/app/i18n";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { CursorPagination } from "@/components/shared/cursor-pagination";
 import { NavigationLink } from "@/components/shared/navigation-link";
 import { ResourceTable, type Column } from "@/components/shared/resource-table";
 import { useListPagination } from "@/lib/use-list-pagination";
 import { resourceLabels } from "@/lib/resource-labels";
 import { cn } from "@/lib/utils";
+
+export interface ResourceDirectoryServerProps {
+  search: string;
+  onSearchChange: (value: string) => void;
+  total?: number | null;
+  page: number;
+  pageSize: number;
+  pageSizeOptions: readonly number[];
+  onPageSizeChange: (size: number) => void;
+  hasPrevious: boolean;
+  hasNext: boolean;
+  onPrevious: () => void;
+  onNext: () => void;
+  isFetching?: boolean;
+}
 
 interface Props<T> {
   rows: T[];
@@ -22,13 +38,14 @@ interface Props<T> {
   groupBy?: (row: T) => string;
   renderToolbar?: (pageRows: T[], matches: T[]) => ReactNode;
   renderProperties?: (row: T) => ReactNode;
+  server?: ResourceDirectoryServerProps;
 }
 
 export function ResourceDirectory<T>({ rows, columns, rowKey, rowName, rowHref, searchText = rowName,
-  linkColumnKey = columns[0]?.key, selectionColumnKey, groupBy, renderToolbar, renderProperties }: Props<T>) {
+  linkColumnKey = columns[0]?.key, selectionColumnKey, groupBy, renderToolbar, renderProperties, server }: Props<T>) {
   const { t } = useI18n();
   const [params, setParams] = useSearchParams();
-  const search = params.get("q") ?? "";
+  const search = server ? server.search : (params.get("q") ?? "");
   const pagination = useListPagination();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const searchInput = useRef<HTMLInputElement>(null);
@@ -36,7 +53,7 @@ export function ResourceDirectory<T>({ rows, columns, rowKey, rowName, rowHref, 
   const inspectorHeading = useId();
   const labels = useMemo(() => resourceLabels(rows.map((row) => ({ id: rowKey(row), name: rowName(row) }))), [rows, rowKey, rowName]);
   const needle = search.trim().toLocaleLowerCase();
-  const matches = rows.filter((row) => !needle || `${searchText(row)} ${rowKey(row)}`.toLocaleLowerCase().includes(needle));
+  const matches = server ? rows : rows.filter((row) => !needle || `${searchText(row)} ${rowKey(row)}`.toLocaleLowerCase().includes(needle));
   const position = matches.findIndex((row) => rowKey(row) === selectedId);
   const selected = matches[position];
   const inspect = (row: T) => {
@@ -51,12 +68,18 @@ export function ResourceDirectory<T>({ rows, columns, rowKey, rowName, rowHref, 
   const move = (step: number) => {
     const index = position + step;
     if (!matches[index]) return;
-    const page = Math.floor(index / pagination.pageSize) + 1;
-    if (page !== pagination.page) pagination.onPageChange(page);
+    if (!server) {
+      const page = Math.floor(index / pagination.pageSize) + 1;
+      if (page !== pagination.page) pagination.onPageChange(page);
+    }
     setSelectedId(rowKey(matches[index]));
   };
   const changeSearch = (value: string) => {
     setSelectedId(null);
+    if (server) {
+      server.onSearchChange(value);
+      return;
+    }
     setParams((current) => {
       const next = new URLSearchParams(current);
       if (value) next.set("q", value); else next.delete("q");
@@ -69,11 +92,17 @@ export function ResourceDirectory<T>({ rows, columns, rowKey, rowName, rowHref, 
       <label className="relative min-w-0"><Search aria-hidden className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground" />
         <Input ref={searchInput} type="search" value={search} aria-label={t("Search records")} placeholder={t("Search records")} className="h-8 w-52 max-w-full pl-7" onChange={(event) => changeSearch(event.target.value)} />
       </label>
-      <span className="text-xs text-muted-foreground">{t("{matches} of {total}", { matches: matches.length, total: rows.length })}</span>
+      <span className="text-xs text-muted-foreground">
+        {server
+          ? (server.total != null
+              ? t("Page {page} · {total} total", { page: server.page, total: server.total })
+              : t("Page {page}", { page: server.page }))
+          : t("{matches} of {total}", { matches: matches.length, total: rows.length })}
+      </span>
     </div>
     <div className={cn("grid min-w-0", selected && "@min-[48rem]:grid-cols-[minmax(0,1fr)_minmax(16rem,.46fr)]")}>
       <div className={cn("min-w-0 py-2 [&_tr:has([aria-pressed=true])]:bg-accent", selected && "hidden @min-[48rem]:block")}>
-        <ResourceTable rows={matches} rowKey={rowKey} rowHref={rowHref} linkColumnKey={linkColumnKey} groupBy={groupBy} pagination={pagination}
+        <ResourceTable rows={matches} rowKey={rowKey} rowHref={rowHref} linkColumnKey={linkColumnKey} groupBy={groupBy} pagination={server ? false : pagination}
           renderToolbar={renderToolbar ? (items) => renderToolbar(items, matches) : undefined}
           columns={[...columns, { key: "inspect", header: "", pinned: true, basis: 2.75, className: "w-11", render: (row) => (
             <Button id={`${inspectorHeading}-${rowKey(row)}`} variant="ghost" size="icon-sm" aria-label={t("Inspect {name}", { name: labels.get(rowKey(row))! })} aria-pressed={rowKey(row) === selectedId} onClick={() => inspect(row)}>
@@ -81,6 +110,21 @@ export function ResourceDirectory<T>({ rows, columns, rowKey, rowName, rowHref, 
             </Button>
           ) }]} onRowClick={inspect}
           empty={<p className="py-8 text-center text-sm text-muted-foreground">{t("No matching records")}</p>} />
+        {server ? (
+          <CursorPagination
+            page={server.page}
+            pageSize={server.pageSize}
+            pageSizeOptions={server.pageSizeOptions}
+            onPageSizeChange={server.onPageSizeChange}
+            hasPrevious={server.hasPrevious}
+            hasNext={server.hasNext}
+            onPrevious={server.onPrevious}
+            onNext={server.onNext}
+            itemCount={rows.length}
+            total={server.total}
+            isFetching={server.isFetching}
+          />
+        ) : null}
       </div>
       {selected && <aside ref={inspector} tabIndex={-1} aria-labelledby={inspectorHeading} className="min-w-0 bg-muted/25 p-3 focus-visible:outline-2 focus-visible:outline-ring @min-[48rem]:border-l">
         <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">

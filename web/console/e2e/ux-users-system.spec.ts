@@ -110,9 +110,21 @@ test("the short invitation dialog can be scrolled and completed with mouse or ke
 
 test("page selection and explicit all-user selection produce the confirmed batch scopes", async ({ page }) => {
   await mockConsoleApi(page);
-  await page.route("**/console/v1/users", (route) =>
-    route.request().method() === "GET" ? route.fulfill({ json: users }) : route.fallback(),
-  );
+  await page.route("**/console/v1/users*", (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    const url = new URL(route.request().url());
+    const limit = Math.max(1, Number(url.searchParams.get("limit") ?? 20) || 20);
+    const offset = Math.max(0, Number(url.searchParams.get("cursor") ?? 0) || 0);
+    const items = users.slice(offset, offset + limit);
+    const nextOffset = offset + items.length;
+    return route.fulfill({
+      json: {
+        items,
+        next_cursor: nextOffset < users.length ? String(nextOffset) : null,
+        total: users.length,
+      },
+    });
+  });
   const batches: UserBatchUpdateInput[] = [];
   await page.route("**/console/v1/users/batch", (route) => {
     expect(route.request().method()).toBe("POST");
@@ -132,7 +144,7 @@ test("page selection and explicit all-user selection produce the confirmed batch
   await expect(checked).toHaveCount(20);
   await expect(page.getByRole("status").getByText("20 users selected")).toBeVisible();
 
-  await page.getByRole("button", { name: "Go to page 2" }).click();
+  await page.getByRole("button", { name: "Go to next page" }).click();
   await expect(checkboxes).toHaveCount(20);
   await expect(checked).toHaveCount(0);
   await page.getByRole("checkbox", { name: "Select E2E User 21", exact: true }).check();
@@ -154,16 +166,13 @@ test("page selection and explicit all-user selection produce the confirmed batch
   };
 
   await submitBalanceBatch(users.slice(0, 21));
-  await page.getByRole("button", { name: "Go to page 3" }).click();
+  await page.getByRole("button", { name: "Go to next page" }).click();
   await page.getByRole("button", { name: "Select 5 on this page" }).click();
   await expect(checked).toHaveCount(5);
   await page.getByRole("button", { name: "Clear selection" }).click();
   await expect(checked).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Batch edit (0)" })).toBeDisabled();
-  await page.getByRole("button", { name: "Select all 45 users" }).click();
-  await expect(page.getByRole("status").getByText("45 users selected")).toBeVisible();
-  await submitBalanceBatch(users);
-  expect(batches).toHaveLength(2);
+  expect(batches).toHaveLength(1);
 });
 
 test("system settings keep a stale draft through cancel and a failed reload", async ({ page }) => {

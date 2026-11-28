@@ -6,13 +6,13 @@ use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::RepositoryError;
 use super::postgres_control_plane::{
     ChannelGroupStatusReport, ChannelGroupStatusWindow, ConsoleRequestLog, CostStatisticsFilter,
     CostStatisticsReport, CostStatisticsSummary, PersonalUsageReport, PostgresMeteringQueries,
     PostgresRequestLogQueries, RequestLogFilter, SpendLeaderboardFilter, SpendLeaderboardRefresh,
     SpendLeaderboardReport, StatisticsGranularity,
 };
+use super::{PageResult, RepositoryError};
 
 #[cfg(feature = "sqlite-backend")]
 use std::sync::Arc;
@@ -85,7 +85,7 @@ impl RequestLogQueries {
         &self,
         user_id: Uuid,
         filter: RequestLogFilter,
-    ) -> Result<Vec<ConsoleRequestLog>, RepositoryError> {
+    ) -> Result<PageResult<ConsoleRequestLog>, RepositoryError> {
         match &self.backend {
             LogQueriesBackend::Postgres(queries) => queries.list_for_user(user_id, filter).await,
             #[cfg(feature = "sqlite-backend")]
@@ -110,7 +110,7 @@ impl RequestLogQueries {
     pub async fn list_all(
         &self,
         filter: RequestLogFilter,
-    ) -> Result<Vec<ConsoleRequestLog>, RepositoryError> {
+    ) -> Result<PageResult<ConsoleRequestLog>, RepositoryError> {
         match &self.backend {
             LogQueriesBackend::Postgres(queries) => queries.list_all(filter).await,
             #[cfg(feature = "sqlite-backend")]

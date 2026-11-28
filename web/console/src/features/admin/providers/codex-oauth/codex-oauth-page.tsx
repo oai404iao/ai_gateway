@@ -2,16 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import {
   CheckCheck,
   Download,
-  ExternalLink,
   FileUp,
-  History,
   KeyRound,
-  Pencil,
   Plus,
   Power,
   PowerOff,
-  RefreshCw,
-  RotateCcw,
   Trash2,
 } from "lucide-react";
 import { NavigationLink } from "@/components/shared/navigation-link";
@@ -19,19 +14,14 @@ import { usePageOrigin, withReturnTo } from "@/lib/page-navigation";
 import { toast } from "sonner";
 import type {
   CodexCredentialImportInput,
-  CodexCredentialUpdateInput,
   CodexCredentialView,
-  CodexQuotaResetOutcome,
-  CodexQuotaWindowPeriod,
 } from "@/api/types";
 import { ApiError } from "@/api/errors";
-import { translate, useI18n } from "@/app/i18n";
+import { useI18n } from "@/app/i18n";
 import { AsyncResource } from "@/components/shared/async-resource";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { PageHeader } from "@/components/shared/page-header";
-import { StatusBadge } from "@/components/shared/status-badge";
-import { EmptyState } from "@/components/shared/empty-state";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { ResourceTable } from "@/components/shared/resource-table";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -42,9 +32,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
   Card,
   CardContent,
@@ -53,55 +41,11 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import {
-  Field,
-  FieldDescription,
-  FieldGroup,
-  FieldLabel,
-} from "@/components/ui/field";
-import { Input } from "@/components/ui/input";
-import { Progress } from "@/components/ui/progress";
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { Textarea } from "@/components/ui/textarea";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
-import {
   useProxies,
 } from "@/features/admin/api";
-import { formatDateTime } from "@/lib/dates";
-import { formatEstimatedQuotaTotal, formatUsd } from "@/lib/formatters";
 import {
   useBatchUpdateCodexCredentials,
-  useCodexCredential,
   useCodexCredentials,
-  useCodexQuotaWindowHistory,
   useCompleteCodexOauth,
   useDeleteCodexCredential,
   useExportCodexCredentials,
@@ -110,279 +54,26 @@ import {
   useRefreshCodexQuota,
   useResetCodexQuota,
   useStartCodexOauth,
-  useUpdateCodexCredential,
 } from "./api";
-import { CodexAccountIdentity } from "./codex-account-identity";
 
-const NO_PROXY = "__none__";
-const MAX_BATCH_SIZE = 100;
-
-function errorMessage(error: unknown): string {
-  if (error instanceof ApiError) {
-    if (error.isConflict) {
-      return translate(
-        "This Codex credential is already connected or changed elsewhere.",
-      );
-    }
-    switch (error.code) {
-      case "codex_oauth_state_mismatch":
-        return translate("The OAuth callback state did not match. Start a new authorization.");
-      case "codex_oauth_flow_expired":
-        return translate("The OAuth flow expired. Start a new authorization.");
-      case "codex_refresh_token_invalid":
-        return translate("The refresh token is no longer valid. Connect the account again.");
-      case "codex_account_changed":
-        return translate(
-          "The refreshed token belongs to a different Codex workspace or member.",
-        );
-      case "codex_network_policy_invalid":
-        return translate("The selected outbound proxy is unavailable.");
-    }
-  }
-  return error instanceof Error ? error.message : "Request failed";
-}
-
-interface CredentialSettingsState {
-  label: string;
-  proxy_id: string;
-  quota_threshold_percent: string;
-}
-
-interface ImportState extends CredentialSettingsState {
-  id_token: string;
-  access_token: string;
-  refresh_token: string;
-  account_id: string;
-  user_id: string;
-}
-
-interface EditState extends CredentialSettingsState {
-  enabled: boolean;
-}
-
-const EMPTY_SETTINGS: CredentialSettingsState = {
-  label: "",
-  proxy_id: "",
-  quota_threshold_percent: "95",
-};
-
-const EMPTY_IMPORT: ImportState = {
-  ...EMPTY_SETTINGS,
-  id_token: "",
-  access_token: "",
-  refresh_token: "",
-  account_id: "",
-  user_id: "",
-};
-
-function parsePositiveInteger(value: string): number | null {
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
-}
-
-function parseSettings(
-  state: CredentialSettingsState,
-): { label: string; proxy_id: string | null; quota_threshold_percent: number } | null {
-  const threshold = parsePositiveInteger(state.quota_threshold_percent);
-  if (
-    !state.label.trim() ||
-    threshold === null ||
-    threshold > 100
-  ) {
-    return null;
-  }
-  return {
-    label: state.label.trim(),
-    proxy_id: state.proxy_id || null,
-    quota_threshold_percent: threshold,
-  };
-}
-
-function credentialStatusVariant(
-  status: CodexCredentialView["runtime_status"],
-): "success" | "warning" | "destructive" | "default" {
-  if (status === "active") return "success";
-  if (status === "draining") return "warning";
-  if (status === "unavailable") return "destructive";
-  return "default";
-}
-
-function quotaSummary(credential: CodexCredentialView): string {
-  if (credential.quota_limit_reached) return translate("Limit reached");
-  if (credential.quota_allowed === false) return translate("Not allowed");
-  if (credential.primary_used_percent !== null) {
-    return translate("{percent}% used", {
-      percent: credential.primary_used_percent,
-    });
-  }
-  return translate("Not checked");
-}
-
-function credentialStatusLabel(
-  status: CodexCredentialView["runtime_status"],
-): string {
-  if (status === "active") return translate("Active");
-  if (status === "draining") return translate("Draining");
-  if (status === "unavailable") return translate("Unavailable");
-  return translate("Disabled");
-}
-
-function quotaResetReasonLabel(
-  reason: CodexQuotaWindowPeriod["reset_reason"],
-): string {
-  if (reason === "natural") return translate("Natural reset");
-  if (reason === "manual") return translate("Manual reset credit");
-  if (reason === "openai_official") return translate("OpenAI official reset");
-  return translate("Current period");
-}
-
-function quotaResetReasonVariant(
-  reason: CodexQuotaWindowPeriod["reset_reason"],
-): "success" | "warning" | "info" | "secondary" {
-  if (reason === "manual") return "warning";
-  if (reason === "openai_official") return "info";
-  if (reason === "natural") return "secondary";
-  return "success";
-}
-
-function quotaResetOutcomeMessage(outcome: CodexQuotaResetOutcome): string {
-  if (outcome === "reset") return translate("OpenAI reset credit consumed.");
-  if (outcome === "nothing_to_reset") {
-    return translate("No active quota window needed a reset.");
-  }
-  if (outcome === "no_credit") {
-    return translate("No OpenAI reset credit is available.");
-  }
-  return translate("This reset request was already redeemed.");
-}
-
-function QuotaWindow({
-  label,
-  percent,
-  resetAt,
-  costAmount,
-}: {
-  label: string;
-  percent: number | null;
-  resetAt: string | null;
-  costAmount: string | null;
-}) {
-  const { t } = useI18n();
-  return (
-    <div className="min-w-40 space-y-1">
-      <div className="flex justify-between gap-3 text-xs">
-        <span>{t(label)}</span>
-        <span>{percent === null ? "—" : `${percent}%`}</span>
-      </div>
-      <Progress value={percent ?? 0} />
-      {resetAt ? (
-        <p className="text-xs text-muted-foreground">
-          {t("Resets {time}", { time: formatDateTime(resetAt) })}
-        </p>
-      ) : null}
-      <div className="flex items-center justify-between gap-3 text-xs">
-        <span className="text-muted-foreground">{t("Period spend")}</span>
-        <span className="font-medium tabular-nums">
-          {formatUsd(costAmount)}
-        </span>
-      </div>
-      <div className="flex items-center justify-between gap-3 text-xs">
-        <span className="text-muted-foreground">
-          {t("Estimated total quota")}
-        </span>
-        <span className="font-medium tabular-nums">
-          {formatEstimatedQuotaTotal(costAmount, percent)}
-        </span>
-      </div>
-    </div>
-  );
-}
-
-function ProxyField({
-  value,
-  onChange,
-  proxies,
-}: {
-  value: string;
-  onChange: (value: string) => void;
-  proxies: Array<{ id: string; name: string }>;
-}) {
-  const { t } = useI18n();
-  return (
-    <Field>
-      <FieldLabel>{t("Outbound proxy")}</FieldLabel>
-      <Select
-        value={value || NO_PROXY}
-        onValueChange={(next) => onChange(next === NO_PROXY ? "" : next)}
-      >
-        <SelectTrigger>
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectGroup>
-            <SelectItem value={NO_PROXY}>{t("Direct")}</SelectItem>
-            {proxies.map((proxy) => (
-              <SelectItem key={proxy.id} value={proxy.id}>
-                {proxy.name}
-              </SelectItem>
-            ))}
-          </SelectGroup>
-        </SelectContent>
-      </Select>
-    </Field>
-  );
-}
-
-function SettingsFields({
-  state,
-  onChange,
-  proxies,
-}: {
-  state: CredentialSettingsState;
-  onChange: (patch: Partial<CredentialSettingsState>) => void;
-  proxies: Array<{ id: string; name: string }>;
-}) {
-  const { t } = useI18n();
-  return (
-    <FieldGroup>
-      <Field>
-        <FieldLabel htmlFor="codex-label">{t("Label")}</FieldLabel>
-        <Input
-          id="codex-label"
-          value={state.label}
-          onChange={(event) => onChange({ label: event.target.value })}
-          placeholder={t("Personal Codex account")}
-        />
-      </Field>
-      <ProxyField
-        value={state.proxy_id}
-        onChange={(proxy_id) => onChange({ proxy_id })}
-        proxies={proxies}
-      />
-      <Field>
-        <FieldLabel htmlFor="codex-threshold">
-          {t("Quota threshold (%)")}
-        </FieldLabel>
-        <Input
-          id="codex-threshold"
-          type="number"
-          min={1}
-          max={100}
-          value={state.quota_threshold_percent}
-          onChange={(event) =>
-            onChange({ quota_threshold_percent: event.target.value })
-          }
-        />
-        <FieldDescription>
-          {t(
-            "New requests stop using this credential at the threshold; existing sticky Responses sessions may continue.",
-          )}
-        </FieldDescription>
-      </Field>
-    </FieldGroup>
-  );
-}
-
+import { buildCodexCredentialColumns } from "./codex-oauth-columns";
+import {
+  ConnectOauthDialog,
+  EditCredentialDialog,
+  ImportTokensDialog,
+  QuotaWindowHistoryDialog,
+} from "./codex-oauth-dialogs";
+import {
+  downloadJson,
+  EMPTY_IMPORT,
+  EMPTY_SETTINGS,
+  errorMessage,
+  MAX_BATCH_SIZE,
+  parseSettings,
+  quotaResetOutcomeMessage,
+  type CredentialSettingsState,
+  type ImportState,
+} from "./codex-oauth-helpers";
 export default function CodexOauthPage() {
   const { t } = useI18n();
   const origin = usePageOrigin();
@@ -826,493 +517,66 @@ export default function CodexOauthPage() {
                   : ""}
               </span>
             </div>
-            <div className="overflow-x-auto rounded-xl border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-12">
-                      <Checkbox
-                        aria-label={t("Select all credentials")}
-                        checked={allSelected}
-                        onCheckedChange={() => {
-                          if (allSelected) setSelected(new Set());
-                          else {
-                            setSelected(
-                              new Set(
-                                (credentials.data ?? []).map(
-                                  (credential) => credential.id,
-                                ),
-                              ),
-                            );
-                          }
-                        }}
-                      />
-                    </TableHead>
-                    <TableHead>{t("Credential")}</TableHead>
-                    <TableHead>{t("Status")}</TableHead>
-                    <TableHead>{t("Quota")}</TableHead>
-                    <TableHead>{t("Token")}</TableHead>
-                    <TableHead>{t("Maintenance proxy")}</TableHead>
-                    <TableHead pinned>{t("Actions")}</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {credentials.data?.map((credential) => (
-                    <TableRow key={credential.id}>
-                      <TableCell className="align-top">
-                        <Checkbox
-                          aria-label={t("Select {label}", {
-                            label: credential.label,
-                          })}
-                          checked={selected.has(credential.id)}
-                          onCheckedChange={() => toggleCredential(credential)}
-                        />
-                      </TableCell>
-                      <TableCell className="min-w-52 align-top">
-                        <div className="font-medium">{credential.label}</div>
-                        {credential.email && credential.email !== credential.label && (
-                          <div className="text-xs text-muted-foreground">{credential.email}</div>
-                        )}
-                        <CodexAccountIdentity accountId={credential.account_id} userId={credential.user_id} />
-                        <div className="mt-2 flex flex-wrap gap-1">
-                          {credential.plan_type ? (
-                            <Badge variant="secondary">{credential.plan_type}</Badge>
-                          ) : null}
-                          {credential.is_fedramp ? (
-                            <Badge variant="outline">FedRAMP</Badge>
-                          ) : null}
-                        </div>
-                        <p className="mt-2 text-xs text-muted-foreground">
-                          {t("Available models: {count}", {
-                            count: credential.available_models.length,
-                          })}
-                        </p>
-                        {credential.last_error_code ? (
-                          <p className="mt-2 max-w-64 text-xs text-destructive">
-                            {credential.last_error_code}
-                            {credential.last_error_summary
-                              ? `: ${credential.last_error_summary}`
-                              : ""}
-                          </p>
-                        ) : null}
-                      </TableCell>
-                      <TableCell className="align-top">
-                        <StatusBadge
-                          value={credential.runtime_status}
-                          label={credentialStatusLabel(credential.runtime_status)}
-                          variant={credentialStatusVariant(
-                            credential.runtime_status,
-                          )}
-                        />
-                        {!credential.enabled ? (
-                          <div className="mt-2">
-                            <StatusBadge value={false} />
-                          </div>
-                        ) : null}
-                      </TableCell>
-                      <TableCell className="min-w-56 align-top">
-                        <div className="mb-2 text-sm font-medium">
-                          {quotaSummary(credential)}
-                        </div>
-                        <div className="space-y-3">
-                          <QuotaWindow
-                            label="Primary window"
-                            percent={credential.primary_used_percent}
-                            resetAt={credential.primary_reset_at}
-                            costAmount={
-                              credential.primary_window_cost_amount
-                            }
-                          />
-                          {credential.secondary_used_percent !== null ? (
-                            <QuotaWindow
-                              label="Secondary window"
-                              percent={credential.secondary_used_percent}
-                              resetAt={credential.secondary_reset_at}
-                              costAmount={
-                                credential.secondary_window_cost_amount
-                              }
-                            />
-                          ) : null}
-                        </div>
-                        <p className="mt-2 text-xs text-muted-foreground">
-                          {t("Threshold: {percent}%", {
-                            percent: credential.quota_threshold_percent,
-                          })}
-                        </p>
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          {t("OpenAI reset credits: {count}", {
-                            count:
-                              credential.quota_reset_credits_available ?? "—",
-                          })}
-                        </p>
-                      </TableCell>
-                      <TableCell className="min-w-44 align-top text-sm">
-                        <p>{formatDateTime(credential.access_token_expires_at)}</p>
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          {t("Refreshed {time}", {
-                            time: formatDateTime(credential.last_refreshed_at),
-                          })}
-                        </p>
-                      </TableCell>
-                      <TableCell className="align-top text-sm">
-                        <p className="text-xs text-muted-foreground">
-                          {credential.proxy_id ? proxies.find((proxy) => proxy.id === credential.proxy_id)?.name ?? t("Proxy assigned") : t("Direct")}
-                        </p>
-                      </TableCell>
-                      <TableCell pinned className="align-top">
-                        <div className="flex flex-col items-end gap-1">
-                          <div className="flex gap-1">
-                            <Tooltip disableHoverablePopup>
-                              <TooltipTrigger
-                                render={
-                                  <Button
-                                    variant="ghost"
-                                    size="icon-sm"
-                                    aria-label={t("View quota history for {label}", {
-                                      label: credential.label,
-                                    })}
-                                    onClick={() => setHistoryTarget(credential)}
-                                  />
-                                }
-                              >
-                                <History />
-                              </TooltipTrigger>
-                              <TooltipContent side="left">
-                                {t("View quota history for {label}", {
-                                  label: credential.label,
-                                })}
-                              </TooltipContent>
-                            </Tooltip>
-                            <Tooltip disableHoverablePopup>
-                              <TooltipTrigger
-                                render={
-                                  <Button
-                                    variant="ghost"
-                                    size="icon-sm"
-                                    aria-label={t("Edit {label}", {
-                                      label: credential.label,
-                                    })}
-                                    onClick={() => setEditingId(credential.id)}
-                                  />
-                                }
-                              >
-                                <Pencil />
-                              </TooltipTrigger>
-                              <TooltipContent side="left">
-                                {t("Edit {label}", {
-                                  label: credential.label,
-                                })}
-                              </TooltipContent>
-                            </Tooltip>
-                          </div>
-                          <div className="flex gap-1">
-                            <Tooltip disableHoverablePopup>
-                              <TooltipTrigger
-                                render={
-                                  <Button
-                                    variant="ghost"
-                                    size="icon-sm"
-                                    aria-label={t(
-                                      "Reset quota with an OpenAI credit for {label}",
-                                      { label: credential.label },
-                                    )}
-                                    disabled={
-                                      resetQuota.isPending ||
-                                      credential.quota_reset_credits_available === 0
-                                    }
-                                    onClick={() => setResetTarget(credential)}
-                                  />
-                                }
-                              >
-                                <RotateCcw />
-                              </TooltipTrigger>
-                              <TooltipContent side="left">
-                                {t(
-                                  "Reset quota with an OpenAI credit for {label}",
-                                  { label: credential.label },
-                                )}
-                              </TooltipContent>
-                            </Tooltip>
-                            <Tooltip disableHoverablePopup>
-                              <TooltipTrigger
-                                render={
-                                  <Button
-                                    variant="ghost"
-                                    size="icon-sm"
-                                    aria-label={t("Refresh quota for {label}", {
-                                      label: credential.label,
-                                    })}
-                                    disabled={refreshQuota.isPending}
-                                    onClick={() => void runRefresh("quota", credential)}
-                                  />
-                                }
-                              >
-                                <RefreshCw className="text-info" />
-                              </TooltipTrigger>
-                              <TooltipContent side="left">
-                                {t("Refresh quota for {label}", {
-                                  label: credential.label,
-                                })}
-                              </TooltipContent>
-                            </Tooltip>
-                            <Tooltip disableHoverablePopup>
-                              <TooltipTrigger
-                                render={
-                                  <Button
-                                    variant="ghost"
-                                    size="icon-sm"
-                                    aria-label={t("Refresh token for {label}", {
-                                      label: credential.label,
-                                    })}
-                                    disabled={refreshCredential.isPending}
-                                    onClick={() => void runRefresh("token", credential)}
-                                  />
-                                }
-                              >
-                                <RefreshCw />
-                              </TooltipTrigger>
-                              <TooltipContent side="left">
-                                {t("Refresh token for {label}", {
-                                  label: credential.label,
-                                })}
-                              </TooltipContent>
-                            </Tooltip>
-                            <Tooltip disableHoverablePopup>
-                              <TooltipTrigger
-                                render={
-                                  <Button
-                                    variant="ghost"
-                                    size="icon-sm"
-                                    aria-label={t("Delete {label}", {
-                                      label: credential.label,
-                                    })}
-                                    disabled={deleteCredential.isPending}
-                                    onClick={() => setDeleteTarget(credential)}
-                                  />
-                                }
-                              >
-                                <Trash2 />
-                              </TooltipTrigger>
-                              <TooltipContent side="left">
-                                {t("Delete {label}", {
-                                  label: credential.label,
-                                })}
-                              </TooltipContent>
-                            </Tooltip>
-                          </div>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
+            <ResourceTable
+              columns={buildCodexCredentialColumns({
+                t,
+                selected,
+                allSelected,
+                proxies,
+                resetQuotaPending: resetQuota.isPending,
+                refreshQuotaPending: refreshQuota.isPending,
+                refreshCredentialPending: refreshCredential.isPending,
+                deleteCredentialPending: deleteCredential.isPending,
+                onToggleAll: () => {
+                  if (allSelected) setSelected(new Set());
+                  else {
+                    setSelected(
+                      new Set((credentials.data ?? []).map((credential) => credential.id)),
+                    );
+                  }
+                },
+                onToggleCredential: toggleCredential,
+                onOpenHistory: setHistoryTarget,
+                onEdit: setEditingId,
+                onResetQuota: setResetTarget,
+                onRefresh: (kind, credential) => void runRefresh(kind, credential),
+                onDelete: setDeleteTarget,
+              })}
+              rows={credentials.data ?? []}
+              rowKey={(credential) => credential.id}
+              pagination={false}
+            />
           </AsyncResource>
         </CardContent>
       </Card>
 
-      <Dialog open={oauthOpen} onOpenChange={(open) => (open ? setOauthOpen(true) : closeOauth())}>
-        <DialogContent className="max-h-[calc(100svh-2rem)] overflow-y-auto sm:max-w-xl">
-          <DialogHeader>
-            <DialogTitle>{t("Connect Codex account")}</DialogTitle>
-            <DialogDescription>
-              {t(
-                "After authorizing in your browser, paste the full localhost callback URL here.",
-              )}
-            </DialogDescription>
-          </DialogHeader>
-          {oauthFlow ? (
-            <FieldGroup>
-              <Alert>
-                <ExternalLink />
-                <AlertTitle>{t("Authorization ready")}</AlertTitle>
-                <AlertDescription>
-                  {t("This flow expires at {time}.", {
-                    time: formatDateTime(oauthFlow.expiresAt),
-                  })}
-                </AlertDescription>
-              </Alert>
-              <Field>
-                <FieldLabel htmlFor="codex-authorization-url">
-                  {t("Authorization URL")}
-                </FieldLabel>
-                <Textarea
-                  id="codex-authorization-url"
-                  readOnly
-                  value={oauthFlow.authorizationUrl}
-                  rows={4}
-                />
-              </Field>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() =>
-                  window.open(
-                    oauthFlow.authorizationUrl,
-                    "_blank",
-                    "noopener,noreferrer",
-                  )
-                }
-              >
-                <ExternalLink data-icon="inline-start" />
-                {t("Open authorization page")}
-              </Button>
-              <Field>
-                <FieldLabel htmlFor="codex-callback-url">
-                  {t("Callback URL")}
-                </FieldLabel>
-                <Textarea
-                  id="codex-callback-url"
-                  value={callbackUrl}
-                  onChange={(event) => setCallbackUrl(event.target.value)}
-                  placeholder="http://localhost:1455/auth/callback?code=…&state=…"
-                  rows={4}
-                />
-              </Field>
-            </FieldGroup>
-          ) : (
-            <SettingsFields
-              state={oauthSettings}
-              onChange={(patch) =>
-                setOauthSettings((current) => ({ ...current, ...patch }))
-              }
-              proxies={proxies}
-            />
-          )}
-          <DialogFooter>
-            <Button variant="outline" onClick={closeOauth}>
-              {t("Cancel")}
-            </Button>
-            <Button
-              onClick={() => void (oauthFlow ? finishOauth() : beginOauth())}
-              disabled={startOauth.isPending || completeOauth.isPending}
-            >
-              {oauthFlow ? t("Complete connection") : t("Start authorization")}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ConnectOauthDialog
+        open={oauthOpen}
+        onOpenChange={(open) => (open ? setOauthOpen(true) : closeOauth())}
+        oauthFlow={oauthFlow}
+        callbackUrl={callbackUrl}
+        onCallbackUrlChange={setCallbackUrl}
+        oauthSettings={oauthSettings}
+        onOauthSettingsChange={(patch) =>
+          setOauthSettings((current) => ({ ...current, ...patch }))
+        }
+        proxies={proxies}
+        isPending={startOauth.isPending || completeOauth.isPending}
+        onBegin={() => void beginOauth()}
+        onFinish={() => void finishOauth()}
+      />
 
-      <Dialog
+      <ImportTokensDialog
         open={importOpen}
-        onOpenChange={(open) => {
-          setImportOpen(open);
-          if (!open) setImportState(EMPTY_IMPORT);
-        }}
-      >
-        <DialogContent className="max-h-[calc(100svh-2rem)] overflow-y-auto sm:max-w-xl">
-          <DialogHeader>
-            <DialogTitle>{t("Import Codex tokens")}</DialogTitle>
-            <DialogDescription>
-              {t(
-                "Import validates the tokens with Codex. Assign new credentials to a channel before use.",
-              )}
-            </DialogDescription>
-          </DialogHeader>
-          <SettingsFields
-            state={importState}
-            onChange={(patch) =>
-              setImportState((current) => ({ ...current, ...patch }))
-            }
-            proxies={proxies}
-          />
-          <FieldGroup>
-            <Field>
-              <FieldLabel htmlFor="codex-id-token">
-                {t("ID token (optional)")}
-              </FieldLabel>
-              <Input
-                id="codex-id-token"
-                type="password"
-                autoComplete="off"
-                value={importState.id_token}
-                onChange={(event) =>
-                  setImportState((current) => ({
-                    ...current,
-                    id_token: event.target.value,
-                  }))
-                }
-              />
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="codex-access-token">
-                {t("Access token")}
-              </FieldLabel>
-              <Input
-                id="codex-access-token"
-                type="password"
-                autoComplete="off"
-                value={importState.access_token}
-                onChange={(event) =>
-                  setImportState((current) => ({
-                    ...current,
-                    access_token: event.target.value,
-                  }))
-                }
-              />
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="codex-refresh-token">
-                {t("Refresh token")}
-              </FieldLabel>
-              <Input
-                id="codex-refresh-token"
-                type="password"
-                autoComplete="off"
-                value={importState.refresh_token}
-                onChange={(event) =>
-                  setImportState((current) => ({
-                    ...current,
-                    refresh_token: event.target.value,
-                  }))
-                }
-              />
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="codex-account-id">
-                {t("Account ID override (optional)")}
-              </FieldLabel>
-              <Input
-                id="codex-account-id"
-                value={importState.account_id}
-                onChange={(event) =>
-                  setImportState((current) => ({
-                    ...current,
-                    account_id: event.target.value,
-                  }))
-                }
-              />
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="codex-user-id">
-                {t("User ID override (optional)")}
-              </FieldLabel>
-              <Input
-                id="codex-user-id"
-                value={importState.user_id}
-                onChange={(event) =>
-                  setImportState((current) => ({
-                    ...current,
-                    user_id: event.target.value,
-                  }))
-                }
-              />
-            </Field>
-          </FieldGroup>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setImportOpen(false)}>
-              {t("Cancel")}
-            </Button>
-            <Button
-              onClick={() => void importTokens()}
-              disabled={importCredential.isPending}
-            >
-              {t("Validate and import")}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
+        onOpenChange={setImportOpen}
+        importState={importState}
+        onImportStateChange={(patch) =>
+          setImportState((current) => ({ ...current, ...patch }))
+        }
+        proxies={proxies}
+        isPending={importCredential.isPending}
+        onImport={() => void importTokens()}
+      />
       <EditCredentialDialog
         credentialId={editingId}
         proxies={proxies}
@@ -1413,258 +677,4 @@ export default function CodexOauthPage() {
       />
     </div>
   );
-}
-
-function QuotaWindowHistoryDialog({
-  credential,
-  onClose,
-}: {
-  credential: CodexCredentialView | null;
-  onClose: () => void;
-}) {
-  const { t } = useI18n();
-  const history = useCodexQuotaWindowHistory(credential?.id ?? "");
-  const primary = (history.data?.periods ?? []).filter(
-    (period) => period.window_kind === "primary",
-  );
-  const secondary = (history.data?.periods ?? []).filter(
-    (period) => period.window_kind === "secondary",
-  );
-
-  return (
-    <Dialog open={credential !== null} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-h-[calc(100svh-2rem)] overflow-y-auto sm:max-w-5xl">
-        <DialogHeader>
-          <DialogTitle>
-            {t("Quota window history for {label}", {
-              label: credential?.label ?? "",
-            })}
-          </DialogTitle>
-          <DialogDescription>
-            {t(
-              "Natural resets follow the scheduled boundary. Manual resets consume a reset credit through this Console. An earlier unmatched rollover is recorded as an OpenAI official reset. Period spend includes every caller and both Responses and Images projections.",
-            )}
-          </DialogDescription>
-        </DialogHeader>
-        <AsyncResource
-          isLoading={history.isLoading}
-          error={history.error}
-          isEmpty={(history.data?.periods.length ?? 0) === 0}
-          emptyTitle={t("No quota window history")}
-          emptyDescription={t("History begins with the first stored quota observation.")}
-        >
-          <Tabs defaultValue="primary">
-            <TabsList>
-              <TabsTrigger value="primary">
-                {t("Primary window")} ({primary.length})
-              </TabsTrigger>
-              <TabsTrigger value="secondary">
-                {t("Secondary window")} ({secondary.length})
-              </TabsTrigger>
-            </TabsList>
-            <TabsContent value="primary">
-              <QuotaWindowPeriodsTable periods={primary} />
-            </TabsContent>
-            <TabsContent value="secondary">
-              <QuotaWindowPeriodsTable periods={secondary} />
-            </TabsContent>
-          </Tabs>
-        </AsyncResource>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function QuotaWindowPeriodsTable({
-  periods,
-}: {
-  periods: CodexQuotaWindowPeriod[];
-}) {
-  const { t } = useI18n();
-  if (periods.length === 0) {
-    return (
-      <EmptyState
-        title={t("No periods for this window")}
-        description={t("The provider has not reported this quota window yet.")}
-        className="py-10"
-      />
-    );
-  }
-  return (
-    <div className="overflow-x-auto rounded-xl border">
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>{t("Period")}</TableHead>
-            <TableHead>{t("Usage")}</TableHead>
-            <TableHead>{t("Period spend")}</TableHead>
-            <TableHead>{t("Estimated total quota")}</TableHead>
-            <TableHead>{t("Ended by")}</TableHead>
-            <TableHead>{t("Last observed")}</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {periods.map((period) => (
-            <TableRow key={period.id}>
-              <TableCell className="min-w-64 align-top">
-                <div className="flex flex-col gap-1">
-                  <span className="font-medium">
-                    {formatDateTime(period.started_at)}
-                  </span>
-                  <span className="text-xs text-muted-foreground">
-                    {period.ended_at
-                      ? t("Ended {time}", {
-                          time: formatDateTime(period.ended_at),
-                        })
-                      : t("Scheduled reset {time}", {
-                          time: formatDateTime(period.scheduled_reset_at),
-                        })}
-                  </span>
-                  <Badge variant="outline" className="w-fit">
-                    {period.window_seconds % 86_400 === 0
-                      ? `${period.window_seconds / 86_400}d`
-                      : `${period.window_seconds / 3_600}h`}
-                  </Badge>
-                </div>
-              </TableCell>
-              <TableCell className="align-top tabular-nums">
-                {period.initial_used_percent}% → {period.last_used_percent}%
-              </TableCell>
-              <TableCell className="align-top tabular-nums">
-                {formatUsd(period.cost_amount)}
-              </TableCell>
-              <TableCell className="align-top tabular-nums">
-                {formatEstimatedQuotaTotal(
-                  period.cost_amount,
-                  period.last_used_percent,
-                )}
-              </TableCell>
-              <TableCell className="align-top">
-                <Badge variant={quotaResetReasonVariant(period.reset_reason)}>
-                  {quotaResetReasonLabel(period.reset_reason)}
-                </Badge>
-              </TableCell>
-              <TableCell className="align-top">
-                {formatDateTime(period.last_observed_at)}
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-    </div>
-  );
-}
-
-function EditCredentialDialog({
-  credentialId,
-  proxies,
-  onClose,
-}: {
-  credentialId: string | null;
-  proxies: Array<{ id: string; name: string }>;
-  onClose: () => void;
-}) {
-  const { t } = useI18n();
-  const detail = useCodexCredential(credentialId ?? "");
-  const update = useUpdateCodexCredential(credentialId ?? "");
-  const [state, setState] = useState<EditState>({
-    ...EMPTY_SETTINGS,
-    enabled: true,
-  });
-
-  useEffect(() => {
-    if (!detail.data) return;
-    const credential = detail.data.data;
-    setState({
-      label: credential.label,
-      enabled: credential.enabled,
-      proxy_id: credential.proxy_id ?? "",
-      quota_threshold_percent: String(credential.quota_threshold_percent),
-    });
-  }, [detail.data]);
-
-  const save = async () => {
-    const settings = parseSettings(state);
-    if (!settings || !detail.etag) {
-      toast.error(t("Enter valid credential settings."));
-      return;
-    }
-    const input: CodexCredentialUpdateInput = {
-      ...settings,
-      enabled: state.enabled,
-    };
-    try {
-      await update.mutateAsync({ input, ifMatch: detail.etag });
-      toast.success(t("Credential updated."));
-      onClose();
-    } catch (error) {
-      if (error instanceof ApiError && error.isConflict) {
-        toast.error(t("Credential changed elsewhere. Reloading."));
-        await detail.refetch();
-        return;
-      }
-      toast.error(errorMessage(error));
-    }
-  };
-
-  return (
-    <Dialog open={Boolean(credentialId)} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-h-[calc(100svh-2rem)] overflow-y-auto sm:max-w-xl">
-        <DialogHeader>
-          <DialogTitle>{t("Edit Codex credential")}</DialogTitle>
-          <DialogDescription>
-            {t("Change routing settings without exposing stored OAuth tokens.")}
-          </DialogDescription>
-        </DialogHeader>
-        <AsyncResource
-          isLoading={detail.isLoading}
-          error={detail.error}
-        >
-          <FieldGroup>
-            <Field orientation="horizontal">
-              <FieldLabel htmlFor="codex-enabled">{t("Enabled")}</FieldLabel>
-              <Switch
-                id="codex-enabled"
-                checked={state.enabled}
-                onCheckedChange={(enabled) =>
-                  setState((current) => ({ ...current, enabled }))
-                }
-              />
-            </Field>
-            <SettingsFields
-              state={state}
-              onChange={(patch) =>
-                setState((current) => ({ ...current, ...patch }))
-              }
-              proxies={proxies}
-            />
-          </FieldGroup>
-        </AsyncResource>
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
-            {t("Cancel")}
-          </Button>
-          <Button
-            onClick={() => void save()}
-            disabled={detail.isLoading || update.isPending}
-          >
-            {t("Save changes")}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function downloadJson(value: unknown, filename: string) {
-  const url = URL.createObjectURL(
-    new Blob([JSON.stringify(value, null, 2)], {
-      type: "application/json",
-    }),
-  );
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  anchor.click();
-  URL.revokeObjectURL(url);
 }

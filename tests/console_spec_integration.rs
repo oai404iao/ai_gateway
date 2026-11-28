@@ -3611,7 +3611,7 @@ async fn user_batch_updates_are_atomic_and_cover_supported_fields() {
     let versions = user_ids
         .iter()
         .map(|id| {
-            users
+            users["items"]
                 .as_array()
                 .unwrap()
                 .iter()
@@ -3670,7 +3670,7 @@ async fn user_batch_updates_are_atomic_and_cover_supported_fields() {
 
     let current_users = request(&app, "GET", "/console/v1/users", serde_json::json!({}), &[]).await;
     let current_users = body_json(current_users).await;
-    let current_version = current_users
+    let current_version = current_users["items"]
         .as_array()
         .unwrap()
         .iter()
@@ -5872,7 +5872,7 @@ async fn api_key_create_returns_retrievable_prefixed_secret() {
         let list = request(&app, "GET", path, serde_json::json!({}), &[]).await;
         assert_eq!(list.status(), StatusCode::OK);
         let list = body_json(list).await;
-        let key = list
+        let key = list["items"]
             .as_array()
             .unwrap()
             .iter()
@@ -6716,8 +6716,9 @@ async fn request_logs_limit_defaults_and_clamps_to_the_documented_bounds() {
              RETURNING id,user_id
          )
          INSERT INTO request_logs(id,started_at,completed_at,user_id,api_key_id,api_format,api_operation,client_model,outcome)
-         SELECT gen_random_uuid(),now(),now(),user_id,id,'open_ai_chat_completions','chat_completion','limit-test','succeeded'
-         FROM fixture_key CROSS JOIN generate_series(1,101)",
+         SELECT ('00000000-0000-0000-0000-' || lpad(to_hex(n),12,'0'))::uuid,
+                '2026-09-18T12:00:00Z','2026-09-18T12:00:00Z',user_id,id,'open_ai_chat_completions','chat_completion','limit-test','succeeded'
+         FROM fixture_key CROSS JOIN generate_series(1,101) AS n",
     )
     .bind(app.user_id)
     .execute(&database.pool)
@@ -6735,10 +6736,51 @@ async fn request_logs_limit_defaults_and_clamps_to_the_documented_bounds() {
         assert_eq!(response.status(), StatusCode::OK, "{path}");
         assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
         assert_eq!(
-            body_json(response).await.as_array().unwrap().len(),
+            body_json(response).await["items"].as_array().unwrap().len(),
             expected,
             "{path}"
         );
+    }
+    let first_path = "/console/v1/request-logs?limit=100&model=limit-test";
+    let first = request(&app, "GET", first_path, serde_json::json!({}), &[]).await;
+    assert_eq!(first.status(), StatusCode::OK);
+    let first = body_json(first).await;
+    assert_eq!(first.get("total"), None);
+    let cursor = first["next_cursor"].as_str().unwrap();
+    let second = request(
+        &app,
+        "GET",
+        &format!("{first_path}&cursor={cursor}"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(second.status(), StatusCode::OK);
+    let second = body_json(second).await;
+    assert_eq!(second["items"].as_array().unwrap().len(), 1);
+    assert_eq!(second.get("next_cursor"), Some(&serde_json::Value::Null));
+    let ids: Vec<_> = first["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(second["items"].as_array().unwrap())
+        .map(|row| row["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        (1..=101)
+            .rev()
+            .map(|id| Uuid::from_u128(id).to_string())
+            .collect::<Vec<_>>()
+    );
+
+    for path in [
+        format!("{first_path}&cursor=v1.!"),
+        format!("/console/v1/request-logs?model=another-model&cursor={cursor}"),
+        format!("/console/v1/me/request-logs?model=limit-test&cursor={cursor}"),
+    ] {
+        let invalid = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
+        assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY, "{path}");
     }
     database.cleanup().await;
 }
@@ -6813,8 +6855,8 @@ async fn request_log_filters_match_the_console_contract() {
         .await;
         assert_eq!(response.status(), StatusCode::OK);
         let rows = body_json(response).await;
-        assert_eq!(rows.as_array().unwrap().len(), 1);
-        assert_eq!(rows[0]["id"], matching_log_id.to_string());
+        assert_eq!(rows["items"].as_array().unwrap().len(), 1);
+        assert_eq!(rows["items"][0]["id"], matching_log_id.to_string());
     }
 
     let response = request(
@@ -6827,23 +6869,29 @@ async fn request_log_filters_match_the_console_contract() {
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
-    assert_eq!(body.as_array().unwrap().len(), 1);
-    assert_eq!(body[0]["id"], matching_log_id.to_string());
-    assert_eq!(body[0]["user_name"], format!("spec-{}", app.user_id));
-    assert_eq!(body[0]["api_operation"], "chat_completion");
-    assert_eq!(body[0]["request_protocol"], "non_stream");
-    assert_eq!(body[0]["reasoning_effort"], "high");
-    assert_eq!(body[0]["fast_mode"], true);
-    assert_eq!(body[0]["peak_pricing"], true);
-    assert_eq!(body[0]["ttft_ms"], 100);
-    assert_eq!(body[0]["total_duration_ms"], 1000);
-    assert_eq!(body[0]["output_tokens_per_second"], "5.5556");
-    assert_eq!(body[0]["input_tokens"], 12);
-    assert_eq!(body[0]["cached_input_tokens"], 2);
-    assert_eq!(body[0]["output_tokens"], 5);
-    assert_eq!(body[0]["reasoning_tokens"], 1);
-    assert_eq!(body[0]["error_code"], "provider_error");
-    assert_eq!(body[0]["error_summary"], "upstream quota exhausted");
+    assert_eq!(body["items"].as_array().unwrap().len(), 1);
+    assert_eq!(body["items"][0]["id"], matching_log_id.to_string());
+    assert_eq!(
+        body["items"][0]["user_name"],
+        format!("spec-{}", app.user_id)
+    );
+    assert_eq!(body["items"][0]["api_operation"], "chat_completion");
+    assert_eq!(body["items"][0]["request_protocol"], "non_stream");
+    assert_eq!(body["items"][0]["reasoning_effort"], "high");
+    assert_eq!(body["items"][0]["fast_mode"], true);
+    assert_eq!(body["items"][0]["peak_pricing"], true);
+    assert_eq!(body["items"][0]["ttft_ms"], 100);
+    assert_eq!(body["items"][0]["total_duration_ms"], 1000);
+    assert_eq!(body["items"][0]["output_tokens_per_second"], "5.5556");
+    assert_eq!(body["items"][0]["input_tokens"], 12);
+    assert_eq!(body["items"][0]["cached_input_tokens"], 2);
+    assert_eq!(body["items"][0]["output_tokens"], 5);
+    assert_eq!(body["items"][0]["reasoning_tokens"], 1);
+    assert_eq!(body["items"][0]["error_code"], "provider_error");
+    assert_eq!(
+        body["items"][0]["error_summary"],
+        "upstream quota exhausted"
+    );
 
     let detail = request(
         &app,
@@ -6890,9 +6938,9 @@ async fn request_log_filters_match_the_console_contract() {
     .await;
     assert_eq!(images.status(), StatusCode::OK);
     let images = body_json(images).await;
-    assert_eq!(images.as_array().unwrap().len(), 1);
-    assert_eq!(images[0]["id"], image_log_id.to_string());
-    assert_eq!(images[0]["api_operation"], "images_generation");
+    assert_eq!(images["items"].as_array().unwrap().len(), 1);
+    assert_eq!(images["items"][0]["id"], image_log_id.to_string());
+    assert_eq!(images["items"][0]["api_operation"], "images_generation");
 
     let standalone_search_log_id = Uuid::new_v4();
     for (id, operation) in [
@@ -6923,9 +6971,9 @@ async fn request_log_filters_match_the_console_contract() {
     .await;
     assert_eq!(operation_filtered.status(), StatusCode::OK);
     let operation_filtered = body_json(operation_filtered).await;
-    assert_eq!(operation_filtered.as_array().unwrap().len(), 1);
+    assert_eq!(operation_filtered["items"].as_array().unwrap().len(), 1);
     assert_eq!(
-        operation_filtered[0]["id"],
+        operation_filtered["items"][0]["id"],
         standalone_search_log_id.to_string()
     );
 
@@ -7376,12 +7424,20 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     .await;
     assert_eq!(admin_logs.status(), StatusCode::OK);
     let admin_logs = body_json(admin_logs).await;
-    assert_eq!(admin_logs[0]["channel_group_name"], group_detail["name"]);
-    assert_eq!(admin_logs[0]["channel_id"], channel_id.to_string());
-    assert_eq!(admin_logs[0]["channel_name"], "Spec channel");
-    assert_eq!(admin_logs[0]["user_name"], regular_display_name);
-    assert_eq!(admin_logs[0]["request_protocol"], "non_stream");
-    assert!(!admin_logs[0].as_object().unwrap().contains_key("streamed"));
+    assert_eq!(
+        admin_logs["items"][0]["channel_group_name"],
+        group_detail["name"]
+    );
+    assert_eq!(admin_logs["items"][0]["channel_id"], channel_id.to_string());
+    assert_eq!(admin_logs["items"][0]["channel_name"], "Spec channel");
+    assert_eq!(admin_logs["items"][0]["user_name"], regular_display_name);
+    assert_eq!(admin_logs["items"][0]["request_protocol"], "non_stream");
+    assert!(
+        !admin_logs["items"][0]
+            .as_object()
+            .unwrap()
+            .contains_key("streamed")
+    );
 
     let admin_own_logs = request(
         &app,
@@ -7393,17 +7449,20 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     .await;
     assert_eq!(admin_own_logs.status(), StatusCode::OK);
     let admin_own_logs = body_json(admin_own_logs).await;
-    assert!(admin_own_logs[0]["user_name"].is_null());
-    assert!(admin_own_logs[0]["channel_id"].is_null());
-    assert!(admin_own_logs[0]["channel_name"].is_null());
-    assert_eq!(admin_own_logs[0]["request_protocol"], "non_stream");
+    assert!(admin_own_logs["items"][0]["user_name"].is_null());
+    assert!(admin_own_logs["items"][0]["channel_id"].is_null());
+    assert!(admin_own_logs["items"][0]["channel_name"].is_null());
+    assert_eq!(admin_own_logs["items"][0]["request_protocol"], "non_stream");
     assert!(
-        !admin_own_logs[0]
+        !admin_own_logs["items"][0]
             .as_object()
             .unwrap()
             .contains_key("streamed")
     );
-    let admin_own_log_id = admin_own_logs[0]["id"].as_str().unwrap().to_owned();
+    let admin_own_log_id = admin_own_logs["items"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let admin_own_log = request(
         &app,
         "GET",
@@ -7431,12 +7490,52 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     .await;
     assert_eq!(user_logs.status(), StatusCode::OK);
     let user_logs = body_json(user_logs).await;
-    assert_eq!(user_logs[0]["channel_group_name"], group_detail["name"]);
-    assert!(user_logs[0]["user_name"].is_null());
-    assert!(user_logs[0]["channel_id"].is_null());
-    assert!(user_logs[0]["channel_name"].is_null());
-    assert_eq!(user_logs[0]["request_protocol"], "non_stream");
-    assert!(!user_logs[0].as_object().unwrap().contains_key("streamed"));
+    assert_eq!(user_logs["items"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        user_logs["items"][0]["id"],
+        regular_request_log_id.to_string()
+    );
+    assert_eq!(
+        user_logs["items"][0]["channel_group_name"],
+        group_detail["name"]
+    );
+    assert!(user_logs["items"][0]["user_name"].is_null());
+    assert!(user_logs["items"][0]["channel_id"].is_null());
+    assert!(user_logs["items"][0]["channel_name"].is_null());
+    assert_eq!(user_logs["items"][0]["request_protocol"], "non_stream");
+    assert!(
+        !user_logs["items"][0]
+            .as_object()
+            .unwrap()
+            .contains_key("streamed")
+    );
+
+    for path in ["/console/v1/me/request-logs", "/console/v1/me/api-keys"] {
+        let spoofed = request_with_token(
+            &app,
+            &regular_session.access_token,
+            "GET",
+            &format!("{path}?user_id={}", app.user_id),
+            serde_json::json!({}),
+            &[],
+        )
+        .await;
+        assert_eq!(spoofed.status(), StatusCode::BAD_REQUEST, "{path}");
+    }
+    let own_keys = request_with_token(
+        &app,
+        &regular_session.access_token,
+        "GET",
+        "/console/v1/me/api-keys?status=active",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(own_keys.status(), StatusCode::OK);
+    let own_keys = body_json(own_keys).await;
+    assert_eq!(own_keys["total"], 1);
+    assert_eq!(own_keys["items"].as_array().unwrap().len(), 1);
+    assert_eq!(own_keys["items"][0]["id"], regular_api_key_id.to_string());
 
     let user_log = request_with_token(
         &app,

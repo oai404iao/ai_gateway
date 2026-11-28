@@ -618,7 +618,7 @@ async fn query_contract(db: &Backend, now: DateTime<Utc>) -> Value {
         },
     ] {
         f.limit = 100;
-        views.push(serde_json::to_value(queries.list_all(f).await.unwrap()).unwrap());
+        views.push(serde_json::to_value(queries.list_all(f).await.unwrap().items).unwrap());
     }
     let mut costs = Vec::new();
     for f in [

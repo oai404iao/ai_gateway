@@ -18,7 +18,16 @@ it("identifies deleted objects by their recorded name and retains exact IDs for 
     before_redacted: { name: "Retired proxy" }, after_redacted: {},
     correlation_id: "00000000-0000-0000-0000-000000000003", reason: null,
   };
-  server.use(http.get("/console/v1/audit-logs", () => HttpResponse.json([event])));
+  server.use(
+    http.get("/console/v1/audit-logs", ({ request }) => {
+      const url = new URL(request.url);
+      const cursor = url.searchParams.get("cursor");
+      if (cursor === "page-2") {
+        return HttpResponse.json({ items: [{ ...event, id: "00000000-0000-0000-0000-000000000010", action: "update" }], next_cursor: null });
+      }
+      return HttpResponse.json({ items: [event], next_cursor: "page-2" });
+    }),
+  );
   window.history.replaceState({}, "", "/admin/audit-logs");
   render(<AppProviders><BrowserRouter><AppRouter /></BrowserRouter></AppProviders>);
   const user = userEvent.setup();
@@ -29,4 +38,8 @@ it("identifies deleted objects by their recorded name and retains exact IDs for 
   const properties = within(await screen.findByRole("complementary", { name: "delete · Retired proxy" }));
   expect(properties.getByText(event.object_id)).toBeVisible();
   expect(properties.getByText(event.correlation_id!)).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Go to next page" }));
+  expect(await screen.findByText("update")).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Go to previous page" }));
+  expect(await screen.findByText("delete")).toBeVisible();
 });

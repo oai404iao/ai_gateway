@@ -145,7 +145,7 @@ def exercise_faults(resources, binary, data, protocols, warmup_id):
             denied(key["secret"])
             control.unlink()
             denied(key["secret"])
-            check(api(f"/request-logs?api_key_id={key['id']}") == [], "failed append unexpectedly produced a log")
+            check(api(f"/request-logs?api_key_id={key['id']}")["items"] == [], "failed append unexpectedly produced a log")
             check(api("/me")["balance_amount"] == before, "failed append unexpectedly changed balance")
             check(upstream.post_count == 0, "failed admission dispatched upstream")
             results.append({

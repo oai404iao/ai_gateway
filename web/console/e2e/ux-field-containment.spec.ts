@@ -53,7 +53,13 @@ test("model details wrap long IDs without widening or clipping the editor", asyn
 
 test("request-ID actions and long user filters fit a narrow form", async ({ page }) => {
   await page.route((url) => url.pathname === "/console/v1/users", (route) =>
-    route.fulfill({ json: [{ ...E2E_USER, display_name: identifier }] }),
+    route.fulfill({ json: { items: [{ ...E2E_USER, display_name: identifier }], next_cursor: null, total: 1 } }),
+  );
+  await page.route((url) => url.pathname === `/console/v1/users/${E2E_USER.id}`, (route) =>
+    route.fulfill({
+      headers: { ETag: `"${E2E_USER.updated_at}"` },
+      json: { ...E2E_USER, display_name: identifier },
+    }),
   );
   await page.goto("/admin/request-logs");
   const search = page.getByRole("searchbox", { name: "Find request ID" });
@@ -73,7 +79,9 @@ test("request-ID actions and long user filters fit a narrow form", async ({ page
   await expect(option).toBeVisible();
   expect(await option.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
   await option.click();
-  await expect(user).toContainText(identifier);
+  await expect(user).toHaveValue(new RegExp(identifier));
   await expectInside(user, "form");
-  expect(await user.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+  expect(
+    await user.evaluate((el) => el.getBoundingClientRect().right <= el.closest("form")!.getBoundingClientRect().right + 1),
+  ).toBe(true);
 });

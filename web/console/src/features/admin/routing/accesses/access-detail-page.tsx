@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useParams } from "react-router";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -15,7 +15,7 @@ import { ApiError, controlPlaneMutationErrorMessage } from "@/api/errors";
 import { useCreateUpstreamAccess, useProxies, useUpdateUpstreamAccess, useUpstreamAccess } from "@/features/admin/api";
 import { useI18n } from "@/app/i18n";
 import { useReturnPath, withReturnTo } from "@/lib/page-navigation";
-import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
+import { useConfigurationDraft } from "@/hooks/use-configuration-draft";
 import { useConnectorPlugins } from "@/features/admin/connectors/api";
 
 const timeout = z.string().regex(/^(?:[1-9][0-9]*)?$/)
@@ -58,15 +58,24 @@ export function AccessDetailPage() {
   const connector = connectors.data?.find((item) => item.id === form.watch("connector_kind"));
   const busy = create.isPending || update.isPending;
   const { navigate, navigationGuard, markSaved } = useConfigurationDraft(busy, form.formState.isDirty);
+  const baselineRef = useRef<typeof query.data>(undefined);
   useEffect(() => {
-    if (access) form.reset({
-      name: access.name, connector_kind: access.connector_kind, base_url: access.base_url,
-      proxy_id: access.proxy_id ?? "__none__", enabled: access.enabled,
-      connect_timeout_ms: access.connect_timeout_ms?.toString() ?? "",
-      response_header_timeout_ms: access.response_header_timeout_ms?.toString() ?? "",
-      stream_idle_timeout_ms: access.stream_idle_timeout_ms?.toString() ?? "",
-    });
-  }, [access, form]);
+    baselineRef.current = undefined;
+    form.reset(defaults);
+  }, [id, form]);
+  useEffect(() => {
+    if (query.data && query.data !== baselineRef.current && !form.formState.isDirty) {
+      baselineRef.current = query.data;
+      const loaded = query.data.data;
+      form.reset({
+        name: loaded.name, connector_kind: loaded.connector_kind, base_url: loaded.base_url,
+        proxy_id: loaded.proxy_id ?? "__none__", enabled: loaded.enabled,
+        connect_timeout_ms: loaded.connect_timeout_ms?.toString() ?? "",
+        response_header_timeout_ms: loaded.response_header_timeout_ms?.toString() ?? "",
+        stream_idle_timeout_ms: loaded.stream_idle_timeout_ms?.toString() ?? "",
+      });
+    }
+  }, [query.data, form, form.formState.isDirty]);
   const submit = form.handleSubmit(async (values) => {
     const input = {
       name: values.name, connector_kind: values.connector_kind, base_url: values.base_url,

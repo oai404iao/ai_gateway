@@ -3,7 +3,6 @@ import { Plus } from "lucide-react";
 import { PageHeader } from "@/components/shared/page-header";
 import { AsyncResource } from "@/components/shared/async-resource";
 import { ResourceTable, type Column } from "@/components/shared/resource-table";
-import { useI18n } from "@/app/i18n";
 import { NavigationLink } from "@/components/shared/navigation-link";
 import { usePageOrigin, withReturnTo } from "@/lib/page-navigation";
 import { useListPagination } from "@/lib/use-list-pagination";
@@ -49,7 +48,6 @@ export function AdminListPage<T>({
   searchText,
 }: AdminListPageProps<T>) {
   const navigate = useNavigate();
-  const { t } = useI18n();
   const origin = usePageOrigin();
   const pagination = useListPagination();
   const href = (row: T) => withReturnTo(detailPath(row), origin);
@@ -76,7 +74,7 @@ export function AdminListPage<T>({
             isLoading={query.isLoading}
             error={query.error}
             isEmpty={query.data?.length === 0}
-            emptyTitle={t("No records")}
+            emptyTitle="No records"
           >
             {rowName ? <ResourceDirectory rows={query.data ?? []} columns={columns} rowKey={rowKey} rowName={rowName}
               searchText={searchText} rowHref={href} linkColumnKey={linkColumnKey} groupBy={groupBy} /> : <ResourceTable

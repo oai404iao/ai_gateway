@@ -405,8 +405,16 @@ async fn system_probe_identity_is_an_internal_active_administrator() {
     assert!(identity.2);
     assert!(identity.3);
 
-    let users = repository.admin_users().await.unwrap();
-    let api_keys = repository.admin_api_keys().await.unwrap();
+    let users = repository
+        .admin_users(Default::default())
+        .await
+        .unwrap()
+        .items;
+    let api_keys = repository
+        .admin_api_keys(None, Default::default())
+        .await
+        .unwrap()
+        .items;
     assert!(users.iter().all(|user| user.id != first.user_id));
     assert!(api_keys.iter().all(|key| key.id != first.api_key_id));
 
@@ -5732,7 +5740,7 @@ async fn managed_users_are_versioned_audited_and_immediately_revoke_their_keys()
     let users: serde_json::Value =
         serde_json::from_slice(&users.into_body().collect().await.unwrap().to_bytes()).unwrap();
     assert!(
-        users
+        users["items"]
             .as_array()
             .unwrap()
             .iter()
@@ -6520,7 +6528,7 @@ async fn admin_api_key_policies_persist_publish_and_are_audited_without_secrets(
     assert_eq!(list.status(), StatusCode::OK);
     let list: serde_json::Value =
         serde_json::from_slice(&list.into_body().collect().await.unwrap().to_bytes()).unwrap();
-    let listed = list
+    let listed = list["items"]
         .as_array()
         .unwrap()
         .iter()

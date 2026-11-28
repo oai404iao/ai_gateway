@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Navigate } from "react-router";
+import { Navigate, useLocation } from "react-router";
 import { ArrowRight, Eye, EyeOff } from "lucide-react";
 import { NavigationLink } from "@/components/shared/navigation-link";
 import { useForm } from "react-hook-form";
@@ -21,8 +21,24 @@ import { login } from "@/api/session";
 import { useSession } from "@/lib/use-session";
 import { useI18n } from "@/app/i18n";
 
+function safeRedirectTarget(from: unknown): string {
+  if (typeof from !== "string" || !from.startsWith("/") || from.startsWith("//") || from.startsWith("/\\")) {
+    return "/";
+  }
+  try {
+    const parsed = new URL(from, "https://console.local");
+    if (parsed.origin !== "https://console.local" || parsed.pathname === "/login") {
+      return "/";
+    }
+    return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+  } catch {
+    return "/";
+  }
+}
+
 export function LoginPage() {
   const { isAuthenticated, user: sessionUser } = useSession();
+  const location = useLocation();
   const [showPassword, setShowPassword] = useState(false);
   const { t } = useI18n();
   const schema = z.object({
@@ -38,9 +54,10 @@ export function LoginPage() {
   } = useForm<FormValues>({ resolver: zodResolver(schema) });
 
   if (isAuthenticated) {
-    return (
-      <Navigate to={sessionUser?.password_change_required ? "/change-password" : "/"} replace />
-    );
+    const redirectTo = sessionUser?.password_change_required
+      ? "/change-password"
+      : safeRedirectTarget((location.state as { from?: unknown } | null)?.from);
+    return <Navigate to={redirectTo} replace />;
   }
 
   const onSubmit = async (values: FormValues) => {

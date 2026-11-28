@@ -1,17 +1,16 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router";
 import { useReturnPath } from "@/lib/page-navigation";
-import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
+import { useConfigurationDraft } from "@/hooks/use-configuration-draft";
 import { Controller, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { z } from "zod";
 import { toast } from "sonner";
 import type { TemporaryPasswordResponse, UserUpdateInput } from "@/api/types";
 import { ApiError } from "@/api/errors";
 import { clearSession, getSession, setSession, sessionScope } from "@/api/session-store";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Field,
   FieldContent,
@@ -33,8 +32,6 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { DecimalField } from "@/components/shared/decimal-field";
 import { DetailField } from "@/components/shared/detail-field";
-import { ConfirmDialog } from "@/components/shared/confirm-dialog";
-import { SecretOnceDialog } from "@/components/shared/secret-once-dialog";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { AdminDetailShell } from "@/features/admin/components/admin-detail-shell";
 import {
@@ -52,57 +49,25 @@ import { formatUsd } from "@/lib/formatters";
 import {
   ROLES,
   roleLabel,
-  USER_STATUSES,
   userStatusLabel,
 } from "@/lib/permissions";
 import { useSession } from "@/lib/use-session";
 
-const accountSchema = z.object({
-  display_name: z.string().min(1, "Display name is required.").max(200),
-  email: z.union([z.literal(""), z.string().email("Enter a valid email.")]),
-  role: z.enum(["user", "admin"]),
-  user_group_id: z.string().min(1, "Pick a user group."),
-  default_api_key_policy_id: z.string(),
-});
-
-const balanceSchema = z.object({
-  balance_amount: z.string().regex(/^-?\d+(?:\.\d+)?$/, "Enter a valid balance."),
-});
-
-const statusSchema = z.object({
-  status: z.enum(["active", "suspended", "disabled"]),
-});
-
-type AccountValues = z.infer<typeof accountSchema>;
-type BalanceValues = z.infer<typeof balanceSchema>;
-type StatusValues = z.infer<typeof statusSchema>;
-type ManageableStatus = StatusValues["status"];
-type SubmittingAction = "account" | "balance" | "status" | "settings";
-
-const manageableStatuses = USER_STATUSES.filter(
-  (status): status is ManageableStatus => status !== "invited",
-);
-
-const emptyAccountValues: AccountValues = {
-  display_name: "",
-  email: "",
-  role: "user",
-  user_group_id: "",
-  default_api_key_policy_id: "",
-};
-
-const emptyBalanceValues: BalanceValues = {
-  balance_amount: "0",
-};
-
-const emptyStatusValues: StatusValues = {
-  status: "active",
-};
-
-function isManageableStatus(value: string): value is ManageableStatus {
-  return manageableStatuses.some((status) => status === value);
-}
-
+import { UserDetailDialogs, UserPasswordRecoveryCard } from "./user-detail-dialogs";
+import {
+  accountSchema,
+  balanceSchema,
+  emptyAccountValues,
+  emptyBalanceValues,
+  emptyStatusValues,
+  isManageableStatus,
+  manageableStatuses,
+  statusSchema,
+  type AccountValues,
+  type BalanceValues,
+  type StatusValues,
+  type SubmittingAction,
+} from "./user-detail-schema";
 export function UserDetailPage() {
   const { id = "" } = useParams();
   const returnTo = useReturnPath("/admin/users");
@@ -122,15 +87,23 @@ export function UserDetailPage() {
   const [invitationToken, setInvitationToken] = useState<string | null>(null);
   const [adminPassword, setAdminPassword] = useState("");
   const [websocketEnabled, setWebsocketEnabled] = useState(false);
+  const [websocketDirty, setWebsocketDirty] = useState(false);
+  const websocketBaselineRef = useRef<typeof data>(undefined);
   const [temporaryPassword, setTemporaryPassword] =
     useState<TemporaryPasswordResponse | null>(null);
   const user = data?.data;
 
   useEffect(() => {
-    if (user) {
-      setWebsocketEnabled(user.websocket_enabled);
+    websocketBaselineRef.current = undefined;
+    setWebsocketDirty(false);
+  }, [id]);
+
+  useEffect(() => {
+    if (data && data !== websocketBaselineRef.current && !websocketDirty) {
+      websocketBaselineRef.current = data;
+      setWebsocketEnabled(data.data.websocket_enabled);
     }
-  }, [user]);
+  }, [data, websocketDirty]);
 
   const accountValues: AccountValues = user
     ? {
@@ -151,16 +124,19 @@ export function UserDetailPage() {
     resolver: zodResolver(accountSchema),
     defaultValues: emptyAccountValues,
     values: accountValues,
+    resetOptions: { keepDirtyValues: true },
   });
   const balanceForm = useForm<BalanceValues>({
     resolver: zodResolver(balanceSchema),
     defaultValues: emptyBalanceValues,
     values: balanceValues,
+    resetOptions: { keepDirtyValues: true },
   });
   const statusForm = useForm<StatusValues>({
     resolver: zodResolver(statusSchema),
     defaultValues: emptyStatusValues,
     values: statusValues,
+    resetOptions: { keepDirtyValues: true },
   });
   const draft = useConfigurationDraft(
     submitting !== null || remove.isPending,
@@ -184,6 +160,15 @@ export function UserDetailPage() {
     setSubmitting(action);
     try {
       await update.mutateAsync({ input, ifMatch: etag });
+      if (action === "account") {
+        accountForm.reset(accountForm.getValues());
+      } else if (action === "balance") {
+        balanceForm.reset(balanceForm.getValues());
+      } else if (action === "status") {
+        statusForm.reset(statusForm.getValues());
+      } else if (action === "settings") {
+        setWebsocketDirty(false);
+      }
       const activeUser = getSession().user;
       if (activeUser && currentUser?.id === id && sessionScope(activeUser) === sessionScope(currentUser)) {
         if (invalidatesCurrentSession) {
@@ -556,78 +541,12 @@ export function UserDetailPage() {
               </CardContent>
             </Card>
 
-            {!user.can_reissue_invitation ? (
-              <Card>
-                <CardHeader>
-                  <CardTitle>{t("Password recovery")}</CardTitle>
-                  <CardDescription>
-                    {t(
-                      "Generate an expiring temporary password that forces the user to choose a new password.",
-                    )}
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="flex flex-col items-start gap-4">
-                  {user.password_change_required ? (
-                    <Alert>
-                      <AlertTitle>{t("Password change pending")}</AlertTitle>
-                      <AlertDescription>
-                        {user.temporary_password_expires_at
-                          ? t("The current temporary password expires at {time}.", {
-                              time: formatDateTime(
-                                user.temporary_password_expires_at,
-                              ),
-                            })
-                          : t("The user must replace the temporary password.")}
-                      </AlertDescription>
-                    </Alert>
-                  ) : null}
-                  {currentUser?.id === user.id ? (
-                    <Alert>
-                      <AlertTitle>{t("Current administrator account")}</AlertTitle>
-                      <AlertDescription>
-                        {t(
-                          "Use another administrator or the host recovery command to reset your own password.",
-                        )}
-                      </AlertDescription>
-                    </Alert>
-                  ) : user.status !== "active" ? (
-                    <Alert>
-                      <AlertTitle>{t("Active account required")}</AlertTitle>
-                      <AlertDescription>
-                        {t(
-                          "Restore this account to active status before generating a temporary password.",
-                        )}
-                      </AlertDescription>
-                    </Alert>
-                  ) : (
-                    <>
-                      <Alert>
-                        <AlertTitle>{t("Existing access will be revoked")}</AlertTitle>
-                        <AlertDescription>
-                          {t(
-                            "Generating a temporary password immediately invalidates the current password and every Console login session. API keys are unchanged.",
-                          )}
-                        </AlertDescription>
-                      </Alert>
-                      <Button
-                        type="button"
-                        onClick={() => setTemporaryPasswordOpen(true)}
-                        disabled={issueTemporaryPassword.isPending}
-                      >
-                        {issueTemporaryPassword.isPending ? (
-                          <Spinner data-icon="inline-start" />
-                        ) : null}
-                        {t(
-                          user.password_change_required
-                            ? "Generate replacement temporary password"
-                            : "Generate temporary password",
-                        )}
-                      </Button>
-                    </>
-                  )}
-                </CardContent>
-              </Card>
-            ) : null}
+            <UserPasswordRecoveryCard
+              user={user}
+              currentUserId={currentUser?.id}
+              isPending={issueTemporaryPassword.isPending}
+              onOpenTemporaryPassword={() => setTemporaryPasswordOpen(true)}
+            />
 
             <Card>
               <CardHeader>
@@ -649,9 +568,11 @@ export function UserDetailPage() {
                     id="admin_user_websocket_enabled"
                     checked={websocketEnabled}
                     disabled={submitting !== null}
-                    onCheckedChange={(checked) =>
-                      setWebsocketEnabled(Boolean(checked))
-                    }
+                    onCheckedChange={(checked) => {
+                      const next = Boolean(checked);
+                      setWebsocketEnabled(next);
+                      setWebsocketDirty(Boolean(user && next !== user.websocket_enabled));
+                    }}
                   />
                 </Field>
                 <Button
@@ -824,87 +745,27 @@ export function UserDetailPage() {
         ) : undefined
       }
       />
-      <ConfirmDialog
-        open={deleteOpen}
-        onOpenChange={setDeleteOpen}
-        title={t("Delete user?")}
-        description={t(
-          "This anonymizes the account, revokes every session and invitation, and deletes every API key with its stored secret. Request logs and audit history are preserved. This action cannot be undone.",
-        )}
-        confirmLabel={t("Delete user")}
-        destructive
-        onConfirm={() => void deleteUser()}
-      />
-      <ConfirmDialog
-        open={reissueOpen}
-        onOpenChange={setReissueOpen}
-        title={t("Reissue invitation?")}
-        description={t(
-          "All previous invitation tokens for this user will stop working. A new token will be shown once.",
-        )}
-        confirmLabel={t("Reissue invitation")}
-        onConfirm={() => void reissueInvitation()}
-      />
-      <ConfirmDialog
-        open={temporaryPasswordOpen}
-        onOpenChange={(open) => {
+      <UserDetailDialogs
+        passwordChangeRequired={user?.password_change_required}
+        issueTemporaryPasswordPending={issueTemporaryPassword.isPending}
+        deleteOpen={deleteOpen}
+        onDeleteOpenChange={setDeleteOpen}
+        onConfirmDelete={() => void deleteUser()}
+        reissueOpen={reissueOpen}
+        onReissueOpenChange={setReissueOpen}
+        onConfirmReissue={() => void reissueInvitation()}
+        temporaryPasswordOpen={temporaryPasswordOpen}
+        onTemporaryPasswordOpenChange={(open) => {
           setTemporaryPasswordOpen(open);
           if (!open) setAdminPassword("");
         }}
-        title={t(
-          user?.password_change_required
-            ? "Generate replacement temporary password?"
-            : "Generate temporary password?",
-        )}
-        description={t(
-          "Re-enter your administrator password. The target user's current password and Console sessions will stop working immediately.",
-        )}
-        content={
-          <FieldGroup>
-            <Field>
-              <FieldLabel htmlFor="temporary-password-admin-confirmation">
-                {t("Your current password")}
-              </FieldLabel>
-              <Input
-                id="temporary-password-admin-confirmation"
-                type="password"
-                autoComplete="current-password"
-                value={adminPassword}
-                onChange={(event) => setAdminPassword(event.target.value)}
-              />
-            </Field>
-          </FieldGroup>
-        }
-        confirmLabel={t(
-          user?.password_change_required
-            ? "Generate replacement password"
-            : "Generate temporary password",
-        )}
-        confirmDisabled={
-          adminPassword.length < 12 || issueTemporaryPassword.isPending
-        }
-        onConfirm={() => void generateTemporaryPassword()}
-      />
-      <SecretOnceDialog
-        open={Boolean(invitationToken)}
-        onOpenChange={(open) => !open && setInvitationToken(null)}
-        title={t("Replacement invitation token")}
-        description={t("Give this new token to the user to activate their account.")}
-        secret={invitationToken}
-      />
-      <SecretOnceDialog
-        open={Boolean(temporaryPassword)}
-        onOpenChange={(open) => !open && setTemporaryPassword(null)}
-        title={t("Temporary password")}
-        description={
-          temporaryPassword
-            ? t(
-                "Give this password to the user through a secure channel. It expires at {time} and will stop working immediately after the user sets a new password.",
-                { time: formatDateTime(temporaryPassword.expires_at) },
-              )
-            : undefined
-        }
-        secret={temporaryPassword?.temporary_password ?? null}
+        adminPassword={adminPassword}
+        onAdminPasswordChange={setAdminPassword}
+        onConfirmTemporaryPassword={() => void generateTemporaryPassword()}
+        invitationToken={invitationToken}
+        temporaryPassword={temporaryPassword}
+        onCloseInvitationToken={() => setInvitationToken(null)}
+        onCloseTemporaryPassword={() => setTemporaryPassword(null)}
       />
     </>
   );

@@ -30,9 +30,10 @@ async function renderAppAt(path: string) {
 describe("RequestLogsView", () => {
   it("compacts usage in the table but keeps the exact token breakdown available", async () => {
     seedUserSession();
-    server.use(http.get("/console/v1/me/request-logs", () => HttpResponse.json([
-      { ...REQUEST_LOG, input_tokens: 1_234_569, cached_input_tokens: 2, cost_amount: "0.0000008" },
-    ])));
+    server.use(http.get("/console/v1/me/request-logs", () => HttpResponse.json({
+      items: [{ ...REQUEST_LOG, input_tokens: 1_234_569, cached_input_tokens: 2, cost_amount: "0.0000008" }],
+      next_cursor: null,
+    })));
     await renderAppAt("/usage/request-logs");
     expect(await screen.findByLabelText("Uncached input: 1,234,567")).toHaveTextContent("1.23M");
     expect(screen.getByText("<0.00001 USD")).toBeVisible();
@@ -52,7 +53,7 @@ describe("RequestLogsView", () => {
       http.get("/console/v1/model-options", () => HttpResponse.json([catalogOnlyModel])),
       http.get("/console/v1/me/request-logs", ({ request }) => {
         queries.push(new URL(request.url).searchParams);
-        return HttpResponse.json([log]);
+        return HttpResponse.json({ items: [log], next_cursor: null });
       }),
     );
 
@@ -132,13 +133,16 @@ describe("RequestLogsView", () => {
     seedAuthenticatedSession();
     server.use(
       http.get("/console/v1/me/request-logs", () =>
-        HttpResponse.json([
-          {
-            ...REQUEST_LOG,
-            reasoning_effort: null,
-            fast_mode: false,
-          },
-        ]),
+        HttpResponse.json({
+          items: [
+            {
+              ...REQUEST_LOG,
+              reasoning_effort: null,
+              fast_mode: false,
+            },
+          ],
+          next_cursor: null,
+        }),
       ),
     );
 
@@ -158,7 +162,7 @@ describe("RequestLogsView", () => {
       http.get("/console/v1/model-options", () => HttpResponse.json(["priced/catalog-option"])),
       http.get("/console/v1/request-logs", ({ request }) => {
         queries.push(new URL(request.url).searchParams);
-        return HttpResponse.json([REQUEST_LOG]);
+        return HttpResponse.json({ items: [REQUEST_LOG], next_cursor: null });
       }),
     );
 
@@ -202,7 +206,7 @@ describe("RequestLogsView", () => {
     await user.click(apiKeySelect);
     await user.click(
       await screen.findByRole("option", {
-        name: `${ADMIN_API_KEY.name} · ${CONTROL_PLANE_USER.display_name}`,
+        name: ADMIN_API_KEY.name,
       }),
     );
 
@@ -234,14 +238,17 @@ describe("RequestLogsView", () => {
       "user-name-that-is-long-enough-to-overflow-the-column";
     server.use(
       http.get("/console/v1/request-logs", () =>
-        HttpResponse.json([
-          {
-            ...REQUEST_LOG,
-            channel_group_name: longGroupName,
-            channel_name: longChannelName,
-            user_name: longUserName,
-          },
-        ]),
+        HttpResponse.json({
+          items: [
+            {
+              ...REQUEST_LOG,
+              channel_group_name: longGroupName,
+              channel_name: longChannelName,
+              user_name: longUserName,
+            },
+          ],
+          next_cursor: null,
+        }),
       ),
     );
 
@@ -294,7 +301,7 @@ describe("RequestLogsView", () => {
     } as const;
     let detailRequests = 0;
     server.use(
-      http.get("/console/v1/request-logs", () => HttpResponse.json([log])),
+      http.get("/console/v1/request-logs", () => HttpResponse.json({ items: [log], next_cursor: null })),
       http.get("/console/v1/request-logs/:id", ({ params }) => {
         expect(params.id).toBe(log.id);
         detailRequests += 1;
@@ -359,7 +366,7 @@ describe("RequestLogsView", () => {
       client_model: "search-model",
     } as const;
     server.use(
-      http.get("/console/v1/request-logs", () => HttpResponse.json([log])),
+      http.get("/console/v1/request-logs", () => HttpResponse.json({ items: [log], next_cursor: null })),
       http.get("/console/v1/request-logs/:id", () => HttpResponse.json(log)),
     );
 
@@ -382,7 +389,7 @@ describe("RequestLogsView", () => {
     };
     server.use(
       http.get("/console/v1/me/request-logs", () =>
-        HttpResponse.json([ownLog]),
+        HttpResponse.json({ items: [ownLog], next_cursor: null }),
       ),
       http.get("/console/v1/me/request-logs/:id", () =>
         HttpResponse.json(ownLog),
@@ -443,7 +450,7 @@ describe("RequestLogsView", () => {
       const log = { ...REQUEST_LOG, upstream_model: "mobile-wire" };
       const unknown = { ...log, id: "f1111111-2222-4333-8444-555555555555", upstream_model: null };
       server.use(
-        http.get("/console/v1/me/request-logs", () => HttpResponse.json([log, unknown])),
+        http.get("/console/v1/me/request-logs", () => HttpResponse.json({ items: [log, unknown], next_cursor: null })),
         http.get(`/console/v1/me/request-logs/${unknown.id}`, () => HttpResponse.json(unknown)),
       );
       await renderAppAt("/usage/request-logs");
@@ -467,7 +474,7 @@ describe("RequestLogsView", () => {
     server.use(
       http.get("/console/v1/me/request-logs", ({ request }) => {
         listQuery = new URL(request.url).searchParams;
-        return HttpResponse.json([]);
+        return HttpResponse.json({ items: [], next_cursor: null });
       }),
       http.get(`/console/v1/me/request-logs/${REQUEST_LOG.id}`, () => HttpResponse.json(REQUEST_LOG)),
     );
@@ -477,5 +484,148 @@ describe("RequestLogsView", () => {
     expect(Object.fromEntries(listQuery!)).toEqual({limit: "50", model: "report-model", started_before: end, api_format: "open_ai_responses"});
     await userEvent.click(detail.getByRole("button", {name: "Close inspector"}));
     expect(new URLSearchParams(window.location.search).get("id")).toBeNull();
+  });
+
+  it("forwards AbortSignal to request log queries on unmount", async () => {
+    seedAuthenticatedSession();
+    let capturedSignal: AbortSignal | undefined;
+    server.use(
+      http.get("/console/v1/request-logs", ({ request }) => {
+        capturedSignal = request.signal;
+        return new Promise(() => {});
+      }),
+    );
+    window.history.replaceState({}, "", "/admin/request-logs");
+    const view = render(
+      <AppProviders>
+        <BrowserRouter>
+          <AppRouter />
+        </BrowserRouter>
+      </AppProviders>,
+    );
+    await waitFor(() => expect(capturedSignal).toBeDefined());
+    expect(capturedSignal?.aborted).toBe(false);
+    view.unmount();
+    expect(capturedSignal?.aborted).toBe(true);
+  });
+
+  it("keeps previous rows while switching outcome and loads user/key filters on demand", async () => {
+    seedAuthenticatedSession();
+    let usersRequests = 0;
+    let apiKeysRequests = 0;
+    let resolveFailed!: (value: Response) => void;
+    const failedPending = new Promise<Response>((resolve) => {
+      resolveFailed = resolve;
+    });
+    server.use(
+      http.get("/console/v1/users", () => {
+        usersRequests += 1;
+        return HttpResponse.json({ items: [CONTROL_PLANE_USER], next_cursor: null, total: 1 });
+      }),
+      http.get("/console/v1/api-keys", () => {
+        apiKeysRequests += 1;
+        return HttpResponse.json({ items: [ADMIN_API_KEY], next_cursor: null, total: 1 });
+      }),
+      http.get("/console/v1/request-logs", () => HttpResponse.json({ items: [REQUEST_LOG], next_cursor: null })),
+    );
+
+    const user = userEvent.setup();
+    await renderAppAt("/admin/request-logs");
+    expect(await screen.findByText(REQUEST_LOG.client_model)).toBeVisible();
+    expect(usersRequests).toBe(0);
+    expect(apiKeysRequests).toBe(0);
+
+    server.use(
+      http.get("/console/v1/request-logs", () => failedPending),
+    );
+    await user.click(screen.getByRole("button", { name: "Failed" }));
+    expect(screen.getByText(REQUEST_LOG.client_model)).toBeVisible();
+
+    resolveFailed(HttpResponse.json({
+      items: [{ ...REQUEST_LOG, id: "e1111111-2222-4333-8444-555555555555", client_model: "failed-model", outcome: "failed" }],
+      next_cursor: null,
+    }));
+    expect(await screen.findByText("failed-model")).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Filters (1)" }));
+    expect(usersRequests).toBe(0);
+    expect(apiKeysRequests).toBe(0);
+
+    await user.click(await screen.findByRole("combobox", { name: "User" }));
+    await waitFor(() => expect(usersRequests).toBe(1));
+    await user.keyboard("{Escape}");
+    await user.click(await screen.findByRole("combobox", { name: "API key" }));
+    await waitFor(() => expect(apiKeysRequests).toBe(1));
+  });
+
+  it("paginates with cursor stack and resets cursor when filters change", async () => {
+    seedAuthenticatedSession();
+    const cursors: (string | null)[] = [];
+    const page2Log = {
+      ...REQUEST_LOG,
+      id: "d1111111-2222-4333-8444-555555555555",
+      client_model: "page-two-model",
+    };
+    server.use(
+      http.get("/console/v1/request-logs", ({ request }) => {
+        const cursor = new URL(request.url).searchParams.get("cursor");
+        cursors.push(cursor);
+        if (cursor === "cursor-p2") {
+          return HttpResponse.json({ items: [page2Log], next_cursor: null });
+        }
+        return HttpResponse.json({ items: [REQUEST_LOG], next_cursor: "cursor-p2" });
+      }),
+    );
+
+    const user = userEvent.setup();
+    await renderAppAt("/admin/request-logs");
+    expect(await screen.findByText(REQUEST_LOG.client_model)).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Go to next page" }));
+    expect(await screen.findByText("page-two-model")).toBeVisible();
+    expect(cursors.at(-1)).toBe("cursor-p2");
+
+    await user.click(screen.getByRole("button", { name: "Failed" }));
+    await waitFor(() => expect(cursors.at(-1)).toBeNull());
+  });
+
+  it("resolves URL user_id and api_key_id via single-record endpoints without listing", async () => {
+    seedAuthenticatedSession();
+    let userListCalls = 0;
+    let keyListCalls = 0;
+    server.use(
+      http.get("/console/v1/users", () => {
+        userListCalls += 1;
+        return HttpResponse.json({ items: [], next_cursor: null, total: 0 });
+      }),
+      http.get("/console/v1/api-keys", () => {
+        keyListCalls += 1;
+        return HttpResponse.json({ items: [], next_cursor: null, total: 0 });
+      }),
+      http.get(`/console/v1/users/${CONTROL_PLANE_USER.id}`, () =>
+        HttpResponse.json(
+          { ...CONTROL_PLANE_USER, display_name: "Resolved User" },
+          { headers: { ETag: '"user-etag"' } },
+        ),
+      ),
+      http.get(`/console/v1/api-keys/${ADMIN_API_KEY.id}`, () =>
+        HttpResponse.json(
+          { ...ADMIN_API_KEY, name: "Resolved Key" },
+          { headers: { ETag: '"key-etag"' } },
+        ),
+      ),
+      http.get("/console/v1/request-logs", () =>
+        HttpResponse.json({ items: [REQUEST_LOG], next_cursor: null }),
+      ),
+    );
+
+    await renderAppAt(
+      `/admin/request-logs?user_id=${CONTROL_PLANE_USER.id}&api_key_id=${ADMIN_API_KEY.id}`,
+    );
+
+    expect(await screen.findByText("User: Resolved User")).toBeVisible();
+    expect(await screen.findByText("API key: Resolved Key · Resolved User")).toBeVisible();
+    expect(userListCalls).toBe(0);
+    expect(keyListCalls).toBe(0);
   });
 });

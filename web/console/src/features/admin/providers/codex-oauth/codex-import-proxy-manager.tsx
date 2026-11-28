@@ -8,6 +8,8 @@ import type {
 } from "@/api/types";
 import { ApiError, controlPlaneMutationErrorMessage } from "@/api/errors";
 import { useI18n } from "@/app/i18n";
+import { EmptyState } from "@/components/shared/empty-state";
+import { ResourceTable, type Column } from "@/components/shared/resource-table";
 import { StatusBadge } from "@/components/shared/status-badge";
 import {
   AlertDialog,
@@ -54,14 +56,6 @@ import {
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import {
   useCreateProxy,
   useDeleteProxy,
@@ -189,94 +183,103 @@ export function CodexImportProxyManager({
                 )}
               </p>
             </div>
-            <div className="overflow-x-auto rounded-xl border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>{t("Imported proxy")}</TableHead>
-                    <TableHead>{t("Endpoint")}</TableHead>
-                    <TableHead>{t("Map to existing")}</TableHead>
-                    <TableHead pinned>{t("Actions")}</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {importedProxies.map((proxy) => (
-                    <TableRow key={proxy.id}>
-                      <TableCell className="min-w-52">
-                        <div className="font-medium">{proxy.name}</div>
-                        <div className="mt-1 flex flex-wrap gap-1">
-                          <Badge variant="outline">{proxy.source}</Badge>
-                          {proxy.username || proxy.password ? (
-                            <Badge variant="secondary">
-                              {t("Credential included")}
-                            </Badge>
-                          ) : null}
-                        </div>
-                        {proxy.errors.map((error) => (
-                          <p
-                            className="mt-1 text-xs text-destructive"
-                            key={error}
-                          >
-                            {t(error)}
-                          </p>
-                        ))}
-                      </TableCell>
-                      <TableCell className="min-w-64 font-mono text-xs">
-                        {proxy.proxy_url || "—"}
-                      </TableCell>
-                      <TableCell className="min-w-56">
-                        <Select
-                          value={proxy.existing_proxy_id || NO_MATCH}
-                          onValueChange={(value) =>
-                            onAssignImportedProxy(
-                              proxy.source_key,
-                              value === NO_MATCH ? "" : value,
-                            )
-                          }
+            <ResourceTable
+              columns={[
+                {
+                  key: "proxy",
+                  header: t("Imported proxy"),
+                  className: "min-w-52",
+                  render: (proxy) => (
+                    <>
+                      <div className="font-medium">{proxy.name}</div>
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        <Badge variant="outline">{proxy.source}</Badge>
+                        {proxy.username || proxy.password ? (
+                          <Badge variant="secondary">
+                            {t("Credential included")}
+                          </Badge>
+                        ) : null}
+                      </div>
+                      {proxy.errors.map((error) => (
+                        <p
+                          className="mt-1 text-xs text-destructive"
+                          key={error}
                         >
-                          <SelectTrigger
-                            aria-label={t("Map {name} to existing proxy", {
-                              name: proxy.name,
-                            })}
-                          >
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectGroup>
-                              <SelectItem value={NO_MATCH}>
-                                {t("Not mapped")}
-                              </SelectItem>
-                              {proxies.map((existing) => (
-                                <SelectItem
-                                  key={existing.id}
-                                  value={existing.id}
-                                >
-                                  {existing.name}
-                                  {!existing.enabled
-                                    ? ` · ${t("Disabled")}`
-                                    : ""}
-                                </SelectItem>
-                              ))}
-                            </SelectGroup>
-                          </SelectContent>
-                        </Select>
-                      </TableCell>
-                      <TableCell pinned>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => openImportedProxy(proxy)}
-                          disabled={proxy.errors.length > 0}
-                        >
-                          <Plus data-icon="inline-start" />
-                          {t("Review and create")}
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
+                          {t(error)}
+                        </p>
+                      ))}
+                    </>
+                  ),
+                },
+                {
+                  key: "endpoint",
+                  header: t("Endpoint"),
+                  className: "min-w-64 font-mono text-xs",
+                  render: (proxy) => proxy.proxy_url || "—",
+                },
+                {
+                  key: "map",
+                  header: t("Map to existing"),
+                  className: "min-w-56",
+                  render: (proxy) => (
+                    <Select
+                      value={proxy.existing_proxy_id || NO_MATCH}
+                      onValueChange={(value) =>
+                        onAssignImportedProxy(
+                          proxy.source_key,
+                          value === NO_MATCH ? "" : value,
+                        )
+                      }
+                    >
+                      <SelectTrigger
+                        aria-label={t("Map {name} to existing proxy", {
+                          name: proxy.name,
+                        })}
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          <SelectItem value={NO_MATCH}>
+                            {t("Not mapped")}
+                          </SelectItem>
+                          {proxies.map((existing) => (
+                            <SelectItem
+                              key={existing.id}
+                              value={existing.id}
+                            >
+                              {existing.name}
+                              {!existing.enabled
+                                ? ` · ${t("Disabled")}`
+                                : ""}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                  ),
+                },
+                {
+                  key: "actions",
+                  header: t("Actions"),
+                  pinned: true,
+                  render: (proxy) => (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => openImportedProxy(proxy)}
+                      disabled={proxy.errors.length > 0}
+                    >
+                      <Plus data-icon="inline-start" />
+                      {t("Review and create")}
+                    </Button>
+                  ),
+                },
+              ] satisfies Column<ImportedProxyDraft>[]}
+              rows={importedProxies}
+              rowKey={(proxy) => proxy.id}
+              pagination={false}
+            />
           </div>
         ) : null}
 
@@ -287,71 +290,65 @@ export function CodexImportProxyManager({
               {t("Only enabled proxies can be assigned to a Codex credential.")}
             </p>
           </div>
-          <div className="overflow-x-auto rounded-xl border">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>{t("Name")}</TableHead>
-                  <TableHead>{t("Proxy URL")}</TableHead>
-                  <TableHead>{t("Status")}</TableHead>
-                  <TableHead pinned>{t("Actions")}</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {proxies.length === 0 ? (
-                  <TableRow>
-                    <TableCell
-                      colSpan={4}
-                      className="text-center text-muted-foreground"
+          <ResourceTable
+            columns={[
+              {
+                key: "name",
+                header: t("Name"),
+                className: "font-medium",
+                render: (proxy) => proxy.name,
+              },
+              {
+                key: "url",
+                header: t("Proxy URL"),
+                className: "font-mono text-xs",
+                render: (proxy) => proxy.proxy_url,
+              },
+              {
+                key: "status",
+                header: t("Status"),
+                render: (proxy) => <StatusBadge value={proxy.enabled} />,
+              },
+              {
+                key: "actions",
+                header: t("Actions"),
+                pinned: true,
+                render: (proxy) => (
+                  <div className="flex justify-end gap-1">
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={t("Edit {name}", { name: proxy.name })}
+                      onClick={() =>
+                        setDialogTarget({
+                          mode: "edit",
+                          proxyId: proxy.id,
+                          sourceKey: "",
+                          initial: EMPTY_PROXY,
+                        })
+                      }
                     >
-                      {t("No proxies configured")}
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  proxies.map((proxy) => (
-                    <TableRow key={proxy.id}>
-                      <TableCell className="font-medium">{proxy.name}</TableCell>
-                      <TableCell className="font-mono text-xs">
-                        {proxy.proxy_url}
-                      </TableCell>
-                      <TableCell>
-                        <StatusBadge value={proxy.enabled} />
-                      </TableCell>
-                      <TableCell pinned>
-                        <div className="flex justify-end gap-1">
-                          <Button
-                            variant="ghost"
-                            size="icon-sm"
-                            aria-label={t("Edit {name}", { name: proxy.name })}
-                            onClick={() =>
-                              setDialogTarget({
-                                mode: "edit",
-                                proxyId: proxy.id,
-                                sourceKey: "",
-                                initial: EMPTY_PROXY,
-                              })
-                            }
-                          >
-                            <Pencil />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon-sm"
-                            aria-label={t("Delete {name}", {
-                              name: proxy.name,
-                            })}
-                            onClick={() => setDeleteTarget(proxy)}
-                          >
-                            <Trash2 />
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))
-                )}
-              </TableBody>
-            </Table>
-          </div>
+                      <Pencil />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={t("Delete {name}", {
+                        name: proxy.name,
+                      })}
+                      onClick={() => setDeleteTarget(proxy)}
+                    >
+                      <Trash2 />
+                    </Button>
+                  </div>
+                ),
+              },
+            ] satisfies Column<ProxyView>[]}
+            rows={proxies}
+            rowKey={(proxy) => proxy.id}
+            empty={<EmptyState title={t("No proxies configured")} className="py-8" />}
+            pagination={false}
+          />
         </div>
       </CardContent>
 

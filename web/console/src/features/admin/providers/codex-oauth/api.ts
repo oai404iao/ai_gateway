@@ -25,9 +25,10 @@ const quotaWindowHistoryKey = (id: string) =>
 export function useCodexCredentials() {
   return useQuery({
     queryKey: credentialsKey,
-    queryFn: () =>
+    queryFn: ({ signal }) =>
       apiGet<CodexCredentialView[]>(
         "/routing/upstream-credentials/codex",
+        signal,
       ),
     refetchInterval: 30_000,
   });
@@ -36,11 +37,14 @@ export function useCodexCredentials() {
 export function useCodexCredential(id: string) {
   const query = useQuery({
     queryKey: credentialKey(id),
-    queryFn: () =>
+    queryFn: ({ signal }) =>
       apiGetDetail<CodexCredentialView>(
         `/routing/upstream-credentials/codex/${id}`,
+        signal,
       ),
     enabled: Boolean(id),
+    staleTime: 0,
+    refetchOnWindowFocus: true,
   });
   return {
     data: query.data,
@@ -54,9 +58,10 @@ export function useCodexCredential(id: string) {
 export function useCodexQuotaWindowHistory(id: string) {
   return useQuery({
     queryKey: quotaWindowHistoryKey(id),
-    queryFn: () =>
+    queryFn: ({ signal }) =>
       apiGet<CodexQuotaWindowHistory>(
         `/routing/upstream-credentials/codex/${id}/quota/windows`,
+        signal,
       ),
     enabled: Boolean(id),
   });

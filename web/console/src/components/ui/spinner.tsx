@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils"
+import { translate } from "@/app/i18n"
 import { Loader2Icon } from "lucide-react"
 import { motion } from "motion/react"
 import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion"
@@ -11,7 +12,7 @@ function Spinner({ className, ...props }: React.ComponentProps<typeof MotionLoad
     <MotionLoader
       data-slot="spinner"
       role="status"
-      aria-label="Loading"
+      aria-label={translate("Loading")}
       className={cn("size-4", className)}
       animate={{ rotate: reduceMotion ? 0 : 360 }}
       transition={reduceMotion ? { duration: 0 } : { duration: 1, repeat: Infinity, ease: "linear" }}

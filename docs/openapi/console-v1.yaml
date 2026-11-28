@@ -20,7 +20,7 @@ info:
       Console masks them by default. Per-user invitation tokens, temporary
       passwords, and reusable registration invitation code plaintext are
       returned only at issuance and are never retrievable again.
-    - Every error body is `{"error":"<code>"}`.
+    - JSON error bodies use `{"error":"<code>"}`. Query decoding failures return plain text.
     - Model rules own their routing tiers. Lower numeric priority wins;
       selection strategy and weights apply only among eligible candidates in
       the same tier.
@@ -316,16 +316,22 @@ paths:
     get:
       tags: [Self]
       operationId: listOwnApiKeys
+      description: Own API keys. Searches key names.
       security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/SearchQuery"
+        - $ref: "#/components/parameters/ApiKeyListStatus"
       responses:
         "200":
-          description: Own API keys.
+          description: Page ordered by `created_at` and `id`, both descending.
           content:
             application/json:
-              schema:
-                type: array
-                items: { $ref: "#/components/schemas/ApiKeyView" }
+              schema: { $ref: "#/components/schemas/ApiKeyPage" }
+        "400": { $ref: "#/components/responses/InvalidQuery" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
     post:
       tags: [Self]
       operationId: createOwnApiKey
@@ -488,10 +494,12 @@ paths:
       description: |
         Returns only request logs owned by the authenticated user. Concrete
         channel identity and the user display name are redacted for every
-        self-service caller, including administrators.
+        self-service caller, including administrators. The owner comes from the
+        authenticated session. A `user_id` query parameter returns `400`.
       security: [{ bearerAuth: [] }]
       parameters:
         - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
         - $ref: "#/components/parameters/RequestLogApiKeyId"
         - $ref: "#/components/parameters/RequestLogModel"
         - $ref: "#/components/parameters/RequestLogApiFormat"
@@ -502,13 +510,13 @@ paths:
         - $ref: "#/components/parameters/RequestLogBilled"
       responses:
         "200":
-          description: Owner-scoped request logs with self-service redaction.
+          description: Page ordered by `started_at` and `id`, both descending.
           content:
             application/json:
-              schema:
-                type: array
-                items: { $ref: "#/components/schemas/RequestLogView" }
+              schema: { $ref: "#/components/schemas/RequestLogPage" }
+        "400": { $ref: "#/components/responses/InvalidQuery" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
 
   /me/request-logs/{id}:
     get:
@@ -597,17 +605,25 @@ paths:
     get:
       tags: [Users]
       operationId: listUsers
+      description: Users. Searches email addresses and display names.
       security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/SearchQuery"
+        - $ref: "#/components/parameters/UserListRole"
+        - $ref: "#/components/parameters/UserListStatus"
+        - $ref: "#/components/parameters/UserListGroupId"
       responses:
         "200":
-          description: Users.
+          description: Page ordered by `created_at` and `id`, both descending.
           content:
             application/json:
-              schema:
-                type: array
-                items: { $ref: "#/components/schemas/ControlPlaneUser" }
+              schema: { $ref: "#/components/schemas/UserPage" }
+        "400": { $ref: "#/components/responses/InvalidQuery" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
     post:
       tags: [Users]
       operationId: inviteUser
@@ -1221,17 +1237,24 @@ paths:
     get:
       tags: [ApiKeys]
       operationId: listApiKeys
+      description: API keys. Searches key names, owner email addresses, and owner display names.
       security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/SearchQuery"
+        - $ref: "#/components/parameters/ApiKeyListUserId"
+        - $ref: "#/components/parameters/ApiKeyListStatus"
       responses:
         "200":
-          description: All API keys.
+          description: Page ordered by `created_at` and `id`, both descending.
           content:
             application/json:
-              schema:
-                type: array
-                items: { $ref: "#/components/schemas/AdminApiKeyView" }
+              schema: { $ref: "#/components/schemas/AdminApiKeyPage" }
+        "400": { $ref: "#/components/responses/InvalidQuery" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
     post:
       tags: [ApiKeys]
       operationId: createApiKey
@@ -2522,6 +2545,7 @@ paths:
       security: [{ bearerAuth: [] }]
       parameters:
         - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
         - $ref: "#/components/parameters/RequestLogUserId"
         - $ref: "#/components/parameters/RequestLogApiKeyId"
         - $ref: "#/components/parameters/RequestLogModel"
@@ -2533,14 +2557,14 @@ paths:
         - $ref: "#/components/parameters/RequestLogBilled"
       responses:
         "200":
-          description: All request logs.
+          description: Page ordered by `started_at` and `id`, both descending.
           content:
             application/json:
-              schema:
-                type: array
-                items: { $ref: "#/components/schemas/RequestLogView" }
+              schema: { $ref: "#/components/schemas/RequestLogPage" }
+        "400": { $ref: "#/components/responses/InvalidQuery" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
 
   /request-logs/{id}:
     get:
@@ -2710,19 +2734,22 @@ paths:
     get:
       tags: [AuditLogs]
       operationId: listAuditLogs
+      description: Audit events. Searches the action, object type, object ID, and correlation ID.
       security: [{ bearerAuth: [] }]
       parameters:
         - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/SearchQuery"
       responses:
         "200":
-          description: Audit events.
+          description: Page ordered by `occurred_at` and `id`, both descending.
           content:
             application/json:
-              schema:
-                type: array
-                items: { $ref: "#/components/schemas/AuditLogView" }
+              schema: { $ref: "#/components/schemas/AuditLogPage" }
+        "400": { $ref: "#/components/responses/InvalidQuery" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
 
   /system/connectors:
     get:
@@ -3114,6 +3141,44 @@ components:
       in: query
       required: false
       schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque base64url continuation token from the previous page. Reuse it with the same endpoint and filters. Invalid or mismatched tokens return `422`.
+      schema: { type: string, minLength: 1, maxLength: 512 }
+    SearchQuery:
+      name: q
+      in: query
+      required: false
+      description: Case-insensitive substring search. Leading and trailing whitespace is trimmed. An empty search matches all rows within the other filters.
+      schema: { type: string, maxLength: 200 }
+    UserListRole:
+      name: role
+      in: query
+      required: false
+      schema: { type: string, enum: [user, admin] }
+    UserListStatus:
+      name: status
+      in: query
+      required: false
+      schema: { type: string, enum: [invited, active, suspended, disabled] }
+    UserListGroupId:
+      name: user_group_id
+      in: query
+      required: false
+      schema: { type: string, format: uuid }
+    ApiKeyListUserId:
+      name: user_id
+      in: query
+      required: false
+      description: Administrator-only owner filter.
+      schema: { type: string, format: uuid }
+    ApiKeyListStatus:
+      name: status
+      in: query
+      required: false
+      schema: { type: string, enum: [active, disabled, revoked] }
     RequestLogUserId:
       name: user_id
       in: query
@@ -4133,6 +4198,96 @@ components:
           minimum: 0
           maximum: 100
           nullable: true
+
+    ApiKeyPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/ApiKeyView" }
+        next_cursor:
+          type: string
+          nullable: true
+          description: Continuation token, or null on the last page.
+        total:
+          type: integer
+          format: int64
+          minimum: 0
+          nullable: true
+          description: Total matching items across all pages.
+
+    UserPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/ControlPlaneUser" }
+        next_cursor:
+          type: string
+          nullable: true
+          description: Continuation token, or null on the last page.
+        total:
+          type: integer
+          format: int64
+          minimum: 0
+          nullable: true
+          description: Total matching items across all pages.
+
+    AdminApiKeyPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/AdminApiKeyView" }
+        next_cursor:
+          type: string
+          nullable: true
+          description: Continuation token, or null on the last page.
+        total:
+          type: integer
+          format: int64
+          minimum: 0
+          nullable: true
+          description: Total matching items across all pages.
+
+    RequestLogPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/RequestLogView" }
+        next_cursor:
+          type: string
+          nullable: true
+          description: Continuation token, or null on the last page.
+        total:
+          type: integer
+          format: int64
+          minimum: 0
+          nullable: true
+          description: Omitted for log pages.
+
+    AuditLogPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/AuditLogView" }
+        next_cursor:
+          type: string
+          nullable: true
+          description: Continuation token, or null on the last page.
+        total:
+          type: integer
+          format: int64
+          minimum: 0
+          nullable: true
+          description: Omitted for log pages.
 
     ApiKeyView:
       type: object

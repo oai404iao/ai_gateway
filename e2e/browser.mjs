@@ -183,7 +183,7 @@ try {
       { headers: { Authorization: `Bearer ${data.token}` } },
     );
     assert.equal(response.status(), 200);
-    const logs = await response.json();
+    const { items: logs } = await response.json();
     return logs.length === 1 && logs[0].billed_at !== null;
   }, { timeout: 30_000 }).toBe(true);
   await navigateWithRefresh(`${data.console}/admin/request-logs`);
@@ -199,7 +199,7 @@ try {
     return url.pathname === "/console/v1/request-logs" && url.searchParams.get("model") === "e2e-wire";
   });
   await page.getByRole("button", { name: "Apply", exact: true }).click();
-  assert.deepEqual(await (await wireOnly).json(), []);
+  assert.deepEqual((await (await wireOnly).json()).items, []);
   await filters.click();
   await modelFilter.fill("e2e-c");
   await page.getByRole("option", { name: "e2e-client", exact: true }).click();

@@ -12,14 +12,15 @@ use uuid::Uuid;
 use crate::{
     domain::AutomaticDisableTrigger,
     persistence::{
-        ApiHostsView, ChannelBatchUpdateInput, CodexCredentialBatchInput, CodexCredentialCreate,
-        CodexCredentialUpdateInput, ConsoleApiKey, ConsoleAuditLog, ControlPlaneApiKey,
-        ControlPlaneApiKeyPolicy, ControlPlaneConfigTemplate, ControlPlaneConfigTemplateDetail,
-        ControlPlaneModel, ControlPlaneMutation, ControlPlaneProxy, ControlPlaneRepository,
-        ControlPlaneUser, ControlPlaneUserGroup, ModelSourceVersions, MutationResult,
-        PreparedControlPlaneChange, RepositoryError, SelfApiKeyCreate, SelfApiKeyOptions,
-        SelfApiKeyUpdate, SyncedModelInput, SystemSettingsView, UserBatchUpdateInput,
-        UserSettingsInput, UserSettingsView,
+        ApiHostsView, ApiKeyListFilter, ChannelBatchUpdateInput, CodexCredentialBatchInput,
+        CodexCredentialCreate, CodexCredentialUpdateInput, ConsoleApiKey, ConsoleAuditLog,
+        ControlPlaneApiKey, ControlPlaneApiKeyPolicy, ControlPlaneConfigTemplate,
+        ControlPlaneConfigTemplateDetail, ControlPlaneModel, ControlPlaneMutation,
+        ControlPlaneProxy, ControlPlaneRepository, ControlPlaneUser, ControlPlaneUserGroup,
+        ModelSourceVersions, MutationResult, PageOptions, PageResult, PreparedControlPlaneChange,
+        RepositoryError, SelfApiKeyCreate, SelfApiKeyOptions, SelfApiKeyUpdate, SyncedModelInput,
+        SystemSettingsView, UserBatchUpdateInput, UserListFilter, UserSettingsInput,
+        UserSettingsView,
     },
     routing::{
         PassiveHealthPolicy, RoutingRuntime, SessionAffinityCacheClearResult,
@@ -182,8 +183,11 @@ impl ControlPlaneCoordinator {
         Ok(correlation_id)
     }
 
-    pub async fn admin_users(&self) -> Result<Vec<ControlPlaneUser>, ControlPlaneError> {
-        Ok(self.repository.admin_users().await?)
+    pub async fn admin_users(
+        &self,
+        filter: UserListFilter,
+    ) -> Result<PageResult<ControlPlaneUser>, ControlPlaneError> {
+        Ok(self.repository.admin_users(filter).await?)
     }
 
     pub async fn admin_user(
@@ -215,8 +219,12 @@ impl ControlPlaneCoordinator {
         Ok(self.repository.admin_model(id).await?)
     }
 
-    pub async fn admin_api_keys(&self) -> Result<Vec<ControlPlaneApiKey>, ControlPlaneError> {
-        Ok(self.repository.admin_api_keys().await?)
+    pub async fn admin_api_keys(
+        &self,
+        user_id: Option<Uuid>,
+        filter: ApiKeyListFilter,
+    ) -> Result<PageResult<ControlPlaneApiKey>, ControlPlaneError> {
+        Ok(self.repository.admin_api_keys(user_id, filter).await?)
     }
 
     pub async fn admin_api_key(
@@ -428,8 +436,12 @@ impl ControlPlaneCoordinator {
         })
     }
 
-    pub async fn own_api_keys(&self, actor: Uuid) -> Result<Vec<ConsoleApiKey>, ControlPlaneError> {
-        Ok(self.repository.own_api_keys(actor).await?)
+    pub async fn own_api_keys(
+        &self,
+        actor: Uuid,
+        filter: ApiKeyListFilter,
+    ) -> Result<PageResult<ConsoleApiKey>, ControlPlaneError> {
+        Ok(self.repository.own_api_keys(actor, filter).await?)
     }
 
     pub async fn own_api_key(
@@ -447,8 +459,11 @@ impl ControlPlaneCoordinator {
         Ok(self.repository.own_api_key_options(actor).await?)
     }
 
-    pub async fn audit_logs(&self, limit: i64) -> Result<Vec<ConsoleAuditLog>, ControlPlaneError> {
-        Ok(self.repository.audit_logs(limit).await?)
+    pub async fn audit_logs(
+        &self,
+        options: PageOptions,
+    ) -> Result<PageResult<ConsoleAuditLog>, ControlPlaneError> {
+        Ok(self.repository.audit_logs(options).await?)
     }
 
     pub async fn create_own_api_key(

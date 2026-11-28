@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BrowserRouter } from "react-router";
 import { http, HttpResponse } from "msw";
@@ -47,5 +47,32 @@ describe("Proxy detail page", () => {
       proxy_id: PROXY.id,
       proxy_url: PROXY.proxy_url,
     });
+  });
+
+  it("preserves unsaved form edits when window focus triggers a detail refetch", async () => {
+    seedAuthenticatedSession();
+    let getCount = 0;
+    server.use(
+      http.get(`/console/v1/network/proxies/${PROXY.id}`, () => {
+        getCount += 1;
+        return HttpResponse.json(
+          { ...PROXY, name: getCount === 1 ? PROXY.name : "Server updated name" },
+          { headers: { etag: `"proxy-etag-${getCount}"` } },
+        );
+      }),
+    );
+    const user = userEvent.setup();
+    renderAppAt(`/admin/network/proxies/${PROXY.id}`);
+
+    const nameInput = await screen.findByDisplayValue(PROXY.name);
+    await user.clear(nameInput);
+    await user.type(nameInput, "Unsaved local proxy");
+    expect(nameInput).toHaveValue("Unsaved local proxy");
+
+    window.dispatchEvent(new Event("visibilitychange"));
+    window.dispatchEvent(new Event("focus"));
+
+    await waitFor(() => expect(getCount).toBeGreaterThanOrEqual(2));
+    expect(nameInput).toHaveValue("Unsaved local proxy");
   });
 });
